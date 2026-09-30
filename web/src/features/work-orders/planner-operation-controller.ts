@@ -1,0 +1,247 @@
+import type { AcpRun, AcpRunEvent, PlanningMessage } from "@/api/hooks";
+import { mergeActivityTimeline, parseActivityEvent, type ActivityItem, type ActivityKind } from "@/features/activity/activity-view";
+
+export type QuestionPayload = NonNullable<PlanningMessage["question_payload"]>;
+export type AnswerPayload = NonNullable<PlanningMessage["answer_payload"]>;
+
+export type PlannerPendingReply = {
+  contentMarkdown: string;
+  answer?: AnswerPayload;
+};
+
+// Planner activity reuses the canonical, source-agnostic activity model shared with
+// work-order-run node activity.
+export type PlannerActivityKind = ActivityKind;
+export type PlannerActivityItem = ActivityItem;
+
+export type PlannerOperationKind = "reply" | "formalize" | "regenerate" | "generate_title";
+
+/**
+ * One source of truth for which planner operation statuses are
+ * terminal. Every consumer that decides "is this operation done with"
+ * — clear-active-operation effects, generating-indicator gates, ghost
+ * streaming entries, global-formalize notification cleanup — should
+ * read from here instead of hard-coding the alphabet. A future status
+ * (e.g. `paused`) becomes a one-line edit, not a search across the
+ * codebase that's likely to miss a consumer.
+ */
+export function isPlannerOperationTerminal(
+  status: PlannerOperationState["status"],
+): boolean {
+  return status === "done" || status === "error" || status === "cancelled";
+}
+
+export type PlannerOperationState = {
+  kind: PlannerOperationKind;
+  operationId: string;
+  /**
+   * `cancelled` is distinct from `error` so the UI can render shutdown
+   * cancellations neutrally instead of as failures, and so failure-rate
+   * metrics derived from this state aren't polluted by graceful
+   * shutdowns. The cancellation reason lives in `error` (the column
+   * name on the row) — only the *status* differs.
+   */
+  status: "pending" | "streaming" | "done" | "error" | "cancelled";
+  lastEventSeq: number;
+  // Parent the operation's new branch attaches to: the user message's parent
+  // for reply/edit, or the regenerated assistant's parent for regenerate.
+  parentMessageId?: string;
+  userMessageId?: string;
+  userCreatedAt?: string;
+  assistantMessageId?: string;
+  assistantCreatedAt?: string;
+  pendingReply: PlannerPendingReply | null;
+  replyText: string;
+  formalizeText: string;
+  draftId?: string;
+  error: string | null;
+  // Canonical completion is terminal for composing, but successful streams
+  // remain live until the durable diagnostic activity barrier arrives.
+  activityReconciled: boolean;
+  events?: AcpRunEvent[];
+  activityItems: PlannerActivityItem[];
+};
+
+export function buildPlannerOperationState(operation: AcpRun): PlannerOperationState {
+  const kind: PlannerOperationKind =
+    operation.agent_name === "planner-generate-title" ? "generate_title" :
+    operation.agent_name === "planner-formalize" ? "formalize" :
+    operation.agent_name === "planner-regenerate" ? "regenerate" : "reply";
+  const outputText = typeof operation.output_text === "string" ? operation.output_text : "";
+  return {
+    kind,
+    operationId: operation.run_id,
+    status:
+      operation.status === "failed" ? "error" :
+      operation.status === "cancelled" ? "cancelled" :
+      operation.status === "completed" ? "done" :
+      operation.status === "in-progress" ? "streaming" : "pending",
+    lastEventSeq: 0,
+    pendingReply: null,
+    replyText: kind === "formalize" || kind === "generate_title" ? "" : outputText,
+    formalizeText: kind === "formalize" ? outputText : "",
+    error: operation.error ?? null,
+    activityReconciled: false,
+    events: [],
+    activityItems: [],
+  };
+}
+
+export function reducePlannerOperationEvent(
+  state: PlannerOperationState,
+  event: AcpRunEvent
+): PlannerOperationState {
+  if (event.seq <= state.lastEventSeq) {
+    return state;
+  }
+  const next = {
+    ...state,
+    status: state.status === "pending" ? "streaming" : state.status,
+    lastEventSeq: event.seq,
+    events: [...(state.events ?? []), event],
+  } satisfies PlannerOperationState;
+
+  switch (event.type) {
+    case "run.created":
+      return applyOperationPayload({ ...next, status: "pending" }, event.payload);
+    case "run.in-progress":
+      return applyOperationPayload(next, event.payload);
+    case "generic": {
+      const activity = parsePlannerActivityEvent(event);
+      if (!activity) {
+        return next;
+      }
+      return {
+        ...next,
+        activityItems: upsertPlannerActivity(next.activityItems, activity),
+      };
+    }
+    case "message.part": {
+      const withPayload = applyOperationPayload(next, event.payload);
+      const text = readString(event.payload.text);
+      if (!text) {
+        return withPayload;
+      }
+      if (withPayload.kind === "formalize") {
+        return {
+          ...withPayload,
+          formalizeText: `${withPayload.formalizeText}${text}`,
+        };
+      }
+      return {
+        ...withPayload,
+        replyText: `${withPayload.replyText}${text}`,
+      };
+    }
+    case "message.completed": {
+      const withPayload = applyOperationPayload(next, event.payload);
+      const text = readString(event.payload.text);
+      if (!text) {
+        return withPayload;
+      }
+      if (withPayload.kind === "formalize") {
+          return { ...withPayload, formalizeText: text };
+      }
+      return { ...withPayload, replyText: text };
+    }
+    case "run.completed": {
+      if (next.kind === "formalize") {
+        return {
+          ...next,
+          status: "done",
+          draftId: readString(event.payload.planning_draft_id) ?? next.draftId,
+        };
+      }
+      return {
+        ...next,
+        status: "done",
+        pendingReply: null,
+      };
+    }
+    case "run.activity.reconciled":
+      return { ...next, activityReconciled: true };
+    case "run.failed":
+    case "error": {
+      return {
+        ...next,
+        status: "error",
+        error: readString(event.payload.error) ?? "Planner operation failed",
+      };
+    }
+    case "run.cancelled": {
+      return {
+        ...next,
+        status: "cancelled",
+        error: readString(event.payload.reason) ?? "Operation cancelled",
+        pendingReply: null,
+      };
+    }
+    default:
+      return next;
+  }
+}
+
+function parsePlannerActivityEvent(event: AcpRunEvent): PlannerActivityItem | null {
+  return parseActivityEvent({
+    payload: event.payload,
+    eventId: event.event_id,
+    createdAt: event.created_at,
+  });
+}
+
+function upsertPlannerActivity(items: PlannerActivityItem[], nextItem: PlannerActivityItem): PlannerActivityItem[] {
+  return mergeActivityTimeline(items,[nextItem]).slice(-400);
+}
+
+function applyOperationPayload(
+  state: PlannerOperationState,
+  payload: AcpRunEvent["payload"],
+): PlannerOperationState {
+  const next = { ...state };
+  const parentMessageId = readString(payload.parent_message_id);
+  if (parentMessageId) {
+    next.parentMessageId = parentMessageId;
+  }
+  const userMessageId = readString(payload.user_message_id);
+  if (userMessageId) {
+    next.userMessageId = userMessageId;
+  }
+  const userCreatedAt = readString(payload.user_created_at);
+  if (userCreatedAt) {
+    next.userCreatedAt = userCreatedAt;
+  }
+  const assistantMessageId = readString(payload.assistant_message_id) ?? readString(payload.planning_message_id);
+  if (assistantMessageId) {
+    next.assistantMessageId = assistantMessageId;
+  }
+  const assistantCreatedAt = readString(payload.assistant_created_at) ?? readString(payload.created_at);
+  if (assistantCreatedAt) {
+    next.assistantCreatedAt = assistantCreatedAt;
+  }
+  const draftId = readString(payload.planning_draft_id);
+  if (draftId) {
+    next.draftId = draftId;
+  }
+  if (next.kind === "reply") {
+    const contentMarkdown = readString(payload.content_markdown);
+    const answer = parseAnswerPayload(payload.answer_payload);
+    if (contentMarkdown || answer) {
+      next.pendingReply = {
+        contentMarkdown: contentMarkdown ?? next.pendingReply?.contentMarkdown ?? "",
+        ...(answer ? { answer } : next.pendingReply?.answer ? { answer: next.pendingReply.answer } : {}),
+      };
+    }
+  }
+  return next;
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() !== "" ? value : undefined;
+}
+
+function parseAnswerPayload(value: unknown): AnswerPayload | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  return value as AnswerPayload;
+}

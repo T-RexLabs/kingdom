@@ -250,7 +250,7 @@ func (s *Store) ListPendingProviderProcessGuards(ctx context.Context, afterGuard
 		return nil, fmt.Errorf("limit must be positive")
 	}
 	rows, err := s.db.QueryContext(ctx, providerProcessGuardSelect+`
-		WHERE owner_kind = 'decree_attempt' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)
+		WHERE owner_kind = 'work_order_attempt' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)
 		ORDER BY guard_id ASC
 		LIMIT ?`, strings.TrimSpace(afterGuardID), limit)
 	if err != nil {
@@ -304,7 +304,7 @@ func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID str
 	var total, pending int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(guard_id), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE provider_invocation_id = ? AND owner_kind = 'decree_attempt'`, strings.TrimSpace(activeProviderInvocationID)).Scan(&total, &pending)
+		WHERE provider_invocation_id = ? AND owner_kind = 'work_order_attempt'`, strings.TrimSpace(activeProviderInvocationID)).Scan(&total, &pending)
 	if err != nil {
 		return false, fmt.Errorf("load attempt process guard quiescence: %w", err)
 	}
@@ -361,7 +361,7 @@ func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID str
 		SELECT 1
 		FROM provider_process_guards ppg
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
-		WHERE ae.run_id = ? AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle <> 'quiescent'
+		WHERE ae.run_id = ? AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("load run provider process guard quiescence: %w", err)
 	}
@@ -398,7 +398,7 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 	var attemptID, lifecycle string
 	var quarantinedAt sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id, lifecycle, quiescence_evidence_lost_at
-		FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'decree_attempt'`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
+		FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'work_order_attempt'`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("provider process guard %q not found", guardID)
 		}
@@ -423,7 +423,7 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE owner_kind = 'decree_attempt' AND attempt_id = ?`, attemptID).Scan(&unresolved, &unquarantined); err != nil {
+		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, attemptID).Scan(&unresolved, &unquarantined); err != nil {
 		return false, fmt.Errorf("load attempt evidence quarantine for guard %q: %w", guardID, err)
 	}
 	if unresolved > 0 && unquarantined == 0 {
@@ -456,7 +456,7 @@ func (s *Store) AttemptProcessGuardEvidenceQuarantined(ctx context.Context, atte
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE owner_kind = 'decree_attempt' AND attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
+		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
 		return false, fmt.Errorf("load attempt process guard evidence quarantine: %w", err)
 	}
 	return unresolved > 0 && unquarantined == 0, nil
@@ -564,7 +564,7 @@ func resumeQuiescentAttemptCancellation(ctx context.Context, tx *sql.Tx, attempt
 		  AND handoff_state IN ('cancellation_requested', 'cancellation_dispatched', 'stop_retry_requested', 'stop_retry_dispatched', 'awaiting_quiescence', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested')
 		  AND NOT EXISTS (
 			SELECT 1 FROM provider_process_guards unresolved
-			WHERE unresolved.owner_kind = 'decree_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
+			WHERE unresolved.owner_kind = 'work_order_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
 			  AND unresolved.lifecycle <> 'quiescent'
 		  )`, quiescentAt, attemptID)
 	if err != nil {
@@ -655,7 +655,7 @@ func normalizeAcknowledgeProviderProcessGuardRequest(req AcknowledgeProviderProc
 
 func providerProcessGuardFromAcknowledgement(req normalizedAcknowledgeProviderProcessGuardRequest) ProviderProcessGuard {
 	return ProviderProcessGuard{
-		GuardID: req.GuardID, OwnerKind: "decree_attempt", OwnerID: req.AttemptID, ProviderInvocationID: req.ProviderInvocationID,
+		GuardID: req.GuardID, OwnerKind: "work_order_attempt", OwnerID: req.AttemptID, ProviderInvocationID: req.ProviderInvocationID,
 		AttemptID: req.AttemptID, RunID: req.RunID, NodeRunID: req.NodeRunID, CommandOrdinal: req.CommandOrdinal,
 		Lifecycle: ProviderProcessGuardLifecycleAcknowledged, Platform: req.Platform, GuardianPID: req.GuardianPID,
 		GuardianIdentityToken: req.GuardianIdentityToken, ChildPID: req.ChildPID, ChildIdentityToken: req.ChildIdentityToken,

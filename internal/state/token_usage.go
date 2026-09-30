@@ -88,13 +88,13 @@ type TokenUsageByModel struct {
 }
 
 type TokenUsageByRun struct {
-	RunID        string `json:"run_id"`
-	DecreeTitle  string `json:"decree_title"`
-	CreatedAt    string `json:"created_at"`
-	TotalTokens  int64  `json:"total_tokens"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	RecordCount  int    `json:"record_count"`
+	RunID          string `json:"run_id"`
+	WorkOrderTitle string `json:"work_order_title"`
+	CreatedAt      string `json:"created_at"`
+	TotalTokens    int64  `json:"total_tokens"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	RecordCount    int    `json:"record_count"`
 }
 
 type TokenUsageStore struct {
@@ -188,8 +188,8 @@ func (s *TokenUsageStore) SummaryByRun(ctx context.Context, runID string) (Token
 	return s.summaryByFilter(ctx, "run_id = ?", runID)
 }
 
-func (s *TokenUsageStore) SummaryByTimeWindowExecutionAnalytics(ctx context.Context, sinceRFC3339 string) (TokenUsageSummary, error) {
-	return s.executionAnalyticsSummaryByFilter(ctx, "tu.created_at >= ?", sinceRFC3339)
+func (s *TokenUsageStore) SummaryByTimeWindowExecutionAnalytics(ctx context.Context, sinceRFC3339, untilRFC3339 string) (TokenUsageSummary, error) {
+	return s.executionAnalyticsSummaryByFilter(ctx, "julianday(tu.created_at) >= julianday(?) AND julianday(tu.created_at) < julianday(?)", sinceRFC3339, untilRFC3339)
 }
 
 func (s *TokenUsageStore) SummaryByRunExecutionAnalytics(ctx context.Context, runID string) (TokenUsageSummary, error) {
@@ -232,8 +232,8 @@ func (s *TokenUsageStore) ByRoleForRun(ctx context.Context, runID string) ([]Tok
 	return s.byRoleFilter(ctx, "run_id = ?", runID)
 }
 
-func (s *TokenUsageStore) ByRoleExecutionAnalytics(ctx context.Context, sinceRFC3339 string) ([]TokenUsageByRole, error) {
-	return s.executionAnalyticsByRoleFilter(ctx, "tu.created_at >= ?", sinceRFC3339)
+func (s *TokenUsageStore) ByRoleExecutionAnalytics(ctx context.Context, sinceRFC3339, untilRFC3339 string) ([]TokenUsageByRole, error) {
+	return s.executionAnalyticsByRoleFilter(ctx, "julianday(tu.created_at) >= julianday(?) AND julianday(tu.created_at) < julianday(?)", sinceRFC3339, untilRFC3339)
 }
 
 func (s *TokenUsageStore) ByRoleForRunExecutionAnalytics(ctx context.Context, runID string) ([]TokenUsageByRole, error) {
@@ -333,7 +333,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tu.run_id,
-		        COALESCE(d.decree_title, ''),
+		        COALESCE(d.work_order_title, ''),
 		        COALESCE(wr.created_at, ''),
 		        COALESCE(SUM(tu.total_tokens), 0),
 		        COALESCE(SUM(tu.input_tokens), 0),
@@ -341,7 +341,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 		        COUNT(1)
 		 FROM token_usage tu
 		 LEFT JOIN workflow_runs wr ON wr.run_id = tu.run_id
-		 LEFT JOIN decrees d ON d.decree_id = wr.decree_id
+		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE tu.created_at >= ?
 		 GROUP BY tu.run_id
 		 ORDER BY SUM(tu.total_tokens) DESC
@@ -357,7 +357,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 	results := make([]TokenUsageByRun, 0)
 	for rows.Next() {
 		var r TokenUsageByRun
-		if err := rows.Scan(&r.RunID, &r.DecreeTitle, &r.CreatedAt, &r.TotalTokens, &r.InputTokens, &r.OutputTokens, &r.RecordCount); err != nil {
+		if err := rows.Scan(&r.RunID, &r.WorkOrderTitle, &r.CreatedAt, &r.TotalTokens, &r.InputTokens, &r.OutputTokens, &r.RecordCount); err != nil {
 			return nil, fmt.Errorf("scan top runs by tokens row: %w", err)
 		}
 		results = append(results, r)
@@ -369,11 +369,11 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 	return results, nil
 }
 
-func (s *TokenUsageStore) executionAnalyticsSummaryByFilter(ctx context.Context, whereClause string, arg any) (TokenUsageSummary, error) {
+func (s *TokenUsageStore) executionAnalyticsSummaryByFilter(ctx context.Context, whereClause string, filterArgs ...any) (TokenUsageSummary, error) {
 	var summary TokenUsageSummary
 	nodeClassFilter, nodeClassArgs := executionAnalyticsTokenNodeClassFilterSQL("wn")
-	args := make([]any, 0, 1+len(nodeClassArgs))
-	args = append(args, arg)
+	args := make([]any, 0, len(filterArgs)+len(nodeClassArgs))
+	args = append(args, filterArgs...)
 	args = append(args, nodeClassArgs...)
 	err := s.db.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT COALESCE(SUM(tu.total_tokens), 0),
@@ -405,10 +405,10 @@ func (s *TokenUsageStore) executionAnalyticsSummaryByFilter(ctx context.Context,
 	return summary, nil
 }
 
-func (s *TokenUsageStore) executionAnalyticsByRoleFilter(ctx context.Context, whereClause string, arg any) ([]TokenUsageByRole, error) {
+func (s *TokenUsageStore) executionAnalyticsByRoleFilter(ctx context.Context, whereClause string, filterArgs ...any) ([]TokenUsageByRole, error) {
 	nodeClassFilter, nodeClassArgs := executionAnalyticsTokenNodeClassFilterSQL("wn")
-	args := make([]any, 0, 1+len(nodeClassArgs))
-	args = append(args, arg)
+	args := make([]any, 0, len(filterArgs)+len(nodeClassArgs))
+	args = append(args, filterArgs...)
 	args = append(args, nodeClassArgs...)
 	rows, err := s.db.QueryContext(ctx,
 		fmt.Sprintf(`SELECT tu.required_role,
@@ -452,7 +452,7 @@ func (s *TokenUsageStore) executionAnalyticsByRoleFilter(ctx context.Context, wh
 	}
 
 	for i := range results {
-		breakdown, breakdownErr := s.executionAnalyticsByModelForRoleFilter(ctx, whereClause, arg, results[i].RequiredRole)
+		breakdown, breakdownErr := s.executionAnalyticsByModelForRoleFilter(ctx, whereClause, results[i].RequiredRole, filterArgs...)
 		if breakdownErr != nil {
 			return nil, breakdownErr
 		}
@@ -462,10 +462,10 @@ func (s *TokenUsageStore) executionAnalyticsByRoleFilter(ctx context.Context, wh
 	return results, nil
 }
 
-func (s *TokenUsageStore) executionAnalyticsByModelForRoleFilter(ctx context.Context, whereClause string, arg any, role string) ([]TokenUsageByModel, error) {
+func (s *TokenUsageStore) executionAnalyticsByModelForRoleFilter(ctx context.Context, whereClause string, role string, filterArgs ...any) ([]TokenUsageByModel, error) {
 	nodeClassFilter, nodeClassArgs := executionAnalyticsTokenNodeClassFilterSQL("wn")
-	args := make([]any, 0, 2+len(nodeClassArgs))
-	args = append(args, arg)
+	args := make([]any, 0, len(filterArgs)+1+len(nodeClassArgs))
+	args = append(args, filterArgs...)
 	args = append(args, role)
 	args = append(args, nodeClassArgs...)
 	rows, err := s.db.QueryContext(ctx,

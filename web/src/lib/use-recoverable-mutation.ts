@@ -8,8 +8,12 @@ type RetainedRequest<TRequest> = {
   request: TRequest;
 };
 
-export function shouldRetainMutationRequest(error: unknown): boolean {
+export function shouldRetainMutationRequest(error: unknown, previouslyUnresolved = false): boolean {
   if (!(error instanceof ApiError)) return true;
+  // Auth and idempotency admission failures describe this replay, not the
+  // outcome of an earlier send whose response was lost.
+  if (previouslyUnresolved && (error.status === 401 || error.correlationId === "api.auth.csrf"
+    || error.code === "idempotency_conflict" || error.code === "idempotency_key_expired")) return true;
   if (error.code === "idempotency_pending") return true;
   if (error.code === "unknown" && (error.status === 408 || error.status >= 500)) return true;
   return error.code === "internal_error" && error.correlationId === "idempotency-middleware";
@@ -41,7 +45,7 @@ export function useRecoverableMutation<TRequest, TResult>(
       return result;
     } catch (error) {
       if (sequence !== sequenceRef.current) throw error;
-      if (shouldRetainMutationRequest(error)) {
+      if (shouldRetainMutationRequest(error, retainedRef.current === attempted)) {
         retainedRef.current = attempted;
         setRetainedRequest(attempted);
       } else if (retainedRef.current === attempted) {

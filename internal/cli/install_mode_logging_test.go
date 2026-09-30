@@ -18,7 +18,7 @@ func TestWithSummonAccessLogWritesRequestLine(t *testing.T) {
 		_, _ = io.WriteString(w, `{"ok":true}`)
 	}), &logged)
 
-	req := httptest.NewRequest(http.MethodPost, "http://example.test/api/v1/decrees", nil)
+	req := httptest.NewRequest(http.MethodPost, "http://example.test/api/v1/work-orders", nil)
 	req.RemoteAddr = "127.0.0.1:4321"
 	resp := httptest.NewRecorder()
 
@@ -31,7 +31,7 @@ func TestWithSummonAccessLogWritesRequestLine(t *testing.T) {
 	if !strings.Contains(line, "method=POST") {
 		t.Fatalf("expected method in log line, got %q", line)
 	}
-	if !strings.Contains(line, "path=/api/v1/decrees") {
+	if !strings.Contains(line, "path=/api/v1/work-orders") {
 		t.Fatalf("expected path in log line, got %q", line)
 	}
 	if !strings.Contains(line, "status=201") {

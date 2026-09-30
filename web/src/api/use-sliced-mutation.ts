@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
-import { useRef, useState } from "react";
-import { shouldRetainMutationRequest } from "@/lib/use-recoverable-mutation";
+import { useRef } from "react";
+import { usePlanningMutationJournal } from "@/features/work-orders/use-planning-mutation-journal";
+import type { OutcomeOperation } from "@/lib/mutation-outcome";
 
 /**
  * Sentinel returned by superseded mutation invocations. mutationFn
@@ -13,53 +14,45 @@ export const SUPERSEDED = Symbol("planner-mutation-superseded");
 export type SupersededResult = typeof SUPERSEDED;
 
 /**
- * Latest-request-wins sequencing for slice-scoped planner mutations.
- *
- * Field-scoped onSuccess reconciliation fixes the cross-slice clobber class.
- * This adds the same-slice ordering guarantee: when two title (or two model)
- * PATCHes are in flight, only the latest one's response is applied. Older
- * in-flight requests are aborted at the transport layer AND skipped at the
- * application layer via a generation token so an older response that's already
- * on the wire can't overwrite a newer one.
- *
- * Returning SUPERSEDED instead of throwing AbortError keeps the mutation hook's
- * `error` state clean - superseded requests are not failures from the user's
- * perspective.
+ * Serialize field-scoped saves and reconcile only the latest invocation.
+ * A superseding edit first resolves any uncertain earlier request with its
+ * original body/key. Aborting a fetch does not prove that a PATCH was not
+ * accepted, so the durable journal owns recovery across route changes/reloads.
+ * Canonical responses are applied by the caller to its own Query fields only.
  */
 export function useSlicedMutation<TVars, TResponse>(
   mutationFn: (vars: TVars, signal: AbortSignal) => Promise<TResponse>,
   onLatestSuccess: (result: TResponse) => void,
   identity = "default",
+  operation?: OutcomeOperation,
 ) {
-  const genRef = useRef(0);
-  const queueRef = useRef<Promise<void>>(Promise.resolve());
-  const recoveryRef = useRef<{ identity: string; variables: TVars } | null>(null);
-  const [recoveryVariables, setRecoveryVariables] = useState<{ identity: string; variables: TVars } | null>(null);
+  const queues = useRef(new Map<string, { generation: number; tail: Promise<void> }>());
+  const recovery = usePlanningMutationJournal<TVars, TResponse>(
+    "planning-field", (vars) => mutationFn(vars, new AbortController().signal), identity, operation,
+  );
 
   const mutation = useMutation<TResponse | SupersededResult, Error, TVars>({
     mutationFn: async (vars: TVars) => {
-      const myGen = ++genRef.current;
-      const previous = queueRef.current;
+      let queue = queues.current.get(identity);
+      if (!queue) { queue = { generation: 0, tail: Promise.resolve() }; queues.current.set(identity, queue); }
+      const myGen = ++queue.generation;
+      const previous = queue.tail;
       let release!: () => void;
-      queueRef.current = new Promise<void>((resolve) => { release = resolve; });
+      queue.tail = new Promise<void>((resolve) => { release = resolve; });
       await previous;
       try {
-        const recovery = recoveryRef.current?.identity === identity ? recoveryRef.current.variables : null;
-        const attempts = recovery && recovery !== vars ? [recovery, vars] : [vars];
+        const retained = recovery.getPendingRequest();
+        const attempts = retained && retained !== vars ? [retained, vars] : [vars];
         let result: TResponse | undefined;
         for (const attemptedVars of attempts) {
           try {
-            const controller = new AbortController();
-            result = await mutationFn(attemptedVars, controller.signal);
-            recoveryRef.current = null;
-            setRecoveryVariables(null);
+            const key = (attemptedVars as { key?: string }).key;
+            result = await recovery.mutateAsync(attemptedVars, key);
           } catch (err) {
-            recoveryRef.current = shouldRetainMutationRequest(err) ? { identity, variables: attemptedVars } : null;
-            setRecoveryVariables(recoveryRef.current);
-            if (myGen !== genRef.current) return SUPERSEDED;
+            if (myGen !== queue.generation) return SUPERSEDED;
             throw err;
           }
-          if (myGen !== genRef.current) return SUPERSEDED;
+          if (myGen !== queue.generation) return SUPERSEDED;
         }
         return result as TResponse;
       } finally {
@@ -75,15 +68,16 @@ export function useSlicedMutation<TVars, TResponse>(
   });
 
   const retryRecovery = () => {
-    const recovery = recoveryRef.current;
-    if (!recovery || recovery.identity !== identity) return Promise.reject(new Error("mutation recovery request is not available"));
-    return mutation.mutateAsync(recovery.variables);
+    const retained = recovery.getPendingRequest();
+    return retained ? mutation.mutateAsync(retained) : Promise.reject(new Error("The recovery request is no longer available."));
   };
 
   return {
     ...mutation,
-    hasPendingRecovery: recoveryVariables?.identity === identity,
-    pendingVariables: recoveryVariables?.identity === identity ? recoveryVariables.variables : null,
+    hasPendingRecovery: recovery.hasPendingRecovery,
+    pendingVariables: recovery.pendingRequest,
+    pendingRequestKey: recovery.pendingKey,
+    recoveryBlocked: recovery.recoveryBlocked,
     retryRecovery,
   };
 }

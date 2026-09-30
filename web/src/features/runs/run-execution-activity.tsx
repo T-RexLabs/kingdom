@@ -1,78 +1,106 @@
-import { useMemo, useState } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { useMemo } from "react";
 import { useRunExecutionActivity } from "@/api/hooks-runs";
-import { activityItemFromApi, buildActivityState, selectLatestTodoList } from "@/features/activity/activity-view";
-import { ActivityChecklist, ActivityLiveStream, ActivitySources, ActivityThoughts } from "@/features/activity/activity-stream";
+import type { RunExecution, RunExecutionDetail } from "@/api/hooks";
+import {
+  activityItemFromApi,
+  buildActivityState,
+  isConversationActivity,
+} from "@/features/activity/activity-view";
+import { RunFinalResponse } from "./run-conversation";
+import { hasSettledResponse } from "./run-conversation-state";
+import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
+import { ActivitySources } from "@/features/activity/activity-sources";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
+import {
+  isActiveExecutionStatus,
+  isQueuedExecutionStatus,
+} from "./run-status-semantics";
 
-// RunExecutionActivity surfaces the fine-grained agent activity (reasoning + tool
-// calls) for the selected node attempt: live while the attempt is running, then a
-// settled Thoughts / Sources trail. The whole section is foldable and collapsed by
-// default — the header shows the current action so the operator knows work is
-// happening, and they expand to read it. It renders nothing for attempts that
-// produced no activity (e.g. runtime-owned nodes), so it never leaves an empty shell.
-export function RunExecutionActivity({
-  runId,
-  attemptId,
-  isRunning,
-}: {
+type RunActivityProps = {
   runId: string;
   attemptId: string | null;
-  isRunning: boolean;
-}) {
-  const [open, setOpen] = useState(false);
-  const durableQuery = useRunExecutionActivity(runId, attemptId, {
+  status?: RunExecution["status"];
+  detail?: RunExecutionDetail | null;
+};
+export function RunExecutionActivity(props: RunActivityProps) {
+  return (
+    <RunAttemptActivity
+      key={JSON.stringify([props.runId, props.attemptId])}
+      {...props}
+    />
+  );
+}
+function RunAttemptActivity({
+  runId,
+  attemptId,
+  status,
+  detail,
+}: RunActivityProps) {
+  const isRunning = isActiveExecutionStatus(status);
+  const durable = useRunExecutionActivity(runId, attemptId, {
     refetchIntervalMs: isRunning ? 1_500 : false,
   });
   const liveBuffer = useLiveRunActivity(runId);
   const liveItems = selectLiveRunActivity(liveBuffer, attemptId);
-
   const state = useMemo(
     () =>
       buildActivityState({
-        durableItems: (durableQuery.data?.items ?? []).map(activityItemFromApi),
+        durableItems: (durable.data?.items ?? []).map(activityItemFromApi),
         liveItems,
       }),
-    [durableQuery.data?.items, liveItems],
+    [durable.data?.items, liveItems],
   );
 
-  const todoList = useMemo(() => selectLatestTodoList(state.items), [state.items]);
-  const showLive = isRunning && Boolean(state.currentEvent || state.liveThoughtText.trim());
-  const showThoughts = !isRunning && state.thoughts.length > 0;
-  const showSources = !isRunning && state.sources.length > 0;
-  const showChecklist = todoList !== null;
-  if (!showLive && !showThoughts && !showSources && !showChecklist) {
-    return null;
-  }
+  const hasFinished =
+    status === "succeeded" || status === "failed" || status === "cancelled";
 
+  if (!attemptId)
+    return (
+      <p className="py-6 text-sm text-foreground-muted">
+        This step has not recorded an attempt yet.
+      </p>
+    );
   return (
-    <section className="rounded-xl border border-border bg-background/70">
-      <button
-        type="button"
-        onClick={() => setOpen((current) => !current)}
-        aria-expanded={open}
-        className="flex min-h-11 w-full items-center justify-between gap-3 px-4 py-3 text-left"
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          <span className="text-xs uppercase tracking-[0.16em] text-foreground-muted">Activity</span>
-          {/* Surface the current action in the collapsed header so live work is
-              visible at a glance without expanding. */}
-          {showLive && state.currentEvent ? (
-            <span className="min-w-0 truncate text-xs text-foreground-subtle">{state.currentEvent.label}</span>
-          ) : null}
-        </span>
-        {open
-          ? <ChevronDown className="h-4 w-4 shrink-0 text-foreground-subtle" />
-          : <ChevronRight className="h-4 w-4 shrink-0 text-foreground-subtle" />}
-      </button>
-      {open ? (
-        <div className="space-y-3 border-t border-border px-4 py-3">
-          {showChecklist && todoList ? <ActivityChecklist list={todoList} /> : null}
-          {showLive ? <ActivityLiveStream state={state} isStreaming={isRunning} /> : null}
-          {showThoughts ? <ActivityThoughts thoughts={state.thoughts} /> : null}
-          {showSources ? <ActivitySources sources={state.sources} /> : null}
-        </div>
-      ) : null}
+    <section className="space-y-2" aria-label="Provider activity">
+      <h3 className="sr-only">Provider Activity</h3>
+      {!isRunning &&
+        !durable.isLoading &&
+        !durable.isError &&
+        !state.items.some(isConversationActivity) &&
+        !hasSettledResponse(detail) && (
+          <p className="py-6 text-sm text-foreground-muted">
+            {durable.gaps.length > 0
+              ? "No thinking or tool calls appear in this loaded window. Open activity to load earlier history."
+              : isQueuedExecutionStatus(status)
+                ? "This attempt is queued. Provider activity will appear when it starts."
+                : hasFinished
+                  ? "No thinking, tool activity, or settled response is available for this attempt."
+                  : "No provider activity has been recorded yet."}
+          </p>
+        )}
+      {liveItems.some(
+        (item) => item.sequence > (durable.data?.snapshotThrough ?? 0),
+      ) && (
+        <p className="text-xs text-foreground-muted">
+          New live activity is awaiting durable reconciliation.
+        </p>
+      )}
+      <ActivityDisclosure
+        scopeKey={JSON.stringify([runId, attemptId])}
+        isLive={isRunning}
+        hasFinalResponse={hasSettledResponse(detail)}
+        completionBehavior="keep-open"
+        items={state.items}
+        gaps={durable.gaps}
+        isLoading={durable.isLoading}
+        error={durable.error}
+        retry={() => durable.refetch()}
+        isLoadingMore={durable.isLoadingMore}
+        loadError={durable.loadError}
+        loadMore={durable.loadMore}
+      />
+      <RunFinalResponse key={attemptId} detail={detail} />
+      <ActivitySources sources={state.sources} />
     </section>
   );
 }

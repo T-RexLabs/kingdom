@@ -22,32 +22,19 @@ Browser flow:
 - cookie-authenticated requests remain loopback-only, and mutations require the exact session origin plus `X-CSRF-Token`
 - a non-loopback browser receives a stable local-only explanation rather than a login prompt
 
-Actor and authority headers do not exist in the public contract. Identity and fixed allfather authority come only from the verified local principal.
+Actor and authority headers do not exist in the public contract. Identity and fixed operator authority come only from the verified local principal.
 
-API request bodies are privately spooled for schema validation, exact-byte idempotency hashing, and handler replay without a fixed route-level aggregate byte limit. Designated decree and planning text fields stream into canonical SQLite content storage. Authentication and schema constraints still apply; request reads and idle connections remain time-bounded, while SSE response writes are not. Individual scalar fields and some read responses still materialize data in memory.
+API request bodies are privately spooled for schema validation, exact-byte idempotency hashing, and handler replay without a fixed route-level aggregate byte limit. Designated work order and planning text fields stream into canonical SQLite content storage. Authentication and schema constraints still apply; request reads and idle connections remain time-bounded, while SSE response writes are not. Individual scalar fields and some read responses still materialize data in memory.
 
 ## Web UI Surfaces
 
-### `Throne Room` (`/`)
+### `Overview` (`/`)
 
-Purpose:
+Overview prioritizes pending operator decisions and current work using server-filtered run queues. It also shows recent planning sessions and a 24-hour outcome/token summary. Each queue links to its complete filtered collection; loaded cards are not a total count.
 
-- top-level runtime overview
-- health indicator
-- recent runs
-- runtime and token metrics cards
+### Planning and New Work Order
 
-What it does not do:
-
-- it is not the decree composer
-- it is not the planning workspace
-- it is not a web artifact browser
-
-### `Decrees` (`/decrees`)
-
-This area has two working modes.
-
-Both creation modes can open the reusable, paginated GitHub issue picker. The picker performs a profile-aware preview, renders opted-in comment bodies through paginated restricted Markdown, and cancels stale searches. Comment import captures every page and complete bodies; preview pagination is not a retention cap. Planning intake can attach the first source at creation and additional unique issues from the active planning page. Each attach fetches before a short atomic capture/link/adoption transaction, affects future operations only, and fabricates no transcript message or context-snapshot movement. Direct issuance first captures an immutable snapshot, prefills editable title/body fields, and links that exact selected snapshot atomically when issued. Pre-issuance refresh exposes a candidate with explicit apply-title, apply-body, and use-snapshot actions; issued decrees provide refresh/field comparison without mutable text.
+Planning sessions live at `/work-orders/planning`; direct issuance is a separate workspace at `/work-orders/new`. Both can use the reusable paginated GitHub issue picker. The picker performs a profile-aware preview, renders opted-in comment bodies through paginated restricted Markdown, and cancels stale searches. Comment import captures every page and complete bodies; preview pagination is not a retention cap. Planning sources attach to an existing session. Each attach fetches before a short atomic capture/link/adoption transaction, affects future operations only, and fabricates no transcript message or filesystem context-snapshot movement. Direct issuance captures an immutable snapshot, prefills editable title/body fields, and links that exact selected snapshot when issued. Pre-issuance refresh offers explicit title, body, and snapshot adoption; refreshing an issued work order never rewrites its immutable text.
 
 ### `Connections` (`/connections`)
 
@@ -63,16 +50,16 @@ Both creation modes can open the reusable, paginated GitHub issue picker. The pi
 - filters and paginates installation-granted repositories, then discovers issue-only results only after the current key generation passes health validation
 - validates, disables, and removes local connections without deleting historical provenance
 
-External snapshot reads return issue and retention metadata only. Comment bodies use `/external-source-snapshots/{id}/comments` with opaque pagination; link history is likewise paginated. Link coordinates always describe the target's immutable decree-used or planning-active snapshot, even when the provider's current issue locator has moved. Refresh responses are compact, typed summaries with field-change flags and optional safe retry timestamps.
+External snapshot reads return issue and retention metadata only. Comment bodies use `/external-source-snapshots/{id}/comments` with opaque pagination; link history is likewise paginated. Link coordinates always describe the target's immutable work-order-used or planning-active snapshot, even when the provider's current issue locator has moved. Refresh responses are compact, typed summaries with field-change flags and optional safe retry timestamps.
 
 Canonical API errors may include optional `retry_at` date-time metadata for provider rate limits. Connection and picker error states display that reset time without discarding the operator's current selection or form input. Only failed Kingdom local authentication returns `401`; revoked GitHub authorization returns a dependency error with safe `revoked` classification and reconnect guidance, leaving the local browser session signed in.
 
-#### Planning mode
+### `Planning` (`/work-orders/planning`)
 
 Routes:
 
-- `/decrees/planning`
-- `/decrees/planning/{sessionId}`
+- `/work-orders/planning`
+- `/work-orders/planning/{sessionId}`
 
 Capabilities:
 
@@ -86,65 +73,75 @@ Capabilities:
 - attach or remove planning sources
 - generate and view a plan draft
 
-Planning context refresh is available through the API, but the web planner does not currently expose a dedicated refresh control.
+Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
+
+Planner user messages align to the right. While a reply is running, a compact unframed activity view appears within the conversation: softly revealed provider reasoning, up to three recent tool calls with their reported status, the latest reported checklist, and sources. Routine provider phases cannot replace tools or thoughts. The primary view does not mount a historical event list or an inner activity scroller. Its reasoning window stays bounded and shows the newest lines, fading older overflow at the top. Stop sits beside Send in the composer; confirmed cancellation appears as a quiet Response Stopped status. After the canonical reply arrives, this preview collapses. **Show Activity** opens recorded thinking, tool calls, and checklists on demand; long histories retain bounded scrolling and earlier-page access. Conversation activity has no per-event metadata panels.
 
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
-#### Issue mode
+### `New Work Order` (`/work-orders/new`)
 
 Route:
 
-- `/decrees/new`
+- `/work-orders/new`
 
 Capabilities:
 
-- create a decree
+- create a work order
 - choose workflow and approval settings
-- set review and validation loop controls
+- set review and validation loop controls in **Review Options**
 - choose a global model
-- optionally set per-role model overrides
-- issue a decree directly or from a planning draft
+- optionally expand **Customize Role Models** to set per-role model overrides
+- issue a work order directly or from a planning draft; confirmed issuance clears the draft and opens the created run
 
 ### `Runs` (`/runs` and `/runs/{runId}`)
 
-The run-detail surface currently exposes these tabs:
+Run detail starts in **Workflow**, which displays the stored workflow DAG. The two primary views are **Workflow** and **Agent Activity**. Quiet contextual actions keep supporting material available without competing with the conversation:
 
-- `DAG`
-- `Activity`
-- `Agents`
-- `Messages`
+- **Workflow**: actual topology, live execution state, and node selection.
+- **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** reads the complete immutable prompt body prepared for the selected attempt, without reconstructing it from the issued brief. **Final Response** appears when a canonical settled response exists and also remains inline in the conversation.
+- **View Plan**: a readable plan document with one scrolling surface, followed by operator guidance and current approval/rework controls where applicable.
+- **Run Files**: artifact downloads and publication results.
+- **Run Details**: the full issued work order, source context, inline settings, and audit history. Settings do not open a second dialog.
 
-The run surface is also where operators handle manual approvals when approvals are not autonomous.
+Review and validation rework counts and limits appear in the main run header, including skipped stages and uncapped runs.
+
+The run surface is also where operators handle manual approvals when approvals are not autonomous. Failed and cancelled runs show one **Retry** and one **Rerun** control. Each opens a compact step picker: Retry repeats the selected step; Rerun repeats its downstream workflow, with completion reruns restarting at plan drafting. Recovery waits for server eligibility checks. An uncertain response retains its exact action, step, and idempotency key even when the picker is dismissed.
 
 Activity semantics:
 
 - Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
+- Agent Activity shares the planner’s presentation for actual reasoning, tools, and reported checklists, but its primary activity remains visible after a final response arrives; it has no user composer or display filters. Detailed history opens only on request and stays open if the operator has opened it
+- Provider Message rows are omitted from planner and run activity to avoid duplicating the reply below. Provider message observations remain stored with exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
-- attempt detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
-- the Outcome panel hides provider output and verdicts until canonical settlement commits; the Activity timeline may show explicitly labelled provisional stream text, which never implies success or canonical output
+- a collapsed **Attempt Record** disclosure under **Run Details → Audit** carries selected-attempt failure, settlement, identity, and retry evidence without duplicating its conversation response
+- The conversation keeps canonical settled responses distinct from observed or provisional evidence; neither activity nor an observed response implies success
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
-- all provider-backed decree attempts settle from a valid server-observed terminal response and node-specific output validation
-- the Activity surface includes a collapsible event timeline rather than a separate Timeline tab
+- all provider-backed work order attempts settle from a valid server-observed terminal response and node-specific output validation
+- Audit exposes the event timeline separately from provider activity
 
 When a stale provider process cannot be proven quiescent, Activity shows the attempt as paused and exposes **Retry Stop** only for its addressable guardian. That action requests one further bounded stop; it does not bypass quiescence, workspace restoration, or the cancellation handoff.
 
-Important limitation:
-
-- there is no dedicated web artifact browser yet
+**Run Files** defaults to **All** and supports producer-agent filtering across bounded pages. Compact file rows retain canonical deliverable, audit evidence, and deletion distinctions without raw provenance disclosures. File downloads and **Download All** return complete stored content; the UI does not execute or preview arbitrary artifact bytes inline. A separate **Publication Results** disclosure selects the exact attempt and preserves structured path actions, results, and conflict reasons independently of execution settlement.
 
 ### `Agents` (`/agents`)
 
 Capabilities:
 
-- inspect the canonical agent registry
-- inspect lineage and role assignment
+- inspect themed names, descriptions, lore, and canonical role responsibilities
+- inspect availability aggregated across the registered instances of each role
+- preserve explicit loading, unknown, mixed, blocked, or offline states instead of inventing availability or selecting an arbitrary run
 
-### `Realm Analytics` (`/realm-analytics`)
+### `Analytics` (`/analytics`)
 
 Capabilities:
 
-- inspect runtime and run analytics backed by `/api/v1/realm-analytics/*`
+- inspect runtime and run analytics backed by `/api/v1/analytics/*`
+
+### `Appearance` (`/appearance` and `/appearance/create`)
+
+Choose a personally pinned theme revision, inspect shared packages and editable source files, or create a theme with synchronized visual and JSON editors. Private app preview, source saving, immutable publication, import/export, unpublishing, and editable-source deletion are separate operations. See [Themes and Appearance](themes.md).
 
 ## CLI Surfaces
 
@@ -153,7 +150,7 @@ The `kd` CLI is the supported installed-mode operator CLI.
 Use it for:
 
 - local setup and runtime lifecycle
-- decree creation and run control
+- work order creation and run control
 - graph and timeline inspection
 - artifact export and approval decisions
 
@@ -177,9 +174,9 @@ Use this section as a guide to the major API areas, not as a complete route inve
 - plan drafts and context refresh
 - background title generation
 
-### Decrees, Workflows, and Runs
+### Work Orders, Workflows, and Runs
 
-- decree creation
+- work order creation
 - workflow publishing
 - run creation, inspection, graph, Activity, timeline events, and cancellation
 - retry and rerun-from controls
@@ -188,7 +185,9 @@ Use this section as a guide to the major API areas, not as a complete route inve
 - paged physical attempt history at `GET /runs/{id}/nodes/{nodeId}/attempts`
 - paged plan-review history at `GET /runs/{id}/plan-reviews`
 
-### Mailbox
+### Mailbox API
+
+The backend mailbox contract remains operational; the web UI has no Messages panel or mailbox controls.
 
 - run mailbox listing and detail
 - read markers for mailbox messages
@@ -197,29 +196,32 @@ Mailbox semantics:
 
 - mailbox is a communication and audit surface, not settlement authority
 - response text in mailbox can help operators inspect context, but it does not determine canonical success or settled review/validation outcomes
-- mailbox history uses signed continuation cursors bound to the run and filters; **Load Older Messages** continues through the history, and lane counts say “loaded” while more pages remain
-- referenced instructions and responses expose **Load Full Content** and **Download Full Content** in message details. The list remains a preview; full content is fetched only on demand through the authenticated, run/message-scoped content endpoint. Content identity and integrity are verified before serving it as a download.
+- mailbox history uses signed continuation cursors bound to the run and filters
+- referenced instructions and responses remain available through the authenticated, run/message-scoped content endpoint. Content identity and integrity are verified before serving complete bytes; list responses contain previews.
 
 Planning-session, plan-review, mailbox, and context-entry page sizes are read boundaries rather than retention ceilings. Continue with the returned `next_cursor` and the same filter scope.
 
 ### Artifacts
 
-- artifact listing and download
-- archive export
+- bounded artifact pages with exact node/attempt/producer lineage and signed continuation cursors
+- separately paged publication results, pinned to one run/attempt/batch revision
+- complete authenticated downloads and archive export
 - artifact content is always delivered as an attachment and cannot execute under the authenticated Kingdom origin
 - downloads and archive exports stream canonical SQLite content chunks without fixed file-size, aggregate-byte, or archive-entry workload ceilings
+
+Artifact pages return `snapshot_id` and optional `next_cursor`; publication pages return `entries_revision` and optional `next_cursor`. Load every page for a complete listing. A changed lineage or publication revision returns HTTP 409 with `refresh_required`; restart from the first page while keeping the current run/attempt selection.
 
 ### Metrics
 
 - runtime metrics
 - dashboard snapshot data
-- realm analytics snapshot and execution detail
+- analytics snapshot and execution detail
 
 Notes:
 
 - `/api/v1/dashboard/snapshot` separates current runtime state (`runtime`) from window-scoped dashboard metrics (`overview`, `tokens`).
-- `/api/v1/realm-analytics/snapshot` remains the fully window-scoped analytics surface.
-- `/api/v1/realm-analytics/execution-detail` returns aggregate execution detail for `window_minutes`, or the exact selected-run detail when `run_id` is provided, and returns `404` for an unknown `run_id`.
+- `/api/v1/analytics/snapshot` accepts either rolling `window_minutes` (default 1440, maximum 525600) or a fixed RFC3339 `start_at`/`end_at` pair. Fixed intervals must be positive and use an inclusive start and exclusive end; they may include future dates and have no duration cap. The two filter forms cannot be combined. Responses return normalized UTC `window_start`/`window_end`, the duration rounded up in `window_minutes`, and the actual read time in `snapshot_at`.
+- `/api/v1/analytics/execution-detail` accepts the same time filters and interval metadata. It returns aggregate execution detail for that interval, or exact selected-run detail independent of the interval when `run_id` is provided, and returns `404` for an unknown `run_id`.
 
 ## Streaming Surfaces
 
@@ -264,11 +266,6 @@ curl http://127.0.0.1:8080/healthz
 # credential file without exposing a raw-token command-line flag.
 kd summon status
 ```
-
-## Known UI/API Gaps
-
-- Artifact browsing is CLI/API-first today; the web UI does not yet have a dedicated artifact browser.
-- Planning context refresh exists in the API but is not exposed as a dedicated web-planner button.
 
 ## Related Docs
 

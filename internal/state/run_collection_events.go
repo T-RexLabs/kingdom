@@ -88,14 +88,15 @@ func projectRunCollectionPayloadTx(ctx context.Context, tx *sql.Tx, req RunColle
 
 	payload["run_id"] = projection.RunID
 	payload["workflow_id"] = projection.WorkflowID
-	payload["decree_id"] = projection.DecreeID
-	payload["decree_title"] = projection.DecreeTitle
+	payload["work_order_id"] = projection.WorkOrderID
+	payload["work_order_title"] = projection.WorkOrderTitle
 	payload["status"] = projection.Status
 	payload["plan_state"] = projection.PlanState
 	payload["display_state"] = projection.DisplayState
 	payload["created_at"] = projection.CreatedAt
 	payload["updated_at"] = projection.UpdatedAt
 	payload["last_activity_at"] = projection.LastActivityAt
+	projectRunStartPayload(payload, projection)
 	payload["autonomous_approvals"] = projection.AutonomousApprovals
 	if projection.PendingApprovalKey != "" {
 		payload["pending_approval_key"] = projection.PendingApprovalKey

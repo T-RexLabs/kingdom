@@ -38,6 +38,7 @@ import (
 	"kingdom/internal/securefs"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
+	"kingdom/internal/theme"
 	"kingdom/internal/workspace"
 	webui "kingdom/web"
 )
@@ -50,7 +51,7 @@ const (
 	defaultStateFileName          = "summon_state.json"
 	defaultSummonRegistryFileName = "summon_registry.json"
 
-	defaultWorkflowSeedName = "royal-decree-v1.json"
+	defaultWorkflowSeedName = "work-order-v1.json"
 	defaultWorkflowVersion  = "seed-v1"
 
 	defaultSummonReadyTimeout   = 30 * time.Second
@@ -757,7 +758,13 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	// readInstallConfigFromStruct already normalized cfg.Server.BasePath,
 	// so every consumer below reads the canonical form directly. No
 	// local re-normalization, no scattered TrimRight fallbacks.
+	themeStore, err := theme.OpenStore(cfg.KingdomHome)
+	if err != nil {
+		return fmt.Errorf("open theme store: %w", err)
+	}
+	defer themeStore.Close()
 	apiHandler, err := api.NewHandler(api.ServerConfig{
+		ThemeStore:                 themeStore,
 		DB:                         db,
 		StartupContext:             startupCtx,
 		BasePath:                   cfg.Server.BasePath,

@@ -256,8 +256,6 @@ describe("useRunEventStream", () => {
 		queryClient.setQueryData(runQueryKeys.governanceHistory("run-1"), { pages: [{ items: [] }], pageParams: [undefined] });
 		queryClient.setQueryData(runQueryKeys.graph("run-1"), { run_id: "run-1", nodes: [], edges: [] });
 		queryClient.setQueryData(runQueryKeys.timeline("run-1", 50), { pages: [{ items: [] }], pageParams: [undefined] });
-		queryClient.setQueryData(runQueryKeys.agents("run-1"), { run_id: "run-1", items: [] });
-		queryClient.setQueryData(runQueryKeys.mailboxList("run-1", ""), { run_id: "run-1", items: [] });
 		queryClient.setQueryData(liveTimelineQueryKey("run-1"), [
 			{ event_id: "evt-live-5", event_type: "attempt.progress", run_event_seq: 5, attempt_seq: 5, emitted_at: "2026-03-01T10:05:00Z", payload_json: {} },
 		]);
@@ -318,7 +316,7 @@ describe("useRunEventStream", () => {
 		).resolves.toBe(true);
 
 		expect(queryClient.getQueryData(runQueryKeys.detail("run-1"))).toMatchObject({
-			tab_counts: { activity_events: 6, messages: 2 },
+			tab_counts: { activity_events: 6 },
 		});
 		expect(queryClient.getQueryData(liveTimelineQueryKey("run-1"))).toMatchObject([
 			{ event_id: "evt-live-5", run_event_seq: 5 },
@@ -329,8 +327,6 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryState(runQueryKeys.governanceHistory("run-1"))?.isInvalidated).toBe(true);
 		expect(queryClient.getQueryState(runQueryKeys.graph("run-1"))?.isInvalidated).toBe(true);
 		expect(queryClient.getQueryState(runQueryKeys.timeline("run-1", 50))?.isInvalidated).toBe(true);
-		expect(queryClient.getQueryState(runQueryKeys.agents("run-1"))?.isInvalidated).toBe(true);
-		expect(queryClient.getQueryState(runQueryKeys.mailboxList("run-1", ""))?.isInvalidated).toBe(true);
 	});
 
 	  it("caches the live timeline tail without marking canonical sync while activity is visible", async () => {
@@ -432,7 +428,7 @@ describe("useRunEventStream", () => {
 			tab_counts: { dag_nodes: 0, agents: 0, activity_events: 0, executions: 0, messages: 0 },
 		});
 
-		renderHook(() => useRunEventStream("run-1", true, false, ["graph", "executions", "agents"]), {
+		renderHook(() => useRunEventStream("run-1", true, false, ["graph", "executions"]), {
 			wrapper: makeWrapper(),
 		});
 		await flush();
@@ -452,135 +448,10 @@ describe("useRunEventStream", () => {
 		).resolves.toBe(true);
 
 		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({
-			dirtySurfaces: ["graph", "executions", "agents"],
+			dirtySurfaces: ["graph", "executions"],
 		});
 	});
 
-	it("marks the hidden mailbox surface dirty for operator-visible mailbox events", async () => {
-		const invocations: Array<{
-			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-		}> = [];
-
-		subscribeSSEMock.mockImplementation((args) => {
-			invocations.push(args);
-			return new Promise<void>(() => undefined);
-		});
-
-		queryClient.setQueryData(runQueryKeys.detail("run-1"), {
-			tab_counts: { dag_nodes: 0, agents: 0, activity_events: 0, executions: 0, messages: 0 },
-		});
-
-		renderHook(() => useRunEventStream("run-1", true, false, ["mailbox"]), {
-			wrapper: makeWrapper(),
-		});
-		await flush();
-
-		await expect(
-			invocations[0].onEvent({
-				id: "evt-hidden-mailbox",
-				type: "message",
-				data: JSON.stringify({
-					event_id: "evt-hidden-mailbox",
-					event_type: "mailbox.message_recorded",
-					run_event_seq: 1,
-					attempt_seq: 1,
-					created_at: "2026-03-01T10:05:00Z",
-					visible_to_operator: true,
-				}),
-			}),
-		).resolves.toBe(true);
-
-		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({
-			dirtySurfaces: ["mailbox"],
-		});
-	});
-
-  it("keeps cursor-paginated timeline pages immutable while appending live events separately", async () => {
-    const invocations: Array<{
-      onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-    }> = [];
-
-    subscribeSSEMock.mockImplementation((args) => {
-      invocations.push(args);
-      return new Promise<void>(() => undefined);
-    });
-
-    queryClient.setQueryData(runQueryKeys.detail("run-1"), {
-	      tab_counts: { dag_nodes: 0, agents: 0, activity_events: 2, executions: 0, messages: 0 },
-    });
-	    queryClient.setQueryData(runQueryKeys.timeline("run-1", 50), {
-	      pageParams: [undefined, "cursor-2"],
-	      pages: [{ items: [{ event_id: "evt-good", event_type: "run.state_changed", run_event_seq: 1, attempt_seq: 1 }] }],
-	    });
-
-    renderHook(() => useRunEventStream("run-1"), {
-      wrapper: makeWrapper(),
-    });
-    await flush();
-
-	    await expect(
-	      invocations[0].onEvent({
-	        id: "evt-live-tail",
-        type: "message",
-	        data: JSON.stringify({
-	          event_id: "evt-live-tail",
-	          event_type: "node.state_changed",
-	          run_event_seq: 3,
-	          attempt_seq: 1,
-	          created_at: "2026-03-01T10:06:00Z",
-	          node_id: "plan_drafting",
-	        }),
-      }),
-    ).resolves.toBe(true);
-
-	    expect(queryClient.getQueryData(runQueryKeys.timeline("run-1", 50))).toMatchObject({
-	      pageParams: [undefined, "cursor-2"],
-	      pages: [{ items: [{ event_id: "evt-good", event_type: "run.state_changed", run_event_seq: 1, attempt_seq: 1 }] }],
-	    });
-	    expect(queryClient.getQueryData(liveTimelineQueryKey("run-1"))).toMatchObject([
-	      { event_id: "evt-live-tail", event_type: "node.state_changed", run_event_seq: 3, attempt_seq: 1 },
-	    ]);
-  });
-
-  it("invalidates governance summary queries that live under the run detail subtree", async () => {
-    const invocations: Array<{
-      onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-    }> = [];
-
-    subscribeSSEMock.mockImplementation((args) => {
-      invocations.push(args);
-      return new Promise<void>(() => undefined);
-    });
-
-    const detailKey = runQueryKeys.detail("run-1");
-    const planKey = runQueryKeys.plan("run-1");
-    const governanceKey = runQueryKeys.governanceSummary("run-1");
-    const governanceHistoryKey = runQueryKeys.governanceHistory("run-1");
-    queryClient.setQueryData(detailKey, { run_id: "run-1", status: "awaiting_human_confirmation" });
-    queryClient.setQueryData(planKey, { run_id: "run-1", plan_state: "awaiting_king_decision" });
-    queryClient.setQueryData(governanceKey, { items: [] });
-    queryClient.setQueryData(governanceHistoryKey, { pages: [] });
-
-    renderHook(() => useRunEventStream("run-1"), {
-      wrapper: makeWrapper(),
-    });
-    await flush();
-
-    await expect(
-      invocations[0].onEvent({
-        id: "evt-governance",
-        type: "message",
-        data: JSON.stringify({ event_type: "approval.recorded" }),
-      }),
-    ).resolves.toBe(true);
-
-    await flush();
-
-    expect(queryClient.getQueryState(detailKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(planKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(governanceKey)?.isInvalidated).toBe(true);
-    expect(queryClient.getQueryState(governanceHistoryKey)?.isInvalidated).toBe(true);
-  });
 
 	it("patches timeline activity while invalidating execution surfaces for node state changes", async () => {
     const invocations: Array<{
@@ -643,14 +514,13 @@ describe("useRunEventStream", () => {
 
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.executions("run-1"), exact: false });
-		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: ["runs", "run-1", "timeline"], exact: undefined });
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.plan("run-1"), exact: true });
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.governanceSummary("run-1"), exact: true });
   });
 
-  it("invalidates graph and agents when execution starts running", async () => {
+  it("invalidates graph when execution starts running", async () => {
     const invocations: Array<{
       onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
     }> = [];
@@ -684,7 +554,7 @@ describe("useRunEventStream", () => {
 	          run_event_seq: 1,
 	          attempt_seq: 4,
 	          created_at: "2026-03-01T10:07:00Z",
-	          node_id: "delegated_execution_berserker",
+	          node_id: "implementation",
 	        }),
       }),
     ).resolves.toBe(true);
@@ -705,7 +575,6 @@ describe("useRunEventStream", () => {
 
     expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
     expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
-    expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
   });
 
 	it("patches Last Activity for meaningful attempt progress without invalidating detail", async () => {
@@ -760,7 +629,6 @@ describe("useRunEventStream", () => {
 
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
-		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
 	});
 
 	it("keeps Last Activity stable for synthetic attempt progress telemetry", async () => {
@@ -807,7 +675,7 @@ describe("useRunEventStream", () => {
 		});
 	});
 
-	it("invalidates detail, executions, graph, and agents when execution reaches a terminal attempt event", async () => {
+	it("invalidates detail, executions, and graph when execution reaches a terminal attempt event", async () => {
 		const invocations: Array<{
 			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
 		}> = [];
@@ -838,7 +706,7 @@ describe("useRunEventStream", () => {
 					run_event_seq: 1,
 					attempt_seq: 5,
 					created_at: "2026-03-01T10:08:00Z",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 				}),
 			}),
 		).resolves.toBe(true);
@@ -859,7 +727,6 @@ describe("useRunEventStream", () => {
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.executions("run-1"), exact: false });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
-		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
 	});
 
 	it("patches live execution projection from terminal SSE lineage", async () => {
@@ -888,9 +755,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 5,
 					attempt_id: "attempt-run-1",
 					node_run_id: "nr-run-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:00Z",
 				}),
@@ -900,9 +767,9 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
 			"nr-run-1": {
 				attempt_id: "attempt-run-1",
-				node_id: "delegated_execution_berserker",
+				node_id: "implementation",
 				attempt: 1,
-				required_role: "builder-berserker",
+				required_role: "builder",
 				execution_mode: "provider_backed",
 				node_run_id: "nr-run-1",
 				activity_at: "2026-03-01T10:08:00Z",
@@ -999,9 +866,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 1,
 					attempt_id: "attempt-runtime-1",
 					node_run_id: "nr-runtime-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:00Z",
 				}),
@@ -1020,9 +887,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 2,
 					attempt_id: "attempt-runtime-1",
 					node_run_id: "nr-runtime-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:05Z",
 				}),
@@ -1097,7 +964,7 @@ describe("useRunEventStream", () => {
 		});
 	});
 
-	it("invalidates detail, executions, graph, and agents when a retry is queued", async () => {
+	it("invalidates detail, executions, and graph when a retry is queued", async () => {
 		const invocations: Array<{
 			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
 		}> = [];
@@ -1130,9 +997,9 @@ describe("useRunEventStream", () => {
 					created_at: "2026-03-01T10:07:00Z",
 					attempt_id: "attempt-retry-queued",
 					node_run_id: "nr-retry-queued",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 4,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 				}),
 			}),
@@ -1141,9 +1008,9 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
 			"nr-retry-queued": {
 				attempt_id: "attempt-retry-queued",
-				node_id: "delegated_execution_berserker",
+				node_id: "implementation",
 				attempt: 4,
-				required_role: "builder-berserker",
+				required_role: "builder",
 				execution_mode: "provider_backed",
 				node_run_id: "nr-retry-queued",
 				activity_at: "2026-03-01T10:07:00Z",
@@ -1166,7 +1033,6 @@ describe("useRunEventStream", () => {
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.executions("run-1"), exact: false });
 		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.graph("run-1"), exact: true });
-		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
 	});
 
 	it("keeps rerun-queued activity queued until execution actually starts", async () => {
@@ -1328,9 +1194,9 @@ describe("useRunEventStream", () => {
 					node_run_id: "nr-retry-scheduled",
 					created_at: "2026-03-01T10:11:00Z",
 					payload_json: {
-						node_id: "delegated_execution_berserker",
+						node_id: "implementation",
 						node_run_id: "nr-retry-scheduled",
-						attempt_id: "run-1:delegated_execution_berserker:1",
+						attempt_id: "run-1:implementation:1",
 						attempt: 1,
 						recovery_trigger: "automatic_retry",
 						recovery_phase: "scheduled",
@@ -1496,7 +1362,7 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryData(liveTimelineQueryKey("run-1")) ?? []).toHaveLength(0);
 	});
 
-	it("patches mailbox counters only for operator-visible mailbox events", async () => {
+	it("retains mailbox audit activity without opening a removed UI query", async () => {
 		const invocations: Array<{
 			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
 		}> = [];
@@ -1531,7 +1397,7 @@ describe("useRunEventStream", () => {
 		).resolves.toBe(true);
 
 		expect(queryClient.getQueryData(runQueryKeys.detail("run-1"))).toMatchObject({
-			tab_counts: { activity_events: 2, messages: 1 },
+			tab_counts: { activity_events: 2 },
 		});
 
 		const invalidatedKeys = invalidateSpy.mock.calls
@@ -1541,97 +1407,9 @@ describe("useRunEventStream", () => {
 			}))
 			.filter((call): call is { queryKey: readonly unknown[]; exact: boolean | undefined } => Array.isArray(call.queryKey));
 
-		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
-		expect(invalidatedKeys).toContainEqual({ queryKey: ["runs", "run-1", "mailbox"], exact: false });
 		expect(invalidatedKeys).not.toContainEqual({ queryKey: runQueryKeys.detail("run-1"), exact: true });
 	});
 
-	it("does not inflate mailbox counts for visible message revisions", async () => {
-		const invocations: Array<{
-			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-		}> = [];
-
-		subscribeSSEMock.mockImplementation((args) => {
-			invocations.push(args);
-			return new Promise<void>(() => undefined);
-		});
-
-		queryClient.setQueryData(runQueryKeys.detail("run-1"), {
-			updated_at: "2026-03-01T10:00:00Z",
-			tab_counts: { dag_nodes: 0, agents: 0, activity_events: 1, executions: 0, messages: 1 },
-		});
-
-		renderHook(() => useRunEventStream("run-1"), {
-			wrapper: makeWrapper(),
-		});
-		await flush();
-
-		await expect(
-			invocations[0].onEvent({
-				id: "evt-mailbox-revision",
-				type: "message",
-				data: JSON.stringify({
-					event_type: "mailbox.message_recorded",
-					run_event_seq: 2,
-					created_at: "2026-03-01T10:08:00Z",
-					visible_to_operator: true,
-					message_id: "msg-1",
-					message_version: 2,
-				}),
-			}),
-		).resolves.toBe(true);
-
-		expect(queryClient.getQueryData(runQueryKeys.detail("run-1"))).toMatchObject({
-			tab_counts: { activity_events: 2, messages: 1 },
-		});
-	});
-
-	it("does not bump mailbox counts for non-user-facing mailbox events", async () => {
-		const invocations: Array<{
-			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-		}> = [];
-
-		subscribeSSEMock.mockImplementation((args) => {
-			invocations.push(args);
-			return new Promise<void>(() => undefined);
-		});
-
-		const invalidateSpy = vi.spyOn(queryClient, "invalidateQueries");
-		queryClient.setQueryData(runQueryKeys.detail("run-1"), {
-			tab_counts: { dag_nodes: 0, agents: 0, activity_events: 1, executions: 0, messages: 4 },
-		});
-
-		renderHook(() => useRunEventStream("run-1"), {
-			wrapper: makeWrapper(),
-		});
-		await flush();
-
-		await expect(
-			invocations[0].onEvent({
-				id: "evt-mailbox-hidden",
-				type: "message",
-				data: JSON.stringify({
-					event_type: "mailbox.message_recorded",
-					run_event_seq: 2,
-					visible_to_operator: false,
-				}),
-			}),
-		).resolves.toBe(true);
-
-		expect(queryClient.getQueryData(runQueryKeys.detail("run-1"))).toMatchObject({
-			tab_counts: { activity_events: 2, messages: 4 },
-		});
-
-		const invalidatedKeys = invalidateSpy.mock.calls
-			.map((call) => ({
-				queryKey: (call[0] as { queryKey?: readonly unknown[] } | undefined)?.queryKey,
-				exact: (call[0] as { exact?: boolean } | undefined)?.exact,
-			}))
-			.filter((call): call is { queryKey: readonly unknown[]; exact: boolean | undefined } => Array.isArray(call.queryKey));
-
-		expect(invalidatedKeys).toContainEqual({ queryKey: runQueryKeys.agents("run-1"), exact: true });
-		expect(invalidatedKeys).not.toContainEqual({ queryKey: ["runs", "run-1", "mailbox"], exact: false });
-	});
 
   it("exposes retrying stream state during reconnect backoff", async () => {
     const invocations: Array<{

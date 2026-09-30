@@ -13,11 +13,11 @@ interface Shortcut {
  * and "?" for help overlay toggle.
  *
  * Navigation shortcuts (g prefix):
- *   g h  - Go to Throne Room (home/dashboard)
- *   g d  - Go to Decrees
+ *   g h  - Go to Overview
+ *   g p  - Go to Planning
  *   g r  - Go to Runs
  *   g g  - Go to Agents
- *   g a  - Go to Realm Analytics
+ *   g a  - Go to Analytics
  *
  * Global:
  *   ?    - Toggle keyboard shortcuts help
@@ -32,11 +32,11 @@ export function useKeyboardShortcuts() {
   const closeHelp = useCallback(() => setHelpOpen(false), []);
 
   const shortcuts: Shortcut[] = [
-    { keys: "g h", label: "g h", description: "Go to Throne Room", action: () => navigate({ to: "/" }) },
-    { keys: "g d", label: "g d", description: "Go to Decrees", action: () => navigate({ to: "/decrees" }) },
+    { keys: "g h", label: "g h", description: "Go to Overview", action: () => navigate({ to: "/" }) },
+    { keys: "g p", label: "g p", description: "Go to Planning", action: () => navigate({ to: "/work-orders/planning" }) },
     { keys: "g r", label: "g r", description: "Go to Runs", action: () => navigate({ to: "/runs" }) },
     { keys: "g g", label: "g g", description: "Go to Agents", action: () => navigate({ to: "/agents" }) },
-    { keys: "g a", label: "g a", description: "Go to Realm Analytics", action: () => navigate({ to: "/realm-analytics" }) },
+    { keys: "g a", label: "g a", description: "Go to Analytics", action: () => navigate({ to: "/analytics" }) },
     { keys: "?", label: "?", description: "Toggle shortcuts help", action: toggleHelp },
   ];
 
@@ -76,10 +76,10 @@ export function useKeyboardShortcuts() {
 
         const navMap: Record<string, string> = {
           h: "/",
-          d: "/decrees",
+          p: "/work-orders/planning",
           r: "/runs",
           g: "/agents",
-          a: "/realm-analytics",
+          a: "/analytics",
         };
 
         const target = navMap[e.key];

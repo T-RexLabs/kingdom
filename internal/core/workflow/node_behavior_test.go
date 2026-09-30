@@ -2,6 +2,27 @@ package workflow
 
 import "testing"
 
+func TestCanonicalWorkflowNodeNamesPreserveExecutionBehavior(t *testing.T) {
+	t.Parallel()
+	for nodeID, want := range map[string]string{
+		"architecture_consultation": NodeClassAdvisorConsultation,
+		"risk_consultation":         NodeClassAdvisorConsultation,
+		"systems_consultation":      NodeClassAdvisorConsultation,
+		"usability_consultation":    NodeClassAdvisorConsultation,
+		"implementation":            NodeClassDelegatedExecution,
+		"quality_validation":        NodeClassValidationGates,
+		"security_validation":       NodeClassValidationGates,
+		"resilience_validation":     NodeClassValidationGates,
+	} {
+		if got := CanonicalNodeClassForNodeID(nodeID); got != want {
+			t.Errorf("%s class = %q, want %q", nodeID, got, want)
+		}
+		if BehaviorForNode(nodeID, "").ExecutionOwnership != NodeExecutionOwnershipProviderBacked {
+			t.Errorf("%s lost provider execution ownership", nodeID)
+		}
+	}
+}
+
 func TestCanonicalNodeContractsResolveCompletionModes(t *testing.T) {
 	t.Parallel()
 
@@ -10,20 +31,20 @@ func TestCanonicalNodeContractsResolveCompletionModes(t *testing.T) {
 		role      string
 		mode      ProviderCompletionMode
 	}{
-		{NodeClassDecreeIntake, "king", ProviderCompletionModeNotApplicable},
-		{NodeClassAdvisorConsultation, "noble-delegate", ProviderCompletionModeServerResponse},
-		{NodeClassAdvisorConsultation, "clergy-delegate", ProviderCompletionModeServerResponse},
-		{NodeClassAdvisorConsultation, "burgher-delegate", ProviderCompletionModeServerResponse},
-		{NodeClassAdvisorConsultation, "peasant-delegate", ProviderCompletionModeServerResponse},
-		{NodeClassAdvisorySynthesis, "chancellor", ProviderCompletionModeServerResponse},
-		{NodeClassPlanDrafting, "council-member", ProviderCompletionModeServerResponse},
-		{NodeClassKingPlanDecision, "king", ProviderCompletionModeNotApplicable},
-		{NodeClassExecutionKickoff, "council-member", ProviderCompletionModeNotApplicable},
-		{NodeClassDelegatedExecution, "builder-berserker", ProviderCompletionModeServerResponse},
-		{NodeClassExecutionReview, "reviewer-shieldmaiden", ProviderCompletionModeServerResponse},
-		{NodeClassValidationGates, "intelligence-qa-scout", ProviderCompletionModeServerResponse},
-		{NodeClassValidationGates, "intelligence-nightraven", ProviderCompletionModeServerResponse},
-		{NodeClassRoyalClosure, "king", ProviderCompletionModeNotApplicable},
+		{NodeClassWorkIntake, "governance", ProviderCompletionModeNotApplicable},
+		{NodeClassAdvisorConsultation, "architecture-advisor", ProviderCompletionModeServerResponse},
+		{NodeClassAdvisorConsultation, "risk-advisor", ProviderCompletionModeServerResponse},
+		{NodeClassAdvisorConsultation, "systems-advisor", ProviderCompletionModeServerResponse},
+		{NodeClassAdvisorConsultation, "usability-advisor", ProviderCompletionModeServerResponse},
+		{NodeClassAdvisorySynthesis, "coordinator", ProviderCompletionModeServerResponse},
+		{NodeClassPlanDrafting, "plan-author", ProviderCompletionModeServerResponse},
+		{NodeClassPlanDecision, "governance", ProviderCompletionModeNotApplicable},
+		{NodeClassExecutionKickoff, "plan-author", ProviderCompletionModeNotApplicable},
+		{NodeClassDelegatedExecution, "builder", ProviderCompletionModeServerResponse},
+		{NodeClassExecutionReview, "reviewer", ProviderCompletionModeServerResponse},
+		{NodeClassValidationGates, "qa-validator", ProviderCompletionModeServerResponse},
+		{NodeClassValidationGates, "security-validator", ProviderCompletionModeServerResponse},
+		{NodeClassCompletion, "governance", ProviderCompletionModeNotApplicable},
 	}
 
 	for _, test := range tests {
@@ -48,13 +69,13 @@ func TestCanonicalNodeContractsRejectInvalidRolePairs(t *testing.T) {
 		nodeClass string
 		role      string
 	}{
-		{NodeClassAdvisorConsultation, "builder-berserker"},
-		{NodeClassDelegatedExecution, "council-member"},
-		{NodeClassExecutionReview, "intelligence-qa-scout"},
+		{NodeClassAdvisorConsultation, "builder"},
+		{NodeClassDelegatedExecution, "plan-author"},
+		{NodeClassExecutionReview, "qa-validator"},
 		{NodeClassExecutionReview, "reviewer-sentinel"},
-		{NodeClassValidationGates, "reviewer-shieldmaiden"},
+		{NodeClassValidationGates, "reviewer"},
 		{NodeClassValidationGates, "intelligence-runesage"},
-		{NodeClassDecreeIntake, "chancellor"},
+		{NodeClassWorkIntake, "coordinator"},
 	} {
 		test := test
 		t.Run(test.nodeClass+"/"+test.role, func(t *testing.T) {

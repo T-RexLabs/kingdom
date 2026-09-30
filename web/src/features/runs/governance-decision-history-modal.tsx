@@ -43,7 +43,7 @@ export function GovernanceDecisionHistoryModal({
 			open={open}
 			onClose={onClose}
 			size="md"
-			title="Allfather Decision History"
+			title="Operator Decision History"
 			caption="Governance History"
 			footer={hasMore ? (
 				<ModalFooter>
@@ -56,7 +56,7 @@ export function GovernanceDecisionHistoryModal({
 				<div className="space-y-3">
 					{items.length === 0 ? (
 						<div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-foreground-subtle">
-							No Allfather decisions recorded yet.
+							No Operator decisions recorded yet.
 						</div>
 					) : (
 						items.map((item) => {

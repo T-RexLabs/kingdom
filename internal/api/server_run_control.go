@@ -363,8 +363,8 @@ func (s *Server) handleCreatePlanApproval(w http.ResponseWriter, r *http.Request
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run is configured for autonomous plan approvals", "api.create_plan_approval", map[string]any{"run_id": runID})
 		return
 	}
-	if planState != "awaiting_king_decision" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "plan is not awaiting allfather approval", "api.create_plan_approval", map[string]any{"run_id": runID, "plan_state": planState})
+	if planState != "awaiting_plan_decision" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "plan is not awaiting operator approval", "api.create_plan_approval", map[string]any{"run_id": runID, "plan_state": planState})
 		return
 	}
 	planRevisionID := strings.TrimSpace(req.PlanRevisionID)
@@ -396,12 +396,12 @@ func (s *Server) handleCreatePlanApproval(w http.ResponseWriter, r *http.Request
 	eventSeq := s.nextAttemptEventSeq(r.Context(), attemptID)
 	toState := "approved"
 	reasonCode := "governance_decision"
-	reasonText := "allfather approved plan"
+	reasonText := "operator approved plan"
 	decision := state.RunPlanReviewDecisionApproved
 	if action == "rework" {
 		toState = "needs_rework"
 		reasonCode = "rework_requested"
-		reasonText = "allfather requested plan rework"
+		reasonText = "operator requested plan rework"
 		decision = state.RunPlanReviewDecisionNeedsRework
 	}
 	if reason != "" {
@@ -430,7 +430,7 @@ func (s *Server) handleCreatePlanApproval(w http.ResponseWriter, r *http.Request
 			EventID:         s.idGenerator("evt"),
 			RunID:           runID,
 			Entity:          state.EntityTypePlan,
-			FromState:       "awaiting_king_decision",
+			FromState:       "awaiting_plan_decision",
 			ToState:         toState,
 			ActorID:         actorID,
 			RoleID:          roleID,
@@ -540,12 +540,12 @@ func (s *Server) handleCreateFinalApproval(w http.ResponseWriter, r *http.Reques
 	toState := "succeeded"
 	decision := "approve"
 	reasonCode := "governance_decision"
-	reasonText := "allfather confirmed decree completion"
+	reasonText := "operator confirmed work order completion"
 	if action == "rework" {
 		toState = "running"
 		decision = "needs_rework"
 		reasonCode = "rework_requested"
-		reasonText = "allfather requested decree rework"
+		reasonText = "operator requested work order rework"
 	}
 	if reason != "" {
 		reasonText = reason

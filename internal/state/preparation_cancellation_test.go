@@ -17,7 +17,7 @@ func TestRunTerminalizationQueuesCancellationForAdmittedPreparation(t *testing.T
 				mustExec(t, db, `UPDATE node_runs SET node_status='ready',started_at=NULL WHERE node_run_id='nr_1'`)
 				ctx := context.Background()
 				store := executionstore.New(db)
-				const attemptID = "run_1:decree_intake:1"
+				const attemptID = "run_1:work_intake:1"
 				// Preparation can exist before any provider session or invocation.
 				if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 					t.Fatal(err)
@@ -62,17 +62,17 @@ func TestSupersededPreparationRetainsCancellationHandoffWithoutLaunch(t *testing
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_preparing_retry','run_1','decree_intake',2,2,'ready','king','agent_king',1)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_preparing_retry','run_1','work_intake',2,2,'ready','governance','agent_governance',1)`)
 	ctx := context.Background()
 	store := executionstore.New(db)
-	const attemptID = "run_1:decree_intake:2"
+	const attemptID = "run_1:work_intake:2"
 	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_preparing_retry", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "preparer", LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || !acquired {
 		t.Fatalf("claim preparation: acquired=%t err=%v", acquired, err)
 	}
-	result, err := NewTransitionService(db, nil).SupersedeQueuedAttemptsBeforeLaunch(ctx, SupersedeQueuedAttemptsRequest{RunID: "run_1", NodeID: "decree_intake", KeepAttempt: 1, OccurredAt: "2026-03-01T12:00:02Z", ActorID: "runtime_orchestrator"})
+	result, err := NewTransitionService(db, nil).SupersedeQueuedAttemptsBeforeLaunch(ctx, SupersedeQueuedAttemptsRequest{RunID: "run_1", NodeID: "work_intake", KeepAttempt: 1, OccurredAt: "2026-03-01T12:00:02Z", ActorID: "runtime_orchestrator"})
 	if err != nil || !result.AllowsCanonicalAdoption() {
 		t.Fatalf("supersede preparation: %+v err=%v", result, err)
 	}

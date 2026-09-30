@@ -102,11 +102,11 @@ func TestPrivateInspectionCompletionNeverCapturesOrRestoresWorkspace(t *testing.
 			h := newTerminalHandoffHarness(t)
 			invocation := h.addInvocation(t, 1)
 			job := h.runningHandoffJob(t, invocation, 1)
-			mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES ('intelligence-qa-scout','QA',0,'2026-03-01T12:00:00Z')`)
-			mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='intelligence-qa-scout', node_class='validation_gates'`)
-			mustExec(t, h.db, `UPDATE node_runs SET required_role='intelligence-qa-scout'`)
-			mustExec(t, h.db, `UPDATE agents SET role_id='intelligence-qa-scout'`)
-			job.node.RequiredRole, job.node.NodeClass = "intelligence-qa-scout", "validation_gates"
+			mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES ('qa-validator','QA',0,'2026-03-01T12:00:00Z')`)
+			mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='qa-validator', node_class='validation_gates'`)
+			mustExec(t, h.db, `UPDATE node_runs SET required_role='qa-validator'`)
+			mustExec(t, h.db, `UPDATE agents SET role_id='qa-validator'`)
+			job.node.RequiredRole, job.node.NodeClass = "qa-validator", "validation_gates"
 			job.attempt.RequiredRole = job.node.RequiredRole
 			job.baseSnapshotID = h.baselineSnapshotID
 			job.workspacePath = t.TempDir()
@@ -152,7 +152,7 @@ func TestPrivateInspectionCompletionNeverCapturesOrRestoresWorkspace(t *testing.
 func TestInspectionPinsInputBeforeLaterBuilderPromotion(t *testing.T) {
 	loop, run, root := newInspectionWorkspaceFixture(t)
 	ctx := context.Background()
-	review := nodeDefinition{NodeID: "review", NodeClass: "execution_review", RequiredRole: "king"}
+	review := nodeDefinition{NodeID: "review", NodeClass: "execution_review", RequiredRole: "governance"}
 	attempt := nodeAttempt{NodeID: "review", NodeRunID: "nr_review", Attempt: 1, LeaseOwner: "owner", LeaseVersion: 1}
 	attemptID := composeAttemptID(run.RunID, review.NodeID, 1)
 	if err := loop.pinAttemptWorkspaceInput(ctx, run, review, attempt, attemptID); err != nil {
@@ -198,7 +198,7 @@ func TestParallelValidatorsHaveIndependentPinnedWorkspaces(t *testing.T) {
 	}
 	results := make(chan result, 2)
 	for _, id := range []string{"qa", "security"} {
-		node := nodeDefinition{NodeID: id, NodeClass: "validation_gates", RequiredRole: "king"}
+		node := nodeDefinition{NodeID: id, NodeClass: "validation_gates", RequiredRole: "governance"}
 		a := nodeAttempt{NodeID: id, NodeRunID: "nr_" + id, Attempt: 1, LeaseOwner: "owner", LeaseVersion: 1}
 		attemptID := composeAttemptID(run.RunID, id, 1)
 		if err := loop.pinAttemptWorkspaceInput(ctx, run, node, a, attemptID); err != nil {
@@ -279,8 +279,8 @@ func newInspectionWorkspaceFixture(t *testing.T) (*orchestrationLoop, runSnapsho
 	seedMinimumGraph(t, db)
 	const at = "2026-09-30T12:00:00Z"
 	for _, n := range []struct{ id, class, status string }{{"builder", "delegated_execution", "succeeded"}, {"review", "execution_review", "ready"}, {"qa", "validation_gates", "ready"}, {"security", "validation_gates", "ready"}} {
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id,workflow_definition_id,node_id,required_role,node_class,created_at) VALUES ('wn_%s','wfdef_1','%s','king','%s','%s')`, n.id, n.id, n.class, at))
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_%s','run_1','%s',1,1,'%s','king','agent_king',1)`, n.id, n.id, n.status))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id,workflow_definition_id,node_id,required_role,node_class,created_at) VALUES ('wn_%s','wfdef_1','%s','governance','%s','%s')`, n.id, n.id, n.class, at))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_%s','run_1','%s',1,1,'%s','governance','agent_governance',1)`, n.id, n.id, n.status))
 		state := "queued"
 		snapshot := ""
 		if n.id == "builder" {

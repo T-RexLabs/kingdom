@@ -21,33 +21,33 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
-	var req gen.CreateDecreeRequest
-	texts, err := DecodeRequestWithText(r, &req, "/decree_text")
+func (s *Server) handleCreateWorkOrder(w http.ResponseWriter, r *http.Request) {
+	var req gen.CreateWorkOrderRequest
+	texts, err := DecodeRequestWithText(r, &req, "/work_order_text")
 	if err != nil {
 		var storageErr *os.PathError
 		if errors.As(err, &storageErr) {
-			s.writeInternalError(w, "stage decree text failed")
+			s.writeInternalError(w, "stage work order text failed")
 			return
 		}
 		s.writeBadRequest(w, err.Error())
 		return
 	}
 	defer texts.Close()
-	text := texts["/decree_text"]
+	text := texts["/work_order_text"]
 	if text == nil {
-		s.writeBadRequest(w, "decree_text is required")
+		s.writeBadRequest(w, "work_order_text is required")
 		return
 	}
 	reader, err := text.Open()
 	if err != nil {
-		s.writeInternalError(w, "open decree text failed")
+		s.writeInternalError(w, "open work order text failed")
 		return
 	}
 	defer reader.Close()
 
 	createdAt := s.now().UTC().Format(time.RFC3339)
-	decreeID := s.idGenerator("decree")
+	workOrderID := s.idGenerator("work_order")
 
 	metadata := map[string]any{}
 	if req.Metadata != nil {
@@ -60,15 +60,15 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 	if req.ExternalSourceSnapshotId != nil {
 		directSnapshotID = strings.TrimSpace(*req.ExternalSourceSnapshotId)
 	}
-	var planningLineage *state.DecreePlanningLineage
+	var planningLineage *state.WorkOrderPlanningLineage
 	if req.PlanningLineage != nil {
-		planningLineage = &state.DecreePlanningLineage{
+		planningLineage = &state.WorkOrderPlanningLineage{
 			PlanningSessionID: req.PlanningLineage.PlanningSessionId,
 			PlanningDraftID:   req.PlanningLineage.PlanningDraftId,
 		}
 	}
-	err = s.externalStore.CreateDecree(r.Context(), state.CreateDecreeRequest{
-		DecreeID: decreeID, Title: req.DecreeTitle,
+	err = s.externalStore.CreateWorkOrder(r.Context(), state.CreateWorkOrderRequest{
+		WorkOrderID: workOrderID, Title: req.WorkOrderTitle,
 		TextContent: &state.RequestContentSource{Reader: reader, SHA256: text.SHA256, SizeBytes: text.SizeBytes},
 		Metadata:    metadata, CreatedAt: createdAt, DirectSnapshotID: directSnapshotID,
 		PlanningLineage: planningLineage, NewLinkID: func() string { return s.idGenerator("external_link") },
@@ -77,16 +77,16 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var commitErr *state.CommitOutcomeUnknownError
 		if errors.As(err, &commitErr) {
-			persisted, readbackErr := s.confirmDecreeCreationAfterCommitError(r.Context(), decreeID, createdAt)
+			persisted, readbackErr := s.confirmWorkOrderCreationAfterCommitError(r.Context(), workOrderID, createdAt)
 			if readbackErr != nil {
-				slog.Warn("decree creation commit outcome unresolved", "decree_id", decreeID, "commit_error", err, "readback_error", readbackErr)
-				writeCommitOutcomePending(w, r, "api.create_decree",
-					"decree creation outcome is still being confirmed; retry later with the same idempotency key",
-					map[string]any{"decree_id": decreeID})
+				slog.Warn("work order creation commit outcome unresolved", "work_order_id", workOrderID, "commit_error", err, "readback_error", readbackErr)
+				writeCommitOutcomePending(w, r, "api.create_work_order",
+					"work order creation outcome is still being confirmed; retry later with the same idempotency key",
+					map[string]any{"work_order_id": workOrderID})
 				return
 			}
 			if !persisted {
-				s.writeInternalError(w, "create decree failed")
+				s.writeInternalError(w, "create work order failed")
 				return
 			}
 			err = nil
@@ -94,42 +94,42 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		switch {
-		case errors.Is(err, state.ErrDecreeLineageInvalid):
-			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), "api.create_decree", nil)
+		case errors.Is(err, state.ErrWorkOrderLineageInvalid):
+			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, err.Error(), "api.create_work_order", nil)
 			return
-		case errors.Is(err, state.ErrDecreeProvenanceConflict):
-			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), "api.create_decree", nil)
+		case errors.Is(err, state.ErrWorkOrderProvenanceConflict):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), "api.create_work_order", nil)
 			return
-		case errors.Is(err, state.ErrDecreeProvenanceNotFound), errors.Is(err, state.ErrExternalNotFound):
-			writeExternalError(w, err, "api.create_decree")
+		case errors.Is(err, state.ErrWorkOrderProvenanceNotFound), errors.Is(err, state.ErrExternalNotFound):
+			writeExternalError(w, err, "api.create_work_order")
 			return
 		}
-		s.writeInternalError(w, "create decree failed")
+		s.writeInternalError(w, "create work order failed")
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, gen.CreateDecreeResult{
-		DecreeId:  decreeID,
-		CreatedAt: mustParseRFC3339(createdAt),
+	writeJSON(w, http.StatusCreated, gen.CreateWorkOrderResult{
+		WorkOrderId: workOrderID,
+		CreatedAt:   mustParseRFC3339(createdAt),
 	})
 }
 
-func (s *Server) confirmDecreeCreationAfterCommitError(ctx context.Context, decreeID, createdAt string) (bool, error) {
+func (s *Server) confirmWorkOrderCreationAfterCommitError(ctx context.Context, workOrderID, createdAt string) (bool, error) {
 	readbackCtx, cancel := commitOutcomeReadbackContext(ctx)
 	defer cancel()
 
-	// CreateDecree writes its provenance links in the same transaction, so the
-	// server-generated decree row proves that the complete bundle committed.
+	// CreateWorkOrder writes its provenance links in the same transaction, so the
+	// server-generated work order row proves that the complete bundle committed.
 	var durableCreatedAt string
-	err := s.db.QueryRowContext(readbackCtx, `SELECT created_at FROM decrees WHERE decree_id = ?`, strings.TrimSpace(decreeID)).Scan(&durableCreatedAt)
+	err := s.db.QueryRowContext(readbackCtx, `SELECT created_at FROM work_orders WHERE work_order_id = ?`, strings.TrimSpace(workOrderID)).Scan(&durableCreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
 	}
 	if err != nil {
-		return false, fmt.Errorf("confirm decree creation after commit error: %w", err)
+		return false, fmt.Errorf("confirm work order creation after commit error: %w", err)
 	}
 	if durableCreatedAt != createdAt {
-		return false, fmt.Errorf("confirm decree creation after commit error: stored timestamp did not match request")
+		return false, fmt.Errorf("confirm work order creation after commit error: stored timestamp did not match request")
 	}
 	return true, nil
 }
@@ -228,8 +228,8 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.decreeExists(r.Context(), req.DecreeId) {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "decree not found", "api.create_run", map[string]any{"decree_id": req.DecreeId})
+	if !s.workOrderExists(r.Context(), req.WorkOrderId) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "work order not found", "api.create_run", map[string]any{"work_order_id": req.WorkOrderId})
 		return
 	}
 
@@ -243,9 +243,9 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var decreeTitle string
-	if err := s.db.QueryRowContext(r.Context(), `SELECT decree_title FROM decrees WHERE decree_id = ?`, req.DecreeId).Scan(&decreeTitle); err != nil {
-		s.writeInternalError(w, "lookup decree title failed")
+	var workOrderTitle string
+	if err := s.db.QueryRowContext(r.Context(), `SELECT work_order_title FROM work_orders WHERE work_order_id = ?`, req.WorkOrderId).Scan(&workOrderTitle); err != nil {
+		s.writeInternalError(w, "lookup work order title failed")
 		return
 	}
 	maxExecutionReviewCycles := 0
@@ -300,10 +300,10 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 
 	_, err = tx.ExecContext(
 		r.Context(),
-		`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, autonomous_approvals, model_selection_json, publish_mode, run_until_all_approve, max_execution_review_cycles, max_validation_rework_cycles, row_version, created_at, updated_at)
+		`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, autonomous_approvals, model_selection_json, publish_mode, run_until_all_approve, max_execution_review_cycles, max_validation_rework_cycles, row_version, created_at, updated_at)
 		 VALUES (?, NULL, ?, ?, 'pending', 'draft', 0, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
 		runID,
-		req.DecreeId,
+		req.WorkOrderId,
 		workflowDefinitionID,
 		boolToInt(autonomousApprovals),
 		modelSelectionJSON,
@@ -342,7 +342,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		persisted, reconcileErr := s.confirmRunCreationAfterCommitError(r.Context(), runID, req.DecreeId)
+		persisted, reconcileErr := s.confirmRunCreationAfterCommitError(r.Context(), runID, req.WorkOrderId)
 		if !persisted {
 			if reconcileErr != nil {
 				slog.Warn("run creation commit outcome unresolved", "run_id", runID, "commit_error", err, "reconcile_error", reconcileErr)
@@ -361,13 +361,14 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, gen.RunSummary{
 		RunId:                     runID,
 		WorkflowId:                workflowID,
-		DecreeId:                  req.DecreeId,
-		DecreeTitle:               decreeTitle,
+		WorkOrderId:               req.WorkOrderId,
+		WorkOrderTitle:            workOrderTitle,
 		AutonomousApprovals:       &autonomousApprovals,
 		Status:                    "pending",
 		DisplayState:              gen.RunDisplayStatePending,
 		PlanState:                 "draft",
 		CreatedAt:                 mustParseRFC3339(now),
+		StartState:                gen.RunStartStateNotStarted,
 		LastActivityAt:            mustParseRFC3339(now),
 		UpdatedAt:                 mustParseRFC3339(now),
 		RunUntilAllApprove:        &runUntilAllApprove,
@@ -378,15 +379,15 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) confirmRunCreationAfterCommitError(ctx context.Context, runID, decreeID string) (bool, error) {
+func (s *Server) confirmRunCreationAfterCommitError(ctx context.Context, runID, workOrderID string) (bool, error) {
 	reconcileCtx, cancel := commitOutcomeReadbackContext(ctx)
 	defer cancel()
 
 	var exists int
 	err := s.db.QueryRowContext(reconcileCtx,
-		`SELECT 1 FROM workflow_runs WHERE run_id = ? AND decree_id = ? LIMIT 1`,
+		`SELECT 1 FROM workflow_runs WHERE run_id = ? AND work_order_id = ? LIMIT 1`,
 		runID,
-		decreeID,
+		workOrderID,
 	).Scan(&exists)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -479,9 +480,9 @@ func (s *Server) persistWorkflowGraph(ctx context.Context, workflowDefinitionID 
 	return nil
 }
 
-func (s *Server) decreeExists(ctx context.Context, decreeID string) bool {
+func (s *Server) workOrderExists(ctx context.Context, workOrderID string) bool {
 	var marker int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM decrees WHERE decree_id = ? LIMIT 1`, decreeID).Scan(&marker)
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM work_orders WHERE work_order_id = ? LIMIT 1`, workOrderID).Scan(&marker)
 	return err == nil
 }
 

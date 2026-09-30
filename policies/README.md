@@ -26,18 +26,18 @@ execution.
 
 Timeout note:
 
-- `timeouts.node_wall_clock` is an activity-gated budget for provider-backed decree execution nodes, not an unconditional kill switch; terminal timeout still requires inactivity beyond `timeouts.stream_inactivity_timeout`, ignoring synthetic runtime polling while honoring real execution activity and active completion-settlement observation.
+- `timeouts.node_wall_clock` is an activity-gated budget for provider-backed work order execution nodes, not an unconditional kill switch; terminal timeout still requires inactivity beyond `timeouts.stream_inactivity_timeout`, ignoring synthetic runtime polling while honoring real execution activity and active completion-settlement observation.
 
 ## Typical changes
 
 ### Add a command/tool capability to a role
 
-If `builder-berserker` needs a new command class, extend only that role in
+If `builder` needs a new command class, extend only that role in
 `role_policy.yaml` and keep the scope narrow:
 
 ```yaml
 roles:
-  builder-berserker:
+  builder:
     allowed_command_classes:
       - git_safe
       - go_toolchain
@@ -56,7 +56,7 @@ default domain list:
 
 ```yaml
 roles:
-  builder-berserker:
+  builder:
     node_class_overrides:
       dependency_install:
         - proxy.golang.org

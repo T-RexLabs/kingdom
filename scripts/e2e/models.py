@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_WORKFLOW_ID = "royal-decree-v1"
 DEFAULT_BASE_PATH = "/api/v1"
 PUBLISH_MODE_DIRECT = "direct"
 PUBLISH_MODE_GIT_WORKTREE = "git_worktree"
@@ -57,7 +56,6 @@ class WorkspacePaths:
 class RunRequest:
     title: str
     text: str
-    workflow_id: str
     publish_mode: str
     global_model: str
     agent_model_overrides: str

@@ -68,10 +68,13 @@ func TestPlanningRetryUsesDurableProviderProgressActivity(t *testing.T) {
 		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
 			t.Fatalf("decode generic event %s: %v", event.EventID, err)
 		}
-		if payload["kind"] != acp.KingdomProgressKind || payload["activity_id"] != "prt_step_1" {
+		if payload["kind"] != acp.KingdomProgressKind || payload["provider_part_id"] != "prt_step_1" {
 			continue
 		}
 		activityFound = true
+		if id, ok := payload["activity_id"].(string); !ok || id == "" {
+			t.Errorf("persisted provider activity is missing its canonical identity: %s", event.PayloadJSON)
+		}
 		if payload["occurred_at"] != adapter.occurredAt {
 			t.Errorf("persisted activity timestamp=%v, want %q", payload["occurred_at"], adapter.occurredAt)
 		}

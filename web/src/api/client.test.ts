@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, apiFetch, currentAuthGeneration, resolveAPIBase, setCSRFToken, shouldRetryApiMutation, shouldRetryApiQuery, signalUnauthorized, subscribeToUnauthorized } from "./client";
+import { ApiError, apiFetch, currentAuthBinding, currentAuthGeneration, resolveAPIBase, setCSRFToken, shouldRetryApiMutation, shouldRetryApiQuery, signalUnauthorized, subscribeToUnauthorized } from "./client";
 
 describe("resolveAPIBase", () => {
   it("uses the API base path injected by the runtime", () => {
@@ -32,6 +32,20 @@ describe("shouldRetryApiMutation", () => {
 });
 
 describe("apiFetch", () => {
+  it("preserves complete text responses without JSON parsing or whitespace normalization", async () => {
+    const text = "  Complete prompt\n\tExact whitespace.\n";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(text, { headers: { "Content-Type": "text/plain" } })));
+    await expect(apiFetch<string>("/runs/r/executions/a/instructions", { responseType: "text" })).resolves.toBe(text);
+  });
+
+  it("tracks the nonsecret binding and clears it when authentication is lost", () => {
+    setCSRFToken("secret-csrf", "binding-one");
+    expect(currentAuthBinding()).toBe("binding-one");
+    signalUnauthorized();
+    expect(currentAuthBinding()).toBe("");
+    setCSRFToken("new-secret", "binding-two");
+    expect(currentAuthBinding()).toBe("binding-two");
+  });
   afterEach(() => {
 	setCSRFToken("");
     vi.unstubAllGlobals();

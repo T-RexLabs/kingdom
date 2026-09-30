@@ -81,7 +81,7 @@ func TestSchedulerEscalatesWhenReadyThresholdBreached(t *testing.T) {
 	if escalation.EventType != "escalation.raised" {
 		t.Fatalf("unexpected event type: %s", escalation.EventType)
 	}
-	if escalation.TargetRole != "chancellor" {
+	if escalation.TargetRole != "coordinator" {
 		t.Fatalf("unexpected escalation target: %s", escalation.TargetRole)
 	}
 	if escalation.ReasonCode != "ready_threshold_breached" {

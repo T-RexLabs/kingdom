@@ -37,18 +37,18 @@ func insertPlanningDraft(ctx context.Context, exec sqlExecutor, req CreatePlanni
 	row := PlanningDraft{
 		PlanningDraftID:   strings.TrimSpace(req.PlanningDraftID),
 		PlanningSessionID: strings.TrimSpace(req.PlanningSessionID),
-		DecreeTitle:       strings.TrimSpace(req.DecreeTitle),
-		DecreeText:        req.DecreeText,
+		WorkOrderTitle:    strings.TrimSpace(req.WorkOrderTitle),
+		WorkOrderText:     req.WorkOrderText,
 		SummaryJSON:       strings.TrimSpace(req.SummaryJSON),
 		CreatedAt:         strings.TrimSpace(req.CreatedAt),
 	}
 	_, err = exec.ExecContext(ctx,
-		`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at,decree_text_content_id)
+		`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, work_order_title, work_order_text, summary_json, created_at,work_order_text_content_id)
 		 VALUES (?, ?, ?, ?, ?, ?,?)`,
 		row.PlanningDraftID,
 		row.PlanningSessionID,
-		row.DecreeTitle,
-		row.DecreeText,
+		row.WorkOrderTitle,
+		row.WorkOrderText,
 		row.SummaryJSON,
 		row.CreatedAt,
 		planningContentID(ref),
@@ -62,15 +62,15 @@ func insertPlanningDraft(ctx context.Context, exec sqlExecutor, req CreatePlanni
 func (s *PlanningStore) GetDraft(ctx context.Context, planningDraftID string) (PlanningDraft, bool, error) {
 	var row PlanningDraft
 	err := s.db.QueryRowContext(ctx,
-		`SELECT planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at
+		`SELECT planning_draft_id, planning_session_id, work_order_title, work_order_text, summary_json, created_at
 		 FROM planning_drafts
 		 WHERE planning_draft_id = ?`,
 		strings.TrimSpace(planningDraftID),
 	).Scan(
 		&row.PlanningDraftID,
 		&row.PlanningSessionID,
-		&row.DecreeTitle,
-		&row.DecreeText,
+		&row.WorkOrderTitle,
+		&row.WorkOrderText,
 		&row.SummaryJSON,
 		&row.CreatedAt,
 	)
@@ -100,7 +100,7 @@ func (s *PlanningStore) GetCurrentDraft(ctx context.Context, planningSessionID s
 func (s *PlanningStore) GetLatestDraft(ctx context.Context, planningSessionID string) (PlanningDraft, bool, error) {
 	var row PlanningDraft
 	err := s.db.QueryRowContext(ctx,
-		`SELECT planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at
+		`SELECT planning_draft_id, planning_session_id, work_order_title, work_order_text, summary_json, created_at
 		 FROM planning_drafts
 		 WHERE planning_session_id = ?
 		 ORDER BY created_at DESC, planning_draft_id DESC
@@ -109,8 +109,8 @@ func (s *PlanningStore) GetLatestDraft(ctx context.Context, planningSessionID st
 	).Scan(
 		&row.PlanningDraftID,
 		&row.PlanningSessionID,
-		&row.DecreeTitle,
-		&row.DecreeText,
+		&row.WorkOrderTitle,
+		&row.WorkOrderText,
 		&row.SummaryJSON,
 		&row.CreatedAt,
 	)
@@ -128,7 +128,7 @@ func (s *PlanningStore) GetLatestDraft(ctx context.Context, planningSessionID st
 
 func (s *PlanningStore) hydrateDraftText(ctx context.Context, draft *PlanningDraft) error {
 	var id sql.NullString
-	if err := s.db.QueryRowContext(ctx, `SELECT decree_text_content_id FROM planning_drafts WHERE planning_draft_id=?`, draft.PlanningDraftID).Scan(&id); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT work_order_text_content_id FROM planning_drafts WHERE planning_draft_id=?`, draft.PlanningDraftID).Scan(&id); err != nil {
 		return err
 	}
 	if !id.Valid {
@@ -138,6 +138,6 @@ func (s *PlanningStore) hydrateDraftText(ctx context.Context, draft *PlanningDra
 	if err != nil {
 		return err
 	}
-	draft.DecreeText, err = readPlanningText(ctx, source)
+	draft.WorkOrderText, err = readPlanningText(ctx, source)
 	return err
 }

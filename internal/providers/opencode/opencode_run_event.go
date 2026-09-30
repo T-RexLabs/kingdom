@@ -3,6 +3,7 @@ package opencode
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -74,6 +75,24 @@ func parseOpencodeRunEvent(line string) (opencodeRunEvent, error) {
 			return opencodeRunEvent{}, fmt.Errorf("multiple JSON values in provider event line")
 		}
 		return opencodeRunEvent{}, fmt.Errorf("trailing provider event data: %w", err)
+	}
+	fields, cleanup, err := stageActivityFields(context.Background(), strings.NewReader(line), jsonValueSpan{size: int64(len(line))}, "part.")
+	if err != nil {
+		return opencodeRunEvent{}, err
+	}
+	defer cleanup()
+	event.activityContent = map[string]providerexecution.ActivityContent{}
+	for key, content := range fields {
+		reader, err := content.Open(context.Background())
+		if err != nil {
+			return opencodeRunEvent{}, err
+		}
+		raw, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			return opencodeRunEvent{}, err
+		}
+		event.activityContent[key] = providerexecution.ActivityText(string(raw))
 	}
 	return event, nil
 }
@@ -214,7 +233,16 @@ func decodeOpencodeRunEventStream(stream io.Reader, onLine func(int) error, onEv
 				event.Part.Text = string(preview)
 			}
 		}
+		fields, cleanup, contentErr := stageActivityFields(context.Background(), file, jsonValueSpan{size: size}, "part.")
+		if contentErr != nil {
+			if largeStrings != nil {
+				largeStrings.close()
+			}
+			return contentErr
+		}
+		event.activityContent = fields
 		err = onEvent(event)
+		cleanup()
 		if largeStrings != nil {
 			largeStrings.close()
 		}

@@ -24,7 +24,7 @@ func TestHistoryStoreKeysetsCrossTimestampTiesAndOldLimits(t *testing.T) {
 	}
 	beforeAt, beforeID, count := "", "", 0
 	for {
-		page, err := sessions.ListSessionsPage(ctx, 37, beforeAt, beforeID)
+		page, err := sessions.ListSessionsPage(ctx, 37, beforeAt, beforeID, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -48,7 +48,7 @@ func TestHistoryStoreKeysetsCrossTimestampTiesAndOldLimits(t *testing.T) {
 	for i := 0; i < 205; i++ {
 		_, err := insertRunPlanReview(ctx, db, CreateRunPlanReviewRequest{
 			PlanReviewID: fmt.Sprintf("history-review-%03d", i), RunID: "run_1", ReviewedPlanRevisionID: "history-plan",
-			Decision: RunPlanReviewDecisionApproved, FeedbackMarkdown: "Approved", ActorID: "operator", RoleID: "king",
+			Decision: RunPlanReviewDecisionApproved, FeedbackMarkdown: "Approved", ActorID: "operator", RoleID: "governance",
 			CreatedAt: fmt.Sprintf("2026-09-29T10:00:%02dZ", i/10),
 		})
 		if err != nil {

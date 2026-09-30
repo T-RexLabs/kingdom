@@ -41,8 +41,8 @@ export function InstallationPicker({
               "rounded-xl border p-4 transition",
               disabled ? "cursor-not-allowed opacity-60" : "cursor-pointer",
               isSelected
-                ? "border-gold bg-gold/10"
-                : "border-border bg-background/40 hover:border-gold/40",
+                ? "border-accent bg-accent/10"
+                : "border-border bg-background/40 hover:border-accent/40",
             )}
           >
             <input
@@ -58,9 +58,9 @@ export function InstallationPicker({
               <span
                 aria-hidden
                 className={cn(
-                  "mt-0.5 flex h-4 w-4 flex-none items-center justify-center border text-[10px] font-bold",
+                  "ui-checkbox-indicator mt-0.5 flex h-4 w-4 flex-none items-center justify-center border text-[10px] font-bold",
                   "rounded",
-                  isSelected ? "border-gold bg-gold text-background" : "border-border",
+                  isSelected ? "border-accent bg-accent text-background" : "border-border",
                 )}
               >
                 {isSelected ? "✓" : ""}
@@ -84,7 +84,7 @@ export function InstallationPicker({
                   </span>
                 ) : (
                   <a
-                    className="mt-1 inline-flex items-center gap-1 text-xs text-gold underline-offset-2 hover:underline"
+                    className="mt-1 inline-flex items-center gap-1 text-xs text-accent underline-offset-2 hover:underline"
                     href={manageURL}
                     target="_blank"
                     rel="noreferrer"

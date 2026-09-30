@@ -1,3 +1,4 @@
+import {availableActivityContent} from "@/features/activity/activity-test-helpers";
 import { QueryClient } from "@tanstack/react-query";
 import { describe, expect, it } from "vitest";
 import { applyRunStreamEvent } from "./use-run-event-stream";
@@ -23,10 +24,10 @@ describe("applyRunStreamEvent activity routing", () => {
         attempt_seq: 3,
         created_at: "2026-06-14T10:00:00Z",
         attempt_id: "run-1:node-a:1",
-        kind: "kingdom.reasoning",
+        kind: "kingdom.reasoning", sequence:5, input:{availability:"not_provided"},output:{availability:"not_provided"},message:{availability:"not_provided"},
         activity_id: "part-1",
         label: "Thinking",
-        detail: "Considering the layout",
+        reasoning:availableActivityContent("Considering the layout"),
       }),
     );
 

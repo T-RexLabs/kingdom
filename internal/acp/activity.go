@@ -1,14 +1,19 @@
 package acp
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"kingdom/internal/core/providerexecution"
 	"maps"
 	"strings"
 )
 
 // Activity kinds are the payload-level discriminators carried inside ACP activity
-// events. They are provider/domain agnostic: both the planner and decree-run node
+// events. They are provider/domain agnostic: both the planner and work-order-run node
 // executions emit the same shapes so a single parser and renderer serve both.
 const (
+	KingdomMessageKind   = "kingdom.message"
 	KingdomPhaseKind     = "kingdom.phase"
 	KingdomToolKind      = "kingdom.tool"
 	KingdomReasoningKind = "kingdom.reasoning"
@@ -18,16 +23,33 @@ const (
 // ActivityInput is a provider-agnostic view of a single activity observation. It
 // is populated from a planner ProviderActivity or an orchestrator
 // ExecuteActivityObservation and mapped into a renderable event payload.
-type ActivityInput struct {
-	Kind       string
-	ToolName   string
-	ToolStatus string
-	ToolTitle  string
-	ToolInput  string
-	Label      string
-	Summary    string
-	RawText    string
-	OccurredAt string
+type ActivityInput = providerexecution.ActivityObservation
+
+// ActivityIdentity scopes provider part/call identity to its invocation.
+func ActivityIdentity(in ActivityInput, fallback string) string {
+	id := strings.TrimSpace(in.ProviderPartID)
+	if in.Kind == "tool" && strings.TrimSpace(in.ToolCallID) != "" {
+		id = strings.TrimSpace(in.ToolCallID)
+	}
+	if id == "" {
+		return fallback
+	}
+	raw, _ := json.Marshal([]string{in.InvocationID, in.Kind, id})
+	hash := sha256.Sum256(raw)
+	return hex.EncodeToString(hash[:])
+}
+
+// ActivitySignature compares complete observed values using their exact-byte
+// digests. Local source handles, previews and read URLs are not observation data.
+func ActivitySignature(in ActivityInput) string {
+	values := []any{in.Kind, in.ProviderPartID, in.ToolCallID, in.InvocationID, in.OccurredAt, in.ToolName, in.ToolStatus, in.ToolTitle, in.Label}
+	for _, content := range []providerexecution.ActivityContent{in.Input, in.Output, in.Reasoning, in.Message} {
+		content = content.Normalized()
+		values = append(values, content.Availability, content.ByteLength, content.SHA256)
+	}
+	raw, _ := json.Marshal(values)
+	hash := sha256.Sum256(raw)
+	return hex.EncodeToString(hash[:])
 }
 
 // ActivityPayload builds the canonical ACP activity event payload for a single
@@ -39,13 +61,16 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 	switch strings.TrimSpace(in.Kind) {
 	case "tool":
 		toolName := strings.TrimSpace(in.ToolName)
-		if toolName == "" {
+		if toolName == "" && in.ToolCallID == "" && in.ProviderPartID == "" && in.Input.Normalized().Availability == "not_provided" && in.Output.Normalized().Availability == "not_provided" {
 			return nil
 		}
-		payload := activityBasePayload(base, KingdomToolKind)
-		payload["tool_name"] = toolName
-		if label := ToolActivityLabel(toolName, in.ToolStatus, in.ToolTitle, in.ToolInput); label != "" {
-			payload["label"] = label
+		payload := activityBasePayload(base, in, KingdomToolKind)
+		payload["label"] = "Tool Call"
+		if toolName != "" {
+			payload["tool_name"] = toolName
+			if label := ToolActivityLabel(toolName, in.ToolStatus, in.ToolTitle, in.Input.PreviewText()); label != "" {
+				payload["label"] = label
+			}
 		}
 		if activityID != "" {
 			payload["activity_id"] = activityID
@@ -62,12 +87,23 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 		if trimmedTitle := strings.TrimSpace(in.ToolTitle); trimmedTitle != "" {
 			payload["tool_title"] = trimmedTitle
 		}
-		if trimmedInput := strings.TrimSpace(in.ToolInput); trimmedInput != "" {
-			payload["tool_input"] = trimmedInput
+
+		return payload
+	case "message":
+		if in.Message.Normalized().Availability != "available" {
+			return nil
+		}
+		payload := activityBasePayload(base, in, KingdomMessageKind)
+		payload["label"] = "Provider Message"
+		if activityID != "" {
+			payload["activity_id"] = activityID
+		}
+		if occurredAt != "" {
+			payload["occurred_at"] = occurredAt
 		}
 		return payload
 	case "reasoning":
-		payload := activityBasePayload(base, KingdomReasoningKind)
+		payload := activityBasePayload(base, in, KingdomReasoningKind)
 		payload["state"] = "thinking"
 		payload["label"] = "Thinking"
 		if activityID != "" {
@@ -76,10 +112,7 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 		if occurredAt != "" {
 			payload["occurred_at"] = occurredAt
 		}
-		if summary := firstNonEmptyString(strings.TrimSpace(in.Summary), strings.TrimSpace(in.RawText)); summary != "" {
-			payload["summary"] = summary
-			payload["detail"] = summary
-		}
+
 		return payload
 	case "progress":
 		label := strings.TrimSpace(in.Label)
@@ -90,7 +123,7 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 		if !ok {
 			return nil
 		}
-		payload := activityBasePayload(base, KingdomProgressKind)
+		payload := activityBasePayload(base, in, KingdomProgressKind)
 		payload["label"] = normalizedLabel
 		if activityID != "" {
 			payload["activity_id"] = activityID
@@ -104,18 +137,20 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 	}
 }
 
-func activityBasePayload(base map[string]any, kind string) map[string]any {
+func activityBasePayload(base map[string]any, in ActivityInput, kind string) map[string]any {
 	payload := make(map[string]any, len(base)+5)
 	maps.Copy(payload, base)
 	payload["kind"] = kind
-	return payload
-}
-
-func firstNonEmptyString(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
+	payload["activity_signature"] = ActivitySignature(in)
+	payload["input"], payload["output"], payload["reasoning"], payload["message"] = in.Input.Normalized(), in.Output.Normalized(), in.Reasoning.Normalized(), in.Message.Normalized()
+	if in.ProviderPartID != "" {
+		payload["provider_part_id"] = in.ProviderPartID
 	}
-	return ""
+	if in.ToolCallID != "" {
+		payload["tool_call_id"] = in.ToolCallID
+	}
+	if in.InvocationID != "" {
+		payload["invocation_id"] = in.InvocationID
+	}
+	return payload
 }

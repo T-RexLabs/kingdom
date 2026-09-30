@@ -11,10 +11,12 @@ import (
 type runProjection struct {
 	AutonomousApprovals bool
 	CreatedAt           string
-	DecreeID            string
-	DecreeTitle         string
+	WorkOrderID         string
+	WorkOrderTitle      string
 	DisplayState        string
 	LastActivityAt      string
+	StartedAt           sql.NullString
+	StartState          string
 	ModelSelection      map[string]any
 	PendingApprovalKey  string
 	PlanState           string
@@ -40,8 +42,8 @@ func loadRunProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (runProj
 	var pendingApprovalKey sql.NullString
 	err := tx.QueryRowContext(ctx,
 		`SELECT wd.workflow_name,
-		        wr.decree_id,
-		        d.decree_title,
+		        wr.work_order_id,
+		        d.work_order_title,
 		        wr.run_status,
 		        wr.plan_state,
 		        wr.created_at,
@@ -50,14 +52,14 @@ func loadRunProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (runProj
 		        COALESCE(wr.autonomous_approvals, 1),
 		        COALESCE(wr.publish_mode, 'direct'),
 		        COALESCE(wr.model_selection_json, '{}'),
-		        `+PendingApprovalKeySelectExpr("wr")+`
+		        `+PendingApprovalKeySelectExpr("wr")+`, `+RunStartedAtSelectExpr("wr")+`, `+RunStartStateSelectExpr("wr")+`
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-		 JOIN decrees d ON d.decree_id = wr.decree_id
+		 JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.run_id = ?`,
 		trimmedRunID,
-	).Scan(&projection.WorkflowID, &projection.DecreeID, &projection.DecreeTitle, &projection.Status, &projection.PlanState, &projection.CreatedAt, &projection.UpdatedAt, &projection.LastActivityAt, &autonomousApprovals, &projection.PublishMode, &modelSelectionJSON, &pendingApprovalKey)
+	).Scan(&projection.WorkflowID, &projection.WorkOrderID, &projection.WorkOrderTitle, &projection.Status, &projection.PlanState, &projection.CreatedAt, &projection.UpdatedAt, &projection.LastActivityAt, &autonomousApprovals, &projection.PublishMode, &modelSelectionJSON, &pendingApprovalKey, &projection.StartedAt, &projection.StartState)
 	if err != nil {
 		return runProjection{}, fmt.Errorf("load run projection for %q: %w", trimmedRunID, err)
 	}
@@ -113,10 +115,19 @@ func projectRunStateChangedPayloadTx(ctx context.Context, tx *sql.Tx, runID stri
 	payload["display_state"] = projection.DisplayState
 	payload["updated_at"] = projection.UpdatedAt
 	payload["last_activity_at"] = projection.LastActivityAt
+	projectRunStartPayload(payload, projection)
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("encode run.state_changed payload for %q: %w", strings.TrimSpace(runID), err)
 	}
 	return string(encoded), nil
+}
+
+func projectRunStartPayload(payload map[string]any, projection runProjection) {
+	payload["start_state"] = projection.StartState
+	delete(payload, "started_at")
+	if projection.StartedAt.Valid {
+		payload["started_at"] = projection.StartedAt.String
+	}
 }

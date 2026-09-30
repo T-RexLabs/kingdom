@@ -24,7 +24,7 @@ export const Sparkline = memo(function Sparkline({
   ariaLabel = "Sparkline chart",
   width = 120,
   height = 32,
-  color = "var(--color-gold)",
+  color = "var(--color-accent)",
   fill = true,
 }: SparklineProps) {
   const hasEnoughData = data.length >= 2;

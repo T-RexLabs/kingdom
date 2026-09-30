@@ -37,10 +37,10 @@ func seedMailboxReferencedContent(t *testing.T) mailboxContentFixture {
 	f := mailboxContentFixture{handler: handler, db: db, runID: seedRunViaAPI(t, handler)}
 	f.otherRunID = seedOtherHistoryRun(t, handler)
 	for _, id := range []string{"ref-agent-a", "ref-agent-b"} {
-		mustExecSQL(t, db, `INSERT INTO agents(agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'chancellor','idle',0,'2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, id)
+		mustExecSQL(t, db, `INSERT INTO agents(agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'coordinator','idle',0,'2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, id)
 	}
 	f.nodeRunID, f.nodeID = "mailbox-content-node", "kickoff"
-	mustExecSQL(t, db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?,'kickoff',1,1,'succeeded','chancellor','ref-agent-a',1)`, f.nodeRunID, f.runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?,'kickoff',1,1,'succeeded','coordinator','ref-agent-a',1)`, f.nodeRunID, f.runID)
 	f.attemptID = "mailbox-content-attempt"
 	seedAttemptExecution(t, db, f.attemptID, f.runID, f.nodeRunID, "2026-09-30T10:00:00Z")
 	f.text = "# Canonical Content\n\n" + strings.Repeat("完整 content beyond the preview.\n", 10000) + "\nCANONICAL TAIL\n"
@@ -139,7 +139,7 @@ func TestMailboxFullContentReferencesAreLazyCompleteAndScoped(t *testing.T) {
 func TestMailboxFullContentRejectsForeignLineageAndCorruptionBeforeHeaders(t *testing.T) {
 	f := seedMailboxReferencedContent(t)
 	otherNode, otherAttempt, otherInvocation := "foreign-content-node", "foreign-content-attempt", "foreign-content-invocation"
-	mustExecSQL(t, f.db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?,'kickoff',1,1,'succeeded','chancellor','ref-agent-a',1)`, otherNode, f.otherRunID)
+	mustExecSQL(t, f.db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?,'kickoff',1,1,'succeeded','coordinator','ref-agent-a',1)`, otherNode, f.otherRunID)
 	seedAttemptExecution(t, f.db, otherAttempt, f.otherRunID, otherNode, "2026-09-30T10:00:00Z")
 	mustExecSQL(t, f.db, `INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES (?,?,?,?,'settled_success','server_response','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, otherInvocation, otherAttempt, f.otherRunID, otherNode)
 	foreignRef := f.response
@@ -220,7 +220,7 @@ func TestMailboxFullContentInlinePreservesCompleteBytes(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 	for _, id := range []string{"mail-content-a", "mail-content-b"} {
-		mustExecSQL(t, db, `INSERT INTO agents(agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'chancellor','idle',0,'2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, id)
+		mustExecSQL(t, db, `INSERT INTO agents(agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'coordinator','idle',0,'2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, id)
 	}
 	text := "# Complete instruction\n" + strings.Repeat("Full inline content. ", 5000) + "\nINLINE TAIL\n"
 	payload := mustMailboxJSON(t, map[string]any{"message_source": "communication", "communication_type": "instruction_dispatched", "instruction_full": text, "body_markdown": "Generic dispatch summary"})

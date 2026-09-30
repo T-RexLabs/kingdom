@@ -24,7 +24,7 @@ func TestInspectionInputLineageSurvivesSnapshotCompaction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mustExec(t, loop.db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_builder_%d','run_1','builder',%d,1,'succeeded','king','agent_king',1)`, n+1, n+1))
+		mustExec(t, loop.db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_builder_%d','run_1','builder',%d,1,'succeeded','governance','agent_governance',1)`, n+1, n+1))
 		mustExec(t, loop.db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id,run_id,node_run_id,state,execution_mode,completion_mode,base_snapshot_id,result_snapshot_id,created_at,updated_at) VALUES ('run_1:builder:%d','run_1','nr_builder_%d','committed_success','provider_backed','server_response','%s','%s','%s','%s')`, n+1, n+1, parent, id, at, at))
 		parent = id
 	}

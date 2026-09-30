@@ -104,7 +104,7 @@ func TestPendingOutboxPagesPreserveEqualTimestampBounds(t *testing.T) {
 	store := New(db)
 	ctx := context.Background()
 	const stamp = "2026-09-30T12:00:00Z"
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := store.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: stamp}); err != nil {
 		t.Fatal(err)
 	}

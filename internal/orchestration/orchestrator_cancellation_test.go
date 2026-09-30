@@ -244,18 +244,18 @@ func testCancellationBatchFairness(t *testing.T, arrivalsDuringScan int) {
 	queueCancellation := func(index int) {
 		runID := fmt.Sprintf("run_cancel_batch_%03d", index)
 		nodeRunID := fmt.Sprintf("nr_cancel_batch_%03d", index)
-		attemptID := fmt.Sprintf("%s:delegated_execution_berserker:1", runID)
+		attemptID := fmt.Sprintf("%s:implementation:1", runID)
 		// These attempts already owned a snapshot, but their targets are
 		// missing. A genuinely unprepared cancellation now safely needs no
 		// restoration, so it cannot serve as persistent cleanup debt.
 		baseSnapshotID := h.baselineSnapshotID
 		if index == 64 {
 			runID = "run_terminal_handoff"
-			attemptID = runID + ":delegated_execution_berserker:1"
+			attemptID = runID + ":implementation:1"
 		} else {
-			mustExec(t, h.db, fmt.Sprintf(`INSERT INTO workflow_runs(run_id,decree_id,workflow_definition_id,run_status,plan_state,row_version,created_at,updated_at) VALUES(%q,'decree_terminal_handoff','wfdef_terminal_handoff','cancelled','approved',1,'2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`, runID))
+			mustExec(t, h.db, fmt.Sprintf(`INSERT INTO workflow_runs(run_id,work_order_id,workflow_definition_id,run_status,plan_state,row_version,created_at,updated_at) VALUES(%q,'work_order_terminal_handoff','wfdef_terminal_handoff','cancelled','approved',1,'2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`, runID))
 		}
-		mustExec(t, h.db, fmt.Sprintf(`INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES(%q,%q,'delegated_execution_berserker',1,1,'cancelled','builder-berserker','agent_terminal_handoff',1)`, nodeRunID, runID))
+		mustExec(t, h.db, fmt.Sprintf(`INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES(%q,%q,'implementation',1,1,'cancelled','builder','agent_terminal_handoff',1)`, nodeRunID, runID))
 		mustExec(t, h.db, fmt.Sprintf(`INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,execution_mode,completion_mode,base_snapshot_id,created_at,updated_at) VALUES(%q,%q,%q,'committed_cancelled','provider_backed','server_response',%q,'2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`, attemptID, runID, nodeRunID, baseSnapshotID))
 		if err := h.store.QueueAttemptCancel(ctx, executionstore.QueueAttemptCancelRequest{
 			CancelOutboxID: fmt.Sprintf("cancel_batch_%03d", index), AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
@@ -278,7 +278,7 @@ func testCancellationBatchFairness(t *testing.T, arrivalsDuringScan int) {
 	if processed, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil || processed != 1 {
 		t.Fatalf("later eligible cancellation starved: processed=%d err=%v", processed, err)
 	}
-	assertCancellationHandoff(t, h, "run_terminal_handoff:delegated_execution_berserker:1", "published", "released")
+	assertCancellationHandoff(t, h, "run_terminal_handoff:implementation:1", "published", "released")
 	// Once the scan wraps, a previously waiting row can converge. Repeated
 	// identical waits should not grow publish_attempts or rewrite bookkeeping.
 	if _, err := h.fsStore.EnsureExecutionTarget(ctx, runtimefs.EnsureExecutionTargetRequest{

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/dbmigrations"
 )
 
 func newScaffoldPaths(t *testing.T) (projectRoot string, kingdomHome string, overlayRoot string) {
@@ -93,7 +94,7 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 }
 
 func TestPlannerProfileKeepsOutputRulesScopedToTheirMode(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("files", "opencode", "agents", "planner.md"))
+	raw, err := os.ReadFile(filepath.Join("files", "opencode", "agents", "planning-assistant.md"))
 	if err != nil {
 		t.Fatalf("read planner profile: %v", err)
 	}
@@ -179,14 +180,14 @@ func TestWriteScaffoldIncludesOpenCodeAgentProfiles(t *testing.T) {
 	for _, rel := range []string{
 		filepath.Join("opencode", "agents", "advisor.md"),
 		filepath.Join("opencode", "agents", "builder.md"),
-		filepath.Join("opencode", "agents", "chancellor.md"),
-		filepath.Join("opencode", "agents", "council.md"),
-		filepath.Join("opencode", "agents", "king.md"),
-		filepath.Join("opencode", "agents", "nightraven.md"),
-		filepath.Join("opencode", "agents", "planner.md"),
-		filepath.Join("opencode", "agents", "qa_scout.md"),
+		filepath.Join("opencode", "agents", "coordinator.md"),
+		filepath.Join("opencode", "agents", "plan-author.md"),
+		filepath.Join("opencode", "agents", "governance.md"),
+		filepath.Join("opencode", "agents", "security-validator.md"),
+		filepath.Join("opencode", "agents", "planning-assistant.md"),
+		filepath.Join("opencode", "agents", "qa-validator.md"),
 		filepath.Join("opencode", "agents", "reviewer.md"),
-		filepath.Join("opencode", "agents", "tester.md"),
+		filepath.Join("opencode", "agents", "resilience-validator.md"),
 	} {
 		if _, err := os.Stat(filepath.Join(kingdomHome, rel)); err != nil {
 			t.Fatalf("expected scaffold file %s: %v", rel, err)
@@ -311,7 +312,7 @@ func TestValidateManagedOpenCodeAssetsFailsWhenManagedFileMissing(t *testing.T) 
 		t.Fatalf("scaffold write: %v", err)
 	}
 
-	plannerPath := filepath.Join(overlayRoot, "agents", "planner.md")
+	plannerPath := filepath.Join(overlayRoot, "agents", "planning-assistant.md")
 	if err := os.Remove(plannerPath); err != nil {
 		t.Fatalf("remove planner profile: %v", err)
 	}
@@ -333,7 +334,7 @@ func TestValidateManagedOpenCodeAssetsFailsWhenManagedFileDrifts(t *testing.T) {
 		t.Fatalf("scaffold write: %v", err)
 	}
 
-	plannerPath := filepath.Join(overlayRoot, "agents", "planner.md")
+	plannerPath := filepath.Join(overlayRoot, "agents", "planning-assistant.md")
 	if err := os.WriteFile(plannerPath, []byte("stale"), 0o644); err != nil {
 		t.Fatalf("overwrite managed planner profile: %v", err)
 	}
@@ -418,7 +419,7 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"webfetch: true",
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "planner.md"),
+		filepath.Join("opencode", "agents", "planning-assistant.md"),
 		"bash: false",
 		"write: false",
 		"list: true",
@@ -431,7 +432,7 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		`"*": deny`,
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "council.md"),
+		filepath.Join("opencode", "agents", "plan-author.md"),
 		"list: true",
 		"glob: true",
 		"grep: true",
@@ -441,7 +442,7 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"authoritative external sources",
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "chancellor.md"),
+		filepath.Join("opencode", "agents", "coordinator.md"),
 		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
 		"Distinguish implementation work from genuine external dependencies.",
 	)
@@ -453,17 +454,17 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"grep: true",
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "qa_scout.md"),
+		filepath.Join("opencode", "agents", "qa-validator.md"),
 		"bash: true",
-		"Validate implemented behavior against decree requirements",
+		"Validate implemented behavior against work order requirements",
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "nightraven.md"),
+		filepath.Join("opencode", "agents", "security-validator.md"),
 		"bash: true",
-		"watcher of trust boundaries",
+		"responsible for trust boundaries",
 	)
 	assertContains(
-		filepath.Join("opencode", "agents", "tester.md"),
+		filepath.Join("opencode", "agents", "resilience-validator.md"),
 		"bash: true",
 		"list: true",
 		"glob: true",
@@ -481,14 +482,14 @@ func TestWriteScaffoldNonBuilderProfilesDenyMarkdownEdits(t *testing.T) {
 
 	nonBuilderProfiles := []string{
 		filepath.Join("opencode", "agents", "advisor.md"),
-		filepath.Join("opencode", "agents", "council.md"),
-		filepath.Join("opencode", "agents", "nightraven.md"),
-		filepath.Join("opencode", "agents", "planner.md"),
-		filepath.Join("opencode", "agents", "qa_scout.md"),
+		filepath.Join("opencode", "agents", "plan-author.md"),
+		filepath.Join("opencode", "agents", "security-validator.md"),
+		filepath.Join("opencode", "agents", "planning-assistant.md"),
+		filepath.Join("opencode", "agents", "qa-validator.md"),
 		filepath.Join("opencode", "agents", "reviewer.md"),
-		filepath.Join("opencode", "agents", "tester.md"),
-		filepath.Join("opencode", "agents", "king.md"),
-		filepath.Join("opencode", "agents", "chancellor.md"),
+		filepath.Join("opencode", "agents", "resilience-validator.md"),
+		filepath.Join("opencode", "agents", "governance.md"),
+		filepath.Join("opencode", "agents", "coordinator.md"),
 	}
 
 	for _, rel := range nonBuilderProfiles {
@@ -514,7 +515,7 @@ func TestWriteScaffoldTesterProfileStaysValidationOnly(t *testing.T) {
 		t.Fatalf("scaffold write: %v", err)
 	}
 
-	raw, err := os.ReadFile(filepath.Join(kingdomHome, "opencode", "agents", "tester.md"))
+	raw, err := os.ReadFile(filepath.Join(kingdomHome, "opencode", "agents", "resilience-validator.md"))
 	if err != nil {
 		t.Fatalf("read tester profile: %v", err)
 	}
@@ -530,6 +531,43 @@ func TestWriteScaffoldTesterProfileStaysValidationOnly(t *testing.T) {
 	} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("expected tester profile to include %q", expected)
+		}
+	}
+}
+
+func TestFreshScaffoldContainsFourCanonicalMigrations(t *testing.T) {
+	t.Parallel()
+	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
+	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(kingdomHome, "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("fresh scaffold has %d migrations, want %d", len(entries), len(want))
+	}
+	for i, name := range want {
+		if entries[i].Name() != name {
+			t.Fatalf("migration %d = %q, want %q", i, entries[i].Name(), name)
+		}
+		got, err := os.ReadFile(filepath.Join(kingdomHome, "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, canonical) {
+			t.Fatalf("scaffold migration %s differs from canonical SQL", name)
 		}
 	}
 }

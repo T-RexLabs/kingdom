@@ -71,10 +71,10 @@ func TestRunTerminalizationRetriesConcurrentPreparationWriter(t *testing.T) {
 			store := executionstore.New(otherDB)
 			for i := range 4 {
 				nodeID, nodeRunID := fmt.Sprintf("advisor_%d", i), fmt.Sprintf("nr_advisor_%d", i)
-				if _, err := otherDB.Exec(`INSERT INTO workflow_nodes(workflow_node_id,workflow_definition_id,node_id,required_role,node_class,created_at) VALUES (?,'wfdef_1',?,'king','advisory_consultation','2026-03-01T12:00:00Z')`, "wn_"+nodeID, nodeID); err != nil {
+				if _, err := otherDB.Exec(`INSERT INTO workflow_nodes(workflow_node_id,workflow_definition_id,node_id,required_role,node_class,created_at) VALUES (?,'wfdef_1',?,'governance','advisory_consultation','2026-03-01T12:00:00Z')`, "wn_"+nodeID, nodeID); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := otherDB.Exec(`INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,'run_1',?,1,1,'ready','king','agent_king',1)`, nodeRunID, nodeID); err != nil {
+				if _, err := otherDB.Exec(`INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,'run_1',?,1,1,'ready','governance','agent_governance',1)`, nodeRunID, nodeID); err != nil {
 					t.Fatal(err)
 				}
 				attemptID := "run_1:" + nodeID + ":1"

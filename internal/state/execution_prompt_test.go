@@ -45,7 +45,7 @@ func TestPersistExecutionPromptRetriesConcurrentWALWriterWithExactSource(t *test
 			db.SetMaxOpenConns(4)
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			seedMinimumGraph(t, db)
-			mustExec(t, db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_prompt_2','run_1','decree_intake',2,1,'ready','king','agent_king',1)`)
+			mustExec(t, db, `INSERT INTO node_runs(node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_prompt_2','run_1','work_intake',2,1,'ready','governance','agent_governance',1)`)
 			const now = "2026-03-01T12:00:00Z"
 			store := executionstore.New(db)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

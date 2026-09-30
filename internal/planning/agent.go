@@ -22,18 +22,7 @@ type Agent interface {
 // the caller's deadline; consumers are drained before Service invokes it.
 type ContextCloser interface{ CloseContext(context.Context) error }
 
-type ProviderActivity struct {
-	Kind           string
-	ProviderPartID string
-	OccurredAt     string
-	ToolName       string
-	ToolStatus     string
-	ToolTitle      string
-	ToolInput      string
-	Label          string
-	Summary        string
-	RawText        string
-}
+type ProviderActivity = providerexecution.ActivityObservation
 
 type ProviderInvocationContext struct {
 	AttemptID                string
@@ -131,11 +120,11 @@ type AgentTurn struct {
 
 // FormalizedPlan owns its parsed body source until Close after finalization.
 type FormalizedPlan struct {
-	TextSource   *state.PlanningTextSource
-	closeContent func() error
-	DecreeTitle  string
-	DecreeText   string
-	Metadata     ProviderExecutionMetadata
+	TextSource     *state.PlanningTextSource
+	closeContent   func() error
+	WorkOrderTitle string
+	WorkOrderText  string
+	Metadata       ProviderExecutionMetadata
 }
 
 func (t AgentTurn) Close() error {

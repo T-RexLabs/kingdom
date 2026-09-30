@@ -3,11 +3,13 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/sqlitex"
@@ -33,25 +35,26 @@ var terminalAttemptEventTypes = map[string]struct{}{
 }
 
 type AttemptEventIngestionRequest struct {
-	EventID         string
-	RunID           string
-	NodeRunID       sql.NullString
-	AttemptID       string
-	RunEventSeq     int
-	SchemaVersion   string
-	EventType       string
-	Seq             int
-	PayloadJSON     string
-	ActorID         string
-	RoleID          string
-	AuthoritySource string
-	ReasonCode      string
-	ReasonText      string
-	CorrelationID   string
-	CausationID     string
-	PrevHash        string
-	EntryHash       string
-	CreatedAt       string
+	ActivityContents map[string]providerexecution.ActivityContent
+	EventID          string
+	RunID            string
+	NodeRunID        sql.NullString
+	AttemptID        string
+	RunEventSeq      int
+	SchemaVersion    string
+	EventType        string
+	Seq              int
+	PayloadJSON      string
+	ActorID          string
+	RoleID           string
+	AuthoritySource  string
+	ReasonCode       string
+	ReasonText       string
+	CorrelationID    string
+	CausationID      string
+	PrevHash         string
+	EntryHash        string
+	CreatedAt        string
 }
 
 type AttemptEventIngestionResult struct {
@@ -157,6 +160,7 @@ func (i *AttemptEventIngestor) ingestOnce(ctx context.Context, req AttemptEventI
 	if hasEvents && req.Seq > lastSeq+1 {
 		expectedSeq := lastSeq + 1
 		gapEventReq := req
+		gapEventReq.ActivityContents = nil
 		gapEventReq.EventID = fmt.Sprintf("%s_gap_%d", req.AttemptID, expectedSeq)
 		gapEventReq.EventType = AttemptIngestGapEventType
 		gapEventReq.Seq = expectedSeq
@@ -350,6 +354,13 @@ func appendAttemptEventTx(ctx context.Context, tx *sql.Tx, schemaSet *schemas.Se
 	if err := validateAttemptEventIngestionRequest(req); err != nil {
 		return err
 	}
+	if req.EventType == AttemptActivityEventType {
+		var err error
+		req.PayloadJSON, err = persistActivityEventTx(ctx, tx, ActivityScope{RunID: req.RunID, AttemptID: req.AttemptID}, req.EventID, req.Seq, req.CreatedAt, req.PayloadJSON, req.ActivityContents)
+		if err != nil {
+			return err
+		}
+	}
 	if req.RunEventSeq <= 0 {
 		runEventSeq, err := nextRunEventSeqTx(ctx, tx, req.RunID)
 		if err != nil {
@@ -412,10 +423,22 @@ func appendAttemptEventTx(ctx context.Context, tx *sql.Tx, schemaSet *schemas.Se
 			return fmt.Errorf("insert canonical attempt event log %q: %w", req.EventID, err)
 		}
 	}
+	activityAt := req.CreatedAt
+	if req.EventType == AttemptActivityEventType {
+		var payload struct {
+			OccurredAt string `json:"occurred_at"`
+		}
+		if err := json.Unmarshal([]byte(req.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		if payload.OccurredAt != "" {
+			activityAt = payload.OccurredAt
+		}
+	}
 	runActivityChanged, err := AdvanceRunActivityTx(ctx, tx, RunActivityUpdateRequest{
 		EventID:     req.EventID,
 		EventType:   req.EventType,
-		OccurredAt:  req.CreatedAt,
+		OccurredAt:  activityAt,
 		PayloadJSON: req.PayloadJSON,
 		ReasonCode:  req.ReasonCode,
 		RunEventSeq: req.RunEventSeq,

@@ -285,7 +285,7 @@ func TestExternalSourceRefreshUsesPersistedInstallationSix(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{DecreeID: "decree-refresh-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh-six" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, state.CreateWorkOrderRequest{WorkOrderID: "work-order-refresh-six", Title: "WorkOrder", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh-six" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -336,8 +336,8 @@ func TestExternalRefreshCapturesResolvedRepositoryInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{
-		DecreeID: "decree-refresh-transfer", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID,
+	if err := store.CreateWorkOrder(ctx, state.CreateWorkOrderRequest{
+		WorkOrderID: "work-order-refresh-transfer", Title: "WorkOrder", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID,
 		NewLinkID: func() string { return "link-refresh-transfer" }, ActorID: "local-operator",
 	}); err != nil {
 		t.Fatal(err)
@@ -1681,7 +1681,7 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{DecreeID: "decree-refresh", Title: "Decree", Text: "immutable", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, state.CreateWorkOrderRequest{WorkOrderID: "work-order-refresh", Title: "WorkOrder", Text: "immutable", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 	issue.Title, issue.UpdatedAt = "Changed", "2026-08-12T11:00:00Z"

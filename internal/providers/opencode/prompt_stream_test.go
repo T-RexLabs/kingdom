@@ -125,7 +125,7 @@ func (h *warmLifecycleHandle) Wait(context.Context) (processguardian.Result, err
 
 func TestAdapterCloseContextCancelsWarmupAndHonorsDrainDeadline(t *testing.T) {
 	h := &warmLifecycleHandle{streamingHandle: streamingHandle{stdout: io.NopCloser(strings.NewReader("ok")), stderr: io.NopCloser(strings.NewReader(""))}, started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planner", Runner: warmLifecycleRunner{h}})
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planning-assistant", Runner: warmLifecycleRunner{h}})
 	if err != nil {
 		t.Fatal(err)
 	}

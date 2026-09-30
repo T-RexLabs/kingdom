@@ -185,12 +185,13 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 		s.writeBadRequest(w, err.Error())
 		return
 	}
-	cursor, err := s.decodeHistoryCursor("planning-sessions", "", strings.TrimSpace(r.URL.Query().Get("cursor")))
+	search := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	cursor, err := s.decodeHistoryCursor("planning-sessions", search, strings.TrimSpace(r.URL.Query().Get("cursor")))
 	if err != nil {
 		s.writeBadRequest(w, "invalid cursor")
 		return
 	}
-	items, err := s.planningStore.ListSessionsPage(r.Context(), limit+1, cursor.OrderedAt, cursor.ID)
+	items, err := s.planningStore.ListSessionsPage(r.Context(), limit+1, cursor.OrderedAt, cursor.ID, search)
 	if err != nil {
 		s.writeInternalError(w, "list planning sessions failed")
 		return
@@ -198,7 +199,7 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 	response := gen.PlanningSessionListResponse{Items: make([]gen.PlanningSessionSummary, 0, len(items))}
 	if len(items) > limit {
 		last := items[limit-1]
-		next := s.encodeHistoryCursor("planning-sessions", "", last.UpdatedAt, last.PlanningSessionID)
+		next := s.encodeHistoryCursor("planning-sessions", search, last.UpdatedAt, last.PlanningSessionID)
 		response.NextCursor = &next
 		items = items[:limit]
 	}

@@ -24,7 +24,7 @@ const (
 
 func TestSessionAdapterStreamsLongPromptThroughStdin(t *testing.T) {
 	const promptMarker = "kingdom-stdin-prompt-marker"
-	prompt := strings.Repeat("Long decree context 界\n", 240_000) + promptMarker
+	prompt := strings.Repeat("Long work order context 界\n", 240_000) + promptMarker
 	if len(prompt) <= 4<<20 {
 		t.Fatalf("test prompt bytes=%d, want larger than guardian control frame", len(prompt))
 	}

@@ -39,7 +39,7 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   strict_startup_total_timeout: nope
   first_event_timeout: 20s
@@ -47,10 +47,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true
 `)
 
@@ -75,7 +75,7 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   strict_startup_total_timeout: nope
   first_event_timeout: 20s
@@ -83,10 +83,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true
 `)
 
@@ -111,7 +111,7 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   session_start_timeout: 30s
   strict_startup_total_timeout: 60s
@@ -120,10 +120,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true
 `)
 
@@ -148,7 +148,7 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   strict_startup_total_timeout: 60s
   first_event_timeout: 20s
@@ -156,10 +156,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: false
 `)
 
@@ -181,7 +181,7 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   strict_startup_total_timeout: 60s
   first_event_timeout: 20s
@@ -189,10 +189,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true
 `)
 
@@ -335,23 +335,23 @@ func TestPolicyAgentForRoleUsesRoleOverrideThenDefault(t *testing.T) {
 		t.Fatalf("load provider policy: %v", err)
 	}
 
-	if got := policy.AgentForRole("builder-berserker"); got != "builder" {
-		t.Fatalf("expected builder-berserker to map to builder agent, got %q", got)
+	if got := policy.AgentForRole("builder"); got != "builder" {
+		t.Fatalf("expected builder to map to builder agent, got %q", got)
 	}
-	if got := policy.AgentForRole("reviewer-shieldmaiden"); got != "reviewer" {
-		t.Fatalf("expected reviewer-shieldmaiden to map to reviewer agent, got %q", got)
+	if got := policy.AgentForRole("reviewer"); got != "reviewer" {
+		t.Fatalf("expected reviewer to map to reviewer agent, got %q", got)
 	}
-	if got := policy.AgentForRole("king"); got != "king" {
-		t.Fatalf("expected king to map to king agent, got %q", got)
+	if got := policy.AgentForRole("governance"); got != "governance" {
+		t.Fatalf("expected governance to map to governance agent, got %q", got)
 	}
-	if got := policy.AgentForRole("noble-delegate"); got != "advisor" {
-		t.Fatalf("expected noble-delegate to map to advisor agent, got %q", got)
+	if got := policy.AgentForRole("architecture-advisor"); got != "advisor" {
+		t.Fatalf("expected architecture-advisor to map to advisor agent, got %q", got)
 	}
-	if got := policy.AgentForRole("intelligence-qa-scout"); got != "qa_scout" {
-		t.Fatalf("expected intelligence-qa-scout to map to qa_scout agent, got %q", got)
+	if got := policy.AgentForRole("qa-validator"); got != "qa-validator" {
+		t.Fatalf("expected qa-validator to map to qa_scout agent, got %q", got)
 	}
-	if got := policy.AgentForRole("intelligence-nightraven"); got != "nightraven" {
-		t.Fatalf("expected intelligence-nightraven to map to nightraven agent, got %q", got)
+	if got := policy.AgentForRole("security-validator"); got != "security-validator" {
+		t.Fatalf("expected security-validator to map to nightraven agent, got %q", got)
 	}
 	if got := policy.AgentForRole("unknown-role"); got != "advisor" {
 		t.Fatalf("expected unknown role to fall back to advisor agent, got %q", got)
@@ -368,11 +368,11 @@ model_policy:
   fallback_enabled: false
   fallback_strategy: disabled_for_mvp
   preferred_models:
-    king: github-copilot/gpt-5.4-mini
+    governance: github-copilot/gpt-5.4-mini
 agent_policy:
   default_agent: advisor
   role_agents:
-    king: king
+    governance: governance
 timeouts:
   strict_startup_total_timeout: 90s
   first_event_timeout: 20s
@@ -380,10 +380,10 @@ timeouts:
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
-    decree_intake: 5m
+    work_intake: 5m
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true
 `)
 

@@ -53,6 +53,14 @@ class TestIntersectionObserver implements IntersectionObserver {
 
 globalThis.IntersectionObserver = TestIntersectionObserver as unknown as typeof IntersectionObserver;
 
+// jsdom has no element layout. Tests that verify resizing supply explicit
+// geometry and a controllable observer; other renders still need the browser API.
+globalThis.ResizeObserver = class implements ResizeObserver {
+	observe() {}
+	unobserve() {}
+	disconnect() {}
+};
+
 export function intersectAllObservers() {
 	for (const observer of [...TestIntersectionObserver.instances]) observer.intersect();
 }

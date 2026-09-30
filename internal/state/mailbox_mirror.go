@@ -117,14 +117,14 @@ func resolveMirrorRecipientRole(ctx context.Context, tx *sql.Tx, fromRole string
 	if mirrorRoleExists(ctx, tx, fromRole) {
 		return fromRole
 	}
-	if mirrorRoleExists(ctx, tx, "council-member") {
-		return "council-member"
+	if mirrorRoleExists(ctx, tx, "plan-author") {
+		return "plan-author"
 	}
-	if mirrorRoleExists(ctx, tx, "chancellor") {
-		return "chancellor"
+	if mirrorRoleExists(ctx, tx, "coordinator") {
+		return "coordinator"
 	}
-	if mirrorRoleExists(ctx, tx, "king") {
-		return "king"
+	if mirrorRoleExists(ctx, tx, "governance") {
+		return "governance"
 	}
 	return fromRole
 }
@@ -132,17 +132,17 @@ func resolveMirrorRecipientRole(ctx context.Context, tx *sql.Tx, fromRole string
 func mirrorRecipientRoleForSender(roleID string) string {
 	trimmed := strings.TrimSpace(strings.ToLower(roleID))
 	switch trimmed {
-	case "king":
-		return "chancellor"
-	case "chancellor":
-		return "council-member"
-	case "council-member":
-		return "chancellor"
+	case "governance":
+		return "coordinator"
+	case "coordinator":
+		return "plan-author"
+	case "plan-author":
+		return "coordinator"
 	default:
 		if strings.HasPrefix(trimmed, "intelligence") || strings.HasPrefix(trimmed, "builder") {
-			return "council-member"
+			return "plan-author"
 		}
-		return "chancellor"
+		return "coordinator"
 	}
 }
 

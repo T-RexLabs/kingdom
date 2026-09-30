@@ -17,9 +17,9 @@ func TestDispatchPreparationDoesNotWaitForBusyWorkspace(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
-		RunID: "run_prepare_busy", DecreeID: "decree_prepare_busy", WorkflowID: "wf_prepare_busy",
-		NodeRunID: "nr_prepare_busy", NodeID: "delegated_execution_berserker", NodeClass: workflow.NodeClassDelegatedExecution,
-		RequiredRole: "builder-berserker", AgentID: "agent_prepare_busy", RoleIDs: []string{"builder-berserker"},
+		RunID: "run_prepare_busy", WorkOrderID: "work_order_prepare_busy", WorkflowID: "wf_prepare_busy",
+		NodeRunID: "nr_prepare_busy", NodeID: "implementation", NodeClass: workflow.NodeClassDelegatedExecution,
+		RequiredRole: "builder", AgentID: "agent_prepare_busy", RoleIDs: []string{"builder"},
 	})
 	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: &sequenceExecutionAdapter{}, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
@@ -34,8 +34,8 @@ func TestDispatchPreparationDoesNotWaitForBusyWorkspace(t *testing.T) {
 	go func() {
 		done <- rt.orchestrator.dispatchNodeAttempt(ctx,
 			runSnapshot{RunID: "run_prepare_busy", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect},
-			nodeDefinition{NodeID: "delegated_execution_berserker", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder-berserker"},
-			nodeAttempt{NodeRunID: "nr_prepare_busy", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "builder-berserker", AgentID: "agent_prepare_busy"}, time.Now().UTC().Format(time.RFC3339Nano))
+			nodeDefinition{NodeID: "implementation", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder"},
+			nodeAttempt{NodeRunID: "nr_prepare_busy", NodeID: "implementation", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "builder", AgentID: "agent_prepare_busy"}, time.Now().UTC().Format(time.RFC3339Nano))
 	}()
 	select {
 	case err := <-done:
@@ -48,7 +48,7 @@ func TestDispatchPreparationDoesNotWaitForBusyWorkspace(t *testing.T) {
 		<-done
 		t.Fatal("dispatch waited for a busy workspace instead of leaving preparation queued")
 	}
-	if rt.orchestrator.executionAttemptInflight("run_prepare_busy:delegated_execution_berserker:1") {
+	if rt.orchestrator.executionAttemptInflight("run_prepare_busy:implementation:1") {
 		t.Fatal("busy workspace parked an admitted preparation worker")
 	}
 }
@@ -184,8 +184,8 @@ func TestDispatchPreparationPrivateAdvisorsCopyConcurrentlyWithinRun(t *testing.
 		}
 		return "", fmt.Errorf("not a git checkout")
 	}}
-	mustExec(t, rt.orchestrator.db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_prepare_parallel', 'wf_prepare', 'parallel_advisor', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, rt.orchestrator.db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_prepare_parallel', 'run_prepare', 'parallel_advisor', 1, 1, 'ready', 'council-member', 'agent_prepare', 1)`)
+	mustExec(t, rt.orchestrator.db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_prepare_parallel', 'wf_prepare', 'parallel_advisor', 'plan-author', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, rt.orchestrator.db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_prepare_parallel', 'run_prepare', 'parallel_advisor', 1, 1, 'ready', 'plan-author', 'agent_prepare', 1)`)
 	secondNode, secondAttempt := node, attempt
 	secondNode.NodeID, secondAttempt.NodeID, secondAttempt.NodeRunID = "parallel_advisor", "parallel_advisor", "nr_prepare_parallel"
 	unlock := rt.orchestrator.lockRunWorkspace(run.RunID)
@@ -215,16 +215,16 @@ func TestDispatchPreparationPrivateAdvisorsCopyConcurrentlyWithinRun(t *testing.
 func TestDispatchPreparationFreedCapacityRotatesAcrossRuns(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_a_large_wave", DecreeID: "decree_a", WorkflowID: "wf_a", NodeRunID: "nr_a_0", NodeID: "advisor_0", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "chancellor", AgentID: "agent_a", RoleIDs: []string{"chancellor"}})
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_a_large_wave", WorkOrderID: "work_order_a", WorkflowID: "wf_a", NodeRunID: "nr_a_0", NodeID: "advisor_0", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "coordinator", AgentID: "agent_a", RoleIDs: []string{"coordinator"}})
 	for i := 1; i < 8; i++ {
-		if _, err := db.Exec(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, 'wf_a', ?, 'chancellor', 'advisory_synthesis', '2026-03-01T12:00:00Z')`, fmt.Sprintf("wn_a_%d", i), fmt.Sprintf("advisor_%d", i)); err != nil {
+		if _, err := db.Exec(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, 'wf_a', ?, 'coordinator', 'advisory_synthesis', '2026-03-01T12:00:00Z')`, fmt.Sprintf("wn_a_%d", i), fmt.Sprintf("advisor_%d", i)); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, 'run_a_large_wave', ?, 1, 1, 'ready', 'chancellor', 'agent_a', 1)`, fmt.Sprintf("nr_a_%d", i), fmt.Sprintf("advisor_%d", i)); err != nil {
+		if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, 'run_a_large_wave', ?, 1, 1, 'ready', 'coordinator', 'agent_a', 1)`, fmt.Sprintf("nr_a_%d", i), fmt.Sprintf("advisor_%d", i)); err != nil {
 			t.Fatal(err)
 		}
 	}
-	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_b_waiting", DecreeID: "decree_b", WorkflowID: "wf_b", NodeRunID: "nr_b", NodeID: "advisor_b", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "chancellor", AgentID: "agent_b"})
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_b_waiting", WorkOrderID: "work_order_b", WorkflowID: "wf_b", NodeRunID: "nr_b", NodeID: "advisor_b", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "coordinator", AgentID: "agent_b"})
 	adapter := newBlockingFirstExecutionAdapter()
 	projectRoot := t.TempDir()
 	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: projectRoot})
@@ -333,7 +333,7 @@ func TestDispatchPreparationAdmissionIsBounded(t *testing.T) {
 	waitPreparationEntered(t, entered)
 	// A separate run remains ready without a claim or goroutine while capacity is
 	// full. The next tick can admit it once the first preparation drains.
-	seedReadyDispatchNodeRun(t, rt.orchestrator.db, readyDispatchNodeRunSeed{RunID: "run_prepare_next", DecreeID: "decree_prepare_next", WorkflowID: "wf_prepare_next", NodeRunID: "nr_prepare_next", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "council-member", AgentID: "agent_prepare_next"})
+	seedReadyDispatchNodeRun(t, rt.orchestrator.db, readyDispatchNodeRunSeed{RunID: "run_prepare_next", WorkOrderID: "work_order_prepare_next", WorkflowID: "wf_prepare_next", NodeRunID: "nr_prepare_next", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "plan-author", AgentID: "agent_prepare_next"})
 	nextRun := runSnapshot{RunID: "run_prepare_next", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}
 	nextAttempt := nodeAttempt{NodeRunID: "nr_prepare_next", NodeID: node.NodeID, Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: node.RequiredRole, AgentID: "agent_prepare_next"}
 	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), nextRun, node, nextAttempt, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
@@ -357,7 +357,7 @@ func newBlockedPreparation(t *testing.T) (*Runtime, *sequenceExecutionAdapter, r
 	t.Helper()
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_prepare", DecreeID: "decree_prepare", WorkflowID: "wf_prepare", NodeRunID: "nr_prepare", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "council-member", AgentID: "agent_prepare", RoleIDs: []string{"council-member", "chancellor"}, ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_prepare_chancellor", RoleID: "chancellor"}}})
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_prepare", WorkOrderID: "work_order_prepare", WorkflowID: "wf_prepare", NodeRunID: "nr_prepare", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "plan-author", AgentID: "agent_prepare", RoleIDs: []string{"plan-author", "coordinator"}, ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_prepare_coordinator", RoleID: "coordinator"}}})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"prepared response", "second response"}}
 	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
@@ -371,7 +371,7 @@ func newBlockedPreparation(t *testing.T) (*Runtime, *sequenceExecutionAdapter, r
 		once.Do(func() { close(entered); <-released })
 		return "", fmt.Errorf("not a git checkout")
 	}}
-	return rt, adapter, runSnapshot{RunID: "run_prepare", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}, nodeDefinition{NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "council-member"}, nodeAttempt{NodeRunID: "nr_prepare", NodeID: "plan_drafting", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "council-member", AgentID: "agent_prepare"}, entered, release
+	return rt, adapter, runSnapshot{RunID: "run_prepare", RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}, nodeDefinition{NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "plan-author"}, nodeAttempt{NodeRunID: "nr_prepare", NodeID: "plan_drafting", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "plan-author", AgentID: "agent_prepare"}, entered, release
 }
 
 func waitPreparationEntered(t *testing.T, entered <-chan struct{}) {

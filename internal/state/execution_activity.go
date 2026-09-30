@@ -15,19 +15,19 @@ import (
 const executionActivityFutureTolerance = time.Second
 
 // ExecutionActivityQuerier is the narrow read contract needed to inspect
-// durable decree-execution activity.
+// durable work-order-execution activity.
 type ExecutionActivityQuerier interface {
 	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
-// HasRecentTimeoutActivity reports whether the current decree-execution node
+// HasRecentTimeoutActivity reports whether the current work-order-execution node
 // has seen timeout-suppressing activity within the supplied window. Runtime
 // observation polling must not extend the timeout budget.
 func HasRecentTimeoutActivity(ctx context.Context, q ExecutionActivityQuerier, nodeRunID string, nowTime time.Time, threshold time.Duration) (bool, error) {
 	return hasRecentExecutionMatch(ctx, q, nodeRunID, nowTime, threshold, timeoutEventShowsRecentActivity)
 }
 
-// HasRecentExecutionLiveness reports whether the current decree-execution node
+// HasRecentExecutionLiveness reports whether the current work-order-execution node
 // has recent evidence that the execution is still live. Stale recovery uses
 // this broader signal so long-running quiet tool calls are not failed or
 // reassigned while runtime observations still show a live execution.

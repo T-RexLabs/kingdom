@@ -16,11 +16,11 @@ func privateCompletionOrderingFixture(t *testing.T) (terminalHandoffHarness, asy
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
 	job := h.runningHandoffJob(t, invocation, 1)
-	mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES ('intelligence-qa-scout','QA',0,'2026-03-01T12:00:00Z')`)
-	mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='intelligence-qa-scout', node_class='validation_gates'`)
-	mustExec(t, h.db, `UPDATE node_runs SET required_role='intelligence-qa-scout'`)
-	mustExec(t, h.db, `UPDATE agents SET role_id='intelligence-qa-scout'`)
-	job.node.RequiredRole, job.node.NodeClass = "intelligence-qa-scout", "validation_gates"
+	mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES ('qa-validator','QA',0,'2026-03-01T12:00:00Z')`)
+	mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='qa-validator', node_class='validation_gates'`)
+	mustExec(t, h.db, `UPDATE node_runs SET required_role='qa-validator'`)
+	mustExec(t, h.db, `UPDATE agents SET role_id='qa-validator'`)
+	job.node.RequiredRole, job.node.NodeClass = "qa-validator", "validation_gates"
 	job.attempt.RequiredRole, job.delegator = job.node.RequiredRole, job.attempt.AgentID
 	h.loop.events = state.NewAttemptEventIngestor(h.db, h.loop.schemas)
 	h.loop.mailbox = state.NewMailboxStore(h.db, h.loop.schemas)

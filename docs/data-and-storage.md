@@ -4,6 +4,14 @@ This document explains what Kingdom stores durably and how that storage is used.
 
 The current control plane uses SQLite with explicit startup pragmas.
 
+## Schema Baseline
+
+The embedded schema consists of four forward-only migrations: core state and content storage, the execution activity index, external sources and idempotency retention, and resumable workspace cleanup. Fresh scaffolds copy those same four files.
+
+`schema_migrations` records each applied filename and its SHA-256 checksum. Before applying SQL, startup verifies that recorded migrations form an unchanged prefix of the embedded migration list. Missing checksum metadata, unknown migrations, gaps, changed SQL, or an existing schema without migration history cause startup to fail without applying migration DDL. There is no upgrade path from the retired baseline.
+
+To replace an old local baseline, preserve any needed data first, then run `kd clean` and `kd init`. Cleaning removes the local `.kingdom/` scaffold and database. `kd init --force` is not a database conversion command.
+
 ## Required Pragmas
 
 - `PRAGMA foreign_keys = ON;`
@@ -20,12 +28,12 @@ The current control plane uses SQLite with explicit startup pragmas.
 
 ## Durable Execution Tables
 
-- `provider_invocations`: runtime-owned invocation identity, provider session linkage, supersession state, lease-generation-fenced terminal-handoff publication/recovery markers, and replayable handoff-file cleanup debt for each provider-backed decree execution attempt dispatch.
-- `provider_completion_evidence`: append-only stream-observation and diagnostic evidence for provider-backed decree execution attempts.
-- `provider_completion_settlements`: canonical invocation-scoped settlement truth for provider-backed decree execution attempts (`success`, `failed`, or `cancelled`) with evidence linkage.
-- `provider_terminal_handoffs`: durable lease-fenced terminal observations for provider-backed decree invocations, written after the pending marker and before settlement; file-only observations are replayed before lost-handoff recovery.
+- `provider_invocations`: runtime-owned invocation identity, provider session linkage, supersession state, lease-generation-fenced terminal-handoff publication/recovery markers, and replayable handoff-file cleanup debt for each provider-backed work order execution attempt dispatch.
+- `provider_completion_evidence`: append-only stream-observation and diagnostic evidence for provider-backed work order execution attempts.
+- `provider_completion_settlements`: canonical invocation-scoped settlement truth for provider-backed work order execution attempts (`success`, `failed`, or `cancelled`) with evidence linkage.
+- `provider_terminal_handoffs`: durable lease-fenced terminal observations for provider-backed work order invocations, written after the pending marker and before settlement; file-only observations are replayed before lost-handoff recovery.
 - `provider_process_guards`: durable provider-command guardian ownership, lease lineage, and acknowledged/quiescent lifecycle. Quiescence evidence is file-backed under the runtime root before ingestion, then retained in SQLite for recovery.
-- `attempt_executions`: durable attempt lifecycle and latest execution projection consumed by orchestration and UI (`queued` -> `starting` -> `running` -> `terminal_observed` -> `committed_*`). For provider-backed decree execution attempts, it references the active invocation and canonical runtime settlement; it does not own settlement truth itself. It also carries replayable cleanup debt for attempt-scoped response-only workspaces, which are isolated copies rather than execution targets or snapshots.
+- `attempt_executions`: durable attempt lifecycle and latest execution projection consumed by orchestration and UI (`queued` -> `starting` -> `running` -> `terminal_observed` -> `committed_*`). For provider-backed work order execution attempts, it references the active invocation and canonical runtime settlement; it does not own settlement truth itself. It also carries replayable cleanup debt for attempt-scoped response-only workspaces, which are isolated copies rather than execution targets or snapshots.
 - `attempt_event_log`: canonical per-attempt execution event stream with monotonic `seq`.
 - `attempt_outbox`: durable completion handoff queue consumed by orchestration for terminal projection.
   - `pending`: awaiting replay/projection.
@@ -34,18 +42,18 @@ The current control plane uses SQLite with explicit startup pragmas.
 - `node_runs`: durable per-node retry lineage (`attempt`) plus explicit cross-node review/validation wave lineage (`wave`).
 - `workspaces`: execution workspace ownership and lifecycle (`active` and `released`) for each node run.
 - `attempt_cancel_outbox`: one durable provider-stop handoff per attempt, including requested reason, dispatch/awaiting-quiescence/workspace-restoration state, retry count, and completion publication.
-- `retry_decisions`: canonical automatic retry or fail-fast decision for a decree attempt or planning invocation, with policy identity, failure code, operator-safe text, meaningful-progress result, per-error retry allowance, provider hint, due time, source/target lineage, dispatch state, escalation target, and final resolution. There is no run-wide attempt-count budget.
+- `retry_decisions`: canonical automatic retry or fail-fast decision for a work order attempt or planning invocation, with policy identity, failure code, operator-safe text, meaningful-progress result, per-error retry allowance, provider hint, due time, source/target lineage, dispatch state, escalation target, and final resolution. There is no run-wide attempt-count budget.
 
-For provider-backed decree execution, the atomic settlement boundary writes stream evidence, canonical settlement, terminal attempt state, token usage, and the completion outbox record. The outbox is a projection handoff, not independent settlement authority.
+For provider-backed work order execution, the atomic settlement boundary writes stream evidence, canonical settlement, terminal attempt state, token usage, and the completion outbox record. The outbox is a projection handoff, not independent settlement authority.
 
 ## Canonical Content and Referenced Handoffs
 
-- `provider_contents` and `provider_content_chunks` store decree invocation content by invocation ID, SHA-256, and size, with ordered chunks of at most 64 KiB. Settlements reference canonical terminal text through `final_text_ref_json`; `final_text_preview` is display data. Full invocation stdout/stderr diagnostics have content references separate from their previews.
+- `provider_contents` and `provider_content_chunks` store work order invocation content by invocation ID, SHA-256, and size, with ordered chunks of at most 64 KiB. Settlements reference canonical terminal text through `final_text_ref_json`; `final_text_preview` is display data. Full invocation stdout/stderr diagnostics have content references separate from their previews.
 - `planning_provider_contents` and `planning_provider_content_chunks` provide separate invocation-scoped content storage for planning. Planner settlements and observed output can reference this content without embedding the full text in lifecycle metadata.
-- `request_contents` and `request_content_chunks` store immutable text manifests and ordered chunks of at most 64 KiB. `decree_text_refs` binds decree text; planning messages, answer text, session titles, drafts, and `planning_event_text_refs` bind their canonical text to this store. `execution_prompt_refs` records the exact persisted prompt for an attempt, and `run_planning_outputs.content_ref_json` can reference provider-owned planning output.
+- `request_contents` and `request_content_chunks` store immutable text manifests and ordered chunks of at most 64 KiB. `work_order_text_refs` binds work order text; planning messages, answer text, session titles, drafts, and `planning_event_text_refs` bind their canonical text to this store. `execution_prompt_refs` records the exact persisted prompt for an attempt, and `run_planning_outputs.content_ref_json` can reference provider-owned planning output.
 - Private request/provider spools support validation, hashing, replay, and prompt assembly. They are staging, not the system of record. Complete prompts reach OpenCode over stdin.
 
-Decree handoff files use a compact `v2` envelope with invocation-scoped content references rather than embedding full output. Runtime-owned content chunks under `.kingdom/runtime/provider-completion/content/` are published before the envelope under `provider-completion/handoffs/`. SQLite ingestion verifies invocation lineage, exact size, and digest under the execution lease fence before file cleanup. Canonical bytes remain in SQLite after settlement. The envelope retains a 1 MiB metadata boundary; referenced content has no aggregate byte ceiling. Guardian evidence and startup/recovery batching keep their existing bounds. Planning uses its own settlement transaction rather than decree handoff files.
+Work Order handoff files use a compact `v2` envelope with invocation-scoped content references rather than embedding full output. Runtime-owned content chunks under `.kingdom/runtime/provider-completion/content/` are published before the envelope under `provider-completion/handoffs/`. SQLite ingestion verifies invocation lineage, exact size, and digest under the execution lease fence before file cleanup. Canonical bytes remain in SQLite after settlement. The envelope retains a 1 MiB metadata boundary; referenced content has no aggregate byte ceiling. Guardian evidence and startup/recovery batching keep their existing bounds. Planning uses its own settlement transaction rather than work order handoff files.
 
 Chunking and paged traversal avoid whole-content buffers on these write/transport paths. They do not make every read projection bounded-memory: individual strings, issue/comment scalars, metadata collections, and some API responses are still materialized.
 
@@ -82,7 +90,7 @@ Artifact download, archive export, and publication stream content from SQLite. F
 - `external_connections`: immutable non-secret provider/App identity, `app_private_key|user_access_token` strategy, App slug, editable display/lifecycle metadata, opaque credential handle, and credential/validated generation health projection. No token value or expiry is stored here.
 - `external_sources` and `external_source_aliases`: canonical immutable provider identity plus the mutable current repository locator used for provider fetches. Public historical coordinates are never read from this projection.
 - `external_source_snapshots` and `external_source_snapshot_comments`: immutable normalized versions and complete captured comment bodies when the operator enables comment import. Intake uses replayable disk spools and row-wise persistence; public comment reads remain paginated. Issue titles/bodies and comments have no Kingdom content-byte cap, and comment count has no retention ceiling.
-- `external_source_links`: immutable target and exact used snapshot; `external_source_link_heads` is the latest-observed projection. Decree summaries decode the used snapshot, while planning summaries decode the latest explicit adoption.
+- `external_source_links`: immutable target and exact used snapshot; `external_source_link_heads` is the latest-observed projection. Work Order summaries decode the used snapshot, while planning summaries decode the latest explicit adoption.
 - `external_source_observations`: body-free refresh attempt history.
 - `planning_external_source_adoptions`: append-only active-version movement for future planning operations.
 - `planning_operation_external_snapshots`: exact bindings for every active source at operation enqueue, with assembler version, digest, and byte counts. Later adoption or removal never changes already-bound operations.
@@ -101,7 +109,7 @@ Setup state is never a table. Manifest and shared finalization first stage and f
 - Lease health snapshot:
   - `SELECT attempt_id, state, lease_owner, lease_expires_at, updated_at FROM attempt_executions WHERE state IN ('starting','running') ORDER BY updated_at ASC;`
 - Pending guardian quiescence:
-  - `SELECT guard_id, attempt_id, run_id, lifecycle, started_at, acknowledged_at, updated_at FROM provider_process_guards WHERE owner_kind='decree_attempt' AND lifecycle <> 'quiescent' ORDER BY updated_at ASC;`
+  - `SELECT guard_id, attempt_id, run_id, lifecycle, started_at, acknowledged_at, updated_at FROM provider_process_guards WHERE owner_kind='work_order_attempt' AND lifecycle <> 'quiescent' ORDER BY updated_at ASC;`
 - Pending cancellation handoff:
   - `SELECT cancel_outbox_id, attempt_id, run_id, reason_code, handoff_state, publish_attempts, last_error, updated_at FROM attempt_cancel_outbox WHERE status='pending' ORDER BY updated_at ASC;`
 - Retry decision state:

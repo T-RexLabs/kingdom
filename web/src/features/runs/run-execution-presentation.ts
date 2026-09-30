@@ -42,6 +42,11 @@ export function presentRunNodeExecution(
 	const status = executionDisplayStatus(execution ?? { status: node.status });
 	const labels = attemptLabels();
 
+	// Cancellation is the canonical outcome. Retained provider failure and retry
+	// evidence remains available in diagnostics; it cannot turn cancellation into failure.
+	if (status === "cancelled") {
+		return { ...labels, status, ...presentStatus(status, execution?.handoff_state) };
+	}
 	if (recovery) {
 		return { ...labels, status, ...presentRecovery(recovery, execution?.handoff_state) };
 	}

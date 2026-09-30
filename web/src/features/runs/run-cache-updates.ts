@@ -37,23 +37,6 @@ export function patchRunDetailFields(
   });
 }
 
-export function incrementRunTabCount(
-  qc: QueryClient,
-  runId: string,
-  key: "activity_events" | "messages",
-): void {
-  qc.setQueryData<RunDetailSummary>(runQueryKeys.detail(runId), (current) => {
-    if (!current) return current;
-    return {
-      ...current,
-      tab_counts: {
-        ...current.tab_counts,
-        [key]: (current.tab_counts?.[key] ?? 0) + 1,
-      },
-    };
-  });
-}
-
 export function applyRunStreamHighWaterMark(
 	qc: QueryClient,
 	runId: string,
@@ -181,8 +164,8 @@ export function inactiveStreamOwnedRunCollectionQueryKeys(qc: QueryClient): read
 export function buildRunSummaryFromCollectionEvent(data: Record<string, unknown>): RunSummary | null {
 	const runId = readString(data.run_id);
 	const workflowId = readString(data.workflow_id);
-	const decreeId = readString(data.decree_id);
-	const decreeTitle = readString(data.decree_title);
+	const workOrderId = readString(data.work_order_id);
+	const workOrderTitle = readString(data.work_order_title);
 	const status = readString(data.status);
 	const planState = readString(data.plan_state);
 	const displayState = readString(data.display_state);
@@ -192,21 +175,24 @@ export function buildRunSummaryFromCollectionEvent(data: Record<string, unknown>
 	const autonomousApprovals = readBoolean(data.autonomous_approvals);
 	const pendingApprovalKey = readString(data.pending_approval_key);
 	const publishMode = readString(data.publish_mode);
-	if (!runId || !workflowId || !decreeId || !decreeTitle || !status || !planState || !displayState || !createdAt || !updatedAt || !lastActivityAt) {
+	const start = readRunStartProjection(data);
+	if (!runId || !workflowId || !workOrderId || !workOrderTitle || !status || !planState || !displayState || !createdAt || !updatedAt || !lastActivityAt) {
 		return null;
 	}
+	if (!start) return null;
 
 	const summary: RunSummary = {
 		run_id: runId,
 		workflow_id: workflowId,
-		decree_id: decreeId,
-		decree_title: decreeTitle,
+		work_order_id: workOrderId,
+		work_order_title: workOrderTitle,
 		status: status as RunSummary["status"],
 		plan_state: planState as RunSummary["plan_state"],
 		display_state: displayState as RunSummary["display_state"],
 		created_at: createdAt,
 		updated_at: updatedAt,
 		last_activity_at: lastActivityAt,
+		...start,
 		...(autonomousApprovals === undefined ? {} : { autonomous_approvals: autonomousApprovals }),
 		...(pendingApprovalKey ? { pending_approval_key: pendingApprovalKey } : {}),
 		...(publishMode ? { publish_mode: publishMode as RunSummary["publish_mode"] } : {}),
@@ -217,6 +203,21 @@ export function buildRunSummaryFromCollectionEvent(data: Record<string, unknown>
 	}
 
 	return summary;
+}
+
+export function readRunStartProjection(data: Record<string, unknown>): Pick<RunSummary, "start_state" | "started_at"> | null {
+	if (data.start_state === "observed") {
+		const startedAt = readString(data.started_at);
+		return startedAt && Number.isFinite(Date.parse(startedAt))
+			? { start_state: "observed", started_at: startedAt }
+			: null;
+	}
+	if (data.start_state === "not_started" || data.start_state === "unrecorded") {
+		return data.started_at === undefined
+			? { start_state: data.start_state, started_at: undefined }
+			: null;
+	}
+	return null;
 }
 function wouldChange<T extends object>(current: T, fields: Partial<T>): boolean {
   for (const key of Object.keys(fields) as Array<keyof T>) {
@@ -419,10 +420,10 @@ function matchesStateFilter(run: RunSummary, stateFilter: RunsStateFilter | null
 		case "pending":
 			return run.status === "pending";
 		case "running":
-			return run.status === "running" && run.plan_state !== "awaiting_king_decision";
+			return run.status === "running" && run.plan_state !== "awaiting_plan_decision";
 		case "awaiting_human_decision":
 			return run.autonomous_approvals === false
-				&& ((run.status === "running" && run.plan_state === "awaiting_king_decision") || run.status === "awaiting_human_confirmation");
+				&& ((run.status === "running" && run.plan_state === "awaiting_plan_decision") || run.status === "awaiting_human_confirmation");
 		case "succeeded":
 			return run.status === "succeeded";
 		case "failed":

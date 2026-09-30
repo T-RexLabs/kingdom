@@ -63,9 +63,39 @@ const (
 
 // Defines values for AcpRunActivityItemKind.
 const (
-	Progress AcpRunActivityItemKind = "progress"
-	Thinking AcpRunActivityItemKind = "thinking"
-	Tool     AcpRunActivityItemKind = "tool"
+	AcpRunActivityItemKindMessage  AcpRunActivityItemKind = "message"
+	AcpRunActivityItemKindProgress AcpRunActivityItemKind = "progress"
+	AcpRunActivityItemKindThinking AcpRunActivityItemKind = "thinking"
+	AcpRunActivityItemKindTool     AcpRunActivityItemKind = "tool"
+)
+
+// Defines values for AcpRunActivityResponseDirection.
+const (
+	Earlier AcpRunActivityResponseDirection = "earlier"
+	Later   AcpRunActivityResponseDirection = "later"
+)
+
+// Defines values for ActivityContentAvailability.
+const (
+	ActivityContentAvailabilityAvailable   ActivityContentAvailability = "available"
+	ActivityContentAvailabilityNotProvided ActivityContentAvailability = "not_provided"
+	ActivityContentAvailabilityUnavailable ActivityContentAvailability = "unavailable"
+)
+
+// Defines values for AnalyticsRunAnalyticsBucketType.
+const (
+	Day  AnalyticsRunAnalyticsBucketType = "day"
+	Hour AnalyticsRunAnalyticsBucketType = "hour"
+)
+
+// Defines values for AnalyticsSelectedRunStatus.
+const (
+	AnalyticsSelectedRunStatusAwaitingHumanConfirmation AnalyticsSelectedRunStatus = "awaiting_human_confirmation"
+	AnalyticsSelectedRunStatusCancelled                 AnalyticsSelectedRunStatus = "cancelled"
+	AnalyticsSelectedRunStatusFailed                    AnalyticsSelectedRunStatus = "failed"
+	AnalyticsSelectedRunStatusPending                   AnalyticsSelectedRunStatus = "pending"
+	AnalyticsSelectedRunStatusRunning                   AnalyticsSelectedRunStatus = "running"
+	AnalyticsSelectedRunStatusSucceeded                 AnalyticsSelectedRunStatus = "succeeded"
 )
 
 // Defines values for ArtifactResponseArtifactAction.
@@ -103,10 +133,10 @@ const (
 
 // Defines values for ConnectionLifecycle.
 const (
-	ConnectionLifecycleDisabled       ConnectionLifecycle = "disabled"
-	ConnectionLifecycleEnabled        ConnectionLifecycle = "enabled"
-	ConnectionLifecycleRemovalPending ConnectionLifecycle = "removal_pending"
-	ConnectionLifecycleRemoved        ConnectionLifecycle = "removed"
+	Disabled       ConnectionLifecycle = "disabled"
+	Enabled        ConnectionLifecycle = "enabled"
+	RemovalPending ConnectionLifecycle = "removal_pending"
+	Removed        ConnectionLifecycle = "removed"
 )
 
 // Defines values for ConnectionProvider.
@@ -212,8 +242,8 @@ const (
 
 // Defines values for ExternalLinkTargetKind.
 const (
-	Decree          ExternalLinkTargetKind = "decree"
 	PlanningSession ExternalLinkTargetKind = "planning_session"
+	WorkOrder       ExternalLinkTargetKind = "work_order"
 )
 
 // Defines values for ExternalProvenanceSummaryProvider.
@@ -312,6 +342,13 @@ const (
 	N1000 IssuePageSearchResultCap = 1000
 )
 
+// Defines values for MutationOutcomeState.
+const (
+	MutationOutcomeStateCompleted MutationOutcomeState = "completed"
+	MutationOutcomeStatePending   MutationOutcomeState = "pending"
+	MutationOutcomeStateUnknown   MutationOutcomeState = "unknown"
+)
+
 // Defines values for NormalizedIssueState.
 const (
 	Closed NormalizedIssueState = "closed"
@@ -377,22 +414,6 @@ const (
 	ProviderModelsResponseFailureReasonTimeout       ProviderModelsResponseFailureReason = "timeout"
 )
 
-// Defines values for RealmAnalyticsRunAnalyticsBucketType.
-const (
-	Day  RealmAnalyticsRunAnalyticsBucketType = "day"
-	Hour RealmAnalyticsRunAnalyticsBucketType = "hour"
-)
-
-// Defines values for RealmAnalyticsSelectedRunStatus.
-const (
-	RealmAnalyticsSelectedRunStatusAwaitingHumanConfirmation RealmAnalyticsSelectedRunStatus = "awaiting_human_confirmation"
-	RealmAnalyticsSelectedRunStatusCancelled                 RealmAnalyticsSelectedRunStatus = "cancelled"
-	RealmAnalyticsSelectedRunStatusFailed                    RealmAnalyticsSelectedRunStatus = "failed"
-	RealmAnalyticsSelectedRunStatusPending                   RealmAnalyticsSelectedRunStatus = "pending"
-	RealmAnalyticsSelectedRunStatusRunning                   RealmAnalyticsSelectedRunStatus = "running"
-	RealmAnalyticsSelectedRunStatusSucceeded                 RealmAnalyticsSelectedRunStatus = "succeeded"
-)
-
 // Defines values for RunAgentStatus.
 const (
 	RunAgentStatusBlocked RunAgentStatus = "blocked"
@@ -413,6 +434,12 @@ const (
 	Deliverable       RunArtifactItemArtifactKind = "deliverable"
 	OrchestrationMeta RunArtifactItemArtifactKind = "orchestration_meta"
 	Verification      RunArtifactItemArtifactKind = "verification"
+)
+
+// Defines values for RunArtifactItemLineage.
+const (
+	Audit                RunArtifactItemLineage = "audit"
+	CanonicalDeliverable RunArtifactItemLineage = "canonical_deliverable"
 )
 
 // Defines values for RunAttemptRetryRelationshipDirection.
@@ -440,9 +467,9 @@ const (
 // Defines values for RunDetailSummaryPlanState.
 const (
 	RunDetailSummaryPlanStateApproved             RunDetailSummaryPlanState = "approved"
-	RunDetailSummaryPlanStateAwaitingKingDecision RunDetailSummaryPlanState = "awaiting_king_decision"
+	RunDetailSummaryPlanStateAwaitingPlanDecision RunDetailSummaryPlanState = "awaiting_plan_decision"
 	RunDetailSummaryPlanStateDraft                RunDetailSummaryPlanState = "draft"
-	RunDetailSummaryPlanStateInCouncilReview      RunDetailSummaryPlanState = "in_council_review"
+	RunDetailSummaryPlanStateInPlanReview         RunDetailSummaryPlanState = "in_plan_review"
 	RunDetailSummaryPlanStateNeedsRework          RunDetailSummaryPlanState = "needs_rework"
 )
 
@@ -534,8 +561,8 @@ const (
 
 // Defines values for RunExecutionDetailOutputVerdictStatus.
 const (
-	Observed RunExecutionDetailOutputVerdictStatus = "observed"
-	Settled  RunExecutionDetailOutputVerdictStatus = "settled"
+	RunExecutionDetailOutputVerdictStatusObserved RunExecutionDetailOutputVerdictStatus = "observed"
+	RunExecutionDetailOutputVerdictStatusSettled  RunExecutionDetailOutputVerdictStatus = "settled"
 )
 
 // Defines values for RunExecutionDetailSettlementStatus.
@@ -567,6 +594,27 @@ const (
 	RunExecutionFailureCategoryCore         RunExecutionFailureCategory = "core"
 	RunExecutionFailureCategoryProvider     RunExecutionFailureCategory = "provider"
 	RunExecutionFailureCategoryRuntime      RunExecutionFailureCategory = "runtime"
+)
+
+// Defines values for RunExecutionPublicationStatus.
+const (
+	RunExecutionPublicationStatusFailed          RunExecutionPublicationStatus = "failed"
+	RunExecutionPublicationStatusPartialConflict RunExecutionPublicationStatus = "partial_conflict"
+	RunExecutionPublicationStatusPartialFailure  RunExecutionPublicationStatus = "partial_failure"
+	RunExecutionPublicationStatusSucceeded       RunExecutionPublicationStatus = "succeeded"
+)
+
+// Defines values for RunExecutionPublicationEntryAction.
+const (
+	Delete RunExecutionPublicationEntryAction = "delete"
+	Write  RunExecutionPublicationEntryAction = "write"
+)
+
+// Defines values for RunExecutionPublicationEntryStatus.
+const (
+	RunExecutionPublicationEntryStatusConflicted RunExecutionPublicationEntryStatus = "conflicted"
+	RunExecutionPublicationEntryStatusFailed     RunExecutionPublicationEntryStatus = "failed"
+	RunExecutionPublicationEntryStatusPublished  RunExecutionPublicationEntryStatus = "published"
 )
 
 // Defines values for RunGraphNodeExecutionOwnership.
@@ -651,10 +699,10 @@ const (
 
 // Defines values for RunMailboxMessageSummaryVerdictStatus.
 const (
-	AutoSucceeded RunMailboxMessageSummaryVerdictStatus = "auto_succeeded"
-	Invalid       RunMailboxMessageSummaryVerdictStatus = "invalid"
-	Pass          RunMailboxMessageSummaryVerdictStatus = "pass"
-	Rework        RunMailboxMessageSummaryVerdictStatus = "rework"
+	RunMailboxMessageSummaryVerdictStatusAutoSucceeded RunMailboxMessageSummaryVerdictStatus = "auto_succeeded"
+	RunMailboxMessageSummaryVerdictStatusInvalid       RunMailboxMessageSummaryVerdictStatus = "invalid"
+	RunMailboxMessageSummaryVerdictStatusPass          RunMailboxMessageSummaryVerdictStatus = "pass"
+	RunMailboxMessageSummaryVerdictStatusRework        RunMailboxMessageSummaryVerdictStatus = "rework"
 )
 
 // Defines values for RunMailboxMessageSummaryVerdictType.
@@ -738,9 +786,9 @@ const (
 // Defines values for RunPlanSnapshotPlanState.
 const (
 	RunPlanSnapshotPlanStateApproved             RunPlanSnapshotPlanState = "approved"
-	RunPlanSnapshotPlanStateAwaitingKingDecision RunPlanSnapshotPlanState = "awaiting_king_decision"
+	RunPlanSnapshotPlanStateAwaitingPlanDecision RunPlanSnapshotPlanState = "awaiting_plan_decision"
 	RunPlanSnapshotPlanStateDraft                RunPlanSnapshotPlanState = "draft"
-	RunPlanSnapshotPlanStateInCouncilReview      RunPlanSnapshotPlanState = "in_council_review"
+	RunPlanSnapshotPlanStateInPlanReview         RunPlanSnapshotPlanState = "in_plan_review"
 	RunPlanSnapshotPlanStateNeedsRework          RunPlanSnapshotPlanState = "needs_rework"
 )
 
@@ -772,12 +820,19 @@ const (
 	RunRecoveryStateTriggerOperatorRetry  RunRecoveryStateTrigger = "operator_retry"
 )
 
+// Defines values for RunStartState.
+const (
+	RunStartStateNotStarted RunStartState = "not_started"
+	RunStartStateObserved   RunStartState = "observed"
+	RunStartStateUnrecorded RunStartState = "unrecorded"
+)
+
 // Defines values for RunSummaryPlanState.
 const (
 	RunSummaryPlanStateApproved             RunSummaryPlanState = "approved"
-	RunSummaryPlanStateAwaitingKingDecision RunSummaryPlanState = "awaiting_king_decision"
+	RunSummaryPlanStateAwaitingPlanDecision RunSummaryPlanState = "awaiting_plan_decision"
 	RunSummaryPlanStateDraft                RunSummaryPlanState = "draft"
-	RunSummaryPlanStateInCouncilReview      RunSummaryPlanState = "in_council_review"
+	RunSummaryPlanStateInPlanReview         RunSummaryPlanState = "in_plan_review"
 	RunSummaryPlanStateNeedsRework          RunSummaryPlanState = "needs_rework"
 )
 
@@ -812,6 +867,73 @@ const (
 	YesNo        StructuredQuestionType = "yes_no"
 )
 
+// Defines values for ThemeAssetMediaType.
+const (
+	Fontwoff2   ThemeAssetMediaType = "font/woff2"
+	Imageavif   ThemeAssetMediaType = "image/avif"
+	Imagejpeg   ThemeAssetMediaType = "image/jpeg"
+	Imagepng    ThemeAssetMediaType = "image/png"
+	ImagesvgXml ThemeAssetMediaType = "image/svg+xml"
+	Imagewebp   ThemeAssetMediaType = "image/webp"
+)
+
+// Defines values for ThemeManifestBaseId.
+const (
+	AstralCouncil ThemeManifestBaseId = "astral-council"
+	Nautilus      ThemeManifestBaseId = "nautilus"
+	ObsidianCourt ThemeManifestBaseId = "obsidian-court"
+	SoftwareLab   ThemeManifestBaseId = "software-lab"
+	Workstation98 ThemeManifestBaseId = "workstation-98"
+)
+
+// Defines values for ThemeManifestColorScheme.
+const (
+	Dark  ThemeManifestColorScheme = "dark"
+	Light ThemeManifestColorScheme = "light"
+)
+
+// Defines values for ThemeManifestResolverVersion.
+const (
+	ThemeManifestResolverVersionN1 ThemeManifestResolverVersion = 1
+)
+
+// Defines values for ThemeManifestSchemaVersion.
+const (
+	ThemeManifestSchemaVersionN1 ThemeManifestSchemaVersion = 1
+)
+
+// Defines values for ThemeManifestSurfacesChrome.
+const (
+	ThemeManifestSurfacesChromeClassic ThemeManifestSurfacesChrome = "classic"
+	ThemeManifestSurfacesChromeFlat    ThemeManifestSurfacesChrome = "flat"
+)
+
+// Defines values for ThemeManifestSurfacesElevation.
+const (
+	ThemeManifestSurfacesElevationFlat ThemeManifestSurfacesElevation = "flat"
+	ThemeManifestSurfacesElevationSoft ThemeManifestSurfacesElevation = "soft"
+)
+
+// Defines values for ThemeManifestSurfacesIconRendering.
+const (
+	Mask     ThemeManifestSurfacesIconRendering = "mask"
+	Original ThemeManifestSurfacesIconRendering = "original"
+)
+
+// Defines values for ThemeManifestSurfacesOrnamentation.
+const (
+	Balanced ThemeManifestSurfacesOrnamentation = "balanced"
+	Minimal  ThemeManifestSurfacesOrnamentation = "minimal"
+)
+
+// Defines values for ActivityContentField.
+const (
+	ActivityContentFieldInput     ActivityContentField = "input"
+	ActivityContentFieldMessage   ActivityContentField = "message"
+	ActivityContentFieldOutput    ActivityContentField = "output"
+	ActivityContentFieldReasoning ActivityContentField = "reasoning"
+)
+
 // Defines values for BrowserBootstrap.
 const (
 	BrowserBootstrapN1 BrowserBootstrap = "1"
@@ -835,6 +957,14 @@ const (
 	GetAcpAgentParamsNamePlannerReply         GetAcpAgentParamsName = "planner-reply"
 )
 
+// Defines values for GetAcpActivityContentParamsField.
+const (
+	GetAcpActivityContentParamsFieldInput     GetAcpActivityContentParamsField = "input"
+	GetAcpActivityContentParamsFieldMessage   GetAcpActivityContentParamsField = "message"
+	GetAcpActivityContentParamsFieldOutput    GetAcpActivityContentParamsField = "output"
+	GetAcpActivityContentParamsFieldReasoning GetAcpActivityContentParamsField = "reasoning"
+)
+
 // Defines values for CreateAuthSessionParamsXKingdomBrowserBootstrap.
 const (
 	CreateAuthSessionParamsXKingdomBrowserBootstrapN1 CreateAuthSessionParamsXKingdomBrowserBootstrap = "1"
@@ -852,6 +982,27 @@ const (
 	ListConnectionIssuesParamsStateOpen   ListConnectionIssuesParamsState = "open"
 )
 
+// Defines values for GetMutationOutcomeParamsOperation.
+const (
+	ExternalSourceAdopt     GetMutationOutcomeParamsOperation = "external-source-adopt"
+	ExternalSourceDetach    GetMutationOutcomeParamsOperation = "external-source-detach"
+	ExternalSourceRefresh   GetMutationOutcomeParamsOperation = "external-source-refresh"
+	PlanningContextRefresh  GetMutationOutcomeParamsOperation = "planning-context-refresh"
+	PlanningMessageActivate GetMutationOutcomeParamsOperation = "planning-message-activate"
+	PlanningOperationCreate GetMutationOutcomeParamsOperation = "planning-operation-create"
+	PlanningSessionCreate   GetMutationOutcomeParamsOperation = "planning-session-create"
+	PlanningSessionDelete   GetMutationOutcomeParamsOperation = "planning-session-delete"
+	PlanningSessionUpdate   GetMutationOutcomeParamsOperation = "planning-session-update"
+	PlanningSourceAttach    GetMutationOutcomeParamsOperation = "planning-source-attach"
+	RunCreate               GetMutationOutcomeParamsOperation = "run-create"
+	ThemeImport             GetMutationOutcomeParamsOperation = "theme-import"
+	ThemePublish            GetMutationOutcomeParamsOperation = "theme-publish"
+	ThemeSourceDelete       GetMutationOutcomeParamsOperation = "theme-source-delete"
+	ThemeSourceSave         GetMutationOutcomeParamsOperation = "theme-source-save"
+	ThemeUnpublish          GetMutationOutcomeParamsOperation = "theme-unpublish"
+	WorkOrderCreate         GetMutationOutcomeParamsOperation = "work-order-create"
+)
+
 // Defines values for ListPlanningContextEntriesParamsKind.
 const (
 	Excluded ListPlanningContextEntriesParamsKind = "excluded"
@@ -866,6 +1017,14 @@ const (
 	ListRunsParamsStateFilterPending               ListRunsParamsStateFilter = "pending"
 	ListRunsParamsStateFilterRunning               ListRunsParamsStateFilter = "running"
 	ListRunsParamsStateFilterSucceeded             ListRunsParamsStateFilter = "succeeded"
+)
+
+// Defines values for GetRunActivityContentParamsField.
+const (
+	GetRunActivityContentParamsFieldInput     GetRunActivityContentParamsField = "input"
+	GetRunActivityContentParamsFieldMessage   GetRunActivityContentParamsField = "message"
+	GetRunActivityContentParamsFieldOutput    GetRunActivityContentParamsField = "output"
+	GetRunActivityContentParamsFieldReasoning GetRunActivityContentParamsField = "reasoning"
 )
 
 // AcpAgent defines model for AcpAgent.
@@ -909,26 +1068,118 @@ type AcpRunStatus string
 
 // AcpRunActivityItem defines model for AcpRunActivityItem.
 type AcpRunActivityItem struct {
-	Detail     *string                `json:"detail,omitempty"`
-	Id         string                 `json:"id"`
-	Input      *string                `json:"input,omitempty"`
-	Kind       AcpRunActivityItemKind `json:"kind"`
-	Label      string                 `json:"label"`
-	OccurredAt time.Time              `json:"occurred_at"`
-	Output     *string                `json:"output,omitempty"`
+	Detail  *string `json:"detail,omitempty"`
+	EventId string  `json:"event_id"`
+
+	// Id Stable identity for one observed activity within its invocation; repeated observations have higher sequences.
+	Id string `json:"id"`
+
+	// Input Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+	Input        ActivityContent `json:"input"`
+	InvocationId *string         `json:"invocation_id,omitempty"`
+
+	// Kind Message entries are provider-observed text, never canonical terminal settlement.
+	Kind  AcpRunActivityItemKind `json:"kind"`
+	Label string                 `json:"label"`
+
+	// Message Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+	Message    ActivityContent `json:"message"`
+	OccurredAt time.Time       `json:"occurred_at"`
+
+	// Output Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+	Output         ActivityContent `json:"output"`
+	ProviderPartId *string         `json:"provider_part_id,omitempty"`
+
+	// Reasoning Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+	Reasoning  ActivityContent `json:"reasoning"`
+	RecordedAt time.Time       `json:"recorded_at"`
+	Sequence   int             `json:"sequence"`
+	ToolCallId *string         `json:"tool_call_id,omitempty"`
+	ToolName   *string         `json:"tool_name,omitempty"`
+
+	// ToolStatus Exact provider-reported tool status. Omitted when not supplied; never inferred from labels.
+	ToolStatus *string `json:"tool_status,omitempty"`
+	ToolTitle  *string `json:"tool_title,omitempty"`
 }
 
-// AcpRunActivityItemKind defines model for AcpRunActivityItem.Kind.
+// AcpRunActivityItemKind Message entries are provider-observed text, never canonical terminal settlement.
 type AcpRunActivityItemKind string
 
-// AcpRunActivityResponse defines model for AcpRunActivityResponse.
+// AcpRunActivityResponse Immutable observations sorted ascending within each page. An initial read returns the latest bounded window. next_cursor walks earlier pages in that pinned snapshot, or continues a forward delta page. resume_cursor independently reads later deltas after the snapshot high-water mark. The covered range is (range_after_sequence, range_through_sequence]. Preserve unloaded ranges explicitly when merging concurrent history and delta pages; a resume cursor does not imply earlier events were loaded.
 type AcpRunActivityResponse struct {
-	Items []AcpRunActivityItem `json:"items"`
+	Direction               AcpRunActivityResponseDirection `json:"direction"`
+	Items                   []AcpRunActivityItem            `json:"items"`
+	NextCursor              *string                         `json:"next_cursor,omitempty"`
+	RangeAfterSequence      int                             `json:"range_after_sequence"`
+	RangeThroughSequence    int                             `json:"range_through_sequence"`
+	RemainingCount          int                             `json:"remaining_count"`
+	ResumeCursor            string                          `json:"resume_cursor"`
+	SnapshotThroughSequence int                             `json:"snapshot_through_sequence"`
+}
+
+// AcpRunActivityResponseDirection defines model for AcpRunActivityResponse.Direction.
+type AcpRunActivityResponseDirection string
+
+// ActivityContent Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+type ActivityContent struct {
+	Availability ActivityContentAvailability `json:"availability"`
+	ByteLength   *int64                      `json:"byte_length,omitempty"`
+
+	// ContentUrl Authenticated API-relative scoped URL for bounded text reads; prefix the configured API base path.
+	ContentUrl *string `json:"content_url,omitempty"`
+	Preview    *string `json:"preview,omitempty"`
+	Sha256     *string `json:"sha256,omitempty"`
+}
+
+// ActivityContentAvailability defines model for ActivityContent.Availability.
+type ActivityContentAvailability string
+
+// ActivityContentPage defines model for ActivityContentPage.
+type ActivityContentPage struct {
+	ByteLength int64   `json:"byte_length"`
+	NextCursor *string `json:"next_cursor,omitempty"`
+	Offset     int64   `json:"offset"`
+	Sha256     string  `json:"sha256"`
+	Text       string  `json:"text"`
 }
 
 // AgentsResponse defines model for AgentsResponse.
 type AgentsResponse struct {
 	Items []RunAgent `json:"items"`
+}
+
+// AnalyticsArtifactSummary defines model for AnalyticsArtifactSummary.
+type AnalyticsArtifactSummary struct {
+	TotalCount     int `json:"total_count"`
+	TotalSizeBytes int `json:"total_size_bytes"`
+}
+
+// AnalyticsExecutionDetail defines model for AnalyticsExecutionDetail.
+type AnalyticsExecutionDetail struct {
+	Artifacts   AnalyticsArtifactSummary `json:"artifacts"`
+	Nodes       AnalyticsNodeSummary     `json:"nodes"`
+	SelectedRun *AnalyticsSelectedRun    `json:"selected_run,omitempty"`
+	Tokens      AnalyticsTokenSummary    `json:"tokens"`
+}
+
+// AnalyticsExecutionDetailSnapshot defines model for AnalyticsExecutionDetailSnapshot.
+type AnalyticsExecutionDetailSnapshot struct {
+	ExecutionDetail AnalyticsExecutionDetail `json:"execution_detail"`
+	SnapshotAt      time.Time                `json:"snapshot_at"`
+
+	// WindowEnd Exclusive end instant of the selected interval, normalized to UTC.
+	WindowEnd time.Time `json:"window_end"`
+
+	// WindowMinutes Selected interval duration in minutes, rounded up.
+	WindowMinutes int `json:"window_minutes"`
+
+	// WindowStart Inclusive start instant of the selected interval, normalized to UTC.
+	WindowStart time.Time `json:"window_start"`
+}
+
+// AnalyticsNodeSummary defines model for AnalyticsNodeSummary.
+type AnalyticsNodeSummary struct {
+	TotalExecuted int `json:"total_executed"`
 }
 
 // AnalyticsOutcomeBucket defines model for AnalyticsOutcomeBucket.
@@ -939,10 +1190,75 @@ type AnalyticsOutcomeBucket struct {
 	Succeeded int    `json:"succeeded"`
 }
 
+// AnalyticsOverview defines model for AnalyticsOverview.
+type AnalyticsOverview struct {
+	AvgDurationSeconds   float32 `json:"avg_duration_seconds"`
+	CancelledRuns        int     `json:"cancelled_runs"`
+	FailedRuns           int     `json:"failed_runs"`
+	ReviewReworkRate     float32 `json:"review_rework_rate"`
+	SucceededRuns        int     `json:"succeeded_runs"`
+	SuccessRate          float32 `json:"success_rate"`
+	TotalRuns            int     `json:"total_runs"`
+	ValidationReworkRate float32 `json:"validation_rework_rate"`
+}
+
 // AnalyticsRoleDuration defines model for AnalyticsRoleDuration.
 type AnalyticsRoleDuration struct {
 	AvgDurationSeconds float32 `json:"avg_duration_seconds"`
 	Role               string  `json:"role"`
+}
+
+// AnalyticsRunAnalytics defines model for AnalyticsRunAnalytics.
+type AnalyticsRunAnalytics struct {
+	BucketType     AnalyticsRunAnalyticsBucketType `json:"bucket_type"`
+	DurationByRole []AnalyticsRoleDuration         `json:"duration_by_role"`
+	OutcomeSeries  []AnalyticsOutcomeBucket        `json:"outcome_series"`
+
+	// RecentRuns Completed runs created within the selected analytics window, ordered by most recent completion.
+	RecentRuns []RunSummary `json:"recent_runs"`
+}
+
+// AnalyticsRunAnalyticsBucketType defines model for AnalyticsRunAnalytics.BucketType.
+type AnalyticsRunAnalyticsBucketType string
+
+// AnalyticsSelectedRun defines model for AnalyticsSelectedRun.
+type AnalyticsSelectedRun struct {
+	CreatedAt      time.Time                  `json:"created_at"`
+	RunId          string                     `json:"run_id"`
+	Status         AnalyticsSelectedRunStatus `json:"status"`
+	WorkOrderTitle string                     `json:"work_order_title"`
+}
+
+// AnalyticsSelectedRunStatus defines model for AnalyticsSelectedRun.Status.
+type AnalyticsSelectedRunStatus string
+
+// AnalyticsSnapshot defines model for AnalyticsSnapshot.
+type AnalyticsSnapshot struct {
+	AllTimeRunCount int                   `json:"all_time_run_count"`
+	Overview        AnalyticsOverview     `json:"overview"`
+	RunAnalytics    AnalyticsRunAnalytics `json:"run_analytics"`
+	SnapshotAt      time.Time             `json:"snapshot_at"`
+
+	// WindowEnd Exclusive end instant of the selected interval, normalized to UTC.
+	WindowEnd time.Time `json:"window_end"`
+
+	// WindowMinutes Selected interval duration in minutes, rounded up.
+	WindowMinutes int `json:"window_minutes"`
+
+	// WindowStart Inclusive start instant of the selected interval, normalized to UTC.
+	WindowStart time.Time `json:"window_start"`
+}
+
+// AnalyticsTokenSummary defines model for AnalyticsTokenSummary.
+type AnalyticsTokenSummary struct {
+	ByRole              []TokenUsageByRole `json:"by_role"`
+	CacheRead           int                `json:"cache_read"`
+	CacheWrite          int                `json:"cache_write"`
+	DerivedTotalTokens  int                `json:"derived_total_tokens"`
+	Input               int                `json:"input"`
+	Output              int                `json:"output"`
+	ProviderTotalTokens int                `json:"provider_total_tokens"`
+	Reasoning           int                `json:"reasoning"`
 }
 
 // ArtifactResponse defines model for ArtifactResponse.
@@ -968,6 +1284,9 @@ type AuthSession struct {
 	CsrfToken string    `json:"csrf_token"`
 	ExpiresAt time.Time `json:"expires_at"`
 	RoleId    string    `json:"role_id"`
+
+	// SessionId Nonsecret fingerprint of the current browser authentication binding. It confers no authority.
+	SessionId string `json:"session_id"`
 }
 
 // CancelAcpRunRequest defines model for CancelAcpRunRequest.
@@ -1061,23 +1380,6 @@ type CreateConnectionRequestCredentialStrategy string
 // CreateConnectionRequestProvider defines model for CreateConnectionRequest.Provider.
 type CreateConnectionRequestProvider string
 
-// CreateDecreeRequest defines model for CreateDecreeRequest.
-type CreateDecreeRequest struct {
-	DecreeText  string `json:"decree_text"`
-	DecreeTitle string `json:"decree_title"`
-
-	// ExternalSourceSnapshotId Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field.
-	ExternalSourceSnapshotId *string                 `json:"external_source_snapshot_id,omitempty"`
-	Metadata                 *map[string]interface{} `json:"metadata,omitempty"`
-	PlanningLineage          *PlanningLineage        `json:"planning_lineage,omitempty"`
-}
-
-// CreateDecreeResult defines model for CreateDecreeResult.
-type CreateDecreeResult struct {
-	CreatedAt time.Time `json:"created_at"`
-	DecreeId  string    `json:"decree_id"`
-}
-
 // CreateFinalApprovalRequest defines model for CreateFinalApprovalRequest.
 type CreateFinalApprovalRequest struct {
 	Action CreateFinalApprovalRequestAction `json:"action"`
@@ -1133,8 +1435,7 @@ type CreatePlanningSessionResult struct {
 
 // CreateRunRequest defines model for CreateRunRequest.
 type CreateRunRequest struct {
-	AutonomousApprovals *bool  `json:"autonomous_approvals,omitempty"`
-	DecreeId            string `json:"decree_id"`
+	AutonomousApprovals *bool `json:"autonomous_approvals,omitempty"`
 
 	// MaxExecutionReviewCycles Review-cycle cap override. `0` keeps execution-review nodes in the workflow but auto-succeeds the first ready review wave immediately. Workflows without review nodes report `0`.
 	MaxExecutionReviewCycles *int `json:"max_execution_review_cycles,omitempty"`
@@ -1147,14 +1448,31 @@ type CreateRunRequest struct {
 	// RunUntilAllApprove When true, review and validation loops continue until approval. Workflows without execution review or validation nodes normalize this to false.
 	RunUntilAllApprove *bool `json:"run_until_all_approve,omitempty"`
 
-	// SkipReviewsAndValidations When true, Kingdom uses the built-in alternate workflow that routes builder output directly to royal closure.
-	SkipReviewsAndValidations *bool `json:"skip_reviews_and_validations,omitempty"`
+	// SkipReviewsAndValidations When true, Kingdom uses the built-in alternate workflow that routes builder output directly to completion.
+	SkipReviewsAndValidations *bool  `json:"skip_reviews_and_validations,omitempty"`
+	WorkOrderId               string `json:"work_order_id"`
+}
+
+// CreateWorkOrderRequest defines model for CreateWorkOrderRequest.
+type CreateWorkOrderRequest struct {
+	// ExternalSourceSnapshotId Immutable snapshot selected through direct GitHub intake. Planned work order provenance is derived server-side and must not use this field.
+	ExternalSourceSnapshotId *string                 `json:"external_source_snapshot_id,omitempty"`
+	Metadata                 *map[string]interface{} `json:"metadata,omitempty"`
+	PlanningLineage          *PlanningLineage        `json:"planning_lineage,omitempty"`
+	WorkOrderText            string                  `json:"work_order_text"`
+	WorkOrderTitle           string                  `json:"work_order_title"`
+}
+
+// CreateWorkOrderResult defines model for CreateWorkOrderResult.
+type CreateWorkOrderResult struct {
+	CreatedAt   time.Time `json:"created_at"`
+	WorkOrderId string    `json:"work_order_id"`
 }
 
 // DashboardSnapshot defines model for DashboardSnapshot.
 type DashboardSnapshot struct {
-	AllTimeRunCount int                    `json:"all_time_run_count"`
-	Overview        RealmAnalyticsOverview `json:"overview"`
+	AllTimeRunCount int               `json:"all_time_run_count"`
+	Overview        AnalyticsOverview `json:"overview"`
 
 	// RecentRuns Runs created within the dashboard window, ordered by most recent activity.
 	RecentRuns    []RunSummary          `json:"recent_runs"`
@@ -1177,16 +1495,6 @@ type DashboardTokenSummary struct {
 type DashboardTrendPoint struct {
 	BucketStartAt time.Time `json:"bucket_start_at"`
 	RunCount      int       `json:"run_count"`
-}
-
-// DecreeDetail defines model for DecreeDetail.
-type DecreeDetail struct {
-	CreatedAt       time.Time                   `json:"created_at"`
-	DecreeId        string                      `json:"decree_id"`
-	DecreeText      string                      `json:"decree_text"`
-	DecreeTitle     string                      `json:"decree_title"`
-	ExternalSources []ExternalProvenanceSummary `json:"external_sources"`
-	Metadata        *map[string]interface{}     `json:"metadata,omitempty"`
 }
 
 // ErrorEnvelope defines model for ErrorEnvelope.
@@ -1239,11 +1547,6 @@ type ExternalCommentTruncationReason string
 type ExternalCommentPage struct {
 	Items      []ExternalComment `json:"items"`
 	NextCursor *string           `json:"next_cursor,omitempty"`
-}
-
-// ExternalDecreeText The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence.
-type ExternalDecreeText struct {
-	Markdown string `json:"markdown"`
 }
 
 // ExternalDetachmentResult defines model for ExternalDetachmentResult.
@@ -1371,6 +1674,11 @@ type ExternalSnapshotResponse struct {
 
 // ExternalSourceStatus defines model for ExternalSourceStatus.
 type ExternalSourceStatus string
+
+// ExternalWorkOrderText The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence.
+type ExternalWorkOrderText struct {
+	Markdown string `json:"markdown"`
+}
 
 // FinalizeGitHubDeviceFlowRequest defines model for FinalizeGitHubDeviceFlowRequest.
 type FinalizeGitHubDeviceFlowRequest struct {
@@ -1533,6 +1841,21 @@ type IssueSummary struct {
 	NativeId     string          `json:"native_id"`
 }
 
+// MutationOutcome defines model for MutationOutcome.
+type MutationOutcome struct {
+	// ResponseBody Original allowlisted nonsecret result body, present only for completed outcomes with a body. Completed 204 outcomes omit this field. No credentials or response headers.
+	ResponseBody *map[string]interface{} `json:"response_body,omitempty"`
+
+	// ResponseStatus Original response status, present only for completed outcomes.
+	ResponseStatus *int `json:"response_status,omitempty"`
+
+	// State Unknown never implies that a replacement-key retry is safe.
+	State MutationOutcomeState `json:"state"`
+}
+
+// MutationOutcomeState Unknown never implies that a replacement-key retry is safe.
+type MutationOutcomeState string
+
 // NormalizedIssue defines model for NormalizedIssue.
 type NormalizedIssue struct {
 	// Body Maximum 1,048,576 UTF-8 bytes.
@@ -1617,11 +1940,11 @@ type PlanningContextSnapshot struct {
 // PlanningDraft defines model for PlanningDraft.
 type PlanningDraft struct {
 	CreatedAt         time.Time               `json:"created_at"`
-	DecreeText        string                  `json:"decree_text"`
-	DecreeTitle       string                  `json:"decree_title"`
 	PlanningDraftId   string                  `json:"planning_draft_id"`
 	PlanningSessionId string                  `json:"planning_session_id"`
 	Summary           *map[string]interface{} `json:"summary,omitempty"`
+	WorkOrderText     string                  `json:"work_order_text"`
+	WorkOrderTitle    string                  `json:"work_order_title"`
 }
 
 // PlanningLineage defines model for PlanningLineage.
@@ -1788,89 +2111,6 @@ type PublishWorkflowResult struct {
 	WorkflowId  string    `json:"workflow_id"`
 }
 
-// RealmAnalyticsArtifactSummary defines model for RealmAnalyticsArtifactSummary.
-type RealmAnalyticsArtifactSummary struct {
-	TotalCount     int `json:"total_count"`
-	TotalSizeBytes int `json:"total_size_bytes"`
-}
-
-// RealmAnalyticsExecutionDetail defines model for RealmAnalyticsExecutionDetail.
-type RealmAnalyticsExecutionDetail struct {
-	Artifacts   RealmAnalyticsArtifactSummary `json:"artifacts"`
-	Nodes       RealmAnalyticsNodeSummary     `json:"nodes"`
-	SelectedRun *RealmAnalyticsSelectedRun    `json:"selected_run,omitempty"`
-	Tokens      RealmAnalyticsTokenSummary    `json:"tokens"`
-}
-
-// RealmAnalyticsExecutionDetailSnapshot defines model for RealmAnalyticsExecutionDetailSnapshot.
-type RealmAnalyticsExecutionDetailSnapshot struct {
-	ExecutionDetail RealmAnalyticsExecutionDetail `json:"execution_detail"`
-	SnapshotAt      time.Time                     `json:"snapshot_at"`
-	WindowMinutes   int                           `json:"window_minutes"`
-}
-
-// RealmAnalyticsNodeSummary defines model for RealmAnalyticsNodeSummary.
-type RealmAnalyticsNodeSummary struct {
-	TotalExecuted int `json:"total_executed"`
-}
-
-// RealmAnalyticsOverview defines model for RealmAnalyticsOverview.
-type RealmAnalyticsOverview struct {
-	AvgDurationSeconds   float32 `json:"avg_duration_seconds"`
-	CancelledRuns        int     `json:"cancelled_runs"`
-	FailedRuns           int     `json:"failed_runs"`
-	ReviewReworkRate     float32 `json:"review_rework_rate"`
-	SucceededRuns        int     `json:"succeeded_runs"`
-	SuccessRate          float32 `json:"success_rate"`
-	TotalRuns            int     `json:"total_runs"`
-	ValidationReworkRate float32 `json:"validation_rework_rate"`
-}
-
-// RealmAnalyticsRunAnalytics defines model for RealmAnalyticsRunAnalytics.
-type RealmAnalyticsRunAnalytics struct {
-	BucketType     RealmAnalyticsRunAnalyticsBucketType `json:"bucket_type"`
-	DurationByRole []AnalyticsRoleDuration              `json:"duration_by_role"`
-	OutcomeSeries  []AnalyticsOutcomeBucket             `json:"outcome_series"`
-
-	// RecentRuns Completed runs created within the selected analytics window, ordered by most recent completion.
-	RecentRuns []RunSummary `json:"recent_runs"`
-}
-
-// RealmAnalyticsRunAnalyticsBucketType defines model for RealmAnalyticsRunAnalytics.BucketType.
-type RealmAnalyticsRunAnalyticsBucketType string
-
-// RealmAnalyticsSelectedRun defines model for RealmAnalyticsSelectedRun.
-type RealmAnalyticsSelectedRun struct {
-	CreatedAt   time.Time                       `json:"created_at"`
-	DecreeTitle string                          `json:"decree_title"`
-	RunId       string                          `json:"run_id"`
-	Status      RealmAnalyticsSelectedRunStatus `json:"status"`
-}
-
-// RealmAnalyticsSelectedRunStatus defines model for RealmAnalyticsSelectedRun.Status.
-type RealmAnalyticsSelectedRunStatus string
-
-// RealmAnalyticsSnapshot defines model for RealmAnalyticsSnapshot.
-type RealmAnalyticsSnapshot struct {
-	AllTimeRunCount int                        `json:"all_time_run_count"`
-	Overview        RealmAnalyticsOverview     `json:"overview"`
-	RunAnalytics    RealmAnalyticsRunAnalytics `json:"run_analytics"`
-	SnapshotAt      time.Time                  `json:"snapshot_at"`
-	WindowMinutes   int                        `json:"window_minutes"`
-}
-
-// RealmAnalyticsTokenSummary defines model for RealmAnalyticsTokenSummary.
-type RealmAnalyticsTokenSummary struct {
-	ByRole              []TokenUsageByRole `json:"by_role"`
-	CacheRead           int                `json:"cache_read"`
-	CacheWrite          int                `json:"cache_write"`
-	DerivedTotalTokens  int                `json:"derived_total_tokens"`
-	Input               int                `json:"input"`
-	Output              int                `json:"output"`
-	ProviderTotalTokens int                `json:"provider_total_tokens"`
-	Reasoning           int                `json:"reasoning"`
-}
-
 // RefreshPlanningSessionContextResult defines model for RefreshPlanningSessionContextResult.
 type RefreshPlanningSessionContextResult struct {
 	// ContextSnapshot Snapshot summary. Read file entries through the paginated context entries route.
@@ -1965,16 +2205,25 @@ type RunArtifactItem struct {
 	ArtifactAction RunArtifactItemArtifactAction `json:"artifact_action"`
 	ArtifactId     string                        `json:"artifact_id"`
 	ArtifactKind   RunArtifactItemArtifactKind   `json:"artifact_kind"`
+	Attempt        int                           `json:"attempt"`
+	AttemptId      string                        `json:"attempt_id"`
 	CreatedAt      time.Time                     `json:"created_at"`
 	DownloadUrl    *string                       `json:"download_url,omitempty"`
-	Mime           string                        `json:"mime"`
+
+	// Lineage Canonical deliverables belong to the latest non-superseded successfully settled builder attempt per node. Other artifacts remain audit evidence. This classification does not imply publication or final run approval.
+	Lineage RunArtifactItemLineage `json:"lineage"`
+	Mime    string                 `json:"mime"`
 
 	// ModeBits Basic permission bits, present for write artifacts and absent for deletions.
-	ModeBits  *int    `json:"mode_bits,omitempty"`
-	Name      string  `json:"name"`
-	Path      string  `json:"path"`
-	Sha256    *string `json:"sha256,omitempty"`
-	SizeBytes int     `json:"size_bytes"`
+	ModeBits        *int    `json:"mode_bits,omitempty"`
+	Name            string  `json:"name"`
+	NodeId          string  `json:"node_id"`
+	NodeRunId       string  `json:"node_run_id"`
+	Path            string  `json:"path"`
+	ProducerAgentId string  `json:"producer_agent_id"`
+	ProducerRole    string  `json:"producer_role"`
+	Sha256          *string `json:"sha256,omitempty"`
+	SizeBytes       int     `json:"size_bytes"`
 }
 
 // RunArtifactItemArtifactAction defines model for RunArtifactItem.ArtifactAction.
@@ -1983,10 +2232,17 @@ type RunArtifactItemArtifactAction string
 // RunArtifactItemArtifactKind defines model for RunArtifactItem.ArtifactKind.
 type RunArtifactItemArtifactKind string
 
+// RunArtifactItemLineage Canonical deliverables belong to the latest non-superseded successfully settled builder attempt per node. Other artifacts remain audit evidence. This classification does not imply publication or final run approval.
+type RunArtifactItemLineage string
+
 // RunArtifactsResponse defines model for RunArtifactsResponse.
 type RunArtifactsResponse struct {
-	Items []RunArtifactItem `json:"items"`
-	RunId string            `json:"run_id"`
+	Items      []RunArtifactItem `json:"items"`
+	NextCursor *string           `json:"next_cursor,omitempty"`
+	RunId      string            `json:"run_id"`
+
+	// SnapshotId Identity of the run/filter insertion window and canonical lineage. Pages from different snapshots must not be merged.
+	SnapshotId string `json:"snapshot_id"`
 }
 
 // RunAttemptRetryRelationship defines model for RunAttemptRetryRelationship.
@@ -2028,11 +2284,11 @@ type RunAttemptTokenUsage struct {
 type RunDetailSummary struct {
 	AutonomousApprovals *bool           `json:"autonomous_approvals,omitempty"`
 	CreatedAt           time.Time       `json:"created_at"`
-	DecreeId            string          `json:"decree_id"`
-	DecreeTitle         string          `json:"decree_title"`
 	DisplayState        RunDisplayState `json:"display_state"`
 	FailedNodes         []RunGraphNode  `json:"failed_nodes"`
-	LastActivityAt      time.Time       `json:"last_activity_at"`
+
+	// LastActivityAt Latest meaningful run activity, distinct from record mutation time.
+	LastActivityAt time.Time `json:"last_activity_at"`
 
 	// MaxExecutionReviewCycles Stored review-cycle cap. Workflows without execution-review nodes report `0`.
 	MaxExecutionReviewCycles *int `json:"max_execution_review_cycles,omitempty"`
@@ -2042,22 +2298,30 @@ type RunDetailSummary struct {
 	ModelSelection            *RunModelSelection `json:"model_selection,omitempty"`
 
 	// PendingApprovalKey Stable identity for the current manual approval gate. Present only while a run is awaiting manual plan or final approval.
-	PendingApprovalKey           *string                   `json:"pending_approval_key,omitempty"`
-	PlanState                    RunDetailSummaryPlanState `json:"plan_state"`
-	PublishMode                  *RunPublishMode           `json:"publish_mode,omitempty"`
-	ReviewAutoSucceededCount     int                       `json:"review_auto_succeeded_count"`
-	ReviewCurrentWave            int                       `json:"review_current_wave"`
-	ReviewReworkCycles           int                       `json:"review_rework_cycles"`
-	RunId                        string                    `json:"run_id"`
-	RunUntilAllApprove           *bool                     `json:"run_until_all_approve,omitempty"`
-	Status                       RunDetailSummaryStatus    `json:"status"`
-	StreamCursor                 *RunStreamCursor          `json:"stream_cursor,omitempty"`
-	TabCounts                    RunTabCounts              `json:"tab_counts"`
-	UpdatedAt                    time.Time                 `json:"updated_at"`
-	ValidationAutoSucceededCount int                       `json:"validation_auto_succeeded_count"`
-	ValidationCurrentWave        int                       `json:"validation_current_wave"`
-	ValidationReworkWaves        int                       `json:"validation_rework_waves"`
-	WorkflowId                   string                    `json:"workflow_id"`
+	PendingApprovalKey       *string                   `json:"pending_approval_key,omitempty"`
+	PlanState                RunDetailSummaryPlanState `json:"plan_state"`
+	PublishMode              *RunPublishMode           `json:"publish_mode,omitempty"`
+	ReviewAutoSucceededCount int                       `json:"review_auto_succeeded_count"`
+	ReviewCurrentWave        int                       `json:"review_current_wave"`
+	ReviewReworkCycles       int                       `json:"review_rework_cycles"`
+	RunId                    string                    `json:"run_id"`
+	RunUntilAllApprove       *bool                     `json:"run_until_all_approve,omitempty"`
+
+	// StartState Observed means started_at is recorded. Unrecorded means canonical stream settlement proves provider execution but its running observation was not recorded. Not_started means neither observation exists; queued work, launch handoff, setup failure and cancellation before launch do not establish execution.
+	StartState RunStartState `json:"start_state"`
+
+	// StartedAt First observed provider-backed execution across all attempts, including advisory work and superseded attempts. Absent unless start_state is observed; creation and launch handoff never substitute for this timestamp.
+	StartedAt                    *time.Time             `json:"started_at,omitempty"`
+	Status                       RunDetailSummaryStatus `json:"status"`
+	StreamCursor                 *RunStreamCursor       `json:"stream_cursor,omitempty"`
+	TabCounts                    RunTabCounts           `json:"tab_counts"`
+	UpdatedAt                    time.Time              `json:"updated_at"`
+	ValidationAutoSucceededCount int                    `json:"validation_auto_succeeded_count"`
+	ValidationCurrentWave        int                    `json:"validation_current_wave"`
+	ValidationReworkWaves        int                    `json:"validation_rework_waves"`
+	WorkOrderId                  string                 `json:"work_order_id"`
+	WorkOrderTitle               string                 `json:"work_order_title"`
+	WorkflowId                   string                 `json:"workflow_id"`
 }
 
 // RunDetailSummaryPlanState defines model for RunDetailSummary.PlanState.
@@ -2131,16 +2395,19 @@ type RunExecutionDetail struct {
 	ProviderInvocationAt *time.Time                             `json:"provider_invocation_at,omitempty"`
 	ProviderInvocationId *string                                `json:"provider_invocation_id,omitempty"`
 	ProviderSessionId    *string                                `json:"provider_session_id,omitempty"`
-	QueuedAt             time.Time                              `json:"queued_at"`
-	RequiredRole         string                                 `json:"required_role"`
-	SettledAt            *time.Time                             `json:"settled_at,omitempty"`
-	SettlementDetail     *RunExecutionSettlementDetail          `json:"settlement_detail,omitempty"`
-	SettlementStatus     RunExecutionDetailSettlementStatus     `json:"settlement_status"`
-	StartedAt            *time.Time                             `json:"started_at,omitempty"`
-	Status               RunExecutionDetailStatus               `json:"status"`
-	StopRetryAvailable   bool                                   `json:"stop_retry_available"`
-	TerminalObservedAt   *time.Time                             `json:"terminal_observed_at,omitempty"`
-	UpdatedAt            time.Time                              `json:"updated_at"`
+
+	// Publication Latest durable publication batch for this attempt. Publication is distinct from provider settlement and run approval.
+	Publication        *RunExecutionPublication           `json:"publication,omitempty"`
+	QueuedAt           time.Time                          `json:"queued_at"`
+	RequiredRole       string                             `json:"required_role"`
+	SettledAt          *time.Time                         `json:"settled_at,omitempty"`
+	SettlementDetail   *RunExecutionSettlementDetail      `json:"settlement_detail,omitempty"`
+	SettlementStatus   RunExecutionDetailSettlementStatus `json:"settlement_status"`
+	StartedAt          *time.Time                         `json:"started_at,omitempty"`
+	Status             RunExecutionDetailStatus           `json:"status"`
+	StopRetryAvailable bool                               `json:"stop_retry_available"`
+	TerminalObservedAt *time.Time                         `json:"terminal_observed_at,omitempty"`
+	UpdatedAt          time.Time                          `json:"updated_at"`
 }
 
 // RunExecutionDetailExecutionMode defines model for RunExecutionDetail.ExecutionMode.
@@ -2175,6 +2442,39 @@ type RunExecutionFailure struct {
 
 // RunExecutionFailureCategory defines model for RunExecutionFailure.Category.
 type RunExecutionFailureCategory string
+
+// RunExecutionPublication Latest durable publication batch for this attempt. Publication is distinct from provider settlement and run approval.
+type RunExecutionPublication struct {
+	BatchId         string    `json:"batch_id"`
+	ConflictedCount int       `json:"conflicted_count"`
+	CreatedAt       time.Time `json:"created_at"`
+
+	// EntriesRevision Monotonic revision advanced atomically with each entry write. Entries are available from the scoped paginated endpoint.
+	EntriesRevision int64                         `json:"entries_revision"`
+	FailedCount     int                           `json:"failed_count"`
+	PublishedCount  int                           `json:"published_count"`
+	Status          RunExecutionPublicationStatus `json:"status"`
+	TargetMode      RunPublishMode                `json:"target_mode"`
+}
+
+// RunExecutionPublicationStatus defines model for RunExecutionPublication.Status.
+type RunExecutionPublicationStatus string
+
+// RunExecutionPublicationEntry defines model for RunExecutionPublicationEntry.
+type RunExecutionPublicationEntry struct {
+	Action     RunExecutionPublicationEntryAction `json:"action"`
+	EntryId    string                             `json:"entry_id"`
+	Path       string                             `json:"path"`
+	ReasonCode *string                            `json:"reason_code,omitempty"`
+	ReasonText *string                            `json:"reason_text,omitempty"`
+	Status     RunExecutionPublicationEntryStatus `json:"status"`
+}
+
+// RunExecutionPublicationEntryAction defines model for RunExecutionPublicationEntry.Action.
+type RunExecutionPublicationEntryAction string
+
+// RunExecutionPublicationEntryStatus defines model for RunExecutionPublicationEntry.Status.
+type RunExecutionPublicationEntryStatus string
 
 // RunExecutionSettlementDetail defines model for RunExecutionSettlementDetail.
 type RunExecutionSettlementDetail struct {
@@ -2477,6 +2777,16 @@ type RunPlanSnapshotComponent struct {
 	PlanningOutputId string    `json:"planning_output_id"`
 }
 
+// RunPublicationEntriesResponse defines model for RunPublicationEntriesResponse.
+type RunPublicationEntriesResponse struct {
+	AttemptId       string                         `json:"attempt_id"`
+	BatchId         string                         `json:"batch_id"`
+	EntriesRevision int64                          `json:"entries_revision"`
+	Items           []RunExecutionPublicationEntry `json:"items"`
+	NextCursor      *string                        `json:"next_cursor,omitempty"`
+	RunId           string                         `json:"run_id"`
+}
+
 // RunPublishMode defines model for RunPublishMode.
 type RunPublishMode string
 
@@ -2501,6 +2811,9 @@ type RunRecoveryStatePhase string
 // RunRecoveryStateTrigger defines model for RunRecoveryState.Trigger.
 type RunRecoveryStateTrigger string
 
+// RunStartState Observed means started_at is recorded. Unrecorded means canonical stream settlement proves provider execution but its running observation was not recorded. Not_started means neither observation exists; queued work, launch handoff, setup failure and cancellation before launch do not establish execution.
+type RunStartState string
+
 // RunStreamCursor defines model for RunStreamCursor.
 type RunStreamCursor struct {
 	EventId     string `json:"event_id"`
@@ -2511,10 +2824,10 @@ type RunStreamCursor struct {
 type RunSummary struct {
 	AutonomousApprovals *bool           `json:"autonomous_approvals,omitempty"`
 	CreatedAt           time.Time       `json:"created_at"`
-	DecreeId            string          `json:"decree_id"`
-	DecreeTitle         string          `json:"decree_title"`
 	DisplayState        RunDisplayState `json:"display_state"`
-	LastActivityAt      time.Time       `json:"last_activity_at"`
+
+	// LastActivityAt Latest meaningful run activity, distinct from record mutation time.
+	LastActivityAt time.Time `json:"last_activity_at"`
 
 	// MaxExecutionReviewCycles Stored review-cycle cap. Workflows without execution-review nodes report `0`.
 	MaxExecutionReviewCycles *int `json:"max_execution_review_cycles,omitempty"`
@@ -2529,9 +2842,17 @@ type RunSummary struct {
 	PublishMode        *RunPublishMode     `json:"publish_mode,omitempty"`
 	RunId              string              `json:"run_id"`
 	RunUntilAllApprove *bool               `json:"run_until_all_approve,omitempty"`
-	Status             RunSummaryStatus    `json:"status"`
-	UpdatedAt          time.Time           `json:"updated_at"`
-	WorkflowId         string              `json:"workflow_id"`
+
+	// StartState Observed means started_at is recorded. Unrecorded means canonical stream settlement proves provider execution but its running observation was not recorded. Not_started means neither observation exists; queued work, launch handoff, setup failure and cancellation before launch do not establish execution.
+	StartState RunStartState `json:"start_state"`
+
+	// StartedAt First observed provider-backed execution across all attempts, including advisory work and superseded attempts. Absent unless start_state is observed; creation and launch handoff never substitute for this timestamp.
+	StartedAt      *time.Time       `json:"started_at,omitempty"`
+	Status         RunSummaryStatus `json:"status"`
+	UpdatedAt      time.Time        `json:"updated_at"`
+	WorkOrderId    string           `json:"work_order_id"`
+	WorkOrderTitle string           `json:"work_order_title"`
+	WorkflowId     string           `json:"workflow_id"`
 }
 
 // RunSummaryPlanState defines model for RunSummary.PlanState.
@@ -2619,6 +2940,367 @@ type StructuredQuestionOption struct {
 	Value string `json:"value"`
 }
 
+// ThemeAsset defines model for ThemeAsset.
+type ThemeAsset struct {
+	License   *string             `json:"license,omitempty"`
+	MediaType ThemeAssetMediaType `json:"mediaType"`
+	Path      string              `json:"path"`
+}
+
+// ThemeAssetMediaType defines model for ThemeAsset.MediaType.
+type ThemeAssetMediaType string
+
+// ThemeAssetReference defines model for ThemeAssetReference.
+type ThemeAssetReference = string
+
+// ThemeCatalog defines model for ThemeCatalog.
+type ThemeCatalog struct {
+	Diagnostics *[]ThemeDiagnostic `json:"diagnostics,omitempty"`
+	Items       []struct {
+		Builtin        bool    `json:"builtin"`
+		Description    *string `json:"description,omitempty"`
+		Id             string  `json:"id"`
+		Name           string  `json:"name"`
+		ResolvedDigest string  `json:"resolvedDigest"`
+		Version        string  `json:"version"`
+	} `json:"items"`
+
+	// Sources Editable source IDs discovered on explicit refresh, including invalid drafts.
+	Sources     []string `json:"sources"`
+	WorkspaceID string   `json:"workspaceID"`
+}
+
+// ThemeColor defines model for ThemeColor.
+type ThemeColor = string
+
+// ThemeDiagnostic defines model for ThemeDiagnostic.
+type ThemeDiagnostic struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+	Path    string `json:"path"`
+}
+
+// ThemeDraftRequest defines model for ThemeDraftRequest.
+type ThemeDraftRequest struct {
+	Assets map[string][]byte `json:"assets"`
+
+	// Source Canonical theme.json text; parsing and diagnostics use the theme schema.
+	Source string `json:"source"`
+}
+
+// ThemeFont An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks.
+type ThemeFont = string
+
+// ThemeIcon Semantic validation verifies symbol existence or an allowed SVG asset.
+type ThemeIcon = string
+
+// ThemeIdentity defines model for ThemeIdentity.
+type ThemeIdentity struct {
+	Description *string              `json:"description,omitempty"`
+	Lore        *string              `json:"lore,omitempty"`
+	Name        *string              `json:"name,omitempty"`
+	Portrait    *ThemeAssetReference `json:"portrait,omitempty"`
+}
+
+// ThemeManifest Version 1 presentation-only theme package. Structural validation is followed by asset and catalog validation, with advisory readability warnings.
+type ThemeManifest struct {
+	// Schema Editor hint only. Runtime never fetches arbitrary schema URLs.
+	Schema  *string `json:"$schema,omitempty"`
+	Artwork *struct {
+		AgentBackdrop *ThemeAssetReference `json:"agentBackdrop,omitempty"`
+		Overview      *ThemeAssetReference `json:"overview,omitempty"`
+		PlanningEmpty *ThemeAssetReference `json:"planningEmpty,omitempty"`
+	} `json:"artwork,omitempty"`
+	Assets *map[string]ThemeAsset `json:"assets,omitempty"`
+	Base   *struct {
+		Id      ThemeManifestBaseId `json:"id"`
+		Version string              `json:"version"`
+	} `json:"base,omitempty"`
+
+	// ColorScheme Inherited from base when omitted; required for a complete resolved package.
+	ColorScheme *ThemeManifestColorScheme `json:"colorScheme,omitempty"`
+	Copy        *struct {
+		AgentsHeading            *string `json:"agents.heading,omitempty"`
+		AppearanceDescription    *string `json:"appearance.description,omitempty"`
+		BrandTagline             *string `json:"brand.tagline,omitempty"`
+		OverviewWelcome          *string `json:"overview.welcome,omitempty"`
+		PlanningEmptyDescription *string `json:"planning.emptyDescription,omitempty"`
+		PlanningEmptyTitle       *string `json:"planning.emptyTitle,omitempty"`
+		WorkOrderPlural          *string `json:"workOrder.plural,omitempty"`
+		WorkOrderSingular        *string `json:"workOrder.singular,omitempty"`
+	} `json:"copy,omitempty"`
+	Description *string `json:"description,omitempty"`
+	Icons       *struct {
+		// Brand Semantic validation verifies symbol existence or an allowed SVG asset.
+		Brand *ThemeIcon `json:"brand,omitempty"`
+
+		// NavAgents Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavAgents *ThemeIcon `json:"nav.agents,omitempty"`
+
+		// NavAnalytics Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavAnalytics *ThemeIcon `json:"nav.analytics,omitempty"`
+
+		// NavAppearance Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavAppearance *ThemeIcon `json:"nav.appearance,omitempty"`
+
+		// NavConnections Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavConnections *ThemeIcon `json:"nav.connections,omitempty"`
+
+		// NavOverview Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavOverview *ThemeIcon `json:"nav.overview,omitempty"`
+
+		// NavPlanning Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavPlanning *ThemeIcon `json:"nav.planning,omitempty"`
+
+		// NavRuns Semantic validation verifies symbol existence or an allowed SVG asset.
+		NavRuns *ThemeIcon `json:"nav.runs,omitempty"`
+
+		// NodeAdvisorConsultation Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeAdvisorConsultation *ThemeIcon `json:"node.advisor-consultation,omitempty"`
+
+		// NodeAdvisorySynthesis Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeAdvisorySynthesis *ThemeIcon `json:"node.advisory-synthesis,omitempty"`
+
+		// NodeCompletion Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeCompletion *ThemeIcon `json:"node.completion,omitempty"`
+
+		// NodeExecutionKickoff Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeExecutionKickoff *ThemeIcon `json:"node.execution-kickoff,omitempty"`
+
+		// NodeExecutionReview Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeExecutionReview *ThemeIcon `json:"node.execution-review,omitempty"`
+
+		// NodeImplementation Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeImplementation *ThemeIcon `json:"node.implementation,omitempty"`
+
+		// NodePlanDecision Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodePlanDecision *ThemeIcon `json:"node.plan-decision,omitempty"`
+
+		// NodePlanDrafting Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodePlanDrafting *ThemeIcon `json:"node.plan-drafting,omitempty"`
+
+		// NodeQualityValidation Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeQualityValidation *ThemeIcon `json:"node.quality-validation,omitempty"`
+
+		// NodeSecurityValidation Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeSecurityValidation *ThemeIcon `json:"node.security-validation,omitempty"`
+
+		// NodeWorkIntake Semantic validation verifies symbol existence or an allowed SVG asset.
+		NodeWorkIntake *ThemeIcon `json:"node.work-intake,omitempty"`
+
+		// RoleArchitectureAdvisor Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleArchitectureAdvisor *ThemeIcon `json:"role.architecture-advisor,omitempty"`
+
+		// RoleBuilder Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleBuilder *ThemeIcon `json:"role.builder,omitempty"`
+
+		// RoleCoordinator Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleCoordinator *ThemeIcon `json:"role.coordinator,omitempty"`
+
+		// RoleGovernance Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleGovernance *ThemeIcon `json:"role.governance,omitempty"`
+
+		// RoleOperator Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleOperator *ThemeIcon `json:"role.operator,omitempty"`
+
+		// RolePlanAuthor Semantic validation verifies symbol existence or an allowed SVG asset.
+		RolePlanAuthor *ThemeIcon `json:"role.plan-author,omitempty"`
+
+		// RolePlanningAssistant Semantic validation verifies symbol existence or an allowed SVG asset.
+		RolePlanningAssistant *ThemeIcon `json:"role.planning-assistant,omitempty"`
+
+		// RoleQaValidator Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleQaValidator *ThemeIcon `json:"role.qa-validator,omitempty"`
+
+		// RoleResilienceValidator Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleResilienceValidator *ThemeIcon `json:"role.resilience-validator,omitempty"`
+
+		// RoleReviewer Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleReviewer *ThemeIcon `json:"role.reviewer,omitempty"`
+
+		// RoleRiskAdvisor Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleRiskAdvisor *ThemeIcon `json:"role.risk-advisor,omitempty"`
+
+		// RoleSecurityValidator Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleSecurityValidator *ThemeIcon `json:"role.security-validator,omitempty"`
+
+		// RoleSystemsAdvisor Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleSystemsAdvisor *ThemeIcon `json:"role.systems-advisor,omitempty"`
+
+		// RoleUsabilityAdvisor Semantic validation verifies symbol existence or an allowed SVG asset.
+		RoleUsabilityAdvisor *ThemeIcon `json:"role.usability-advisor,omitempty"`
+
+		// WorkOrder Semantic validation verifies symbol existence or an allowed SVG asset.
+		WorkOrder *ThemeIcon `json:"work-order,omitempty"`
+	} `json:"icons,omitempty"`
+	Id         string `json:"id"`
+	Identities *struct {
+		ArchitectureAdvisor *ThemeIdentity `json:"architecture-advisor,omitempty"`
+		Builder             *ThemeIdentity `json:"builder,omitempty"`
+		Coordinator         *ThemeIdentity `json:"coordinator,omitempty"`
+		Governance          *ThemeIdentity `json:"governance,omitempty"`
+		Operator            *ThemeIdentity `json:"operator,omitempty"`
+		PlanAuthor          *ThemeIdentity `json:"plan-author,omitempty"`
+		PlanningAssistant   *ThemeIdentity `json:"planning-assistant,omitempty"`
+		QaValidator         *ThemeIdentity `json:"qa-validator,omitempty"`
+		ResilienceValidator *ThemeIdentity `json:"resilience-validator,omitempty"`
+		Reviewer            *ThemeIdentity `json:"reviewer,omitempty"`
+		RiskAdvisor         *ThemeIdentity `json:"risk-advisor,omitempty"`
+		SecurityValidator   *ThemeIdentity `json:"security-validator,omitempty"`
+		SystemsAdvisor      *ThemeIdentity `json:"systems-advisor,omitempty"`
+		UsabilityAdvisor    *ThemeIdentity `json:"usability-advisor,omitempty"`
+	} `json:"identities,omitempty"`
+	Name    string `json:"name"`
+	Palette *struct {
+		Accent  *ThemeColor `json:"accent,omitempty"`
+		Canvas  *ThemeColor `json:"canvas,omitempty"`
+		Surface *ThemeColor `json:"surface,omitempty"`
+		Text    *ThemeColor `json:"text,omitempty"`
+	} `json:"palette,omitempty"`
+	ResolverVersion ThemeManifestResolverVersion `json:"resolverVersion"`
+	SchemaVersion   ThemeManifestSchemaVersion   `json:"schemaVersion"`
+	Surfaces        *struct {
+		BorderWidth *float32 `json:"borderWidth,omitempty"`
+
+		// Chrome Application-owned structural styling. Omission uses flat chrome.
+		Chrome    *ThemeManifestSurfacesChrome    `json:"chrome,omitempty"`
+		Elevation *ThemeManifestSurfacesElevation `json:"elevation,omitempty"`
+
+		// IconRendering Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask.
+		IconRendering *ThemeManifestSurfacesIconRendering `json:"iconRendering,omitempty"`
+		Ornamentation *ThemeManifestSurfacesOrnamentation `json:"ornamentation,omitempty"`
+		Radius        *float32                            `json:"radius,omitempty"`
+	} `json:"surfaces,omitempty"`
+	Tokens *struct {
+		AccentBase                *ThemeColor `json:"accent.base,omitempty"`
+		AccentForeground          *ThemeColor `json:"accent.foreground,omitempty"`
+		AccentHover               *ThemeColor `json:"accent.hover,omitempty"`
+		AccentPressed             *ThemeColor `json:"accent.pressed,omitempty"`
+		AccentSubtle              *ThemeColor `json:"accent.subtle,omitempty"`
+		BorderDefault             *ThemeColor `json:"border.default,omitempty"`
+		BorderStrong              *ThemeColor `json:"border.strong,omitempty"`
+		Canvas                    *ThemeColor `json:"canvas,omitempty"`
+		ChartAxis                 *ThemeColor `json:"chart.axis,omitempty"`
+		ChartCategory1            *ThemeColor `json:"chart.category1,omitempty"`
+		ChartCategory2            *ThemeColor `json:"chart.category2,omitempty"`
+		ChartCategory3            *ThemeColor `json:"chart.category3,omitempty"`
+		ChartCategory4            *ThemeColor `json:"chart.category4,omitempty"`
+		ChartCategory5            *ThemeColor `json:"chart.category5,omitempty"`
+		ChartCategory6            *ThemeColor `json:"chart.category6,omitempty"`
+		ChartCategory7            *ThemeColor `json:"chart.category7,omitempty"`
+		ChartCategory8            *ThemeColor `json:"chart.category8,omitempty"`
+		ChartGrid                 *ThemeColor `json:"chart.grid,omitempty"`
+		CodeBackground            *ThemeColor `json:"code.background,omitempty"`
+		CodeForeground            *ThemeColor `json:"code.foreground,omitempty"`
+		ControlDisabledBackground *ThemeColor `json:"control.disabledBackground,omitempty"`
+		ControlDisabledForeground *ThemeColor `json:"control.disabledForeground,omitempty"`
+		DagEdge                   *ThemeColor `json:"dag.edge,omitempty"`
+		DagEdgeActive             *ThemeColor `json:"dag.edgeActive,omitempty"`
+		DagEdgeCompleted          *ThemeColor `json:"dag.edgeCompleted,omitempty"`
+		DagNodeActiveBackground   *ThemeColor `json:"dag.nodeActiveBackground,omitempty"`
+		FocusOffset               *ThemeColor `json:"focus.offset,omitempty"`
+		FocusRing                 *ThemeColor `json:"focus.ring,omitempty"`
+		SelectionBackground       *ThemeColor `json:"selection.background,omitempty"`
+		SelectionForeground       *ThemeColor `json:"selection.foreground,omitempty"`
+		StatusAttentionBackground *ThemeColor `json:"status.attention.background,omitempty"`
+		StatusAttentionBorder     *ThemeColor `json:"status.attention.border,omitempty"`
+		StatusAttentionForeground *ThemeColor `json:"status.attention.foreground,omitempty"`
+		StatusCancelledBackground *ThemeColor `json:"status.cancelled.background,omitempty"`
+		StatusCancelledBorder     *ThemeColor `json:"status.cancelled.border,omitempty"`
+		StatusCancelledForeground *ThemeColor `json:"status.cancelled.foreground,omitempty"`
+		StatusFailedBackground    *ThemeColor `json:"status.failed.background,omitempty"`
+		StatusFailedBorder        *ThemeColor `json:"status.failed.border,omitempty"`
+		StatusFailedForeground    *ThemeColor `json:"status.failed.foreground,omitempty"`
+		StatusNeutralBackground   *ThemeColor `json:"status.neutral.background,omitempty"`
+		StatusNeutralBorder       *ThemeColor `json:"status.neutral.border,omitempty"`
+		StatusNeutralForeground   *ThemeColor `json:"status.neutral.foreground,omitempty"`
+		StatusReworkBackground    *ThemeColor `json:"status.rework.background,omitempty"`
+		StatusReworkBorder        *ThemeColor `json:"status.rework.border,omitempty"`
+		StatusReworkForeground    *ThemeColor `json:"status.rework.foreground,omitempty"`
+		StatusRunningBackground   *ThemeColor `json:"status.running.background,omitempty"`
+		StatusRunningBorder       *ThemeColor `json:"status.running.border,omitempty"`
+		StatusRunningForeground   *ThemeColor `json:"status.running.foreground,omitempty"`
+		StatusSucceededBackground *ThemeColor `json:"status.succeeded.background,omitempty"`
+		StatusSucceededBorder     *ThemeColor `json:"status.succeeded.border,omitempty"`
+		StatusSucceededForeground *ThemeColor `json:"status.succeeded.foreground,omitempty"`
+		SurfaceBase               *ThemeColor `json:"surface.base,omitempty"`
+		SurfaceElevated           *ThemeColor `json:"surface.elevated,omitempty"`
+		SurfaceInset              *ThemeColor `json:"surface.inset,omitempty"`
+		SurfaceOverlay            *ThemeColor `json:"surface.overlay,omitempty"`
+		TextInverse               *ThemeColor `json:"text.inverse,omitempty"`
+		TextPrimary               *ThemeColor `json:"text.primary,omitempty"`
+		TextSecondary             *ThemeColor `json:"text.secondary,omitempty"`
+		TextSubtle                *ThemeColor `json:"text.subtle,omitempty"`
+		ToolBackground            *ThemeColor `json:"tool.background,omitempty"`
+		ToolBorder                *ThemeColor `json:"tool.border,omitempty"`
+	} `json:"tokens,omitempty"`
+	Typography *struct {
+		// Body An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks.
+		Body       *ThemeFont `json:"body,omitempty"`
+		BodyWeight *float32   `json:"bodyWeight,omitempty"`
+
+		// Display An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks.
+		Display       *ThemeFont `json:"display,omitempty"`
+		HeadingWeight *float32   `json:"headingWeight,omitempty"`
+
+		// Mono An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks.
+		Mono *ThemeFont `json:"mono,omitempty"`
+	} `json:"typography,omitempty"`
+	Version string `json:"version"`
+}
+
+// ThemeManifestBaseId defines model for ThemeManifest.Base.Id.
+type ThemeManifestBaseId string
+
+// ThemeManifestColorScheme Inherited from base when omitted; required for a complete resolved package.
+type ThemeManifestColorScheme string
+
+// ThemeManifestResolverVersion defines model for ThemeManifest.ResolverVersion.
+type ThemeManifestResolverVersion int
+
+// ThemeManifestSchemaVersion defines model for ThemeManifest.SchemaVersion.
+type ThemeManifestSchemaVersion int
+
+// ThemeManifestSurfacesChrome Application-owned structural styling. Omission uses flat chrome.
+type ThemeManifestSurfacesChrome string
+
+// ThemeManifestSurfacesElevation defines model for ThemeManifest.Surfaces.Elevation.
+type ThemeManifestSurfacesElevation string
+
+// ThemeManifestSurfacesIconRendering Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask.
+type ThemeManifestSurfacesIconRendering string
+
+// ThemeManifestSurfacesOrnamentation defines model for ThemeManifest.Surfaces.Ornamentation.
+type ThemeManifestSurfacesOrnamentation string
+
+// ThemePackage defines model for ThemePackage.
+type ThemePackage struct {
+	// Manifest Version 1 presentation-only theme package. Structural validation is followed by asset and catalog validation, with advisory readability warnings.
+	Manifest       ThemeManifest `json:"manifest"`
+	ResolvedDigest string        `json:"resolvedDigest"`
+	SourceDigest   string        `json:"sourceDigest"`
+
+	// Warnings Advisory readability diagnostics; these do not block preview, saving, or publication.
+	Warnings *[]ThemeDiagnostic `json:"warnings,omitempty"`
+}
+
+// ThemeSaveRequest defines model for ThemeSaveRequest.
+type ThemeSaveRequest struct {
+	Assets map[string][]byte `json:"assets"`
+
+	// ExpectedSourceDigest Empty only when creating a source that does not exist yet.
+	ExpectedSourceDigest string `json:"expected_source_digest"`
+	Source               string `json:"source"`
+}
+
+// ThemeSource defines model for ThemeSource.
+type ThemeSource struct {
+	Assets       map[string][]byte  `json:"assets"`
+	Diagnostics  *[]ThemeDiagnostic `json:"diagnostics,omitempty"`
+	Source       string             `json:"source"`
+	SourceDigest string             `json:"sourceDigest"`
+}
+
 // ThinkingEffortOption defines model for ThinkingEffortOption.
 type ThinkingEffortOption struct {
 	Label string `json:"label"`
@@ -2680,6 +3362,16 @@ type UpdatePlanningSessionRequest struct {
 	Title          *string                      `json:"title,omitempty"`
 }
 
+// WorkOrderDetail defines model for WorkOrderDetail.
+type WorkOrderDetail struct {
+	CreatedAt       time.Time                   `json:"created_at"`
+	ExternalSources []ExternalProvenanceSummary `json:"external_sources"`
+	Metadata        *map[string]interface{}     `json:"metadata,omitempty"`
+	WorkOrderId     string                      `json:"work_order_id"`
+	WorkOrderText   string                      `json:"work_order_text"`
+	WorkOrderTitle  string                      `json:"work_order_title"`
+}
+
 // WorkspaceCapabilities defines model for WorkspaceCapabilities.
 type WorkspaceCapabilities struct {
 	DefaultPublishMode   RunPublishMode `json:"default_publish_mode"`
@@ -2691,6 +3383,21 @@ type WorkspaceCapabilities struct {
 
 // AcpRunId defines model for AcpRunId.
 type AcpRunId = string
+
+// ActivityContentField defines model for ActivityContentField.
+type ActivityContentField string
+
+// ActivityContentLimit defines model for ActivityContentLimit.
+type ActivityContentLimit = int
+
+// ActivityEventId defines model for ActivityEventId.
+type ActivityEventId = string
+
+// AnalyticsEndAt defines model for AnalyticsEndAt.
+type AnalyticsEndAt = time.Time
+
+// AnalyticsStartAt defines model for AnalyticsStartAt.
+type AnalyticsStartAt = time.Time
 
 // ArtifactId defines model for ArtifactId.
 type ArtifactId = string
@@ -2709,9 +3416,6 @@ type ConnectionId = string
 
 // Cursor defines model for Cursor.
 type Cursor = string
-
-// DecreeId defines model for DecreeId.
-type DecreeId = string
 
 // DeviceFlowId defines model for DeviceFlowId.
 type DeviceFlowId = string
@@ -2770,8 +3474,17 @@ type RunStateFilter string
 // SnapshotId defines model for SnapshotId.
 type SnapshotId = string
 
+// ThemeDigest defines model for ThemeDigest.
+type ThemeDigest = string
+
+// ThemeId defines model for ThemeId.
+type ThemeId = string
+
 // WindowMinutes defines model for WindowMinutes.
 type WindowMinutes = int
+
+// WorkOrderId defines model for WorkOrderId.
+type WorkOrderId = string
 
 // BadRequestError defines model for BadRequestError.
 type BadRequestError = ErrorEnvelope
@@ -2787,6 +3500,9 @@ type ForbiddenError = ErrorEnvelope
 
 // NotFoundError defines model for NotFoundError.
 type NotFoundError = ErrorEnvelope
+
+// ResolvedTheme defines model for ResolvedTheme.
+type ResolvedTheme = ThemePackage
 
 // ServiceUnavailableError defines model for ServiceUnavailableError.
 type ServiceUnavailableError = ErrorEnvelope
@@ -2806,6 +3522,21 @@ type CreateAcpRunParams struct {
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
 }
 
+// GetAcpRunActivityParams defines parameters for GetAcpRunActivity.
+type GetAcpRunActivityParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetAcpActivityContentParams defines parameters for GetAcpActivityContent.
+type GetAcpActivityContentParams struct {
+	Cursor *Cursor               `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *ActivityContentLimit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetAcpActivityContentParamsField defines parameters for GetAcpActivityContent.
+type GetAcpActivityContentParamsField string
+
 // CancelAcpRunParams defines parameters for CancelAcpRun.
 type CancelAcpRunParams struct {
 	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
@@ -2818,6 +3549,33 @@ type CancelAcpRunParams struct {
 // StreamAcpRunEventsParams defines parameters for StreamAcpRunEvents.
 type StreamAcpRunEventsParams struct {
 	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
+}
+
+// GetAnalyticsExecutionDetailSnapshotParams defines parameters for GetAnalyticsExecutionDetailSnapshot.
+type GetAnalyticsExecutionDetailSnapshotParams struct {
+	// WindowMinutes Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at.
+	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
+
+	// StartAt Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed.
+	StartAt *AnalyticsStartAt `form:"start_at,omitempty" json:"start_at,omitempty"`
+
+	// EndAt Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes.
+	EndAt *AnalyticsEndAt `form:"end_at,omitempty" json:"end_at,omitempty"`
+
+	// RunId When provided, scope execution detail to that exact run regardless of the selected time range. Time parameters only scope aggregate mode when `run_id` is omitted.
+	RunId *string `form:"run_id,omitempty" json:"run_id,omitempty"`
+}
+
+// GetAnalyticsSnapshotParams defines parameters for GetAnalyticsSnapshot.
+type GetAnalyticsSnapshotParams struct {
+	// WindowMinutes Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at.
+	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
+
+	// StartAt Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed.
+	StartAt *AnalyticsStartAt `form:"start_at,omitempty" json:"start_at,omitempty"`
+
+	// EndAt Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes.
+	EndAt *AnalyticsEndAt `form:"end_at,omitempty" json:"end_at,omitempty"`
 }
 
 // CreateAuthSessionParams defines parameters for CreateAuthSession.
@@ -3016,15 +3774,6 @@ type PreviewConnectionIssueParams struct {
 	IncludeComments *bool `form:"include_comments,omitempty" json:"include_comments,omitempty"`
 }
 
-// CreateDecreeParams defines parameters for CreateDecree.
-type CreateDecreeParams struct {
-	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
-	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
-
-	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
-	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
-}
-
 // StreamEventsParams defines parameters for StreamEvents.
 type StreamEventsParams struct {
 	RunId       RunIdQuery   `form:"run_id" json:"run_id"`
@@ -3079,10 +3828,21 @@ type ListExternalSourceSnapshotCommentsParams struct {
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
 }
 
+// GetMutationOutcomeParams defines parameters for GetMutationOutcome.
+type GetMutationOutcomeParams struct {
+	Operation GetMutationOutcomeParamsOperation `form:"operation" json:"operation"`
+}
+
+// GetMutationOutcomeParamsOperation defines parameters for GetMutationOutcome.
+type GetMutationOutcomeParamsOperation string
+
 // ListPlanningSessionsParams defines parameters for ListPlanningSessions.
 type ListPlanningSessionsParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+
+	// Q Case-insensitive session title substring search. The query is bound to pagination cursor scope; this does not search message contents.
+	Q *string `form:"q,omitempty" json:"q,omitempty"`
 }
 
 // CreatePlanningSessionParams defines parameters for CreatePlanningSession.
@@ -3160,26 +3920,13 @@ type ListProviderModelsParams struct {
 	Refresh *bool `form:"refresh,omitempty" json:"refresh,omitempty"`
 }
 
-// GetRealmAnalyticsExecutionDetailSnapshotParams defines parameters for GetRealmAnalyticsExecutionDetailSnapshot.
-type GetRealmAnalyticsExecutionDetailSnapshotParams struct {
-	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
-
-	// RunId When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted.
-	RunId *string `form:"run_id,omitempty" json:"run_id,omitempty"`
-}
-
-// GetRealmAnalyticsSnapshotParams defines parameters for GetRealmAnalyticsSnapshot.
-type GetRealmAnalyticsSnapshotParams struct {
-	WindowMinutes *WindowMinutes `form:"window_minutes,omitempty" json:"window_minutes,omitempty"`
-}
-
 // ListRunsParams defines parameters for ListRuns.
 type ListRunsParams struct {
 	Limit       *Limit                     `form:"limit,omitempty" json:"limit,omitempty"`
 	Cursor      *Cursor                    `form:"cursor,omitempty" json:"cursor,omitempty"`
 	StateFilter *ListRunsParamsStateFilter `form:"state_filter,omitempty" json:"state_filter,omitempty"`
 
-	// Search Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms.
+	// Search Case-insensitive run search. Matches exact or prefix run ids and token-prefix work order title terms; multi-term queries require all terms.
 	Search *RunSearch `form:"search,omitempty" json:"search,omitempty"`
 }
 
@@ -3202,6 +3949,16 @@ type StreamRunCollectionEventsParams struct {
 	LastEventID *LastEventId `json:"Last-Event-ID,omitempty"`
 }
 
+// ListRunArtifactsParams defines parameters for ListRunArtifacts.
+type ListRunArtifactsParams struct {
+	Cursor    *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit     *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+	AttemptId *string `form:"attempt_id,omitempty" json:"attempt_id,omitempty"`
+
+	// AgentId Filter by the exact producing run participant across all of its attempts. Combined with attempt_id when supplied; cursors are scoped to both filters.
+	AgentId *string `form:"agent_id,omitempty" json:"agent_id,omitempty"`
+}
+
 // CancelRunParams defines parameters for CancelRun.
 type CancelRunParams struct {
 	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
@@ -3209,6 +3966,27 @@ type CancelRunParams struct {
 
 	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
 	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// GetRunExecutionActivityParams defines parameters for GetRunExecutionActivity.
+type GetRunExecutionActivityParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetRunActivityContentParams defines parameters for GetRunActivityContent.
+type GetRunActivityContentParams struct {
+	Cursor *Cursor               `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *ActivityContentLimit `form:"limit,omitempty" json:"limit,omitempty"`
+}
+
+// GetRunActivityContentParamsField defines parameters for GetRunActivityContent.
+type GetRunActivityContentParamsField string
+
+// ListRunPublicationEntriesParams defines parameters for ListRunPublicationEntries.
+type ListRunPublicationEntriesParams struct {
+	Cursor *Cursor `form:"cursor,omitempty" json:"cursor,omitempty"`
+	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
 // RetryExecutionStopParams defines parameters for RetryExecutionStop.
@@ -3301,6 +4079,104 @@ type GetRunTimelineParams struct {
 	Limit  *Limit  `form:"limit,omitempty" json:"limit,omitempty"`
 }
 
+// ImportThemeJSONBody defines parameters for ImportTheme.
+type ImportThemeJSONBody struct {
+	Archive []byte `json:"archive"`
+}
+
+// ImportThemeParams defines parameters for ImportTheme.
+type ImportThemeParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ValidateThemeParams defines parameters for ValidateTheme.
+type ValidateThemeParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// ValidateThemeArchiveJSONBody defines parameters for ValidateThemeArchive.
+type ValidateThemeArchiveJSONBody struct {
+	Archive []byte `json:"archive"`
+}
+
+// ValidateThemeArchiveParams defines parameters for ValidateThemeArchive.
+type ValidateThemeArchiveParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// RemoveThemeParams defines parameters for RemoveTheme.
+type RemoveThemeParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// PublishThemeJSONBody defines parameters for PublishTheme.
+type PublishThemeJSONBody struct {
+	ExpectedSourceDigest string `json:"expected_source_digest"`
+}
+
+// PublishThemeParams defines parameters for PublishTheme.
+type PublishThemeParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// DeleteThemeSourceJSONBody defines parameters for DeleteThemeSource.
+type DeleteThemeSourceJSONBody struct {
+	ExpectedSourceDigest string `json:"expected_source_digest"`
+}
+
+// DeleteThemeSourceParams defines parameters for DeleteThemeSource.
+type DeleteThemeSourceParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// GetThemeSourceParams defines parameters for GetThemeSource.
+type GetThemeSourceParams struct {
+	// Revision Read the original editable source and assets of this immutable revision.
+	Revision *string `form:"revision,omitempty" json:"revision,omitempty"`
+}
+
+// SaveThemeSourceParams defines parameters for SaveThemeSource.
+type SaveThemeSourceParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
+// CreateWorkOrderParams defines parameters for CreateWorkOrder.
+type CreateWorkOrderParams struct {
+	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+	IdempotencyKey IdempotencyKey `json:"Idempotency-Key"`
+
+	// XCSRFToken Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
+	XCSRFToken *CSRFToken `json:"X-CSRF-Token,omitempty"`
+}
+
 // PublishWorkflowParams defines parameters for PublishWorkflow.
 type PublishWorkflowParams struct {
 	// IdempotencyKey Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
@@ -3334,9 +4210,6 @@ type UpdateConnectionJSONRequestBody = UpdateConnectionRequest
 // SetConnectionInstallationsJSONRequestBody defines body for SetConnectionInstallations for application/json ContentType.
 type SetConnectionInstallationsJSONRequestBody = SetConnectionInstallationsRequest
 
-// CreateDecreeJSONRequestBody defines body for CreateDecree for application/json ContentType.
-type CreateDecreeJSONRequestBody = CreateDecreeRequest
-
 // CaptureExternalSourceJSONRequestBody defines body for CaptureExternalSource for application/json ContentType.
 type CaptureExternalSourceJSONRequestBody = ExternalIntake
 
@@ -3366,6 +4239,27 @@ type CreatePlanApprovalJSONRequestBody = CreatePlanApprovalRequest
 
 // RerunFromNodeJSONRequestBody defines body for RerunFromNode for application/json ContentType.
 type RerunFromNodeJSONRequestBody = RerunFromNodeRequest
+
+// ImportThemeJSONRequestBody defines body for ImportTheme for application/json ContentType.
+type ImportThemeJSONRequestBody ImportThemeJSONBody
+
+// ValidateThemeJSONRequestBody defines body for ValidateTheme for application/json ContentType.
+type ValidateThemeJSONRequestBody = ThemeDraftRequest
+
+// ValidateThemeArchiveJSONRequestBody defines body for ValidateThemeArchive for application/json ContentType.
+type ValidateThemeArchiveJSONRequestBody ValidateThemeArchiveJSONBody
+
+// PublishThemeJSONRequestBody defines body for PublishTheme for application/json ContentType.
+type PublishThemeJSONRequestBody PublishThemeJSONBody
+
+// DeleteThemeSourceJSONRequestBody defines body for DeleteThemeSource for application/json ContentType.
+type DeleteThemeSourceJSONRequestBody DeleteThemeSourceJSONBody
+
+// SaveThemeSourceJSONRequestBody defines body for SaveThemeSource for application/json ContentType.
+type SaveThemeSourceJSONRequestBody = ThemeSaveRequest
+
+// CreateWorkOrderJSONRequestBody defines body for CreateWorkOrder for application/json ContentType.
+type CreateWorkOrderJSONRequestBody = CreateWorkOrderRequest
 
 // PublishWorkflowJSONRequestBody defines body for PublishWorkflow for application/json ContentType.
 type PublishWorkflowJSONRequestBody = PublishWorkflowRequest
@@ -3458,7 +4352,10 @@ type ClientInterface interface {
 	GetAcpRun(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetAcpRunActivity request
-	GetAcpRunActivity(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAcpActivityContent request
+	GetAcpActivityContent(ctx context.Context, runId AcpRunId, eventId ActivityEventId, field GetAcpActivityContentParamsField, params *GetAcpActivityContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// CancelAcpRunWithBody request with any body
 	CancelAcpRunWithBody(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3470,6 +4367,12 @@ type ClientInterface interface {
 
 	// ListAgents request
 	ListAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAnalyticsExecutionDetailSnapshot request
+	GetAnalyticsExecutionDetailSnapshot(ctx context.Context, params *GetAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetAnalyticsSnapshot request
+	GetAnalyticsSnapshot(ctx context.Context, params *GetAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetArtifact request
 	GetArtifact(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3585,14 +4488,6 @@ type ClientInterface interface {
 	// GetDashboardSnapshot request
 	GetDashboardSnapshot(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// CreateDecreeWithBody request with any body
-	CreateDecreeWithBody(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	CreateDecree(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetDecree request
-	GetDecree(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// StreamEvents request
 	StreamEvents(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3619,14 +4514,17 @@ type ClientInterface interface {
 	// ListExternalSourceSnapshotComments request
 	ListExternalSourceSnapshotComments(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetExternalSourceDecreeText request
-	GetExternalSourceDecreeText(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	// GetExternalSourceWorkOrderText request
+	GetExternalSourceWorkOrderText(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetHealth request
 	GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetMetricsRuntime request
 	GetMetricsRuntime(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetMutationOutcome request
+	GetMutationOutcome(ctx context.Context, key string, params *GetMutationOutcomeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListPlanningSessions request
 	ListPlanningSessions(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3673,12 +4571,6 @@ type ClientInterface interface {
 	// ListProviderModels request
 	ListProviderModels(ctx context.Context, params *ListProviderModelsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
-	// GetRealmAnalyticsExecutionDetailSnapshot request
-	GetRealmAnalyticsExecutionDetailSnapshot(ctx context.Context, params *GetRealmAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
-	// GetRealmAnalyticsSnapshot request
-	GetRealmAnalyticsSnapshot(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error)
-
 	// ListRoles request
 	ListRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
 
@@ -3700,7 +4592,7 @@ type ClientInterface interface {
 	ListRunAgents(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// ListRunArtifacts request
-	ListRunArtifacts(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	ListRunArtifacts(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunArtifactsArchive request
 	GetRunArtifactsArchive(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3717,7 +4609,16 @@ type ClientInterface interface {
 	GetRunExecution(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// GetRunExecutionActivity request
-	GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error)
+	GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetRunActivityContent request
+	GetRunActivityContent(ctx context.Context, id RunId, attemptId AttemptId, eventId ActivityEventId, field GetRunActivityContentParamsField, params *GetRunActivityContentParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetExecutionInstructions request
+	GetExecutionInstructions(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListRunPublicationEntries request
+	ListRunPublicationEntries(ctx context.Context, id RunId, attemptId AttemptId, batchId string, params *ListRunPublicationEntriesParams, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// RetryExecutionStop request
 	RetryExecutionStop(ctx context.Context, id RunId, attemptId AttemptId, params *RetryExecutionStopParams, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3771,6 +4672,65 @@ type ClientInterface interface {
 
 	// GetRunTimeline request
 	GetRunTimeline(ctx context.Context, id RunId, params *GetRunTimelineParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ListThemes request
+	ListThemes(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ImportThemeWithBody request with any body
+	ImportThemeWithBody(ctx context.Context, params *ImportThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ImportTheme(ctx context.Context, params *ImportThemeParams, body ImportThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetThemeSchema request
+	GetThemeSchema(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ValidateThemeWithBody request with any body
+	ValidateThemeWithBody(ctx context.Context, params *ValidateThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ValidateTheme(ctx context.Context, params *ValidateThemeParams, body ValidateThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ValidateThemeArchiveWithBody request with any body
+	ValidateThemeArchiveWithBody(ctx context.Context, params *ValidateThemeArchiveParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	ValidateThemeArchive(ctx context.Context, params *ValidateThemeArchiveParams, body ValidateThemeArchiveJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// RemoveTheme request
+	RemoveTheme(ctx context.Context, id ThemeId, params *RemoveThemeParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// PublishThemeWithBody request with any body
+	PublishThemeWithBody(ctx context.Context, id ThemeId, params *PublishThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	PublishTheme(ctx context.Context, id ThemeId, params *PublishThemeParams, body PublishThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetThemeRevision request
+	GetThemeRevision(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetThemeAsset request
+	GetThemeAsset(ctx context.Context, id ThemeId, digest ThemeDigest, assetId string, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// ExportTheme request
+	ExportTheme(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// DeleteThemeSourceWithBody request with any body
+	DeleteThemeSourceWithBody(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	DeleteThemeSource(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, body DeleteThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetThemeSource request
+	GetThemeSource(ctx context.Context, id ThemeId, params *GetThemeSourceParams, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// SaveThemeSourceWithBody request with any body
+	SaveThemeSourceWithBody(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	SaveThemeSource(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, body SaveThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// CreateWorkOrderWithBody request with any body
+	CreateWorkOrderWithBody(ctx context.Context, params *CreateWorkOrderParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	CreateWorkOrder(ctx context.Context, params *CreateWorkOrderParams, body CreateWorkOrderJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error)
+
+	// GetWorkOrder request
+	GetWorkOrder(ctx context.Context, id WorkOrderId, reqEditors ...RequestEditorFn) (*http.Response, error)
 
 	// PublishWorkflowWithBody request with any body
 	PublishWorkflowWithBody(ctx context.Context, params *PublishWorkflowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error)
@@ -3841,8 +4801,20 @@ func (c *Client) GetAcpRun(ctx context.Context, runId AcpRunId, reqEditors ...Re
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetAcpRunActivity(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetAcpRunActivityRequest(c.Server, runId)
+func (c *Client) GetAcpRunActivity(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpRunActivityRequest(c.Server, runId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAcpActivityContent(ctx context.Context, runId AcpRunId, eventId ActivityEventId, field GetAcpActivityContentParamsField, params *GetAcpActivityContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAcpActivityContentRequest(c.Server, runId, eventId, field, params)
 	if err != nil {
 		return nil, err
 	}
@@ -3891,6 +4863,30 @@ func (c *Client) StreamAcpRunEvents(ctx context.Context, runId AcpRunId, params 
 
 func (c *Client) ListAgents(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListAgentsRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAnalyticsExecutionDetailSnapshot(ctx context.Context, params *GetAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAnalyticsExecutionDetailSnapshotRequest(c.Server, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetAnalyticsSnapshot(ctx context.Context, params *GetAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetAnalyticsSnapshotRequest(c.Server, params)
 	if err != nil {
 		return nil, err
 	}
@@ -4381,42 +5377,6 @@ func (c *Client) GetDashboardSnapshot(ctx context.Context, reqEditors ...Request
 	return c.Client.Do(req)
 }
 
-func (c *Client) CreateDecreeWithBody(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateDecreeRequestWithBody(c.Server, params, contentType, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) CreateDecree(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewCreateDecreeRequest(c.Server, params, body)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetDecree(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetDecreeRequest(c.Server, id)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
 func (c *Client) StreamEvents(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewStreamEventsRequest(c.Server, params)
 	if err != nil {
@@ -4525,8 +5485,8 @@ func (c *Client) ListExternalSourceSnapshotComments(ctx context.Context, id Snap
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetExternalSourceDecreeText(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetExternalSourceDecreeTextRequest(c.Server, id)
+func (c *Client) GetExternalSourceWorkOrderText(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExternalSourceWorkOrderTextRequest(c.Server, id)
 	if err != nil {
 		return nil, err
 	}
@@ -4551,6 +5511,18 @@ func (c *Client) GetHealth(ctx context.Context, reqEditors ...RequestEditorFn) (
 
 func (c *Client) GetMetricsRuntime(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewGetMetricsRuntimeRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetMutationOutcome(ctx context.Context, key string, params *GetMutationOutcomeParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetMutationOutcomeRequest(c.Server, key, params)
 	if err != nil {
 		return nil, err
 	}
@@ -4753,30 +5725,6 @@ func (c *Client) ListProviderModels(ctx context.Context, params *ListProviderMod
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRealmAnalyticsExecutionDetailSnapshot(ctx context.Context, params *GetRealmAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRealmAnalyticsExecutionDetailSnapshotRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
-func (c *Client) GetRealmAnalyticsSnapshot(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRealmAnalyticsSnapshotRequest(c.Server, params)
-	if err != nil {
-		return nil, err
-	}
-	req = req.WithContext(ctx)
-	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
-		return nil, err
-	}
-	return c.Client.Do(req)
-}
-
 func (c *Client) ListRoles(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewListRolesRequest(c.Server)
 	if err != nil {
@@ -4861,8 +5809,8 @@ func (c *Client) ListRunAgents(ctx context.Context, id RunId, reqEditors ...Requ
 	return c.Client.Do(req)
 }
 
-func (c *Client) ListRunArtifacts(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewListRunArtifactsRequest(c.Server, id)
+func (c *Client) ListRunArtifacts(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunArtifactsRequest(c.Server, id, params)
 	if err != nil {
 		return nil, err
 	}
@@ -4933,8 +5881,44 @@ func (c *Client) GetRunExecution(ctx context.Context, id RunId, attemptId Attemp
 	return c.Client.Do(req)
 }
 
-func (c *Client) GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error) {
-	req, err := NewGetRunExecutionActivityRequest(c.Server, id, attemptId)
+func (c *Client) GetRunExecutionActivity(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunExecutionActivityRequest(c.Server, id, attemptId, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetRunActivityContent(ctx context.Context, id RunId, attemptId AttemptId, eventId ActivityEventId, field GetRunActivityContentParamsField, params *GetRunActivityContentParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetRunActivityContentRequest(c.Server, id, attemptId, eventId, field, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetExecutionInstructions(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetExecutionInstructionsRequest(c.Server, id, attemptId)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ListRunPublicationEntries(ctx context.Context, id RunId, attemptId AttemptId, batchId string, params *ListRunPublicationEntriesParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListRunPublicationEntriesRequest(c.Server, id, attemptId, batchId, params)
 	if err != nil {
 		return nil, err
 	}
@@ -5173,6 +6157,270 @@ func (c *Client) GetRunTimeline(ctx context.Context, id RunId, params *GetRunTim
 	return c.Client.Do(req)
 }
 
+func (c *Client) ListThemes(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewListThemesRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportThemeWithBody(ctx context.Context, params *ImportThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportThemeRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ImportTheme(ctx context.Context, params *ImportThemeParams, body ImportThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewImportThemeRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetThemeSchema(ctx context.Context, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetThemeSchemaRequest(c.Server)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateThemeWithBody(ctx context.Context, params *ValidateThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateThemeRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateTheme(ctx context.Context, params *ValidateThemeParams, body ValidateThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateThemeRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateThemeArchiveWithBody(ctx context.Context, params *ValidateThemeArchiveParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateThemeArchiveRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ValidateThemeArchive(ctx context.Context, params *ValidateThemeArchiveParams, body ValidateThemeArchiveJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewValidateThemeArchiveRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) RemoveTheme(ctx context.Context, id ThemeId, params *RemoveThemeParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewRemoveThemeRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PublishThemeWithBody(ctx context.Context, id ThemeId, params *PublishThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPublishThemeRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) PublishTheme(ctx context.Context, id ThemeId, params *PublishThemeParams, body PublishThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewPublishThemeRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetThemeRevision(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetThemeRevisionRequest(c.Server, id, digest)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetThemeAsset(ctx context.Context, id ThemeId, digest ThemeDigest, assetId string, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetThemeAssetRequest(c.Server, id, digest, assetId)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) ExportTheme(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewExportThemeRequest(c.Server, id, digest)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteThemeSourceWithBody(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteThemeSourceRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) DeleteThemeSource(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, body DeleteThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewDeleteThemeSourceRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetThemeSource(ctx context.Context, id ThemeId, params *GetThemeSourceParams, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetThemeSourceRequest(c.Server, id, params)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SaveThemeSourceWithBody(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveThemeSourceRequestWithBody(c.Server, id, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) SaveThemeSource(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, body SaveThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewSaveThemeSourceRequest(c.Server, id, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateWorkOrderWithBody(ctx context.Context, params *CreateWorkOrderParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWorkOrderRequestWithBody(c.Server, params, contentType, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) CreateWorkOrder(ctx context.Context, params *CreateWorkOrderParams, body CreateWorkOrderJSONRequestBody, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewCreateWorkOrderRequest(c.Server, params, body)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
+func (c *Client) GetWorkOrder(ctx context.Context, id WorkOrderId, reqEditors ...RequestEditorFn) (*http.Response, error) {
+	req, err := NewGetWorkOrderRequest(c.Server, id)
+	if err != nil {
+		return nil, err
+	}
+	req = req.WithContext(ctx)
+	if err := c.applyEditors(ctx, req, reqEditors); err != nil {
+		return nil, err
+	}
+	return c.Client.Do(req)
+}
+
 func (c *Client) PublishWorkflowWithBody(ctx context.Context, params *PublishWorkflowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*http.Response, error) {
 	req, err := NewPublishWorkflowRequestWithBody(c.Server, params, contentType, body)
 	if err != nil {
@@ -5369,7 +6617,7 @@ func NewGetAcpRunRequest(server string, runId AcpRunId) (*http.Request, error) {
 }
 
 // NewGetAcpRunActivityRequest generates requests for GetAcpRunActivity
-func NewGetAcpRunActivityRequest(server string, runId AcpRunId) (*http.Request, error) {
+func NewGetAcpRunActivityRequest(server string, runId AcpRunId, params *GetAcpRunActivityParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -5392,6 +6640,130 @@ func NewGetAcpRunActivityRequest(server string, runId AcpRunId) (*http.Request, 
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetAcpActivityContentRequest generates requests for GetAcpActivityContent
+func NewGetAcpActivityContentRequest(server string, runId AcpRunId, eventId ActivityEventId, field GetAcpActivityContentParamsField, params *GetAcpActivityContentParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "runId", runtime.ParamLocationPath, runId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "eventId", runtime.ParamLocationPath, eventId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "field", runtime.ParamLocationPath, field)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/acp/runs/%s/activity/%s/content/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -5539,6 +6911,184 @@ func NewListAgentsRequest(server string) (*http.Request, error) {
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetAnalyticsExecutionDetailSnapshotRequest generates requests for GetAnalyticsExecutionDetailSnapshot
+func NewGetAnalyticsExecutionDetailSnapshotRequest(server string, params *GetAnalyticsExecutionDetailSnapshotParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/analytics/execution-detail")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.WindowMinutes != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "window_minutes", runtime.ParamLocationQuery, *params.WindowMinutes); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.StartAt != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "start_at", runtime.ParamLocationQuery, *params.StartAt); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.EndAt != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "end_at", runtime.ParamLocationQuery, *params.EndAt); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.RunId != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "run_id", runtime.ParamLocationQuery, *params.RunId); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetAnalyticsSnapshotRequest generates requests for GetAnalyticsSnapshot
+func NewGetAnalyticsSnapshotRequest(server string, params *GetAnalyticsSnapshotParams) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/analytics/snapshot")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.WindowMinutes != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "window_minutes", runtime.ParamLocationQuery, *params.WindowMinutes); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.StartAt != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "start_at", runtime.ParamLocationQuery, *params.StartAt); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.EndAt != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "end_at", runtime.ParamLocationQuery, *params.EndAt); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -7342,104 +8892,6 @@ func NewGetDashboardSnapshotRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
-// NewCreateDecreeRequest calls the generic CreateDecree builder with application/json body
-func NewCreateDecreeRequest(server string, params *CreateDecreeParams, body CreateDecreeJSONRequestBody) (*http.Request, error) {
-	var bodyReader io.Reader
-	buf, err := json.Marshal(body)
-	if err != nil {
-		return nil, err
-	}
-	bodyReader = bytes.NewReader(buf)
-	return NewCreateDecreeRequestWithBody(server, params, "application/json", bodyReader)
-}
-
-// NewCreateDecreeRequestWithBody generates requests for CreateDecree with any type of body
-func NewCreateDecreeRequestWithBody(server string, params *CreateDecreeParams, contentType string, body io.Reader) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/decrees")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("POST", queryURL.String(), body)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Add("Content-Type", contentType)
-
-	if params != nil {
-
-		var headerParam0 string
-
-		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-
-		req.Header.Set("Idempotency-Key", headerParam0)
-
-		if params.XCSRFToken != nil {
-			var headerParam1 string
-
-			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
-			if err != nil {
-				return nil, err
-			}
-
-			req.Header.Set("X-CSRF-Token", headerParam1)
-		}
-
-	}
-
-	return req, nil
-}
-
-// NewGetDecreeRequest generates requests for GetDecree
-func NewGetDecreeRequest(server string, id DecreeId) (*http.Request, error) {
-	var err error
-
-	var pathParam0 string
-
-	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
-	if err != nil {
-		return nil, err
-	}
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/decrees/%s", pathParam0)
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
 // NewStreamEventsRequest generates requests for StreamEvents
 func NewStreamEventsRequest(server string, params *StreamEventsParams) (*http.Request, error) {
 	var err error
@@ -7916,8 +9368,8 @@ func NewListExternalSourceSnapshotCommentsRequest(server string, id SnapshotId, 
 	return req, nil
 }
 
-// NewGetExternalSourceDecreeTextRequest generates requests for GetExternalSourceDecreeText
-func NewGetExternalSourceDecreeTextRequest(server string, id SnapshotId) (*http.Request, error) {
+// NewGetExternalSourceWorkOrderTextRequest generates requests for GetExternalSourceWorkOrderText
+func NewGetExternalSourceWorkOrderTextRequest(server string, id SnapshotId) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -7932,7 +9384,7 @@ func NewGetExternalSourceDecreeTextRequest(server string, id SnapshotId) (*http.
 		return nil, err
 	}
 
-	operationPath := fmt.Sprintf("/external-source-snapshots/%s/decree-text", pathParam0)
+	operationPath := fmt.Sprintf("/external-source-snapshots/%s/work-order-text", pathParam0)
 	if operationPath[0] == '/' {
 		operationPath = "." + operationPath
 	}
@@ -8004,6 +9456,58 @@ func NewGetMetricsRuntimeRequest(server string) (*http.Request, error) {
 	return req, nil
 }
 
+// NewGetMutationOutcomeRequest generates requests for GetMutationOutcome
+func NewGetMutationOutcomeRequest(server string, key string, params *GetMutationOutcomeParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "key", runtime.ParamLocationPath, key)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/mutation-outcomes/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if queryFrag, err := runtime.StyleParamWithLocation("form", true, "operation", runtime.ParamLocationQuery, params.Operation); err != nil {
+			return nil, err
+		} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+			return nil, err
+		} else {
+			for k, v := range parsed {
+				for _, v2 := range v {
+					queryValues.Add(k, v2)
+				}
+			}
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewListPlanningSessionsRequest generates requests for ListPlanningSessions
 func NewListPlanningSessionsRequest(server string, params *ListPlanningSessionsParams) (*http.Request, error) {
 	var err error
@@ -8045,6 +9549,22 @@ func NewListPlanningSessionsRequest(server string, params *ListPlanningSessionsP
 		if params.Cursor != nil {
 
 			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Q != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "q", runtime.ParamLocationQuery, *params.Q); err != nil {
 				return nil, err
 			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
 				return nil, err
@@ -8781,120 +10301,6 @@ func NewListProviderModelsRequest(server string, params *ListProviderModelsParam
 	return req, nil
 }
 
-// NewGetRealmAnalyticsExecutionDetailSnapshotRequest generates requests for GetRealmAnalyticsExecutionDetailSnapshot
-func NewGetRealmAnalyticsExecutionDetailSnapshotRequest(server string, params *GetRealmAnalyticsExecutionDetailSnapshotParams) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/realm-analytics/execution-detail")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-		queryValues := queryURL.Query()
-
-		if params.WindowMinutes != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "window_minutes", runtime.ParamLocationQuery, *params.WindowMinutes); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		if params.RunId != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "run_id", runtime.ParamLocationQuery, *params.RunId); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		queryURL.RawQuery = queryValues.Encode()
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
-// NewGetRealmAnalyticsSnapshotRequest generates requests for GetRealmAnalyticsSnapshot
-func NewGetRealmAnalyticsSnapshotRequest(server string, params *GetRealmAnalyticsSnapshotParams) (*http.Request, error) {
-	var err error
-
-	serverURL, err := url.Parse(server)
-	if err != nil {
-		return nil, err
-	}
-
-	operationPath := fmt.Sprintf("/realm-analytics/snapshot")
-	if operationPath[0] == '/' {
-		operationPath = "." + operationPath
-	}
-
-	queryURL, err := serverURL.Parse(operationPath)
-	if err != nil {
-		return nil, err
-	}
-
-	if params != nil {
-		queryValues := queryURL.Query()
-
-		if params.WindowMinutes != nil {
-
-			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "window_minutes", runtime.ParamLocationQuery, *params.WindowMinutes); err != nil {
-				return nil, err
-			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
-				return nil, err
-			} else {
-				for k, v := range parsed {
-					for _, v2 := range v {
-						queryValues.Add(k, v2)
-					}
-				}
-			}
-
-		}
-
-		queryURL.RawQuery = queryValues.Encode()
-	}
-
-	req, err := http.NewRequest("GET", queryURL.String(), nil)
-	if err != nil {
-		return nil, err
-	}
-
-	return req, nil
-}
-
 // NewListRolesRequest generates requests for ListRoles
 func NewListRolesRequest(server string) (*http.Request, error) {
 	var err error
@@ -9232,7 +10638,7 @@ func NewListRunAgentsRequest(server string, id RunId) (*http.Request, error) {
 }
 
 // NewListRunArtifactsRequest generates requests for ListRunArtifacts
-func NewListRunArtifactsRequest(server string, id RunId) (*http.Request, error) {
+func NewListRunArtifactsRequest(server string, id RunId, params *ListRunArtifactsParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -9255,6 +10661,76 @@ func NewListRunArtifactsRequest(server string, id RunId) (*http.Request, error) 
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.AttemptId != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "attempt_id", runtime.ParamLocationQuery, *params.AttemptId); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.AgentId != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "agent_id", runtime.ParamLocationQuery, *params.AgentId); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -9446,7 +10922,7 @@ func NewGetRunExecutionRequest(server string, id RunId, attemptId AttemptId) (*h
 }
 
 // NewGetRunExecutionActivityRequest generates requests for GetRunExecutionActivity
-func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId AttemptId) (*http.Request, error) {
+func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams) (*http.Request, error) {
 	var err error
 
 	var pathParam0 string
@@ -9476,6 +10952,264 @@ func NewGetRunExecutionActivityRequest(server string, id RunId, attemptId Attemp
 	queryURL, err := serverURL.Parse(operationPath)
 	if err != nil {
 		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetRunActivityContentRequest generates requests for GetRunActivityContent
+func NewGetRunActivityContentRequest(server string, id RunId, attemptId AttemptId, eventId ActivityEventId, field GetRunActivityContentParamsField, params *GetRunActivityContentParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "attemptId", runtime.ParamLocationPath, attemptId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "eventId", runtime.ParamLocationPath, eventId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam3 string
+
+	pathParam3, err = runtime.StyleParamWithLocation("simple", false, "field", runtime.ParamLocationPath, field)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/runs/%s/executions/%s/activity/%s/content/%s", pathParam0, pathParam1, pathParam2, pathParam3)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetExecutionInstructionsRequest generates requests for GetExecutionInstructions
+func NewGetExecutionInstructionsRequest(server string, id RunId, attemptId AttemptId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "attemptId", runtime.ParamLocationPath, attemptId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/runs/%s/executions/%s/instructions", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewListRunPublicationEntriesRequest generates requests for ListRunPublicationEntries
+func NewListRunPublicationEntriesRequest(server string, id RunId, attemptId AttemptId, batchId string, params *ListRunPublicationEntriesParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "attemptId", runtime.ParamLocationPath, attemptId)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "batchId", runtime.ParamLocationPath, batchId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/runs/%s/executions/%s/publication/%s/entries", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Cursor != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "cursor", runtime.ParamLocationQuery, *params.Cursor); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		if params.Limit != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "limit", runtime.ParamLocationQuery, *params.Limit); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
 	}
 
 	req, err := http.NewRequest("GET", queryURL.String(), nil)
@@ -10495,6 +12229,807 @@ func NewGetRunTimelineRequest(server string, id RunId, params *GetRunTimelinePar
 	return req, nil
 }
 
+// NewListThemesRequest generates requests for ListThemes
+func NewListThemesRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewImportThemeRequest calls the generic ImportTheme builder with application/json body
+func NewImportThemeRequest(server string, params *ImportThemeParams, body ImportThemeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewImportThemeRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewImportThemeRequestWithBody generates requests for ImportTheme with any type of body
+func NewImportThemeRequestWithBody(server string, params *ImportThemeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/import")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetThemeSchemaRequest generates requests for GetThemeSchema
+func NewGetThemeSchemaRequest(server string) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/schema")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewValidateThemeRequest calls the generic ValidateTheme builder with application/json body
+func NewValidateThemeRequest(server string, params *ValidateThemeParams, body ValidateThemeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewValidateThemeRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewValidateThemeRequestWithBody generates requests for ValidateTheme with any type of body
+func NewValidateThemeRequestWithBody(server string, params *ValidateThemeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/validate")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewValidateThemeArchiveRequest calls the generic ValidateThemeArchive builder with application/json body
+func NewValidateThemeArchiveRequest(server string, params *ValidateThemeArchiveParams, body ValidateThemeArchiveJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewValidateThemeArchiveRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewValidateThemeArchiveRequestWithBody generates requests for ValidateThemeArchive with any type of body
+func NewValidateThemeArchiveRequestWithBody(server string, params *ValidateThemeArchiveParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/validate-archive")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewRemoveThemeRequest generates requests for RemoveTheme
+func NewRemoveThemeRequest(server string, id ThemeId, params *RemoveThemeParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewPublishThemeRequest calls the generic PublishTheme builder with application/json body
+func NewPublishThemeRequest(server string, id ThemeId, params *PublishThemeParams, body PublishThemeJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewPublishThemeRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewPublishThemeRequestWithBody generates requests for PublishTheme with any type of body
+func NewPublishThemeRequestWithBody(server string, id ThemeId, params *PublishThemeParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/publish", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetThemeRevisionRequest generates requests for GetThemeRevision
+func NewGetThemeRevisionRequest(server string, id ThemeId, digest ThemeDigest) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "digest", runtime.ParamLocationPath, digest)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/revisions/%s", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewGetThemeAssetRequest generates requests for GetThemeAsset
+func NewGetThemeAssetRequest(server string, id ThemeId, digest ThemeDigest, assetId string) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "digest", runtime.ParamLocationPath, digest)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam2 string
+
+	pathParam2, err = runtime.StyleParamWithLocation("simple", false, "assetId", runtime.ParamLocationPath, assetId)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/revisions/%s/assets/%s", pathParam0, pathParam1, pathParam2)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewExportThemeRequest generates requests for ExportTheme
+func NewExportThemeRequest(server string, id ThemeId, digest ThemeDigest) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	var pathParam1 string
+
+	pathParam1, err = runtime.StyleParamWithLocation("simple", false, "digest", runtime.ParamLocationPath, digest)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/revisions/%s/export", pathParam0, pathParam1)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewDeleteThemeSourceRequest calls the generic DeleteThemeSource builder with application/json body
+func NewDeleteThemeSourceRequest(server string, id ThemeId, params *DeleteThemeSourceParams, body DeleteThemeSourceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewDeleteThemeSourceRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewDeleteThemeSourceRequestWithBody generates requests for DeleteThemeSource with any type of body
+func NewDeleteThemeSourceRequestWithBody(server string, id ThemeId, params *DeleteThemeSourceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/source", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("DELETE", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetThemeSourceRequest generates requests for GetThemeSource
+func NewGetThemeSourceRequest(server string, id ThemeId, params *GetThemeSourceParams) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/source", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	if params != nil {
+		queryValues := queryURL.Query()
+
+		if params.Revision != nil {
+
+			if queryFrag, err := runtime.StyleParamWithLocation("form", true, "revision", runtime.ParamLocationQuery, *params.Revision); err != nil {
+				return nil, err
+			} else if parsed, err := url.ParseQuery(queryFrag); err != nil {
+				return nil, err
+			} else {
+				for k, v := range parsed {
+					for _, v2 := range v {
+						queryValues.Add(k, v2)
+					}
+				}
+			}
+
+		}
+
+		queryURL.RawQuery = queryValues.Encode()
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
+// NewSaveThemeSourceRequest calls the generic SaveThemeSource builder with application/json body
+func NewSaveThemeSourceRequest(server string, id ThemeId, params *SaveThemeSourceParams, body SaveThemeSourceJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewSaveThemeSourceRequestWithBody(server, id, params, "application/json", bodyReader)
+}
+
+// NewSaveThemeSourceRequestWithBody generates requests for SaveThemeSource with any type of body
+func NewSaveThemeSourceRequestWithBody(server string, id ThemeId, params *SaveThemeSourceParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/themes/%s/source", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("PUT", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewCreateWorkOrderRequest calls the generic CreateWorkOrder builder with application/json body
+func NewCreateWorkOrderRequest(server string, params *CreateWorkOrderParams, body CreateWorkOrderJSONRequestBody) (*http.Request, error) {
+	var bodyReader io.Reader
+	buf, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
+	bodyReader = bytes.NewReader(buf)
+	return NewCreateWorkOrderRequestWithBody(server, params, "application/json", bodyReader)
+}
+
+// NewCreateWorkOrderRequestWithBody generates requests for CreateWorkOrder with any type of body
+func NewCreateWorkOrderRequestWithBody(server string, params *CreateWorkOrderParams, contentType string, body io.Reader) (*http.Request, error) {
+	var err error
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/work-orders")
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("POST", queryURL.String(), body)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Add("Content-Type", contentType)
+
+	if params != nil {
+
+		var headerParam0 string
+
+		headerParam0, err = runtime.StyleParamWithLocation("simple", false, "Idempotency-Key", runtime.ParamLocationHeader, params.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Idempotency-Key", headerParam0)
+
+		if params.XCSRFToken != nil {
+			var headerParam1 string
+
+			headerParam1, err = runtime.StyleParamWithLocation("simple", false, "X-CSRF-Token", runtime.ParamLocationHeader, *params.XCSRFToken)
+			if err != nil {
+				return nil, err
+			}
+
+			req.Header.Set("X-CSRF-Token", headerParam1)
+		}
+
+	}
+
+	return req, nil
+}
+
+// NewGetWorkOrderRequest generates requests for GetWorkOrder
+func NewGetWorkOrderRequest(server string, id WorkOrderId) (*http.Request, error) {
+	var err error
+
+	var pathParam0 string
+
+	pathParam0, err = runtime.StyleParamWithLocation("simple", false, "id", runtime.ParamLocationPath, id)
+	if err != nil {
+		return nil, err
+	}
+
+	serverURL, err := url.Parse(server)
+	if err != nil {
+		return nil, err
+	}
+
+	operationPath := fmt.Sprintf("/work-orders/%s", pathParam0)
+	if operationPath[0] == '/' {
+		operationPath = "." + operationPath
+	}
+
+	queryURL, err := serverURL.Parse(operationPath)
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequest("GET", queryURL.String(), nil)
+	if err != nil {
+		return nil, err
+	}
+
+	return req, nil
+}
+
 // NewPublishWorkflowRequest calls the generic PublishWorkflow builder with application/json body
 func NewPublishWorkflowRequest(server string, params *PublishWorkflowParams, body PublishWorkflowJSONRequestBody) (*http.Request, error) {
 	var bodyReader io.Reader
@@ -10644,7 +13179,10 @@ type ClientWithResponsesInterface interface {
 	GetAcpRunWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunResponse, error)
 
 	// GetAcpRunActivityWithResponse request
-	GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error)
+	GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error)
+
+	// GetAcpActivityContentWithResponse request
+	GetAcpActivityContentWithResponse(ctx context.Context, runId AcpRunId, eventId ActivityEventId, field GetAcpActivityContentParamsField, params *GetAcpActivityContentParams, reqEditors ...RequestEditorFn) (*GetAcpActivityContentResponse, error)
 
 	// CancelAcpRunWithBodyWithResponse request with any body
 	CancelAcpRunWithBodyWithResponse(ctx context.Context, runId AcpRunId, params *CancelAcpRunParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CancelAcpRunResponse, error)
@@ -10656,6 +13194,12 @@ type ClientWithResponsesInterface interface {
 
 	// ListAgentsWithResponse request
 	ListAgentsWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListAgentsResponse, error)
+
+	// GetAnalyticsExecutionDetailSnapshotWithResponse request
+	GetAnalyticsExecutionDetailSnapshotWithResponse(ctx context.Context, params *GetAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*GetAnalyticsExecutionDetailSnapshotResponse, error)
+
+	// GetAnalyticsSnapshotWithResponse request
+	GetAnalyticsSnapshotWithResponse(ctx context.Context, params *GetAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*GetAnalyticsSnapshotResponse, error)
 
 	// GetArtifactWithResponse request
 	GetArtifactWithResponse(ctx context.Context, id ArtifactId, reqEditors ...RequestEditorFn) (*GetArtifactResponse, error)
@@ -10771,14 +13315,6 @@ type ClientWithResponsesInterface interface {
 	// GetDashboardSnapshotWithResponse request
 	GetDashboardSnapshotWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetDashboardSnapshotResponse, error)
 
-	// CreateDecreeWithBodyWithResponse request with any body
-	CreateDecreeWithBodyWithResponse(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error)
-
-	CreateDecreeWithResponse(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error)
-
-	// GetDecreeWithResponse request
-	GetDecreeWithResponse(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error)
-
 	// StreamEventsWithResponse request
 	StreamEventsWithResponse(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*StreamEventsResponse, error)
 
@@ -10805,14 +13341,17 @@ type ClientWithResponsesInterface interface {
 	// ListExternalSourceSnapshotCommentsWithResponse request
 	ListExternalSourceSnapshotCommentsWithResponse(ctx context.Context, id SnapshotId, params *ListExternalSourceSnapshotCommentsParams, reqEditors ...RequestEditorFn) (*ListExternalSourceSnapshotCommentsResponse, error)
 
-	// GetExternalSourceDecreeTextWithResponse request
-	GetExternalSourceDecreeTextWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceDecreeTextResponse, error)
+	// GetExternalSourceWorkOrderTextWithResponse request
+	GetExternalSourceWorkOrderTextWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceWorkOrderTextResponse, error)
 
 	// GetHealthWithResponse request
 	GetHealthWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetHealthResponse, error)
 
 	// GetMetricsRuntimeWithResponse request
 	GetMetricsRuntimeWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetMetricsRuntimeResponse, error)
+
+	// GetMutationOutcomeWithResponse request
+	GetMutationOutcomeWithResponse(ctx context.Context, key string, params *GetMutationOutcomeParams, reqEditors ...RequestEditorFn) (*GetMutationOutcomeResponse, error)
 
 	// ListPlanningSessionsWithResponse request
 	ListPlanningSessionsWithResponse(ctx context.Context, params *ListPlanningSessionsParams, reqEditors ...RequestEditorFn) (*ListPlanningSessionsResponse, error)
@@ -10859,12 +13398,6 @@ type ClientWithResponsesInterface interface {
 	// ListProviderModelsWithResponse request
 	ListProviderModelsWithResponse(ctx context.Context, params *ListProviderModelsParams, reqEditors ...RequestEditorFn) (*ListProviderModelsResponse, error)
 
-	// GetRealmAnalyticsExecutionDetailSnapshotWithResponse request
-	GetRealmAnalyticsExecutionDetailSnapshotWithResponse(ctx context.Context, params *GetRealmAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*GetRealmAnalyticsExecutionDetailSnapshotResponse, error)
-
-	// GetRealmAnalyticsSnapshotWithResponse request
-	GetRealmAnalyticsSnapshotWithResponse(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*GetRealmAnalyticsSnapshotResponse, error)
-
 	// ListRolesWithResponse request
 	ListRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRolesResponse, error)
 
@@ -10886,7 +13419,7 @@ type ClientWithResponsesInterface interface {
 	ListRunAgentsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunAgentsResponse, error)
 
 	// ListRunArtifactsWithResponse request
-	ListRunArtifactsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error)
+	ListRunArtifactsWithResponse(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error)
 
 	// GetRunArtifactsArchiveWithResponse request
 	GetRunArtifactsArchiveWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*GetRunArtifactsArchiveResponse, error)
@@ -10903,7 +13436,16 @@ type ClientWithResponsesInterface interface {
 	GetRunExecutionWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionResponse, error)
 
 	// GetRunExecutionActivityWithResponse request
-	GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error)
+	GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error)
+
+	// GetRunActivityContentWithResponse request
+	GetRunActivityContentWithResponse(ctx context.Context, id RunId, attemptId AttemptId, eventId ActivityEventId, field GetRunActivityContentParamsField, params *GetRunActivityContentParams, reqEditors ...RequestEditorFn) (*GetRunActivityContentResponse, error)
+
+	// GetExecutionInstructionsWithResponse request
+	GetExecutionInstructionsWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetExecutionInstructionsResponse, error)
+
+	// ListRunPublicationEntriesWithResponse request
+	ListRunPublicationEntriesWithResponse(ctx context.Context, id RunId, attemptId AttemptId, batchId string, params *ListRunPublicationEntriesParams, reqEditors ...RequestEditorFn) (*ListRunPublicationEntriesResponse, error)
 
 	// RetryExecutionStopWithResponse request
 	RetryExecutionStopWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *RetryExecutionStopParams, reqEditors ...RequestEditorFn) (*RetryExecutionStopResponse, error)
@@ -10957,6 +13499,65 @@ type ClientWithResponsesInterface interface {
 
 	// GetRunTimelineWithResponse request
 	GetRunTimelineWithResponse(ctx context.Context, id RunId, params *GetRunTimelineParams, reqEditors ...RequestEditorFn) (*GetRunTimelineResponse, error)
+
+	// ListThemesWithResponse request
+	ListThemesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListThemesResponse, error)
+
+	// ImportThemeWithBodyWithResponse request with any body
+	ImportThemeWithBodyWithResponse(ctx context.Context, params *ImportThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportThemeResponse, error)
+
+	ImportThemeWithResponse(ctx context.Context, params *ImportThemeParams, body ImportThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportThemeResponse, error)
+
+	// GetThemeSchemaWithResponse request
+	GetThemeSchemaWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetThemeSchemaResponse, error)
+
+	// ValidateThemeWithBodyWithResponse request with any body
+	ValidateThemeWithBodyWithResponse(ctx context.Context, params *ValidateThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateThemeResponse, error)
+
+	ValidateThemeWithResponse(ctx context.Context, params *ValidateThemeParams, body ValidateThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateThemeResponse, error)
+
+	// ValidateThemeArchiveWithBodyWithResponse request with any body
+	ValidateThemeArchiveWithBodyWithResponse(ctx context.Context, params *ValidateThemeArchiveParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateThemeArchiveResponse, error)
+
+	ValidateThemeArchiveWithResponse(ctx context.Context, params *ValidateThemeArchiveParams, body ValidateThemeArchiveJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateThemeArchiveResponse, error)
+
+	// RemoveThemeWithResponse request
+	RemoveThemeWithResponse(ctx context.Context, id ThemeId, params *RemoveThemeParams, reqEditors ...RequestEditorFn) (*RemoveThemeResponse, error)
+
+	// PublishThemeWithBodyWithResponse request with any body
+	PublishThemeWithBodyWithResponse(ctx context.Context, id ThemeId, params *PublishThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PublishThemeResponse, error)
+
+	PublishThemeWithResponse(ctx context.Context, id ThemeId, params *PublishThemeParams, body PublishThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*PublishThemeResponse, error)
+
+	// GetThemeRevisionWithResponse request
+	GetThemeRevisionWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*GetThemeRevisionResponse, error)
+
+	// GetThemeAssetWithResponse request
+	GetThemeAssetWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, assetId string, reqEditors ...RequestEditorFn) (*GetThemeAssetResponse, error)
+
+	// ExportThemeWithResponse request
+	ExportThemeWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*ExportThemeResponse, error)
+
+	// DeleteThemeSourceWithBodyWithResponse request with any body
+	DeleteThemeSourceWithBodyWithResponse(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteThemeSourceResponse, error)
+
+	DeleteThemeSourceWithResponse(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, body DeleteThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteThemeSourceResponse, error)
+
+	// GetThemeSourceWithResponse request
+	GetThemeSourceWithResponse(ctx context.Context, id ThemeId, params *GetThemeSourceParams, reqEditors ...RequestEditorFn) (*GetThemeSourceResponse, error)
+
+	// SaveThemeSourceWithBodyWithResponse request with any body
+	SaveThemeSourceWithBodyWithResponse(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SaveThemeSourceResponse, error)
+
+	SaveThemeSourceWithResponse(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, body SaveThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*SaveThemeSourceResponse, error)
+
+	// CreateWorkOrderWithBodyWithResponse request with any body
+	CreateWorkOrderWithBodyWithResponse(ctx context.Context, params *CreateWorkOrderParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWorkOrderResponse, error)
+
+	CreateWorkOrderWithResponse(ctx context.Context, params *CreateWorkOrderParams, body CreateWorkOrderJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWorkOrderResponse, error)
+
+	// GetWorkOrderWithResponse request
+	GetWorkOrderWithResponse(ctx context.Context, id WorkOrderId, reqEditors ...RequestEditorFn) (*GetWorkOrderResponse, error)
 
 	// PublishWorkflowWithBodyWithResponse request with any body
 	PublishWorkflowWithBodyWithResponse(ctx context.Context, params *PublishWorkflowParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PublishWorkflowResponse, error)
@@ -11096,6 +13697,31 @@ func (r GetAcpRunActivityResponse) StatusCode() int {
 	return 0
 }
 
+type GetAcpActivityContentResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ActivityContentPage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAcpActivityContentResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAcpActivityContentResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type CancelAcpRunResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -11166,6 +13792,57 @@ func (r ListAgentsResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r ListAgentsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetAnalyticsExecutionDetailSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AnalyticsExecutionDetailSnapshot
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAnalyticsExecutionDetailSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAnalyticsExecutionDetailSnapshotResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetAnalyticsSnapshotResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *AnalyticsSnapshot
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetAnalyticsSnapshotResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetAnalyticsSnapshotResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -12034,59 +14711,6 @@ func (r GetDashboardSnapshotResponse) StatusCode() int {
 	return 0
 }
 
-type CreateDecreeResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON201      *CreateDecreeResult
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSON409      *ConflictError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r CreateDecreeResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r CreateDecreeResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type GetDecreeResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *DecreeDetail
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetDecreeResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetDecreeResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
 type StreamEventsResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -12290,17 +14914,17 @@ func (r ListExternalSourceSnapshotCommentsResponse) StatusCode() int {
 	return 0
 }
 
-type GetExternalSourceDecreeTextResponse struct {
+type GetExternalSourceWorkOrderTextResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
-	JSON200      *ExternalDecreeText
+	JSON200      *ExternalWorkOrderText
 	JSON400      *BadRequestError
 	JSON401      *UnauthorizedError
 	JSONDefault  *ErrorResponse
 }
 
 // Status returns HTTPResponse.Status
-func (r GetExternalSourceDecreeTextResponse) Status() string {
+func (r GetExternalSourceWorkOrderTextResponse) Status() string {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.Status
 	}
@@ -12308,7 +14932,7 @@ func (r GetExternalSourceDecreeTextResponse) Status() string {
 }
 
 // StatusCode returns HTTPResponse.StatusCode
-func (r GetExternalSourceDecreeTextResponse) StatusCode() int {
+func (r GetExternalSourceWorkOrderTextResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -12359,6 +14983,31 @@ func (r GetMetricsRuntimeResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetMetricsRuntimeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetMutationOutcomeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *MutationOutcome
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetMutationOutcomeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetMutationOutcomeResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -12702,57 +15351,6 @@ func (r ListProviderModelsResponse) StatusCode() int {
 	return 0
 }
 
-type GetRealmAnalyticsExecutionDetailSnapshotResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *RealmAnalyticsExecutionDetailSnapshot
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSON404      *NotFoundError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetRealmAnalyticsExecutionDetailSnapshotResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetRealmAnalyticsExecutionDetailSnapshotResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
-type GetRealmAnalyticsSnapshotResponse struct {
-	Body         []byte
-	HTTPResponse *http.Response
-	JSON200      *RealmAnalyticsSnapshot
-	JSON400      *BadRequestError
-	JSON401      *UnauthorizedError
-	JSONDefault  *ErrorResponse
-}
-
-// Status returns HTTPResponse.Status
-func (r GetRealmAnalyticsSnapshotResponse) Status() string {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.Status
-	}
-	return http.StatusText(0)
-}
-
-// StatusCode returns HTTPResponse.StatusCode
-func (r GetRealmAnalyticsSnapshotResponse) StatusCode() int {
-	if r.HTTPResponse != nil {
-		return r.HTTPResponse.StatusCode
-	}
-	return 0
-}
-
 type ListRolesResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -12910,6 +15508,8 @@ type ListRunArtifactsResponse struct {
 	JSON200      *RunArtifactsResponse
 	JSON400      *BadRequestError
 	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSON409      *ConflictError
 	JSONDefault  *ErrorResponse
 }
 
@@ -13050,6 +15650,83 @@ func (r GetRunExecutionActivityResponse) Status() string {
 
 // StatusCode returns HTTPResponse.StatusCode
 func (r GetRunExecutionActivityResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetRunActivityContentResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ActivityContentPage
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetRunActivityContentResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetRunActivityContentResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetExecutionInstructionsResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *ErrorEnvelope
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetExecutionInstructionsResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetExecutionInstructionsResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ListRunPublicationEntriesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *RunPublicationEntriesResponse
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListRunPublicationEntriesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListRunPublicationEntriesResponse) StatusCode() int {
 	if r.HTTPResponse != nil {
 		return r.HTTPResponse.StatusCode
 	}
@@ -13444,6 +16121,386 @@ func (r GetRunTimelineResponse) StatusCode() int {
 	return 0
 }
 
+type ListThemesResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ThemeCatalog
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ListThemesResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ListThemesResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ImportThemeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ResolvedTheme
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ImportThemeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ImportThemeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetThemeSchemaResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *map[string]interface{}
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetThemeSchemaResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetThemeSchemaResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ValidateThemeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResolvedTheme
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ValidateThemeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ValidateThemeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ValidateThemeArchiveResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResolvedTheme
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ValidateThemeArchiveResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ValidateThemeArchiveResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type RemoveThemeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r RemoveThemeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r RemoveThemeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type PublishThemeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *ResolvedTheme
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r PublishThemeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r PublishThemeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetThemeRevisionResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ResolvedTheme
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetThemeRevisionResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetThemeRevisionResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetThemeAssetResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetThemeAssetResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetThemeAssetResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type ExportThemeResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r ExportThemeResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r ExportThemeResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type DeleteThemeSourceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r DeleteThemeSourceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r DeleteThemeSourceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetThemeSourceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ThemeSource
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetThemeSourceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetThemeSourceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type SaveThemeSourceResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *ThemeSource
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON413      *ErrorResponse
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r SaveThemeSourceResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r SaveThemeSourceResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type CreateWorkOrderResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON201      *CreateWorkOrderResult
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSON409      *ConflictError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r CreateWorkOrderResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r CreateWorkOrderResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
+type GetWorkOrderResponse struct {
+	Body         []byte
+	HTTPResponse *http.Response
+	JSON200      *WorkOrderDetail
+	JSON400      *BadRequestError
+	JSON401      *UnauthorizedError
+	JSON404      *NotFoundError
+	JSONDefault  *ErrorResponse
+}
+
+// Status returns HTTPResponse.Status
+func (r GetWorkOrderResponse) Status() string {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.Status
+	}
+	return http.StatusText(0)
+}
+
+// StatusCode returns HTTPResponse.StatusCode
+func (r GetWorkOrderResponse) StatusCode() int {
+	if r.HTTPResponse != nil {
+		return r.HTTPResponse.StatusCode
+	}
+	return 0
+}
+
 type PublishWorkflowResponse struct {
 	Body         []byte
 	HTTPResponse *http.Response
@@ -13539,12 +16596,21 @@ func (c *ClientWithResponses) GetAcpRunWithResponse(ctx context.Context, runId A
 }
 
 // GetAcpRunActivityWithResponse request returning *GetAcpRunActivityResponse
-func (c *ClientWithResponses) GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error) {
-	rsp, err := c.GetAcpRunActivity(ctx, runId, reqEditors...)
+func (c *ClientWithResponses) GetAcpRunActivityWithResponse(ctx context.Context, runId AcpRunId, params *GetAcpRunActivityParams, reqEditors ...RequestEditorFn) (*GetAcpRunActivityResponse, error) {
+	rsp, err := c.GetAcpRunActivity(ctx, runId, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseGetAcpRunActivityResponse(rsp)
+}
+
+// GetAcpActivityContentWithResponse request returning *GetAcpActivityContentResponse
+func (c *ClientWithResponses) GetAcpActivityContentWithResponse(ctx context.Context, runId AcpRunId, eventId ActivityEventId, field GetAcpActivityContentParamsField, params *GetAcpActivityContentParams, reqEditors ...RequestEditorFn) (*GetAcpActivityContentResponse, error) {
+	rsp, err := c.GetAcpActivityContent(ctx, runId, eventId, field, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAcpActivityContentResponse(rsp)
 }
 
 // CancelAcpRunWithBodyWithResponse request with arbitrary body returning *CancelAcpRunResponse
@@ -13580,6 +16646,24 @@ func (c *ClientWithResponses) ListAgentsWithResponse(ctx context.Context, reqEdi
 		return nil, err
 	}
 	return ParseListAgentsResponse(rsp)
+}
+
+// GetAnalyticsExecutionDetailSnapshotWithResponse request returning *GetAnalyticsExecutionDetailSnapshotResponse
+func (c *ClientWithResponses) GetAnalyticsExecutionDetailSnapshotWithResponse(ctx context.Context, params *GetAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*GetAnalyticsExecutionDetailSnapshotResponse, error) {
+	rsp, err := c.GetAnalyticsExecutionDetailSnapshot(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAnalyticsExecutionDetailSnapshotResponse(rsp)
+}
+
+// GetAnalyticsSnapshotWithResponse request returning *GetAnalyticsSnapshotResponse
+func (c *ClientWithResponses) GetAnalyticsSnapshotWithResponse(ctx context.Context, params *GetAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*GetAnalyticsSnapshotResponse, error) {
+	rsp, err := c.GetAnalyticsSnapshot(ctx, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetAnalyticsSnapshotResponse(rsp)
 }
 
 // GetArtifactWithResponse request returning *GetArtifactResponse
@@ -13936,32 +17020,6 @@ func (c *ClientWithResponses) GetDashboardSnapshotWithResponse(ctx context.Conte
 	return ParseGetDashboardSnapshotResponse(rsp)
 }
 
-// CreateDecreeWithBodyWithResponse request with arbitrary body returning *CreateDecreeResponse
-func (c *ClientWithResponses) CreateDecreeWithBodyWithResponse(ctx context.Context, params *CreateDecreeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error) {
-	rsp, err := c.CreateDecreeWithBody(ctx, params, contentType, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseCreateDecreeResponse(rsp)
-}
-
-func (c *ClientWithResponses) CreateDecreeWithResponse(ctx context.Context, params *CreateDecreeParams, body CreateDecreeJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateDecreeResponse, error) {
-	rsp, err := c.CreateDecree(ctx, params, body, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseCreateDecreeResponse(rsp)
-}
-
-// GetDecreeWithResponse request returning *GetDecreeResponse
-func (c *ClientWithResponses) GetDecreeWithResponse(ctx context.Context, id DecreeId, reqEditors ...RequestEditorFn) (*GetDecreeResponse, error) {
-	rsp, err := c.GetDecree(ctx, id, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetDecreeResponse(rsp)
-}
-
 // StreamEventsWithResponse request returning *StreamEventsResponse
 func (c *ClientWithResponses) StreamEventsWithResponse(ctx context.Context, params *StreamEventsParams, reqEditors ...RequestEditorFn) (*StreamEventsResponse, error) {
 	rsp, err := c.StreamEvents(ctx, params, reqEditors...)
@@ -14042,13 +17100,13 @@ func (c *ClientWithResponses) ListExternalSourceSnapshotCommentsWithResponse(ctx
 	return ParseListExternalSourceSnapshotCommentsResponse(rsp)
 }
 
-// GetExternalSourceDecreeTextWithResponse request returning *GetExternalSourceDecreeTextResponse
-func (c *ClientWithResponses) GetExternalSourceDecreeTextWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceDecreeTextResponse, error) {
-	rsp, err := c.GetExternalSourceDecreeText(ctx, id, reqEditors...)
+// GetExternalSourceWorkOrderTextWithResponse request returning *GetExternalSourceWorkOrderTextResponse
+func (c *ClientWithResponses) GetExternalSourceWorkOrderTextWithResponse(ctx context.Context, id SnapshotId, reqEditors ...RequestEditorFn) (*GetExternalSourceWorkOrderTextResponse, error) {
+	rsp, err := c.GetExternalSourceWorkOrderText(ctx, id, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
-	return ParseGetExternalSourceDecreeTextResponse(rsp)
+	return ParseGetExternalSourceWorkOrderTextResponse(rsp)
 }
 
 // GetHealthWithResponse request returning *GetHealthResponse
@@ -14067,6 +17125,15 @@ func (c *ClientWithResponses) GetMetricsRuntimeWithResponse(ctx context.Context,
 		return nil, err
 	}
 	return ParseGetMetricsRuntimeResponse(rsp)
+}
+
+// GetMutationOutcomeWithResponse request returning *GetMutationOutcomeResponse
+func (c *ClientWithResponses) GetMutationOutcomeWithResponse(ctx context.Context, key string, params *GetMutationOutcomeParams, reqEditors ...RequestEditorFn) (*GetMutationOutcomeResponse, error) {
+	rsp, err := c.GetMutationOutcome(ctx, key, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetMutationOutcomeResponse(rsp)
 }
 
 // ListPlanningSessionsWithResponse request returning *ListPlanningSessionsResponse
@@ -14210,24 +17277,6 @@ func (c *ClientWithResponses) ListProviderModelsWithResponse(ctx context.Context
 	return ParseListProviderModelsResponse(rsp)
 }
 
-// GetRealmAnalyticsExecutionDetailSnapshotWithResponse request returning *GetRealmAnalyticsExecutionDetailSnapshotResponse
-func (c *ClientWithResponses) GetRealmAnalyticsExecutionDetailSnapshotWithResponse(ctx context.Context, params *GetRealmAnalyticsExecutionDetailSnapshotParams, reqEditors ...RequestEditorFn) (*GetRealmAnalyticsExecutionDetailSnapshotResponse, error) {
-	rsp, err := c.GetRealmAnalyticsExecutionDetailSnapshot(ctx, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetRealmAnalyticsExecutionDetailSnapshotResponse(rsp)
-}
-
-// GetRealmAnalyticsSnapshotWithResponse request returning *GetRealmAnalyticsSnapshotResponse
-func (c *ClientWithResponses) GetRealmAnalyticsSnapshotWithResponse(ctx context.Context, params *GetRealmAnalyticsSnapshotParams, reqEditors ...RequestEditorFn) (*GetRealmAnalyticsSnapshotResponse, error) {
-	rsp, err := c.GetRealmAnalyticsSnapshot(ctx, params, reqEditors...)
-	if err != nil {
-		return nil, err
-	}
-	return ParseGetRealmAnalyticsSnapshotResponse(rsp)
-}
-
 // ListRolesWithResponse request returning *ListRolesResponse
 func (c *ClientWithResponses) ListRolesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListRolesResponse, error) {
 	rsp, err := c.ListRoles(ctx, reqEditors...)
@@ -14291,8 +17340,8 @@ func (c *ClientWithResponses) ListRunAgentsWithResponse(ctx context.Context, id 
 }
 
 // ListRunArtifactsWithResponse request returning *ListRunArtifactsResponse
-func (c *ClientWithResponses) ListRunArtifactsWithResponse(ctx context.Context, id RunId, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error) {
-	rsp, err := c.ListRunArtifacts(ctx, id, reqEditors...)
+func (c *ClientWithResponses) ListRunArtifactsWithResponse(ctx context.Context, id RunId, params *ListRunArtifactsParams, reqEditors ...RequestEditorFn) (*ListRunArtifactsResponse, error) {
+	rsp, err := c.ListRunArtifacts(ctx, id, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
@@ -14344,12 +17393,39 @@ func (c *ClientWithResponses) GetRunExecutionWithResponse(ctx context.Context, i
 }
 
 // GetRunExecutionActivityWithResponse request returning *GetRunExecutionActivityResponse
-func (c *ClientWithResponses) GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error) {
-	rsp, err := c.GetRunExecutionActivity(ctx, id, attemptId, reqEditors...)
+func (c *ClientWithResponses) GetRunExecutionActivityWithResponse(ctx context.Context, id RunId, attemptId AttemptId, params *GetRunExecutionActivityParams, reqEditors ...RequestEditorFn) (*GetRunExecutionActivityResponse, error) {
+	rsp, err := c.GetRunExecutionActivity(ctx, id, attemptId, params, reqEditors...)
 	if err != nil {
 		return nil, err
 	}
 	return ParseGetRunExecutionActivityResponse(rsp)
+}
+
+// GetRunActivityContentWithResponse request returning *GetRunActivityContentResponse
+func (c *ClientWithResponses) GetRunActivityContentWithResponse(ctx context.Context, id RunId, attemptId AttemptId, eventId ActivityEventId, field GetRunActivityContentParamsField, params *GetRunActivityContentParams, reqEditors ...RequestEditorFn) (*GetRunActivityContentResponse, error) {
+	rsp, err := c.GetRunActivityContent(ctx, id, attemptId, eventId, field, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetRunActivityContentResponse(rsp)
+}
+
+// GetExecutionInstructionsWithResponse request returning *GetExecutionInstructionsResponse
+func (c *ClientWithResponses) GetExecutionInstructionsWithResponse(ctx context.Context, id RunId, attemptId AttemptId, reqEditors ...RequestEditorFn) (*GetExecutionInstructionsResponse, error) {
+	rsp, err := c.GetExecutionInstructions(ctx, id, attemptId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetExecutionInstructionsResponse(rsp)
+}
+
+// ListRunPublicationEntriesWithResponse request returning *ListRunPublicationEntriesResponse
+func (c *ClientWithResponses) ListRunPublicationEntriesWithResponse(ctx context.Context, id RunId, attemptId AttemptId, batchId string, params *ListRunPublicationEntriesParams, reqEditors ...RequestEditorFn) (*ListRunPublicationEntriesResponse, error) {
+	rsp, err := c.ListRunPublicationEntries(ctx, id, attemptId, batchId, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListRunPublicationEntriesResponse(rsp)
 }
 
 // RetryExecutionStopWithResponse request returning *RetryExecutionStopResponse
@@ -14517,6 +17593,197 @@ func (c *ClientWithResponses) GetRunTimelineWithResponse(ctx context.Context, id
 		return nil, err
 	}
 	return ParseGetRunTimelineResponse(rsp)
+}
+
+// ListThemesWithResponse request returning *ListThemesResponse
+func (c *ClientWithResponses) ListThemesWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*ListThemesResponse, error) {
+	rsp, err := c.ListThemes(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseListThemesResponse(rsp)
+}
+
+// ImportThemeWithBodyWithResponse request with arbitrary body returning *ImportThemeResponse
+func (c *ClientWithResponses) ImportThemeWithBodyWithResponse(ctx context.Context, params *ImportThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ImportThemeResponse, error) {
+	rsp, err := c.ImportThemeWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportThemeResponse(rsp)
+}
+
+func (c *ClientWithResponses) ImportThemeWithResponse(ctx context.Context, params *ImportThemeParams, body ImportThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*ImportThemeResponse, error) {
+	rsp, err := c.ImportTheme(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseImportThemeResponse(rsp)
+}
+
+// GetThemeSchemaWithResponse request returning *GetThemeSchemaResponse
+func (c *ClientWithResponses) GetThemeSchemaWithResponse(ctx context.Context, reqEditors ...RequestEditorFn) (*GetThemeSchemaResponse, error) {
+	rsp, err := c.GetThemeSchema(ctx, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetThemeSchemaResponse(rsp)
+}
+
+// ValidateThemeWithBodyWithResponse request with arbitrary body returning *ValidateThemeResponse
+func (c *ClientWithResponses) ValidateThemeWithBodyWithResponse(ctx context.Context, params *ValidateThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateThemeResponse, error) {
+	rsp, err := c.ValidateThemeWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateThemeResponse(rsp)
+}
+
+func (c *ClientWithResponses) ValidateThemeWithResponse(ctx context.Context, params *ValidateThemeParams, body ValidateThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateThemeResponse, error) {
+	rsp, err := c.ValidateTheme(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateThemeResponse(rsp)
+}
+
+// ValidateThemeArchiveWithBodyWithResponse request with arbitrary body returning *ValidateThemeArchiveResponse
+func (c *ClientWithResponses) ValidateThemeArchiveWithBodyWithResponse(ctx context.Context, params *ValidateThemeArchiveParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*ValidateThemeArchiveResponse, error) {
+	rsp, err := c.ValidateThemeArchiveWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateThemeArchiveResponse(rsp)
+}
+
+func (c *ClientWithResponses) ValidateThemeArchiveWithResponse(ctx context.Context, params *ValidateThemeArchiveParams, body ValidateThemeArchiveJSONRequestBody, reqEditors ...RequestEditorFn) (*ValidateThemeArchiveResponse, error) {
+	rsp, err := c.ValidateThemeArchive(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseValidateThemeArchiveResponse(rsp)
+}
+
+// RemoveThemeWithResponse request returning *RemoveThemeResponse
+func (c *ClientWithResponses) RemoveThemeWithResponse(ctx context.Context, id ThemeId, params *RemoveThemeParams, reqEditors ...RequestEditorFn) (*RemoveThemeResponse, error) {
+	rsp, err := c.RemoveTheme(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseRemoveThemeResponse(rsp)
+}
+
+// PublishThemeWithBodyWithResponse request with arbitrary body returning *PublishThemeResponse
+func (c *ClientWithResponses) PublishThemeWithBodyWithResponse(ctx context.Context, id ThemeId, params *PublishThemeParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*PublishThemeResponse, error) {
+	rsp, err := c.PublishThemeWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePublishThemeResponse(rsp)
+}
+
+func (c *ClientWithResponses) PublishThemeWithResponse(ctx context.Context, id ThemeId, params *PublishThemeParams, body PublishThemeJSONRequestBody, reqEditors ...RequestEditorFn) (*PublishThemeResponse, error) {
+	rsp, err := c.PublishTheme(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParsePublishThemeResponse(rsp)
+}
+
+// GetThemeRevisionWithResponse request returning *GetThemeRevisionResponse
+func (c *ClientWithResponses) GetThemeRevisionWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*GetThemeRevisionResponse, error) {
+	rsp, err := c.GetThemeRevision(ctx, id, digest, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetThemeRevisionResponse(rsp)
+}
+
+// GetThemeAssetWithResponse request returning *GetThemeAssetResponse
+func (c *ClientWithResponses) GetThemeAssetWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, assetId string, reqEditors ...RequestEditorFn) (*GetThemeAssetResponse, error) {
+	rsp, err := c.GetThemeAsset(ctx, id, digest, assetId, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetThemeAssetResponse(rsp)
+}
+
+// ExportThemeWithResponse request returning *ExportThemeResponse
+func (c *ClientWithResponses) ExportThemeWithResponse(ctx context.Context, id ThemeId, digest ThemeDigest, reqEditors ...RequestEditorFn) (*ExportThemeResponse, error) {
+	rsp, err := c.ExportTheme(ctx, id, digest, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseExportThemeResponse(rsp)
+}
+
+// DeleteThemeSourceWithBodyWithResponse request with arbitrary body returning *DeleteThemeSourceResponse
+func (c *ClientWithResponses) DeleteThemeSourceWithBodyWithResponse(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*DeleteThemeSourceResponse, error) {
+	rsp, err := c.DeleteThemeSourceWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteThemeSourceResponse(rsp)
+}
+
+func (c *ClientWithResponses) DeleteThemeSourceWithResponse(ctx context.Context, id ThemeId, params *DeleteThemeSourceParams, body DeleteThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*DeleteThemeSourceResponse, error) {
+	rsp, err := c.DeleteThemeSource(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseDeleteThemeSourceResponse(rsp)
+}
+
+// GetThemeSourceWithResponse request returning *GetThemeSourceResponse
+func (c *ClientWithResponses) GetThemeSourceWithResponse(ctx context.Context, id ThemeId, params *GetThemeSourceParams, reqEditors ...RequestEditorFn) (*GetThemeSourceResponse, error) {
+	rsp, err := c.GetThemeSource(ctx, id, params, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetThemeSourceResponse(rsp)
+}
+
+// SaveThemeSourceWithBodyWithResponse request with arbitrary body returning *SaveThemeSourceResponse
+func (c *ClientWithResponses) SaveThemeSourceWithBodyWithResponse(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*SaveThemeSourceResponse, error) {
+	rsp, err := c.SaveThemeSourceWithBody(ctx, id, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSaveThemeSourceResponse(rsp)
+}
+
+func (c *ClientWithResponses) SaveThemeSourceWithResponse(ctx context.Context, id ThemeId, params *SaveThemeSourceParams, body SaveThemeSourceJSONRequestBody, reqEditors ...RequestEditorFn) (*SaveThemeSourceResponse, error) {
+	rsp, err := c.SaveThemeSource(ctx, id, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseSaveThemeSourceResponse(rsp)
+}
+
+// CreateWorkOrderWithBodyWithResponse request with arbitrary body returning *CreateWorkOrderResponse
+func (c *ClientWithResponses) CreateWorkOrderWithBodyWithResponse(ctx context.Context, params *CreateWorkOrderParams, contentType string, body io.Reader, reqEditors ...RequestEditorFn) (*CreateWorkOrderResponse, error) {
+	rsp, err := c.CreateWorkOrderWithBody(ctx, params, contentType, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWorkOrderResponse(rsp)
+}
+
+func (c *ClientWithResponses) CreateWorkOrderWithResponse(ctx context.Context, params *CreateWorkOrderParams, body CreateWorkOrderJSONRequestBody, reqEditors ...RequestEditorFn) (*CreateWorkOrderResponse, error) {
+	rsp, err := c.CreateWorkOrder(ctx, params, body, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseCreateWorkOrderResponse(rsp)
+}
+
+// GetWorkOrderWithResponse request returning *GetWorkOrderResponse
+func (c *ClientWithResponses) GetWorkOrderWithResponse(ctx context.Context, id WorkOrderId, reqEditors ...RequestEditorFn) (*GetWorkOrderResponse, error) {
+	rsp, err := c.GetWorkOrder(ctx, id, reqEditors...)
+	if err != nil {
+		return nil, err
+	}
+	return ParseGetWorkOrderResponse(rsp)
 }
 
 // PublishWorkflowWithBodyWithResponse request with arbitrary body returning *PublishWorkflowResponse
@@ -14808,6 +18075,53 @@ func ParseGetAcpRunActivityResponse(rsp *http.Response) (*GetAcpRunActivityRespo
 	return response, nil
 }
 
+// ParseGetAcpActivityContentResponse parses an HTTP response from a GetAcpActivityContentWithResponse call
+func ParseGetAcpActivityContentResponse(rsp *http.Response) (*GetAcpActivityContentResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAcpActivityContentResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ActivityContentPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParseCancelAcpRunResponse parses an HTTP response from a CancelAcpRunWithResponse call
 func ParseCancelAcpRunResponse(rsp *http.Response) (*CancelAcpRunResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -14925,6 +18239,107 @@ func ParseListAgentsResponse(rsp *http.Response) (*ListAgentsResponse, error) {
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest AgentsResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAnalyticsExecutionDetailSnapshotResponse parses an HTTP response from a GetAnalyticsExecutionDetailSnapshotWithResponse call
+func ParseGetAnalyticsExecutionDetailSnapshotResponse(rsp *http.Response) (*GetAnalyticsExecutionDetailSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAnalyticsExecutionDetailSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AnalyticsExecutionDetailSnapshot
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetAnalyticsSnapshotResponse parses an HTTP response from a GetAnalyticsSnapshotWithResponse call
+func ParseGetAnalyticsSnapshotResponse(rsp *http.Response) (*GetAnalyticsSnapshotResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetAnalyticsSnapshotResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest AnalyticsSnapshot
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -16626,121 +20041,6 @@ func ParseGetDashboardSnapshotResponse(rsp *http.Response) (*GetDashboardSnapsho
 	return response, nil
 }
 
-// ParseCreateDecreeResponse parses an HTTP response from a CreateDecreeWithResponse call
-func ParseCreateDecreeResponse(rsp *http.Response) (*CreateDecreeResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &CreateDecreeResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
-		var dest CreateDecreeResult
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON201 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
-		var dest ConflictError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON409 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetDecreeResponse parses an HTTP response from a GetDecreeWithResponse call
-func ParseGetDecreeResponse(rsp *http.Response) (*GetDecreeResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetDecreeResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest DecreeDetail
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
 // ParseStreamEventsResponse parses an HTTP response from a StreamEventsWithResponse call
 func ParseStreamEventsResponse(rsp *http.Response) (*StreamEventsResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -17138,22 +20438,22 @@ func ParseListExternalSourceSnapshotCommentsResponse(rsp *http.Response) (*ListE
 	return response, nil
 }
 
-// ParseGetExternalSourceDecreeTextResponse parses an HTTP response from a GetExternalSourceDecreeTextWithResponse call
-func ParseGetExternalSourceDecreeTextResponse(rsp *http.Response) (*GetExternalSourceDecreeTextResponse, error) {
+// ParseGetExternalSourceWorkOrderTextResponse parses an HTTP response from a GetExternalSourceWorkOrderTextWithResponse call
+func ParseGetExternalSourceWorkOrderTextResponse(rsp *http.Response) (*GetExternalSourceWorkOrderTextResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
 	defer func() { _ = rsp.Body.Close() }()
 	if err != nil {
 		return nil, err
 	}
 
-	response := &GetExternalSourceDecreeTextResponse{
+	response := &GetExternalSourceWorkOrderTextResponse{
 		Body:         bodyBytes,
 		HTTPResponse: rsp,
 	}
 
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest ExternalDecreeText
+		var dest ExternalWorkOrderText
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -17248,6 +20548,53 @@ func ParseGetMetricsRuntimeResponse(rsp *http.Response) (*GetMetricsRuntimeRespo
 	switch {
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
 		var dest RuntimeMetrics
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetMutationOutcomeResponse parses an HTTP response from a GetMutationOutcomeWithResponse call
+func ParseGetMutationOutcomeResponse(rsp *http.Response) (*GetMutationOutcomeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetMutationOutcomeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest MutationOutcome
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
 			return nil, err
 		}
@@ -17974,107 +21321,6 @@ func ParseListProviderModelsResponse(rsp *http.Response) (*ListProviderModelsRes
 	return response, nil
 }
 
-// ParseGetRealmAnalyticsExecutionDetailSnapshotResponse parses an HTTP response from a GetRealmAnalyticsExecutionDetailSnapshotWithResponse call
-func ParseGetRealmAnalyticsExecutionDetailSnapshotResponse(rsp *http.Response) (*GetRealmAnalyticsExecutionDetailSnapshotResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetRealmAnalyticsExecutionDetailSnapshotResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest RealmAnalyticsExecutionDetailSnapshot
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
-		var dest NotFoundError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON404 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
-// ParseGetRealmAnalyticsSnapshotResponse parses an HTTP response from a GetRealmAnalyticsSnapshotWithResponse call
-func ParseGetRealmAnalyticsSnapshotResponse(rsp *http.Response) (*GetRealmAnalyticsSnapshotResponse, error) {
-	bodyBytes, err := io.ReadAll(rsp.Body)
-	defer func() { _ = rsp.Body.Close() }()
-	if err != nil {
-		return nil, err
-	}
-
-	response := &GetRealmAnalyticsSnapshotResponse{
-		Body:         bodyBytes,
-		HTTPResponse: rsp,
-	}
-
-	switch {
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
-		var dest RealmAnalyticsSnapshot
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON200 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
-		var dest BadRequestError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON400 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
-		var dest UnauthorizedError
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSON401 = &dest
-
-	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
-		var dest ErrorResponse
-		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
-			return nil, err
-		}
-		response.JSONDefault = &dest
-
-	}
-
-	return response, nil
-}
-
 // ParseListRolesResponse parses an HTTP response from a ListRolesWithResponse call
 func ParseListRolesResponse(rsp *http.Response) (*ListRolesResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -18399,6 +21645,20 @@ func ParseListRunArtifactsResponse(rsp *http.Response) (*ListRunArtifactsRespons
 		}
 		response.JSON401 = &dest
 
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
 		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
@@ -18647,6 +21907,161 @@ func ParseGetRunExecutionActivityResponse(rsp *http.Response) (*GetRunExecutionA
 			return nil, err
 		}
 		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetRunActivityContentResponse parses an HTTP response from a GetRunActivityContentWithResponse call
+func ParseGetRunActivityContentResponse(rsp *http.Response) (*GetRunActivityContentResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetRunActivityContentResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ActivityContentPage
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetExecutionInstructionsResponse parses an HTTP response from a GetExecutionInstructionsWithResponse call
+func ParseGetExecutionInstructionsResponse(rsp *http.Response) (*GetExecutionInstructionsResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetExecutionInstructionsResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest ErrorEnvelope
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseListRunPublicationEntriesResponse parses an HTTP response from a ListRunPublicationEntriesWithResponse call
+func ParseListRunPublicationEntriesResponse(rsp *http.Response) (*ListRunPublicationEntriesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListRunPublicationEntriesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest RunPublicationEntriesResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
 
 	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
 		var dest ErrorResponse
@@ -19456,6 +22871,746 @@ func ParseGetRunTimelineResponse(rsp *http.Response) (*GetRunTimelineResponse, e
 	return response, nil
 }
 
+// ParseListThemesResponse parses an HTTP response from a ListThemesWithResponse call
+func ParseListThemesResponse(rsp *http.Response) (*ListThemesResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ListThemesResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ThemeCatalog
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseImportThemeResponse parses an HTTP response from a ImportThemeWithResponse call
+func ParseImportThemeResponse(rsp *http.Response) (*ImportThemeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ImportThemeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ResolvedTheme
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetThemeSchemaResponse parses an HTTP response from a GetThemeSchemaWithResponse call
+func ParseGetThemeSchemaResponse(rsp *http.Response) (*GetThemeSchemaResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetThemeSchemaResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest map[string]interface{}
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseValidateThemeResponse parses an HTTP response from a ValidateThemeWithResponse call
+func ParseValidateThemeResponse(rsp *http.Response) (*ValidateThemeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ValidateThemeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResolvedTheme
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseValidateThemeArchiveResponse parses an HTTP response from a ValidateThemeArchiveWithResponse call
+func ParseValidateThemeArchiveResponse(rsp *http.Response) (*ValidateThemeArchiveResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ValidateThemeArchiveResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResolvedTheme
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseRemoveThemeResponse parses an HTTP response from a RemoveThemeWithResponse call
+func ParseRemoveThemeResponse(rsp *http.Response) (*RemoveThemeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &RemoveThemeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParsePublishThemeResponse parses an HTTP response from a PublishThemeWithResponse call
+func ParsePublishThemeResponse(rsp *http.Response) (*PublishThemeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &PublishThemeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest ResolvedTheme
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetThemeRevisionResponse parses an HTTP response from a GetThemeRevisionWithResponse call
+func ParseGetThemeRevisionResponse(rsp *http.Response) (*GetThemeRevisionResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetThemeRevisionResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ResolvedTheme
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetThemeAssetResponse parses an HTTP response from a GetThemeAssetWithResponse call
+func ParseGetThemeAssetResponse(rsp *http.Response) (*GetThemeAssetResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetThemeAssetResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseExportThemeResponse parses an HTTP response from a ExportThemeWithResponse call
+func ParseExportThemeResponse(rsp *http.Response) (*ExportThemeResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &ExportThemeResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseDeleteThemeSourceResponse parses an HTTP response from a DeleteThemeSourceWithResponse call
+func ParseDeleteThemeSourceResponse(rsp *http.Response) (*DeleteThemeSourceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &DeleteThemeSourceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetThemeSourceResponse parses an HTTP response from a GetThemeSourceWithResponse call
+func ParseGetThemeSourceResponse(rsp *http.Response) (*GetThemeSourceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetThemeSourceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ThemeSource
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseSaveThemeSourceResponse parses an HTTP response from a SaveThemeSourceWithResponse call
+func ParseSaveThemeSourceResponse(rsp *http.Response) (*SaveThemeSourceResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &SaveThemeSourceResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest ThemeSource
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 413:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON413 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseCreateWorkOrderResponse parses an HTTP response from a CreateWorkOrderWithResponse call
+func ParseCreateWorkOrderResponse(rsp *http.Response) (*CreateWorkOrderResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &CreateWorkOrderResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 201:
+		var dest CreateWorkOrderResult
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON201 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 409:
+		var dest ConflictError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON409 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
+// ParseGetWorkOrderResponse parses an HTTP response from a GetWorkOrderWithResponse call
+func ParseGetWorkOrderResponse(rsp *http.Response) (*GetWorkOrderResponse, error) {
+	bodyBytes, err := io.ReadAll(rsp.Body)
+	defer func() { _ = rsp.Body.Close() }()
+	if err != nil {
+		return nil, err
+	}
+
+	response := &GetWorkOrderResponse{
+		Body:         bodyBytes,
+		HTTPResponse: rsp,
+	}
+
+	switch {
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 200:
+		var dest WorkOrderDetail
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON200 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 400:
+		var dest BadRequestError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON400 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 401:
+		var dest UnauthorizedError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON401 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && rsp.StatusCode == 404:
+		var dest NotFoundError
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSON404 = &dest
+
+	case strings.Contains(rsp.Header.Get("Content-Type"), "json") && true:
+		var dest ErrorResponse
+		if err := json.Unmarshal(bodyBytes, &dest); err != nil {
+			return nil, err
+		}
+		response.JSONDefault = &dest
+
+	}
+
+	return response, nil
+}
+
 // ParsePublishWorkflowResponse parses an HTTP response from a PublishWorkflowWithResponse call
 func ParsePublishWorkflowResponse(rsp *http.Response) (*PublishWorkflowResponse, error) {
 	bodyBytes, err := io.ReadAll(rsp.Body)
@@ -19553,352 +23708,460 @@ func ParseGetWorkspaceCapabilitiesResponse(rsp *http.Response) (*GetWorkspaceCap
 // Base64 encoded, gzipped, json marshaled Swagger object
 var swaggerSpec = []string{
 
-	"H4sIAAAAAAAC/+z9eXMbN7YwDn8VFO+tembqktq8xPHUW1OybCeusROP5Mw8NYkfBuw+JHHVBDoAWjLj",
-	"V9/9V1gbvS8Stdj+J7HYWA/OOTg46+dJxDYpo0ClmDz/PEkxxxuQwPVfx1F6vAIqf8IbUH8TOnk+SbFc",
-	"T6YTqn8z/5tOOPyREQ7x5LnkGUwnIlrDBqs+QLPN5PmvkzTBlAKfcUiT7WQa/L0CChxLCH5cMr7BCfkz",
-	"/M01m0kiE5h8nE7kNlVLEJITuppcXU3Vgk8z+iZuWCzX39pWuyH0LdCVXE+eH9ZOwCVZ4kg2TkGuOb6U",
-	"sEmbh8f++3VmecHZpQD+gjEpJMepn2wNOAaeT/d/Z/8gdBWzzcx2meV9+hz6Yf0xnZydvv7AzoGqtjGI",
-	"iJNUEqZWcGrHREvGUcTYOYEZzuQaqCQRlhCjTSaxaiz+hhaAOfDS9wgniUBsQyQicm8ybdqZWsTMrGII",
-	"7E4YpRCpBewKB04yLhj3Y/+RAd/mg0fm65ABX0LEAXa13JdwQSJ4nbDL0TPgT36Go2fTwoxP66Z89UkC",
-	"pzh5S+j5rrb1miUJu2w6haX5Gg4YwxJniZw8X+JEgB9ywVgCmOox38SwSZkEGm3/Adsq8v8LuCCMBkiO",
-	"zmGLIsz5ltAVIlIgIkQGSJINTNGCZTSGGH348HaKWArc9BERS2GKMI1RxLepZCuO0zWJEGU0gj30IqNx",
-	"oiglIUClQJkAhNHR49maZVwN9jckgF8AF4jD/0Ik1W8C4QW7ACTgAiiK8VboCVLgG0yBymTrGsOnVFPw",
-	"OWxFI/0FoJgpWAzBjxRLCVyN+v/O48Pfftv79WD2/cf/KfwDz/5U//7L35/bf84+fj6YPnp25b789e+q",
-	"2fHsP+bv+ezj56Ojq/+e1OHCWyzkqwugIV8ub0i1melGszcvB5HnW7IhsgnREv2xFs+eHEwVaMhG8dqj",
-	"gwNNOOavfB5CJayA64neYUqWIOSt0uo7EAKvmrnPxn+/DrX+xGKwJFUzB7VfrzPDz5ysCG08fvu5bQYt",
-	"1MjJ80nGSS2avVeSDqErCzLxApaMQxNmLMzXIXtwE5yBEDu8wN6zJHknmtadsiSZb0Q9Th8dHIRY/eSg",
-	"B1qfQsoEkYxv38RVnvqeswsSA59RLMkFIO5bozcvEQeZccVwF1tEqJA4SQwPjYmI2AXwredgJVEynPQ6",
-	"wDrNdnYOeuh/aug3nAXP6Pz6k5wB5tG6CvoTLGBGqAAqiIF9RpHQjffQOyyjNQgEn3AkEeMo5bAkn3Qb",
-	"EpvLRSrpbGY/xFqKQVr6RxL4RvwNbbJEkpn6A6mdERDI7gThJDGt/AGW9m4WMhm6V4klvCaJhEYJTagm",
-	"86VpU/sUAhqrIacK/tT8C19iIgldzdfZBtN5DBFRJKr6Z1EEEIM6piUmif5HhGkEifp3rYB9RnEq1mxn",
-	"z5R/Exqzy3eEZhIaCf1SN5pvbKtaej98/LhA70dPnnZS/JVauUgZFWbuFzhWrwYQ8hXnRnCOGJVA9aWK",
-	"0zRRLwPC6P7/CqY5OHzCmzTRnBV8FyxhxRSpTCLDVyMWW35Fou38gjDDGvQXzsH8pchHgTOXZjYkjhO4",
-	"xHqMGCQmiVrm1dRddZPnkw0RQgl0JSkI+VuFRVHGOcRzfWEcHRw9nR08nj06+HB49Pzg4PnBwX/0+Um+",
-	"xYsErMx5dRXC+L85LCfPJ/+1n7/w981Xsa8B9YpeQMJSMCAtky5llEQ4QRc4IbHhiYxr6gIhZ2KNU0Aa",
-	"eMgdBgI74N7EvJOWCYl2cyYxKBpSYJsvEhadQ1x3KjglexEHRY1KiTDHacrZBU4K5+J4oGGGh0ePJoWT",
-	"Uh2R5FizMEYREYgyqbgLu4T4Xp2U5juzyMK99XD0qKf2000fDqHmdTY3TRsOxrVqJpKMwqcUIvWmN88R",
-	"5AYcCnPF3nYC8gYYa+VFsHz9V5RgIciSKN0GJknGQeizeM34gsQx0DvjXuo4lA5lLxJ82XweAm9gxrSc",
-	"i5TyJGQN/mK6P+SgdsQ4+dMssI0afgScyPUAcui31tKwNYs9A650J4rtJ3Kt1/ITk6/Vq/6O2eYK5Jxn",
-	"tIVT2iusyC2V8KbY41Jt4V5hg13ujINgGY/a7y57Lr9QfIFJopa2k+PoxygTIuQ8ta+Y+YbFkIhmInUN",
-	"kW6IIixxwlYoy7dyn/inuViBSpSjphYzMirJBpBdNEmI3Lae2C/UkTvEd85Hm08n0FQrpuQF8PvGN4M1",
-	"NkPdT16wFal/4zjW0hJO3nOWApcEhNeLpsFPpRdjx8PDvSxu06g0nXi96tx8ymd3sxZmC2dxP8+bRzdf",
-	"ejy58sfar87oZvoWT7Ky3nxStlDq2cnV1J/VWyJkeO0NODciYVP8Rxv6uQknV341mHO8rezMjNaw5tOM",
-	"dq4yIGqsZpw7rVMJU8y7oJ7cHllyY5lMMzmX8Ek1eo+5JFrM5oA3ECM7JDLNHFKpN7ww+jXDFVKhXxXT",
-	"/Pr8/uniIH7y9HAWLeC72ZPoycFssXzyeBbFh3H0KPruafz4u8l0UhjlWbTEz54sj2bL75/g2ZNHEM0w",
-	"PHk2O4oeP10eHT7+/kkcqT4S85ZtHf7HtJGZ0PfPLOVsxUGIyVX5gEPo3S7BhUcTaE1j08tgfrmPZ+CV",
-	"L0tCiVgPHK5w8jWD1p50J/dyCBCqgjOtiak0LY7b3Tw49r57dGiQH64F/GRawIxcN6XvPEVdcpAyKqRv",
-	"r3AMNlgPzmmIgX61BexoZhPHkSQXRG7fSNgMvpDUzV176r0OmVDFDOq6nxMah+CWa0LPDVglY8lkOvEw",
-	"ryOLBC8g6bGAgiQxDOFrll3mz/HEbsQtqDhh95Hc1n1TxoJr3DwKD8WtrFst+rr3JMXJVpJI/JzJiG3g",
-	"RRadw1CpbOE7dSBbTvrPP+da24Oq1tazi852ub67o2kJJHbNAxTmNUA7ZQm8zIz8NBBm+GI1j23XuYCI",
-	"0Vg0bIFmm4XZLGfDpT/dZ1o/X+3mrM/SSAzGtvscRw4qjoNdciKNAJqArL/Mfe9ezDNmlzRhOJ5nPOk2",
-	"mU4nG7KBHsOqt/B8QWT1xTF5gQWJtBcD0VcPUs2myhgl1LNUKfL0LpHbiLFM4YX/rDdPGNWGptyScXg4",
-	"7UB0instXqzx0ZOnxjnP+z38imdL5cXw+enjOp+F6USQP2G+2FrzzAAyCg9sWjn8qXt7bMxFEkxTi3qZ",
-	"XFtj81CsiyTjFmmqXEfw5Vw6B7LKZ+OAIgZdgIqo6qcrw8ctLO9TWFBh+jqYnGhOZG4oa7caCBsOWPR4",
-	"Ll81Tn43M6cy43AKIkuGTiusObMfEzEKvj5tS0ebd5wWpqw9Re8GOBSx07TfNlRDkWSrEuX/5e/P//8N",
-	"3k3fh95Nf61lC8blq98CIr/Fnu1HvNsiDjFQ9a6ea/NVeLs4DfN0Yrnx5GPXCBxLWG3DQRQUU04usIT5",
-	"uXYBygTwOY4iEMKSbN2wMRFpgrfznkzaWnTm2shTy5SMjj9vUNrlPN/HZDqhcAF8Hq3B6uhNZ/3g9jeV",
-	"0sBvlBPFZDrhcMFMS5EJrUhV/9aqJ+1Apv8s6oBjItS/dDvYKLPoPPBLUL/Uvuemk9BNpr9kG7jNBv31",
-	"5Yw/vTEjPDk4KIu96pUhpIPEINTSHbUsKIZdBQlZQrSNkgIyAnXQGg04p5oPh10Ruc4Wtc2zNB5ITiV2",
-	"VqTfYP56oinh/NRxqpBpBFypjAgh3ErYXkPmBW5R2Gs7sy0gz1CJImKZ532hLHU4+/6j9hxVHqKH9fKU",
-	"650w6wUYOkJal5V2tUC+8FFLKD8AS+O1g00penf6cM2nusbT9USjxHUko7tTWo7UCOYr6ACwc9089T1+",
-	"dnp+Byo9ntph76HSZFsdpSzvhlq4ul02n2SOFCNPMxeVcmJ7+ng6UnLqIzX1EJpaHKCvL570EkXCFYzi",
-	"PMPAOejeKmHPjdw5vXidxjgT6dIX2wJbkXEudaae4ywmEsk1OKdTFXSBaQRIeVFOkbnlUczJUpo4C7Em",
-	"qe4QJYApihiVHEc6/MgNbQx9kzOp7dl/VsdemoiSDUgcY6lNuiknjBO5nTyfrMlKO6vqN8rk+YTDBmJi",
-	"pair6YQyaV5oAfAdtSaEAl6BfptalwP71ik8c66quvAAKt3Km8JGO5u3LaWipnmzURExiwSQa4YEJMa7",
-	"Sq45y1ZrFBMOkUQ/EPljtkCESnwOe0hzO4gdtBVCAtXwJgLFwMmF9y+bCRKDPs5NJqR2ZFGhMXJNBFoS",
-	"SGKt4WnfVXh69chnfG0rCFw5rJ5c/K1tXqa8wmlMC0fZTT+93ugB+bRZU53zgl2BOl33b+ttWUS6Mc/I",
-	"YOxhT/68Y6dlyUDoNaE4ObaOpCOvtYoeVflsEr7R74dLxs9rr4H+upeSukpN1ntDI7Qzzq22r8gTMR4P",
-	"PN/cctoxetWoGVoDnLt957UVbmkaGC2dETLcRDNoFYneCapob2cOF2SIJHoN7KqZsS9Uvjh8M6vT6EYB",
-	"YjFvPKed4VwQ4jUO7bTv4NxcsBb/+lxF2nT5TvU9gyR4DfZ1ceq7pRE4w1LQl6t3xeu3IxuJF3hk9O1p",
-	"F/vSeBNUNM12sOZzHPAEDl2eMsko27BM+GCHvF3DBaw1cHP4BFGmBWxFxXA515ocMXl+ZL7nvt4WoQsN",
-	"qviyStgCJx6ZAs/Uff3DTCO3c4GYw3LJuJw8nygZWEErzRYJEWvt76rWq2U7SxcZlSSZ4ySxmwQfwHRO",
-	"Urt+Mcc0DlZtBa+qm1MtxD5XoreHyBgdEK2mPFCfZ/ozinCKVNwhJzHsod8PfkfnAKlAfrSZGQ1RFoNA",
-	"hOpXhzoQ9XxAi0wqB042s9ee0J+XhAuJOOB4i2z3S3wBiGzMGwKS7R76tx1DoEsi1yyTqDATh5RxqVZk",
-	"peAWy2Y7wlSi3n1LZFo2AiEfc7bCEkbDIB+nFxyC5iNgMYyXnma0ykGLxNA5wHvTXI0zuWokmfIx/HsN",
-	"FGk6cgevXkLB3hPGUqGftoRmgPSQyBFNHdw8zroBGa/Ckjp9m3lnSYY0u9qbTGtosJ3AW3Zk05io95xB",
-	"h0VGEjkjFOFEP0NlgEByjSXiLJMgdLvYO3naN2ayVevkbIsTFCVMZLx2vS1vjTJWlM647l54icV6wTCP",
-	"XXDnULEpSeaSbEDFdcy1MrvbF0cRoQJ2J9IBTja555HrZcQvoDqWpI7zZVQg++zSWGNJOXZbRSaGdIoY",
-	"j4GbMO0N03SshkXYengp6Pd1sDrLNhvMt1U9taEUycG46fUazx/KB9XtPSNUNgwsratKx+pUs3cgOYm0",
-	"T65XigyRXrVVc8DSVfMAKqW43RBJDjvdR8IFT6shwDVImEMnwDe/iSIGhUfUSiOFPQ11ANU6oblkEifz",
-	"HJbtlOLdPjsIKpO92pnnmDrPYd47tYt3q/PTh+O3gzHH6jEOhHPtlzz45dWLOdV6/+UThiPVblEz45fe",
-	"2XfA3naroJreqta1v4XP5Vx67xWoLYx0pBa05cJsUWeWbMmVHdYdfzEeasAL60vLF1BEbb+7IeTgARFq",
-	"qfRuAutPzuO1bYQlOiS/IQDEirluNB8lONf/UrL3ZDpRwzHNzAjVYuDcRm0YjJ1M606iNgLWxYQaX5k5",
-	"fPIKw0qEZpJs5iW3GvWTEeeKDjbq90ydnx2WA47WvoeCAnySc3XjWcOP+tltxcXbBUCcE+qiL+Yy4zT8",
-	"BJtUbud5IJL7PaPnlF3SuXVPCj/lDtEu0iKjdlZyoVrChfpRKCUEjWC+0in/AsSdu0wDpZ/PYTu3KcBK",
-	"X5ybTP2ZF0mkB99zlDLMzhJogHYRSKFpbHgPQ5Wfu54QmjLyPYSdpzkh5sCpwLUrWqM0n0H7WgZquexx",
-	"zFI5VitXoz1Vw/UJJLJd25Z2wjab4QGpJo641oVvweJt7YfIBc/29VsfI0KYzAs46efVHVK6gUNfdbnE",
-	"hELcdxbJMxo5NY8zIZQzcBlfekaTLWIUrYmQjJuUJfa1IFBk3IPNMxDZJaN89D30E1y6VgKZZSLHEH2H",
-	"BYsJaE/8/Coyu1f7mbtseni14rBSfDz4eSdOeHWnMHVIZlGqjEDNznEVLKgcWA+CeG/Z386cwUrz1QmI",
-	"VN19kU90OsTm1Ow/5uY1sv0HKz+3brOIqR/WYPNrqnOZIpPl06gdlF7CwbqEbuhSK5pU541WDAauCbCZ",
-	"oiXX8cJYaXHNChEopFDJOCcV2wvm5yoMpjsSwbdsh4XE0Vot9oY4dKwHvCEW/aNmBdtXVA5+ptvkDvOY",
-	"rKyRpNmr6eljv4bAZRtkNDQuOOUQQwRCMD4fFpSQi2SDOcp0UPxDkz6m4AI8L/CUABLTMlx7nN6t8ZMC",
-	"ttw2U3mjSfs9Z0uSDN4ujZIsBncHiLp0wVVO5JiMVmIobyWcXKq0u+6q3ENawW0906dlpoR5wLAIRcss",
-	"SXpoqStrbQWKdrIaTrmD4kr6QK9qKtB8fG4jLTt0mNMgnecIGis72hcHKy2lDZwqn/UID5ELGMiMhsur",
-	"I+Ivxsi4ww4twRKEHLj3hNDzYSy7Z7xGfuq1bwTOLucXJr939876h7CFLih9eOiZHvnM9FE8FPMV9ASd",
-	"bVvOY1B2CvfquXqJWkA8v8aF5s6vuJxwI9NCIF9lvlq8Cf1sgoMqqrDyA65K7AXM7fQlbFam3kfq/4Kp",
-	"8nrEc3O43IRmZbQqYd1A5G5DxVNYchDrkzWmKxBDzT1FzUhwDVeQraaJfRl7s09jkwbPnOJN0y0KVFvU",
-	"Yknw3cemVj95w0v1U1HU75C7nGXDagRcmNwQbGjWGhRBHMCzB0aMejdGORr1IawS8lmG0Le3FpuGqXZN",
-	"bpSQh2TUrFl7gvt/iSwFLrw1wIQNk0UCc8bneYCySYBRE3MbiIZB3Kgw+SVLBoM8iLc+yDc3eGxwong2",
-	"FOwETF9af4Y/frwRBbVnJRa/eiCzPr0czDVjTD2K5OfWhozO6aV3EpOm+BHvbxTnoSTOXLmHTqpvKH9E",
-	"RoHpok2UuifFShcnc4WQMG5DVa1Ohce1a1XdcHOrAK0H+jgdhuszcEnlbile9dEPa5bVRcg/+TN5o5sr",
-	"Ct0QKYevstyt5yrT/Fnfh+EUdQHX1e54DW6oqu6x6Eq/njC6rWwaRQkkEMkNTuRQ76mXKl5h9WjchKdN",
-	"CNWEMY3QbTyuWqJt5WihMBlcROXcD/UX0xdxF+nYI/InmJC9vJDYuKiFm42TLaonh6YLKCW12BBq/zzs",
-	"io4vr6IUIluHUT/YiPD4A5EJvMXa2u6cCIfBcGlPpFeYA/DCXPqWIFzIee7lNmaMBCuUH9v7jwyy0cu3",
-	"voZCu/vMhQVEhwVUudqNm7B09jWzu/14qJRAPM1PzK2kG0NKbqYDMURn1Jv7LMM9LqrE7LoLRq1orO72",
-	"JFYvWw2QeD7KhG5GsGGA8zFZU+3sQ7bvpuvfp4QX1TlrB53WnE0O/Fq00Hz3OCyU8Mvp21EOE7Z7g0op",
-	"YJ9rKVPxfH/f6Gx++20vYpt9nVVln6mh9t143bb16szNm8wvl/zGHeTkRmOiEKO/1crMGyasOXGDFG+I",
-	"w4O6vEdDrSRjkt45t7DiZXn05GnnZalc1nokxHjafM+OxBScpmJ/UjusBK7CJ4PUm8U34H+AM/OGu1yT",
-	"BJATOkuVQjRXyFJlcOOgpCOIC5kdnx5MOwVze3jzyiGW6n/gC/12dI3QApSXJwdPA/Ee+okhJtfAkR8W",
-	"kRioVCURVI1cn1YDaZ2RWjd8Spnwyx6SrmSEdkBalYsPuFbwU6ypANawxFn5g6u1p76Vk0rZEJnSFx9c",
-	"W/rRXobVXNU231sMlOi/cwdFwzObTBV87pxRQwnwePYfkz3m8fTRUb0AqLaztDUU5gq1xzLFWDOu7oRQ",
-	"jiLdiRQ4Qg15TEOe1sw36/nXQ8q8lWcRGjzzfcojZEgf4towN80fdPxcwExwYqIdNW2ZqLeQXOoj7G4+",
-	"2dBQqAfW80LUpHcRTRLPF/q4IZWXVM05lKNnGdu6kuD1o5vhMlVhzTd6UbYBp12CCqsHj5KhFNRGotWN",
-	"U+KXKlxVbuP80k1T82ayl7H706mGLoC7duFdXbpgwz/nHCIgJtVF491e+Dvs4SJ3VepTfxr1FSY+Xuvu",
-	"a8boM5BZ+nPqn2QDcfkmEXJHQrFYYw7x3CUv7TbclDrUwk5dJ9pn4aUrUnsr8XN+qppMKzYrTp+sK/lY",
-	"/Uh/CRAvcHQ+b3HMraE75RTjBNJuBA6XlCNxnBcBrq6i08ekek63U8OiOu91fTV75+NpKjbT7N1ZLf14",
-	"Ledodn4tt2ht/RrjTptHhnFtrW9wlBh2kHo1LUGew47QlNu265tHOA3gpjQgHzvVYGbR07rd1g3fDGCT",
-	"QGJobIAvVRhYkFOXTcUGrZhgFO/+X/bIpTHS5qnA4OxQTyBt90HW2TV41oupqYMupqZKulVa6NAscWOW",
-	"5psM7gCJV3OXs73Vbn2/bdAUa++6XtfEw7JXX8vdOQdLg6tzwbTb6Hq0exNuAQ8b2cE4z8uB57x7FGw5",
-	"JHcoxTXXAaS8gnFegEXG+c4oTtHh9ODxs+mT756iXz68nj1D2my+N5neUTjl2PiAssT///Y//s++/u9/",
-	"N1XZKwiGLAUtvCVMNKgdvUdhIxyPHnfC8NqBizv0R6zDPGsgfUlEqlwMxtkmowSTzdzX4uh5A+pORvHd",
-	"9x5iHFacZTSem962zASIQX1NshJunB162VGFy3ASKBcaCl+EzQa6I2mF4Xb41nzPoRsrLnZM+pdmqDYv",
-	"q/UcW+AwrcWzOkSq31kL+hf9A4bXn9v0AbZ2Lxhqg3a9pm6ell1cy7/AhTSYWJIe+4kty+jpglHmMFfT",
-	"MS4NrghDnCfe6e/aUE3zdS9cG3wcjwfEUFZaM0JORQOHMGWW5xy0qn50b5Ft+i+fM0XiQShTD0x4cA4h",
-	"ZQKr33fHSXSAug8q9EC4gLgb2U1D3uERCY/7RMCV89V2xujrgdsWf2ISAamgZgK3o6ErTf2aJHC7MdWN",
-	"Cxi26xTL9aDU5jdXJVNP3WNrvXN1lhxDfJEL8zhVeiIcI/WkRmAwpTEQQc/rWzXFI4y4Yjy52jmGZkAY",
-	"VSHJAqCgfR+ChK2Lbqo8Xpm0U9nujv0lx0t5e/kEd5Mj0AMlVru5hdO9XprA6nKbzrVvEsG2E36bl2cZ",
-	"wqpuCaRNoKkvt+8X07bhd3lU3RAxnopL4PMUb1U9564b6UzyLNJJLf6p3maE0WPdX2fd4phG61yGK3LK",
-	"n7TyAbElUqEQynvOtFfqdmlcYlJGqPyb5pMUX5AVlowjsdaZqtdA0W/ZwcEjQIeFXN61WiC7FEJj+FTv",
-	"XzhbYKHsAkxoQKl16TXYEDeEN4yuEJHCLVegvwi8URycA5V/7c4n7vKztJojR7F3vQJXIaHWX/G9buIS",
-	"rhunAWG8JiUH+BuymlhdF1s14UxH1+kR91rvlOK0O2E2f1jUGo+UYcV2HzcqgE+mEywEERI3FKm10U+5",
-	"GTPXaGaaJHuScQClJh5nq8NX0KQ3g7P0/i/MCabydiXSoN7GyBqSpZHECGuqCbBQU+SU3qHdv9nNjkVw",
-	"bY1UlSx6G2VNmugxCrd65HMm2nDcaRWgbQfXUuBy2DHahCBt/ExlWfKE63m0KkGgqlBgROGydK2gJWeb",
-	"zjJwJVhVV9IOgLqynHd1+9ZdN11o2H2RvDDA1FeE2i5iy9JF+ReItUMZwhQB5gkB7r8ZRiYQdofz1z30",
-	"s715/n95gQp1VHoKi6L/R5h6AYASwMuhh1gBRNsZFqv/mOILPy8nz38dVDwo970YGpDDjIw7h4SsyKIp",
-	"P8Ut5QK/0WJSKWcK2HMlWQyWhsO+01o4VZfbK6H4x2IVpigtMO7Js2iJnz1ZHs2W3z/BsyePIJphePJs",
-	"dhQ9fro8Onz8/ZM4yjVzCjsL1DPZiJUt1VR7thYLap/lk0h+sn1Dec1V259oF/GicNCYP1wnDqYyeMNM",
-	"zD/t+Pazk3Im3z9dHMRPnh7OogV8N3sSPTmYLZZPHs+i+DCOHkXfPY0ffxf0M9vyvZ8eLh4tH8PB7Nli",
-	"cTR7EscHs2ff48PZ94uDZ4+fPnsWHX4Xh1XH/ZYMGCe1mDeiGFXDbTxJhd13ESUn+8rxUKQ4gv1zU3Vm",
-	"4m26kx8xj22uUJ5RXz1H15V1zfxGokxItinaTiuH80QfzlWV+aia37cqvFW41u0qE0vTD7U6pSVZq0NC",
-	"b6bW8l33FvDSvAPB3T+Fl5M6evM6VdUTVZ4RneVej4CAxgKtwdQX6g4RGaGWq+MK+evGsYfcRFCfvX3E",
-	"e7PKTbrXWuIwPU6pnrn06FjhKzlQPINRLofanf3mKsL31dEVOEXB7TiCtTIG8klgpZxMHTPZTZLr2sdA",
-	"iaam3qUkXHsV0LUoOdCZxHL3d86sM4T39Tklc7P4YJaeqX+HJQruOXrp1pr7zKiDe7I8EqIX3/9g+7/S",
-	"3U0cRffLvZCGuPiXjccKgNu8yM5jH6u4iLDECVvNrZt2QFs6RZnx6dBoHGZM+dgcABTWHG1sk9uo3Gx5",
-	"hpUFodoY4TO8KD8+TOO5DY/RLy4B85ZI1oEXeoF8au5x42FkHGLGcw2nLChBvPZkTXE8V2JwZH4YWBKq",
-	"G8//VzA60OigQ3qD7K1tlOUqCY7Q2Idd8ymnlcX3gtKIxH22DOHAu/xOQVNYch1citUJj7kkSxzJcYLi",
-	"AI2ZU4ONNjIXtWiVwbq3+soV4BxV5wxbQIlh1R/L8FVyP4th4Cg/sThUKriQCiXBDRvozPY8zWj/2ojF",
-	"IYoFEiuHpAecBuByGx58QCMre+aVhmN/zv13V0aSsVUnd1k2srLDbtCGCDSGxM2UEI+iWd+5e50/ByVW",
-	"B3p7xpn1mgpSntQs1fpnG8d6U/PL12Pt8FXGpH9jW+XaFnvm9mHSuh5boLn3FE7k6DW4OYl+A1eLVfeY",
-	"ovbk9XyVnRVBWTmIaf1xljZcC+LGtXdj3mlG/b/Hlfc0E+Qy65plfDKdxHhbH3jrNrjYzp0ZtZdAmi+Z",
-	"JfDSjlInmNqEs3MBnIAYPv7Ppv8Lvb26CVrLGZ+40HWl26stbOwjA7GbsavCsQ0qtPk6rl3juL5qqm5T",
-	"gV7NgRUB0I1i4eV7e05RPVUoPYOKpzVxvq6SoXe7DVMgrLMNpnMbku7yIHiG4HlByAa6o4Z9LHPJh8mX",
-	"Leiw7pfO5UGVEM/oHIeMqv8wBRZ3HwWb2nrYQRXs4t67D/Yada+HMmU91S9Ks/Fiq/hyHbuMcLTWyo24",
-	"G1FM20tOZI+km/eiSLdXXA1bxdja3vXTTUfU/C4cTBHyU48H9cimlWAlk4v1dR5XKKBktBjou+4ZmX4j",
-	"CjHAwFy00Vfo1g5WNas0ACaMDx2WWHJgMZZe5VRYhCXjg2JV6xS1bpxybGc7CHZeEC6f6tasjKfAM/qa",
-	"s416V47TP+Y63iFLsr16rGkE9SkXmTm1GQ47wyjUZQTUBB811FG5Xp6WfDmV6er3L/nWqy/OJEtHAUER",
-	"yCbtWx+3v9DIUhsMaiNOeyVg8rAIVtUwWCNI7hWK+vWMOBmFCqqeeC/sVMDZKXb61VRmq905G1wm0pRh",
-	"D71WGNd38Vw/Drsli9oBRCHRXQVwrX0SvIBkeLfrLNc6QTRWk5qLFF/S+s+F53jNoivJLTtwSoF+BMLY",
-	"bqX5issL99IBie5z7XWKvc5s2omETbh+O47i9Q+N/rd4RrVf4SjC7OeiMkZvMQwtrX/tgEX1ReTpRCPk",
-	"PIZUrrvpt6oXIbHJGZIJxSUXCbM1TNhymRAKA1I6+t1Nm+nJ6z7CVXdrQiwO3BLCZvQ95pJEJMX12bJ2",
-	"lttObdTapFSm+ZHWvzmuZOB1L0VTaaZW1et798I637pcWjSGhFwAt0VpwpzaCql4tAYhrYpyAxLfmG+a",
-	"cvBWnvPuUdax/g3pRbiKqc4XRNaojl9gQSKU19pBqtkU2eRVOp5KQx15K6POJocX/rM+DMKoKCSrf3J4",
-	"2BVQ1pvr9Aq2Fmt89ORpNS3qUmd9fvq4PufzaBN5iGdlPJpWcNhu1h6Y3VNh9l7cwx3BbTGQAhXfNgcx",
-	"zxAtx5+Czcu/Jung2ky8msnb+NP72r211KtdjcZUVUvXWBTrEkRriDPnMJUJiAvqe5udwlYHWONMyAZn",
-	"KvPc8YUBej1MegaSmcYb3KOp384gqNhAxEFPXttHP396P39tzNOgiWyfgRNxsloVywGrIIkNliQyT+bJ",
-	"dGISjDBe9wPPaI8EvR5/HWblMxcxog7GtTAsokZ49qXDrRJBO63mivnBukinFO6tyw5Ux8O08L1bG/X1",
-	"cOV67x5DlPeV7PnB0spLLY1cs7RpDcRrQdpw3tZpKLD29IoyK9iHx9T+8u5cfS+wHzhO10oLVG9S104N",
-	"OrIpd5voaV20nZ2X/yW+gKGeKtr3vFeSOp3nKFcsd8FYtz8xzTV3W5hd9YHYB7w4MW2L3injoBQMMAxS",
-	"Vd8S1W8omQQ7bwB+/UE2z9+8pXZ86obltIjknaF+mWSUbVTQtYvlyomnJabu0MXUWXO+CaYz/zZRZUVn",
-	"hsmZxAuiMrMi8wERITJMI0DKJTZ4G/soOOeOoFPQz8Nc8gUq/vWjvV90VAuR27rlHn1vl7vBn+a5M547",
-	"NEtBR+Z79dDCBtWYvFXCFqaC4ojoPBtok287Lwpg/YK1Lmvy3F7hHQjy/MB/L1LKYRPbOMzlb/0Pc3rq",
-	"XxmVJJkrC79dlPMsd3qTLpeRMsOBC6fxmcCFDGYyHwT8ocqNVliNP1jdTJcktWo+MXn+eDqJ8cohw9PA",
-	"1VLt7cgX5xaT58+uWiMRj55YHOlkVwctHOmghekclNzHJ5xtcTIzBDG7OJxc2XvRkMJZJTiqzWtHY1FA",
-	"Jc30M9iVRy/K26nG5MN0ZNlXzB+gG7RiancK5EGivApRMUm5hyw75ywbFhePzvk+qCIY7uWmhpmzS9oA",
-	"9DyXYK+HmmveM6fWGtOYLZfVEDyLCQ6BnbVuWvzgEhsWq+f8kREQEdAImox+hZ8Lg6wyzGOCFTcgsRpi",
-	"njAhaz/4TIzhuH4RPn65uJz8Zw5CMt4acGSq1Y5KQ6oqb0W6UN2AsEn9sOrfsvfrMuVsxYdFOQWdDF92",
-	"XrJ9pxqmX/CUMTQXUja4TL2R6LyXWLfX5OCzr1oUzEJdJuUy984tDF6jo5XEW/N5BKcOqCuP7qs1Nkrg",
-	"G301sIWpEjpop9eOuS2oF4p6BUcMOXOfFuwphYOscN3ArpJjybRwDxWW3wCzhjdrXUhS31er7zv03Wof",
-	"5lXsooyqDbsTVHsBKQ2edIV32kF7Xhe29QXwmEQyXMP747OzyXRy+urfP5/+Y/Kxs2/NNmrW/7E1EJle",
-	"MFuadCBfq/Tvp0E0ixrGCnQfXa+iZ1RTgCBnvnMQ1JQPWIcIUknpCYmsrUn9YDnYZBpIjtf1466uYlpC",
-	"z5onZ4l0XufJ/4cFNsPKOih6WYVxCCKwc7HK+j1ylmjBuJ4CogQLkVvk+kiFva40r5ztSVua9TQx6koa",
-	"J83iSkuf5tAJhysvpYunVdBuV95Xrau4NbuU0uiFPPlWDVNap/gqHp7dj7NNHxzsg8+SDd2bnl13bNvW",
-	"Tyweuq3ez7j8tlcvJ+5seTfx0Mrxl2aJlZwKsfS7l9dHCKmNOgKb+qZW8Ky9BmzNyVAszW+G6USckzTt",
-	"c0fk8ltedadJZMsPsQ2hRnIEiFcjFP2aKOv8sm/WbHB9Z04xmdotNsDu1lJotYXs7cqhPaPvMEkW7JPN",
-	"QzrqylJ6noy6Ovc9X7o2lWJ95mLzbU7EPM3rNFYKnlOkGQuyzRERiNFki7AvyajcYzZ4ixaAFGPc/g0t",
-	"sySZu/EzniAtNAuby9jWblTlruoro4/xI3Ktcv4S5ONNE0yoyz5eSuoRDKF84gfo84L2PT17ynCpAvw4",
-	"k2ugUh2zCW7dt1rhmYhYCjFy/lLol9O3tXme11jMw3naqthDnugTc13EAOfnQ2hCqDkmVQ4TIxWjqpKm",
-	"qdFnDh04LIEDjaD+KAclm3aNrbdK/w7l6OgowQX/NRAR9oW1fQVgq5Lzz3Br96/FjeAWlVV/LZ37dVyq",
-	"m5QTxoksvBWMmckUP51MJ2uyMs6WROFF0uQp00ovnWJCSRXW3b6318har61fWzaE/iQbRn3Nr/oUCxFK",
-	"FYRqy4jLApqLIB97QNJNU0ZKy2NDq0uP8cpVbsK05DVqqCIPq/KoIozLMAxPq0Rd07oLqEKyAT6X8shZ",
-	"rMyvpBLd9Lo4xxcQHXtzdt2OnpGmnKilGXZJBNJ6+xgJSDHHEpKtuSYzIdU9qfYNMYJPSg9CZPLtIvx2",
-	"EX4BF2FOKDXfvt1z3+65L/+eS/32LX72uthuTZFYf59e8yW8W/XjwHKDgcvYtdydbDSUst5zErtkTCSJ",
-	"gc8WwAXwcxt5OWbsaG3UVWzsEFdXZVzId9uFAwWA+nqE1e3Ww3ns+O2lxezqe+HAmAqG16g7OQSlm6tQ",
-	"Wi2+9Rz/kQjJ+HZMtNg3L6XrKc+HWDed/e+bj9M3H6evy8dpqOPBvXWOciifB9QNiwhsisqrkZm+dD8s",
-	"kaXAhR694/sgEFzPvUsH7swzF4TV7ziDwK2vwUOscHT1JNEtsoxO82+9zofJC7bTMP46yq+iRiK79nuo",
-	"/wVyE5lyut9QRf+RcUmbekZAuZODcLoB7oY7dJsYKfklWEI5aqcvdxqACFaK6rHIU9vUhF2M9MXIxAhn",
-	"jPz26bhoRvlg9PG9CDhiETEbMD9MCbKzVDQD08qYKp0CgI4pG/wtG01DNpoiWJvwIcH0FMakgdfpmXaX",
-	"mchFPQVQDSLsKEAsbJBWPYsDiBVHbK9WrUOvbHTdIAE9viCCKZmir3bAdtQT9u5kVua6qb/6PyX64/q4",
-	"K7cEukAr3bzq4FjrTmiaI1WI7d15UXIkvr3USn7K+60tVuvsnXO7VD5Q3/PI519VVsdZAheQIHWyyJ0s",
-	"siJOskWuMqjOC+Q8mPNak8rkm3K2SSVab2OTPmlvUtBR59DWcRneVjn5CXPOLrVtcglYZhyQtnzqQXWN",
-	"IkBhmia0Usvf+422lxg9fGZjR71kYjBb1wbUheXUJGHNc+sz75uyTJpGOiz2ahou+kxpgFSotFo22aTG",
-	"Rdus71JXeqYx4ixJWCZRtIboPGWEyu5lHx10LNvmr9p2rdy1M4v/GLjITf7rv1ANKH6jv9HRZ/EbrQzq",
-	"FqA+7h5c/vIpOgGUmKv+icOFK7NaCPN2irxzs3rPz/wIPsjaiY6VKO2rGpcMj/XDeJCj7RPXojYZepvb",
-	"4w59KpqKUw68ykL451NqDNJGWy3xRiSZe1tj4yENESEqB9r8PPh481w92HR1KdMQY7o8i3rcDDn2jMih",
-	"foOI1f95WMfUhkE6f2fVjFWCaRcoTb6HdyWjjM/7sCJS6/0lB2iK0i8+Yocdw7dUZd9Sld2DVGX3Nj1Z",
-	"ISHSMNLKM5/0EuODfCiDirX4acrDNO2op+fnA08YdIvpgeyV7mFjsr9P9JKeK/l1/t1kRMaf3STo6ZMM",
-	"pyNhTUWfU4sen2/ICzfAnW7t4bBiWiVs6pSaCzl6rupwrO+mWnGu7Fx7ZhygTauZboUinO4hVzRX6HJt",
-	"6mXjx5yZ1kiHjCEOKeMS/X7wuy3J33LxtaN7w9ryDu3rC9opwhizvGourkFOVJOrJoKtbk27JpMYqCRy",
-	"qxUTOuzK6CzQBtNMaSbsIPqluofe2+zHOrLrck0SQFipP5Qnu6NM11XrQhhHmlP4gSwM7uGzpsiquh+Z",
-	"gWw7xP+3gc3V2snvosrdGDP3tYpIe+kmHCPkjM0V9oosrvQ2LDxUCrbvCmdrECbylI9DxIkbzO3W4NHn",
-	"Ru5VzaNHu2BJXU3D9Xa1zfcyKDdlvhq/g2ll74WVBFM1nSTZQEIo3IoW3E326qJB7VTSgt+q3lsR8DuQ",
-	"fHiFWWveNiL4oMe0UiMA71UFDnhpjVee1fVFUde8ZwFjiROYuz49p6gyZnau2dSK47hXzhnHwQqLLW+1",
-	"fnV1B3sG8oRRaoSAN1R1s04746pOkWCIOYmLuB+WETicff/xV11I4GD66LC+lMAGf3pj+j45ONC3v/3z",
-	"sKtqTHkVtVuXmMsfiPwxW7yECxLB64Rdjtt15EHoyA9/8uR39Gw6PAlMsLh3mJIlCKmW995ENA4uKp8S",
-	"DsOcQsM7uWUzTxuU2UGpkVIVxAAJ1lKm4vn+/orIdbb47be9iG326xHBgKC8mqePnj2eDkva4sWEcJXB",
-	"DNMQWh/7n8w4xGF8hSn50yddCinkePYfPPtTkchf/v48/2umKea7q+D7X/9eSz7ap6USPZUCF2ptk2lx",
-	"9k7WEwxXDxeeRTLjEP9TAWK4GxhLvXjQ67asTvhz2pS9yNhI++j1StDagphTNplOBKGrBOwLSyFMlkiS",
-	"/ynWjEsX95owumqy11QLwRqXzQFwPabiEoaq3VyYQDXKDicZNH8pnkcDvAI23GP9P6cjsMOXr+uKTXTb",
-	"GcIVzOCuc90pfLBRO6900M7924HpNLWT1O6gIFyO89DsoYadTmBMHE5/pfCwIIXrZM4YaHHZhbJ6WgB9",
-	"YfMFQPfIdVCp8T24pLiPcBtVU1zrm+p48zXqf/duvSGfIM43UBM9rxvUxObVNO0Z6Dew2sl1K5AP6BEx",
-	"PqAqxzDP32uGN5Y9dMcUSm+u4lJTtqUAjWmO5n1I6J3DhAF0dCvY3hNDdbu+PsVj0XlYcFfPxdxXYslo",
-	"36bXpJPbpot8Z3WE8YtWkuaKhL6PoQ2h4a+HFWIpu72HL9GDTnsAUGWqaCrV3bCL99Z35cyEGY571w00",
-	"x7g5dTHTqmGmn+Gubkv/dkGwJzjVNmQv0fVUSsewxFki503mWOWIwyFlvm/omROG+9V9dklGFfDUihFn",
-	"TOf/o0wibKxiaEWkdlVUBiLVazJ1zeeq+eT5ZN+H+u6rVjHbVI2x9fsYaqvJd1snGDRtvbNtz2TB5Y0P",
-	"5hh532k9QIIdNm7nY12iBQFRxoncninQGYi/AMyBqyxL6q+F/uu1ewywFP+RletoP5+8Zcor2rs5Rxy0",
-	"lVF5SgOO0ZKzjU4LySREEuKwwZIkOjGSPjwNbD1j/thQyiYFwxecXQrglrxryrea77MNpngFMfpRyvRn",
-	"ZbWMGDsnsIc+6ByTNOIgwf6IFINSiMs4WRHqMkgp51od5WQsveh3i54+hPn3vyEdRo032nEIRQlRGIgy",
-	"ASiH355m4GoLgE1mb8MPJyd68nyLOCX/0DXtP83sTDOzvpnqMEs5LMmnyfNJeRkm2QehS9YjTZYkG0DH",
-	"79/soROWWCaFUpXZStVeFWjBMhojQmNyQeLMHp2YappWdmK8UdcIYkuf5WptAiORxzEk15xlq7UCsyQ0",
-	"M/7Kxu6ha+ImJAJrjLGgUFyME5BY+1nphF8Tp160291LFHbtu745X538wzRQuzLRzgYzJgd7R3sHNos5",
-	"xSmZPJ882jvYe2TLzWo038dRup/by1agCdOgsFKpxwqtiZDHUXrsbFLcGpN0j6ODg5Ljp01er7rvu4er",
-	"4UldHMtNUkh2qw+3dKge0tbEgo5P3iOziz214ccHB01z+cXvv8CxvR1fcW4K4z0+OOzu9wvFmVwzTv6E",
-	"2Pe0/Ki7t+4RbG46Ec51SwO6dkvTicQrob30onTyUfUKDm7/s8Kiq8bz+wH88emj53gDErhoLHSRN/FH",
-	"8pPCUxUOsPPDrzvw92WYoA1IHGOJ7+i4Hx887u75E5OvFTe5WST5AWpwJIBHE644s2DKRA2OnGingeMo",
-	"Pc3oYCR5E8MmZRJotFUM/Gra2ePk7PS1fo5anNLn8oLF2xtDp3BD9twNZuVCheQZXFUw+vAmMVpBs46B",
-	"nbzX3kPWVePrQ2JzOggXMFlBxASto8U2SCPp2niMbUfy/c88o2/iLn44BtFNtzfxzjlhB96YMjTfeJ+C",
-	"hXEpMNljezFBhx/7zremG1GOXcv7jDBuka2SkwWa27oTXr+hUh1UtHOoVeL0xCnjYdhyz+rv12Y/04d5",
-	"JwebD+7kqzvlpd4nVPnshknjEI7OKbtMIF59lVe0BkX1iu5JCLmvZi1rNRE45nReXdiH5e6o4S0WUk/T",
-	"jxUrbwOzg5kpfVxEuLKmqoJbZ2evkOkYKgocxhnQfH0YZc68ItYVwWJUTeq8ZvrAZm9eIg4i20AD4vXQ",
-	"XexecaFnaL14k8S+5hHjMXAj4yaEglI96QwtWoTRLwLFfCRRO37gugycKP3Zigipd2wBwGGFeZyAEIo6",
-	"9MUrBItIVbbX7d1Bc0mWOFLqDtIh3NuWwzmK7bhzec3O04owto0XajV6+KT+Os8B8IeMIa9BRmuEy/ss",
-	"IID9WI8D+8FhdOHCSVBV43ZQgkUS6q8P71O0INQofDsvFI8NdjJks2QoolK1GBxefEH44Ha62KpUIW1I",
-	"kcn1vsjtIU7wbtIZ6xguyRCmCD6pmYSyLhjTB1oY8wmy4i+6XDMBiGw2EBOlsUgBuKbEH5nibxxQwliq",
-	"tBbGsuIREOEoglQKRBn6IwOuS2O4UV1pr1odXCbXzrozFFut8ecFY1JIjtM+otHPeuM7ZnjBnmqw+9Un",
-	"InQEnYO+PU3EIRNK9p5a25Fe2BnImTUdtUtlV9ObVee1b+JFae1etzd68ePp+FF3v9eML0gcA827HX0/",
-	"mICvR/rW6jp5/uvHGuWgphdlSsQVvLCWVGPG9xToyKvALJQB1/CJPMqhXVw8CdrtkCbyadSkta8IfKGM",
-	"xPlyHrw8KPSO4JMETnEyM7kewh36kOLANL7BEjjBSXisQZeJqkndZtTIAf0FGTaqzkq3bNwIoFqDuvnX",
-	"O7Zx3MzDFV8AMjEz6DhNURifVSu3FtGzxHxsvNB+rKO2ZjqUvk2EPTGR6eVQr13ypvJcZyZsr+6gzeKQ",
-	"wEuTzsPq4/VxHxldQ7HHTwxldEkoEWuITRfi3C4kQ3JNRIXfK4HLCGgPGY1eEqGzJWk/kgAGYo05xDOF",
-	"WRoc3bAwcquDyFC2WBs5+EXwxtaYyF4M8i5oyIu/ZbpwuSnUAwUtiE6BoM+f6PVZGju8gyWfKXI3DAw5",
-	"cjHskFChI6YKt7lz93Vd1L4UIiABEYc71IX2kHhPGF0mJJJ3KCcHGlTMJeKgvfKcm569mGpP46ZYSY8r",
-	"zKvlYkhAQpXxnySAuUAb2DC+nelXuMeL4qoxjR1+SJ1+5djQg1YN+z6Me1WyzgVKKFomZLXWqgN9ZALp",
-	"hCNIrrFxwkUCpEyMOqHIExVvxjy+NlfMu96Wma7AvmruW7UWFJvtPTA71jj6vLG7GnPlA3s7N3WT8HfD",
-	"CPnxXlx4Z3XC4ldlCjtV/uBaZrbuK0tdOLcffoXS8HUZtnJYiEmMJbQ4B57CkoNYhwd8knd7YCzyzhCe",
-	"GygqlY4H3oMSfG4I82dLreg3nNEniA/f1ALhpXTvJIXx9qPQvyjqcIIlB7c7Qlc3QA06Zxv5E5pp4bVt",
-	"8QAlhZt/bzUB417qpH4EnMj1FrkzDlWrXyUdmrp4yIT5QVwmQRojLNlGVXpIcqghHIBtapT0fmeaPg1h",
-	"++rwRucbjo0EyBug1ZQlLY5271mSPHRp/quWzR7Y0/w9cGXXR4wC0lUa+SzFEcQV3UfxqauQeDAtuGxP",
-	"A3XHYb6n3WuPw9luWH+s/XThq9Idn2oXOBOBaHZfrwVyqNH3fXoDOuQSWn1RWuS6FGl3okfuR01n5Rel",
-	"cnGxyuVcg+ZVyjol2q6UyR0pAGtW/4FjKojiBhaZNUM1Oe5MfIcdx7jaOIgrFsBB+ejn7j1qn4QWEjun",
-	"nEUgjFxDBKKgLDEpcEHEQzdPaq1wpqK+1YnGoanS8wPjhml9k7TU5hmKxgWDBdbkQISV4sawjF6XVv6n",
-	"Ei+V90bjNXYKEZALKKLSietVYTg61Fx7XOWR5nnZnJBqpwEmtySJfHRUk5ugfh5b16LXNEdPnnblfixL",
-	"hI+MY0+Rak7BusFoNq/IX+du1+fnvNoClxYT6+7dLCwYrYuas2MHDktvbZXzBhdGkxTzJr2XduBQZDEI",
-	"YcSoSeJWuS49IHLNQqJKhiNmuEiZEGw2hWsSAVMsYSAF/Kz80L6h/zf0vw76SyV1ccy34V2hMeuOKEGA",
-	"zNKBlHCm+txPSihlcG6dcVha6aYZNQDzhMDN0/mSxGaJk4/fCG+HhMecDVFyXRsNRQkmm7JCzFcjyai2",
-	"bDsy1ejqNAZye10i67LQW6Nn0UbvH+WmmuefwBkIRKRA0svr1o0DCYbwAtOYKSlUY6RCi1Sg1NRPUWyE",
-	"SAHJUoUtaBFUyewd5vhrPTDDzt9M8vfD+nlscKRkXL9Vi/qN4tTH+/T8/2ZXr9rVbxS1+vPa/YKut9lW",
-	"cWybwZfA724a9Y9DGP5y+raX5qioZP/l9O3XZ+AzWiH4pKBPZL3Er43rRVhpDeH7f5y8uhECsFbAVuw/",
-	"MW2+COT/Zsu+C1R/z9mF9RRRbLwSoqH13GJN0haj9tpCNITjjRAA9QkZmwlAtZHfmH+V+YclnTp5f+HM",
-	"v0qe/+pTtMZ0ZdT6/hWZKzlZbB5xKYcU86LT1Y2gezhgM8JXpPDyMX/D+294P8I6XgCEkfwN/1WKl4Jl",
-	"fDCyG/1kUOOp/XmpVZM/pzsPIq6ZrdEsrBohu4OH7Qqh6wpfrkGuwVordW5kn955jY2nqE4OHlmv6lDu",
-	"1bViVxmHuD8idCnPPrDNQkhGDfPNe2qGy2GjRBQi3VLPYeuVoXpEpRrTJXEpppFO000EihmYbPIZtbit",
-	"B893UqM508u705jnLvVXvjgLlwdtfc/PHXeeeh7VPkZzVTjUW8hL0B7Y/YCPTOV+FKXkCsU8SxxiXE7R",
-	"b2LRWs5tGJ0FdUuNCjHFMlpXD75cnOSLcLFqqrhyy75V7bhuFhkiyQPG+VcxCXKJMY5MdRlkMpzqf+IK",
-	"UQy7HffNG3oWrSE6b8s1rr7noDe6jMn16OcBS/ztSPgvVUXmy0FDtx2jpLFmz2kpPEBiCdNAI58C3xCt",
-	"phcDMTIcd1YMdbO3bKmCCxFSlAIhiuLc/xFKnRTeCxGmSABMEeBojZYJXqm6K1qPmsuoRYkw4YBjpWtS",
-	"uiFEZFWMKyYiCp+D14i8q1w518LpndWRrz6B/Z6LZbUPDw4OukppN9SErxJaOF8QoffQUy65iLkyThMR",
-	"YmTEsiQ2+HgNCjM8P5N1ziJpgiMwxCRA189pozJTdUfn+dpDry6Uj0jRYUKYx5LKKYrVF93fh1osYMm4",
-	"ErxVQ+OYYvgJpsVxHCWuITFFByjTBKuSK4bL0S7GS5eMruQK31iD/gHcaTvwnu8syf9NyLtf2rOTNWMC",
-	"0OWaROtevELdWgPZBIeUCSIZJ9A3+95p2GXXlHSiq3NNmr3rMI/WkzZf1i4nuptEaQ+a7Xu8gs7brAD8",
-	"B36fhXtxsR3JFq04poqMccSZqJHZCih9Ddzd/+z/2qo090SIrDdGvzGNd43Lp8EKbwL3rc9sjpr+NNVu",
-	"6WTqfUrtn1HCBMST6aTBv/RhEJk+rUb6Uh+NgyQHkSVS/A2lmU53rmlG6NzA8ClKsvhh6zdNXlulJzDn",
-	"gwzKq3RLjIInvJwsbpy69j/TbLMAfrWfcrggcNn4fMttYpTNtNxnVotsR6tWz5M0m+SUOkmzyyVlk5Iy",
-	"JQTS86q4994MVaLq2ydqTUGqjmNOQAZM7e7trVX9m5zZNRbPI7bZ2EoKNbzAPvwqlYp3T6IWKZqo1B3+",
-	"A6ZBu0X9fNFbCtLkYm06ctgbmJBayTDGYr1gmMf7guJUrFlrFv2XrvWZa7zDQ61OVnOyvhFy60epiSx9",
-	"+CnwlfDyYc0Vdz1lbIPiyl7Ds92A5CTy5woRB+gs9PhSN/uC8iGbDd1V3pnCEpQ0UIuy+rutC/AtE9/g",
-	"UpEGtRFQWZQxHMoXCKCzSMxICjDddu30b2Z5qas8tqCSKQMpvs7ifR4hFlv05mUzQpiyUvt5IZaWemQj",
-	"K5HpMmT/1ELT0Fpk3c1fs0S5gvZoqVIevRO3Ud9ML99VOPvL2dmrvz7s/Al6H0ENMp2l++ys4ANvPjmk",
-	"KpYwmEU4lRlvvXdNi1e245nu90VcwG5Lb6jE53Drd6+Ba/O1q8ILlBHRScj2qLzx8SFjrt28fhdsNpnU",
-	"GzQvBC8W6xqmhlOmHJakmG+qhMhN+K2ewi6mKQ68IOtrLb2yQSfJFunWWqJNsAQhEVvo7FhxcYHLTO9D",
-	"lwTUseaOdoTO51J9hR+rcYvE9JbQ88EE5YZQnR94xIjbyrE9oGaScA8rczp3KIremVB53IiWHgWtHgg8",
-	"Ll+PbJSsFq03rlhlQ5GyNAUa64JuvrkKqlYLtesx8dRLAF0MIKSbsEK62EPvvSZg6uoZWxuosXnOgP6R",
-	"QQZx3svVGDDKy4yaYAJrOs0zBWn+orweFoBwHDsjbJ0vqtrENyqto9KX/oBb6NQcucGFby/G/g7i2u0W",
-	"awVuDUnr6mHNlHMtMreU1vbyrNLDj7bT7snCmXp2+Xh1q7K7arSgeIHFHouNk7vjkvQ3F4aeS2Re1Anr",
-	"yjMKDkENAK6HeC67eHca9y+BH988tlrgdL8jLKCt2e/rE53eYZrp4Fnt5ptzWUvFWsLQYox6lRixqhJf",
-	"2BO9Hd10a/OKOB1YKYbhteu4a/2eX66dr60QdM4nKeMbG+2dGwIeOJNUXDBnlOXKkHX2jlG4s+9tl22e",
-	"GvVYdJKbPcdj0/26mu2Wmq5m/z50UNPJux48rmG9DeV66pPT19zRfs/ag5ul+A9lQsYrQm+GjVkLxUzp",
-	"YPuzNKPx/6D63HemFiy12XShdp/Xt/siuJlO3YadfjG272QsUJxveYqMM4V6jXCQmFCIA4xbg8mxSDY6",
-	"xNVXZpBr2PRAPBN/04ZUPtamDgvaN2+6hnnzHzIvUGIJicCm/fD5snIQi62QsLGAtTb2fRtg3Abhd6bp",
-	"qW25SydQM4WdsI7WTl08tNmk3cWX4yjBa/fX7BzhFAEzm/SrXRp4b1ufucZDGe9bsiHyvlz9pd2oDbZJ",
-	"ne+9zsTuHjEeg2Jriy3KrM+8Av6Dr0metu2UQwRUmpILpQScrl9n/fES5L8gp5vSzu7U+6aylqZ3fBmz",
-	"77hA+X3wrCmTQF4mYkm4kEjv1UVlbZXQDDHBEpImgqhltjUZNOpSV1yXXEr970vO1wraGSh8hdlfzTHX",
-	"oZ0uzSEFwkKwiOgrRrURU7QBIfAKhDFFabbxSfp3g2jky01S2g6Q7BYv72bHsBosU02/Vg+xCoZVfMWK",
-	"t3hbBo4Hypd2lbvjOnf/HRCGC/NMvxGIIRADkDoakUSavCDONrphMSSDb/p9y6WdZarTLlU6yxPT/UHe",
-	"/zcZ6dkCm2Yh99TXGvbHW740v8bk4MZyZzxZKJHkzzYAuZrcBuTj8f+z8ArYq32gsjME2h22PeVXtsvN",
-	"EEJN2Fi+vq7QsZZiPQ2xY+eExg2xozasLA7iR8OfbOhkQ/zoQ1S9FM+zTftiW5pYB2O1sGUeXbEVc6ZT",
-	"j6xGMDbtFcy/PurWypzcnhMFICQmXNV5/mr9znB6rijdG934tHbSJjsxVgCbkCRIPW0Wowui+DWngcue",
-	"j+zDKvmjtkE5RqUM7ua8jS8u1UVVEKHE5KmrcawNHQN1kKxerX9WeQe/ZmZY8Ais8ceVyketxHKu6ez+",
-	"xUjMd+sh72bPHULPLNHUcB5zjlWnuW++hz0dizX8EHY5Wg35S1YoxWor+JYl71qWNG0y9jVwKUfSQ0wb",
-	"71yfW6HQ3nezG90t74VmordzV7s5m1wk3lq3cW6iy1kmah5SOaPVVzihCIsItIu1SrqoSta6y+irvK0r",
-	"EMvvI4Gwc7qAuAzJ4Xe3G3j/s/2XksU1GWIJQday0qVmG5SQ4l+YE0wfwsu0Xt73ILiGuH+LNFifFVMf",
-	"AXJHGO+hU5AZt4nk/M8Oo74+Aju7JC6XgL1uLizMzLPW056FENLpRUY9dGuJy87W7x4qEtYOn7oPDPUd",
-	"QNreipqTsqU7XoGwNCnb8gP9Ki8XlSy/CBMbv+TggmyVAJFCRJYkZBZDKUD93OYUVMJP9edDMTm95HhZ",
-	"7w/v6uqXL3H1w9dpcFLYZFPSoWXurK0AUua6PbSKNpnpvla/d/BR2/adadqrFLJTy0+rgf+3k7ypuOg2",
-	"Fnd8gUniNSQkdjYJ66PrROkEL+DOsmE8OXjU3fPMeB3+QrHb0S4Yn4fWzynQExZXwFbAOvvJPSs54GQz",
-	"wxQnW0kisQ+fIMp0+mxjKWtjc6eq77Hr+sr1NFa50UEZ/yY0ZpfvCM1MOuaytu3fymvWbiOeGkUp8su2",
-	"Bj6jOMXSZhTnGUUcVpjHCQihrs/fL/U0842Z5/e9yi86Et0Mb6XM1UqNIUGDFWVCpf1Wi/mdZ6rq9+8q",
-	"bTDbECmNxqyWCjNbH/w+SB/9zq/W3ISTDfI9q9C/J0m67vB+MB6rOcpUQMS40RHhKHf8nik8LehzS5Bu",
-	"9nUt03GfNG/F878pgr09jB2Col9m2rjyLo3pqDNrHGdJh8bwVLfY5UmqCVptYpgySnSZL5aAL2Xy4P2P",
-	"I78vvFKCoz6L8Kj0D+6gsg6n9dPsNhzVp31SYqk65fCaJBJ69zAJgHfLMbJO3/dTxXT1ISnDYeANbhPg",
-	"ckjgAtMIzG1vfiV0NUW6eMAlEYAoXOrSmNp/lnHV2/zkfclN56WGjzHs4ktMtH1gnW2wuhciIh56sT6N",
-	"4peMn+sS7Ap9jcxu9q2BxrGJH9ZgtA6eGs8aou7UIJ1O96fZl+Rof5rdlXO9ospma6GmFIn53fkx34tn",
-	"lym1jgt4XoOxjoEPSkl4mtETliQme+/I/IRfQMbBHAYIvsTkg5Hf3yyBC9C1TG2cVZ6O0LBOdZozfZyz",
-	"Ny91GooNtGFbV+6EMaxSZ7zc+UVtH57t/Oduk6DebDSjKX1WK7DXneq+lhg7BcLj1fispjs/Y7O4LnEs",
-	"xVySiKRamR9IZAmhoJ44MaRybUQH7Tel3Zg38LWaPjRMjb7LQ05ZQwlFuOtyMojFJVniqAdu+Yb3FL3c",
-	"+rowzO0YJUTIBy9x+/NTitE4iyC2BohBh7+vHzYX0HF7eBgf2+a3ggp/krSICdriIpX5glCsdaydUsV/",
-	"3rxHdo/a4xETbZzhAT486IvlJbukSrmljaE5TnhUMH42f5LUQaETNyJMI0ja0hyr79cQKR6mh6ffdvBM",
-	"u9otZ+sQi8xBJQ+79pABq9KLWx+Wvi8s67BtVeydt9irvOX9vMbyBbbdYz9TCNSJCVvp/+eWhpSz/7WP",
-	"KMUCQNfV9CClLP5aBaYK0GYKGAHkjFze/wr1PcX+ZywlbFIV/dNxj/pD3h3vPHZruT2MbY7JzDX6FWOY",
-	"S5DpkrZbGH6tZsMcPxvgkwPQQ2oUhu477XRfVD127R86yh5H6Wnmt9PGZV8Gpba0U4XX6JfTu37lWLsk",
-	"FGYrbpKcVaH1Fw5YMC1w/w+SjKlK6kki/loF3zhUFpKlMw6Sb0NxtWwVttUa1XzLjOvizwsFEGWRkCx1",
-	"i3DBoBIXqO1yzQTkIQC6h6mlTZVpWUXcqP9GIAT6IyMgIlCl2ZD2WfkHoauYbdAaC0vIW1fV2vXBC6E6",
-	"oEUm0SrDPCZYKUBJrH8lAum6+KpgAkeEXqji+lPj/QlBDQaHG8JJha4srC7lu/XV5KSLObPFtM0S8pXX",
-	"1Kk/VfD13OBMsvRWOMGtR3Qf3aDLQhliLQngFT5pFHZ1Rb9lge8f7a3ApigyNWGUKdYeWiUS7uQuS6Ji",
-	"r3CqKBMnXYX1XqvWx67xrVogp4PeKrsyVRYAcKcZwUoraaIx3Qy58/VWd80deXyH9NbDsPma8QWJY6AP",
-	"mUwVmJWCaon17avpzeVMjRhdEr4x9xXjiIN6rvpDCol3pe4yHd5aIeH808z17FQJ/OD7vPRddnaz9fer",
-	"sa46u5SEa3bepTzPAZzTz92WcbhrjYJ/uHq8boHRAMXCiuN03fE4+0G3uZ+KLL221tfV8Q9Ib/IrTlST",
-	"24ProNGBIRtMkgX71C8Q/DSj70z70THgvZncGC/DOpd5ueaA47LXfM98NJLNtXV0ZPeM6rlVJEB74Ewl",
-	"SsE4QqI1pjFbLvNI58VW5//OqCUppIZCf/mdUCF5ppW1cxXggqVKy/D7FP3ucGjOIQJyYX508svcSnal",
-	"30yP3//aFIZQWMJc7+aehCRUELSNedimOXRdhnnNWh+4TXdTt7l+t0aZJ4SRuh2XSRH6u+MO79yCJreL",
-	"T83q6RIy3W2mwBu8Vza1+zI5gDBK8J9btMySZGbhjVJGqCwmTBqMZPvB4VlkKyviBEsuwJT7NIGUdnqt",
-	"jTPhW0SgCyKIkqt4Rt1EU6T1XtpTLtCDq1yy9IJZrmodhYx78QVwFfAr7Dy2FkhMVto/m8ZIkD99zibj",
-	"aEjoag+9oWqYnABNBQc1CuH5OIyTlX7DKJ/HPeTOwhRVxNKXgTTefO/evHuFBCXLpc0KosTGmgRLddR4",
-	"YoF6P4hSbVdFQhM60LfzX+Y44hyEDjXt6FMkMmJSZGm7pVVtIg5qUB0o9Q7z85hdUnRB4NIqRCnWNuMF",
-	"Z5cCOIqtM4SC7Rqwjnl8/nligTh7SYSLDG9f/3Tyf2eu04dtCrOf83q4eS+X0o4yfbh1aeyuvrrMz84d",
-	"pUB3KSfqu+dLgeRjnvxmrOvxHyW2NevuFPZUqEvVCbmnGrxrUm5NenLbXmd4RxvMz4G7Mg8P+cZTB1u5",
-	"8LDQ2+xEKMpihUXqf9o0aswPnQ+qn1gMx67teNZck73ErOR6STofkiaqBMzWeiXrrTBBdKaxV604Z2Eb",
-	"faUDsr7WdFs+n5bTTqUOahX/AeGtsCX/oP408w/YXu132l9ZClQ5IS4xSSDWSg9mymhZ/zX9k7OzWhty",
-	"aMacupuk6OE09ZggQMoENlqO0MKdzVOSAFZS2RpfgBZ4t7ZlvIfeLNEGU7xSAf2Mn0sOYOo1qH7KXGuD",
-	"nqbmcWkwBHGbgerxwfcoo5IkKEoA0yz1d534G8JLCdx9UILNYkNU7BCFS3QaWvoabK2KIB7srfSTQYud",
-	"maA8hAYZno52MX9zZm51xqby+tdXcuafat9KaaGh4FhML87SlWPpNBuXV+l29N5qaW3pCWw+SeVIApcm",
-	"gXGQX+mLqJCYZylI+m12gIJL9etto1dn8TWb6MP933nNrm4DvWr1zT5/b+zzaeE4RtvkNcUaDtD5olIY",
-	"cGqb3h/z1C3cGHbTndGR6kgMLO/Y7L5LA3rNLgfcEBx4RmdLzjb56+SBvUv0a0OBQGW7s7krXYVg/0rT",
-	"+cnu8AVjMqs1vmB4Rl9ztvn2iml9RQRQurOXTGENza8Zdd5f92tGcxakOAvC/Z4ykmxAWZI6njMfXLOv",
-	"w+8s2HHbhefa2EzwX6dvUK7KU7jn8KkB8dzdIPbTbJGQtlJs702Df9seX0QKpdKe7ujFU1lFE0t1LZSV",
-	"2uRTNj0ftiHGbl+F8ub1ji5LWw3x130LkVikOIJZhFO8IAmRbXXUfgD5b9fjJOywQwZWP2HDEeuGKNyL",
-	"Fmat3zMRItOuopgaEndpTR4yDiiDqsPmmU6ZW9m+dfxYklXGIXZiM+Ks6PgotkLCRmGGmgCijOuQxV8/",
-	"T14A5sCPM2UA+/Wj4j8vjPnflW1Vv35UnfiF42klB1SzVRQTDpGcJYylCxydq1PQKWXQKWyYVO4haiaE",
-	"Ix0llQnrTmLQkPFZsI0fP3x4f4ZwHHMQOrVjxpPJ88layvT5/v7h0Xd7B3sHe4fPnx08O9jHKdm/OJxc",
-	"fbz6/wYAMHcXKRJnAgA=",
+	"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",
 }
 
 // GetSwagger returns the content of the embedded swagger specification file

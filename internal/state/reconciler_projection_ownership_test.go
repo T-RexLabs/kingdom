@@ -26,7 +26,7 @@ func TestReconcilerRetryRepairRechecksConcurrentProjection(t *testing.T) {
 				// Commit the competing owner's action before retry repair writes.
 				planned = true
 				if takeover == "retry_recorded" {
-					if _, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil || !scheduled {
+					if _, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil || !scheduled {
 						t.Fatalf("commit competing retry projection: scheduled=%t err=%v", scheduled, err)
 					}
 				} else {
@@ -40,7 +40,7 @@ func TestReconcilerRetryRepairRechecksConcurrentProjection(t *testing.T) {
 				return fixedDelayRetryPlanner{delay: time.Minute}.Plan(code, count)
 			})
 			r := NewReconciler(db, nil, planner, nil)
-			if err := r.recoverUnprojectedAutomaticDecreeRetries(context.Background(), now); err != nil {
+			if err := r.recoverUnprojectedAutomaticWorkOrderRetries(context.Background(), now); err != nil {
 				t.Fatalf("stale retry-repair candidate must yield to its current owner: %v", err)
 			}
 			if !planned {
@@ -50,7 +50,7 @@ func TestReconcilerRetryRepairRechecksConcurrentProjection(t *testing.T) {
 			if err := db.QueryRow(`SELECT COUNT(*) FROM retry_decisions WHERE source_attempt_id = 'source_attempt'`).Scan(&decisions); err != nil {
 				t.Fatal(err)
 			}
-			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake'`).Scan(&attempts); err != nil {
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake'`).Scan(&attempts); err != nil {
 				t.Fatal(err)
 			}
 			wantDecisions, wantAttempts, wantState := 1, 2, "failed"

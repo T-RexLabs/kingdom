@@ -80,6 +80,7 @@ function normalizeApiErrorOptions(status: number, statusText: string, parsed: Pa
 }
 
 let csrfToken = "";
+let authBinding = "";
 let authGeneration = 0;
 let signaledGeneration = -1;
 
@@ -90,14 +91,21 @@ export type UnauthorizedEvent = {
 
 const unauthorizedListeners = new Set<(event: UnauthorizedEvent) => void>();
 
-export function setCSRFToken(token: string): void {
+export function setCSRFToken(token: string, sessionId = ""): void {
   csrfToken = token;
+  authBinding = sessionId;
   authGeneration += 1;
   signaledGeneration = -1;
 }
 
 export function currentAuthGeneration(): number {
   return authGeneration;
+}
+
+// Nonsecret identity used to decide whether an exact pending request can be
+// retried. It is never an authentication credential or permission to mutate.
+export function currentAuthBinding(): string {
+  return authBinding;
 }
 
 export function subscribeToUnauthorized(listener: (event: UnauthorizedEvent) => void): () => void {
@@ -108,6 +116,7 @@ export function subscribeToUnauthorized(listener: (event: UnauthorizedEvent) => 
 export function signalUnauthorized(source: UnauthorizedEvent["source"] = "read", generation = authGeneration): void {
   if (generation !== authGeneration || signaledGeneration === generation) return;
   csrfToken = "";
+  authBinding = "";
   signaledGeneration = generation;
   const event = { generation, source } as const;
   for (const listener of unauthorizedListeners) listener(event);
@@ -129,9 +138,10 @@ export async function apiFetch<T>(
   path: string,
   options?: RequestInit & {
     params?: Record<string, string | number | boolean | undefined>;
+    responseType?: "json" | "text";
   }
 ): Promise<T> {
-  const { params, ...fetchOpts } = options ?? {};
+  const { params, responseType = "json", ...fetchOpts } = options ?? {};
 
   let url = `${API_BASE}${path}`;
   if (params) {
@@ -176,7 +186,7 @@ export async function apiFetch<T>(
 
   if (res.status === 204) return undefined as T;
 
-  return res.json();
+  return responseType === "text" ? res.text() as Promise<T> : res.json();
 }
 
 export class ApiError extends Error {

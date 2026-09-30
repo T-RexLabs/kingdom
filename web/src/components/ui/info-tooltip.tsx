@@ -97,7 +97,7 @@ export function InfoTooltip({
             id={tooltipID}
             role="tooltip"
             className={cn(
-              "pointer-events-none fixed z-[120] rounded-md border border-border bg-surface-overlay px-2 py-1 text-[11px] leading-snug text-foreground shadow-lg",
+              "ui-tooltip pointer-events-none fixed z-[120] rounded-md border border-border bg-surface-overlay px-3 py-2 text-[11px] leading-snug text-foreground shadow-lg",
               tooltipClassName,
             )}
             style={{ top: position.top, left: position.left, maxWidth: position.maxWidth, zIndex: position.zIndex }}

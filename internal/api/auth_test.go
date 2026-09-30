@@ -32,7 +32,7 @@ func TestAuthenticationMiddlewareRejectsForgedAttribution(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/roles", nil)
 	req.Header.Set("X-Actor-Id", "forged-admin")
-	req.Header.Set("X-Role-Id", "allfather")
+	req.Header.Set("X-Role-Id", "operator")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if called || res.Code != http.StatusUnauthorized {
@@ -215,7 +215,7 @@ func TestBrowserSessionBootstrapAndRestart(t *testing.T) {
 	if err := json.Unmarshal(reused.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if second.CSRFToken != first.CSRFToken || !second.ExpiresAt.Equal(first.ExpiresAt) {
+	if first.SessionID == "" || first.SessionID == cookies[0].Value || second.SessionID != first.SessionID || second.CSRFToken != first.CSRFToken || !second.ExpiresAt.Equal(first.ExpiresAt) {
 		t.Fatal("bootstrap rotated a valid session")
 	}
 

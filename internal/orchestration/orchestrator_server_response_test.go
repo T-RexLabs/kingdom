@@ -21,12 +21,12 @@ func TestExecutionSpecForNodeUsesApprovedCompletionModes(t *testing.T) {
 		nodeClass      string
 		completionMode executionstore.ProviderCompletionMode
 	}{
-		{name: "advisor", nodeID: "advisor_consultation_noble", nodeClass: workflow.NodeClassAdvisorConsultation, completionMode: executionstore.ProviderCompletionModeServerResponse},
+		{name: "advisor", nodeID: "architecture_consultation", nodeClass: workflow.NodeClassAdvisorConsultation, completionMode: executionstore.ProviderCompletionModeServerResponse},
 		{name: "synthesis", nodeID: "advisory_synthesis", nodeClass: workflow.NodeClassAdvisorySynthesis, completionMode: executionstore.ProviderCompletionModeServerResponse},
 		{name: "plan drafting", nodeID: "plan_drafting", nodeClass: workflow.NodeClassPlanDrafting, completionMode: executionstore.ProviderCompletionModeServerResponse},
-		{name: "review", nodeID: "execution_review_shieldmaiden", nodeClass: workflow.NodeClassExecutionReview, completionMode: executionstore.ProviderCompletionModeServerResponse},
-		{name: "validation", nodeID: "validation_gates_qa_scout", nodeClass: workflow.NodeClassValidationGates, completionMode: executionstore.ProviderCompletionModeServerResponse},
-		{name: "builder", nodeID: "delegated_execution_berserker", nodeClass: workflow.NodeClassDelegatedExecution, completionMode: executionstore.ProviderCompletionModeServerResponse},
+		{name: "review", nodeID: "execution_review", nodeClass: workflow.NodeClassExecutionReview, completionMode: executionstore.ProviderCompletionModeServerResponse},
+		{name: "validation", nodeID: "quality_validation", nodeClass: workflow.NodeClassValidationGates, completionMode: executionstore.ProviderCompletionModeServerResponse},
+		{name: "builder", nodeID: "implementation", nodeClass: workflow.NodeClassDelegatedExecution, completionMode: executionstore.ProviderCompletionModeServerResponse},
 	}
 
 	for _, test := range tests {
@@ -54,12 +54,12 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 
 	const (
 		runID              = "run_server_response"
-		decreeID           = "decree_server_response"
+		workOrderID        = "work_order_server_response"
 		workflowID         = "wfdef_server_response"
 		nodeRunID          = "nr_server_response"
-		nodeID             = "advisor_consultation_noble"
+		nodeID             = "architecture_consultation"
 		agentID            = "agent_server_response"
-		attemptID          = "run_server_response:advisor_consultation_noble:1"
+		attemptID          = "run_server_response:architecture_consultation:1"
 		invocationID       = "invocation_server_response"
 		logicalSessionID   = "session_server_response"
 		attemptStartedAt   = "2026-03-01T12:00:00Z"
@@ -72,14 +72,14 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	applyMigration(t, db)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        runID,
-		DecreeID:     decreeID,
+		WorkOrderID:  workOrderID,
 		WorkflowID:   workflowID,
 		NodeRunID:    nodeRunID,
 		NodeID:       nodeID,
 		NodeClass:    workflow.NodeClassAdvisorConsultation,
-		RequiredRole: "noble-delegate",
+		RequiredRole: "architecture-advisor",
 		AgentID:      agentID,
-		RoleIDs:      []string{"noble-delegate"},
+		RoleIDs:      []string{"architecture-advisor"},
 	})
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+attemptStartedAt+`' WHERE node_run_id = '`+nodeRunID+`'`)
 
@@ -144,8 +144,8 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	}
 	result := asyncExecutionResult{
 		run:                       runSnapshot{RunID: runID, RunStatus: "running"},
-		node:                      nodeDefinition{NodeID: nodeID, NodeClass: workflow.NodeClassAdvisorConsultation, RequiredRole: "noble-delegate"},
-		attempt:                   nodeAttempt{NodeRunID: nodeRunID, NodeID: nodeID, Attempt: 1, RequiredRole: "noble-delegate", AgentID: agentID, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
+		node:                      nodeDefinition{NodeID: nodeID, NodeClass: workflow.NodeClassAdvisorConsultation, RequiredRole: "architecture-advisor"},
+		attempt:                   nodeAttempt{NodeRunID: nodeRunID, NodeID: nodeID, Attempt: 1, RequiredRole: "architecture-advisor", AgentID: agentID, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		providerInvocationID:      invocationID,
 		completionMode:            executionstore.ProviderCompletionModeServerResponse,

@@ -1,5 +1,6 @@
 import {
   autoUpdate,
+  flip,
   offset,
   shift,
   size,
@@ -28,6 +29,8 @@ import { isElementInsideModal, popoverZIndexForOwner } from "./overlay-system";
  */
 
 export interface PopoverFloatingOptions {
+	/** Register related popovers in a FloatingTree for nested focus and dismissal. */
+	nodeId?: string;
 	open: boolean;
 	onOpenChange(open: boolean): void;
 	/** "listbox" for an option list, "dialog" for a panel of controls. */
@@ -36,6 +39,8 @@ export interface PopoverFloatingOptions {
 	minWidth?: number;
 	/** Anchoring direction; defaults to bottom-start. */
 	placement?: Placement;
+	/** Keep a complete control panel visible when its preferred side has too little room. */
+	allowFlip?: boolean;
 	/** Lets responsive CSS own width while Floating UI caps it to available space. */
 	widthMode?: "reference-min" | "css";
 	/** Upper bound on panel height (px); defaults to 320 (content scrolls). */
@@ -59,29 +64,30 @@ export interface PopoverFloating {
 }
 
 export function usePopoverFloating({
+	nodeId,
 	open,
 	onOpenChange,
 	role,
 	minWidth = 160,
 	placement = "bottom-start",
+	allowFlip = false,
 	widthMode = "reference-min",
 	maxHeight = 320,
 	triggerDisabled,
 	dismissDisabled,
 }: PopoverFloatingOptions): PopoverFloating {
 	const { refs, floatingStyles, context } = useFloating({
+		nodeId,
 		open,
 		onOpenChange,
 		placement,
 		whileElementsMounted: autoUpdate,
 		middleware: [
 			offset(4),
+			// Lists stay below their trigger by default. Complete panels such as
+			// calendars can opt in to flipping to keep their controls together.
+			...(allowFlip ? [flip({ padding: 8 })] : []),
 			shift({ padding: 8 }),
-			// No `flip`. Predictability matters more than maximum panel size: the
-			// panel always opens below the trigger and `size` shrinks it to fit
-			// the available viewport space, with internal scrolling when the
-			// content is longer. Flipping above the trigger was jarring when
-			// triggers landed in the lower half of the viewport.
 			size({
 				padding: 8,
 				apply({ rects, elements, availableHeight, availableWidth }) {

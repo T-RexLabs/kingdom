@@ -2,14 +2,10 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { Laptop, RefreshCw, ShieldCheck, WifiOff } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, setCSRFToken, subscribeToUnauthorized } from "@/api/client";
+import type { components } from "@/api/schema";
 import { useNotifications } from "@/components/notifications";
 
-type AuthSession = {
-  actor_id: string;
-  role_id: string;
-  csrf_token: string;
-  expires_at: string;
-};
+type AuthSession = components["schemas"]["AuthSession"];
 
 type BoundaryState =
   | { status: "bootstrapping"; recovery: boolean }
@@ -89,7 +85,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
         try {
           const session = await bootstrapSession();
           if (!current) return;
-          setCSRFToken(session.csrf_token);
+          setCSRFToken(session.csrf_token, session.session_id);
           await queryClient.invalidateQueries();
           if (!current) return;
           if (pendingMutationFailure.current) {
@@ -145,7 +141,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
     return (
       <main className="grid min-h-dvh place-items-center bg-background px-5 text-foreground">
         <div role="status" aria-live="polite" className="flex items-center gap-3 text-sm text-foreground-muted">
-          <span className="grid h-9 w-9 place-items-center border border-gold/35 bg-gold/10 text-gold">
+          <span className="grid h-9 w-9 place-items-center border border-accent/35 bg-accent/10 text-accent">
             <ShieldCheck aria-hidden="true" className="h-4 w-4 motion-safe:animate-pulse" />
           </span>
           <span>{state.recovery ? "Restoring local session..." : "Opening Kingdom..."}</span>
@@ -157,19 +153,19 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
   const unsupported = state.status === "unsupported";
   return (
     <main className="relative grid min-h-dvh place-items-center overflow-hidden bg-background px-4 py-10 text-foreground sm:px-6">
-      <div aria-hidden="true" className="absolute inset-0 opacity-40 [background-image:radial-gradient(circle_at_18%_12%,hsl(var(--gold)/.16),transparent_34%),linear-gradient(115deg,transparent_35%,hsl(var(--border)/.32)_35.2%,transparent_35.5%)]" />
+      <div aria-hidden="true" className="absolute inset-0 opacity-40 [background-image:radial-gradient(circle_at_18%_12%,hsl(var(--accent)/.16),transparent_34%),linear-gradient(115deg,transparent_35%,hsl(var(--border)/.32)_35.2%,transparent_35.5%)]" />
       <section aria-labelledby="local-session-title" className="relative w-full max-w-xl border border-border bg-surface/95 shadow-2xl shadow-black/40">
         <div className="flex items-center justify-between border-b border-border px-5 py-4 sm:px-7 sm:py-5">
           <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center border border-gold/40 bg-gold/10 text-gold">
+            <span className="grid h-11 w-11 place-items-center border border-accent/40 bg-accent/10 text-accent">
               {unsupported ? <Laptop aria-hidden="true" className="h-5 w-5" /> : <WifiOff aria-hidden="true" className="h-5 w-5" />}
             </span>
             <div>
-              <p className="font-display text-lg font-bold tracking-wide text-gold">Kingdom Local</p>
+              <p className="font-display text-lg font-bold tracking-wide text-accent">Kingdom Local</p>
               <p className="text-[10px] uppercase tracking-[0.24em] text-foreground-subtle">Host-bound control plane</p>
             </div>
           </div>
-          <span className="h-px w-12 bg-gradient-to-r from-gold/50 to-transparent sm:w-20" />
+          <span className="h-px w-12 bg-gradient-to-r from-accent/50 to-transparent sm:w-20" />
         </div>
 
         <div className="p-6 sm:p-8">
@@ -183,7 +179,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
           </p>
 
           {unsupported ? (
-            <div className="mt-6 border-l-2 border-gold/50 bg-background/60 px-4 py-3 text-sm leading-6 text-foreground-muted">
+            <div className="mt-6 border-l-2 border-accent/50 bg-background/60 px-4 py-3 text-sm leading-6 text-foreground-muted">
               Remote automation can use the authenticated HTTPS API with an explicitly supplied operator credential.
             </div>
           ) : (
@@ -193,7 +189,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
                 setState({ status: "bootstrapping", recovery: false });
                 setBootstrapAttempt((attempt) => attempt + 1);
               }}
-              className="mt-7 inline-flex min-h-11 items-center gap-2 border border-gold/60 bg-gold px-5 py-3 text-sm font-semibold text-background outline-none transition hover:bg-gold/90 focus-visible:ring-2 focus-visible:ring-gold focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+              className="mt-7 inline-flex min-h-11 items-center gap-2 border border-accent/60 bg-accent px-5 py-3 text-sm font-semibold text-background outline-none transition hover:bg-accent/90 focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-background"
             >
               <RefreshCw aria-hidden="true" className="h-4 w-4" />
               Try again

@@ -24,7 +24,7 @@ func TestTokenUsageInsertAndSumForRun(t *testing.T) {
 		RunID:            "run_tok_1",
 		NodeRunID:        "run_tok_1_nr_1",
 		AttemptID:        "attempt_1",
-		RequiredRole:     "king",
+		RequiredRole:     "governance",
 		Model:            "claude-opus-4",
 		InputTokens:      1000,
 		OutputTokens:     200,
@@ -94,7 +94,7 @@ func TestTokenUsageSummaryByTimeWindow(t *testing.T) {
 		RunID:            "run_tok_3",
 		NodeRunID:        "run_tok_3_nr_1",
 		AttemptID:        "attempt_1",
-		RequiredRole:     "king",
+		RequiredRole:     "governance",
 		InputTokens:      1000,
 		OutputTokens:     200,
 		TotalTokens:      1200,
@@ -168,7 +168,7 @@ func TestTokenUsageByRole(t *testing.T) {
 		RunID:        "run_tok_4",
 		NodeRunID:    "run_tok_4_nr_1",
 		AttemptID:    "attempt_1",
-		RequiredRole: "king",
+		RequiredRole: "governance",
 		TotalTokens:  1000,
 		InputTokens:  800,
 		OutputTokens: 200,
@@ -188,7 +188,7 @@ func TestTokenUsageByRole(t *testing.T) {
 		RunID:        "run_tok_4",
 		NodeRunID:    "run_tok_4_nr_1",
 		AttemptID:    "attempt_3",
-		RequiredRole: "king",
+		RequiredRole: "governance",
 		TotalTokens:  300,
 		InputTokens:  250,
 		OutputTokens: 50,
@@ -202,9 +202,9 @@ func TestTokenUsageByRole(t *testing.T) {
 	if len(byRole) != 2 {
 		t.Fatalf("expected 2 role groups, got %d", len(byRole))
 	}
-	// Should be sorted by total_tokens DESC (king=1300, knight=500)
-	if byRole[0].RequiredRole != "king" || byRole[0].TotalTokens != 1300 {
-		t.Fatalf("expected king with 1300 tokens first, got %q with %d", byRole[0].RequiredRole, byRole[0].TotalTokens)
+	// Should be sorted by total_tokens DESC (governance=1300, knight=500)
+	if byRole[0].RequiredRole != "governance" || byRole[0].TotalTokens != 1300 {
+		t.Fatalf("expected governance with 1300 tokens first, got %q with %d", byRole[0].RequiredRole, byRole[0].TotalTokens)
 	}
 	if byRole[1].RequiredRole != "knight" || byRole[1].TotalTokens != 500 {
 		t.Fatalf("expected knight with 500 tokens second, got %q with %d", byRole[1].RequiredRole, byRole[1].TotalTokens)
@@ -225,7 +225,7 @@ func TestTokenUsageByRoleForRun(t *testing.T) {
 		RunID:           "run_tok_4",
 		NodeRunID:       "run_tok_4_nr_1",
 		AttemptID:       "attempt_1",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		TotalTokens:     1000,
 		InputTokens:     700,
 		OutputTokens:    200,
@@ -247,7 +247,7 @@ func TestTokenUsageByRoleForRun(t *testing.T) {
 		RunID:           "run_tok_5a",
 		NodeRunID:       "run_tok_5a_nr_1",
 		AttemptID:       "attempt_1",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		TotalTokens:     200,
 		InputTokens:     150,
 		OutputTokens:    40,
@@ -262,8 +262,8 @@ func TestTokenUsageByRoleForRun(t *testing.T) {
 	if len(byRole) != 2 {
 		t.Fatalf("expected 2 role groups, got %d", len(byRole))
 	}
-	if byRole[0].RequiredRole != "king" || byRole[0].TotalTokens != 1000 {
-		t.Fatalf("expected king with 1000 provider tokens first, got %q with %d", byRole[0].RequiredRole, byRole[0].TotalTokens)
+	if byRole[0].RequiredRole != "governance" || byRole[0].TotalTokens != 1000 {
+		t.Fatalf("expected governance with 1000 provider tokens first, got %q with %d", byRole[0].RequiredRole, byRole[0].TotalTokens)
 	}
 	if byRole[1].RequiredRole != "knight" || byRole[1].TotalTokens != 500 {
 		t.Fatalf("expected knight with 500 provider tokens second, got %q with %d", byRole[1].RequiredRole, byRole[1].TotalTokens)
@@ -284,7 +284,7 @@ func TestTokenUsageByRoleIncludesExactModelBreakdown(t *testing.T) {
 		RunID:           "run_tok_4",
 		NodeRunID:       "run_tok_4_nr_1",
 		AttemptID:       "attempt_1",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		Model:           "github-copilot/gpt-4.1",
 		Variant:         "medium",
 		TotalTokens:     900,
@@ -297,7 +297,7 @@ func TestTokenUsageByRoleIncludesExactModelBreakdown(t *testing.T) {
 		RunID:           "run_tok_4",
 		NodeRunID:       "run_tok_4_nr_1",
 		AttemptID:       "attempt_2",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		Model:           "anthropic/opus-4.6",
 		Variant:         "high",
 		TotalTokens:     700,
@@ -310,7 +310,7 @@ func TestTokenUsageByRoleIncludesExactModelBreakdown(t *testing.T) {
 		RunID:           "run_tok_5a",
 		NodeRunID:       "run_tok_5a_nr_1",
 		AttemptID:       "attempt_1",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		Model:           "github-copilot/gpt-4.1",
 		Variant:         "medium",
 		TotalTokens:     300,
@@ -327,8 +327,8 @@ func TestTokenUsageByRoleIncludesExactModelBreakdown(t *testing.T) {
 	if len(byRole) == 0 {
 		t.Fatal("expected at least one role group")
 	}
-	if byRole[0].RequiredRole != "king" {
-		t.Fatalf("expected king role group first, got %q", byRole[0].RequiredRole)
+	if byRole[0].RequiredRole != "governance" {
+		t.Fatalf("expected governance role group first, got %q", byRole[0].RequiredRole)
 	}
 	if len(byRole[0].ByModel) != 2 {
 		t.Fatalf("expected 2 model breakdown rows, got %d", len(byRole[0].ByModel))
@@ -374,7 +374,7 @@ func TestTokenUsageByRoleOrdersByDerivedTotals(t *testing.T) {
 		RunID:           "run_tok_5a",
 		NodeRunID:       "run_tok_5a_nr_1",
 		AttemptID:       "attempt_1",
-		RequiredRole:    "king",
+		RequiredRole:    "governance",
 		Model:           "github-copilot/gpt-4.1",
 		TotalTokens:     1000,
 		InputTokens:     200,
@@ -409,8 +409,8 @@ func TestTokenUsageByRoleOrdersByDerivedTotals(t *testing.T) {
 	if derived := byRole[0].InputTokens + byRole[0].OutputTokens + byRole[0].ReasoningTokens; derived != 650 {
 		t.Fatalf("expected knight derived total 650, got %d", derived)
 	}
-	if byRole[1].RequiredRole != "king" {
-		t.Fatalf("expected king second because derived total is lower, got %q", byRole[1].RequiredRole)
+	if byRole[1].RequiredRole != "governance" {
+		t.Fatalf("expected governance second because derived total is lower, got %q", byRole[1].RequiredRole)
 	}
 
 	if len(byRole[0].ByModel) != 1 {
@@ -436,7 +436,7 @@ func TestTokenUsageTopRunsByTokens(t *testing.T) {
 		RunID:        "run_tok_5a",
 		NodeRunID:    "run_tok_5a_nr_1",
 		AttemptID:    "attempt_1",
-		RequiredRole: "king",
+		RequiredRole: "governance",
 		TotalTokens:  2000,
 		CreatedAt:    "2026-03-01T12:00:00Z",
 	})
@@ -445,7 +445,7 @@ func TestTokenUsageTopRunsByTokens(t *testing.T) {
 		RunID:        "run_tok_5b",
 		NodeRunID:    "run_tok_5b_nr_1",
 		AttemptID:    "attempt_1",
-		RequiredRole: "king",
+		RequiredRole: "governance",
 		TotalTokens:  500,
 		CreatedAt:    "2026-03-01T12:01:00Z",
 	})
@@ -489,7 +489,7 @@ func TestTokenUsageInsertIsIdempotentPerAttempt(t *testing.T) {
 		RunID:            "run_tok_1",
 		NodeRunID:        "run_tok_1_nr_1",
 		AttemptID:        "attempt_dedupe_1",
-		RequiredRole:     "king",
+		RequiredRole:     "governance",
 		Model:            "claude-opus-4",
 		InputTokens:      100,
 		OutputTokens:     20,
@@ -507,7 +507,7 @@ func TestTokenUsageInsertIsIdempotentPerAttempt(t *testing.T) {
 		RunID:            "run_tok_1",
 		NodeRunID:        "run_tok_1_nr_1",
 		AttemptID:        "attempt_dedupe_1",
-		RequiredRole:     "king",
+		RequiredRole:     "governance",
 		Model:            "claude-opus-4",
 		InputTokens:      100,
 		OutputTokens:     20,
@@ -563,16 +563,16 @@ func applyTokenUsageMigration(t *testing.T, db *sql.DB) {
 func seedTokenUsagePrereqs(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	mustTokenExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '2026-03-01T12:00:00Z')`)
+	mustTokenExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '2026-03-01T12:00:00Z')`)
 	mustTokenExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('knight', 'Knight', 0, '2026-03-01T12:00:00Z')`)
-	mustTokenExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king', 'king', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustTokenExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`)
-	mustTokenExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'royal-decree', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustTokenExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance', 'governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustTokenExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustTokenExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'work-order', 'v1', '{}', '2026-03-01T12:00:00Z')`)
 
 	runs := []string{"run_tok_1", "run_tok_2", "run_tok_3", "run_tok_4", "run_tok_5a", "run_tok_5b"}
 	for _, runID := range runs {
-		mustTokenExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('`+runID+`', NULL, 'decree_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustTokenExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('`+runID+`_nr_1', '`+runID+`', 'node_1', 1,1, 'running', 'king', 'agent_king', 1, '2026-03-01T12:00:00Z', NULL)`)
+		mustTokenExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('`+runID+`', NULL, 'work_order_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustTokenExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('`+runID+`_nr_1', '`+runID+`', 'node_1', 1,1, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:00:00Z', NULL)`)
 	}
 }
 

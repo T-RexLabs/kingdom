@@ -45,7 +45,7 @@ func (a *deterministicExternalAdapter) update(title, body, updatedAt string) {
 	a.mu.Unlock()
 }
 
-func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
+func TestE2EExternalPlanningWorkOrderRefreshAdoptionAndRetention(t *testing.T) {
 	adapter := &deterministicExternalAdapter{issue: state.NormalizedExternalIssue{Title: "Private issue", Body: "provider body marker", State: "open", Repository: "owner/private-repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/private-repo/issues/7", CreatedAt: "2026-03-01T10:00:00Z", UpdatedAt: "2026-03-01T11:00:00Z"}}
 	env := newE2EEnvWithExternalAdapter(t, adapter)
 
@@ -102,26 +102,26 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	if err := json.Unmarshal(captureResponse.Body.Bytes(), &capture); err != nil {
 		t.Fatal(err)
 	}
-	decreeResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", body: map[string]any{"decree_title": "Operator-edited title", "decree_text": "Operator-edited immutable text", "external_source_snapshot_id": capture.SnapshotID}, idempotencyKey: "external-decree"})
-	if decreeResponse.Code != http.StatusCreated {
-		t.Fatalf("create linked decree status=%d body=%s", decreeResponse.Code, decreeResponse.Body.String())
+	workOrderResponse := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", body: map[string]any{"work_order_title": "Operator-edited title", "work_order_text": "Operator-edited immutable text", "external_source_snapshot_id": capture.SnapshotID}, idempotencyKey: "external-work order"})
+	if workOrderResponse.Code != http.StatusCreated {
+		t.Fatalf("create linked work order status=%d body=%s", workOrderResponse.Code, workOrderResponse.Body.String())
 	}
-	var decree struct {
-		DecreeID string `json:"decree_id"`
+	var workOrder struct {
+		WorkOrderID string `json:"work_order_id"`
 	}
-	if err := json.Unmarshal(decreeResponse.Body.Bytes(), &decree); err != nil {
+	if err := json.Unmarshal(workOrderResponse.Body.Bytes(), &workOrder); err != nil {
 		t.Fatal(err)
 	}
-	var decreeLink, decreeUsed string
-	if err := env.db.QueryRow(`SELECT link_id,used_snapshot_id FROM external_source_links WHERE target_kind='decree' AND target_id=?`, decree.DecreeID).Scan(&decreeLink, &decreeUsed); err != nil {
+	var workOrderLink, workOrderUsed string
+	if err := env.db.QueryRow(`SELECT link_id,used_snapshot_id FROM external_source_links WHERE target_kind='work_order' AND target_id=?`, workOrder.WorkOrderID).Scan(&workOrderLink, &workOrderUsed); err != nil {
 		t.Fatal(err)
 	}
-	if decreeUsed != capture.SnapshotID || decreeUsed != usedSnapshot {
-		t.Fatalf("issuance did not retain exact deduplicated snapshot: planning=%s capture=%s decree=%s", usedSnapshot, capture.SnapshotID, decreeUsed)
+	if workOrderUsed != capture.SnapshotID || workOrderUsed != usedSnapshot {
+		t.Fatalf("issuance did not retain exact deduplicated snapshot: planning=%s capture=%s work order=%s", usedSnapshot, capture.SnapshotID, workOrderUsed)
 	}
 
 	adapter.update("Changed provider title", "changed provider body", "2026-03-01T12:00:00Z")
-	for _, link := range []string{decreeLink, planningLink} {
+	for _, link := range []string{workOrderLink, planningLink} {
 		response := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + link + "/refreshes", idempotencyKey: "refresh-" + link})
 		if response.Code != http.StatusOK {
 			t.Fatalf("refresh %s status=%d body=%s", link, response.Code, response.Body.String())
@@ -134,26 +134,26 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	if count := env.queryInt(t, `SELECT COUNT(*) FROM planning_external_source_adoptions WHERE planning_session_id=?`, planningPayload.Session.PlanningSessionID); count != 2 {
 		t.Fatalf("planning adoption count after refresh=%d", count)
 	}
-	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/decrees/" + decree.DecreeID})
+	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/work-orders/" + workOrder.WorkOrderID})
 	if detailResponse.Code != http.StatusOK {
-		t.Fatalf("read refreshed decree: %d %s", detailResponse.Code, detailResponse.Body.String())
+		t.Fatalf("read refreshed work order: %d %s", detailResponse.Code, detailResponse.Body.String())
 	}
 	var detail struct {
-		Title string `json:"decree_title"`
-		Text  string `json:"decree_text"`
+		Title string `json:"work_order_title"`
+		Text  string `json:"work_order_text"`
 	}
 	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
 	if detail.Title != "Operator-edited title" || detail.Text != "Operator-edited immutable text" {
-		t.Fatalf("refresh rewrote decree: title=%q text=%q", detail.Title, detail.Text)
+		t.Fatalf("refresh rewrote work order: title=%q text=%q", detail.Title, detail.Text)
 	}
 
 	removeResponse := env.request(t, requestSpec{method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID, idempotencyKey: "external-remove"})
 	if removeResponse.Code != http.StatusNoContent {
 		t.Fatalf("remove connection status=%d body=%s", removeResponse.Code, removeResponse.Body.String())
 	}
-	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_source_links WHERE target_id IN (?,?)`, decree.DecreeID, planningPayload.Session.PlanningSessionID); count != 2 {
+	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_source_links WHERE target_id IN (?,?)`, workOrder.WorkOrderID, planningPayload.Session.PlanningSessionID); count != 2 {
 		t.Fatalf("provenance links did not survive removal: %d", count)
 	}
 }

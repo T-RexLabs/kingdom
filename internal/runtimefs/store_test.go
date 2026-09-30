@@ -1228,9 +1228,9 @@ func assertTestFile(t *testing.T, root, relativePath, want string) {
 func seedRuntimeFSRun(t testing.TB, db *sql.DB, runID string) {
 	t.Helper()
 	stmts := []string{
-		`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_runtimefs', 'Runtime FS', 'text', '{}', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_runtimefs', 'royal-decree-v1', '1', '{}', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('` + runID + `', NULL, 'decree_runtimefs', 'wfdef_runtimefs', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_runtimefs', 'Runtime FS', 'text', '{}', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_runtimefs', 'work-order-v1', '1', '{}', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('` + runID + `', NULL, 'work_order_runtimefs', 'wfdef_runtimefs', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {

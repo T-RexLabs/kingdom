@@ -25,10 +25,11 @@ WORKDIR_ID := $(shell printf '%s' '$(CURDIR)' | cksum | awk '{print $$1}')
 WEB_NODE_MODULES_STAMP := web/node_modules/.pnpm-ready-$(PNPM_VERSION)-$(WORKDIR_ID).stamp
 WEB_DIST_INDEX := web/dist/index.html
 KD_BINARY := bin/kd
+THEME_INPUTS := $(shell find contracts/theme -type f)
 
 WEB_BUILD_INPUTS := $(shell find web/src web/public -type f) \
 	$(shell find web -maxdepth 1 -type f \( -name '*.html' -o -name '*.json' -o -name '*.js' -o -name '*.ts' \)) \
-	Makefile
+	$(THEME_INPUTS) Makefile
 KD_GO_SOURCES := $(shell find cmd internal web -type f -name '*.go' ! -name '*_test.go')
 BOOTSTRAP_ASSETS := $(shell find internal/bootstrapassets/files -type f)
 DB_MIGRATIONS := $(shell find internal/dbmigrations -maxdepth 1 -type f -name '*.sql')
@@ -93,6 +94,7 @@ verify: test test-web lint-web test-race vet coverage-core contracts-check ## Ru
 
 ##@ Contracts
 contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date
+	node scripts/generate_theme_contract.mjs --check
 	@tmp_dir="$$(mktemp -d)"; trap 'rm -rf "$$tmp_dir"' EXIT; \
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o "$$tmp_dir/types.gen.go" $(OPENAPI_SPEC); \
 	($(WEB_PNPM) exec openapi-typescript ../$(OPENAPI_SPEC) -o "$$tmp_dir/schema.ts"); \
@@ -111,6 +113,9 @@ tool-versions: ## Print the pinned local tool versions
 # Internal targets
 contracts-generate: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
 
+$(OPENAPI_SPEC): contracts/theme/theme.schema.json scripts/generate_theme_contract.mjs
+	node scripts/generate_theme_contract.mjs
+
 $(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml Makefile
 	rm -rf web/node_modules
 	$(WEB_PNPM) install --frozen-lockfile
@@ -119,7 +124,7 @@ $(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspac
 $(WEB_DIST_INDEX): $(WEB_BUILD_INPUTS) $(WEB_NODE_MODULES_STAMP)
 	$(WEB_PNPM) build
 
-$(KD_BINARY): $(KD_GO_SOURCES) $(BOOTSTRAP_ASSETS) $(DB_MIGRATIONS) go.mod go.sum $(WEB_DIST_INDEX)
+$(KD_BINARY): $(KD_GO_SOURCES) $(BOOTSTRAP_ASSETS) $(DB_MIGRATIONS) $(THEME_INPUTS) go.mod go.sum $(WEB_DIST_INDEX)
 	mkdir -p bin
 	$(GO) build -o $@ ./cmd/kd
 

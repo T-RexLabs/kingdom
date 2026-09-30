@@ -21,11 +21,11 @@ func TestServerRejectsUnknownFields(t *testing.T) {
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Title",
-			"decree_text":  "Text",
-			"unexpected":   true,
+			"work_order_title": "Title",
+			"work_order_text":  "Text",
+			"unexpected":       true,
 		},
 		idempotencyKey: "idem-unknown-fields",
 	})
@@ -64,7 +64,7 @@ func TestServerWaiverEndpointRemoved(t *testing.T) {
 			"run_id":      runID,
 			"waiver_type": "validation_bypass",
 			"target_gate": "functional_validation",
-			"reason":      "attempted by non-king",
+			"reason":      "attempted by non-governance",
 		},
 		idempotencyKey: "idem-waiver-forbidden",
 	})
@@ -293,7 +293,7 @@ func TestServerAllMVPEndpointsSmoke(t *testing.T) {
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
-	setRunPlanState(t, db, runID, "awaiting_king_decision")
+	setRunPlanState(t, db, runID, "awaiting_plan_decision")
 	seedTimelineEvents(t, db, runID)
 	seedArtifact(t, db, runID)
 
@@ -340,9 +340,9 @@ func TestServerListAgentsReturnsAllRegisteredAgents(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-king-1', 'king', 'King', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-chancellor-1', 'chancellor', 'Chancellor', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-1', 'council-member', 'Council', 'offline', 'agent-chancellor-1', 1, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-governance-1', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-coordinator-1', 'coordinator', 'Coordinator', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-1', 'plan-author', 'Council', 'offline', 'agent-coordinator-1', 1, ?, ?)`, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/agents"})
 	if res.Code != http.StatusOK {
@@ -369,11 +369,11 @@ func TestServerListAgentsReturnsAllRegisteredAgents(t *testing.T) {
 		t.Fatalf("expected 3 agents, got %d", len(payload.Items))
 	}
 
-	if payload.Items[0].AgentID != "agent-chancellor-1" {
-		t.Errorf("items[0] expected agent-chancellor-1, got %s", payload.Items[0].AgentID)
+	if payload.Items[0].AgentID != "agent-coordinator-1" {
+		t.Errorf("items[0] expected agent-coordinator-1, got %s", payload.Items[0].AgentID)
 	}
-	if payload.Items[1].AgentID != "agent-king-1" {
-		t.Errorf("items[1] expected agent-king-1, got %s", payload.Items[1].AgentID)
+	if payload.Items[1].AgentID != "agent-governance-1" {
+		t.Errorf("items[1] expected agent-governance-1, got %s", payload.Items[1].AgentID)
 	}
 	if payload.Items[2].AgentID != "agent-council-1" {
 		t.Errorf("items[2] expected agent-council-1, got %s", payload.Items[2].AgentID)

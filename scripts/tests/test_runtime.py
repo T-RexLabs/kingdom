@@ -23,21 +23,48 @@ class RuntimeServiceTests(unittest.TestCase):
         request = RunRequest(
             title="Title",
             text="Text",
-            workflow_id="royal-decree-v1",
             publish_mode="direct",
             global_model="github-copilot/gpt-5.4-mini",
-            agent_model_overrides="reviewer-shieldmaiden=github-copilot/gpt-5.4-mini",
+            agent_model_overrides="reviewer=github-copilot/gpt-5.4-mini",
             max_execution_review_cycles=5,
             max_validation_rework_cycles=5,
         )
 
-        payload = runtime.build_run_payload("decree_123", request)
+        payload = runtime.build_run_payload("work_order_123", request)
 
         self.assertEqual(payload["model_selection"]["global"], {"model": "github-copilot/gpt-5.4-mini"})
         self.assertEqual(
             payload["model_selection"]["role_overrides"],
-            {"reviewer-shieldmaiden": {"model": "github-copilot/gpt-5.4-mini"}},
+            {"reviewer": {"model": "github-copilot/gpt-5.4-mini"}},
         )
+
+    def test_run_creation_uses_server_selected_workflow_in_both_publish_modes(self) -> None:
+        runtime = RuntimeService(Path("/tmp/kingdom"))
+        for publish_mode in ("direct", "git_worktree"):
+            with self.subTest(publish_mode=publish_mode):
+                request = RunRequest(
+                    title="Title", text="Text",
+                    publish_mode=publish_mode, global_model="openai/gpt-5.6-luna",
+                    agent_model_overrides="", max_execution_review_cycles=0,
+                    max_validation_rework_cycles=0,
+                )
+                payload = runtime.build_run_payload("work_order_123", request)
+                self.assertNotIn("workflow_id", payload)
+                self.assertEqual(payload["publish_mode"], publish_mode)
+                self.assertEqual(payload["work_order_id"], "work_order_123")
+
+    def test_workspace_init_uses_current_flags_in_both_publish_modes(self) -> None:
+        runtime = RuntimeService(Path("/tmp/kingdom"))
+        for publish_mode in ("direct", "git_worktree"):
+            with self.subTest(publish_mode=publish_mode), TemporaryDirectory() as directory:
+                with mock.patch.object(runtime, "run_command") as run_command:
+                    paths = runtime.init_workspace(Path(directory), 18180, publish_mode)
+                command = run_command.call_args.args[0]
+                self.assertEqual(command[:2], ["kd", "init"])
+                self.assertNotIn("--default-workflow-id", command)
+                self.assertEqual(command[command.index("--publish-mode") + 1], publish_mode)
+                self.assertEqual(command[command.index("--listen") + 1], "127.0.0.1:18180")
+                self.assertEqual(paths.workspace_dir, Path(directory))
 
     def test_post_json_retries_ambiguous_transport_with_same_key(self) -> None:
         runtime = RuntimeService(Path("/tmp/kingdom"))

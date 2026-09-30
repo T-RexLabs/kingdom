@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Eye, EyeOff } from "lucide-react";
+import { ArrowDown, ArrowUp } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/api/hooks";
 import { buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
 import { MilestoneRow } from "./timeline-milestone-row";
@@ -111,91 +112,68 @@ export function TimelinePanel({
   }
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col gap-3">
-		<div className="flex items-center justify-between">
-			<span className="text-xs text-foreground-subtle">
-				{showRawEvents
-					? `${events.length} raw events`
-					: `${orderedMilestones.length} milestones from ${events.length} events`}
-			</span>
-        <button
-          onClick={() => {
-            setShowRawEvents(!showRawEvents);
-            setExpandedId(null);
-          }}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-[11px] font-medium text-foreground-subtle transition-colors hover:border-border-strong hover:text-foreground"
-        >
-          {showRawEvents ? (
-            <>
-              <EyeOff className="h-3 w-3" />
-              Milestones
-            </>
-          ) : (
-            <>
-              <Eye className="h-3 w-3" />
-              Raw Events
-            </>
-          )}
-        </button>
+    <div className="relative flex h-full min-h-0 flex-col gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-3">
+        <div className="space-y-1.5">
+          <h3 className="text-sm font-medium text-foreground">Audit Trail</h3>
+          <p className="text-xs leading-relaxed text-foreground-subtle">
+            {showRawEvents
+              ? `${events.length} loaded ${events.length === 1 ? "event" : "events"}`
+              : `${orderedMilestones.length} ${orderedMilestones.length === 1 ? "milestone" : "milestones"} · ${events.length} loaded ${events.length === 1 ? "event" : "events"}`}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-1" role="group" aria-label="Audit view">
+          {([false, true] as const).map((raw) => (
+            <Button
+              key={String(raw)}
+              type="button"
+              size="sm"
+              variant={showRawEvents === raw ? "secondary" : "ghost"}
+              aria-pressed={showRawEvents === raw}
+              onClick={() => { setShowRawEvents(raw); setExpandedId(null); }}
+            >
+              {raw ? "Raw Events" : "Activity"}
+            </Button>
+          ))}
+        </div>
       </div>
-
-			<div
-				ref={scrollRef}
-				onScroll={handleScroll}
-        className="relative min-h-0 flex-1 overflow-y-auto pr-2"
-      >
-				<div className="pl-1">
-					{showRawEvents ? (
-						orderedRawEvents.map((event, index) => (
-							<RawEventRow
-								key={event.event_id}
-								event={event}
-								isLast={index === orderedRawEvents.length - 1}
-								isExpanded={expandedId === event.event_id}
-								onToggle={() => toggleExpand(event.event_id)}
-								lookups={lookups}
-							/>
-						))
-					) : (
-						orderedMilestones.map((milestone, index) => (
-							<MilestoneRow
-								key={milestone.id}
-								milestone={milestone}
-								isLast={index === orderedMilestones.length - 1}
-								isExpanded={expandedId === milestone.id}
-								onToggle={() => toggleExpand(milestone.id)}
-								lookups={lookups}
-							/>
-						))
-					)}
-
-					{hasMore && onLoadMore && (
-						<div className="flex justify-center pt-3">
-							<button
-								type="button"
-								onClick={onLoadMore}
-								disabled={isLoadingMore}
-								className="rounded-md border border-border bg-surface px-4 py-1.5 text-xs font-medium text-foreground-muted transition-colors hover:border-border-strong hover:bg-surface-raised hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"
-							>
-								{isLoadingMore ? "Loading older activity..." : "Load older activity"}
-							</button>
-						</div>
-					)}
-				</div>
-			</div>
-
-			{(userScrolledAwayFromLatest || hasHiddenLatestUpdate) && (
-				<button
-					onClick={scrollToLatest}
-					className="absolute right-4 z-20 flex items-center gap-1.5 rounded-full border border-border-strong bg-surface-overlay px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition-colors hover:bg-surface-raised hover:text-gold sm:right-6"
-					style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
-				>
-					<ArrowUp className="h-3.5 w-3.5" />
-					Jump to latest
-				</button>
-			)}
-		</div>
-	);
+      <div className="flex items-center gap-1.5 text-xs text-foreground-subtle">
+        <ArrowDown aria-hidden="true" className="h-3.5 w-3.5" />
+        Newest First
+      </div>
+      <div ref={scrollRef} onScroll={handleScroll} className="relative min-h-0 flex-1 overflow-y-auto pr-1">
+        <ol aria-label={showRawEvents ? "Raw events" : "Run milestones"} className="min-w-0 border-y border-border">
+          {showRawEvents
+            ? orderedRawEvents.map((event) => (
+              <RawEventRow key={event.event_id} event={event} isExpanded={expandedId === event.event_id} onToggle={() => toggleExpand(event.event_id)} lookups={lookups} />
+            ))
+            : orderedMilestones.map((milestone) => (
+              <MilestoneRow key={milestone.id} milestone={milestone} isExpanded={expandedId === milestone.id} onToggle={() => toggleExpand(milestone.id)} lookups={lookups} />
+            ))}
+        </ol>
+        {hasMore && onLoadMore && (
+          <div className="flex justify-center py-4">
+            <Button type="button" variant="outline" size="sm" onClick={onLoadMore} disabled={isLoadingMore}>
+              {isLoadingMore ? "Loading older activity..." : "Load Older Activity"}
+            </Button>
+          </div>
+        )}
+      </div>
+      {(userScrolledAwayFromLatest || hasHiddenLatestUpdate) && (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={scrollToLatest}
+          className="absolute right-4 z-20 bg-surface-overlay shadow-lg sm:right-6"
+          style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
+        >
+          <ArrowUp aria-hidden="true" className="h-3.5 w-3.5" />
+          Jump to Latest
+        </Button>
+      )}
+    </div>
+  );
 }
 
 function compareTimelineEventDisplayTime(left: TimelineEvent, right: TimelineEvent): number {

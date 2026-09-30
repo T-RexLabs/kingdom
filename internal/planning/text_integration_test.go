@@ -117,10 +117,10 @@ func TestPlannerStreamedFinalizationPublishesChunksAndReplaysAfterRelease(t *tes
 				}
 			} else {
 				draft, found, err := store.GetDraft(context.Background(), *op.ResultRef)
-				if err != nil || !found || draft.DecreeText != want || draft.DecreeTitle != "Complete Plan" {
+				if err != nil || !found || draft.WorkOrderText != want || draft.WorkOrderTitle != "Complete Plan" {
 					t.Fatalf("draft replay: %v", err)
 				}
-				if err := db.QueryRow(`SELECT decree_text,decree_text_content_id FROM planning_drafts WHERE planning_draft_id=?`, *op.ResultRef).Scan(&scalar, &reference); err != nil || scalar != "" || reference == "" {
+				if err := db.QueryRow(`SELECT work_order_text,work_order_text_content_id FROM planning_drafts WHERE planning_draft_id=?`, *op.ResultRef).Scan(&scalar, &reference); err != nil || scalar != "" || reference == "" {
 					t.Fatalf("draft scalar retained body: %v", err)
 				}
 			}

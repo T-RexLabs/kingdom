@@ -5,7 +5,6 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
@@ -240,7 +239,7 @@ func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	events, err := s.planningService.ListOperationEventsAfterEventID(r.Context(), operation.OperationID, afterEventID)
+	events, err := s.planningService.ListOperationEventsAfterEventIDPage(r.Context(), operation.OperationID, afterEventID)
 	if err != nil {
 		if errors.Is(err, state.ErrPlanningOperationEventNotFound) {
 			writeCanonicalError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "invalid Last-Event-ID header", "api.stream_acp_run_events", nil)
@@ -251,37 +250,6 @@ func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request
 	}
 	s.planningService.ObserveOperationEventReplay(afterEventID)
 	s.writePlanningOperationEvents(w, r, operation.OperationID, afterEventID, events)
-}
-
-func (s *Server) handleGetAcpRunActivity(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requirePrincipal(w, r, "api.get_acp_run_activity"); !ok {
-		return
-	}
-	if s.planningService == nil {
-		s.writeInternalError(w, "planning service is not configured")
-		return
-	}
-	runID := strings.TrimSpace(r.PathValue("runId"))
-	if runID == "" {
-		s.writeBadRequest(w, "acp run id is required")
-		return
-	}
-	operation, ok, _, err := s.planningService.GetOperationByAcpRunID(r.Context(), runID)
-	if err != nil {
-		s.writeInternalError(w, "fetch acp run failed")
-		return
-	}
-	if !ok {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "acp run not found", "api.get_acp_run_activity", map[string]any{"run_id": runID})
-		return
-	}
-	storedEvents, err := s.planningService.ListOperationEventsAfterEventID(r.Context(), operation.OperationID, "")
-	if err != nil {
-		s.writeInternalError(w, "fetch acp run events failed")
-		return
-	}
-	items := acpRunActivityItemsFromEvents(storedEvents)
-	writeJSON(w, http.StatusOK, gen.AcpRunActivityResponse{Items: dedupeAcpRunActivityItems(items)})
 }
 
 func acpAgentFromDefinition(agent acp.PlannerAgent) gen.AcpAgent {
@@ -316,124 +284,6 @@ func acpRunFromOperation(operation state.PlanningOperation) gen.AcpRun {
 	if value := optionalTrimmedString(operation.FinishedAt); value != nil {
 		finishedAt := mustParseRFC3339(*value)
 		result.FinishedAt = &finishedAt
-	}
-	return result
-}
-
-func acpRunActivityItemsFromEvents(events []state.PlanningOperationEvent) []gen.AcpRunActivityItem {
-	items := make([]gen.AcpRunActivityItem, 0)
-	for _, event := range events {
-		item, ok := acpRunActivityItemFromEvent(event)
-		if ok {
-			items = append(items, item)
-		}
-	}
-	return items
-}
-
-func acpRunActivityItemFromEvent(event state.PlanningOperationEvent) (gen.AcpRunActivityItem, bool) {
-	return acpActivityItemFromPayload(event.PayloadJSON, event.EventID, event.CreatedAt)
-}
-
-// acpActivityItemFromPayload maps a stored activity event into a renderable item by
-// inspecting its payload "kind". It is source-agnostic: planner operation events and
-// decree-run attempt.activity events share the same payload shape, so both feed the
-// same parser (and the same frontend renderer). Events without a recognized activity
-// kind are skipped.
-func acpActivityItemFromPayload(payloadJSON, eventID, createdAt string) (gen.AcpRunActivityItem, bool) {
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		return gen.AcpRunActivityItem{}, false
-	}
-	occurredAt := mustParseRFC3339(createdAt)
-	if rawOccurredAt := strings.TrimSpace(stringValue(payload["occurred_at"])); rawOccurredAt != "" {
-		if parsed, err := time.Parse(time.RFC3339, rawOccurredAt); err == nil {
-			occurredAt = parsed.UTC()
-		}
-	}
-	activityID := activityItemID(payload, eventID)
-	switch strings.TrimSpace(stringValue(payload["kind"])) {
-	case acp.KingdomPhaseKind:
-		phase := strings.TrimSpace(stringValue(payload["phase"]))
-		label := strings.TrimSpace(stringValue(payload["label"]))
-		if label == "" {
-			var ok bool
-			label, ok = acp.PhaseActivityLabel(phase)
-			if !ok {
-				return gen.AcpRunActivityItem{}, false
-			}
-		}
-		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
-	case acp.KingdomProgressKind:
-		label := strings.TrimSpace(stringValue(payload["label"]))
-		var ok bool
-		label, ok = acp.NormalizeProgressActivityLabel(label)
-		if !ok {
-			return gen.AcpRunActivityItem{}, false
-		}
-		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
-	case acp.KingdomToolKind:
-		toolName := strings.TrimSpace(stringValue(payload["tool_name"]))
-		if toolName == "" {
-			return gen.AcpRunActivityItem{}, false
-		}
-		status := strings.TrimSpace(stringValue(payload["tool_status"]))
-		toolTitle := strings.TrimSpace(stringValue(payload["tool_title"]))
-		toolInput := strings.TrimSpace(stringValue(payload["tool_input"]))
-		label := strings.TrimSpace(stringValue(payload["label"]))
-		if label == "" {
-			label = acp.ToolActivityLabel(toolName, status, toolTitle, toolInput)
-		}
-		item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Tool, Label: label, OccurredAt: occurredAt}
-		detail := strings.TrimSpace(stringValue(payload["detail"]))
-		if detail == "" {
-			detail = acp.ToolActivityDetail(status)
-		}
-		if detail != "" {
-			item.Detail = &detail
-		}
-		if toolInput != "" {
-			item.Input = &toolInput
-		}
-		return item, true
-	case acp.KingdomReasoningKind:
-		detail := strings.TrimSpace(stringValue(payload["detail"]))
-		if detail == "" {
-			detail = strings.TrimSpace(stringValue(payload["summary"]))
-		}
-		label := strings.TrimSpace(stringValue(payload["label"]))
-		if label == "" {
-			label = "Thinking"
-		}
-		item := gen.AcpRunActivityItem{Id: activityID, Kind: gen.Thinking, Label: label, OccurredAt: occurredAt}
-		if detail != "" {
-			item.Detail = &detail
-		}
-		return item, true
-	}
-	return gen.AcpRunActivityItem{}, false
-}
-
-func activityItemID(payload map[string]any, fallback string) string {
-	if activityID := strings.TrimSpace(stringValue(payload["activity_id"])); activityID != "" {
-		return activityID
-	}
-	return fallback
-}
-
-func dedupeAcpRunActivityItems(items []gen.AcpRunActivityItem) []gen.AcpRunActivityItem {
-	result := make([]gen.AcpRunActivityItem, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		key := strings.TrimSpace(item.Id)
-		if key == "" {
-			key = strings.Join([]string{string(item.Kind), item.Label, nullableStringValue(item.Detail), nullableStringValue(item.Input), nullableStringValue(item.Output), item.OccurredAt.Format(time.RFC3339)}, "\x00")
-		}
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, item)
 	}
 	return result
 }

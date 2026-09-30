@@ -1,9 +1,30 @@
-export const RUN_DETAIL_TABS = ["graph", "execution", "agents", "mailbox"] as const;
-
+export const RUN_DETAIL_TABS = ["workflow", "execution"] as const;
 export type RunDetailTab = (typeof RUN_DETAIL_TABS)[number];
-
-const RUN_DETAIL_TAB_SET = new Set<string>(RUN_DETAIL_TABS);
-
+export type RunDetailPanel = "files" | "plan" | "details";
+export type RunDetailSection = "context" | "audit";
+export type RunDetailSearch = {
+  tab?: RunDetailTab;
+  panel?: RunDetailPanel;
+  section?: RunDetailSection;
+};
 export function isRunDetailTab(value: unknown): value is RunDetailTab {
-  return typeof value === "string" && RUN_DETAIL_TAB_SET.has(value);
+  return value === "workflow" || value === "execution";
+}
+export function parseRunDetailSearch(
+  search: Record<string, unknown>,
+): RunDetailSearch {
+  const result: RunDetailSearch = {};
+  if (isRunDetailTab(search.tab)) result.tab = search.tab;
+  if (
+    search.panel === "files" ||
+    search.panel === "plan" ||
+    search.panel === "details"
+  )
+    result.panel = search.panel;
+  if (
+    result.panel === "details" &&
+    (search.section === "context" || search.section === "audit")
+  )
+    result.section = search.section;
+  return result;
 }

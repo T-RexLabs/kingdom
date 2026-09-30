@@ -173,15 +173,15 @@ func TestRuntimeCloseTimeoutPreservesProviderContentUntilHandoffReadersDrain(t *
 func TestReferencedResponseProjectionIsCompleteAndIdempotentWithOneConnection(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
 	h.db.SetMaxOpenConns(1)
-	mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES('chancellor','Chancellor',1,'2026-03-01T12:00:00Z')`)
-	mustExec(t, h.db, `UPDATE agents SET role_id='chancellor'`)
-	mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='chancellor',node_class='advisory_synthesis'`)
+	mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES('coordinator','Coordinator',1,'2026-03-01T12:00:00Z')`)
+	mustExec(t, h.db, `UPDATE agents SET role_id='coordinator'`)
+	mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='coordinator',node_class='advisory_synthesis'`)
 	invocation := h.addInvocation(t, 1)
-	mustExec(t, h.db, `UPDATE node_runs SET required_role='chancellor'`)
+	mustExec(t, h.db, `UPDATE node_runs SET required_role='coordinator'`)
 	job := h.runningHandoffJob(t, invocation, 1)
-	job.node.RequiredRole = "chancellor"
+	job.node.RequiredRole = "coordinator"
 	job.node.NodeClass = "advisory_synthesis"
-	job.attempt.RequiredRole = "chancellor"
+	job.attempt.RequiredRole = "coordinator"
 	body := strings.Repeat("full canonical response\n", 450000)
 	configureSuccessfulHandoff(&job, body)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -277,12 +277,12 @@ func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 	t.Helper()
 	db := openTestDB(t)
 	applyMigration(t, db)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_terminal_handoff', 'builder-berserker', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_terminal_handoff', 'Terminal handoff', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_terminal_handoff', 'builder', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_terminal_handoff', 'Terminal handoff', 'text', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_terminal_handoff', 'terminal-handoff', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_terminal_handoff', 'wfdef_terminal_handoff', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_terminal_handoff', NULL, 'decree_terminal_handoff', 'wfdef_terminal_handoff', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_terminal_handoff', 'wfdef_terminal_handoff', 'implementation', 'builder', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_terminal_handoff', NULL, 'work_order_terminal_handoff', 'wfdef_terminal_handoff', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	runtimeDir := t.TempDir()
 	fsStore, err := runtimefs.NewStore(db, runtimeDir)
@@ -336,11 +336,11 @@ func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 func (h terminalHandoffHarness) addInvocation(t *testing.T, index int) executionstore.ProviderInvocation {
 	t.Helper()
 	nodeRunID := fmt.Sprintf("nr_terminal_handoff_%03d", index)
-	attemptID := fmt.Sprintf("run_terminal_handoff:delegated_execution_berserker:%d", index)
+	attemptID := fmt.Sprintf("run_terminal_handoff:implementation:%d", index)
 	invocationID := fmt.Sprintf("pinv_terminal_handoff_%03d", index)
 	sessionID := fmt.Sprintf("session_terminal_handoff_%03d", index)
 	owner := fmt.Sprintf("handoff-worker-%03d", index)
-	mustExec(t, h.db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (%q, 'run_terminal_handoff', 'delegated_execution_berserker', %d, 1, 'running', 'builder-berserker', 'agent_terminal_handoff', 1, %q, NULL)`, nodeRunID, index, terminalHandoffFixtureNow))
+	mustExec(t, h.db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (%q, 'run_terminal_handoff', 'implementation', %d, 1, 'running', 'builder', 'agent_terminal_handoff', 1, %q, NULL)`, nodeRunID, index, terminalHandoffFixtureNow))
 	if err := h.store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:             attemptID,
 		RunID:                 "run_terminal_handoff",
@@ -606,7 +606,7 @@ func TestRejectedPendingMarkerWithoutGuardianPersistsLeaseFencedRecovery(t *test
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode recovered no-guardian outbox payload: %v", err)
 	}
-	if payload.Attempt.Attempt != 1 || payload.Attempt.NodeID != "delegated_execution_berserker" || payload.Attempt.AgentID != "agent_terminal_handoff" || payload.Node.NodeClass != "delegated_execution" {
+	if payload.Attempt.Attempt != 1 || payload.Attempt.NodeID != "implementation" || payload.Attempt.AgentID != "agent_terminal_handoff" || payload.Node.NodeClass != "delegated_execution" {
 		t.Fatalf("lost-handoff replay dropped node-attempt lineage: attempt=%#v node=%#v", payload.Attempt, payload.Node)
 	}
 }
@@ -736,7 +736,7 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 	if err != nil || !found {
 		t.Fatalf("load guardian recovery invocation: found=%t err=%v", found, err)
 	}
-	const attemptID = "run_terminal_handoff:delegated_execution_berserker:1"
+	const attemptID = "run_terminal_handoff:implementation:1"
 	mustExec(t, h.db, `UPDATE node_runs SET node_status = 'blocked', finished_at = '2026-03-01T12:00:02Z' WHERE node_run_id = '`+invocation.NodeRunID+`'`)
 	mustExec(t, h.db, `UPDATE attempt_executions SET state = 'committed_cancelled', committed_at = '2026-03-01T12:00:02Z', failure_code = 'agent_unresponsive' WHERE attempt_id = '`+attemptID+`'`)
 	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
@@ -764,7 +764,7 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 		RunID:      invocation.RunID,
 		AttemptID:  attemptID,
 		ActorID:    "local-operator",
-		RoleID:     "allfather",
+		RoleID:     "operator",
 		OccurredAt: "2026-03-01T12:00:03Z",
 		GenerateID: func(prefix string) string { return prefix + "_guardian_recovery" },
 	}); err != nil {
@@ -863,8 +863,8 @@ func (h terminalHandoffHarness) baseHandoffJob(invocation executionstore.Provide
 	owner := fmt.Sprintf("handoff-worker-%03d", index)
 	return asyncExecutionResult{
 		run:                     runSnapshot{RunID: invocation.RunID, RunStatus: "running"},
-		node:                    nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
-		attempt:                 nodeAttempt{NodeRunID: invocation.NodeRunID, NodeID: "delegated_execution_berserker", Attempt: index, RequiredRole: "builder-berserker", AgentID: "agent_terminal_handoff", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, LeaseOwner: owner, LeaseVersion: 1},
+		node:                    nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: "delegated_execution"},
+		attempt:                 nodeAttempt{NodeRunID: invocation.NodeRunID, NodeID: "implementation", Attempt: index, RequiredRole: "builder", AgentID: "agent_terminal_handoff", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, LeaseOwner: owner, LeaseVersion: 1},
 		attemptID:               invocation.AttemptID,
 		providerInvocationID:    invocation.ProviderInvocationID,
 		providerInvocationAt:    terminalHandoffFixtureNow,
@@ -934,9 +934,9 @@ func TestProviderTerminalHandoffFileRecoveryFencesLeaseLineageAndExpiry(t *testi
 		name   string
 		update string
 	}{
-		{name: "owner changed", update: `UPDATE attempt_executions SET lease_owner = 'replacement-worker' WHERE attempt_id = 'run_terminal_handoff:delegated_execution_berserker:1'`},
-		{name: "version changed", update: `UPDATE attempt_executions SET lease_version = lease_version + 1 WHERE attempt_id = 'run_terminal_handoff:delegated_execution_berserker:1'`},
-		{name: "observation after durable expiry", update: `UPDATE attempt_executions SET lease_expires_at = '2026-03-01T12:00:03Z' WHERE attempt_id = 'run_terminal_handoff:delegated_execution_berserker:1'`},
+		{name: "owner changed", update: `UPDATE attempt_executions SET lease_owner = 'replacement-worker' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`},
+		{name: "version changed", update: `UPDATE attempt_executions SET lease_version = lease_version + 1 WHERE attempt_id = 'run_terminal_handoff:implementation:1'`},
+		{name: "observation after durable expiry", update: `UPDATE attempt_executions SET lease_expires_at = '2026-03-01T12:00:03Z' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
@@ -1428,8 +1428,8 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 			h := newTerminalHandoffHarness(t)
 			h.loop.processGuardRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
-			const attemptID = "run_terminal_handoff:delegated_execution_berserker:1"
-			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_terminal_handoff:delegated_execution_berserker:1'`)
+			const attemptID = "run_terminal_handoff:implementation:1"
+			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`)
 			const guardID = "guard_terminal_handoff_001"
 			tc.mutate(t, providerGuardEvidencePath(h.runtimeDir, guardID))
 			if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
@@ -1599,7 +1599,7 @@ func (h terminalHandoffHarness) persistPendingProviderGuardQuiescence(t *testing
 	quiescentAt := "2026-03-01T12:00:04Z"
 	_, err = h.store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
 		GuardID: guardID, ProviderInvocationID: fmt.Sprintf("pinv_terminal_handoff_%03d", index),
-		AttemptID: fmt.Sprintf("run_terminal_handoff:delegated_execution_berserker:%d", index), RunID: "run_terminal_handoff",
+		AttemptID: fmt.Sprintf("run_terminal_handoff:implementation:%d", index), RunID: "run_terminal_handoff",
 		NodeRunID: fmt.Sprintf("nr_terminal_handoff_%03d", index), Platform: result.Platform,
 		GuardianPID: int64(result.GuardianPID), GuardianIdentityToken: result.GuardianIdentityToken,
 		ChildPID: int64(result.ChildPID), ChildIdentityToken: result.ChildIdentityToken, TreeID: strconv.Itoa(result.TreeID),

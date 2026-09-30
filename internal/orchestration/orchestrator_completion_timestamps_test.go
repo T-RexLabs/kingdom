@@ -34,10 +34,10 @@ func completionTimestampFixture(t *testing.T) (*orchestrationLoop, asyncExecutio
 	}
 	result := asyncExecutionResult{
 		run:  runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
-		node: nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt: nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, Wave: 1,
-			AgentID: "agent_king", RequiredRole: "king", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
-		attemptID: "run_1:decree_intake:1", delegator: "agent_king", outputText: "Complete.",
+		node: nodeDefinition{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
+		attempt: nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, Wave: 1,
+			AgentID: "agent_governance", RequiredRole: "governance", ExecutionMode: executionstore.ExecutionModeRuntimeOwned},
+		attemptID: "run_1:work_intake:1", delegator: "agent_governance", outputText: "Complete.",
 		occurredAt: "2026-09-30T11:59:00Z",
 	}
 	seedCompletionTimestampOutbox(t, db, result)
@@ -83,10 +83,10 @@ func TestCompletionTimestampsFollowPerRecordProjection(t *testing.T) {
 	loop, first := completionTimestampFixture(t)
 	mustExec(t, loop.db, `INSERT INTO workflow_nodes
 		(workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at)
-		VALUES ('wn_2', 'wfdef_1', 'second_intake', 'king', 'decree_intake', '2026-09-30T11:59:00Z')`)
+		VALUES ('wn_2', 'wfdef_1', 'second_intake', 'governance', 'work_intake', '2026-09-30T11:59:00Z')`)
 	mustExec(t, loop.db, `INSERT INTO node_runs
 		(node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at)
-		VALUES ('nr_2', 'run_1', 'second_intake', 1, 1, 'running', 'king', 'agent_king', 1, '2026-09-30T11:59:00Z')`)
+		VALUES ('nr_2', 'run_1', 'second_intake', 1, 1, 'running', 'governance', 'agent_governance', 1, '2026-09-30T11:59:00Z')`)
 	second := first
 	second.node.NodeID = "second_intake"
 	second.attempt.NodeID = "second_intake"
@@ -232,15 +232,15 @@ func TestCompletionExitRecordsProjectionFailureTime(t *testing.T) {
 
 func TestCompletionLoopCapsPreserveZeroAndUnlimitedModes(t *testing.T) {
 	for _, gate := range []struct{ class, role, reason string }{
-		{"execution_review", "reviewer-shieldmaiden", "execution_review_cap_auto_succeeded"},
-		{"validation_gates", "intelligence-qa-scout", "validation_gate_cap_auto_succeeded"},
+		{"execution_review", "reviewer", "execution_review_cap_auto_succeeded"},
+		{"validation_gates", "qa-validator", "validation_gate_cap_auto_succeeded"},
 	} {
 		for _, unlimited := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/unlimited_%t", gate.class, unlimited), func(t *testing.T) {
 				db := openTestDB(t)
 				applyMigration(t, db)
 				seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
-					RunID: "run_cap", DecreeID: "decree_cap", WorkflowID: "workflow_cap",
+					RunID: "run_cap", WorkOrderID: "work_order_cap", WorkflowID: "workflow_cap",
 					NodeRunID: "node_run_cap", NodeID: "custom_gate", NodeClass: gate.class,
 					RequiredRole: gate.role, AgentID: "agent_gate", RoleIDs: []string{gate.role},
 				})

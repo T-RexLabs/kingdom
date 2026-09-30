@@ -77,7 +77,7 @@ func terminalizePreparationRun(t *testing.T, loop *orchestrationLoop, runID, ter
 		Transition: state.TransitionRequest{
 			TransitionID: "tr_cancel_preparation", EventID: "evt_cancel_preparation", RunID: runID,
 			Entity: state.EntityTypeRun, FromState: "running", ToState: terminal,
-			ActorID: "test_operator", RoleID: "king", AuthoritySource: "api.cancel_run",
+			ActorID: "test_operator", RoleID: "governance", AuthoritySource: "api.cancel_run",
 			ReasonCode: "run_cancelled_by_user", ReasonText: "cancel preparation",
 			CorrelationID: "corr_cancel_preparation", CausationID: "caus_cancel_preparation",
 			OccurredAt: loop.now().UTC().Format(time.RFC3339Nano), AttemptID: "run_cancel_preparation",
@@ -93,7 +93,7 @@ func TestCancellationBeforeCanonicalPreparationNeedsNoWorkspaceRestore(t *testin
 		t.Run(scenario, func(t *testing.T) {
 			db := openTestDB(t)
 			applyMigration(t, db)
-			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_cancel_prep", DecreeID: "decree_cancel_prep", WorkflowID: "wf_cancel_prep", NodeRunID: "nr_cancel_prep", NodeID: "builder", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder-berserker", AgentID: "agent_cancel_prep", RoleIDs: []string{"builder-berserker"}})
+			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_cancel_prep", WorkOrderID: "work_order_cancel_prep", WorkflowID: "wf_cancel_prep", NodeRunID: "nr_cancel_prep", NodeID: "builder", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder", AgentID: "agent_cancel_prep", RoleIDs: []string{"builder"}})
 			root := t.TempDir()
 			rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: &sequenceExecutionAdapter{}, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: root})
 			if err != nil {

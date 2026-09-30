@@ -16,11 +16,11 @@ const EMPTY_GOVERNANCE_STATE: ManualGovernanceState = {
 };
 
 const PLAN_STATE_LABELS: Record<string, string> = {
-  draft: "The Scribes Draft...",
-  in_council_review: "The Council Deliberates...",
-  awaiting_king_decision: "Awaiting Your Plan Approval",
-  approved: "Approved by Royal Decree",
-  needs_rework: "Sent Back to the Forge",
+  draft: "Draft",
+  in_plan_review: "In Plan Review",
+  awaiting_plan_decision: "Awaiting Your Plan Approval",
+  approved: "Approved",
+  needs_rework: "Rework Requested",
 };
 
 type ManualGovernanceRun = Pick<RunSummary, "display_state" | "plan_state" | "autonomous_approvals">;
@@ -37,7 +37,7 @@ export function describeManualGovernanceState(
     return {
       isAwaitingPlanApproval: true,
       isAwaitingFinalApproval: false,
-      noticeTitle: "Awaiting your plan approval",
+      noticeTitle: "Awaiting Your Plan Approval",
       noticeMessage:
         "Execution is paused until you confirm this plan or request rework.",
     };
@@ -48,7 +48,7 @@ export function describeManualGovernanceState(
     return {
       isAwaitingPlanApproval: false,
       isAwaitingFinalApproval: true,
-      noticeTitle: "Awaiting your final approval",
+      noticeTitle: "Awaiting Your Final Approval",
       noticeMessage:
         "This run is paused until you confirm completion or request rework.",
     };
@@ -58,7 +58,7 @@ export function describeManualGovernanceState(
 }
 
 export function runPlanStateLabel(run: ManualGovernanceRun): string {
-  if (run.plan_state === "awaiting_king_decision" && run.autonomous_approvals !== false) {
+  if (run.plan_state === "awaiting_plan_decision" && run.autonomous_approvals !== false) {
     return "Awaiting Plan Decision";
   }
   return PLAN_STATE_LABELS[run.plan_state] ?? capitalize(run.plan_state.replace(/_/g, " "));

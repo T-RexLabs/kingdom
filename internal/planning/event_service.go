@@ -15,23 +15,8 @@ func newOperationEventService(deps runtimeDeps) *operationEventService {
 	return &operationEventService{deps: deps}
 }
 
-func (s *operationEventService) ListOperationEventsAfterEventID(ctx context.Context, operationID string, afterEventID string) ([]state.PlanningOperationEvent, error) {
-	all := make([]state.PlanningOperationEvent, 0)
-	cursor := strings.TrimSpace(afterEventID)
-	for {
-		page, err := s.deps.store.ListOperationEventsAfterEventIDPage(ctx, operationID, cursor, state.DefaultPlanningOperationEventListLimit)
-		if err != nil {
-			return nil, err
-		}
-		if len(page) == 0 {
-			return all, nil
-		}
-		all = append(all, page...)
-		if len(page) < state.DefaultPlanningOperationEventListLimit {
-			return all, nil
-		}
-		cursor = page[len(page)-1].EventID
-	}
+func (s *operationEventService) ListOperationEventsAfterEventIDPage(ctx context.Context, operationID string, afterEventID string) ([]state.PlanningOperationEvent, error) {
+	return s.deps.store.ListOperationEventsAfterEventIDPage(ctx, operationID, strings.TrimSpace(afterEventID), state.DefaultPlanningOperationEventListLimit)
 }
 
 func (s *operationEventService) SubscribeOperationEvents(operationID string) (<-chan struct{}, func()) {

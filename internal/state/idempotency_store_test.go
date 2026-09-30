@@ -122,7 +122,6 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunesOnlyCompleted
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
-	applyMigration(t, db, "0003_external_sources_and_idempotency_retention.up.sql")
 	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +197,6 @@ func TestIdempotencyStoreExpiredPendingReservationPastFormerGraceReturnsPending(
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
-	applyMigration(t, db, "0003_external_sources_and_idempotency_retention.up.sql")
 	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}

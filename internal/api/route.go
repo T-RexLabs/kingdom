@@ -49,8 +49,8 @@ func ValidateBasePath(raw string) (string, error) {
 		}
 	}
 	reserved := map[string]struct{}{
-		"agents": {}, "assets": {}, "connections": {}, "decrees": {}, "favicon.svg": {},
-		"healthz": {}, "index.html": {}, "realm-analytics": {}, "runs": {}, "src": {},
+		"agents": {}, "assets": {}, "connections": {}, "work-orders": {}, "favicon.svg": {},
+		"healthz": {}, "index.html": {}, "analytics": {}, "runs": {}, "src": {},
 	}
 	if _, conflict := reserved[strings.ToLower(segments[0])]; conflict {
 		return "", fmt.Errorf("API base path conflicts with reserved web route /%s", segments[0])

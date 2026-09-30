@@ -3,29 +3,29 @@ package workflow
 const CodeInvalidNodeClass = "invalid_node_class"
 
 const (
-	NodeClassDecreeIntake                = "decree_intake"
-	NodeClassAdvisorConsultation         = "advisor_consultation"
-	NodeClassAdvisorySynthesis           = "advisory_synthesis"
-	NodeClassPlanDrafting                = "plan_drafting"
-	NodeClassKingPlanDecision            = "king_plan_decision"
-	NodeClassExecutionKickoff            = "execution_kickoff"
-	NodeClassDelegatedExecution          = "delegated_execution"
-	NodeClassExecutionReview             = "execution_review"
-	NodeClassValidationGates             = "validation_gates"
-	NodeClassRoyalClosure                = "royal_closure"
+	NodeClassWorkIntake          = "work_intake"
+	NodeClassAdvisorConsultation = "advisor_consultation"
+	NodeClassAdvisorySynthesis   = "advisory_synthesis"
+	NodeClassPlanDrafting        = "plan_drafting"
+	NodeClassPlanDecision        = "plan_decision"
+	NodeClassExecutionKickoff    = "execution_kickoff"
+	NodeClassDelegatedExecution  = "delegated_execution"
+	NodeClassExecutionReview     = "execution_review"
+	NodeClassValidationGates     = "validation_gates"
+	NodeClassCompletion          = "completion"
 )
 
 var canonicalNodeClasses = []string{
-	NodeClassDecreeIntake,
+	NodeClassWorkIntake,
 	NodeClassAdvisorConsultation,
 	NodeClassAdvisorySynthesis,
 	NodeClassPlanDrafting,
-	NodeClassKingPlanDecision,
+	NodeClassPlanDecision,
 	NodeClassExecutionKickoff,
 	NodeClassDelegatedExecution,
 	NodeClassExecutionReview,
 	NodeClassValidationGates,
-	NodeClassRoyalClosure,
+	NodeClassCompletion,
 }
 
 var canonicalNodeClassSet = func() map[string]struct{} {

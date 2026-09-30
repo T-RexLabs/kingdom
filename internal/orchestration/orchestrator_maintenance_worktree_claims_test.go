@@ -25,8 +25,8 @@ func TestMaintenanceWorktreeClaimRecoveryIsBoundedAndCyclesPastLiveOwners(t *tes
 		t.Helper()
 		runID := fmt.Sprintf("claimed_%03d", index)
 		if _, err := db.Exec(`INSERT INTO workflow_runs
-			(run_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at)
-			SELECT ?, decree_id, workflow_definition_id, 'failed', plan_state, 1, created_at, updated_at FROM workflow_runs WHERE run_id = 'run_1'`, runID); err != nil {
+			(run_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at)
+			SELECT ?, work_order_id, workflow_definition_id, 'failed', plan_state, 1, created_at, updated_at FROM workflow_runs WHERE run_id = 'run_1'`, runID); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO run_worktrees

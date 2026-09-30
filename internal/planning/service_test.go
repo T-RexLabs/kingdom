@@ -41,7 +41,7 @@ func (a *unopenedFormalizeAgent) FormalizePlanStream(_ context.Context, input Ag
 		OutcomeState:      "success",
 		StreamObservation: terminalPlannerStreamObservation(text, "session-open-was-not-persisted"),
 	}
-	return FormalizedPlan{DecreeTitle: "Durable Planner Settlement", DecreeText: text, Metadata: metadata}, nil
+	return FormalizedPlan{WorkOrderTitle: "Durable Planner Settlement", WorkOrderText: text, Metadata: metadata}, nil
 }
 
 type formalizeContextCaptureAgent struct {
@@ -430,9 +430,9 @@ func (m *mockAgent) FormalizePlanStream(_ context.Context, input AgentContext, o
 		onChunk("## Objective\n\n")
 	}
 	return FormalizedPlan{
-		DecreeTitle: input.Title,
-		DecreeText:  defaultPlanningServiceTestScript.FormalizedText,
-		Metadata:    metadata,
+		WorkOrderTitle: input.Title,
+		WorkOrderText:  defaultPlanningServiceTestScript.FormalizedText,
+		Metadata:       metadata,
 	}, nil
 }
 
@@ -791,7 +791,7 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	reply := "We need a planner for decree composition that captures scope, constraints, acceptance criteria, and verification checkpoints before implementation begins."
+	reply := "We need a planner for work order composition that captures scope, constraints, acceptance criteria, and verification checkpoints before implementation begins."
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     reply,
@@ -955,8 +955,8 @@ func TestServiceFormalizeOperationCreatesDraftWithoutPlanningMessages(t *testing
 	if !ok {
 		t.Fatal("expected draft to exist")
 	}
-	if !strings.Contains(draft.DecreeText, "## Objective") {
-		t.Fatalf("expected formalized plan scaffold, got %q", draft.DecreeText)
+	if !strings.Contains(draft.WorkOrderText, "## Objective") {
+		t.Fatalf("expected formalized plan scaffold, got %q", draft.WorkOrderText)
 	}
 }
 
@@ -1795,10 +1795,10 @@ func TestServiceDiagnosticSessionActivityDoesNotDelayCanonicalSettlement(t *test
 	t.Cleanup(func() {
 		releaseOnce.Do(func() { close(releaseInspection) })
 	})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string) ([]sessionActivityItem, error) {
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
 		close(inspectionStarted)
 		<-releaseInspection
-		return nil, nil
+		return nil
 	}
 
 	session, err := service.CreateSession(context.Background(), "Diagnostic export", `{"model":"test-model"}`)
@@ -1871,10 +1871,10 @@ func TestServiceCloseCancelsAndJoinsContendedActivityReconciliationBeforeSQLiteT
 
 	inspectionStarted := make(chan struct{})
 	releaseInspection := make(chan struct{})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string) ([]sessionActivityItem, error) {
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
 		close(inspectionStarted)
 		<-releaseInspection
-		return nil, nil
+		return nil
 	}
 
 	session, err := service.CreateSession(context.Background(), "Contended reconciliation", `{"model":"test-model"}`)
@@ -2014,14 +2014,14 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	service := NewService(store, &streamingMockAgent{
 		chunks: []string{
 			"```structured_question\n{\"prompt\":\"Choose planning depth\",\"type\":\"single_select\",\"options\":[{\"label\":\"Lean\",\"value\":\"lean\"},{\"label\":\"Thorough\",\"value\":\"thorough\"}]}\n```\n\n",
-			"A lean plan keeps the next decree focused on outcome and verification.\n",
+			"A lean plan keeps the next work order focused on outcome and verification.\n",
 		},
 		question: &StructuredQuestion{
 			Prompt:  "Choose planning depth",
 			Type:    "single_select",
 			Options: []StructuredQuestionOption{{Label: "Lean", Value: "lean"}, {Label: "Thorough", Value: "thorough"}},
 		},
-		final: "A lean plan keeps the next decree focused on outcome and verification.",
+		final: "A lean plan keeps the next work order focused on outcome and verification.",
 	}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 
 	session, err := service.CreateSession(context.Background(), "Stream question test", `{"model":"test-model"}`)
@@ -2035,7 +2035,7 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	}
 	awaitOperationTerminal(t, store, operation.Operation.OperationID)
 
-	eventsAfterFirst, err := service.ListOperationEventsAfterEventID(context.Background(), operation.Operation.OperationID, operation.Operation.OperationID+":1")
+	eventsAfterFirst, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, operation.Operation.OperationID+":1")
 	if err != nil {
 		t.Fatalf("list operation events after seq: %v", err)
 	}
@@ -2087,8 +2087,8 @@ func TestServiceRecoversExpiredPlanningActivityReconciliationWithoutRerunningPro
 			t.Errorf("close restarted service: %v", err)
 		}
 	}()
-	restarted.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string) ([]sessionActivityItem, error) {
-		return []sessionActivityItem{{ID: "export-tool-1", Kind: "tool", Label: "Fetched https://example.com", Input: `{"url":"https://example.com"}`, OccurredAt: "2026-04-21T17:10:00Z"}}, nil
+	restarted.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
+		return visit(ProviderActivity{ProviderPartID: "export-tool-1", Kind: "tool", ToolName: "webfetch", ToolStatus: "completed", ToolTitle: "https://example.com", Input: providerexecution.ActivityText(`{"url":"https://example.com"}`), OccurredAt: "2026-04-21T17:10:00Z"})
 	}
 	if err := restarted.RecoverOperations(context.Background()); err != nil {
 		t.Fatalf("recover activity reconciliation: %v", err)
@@ -2140,8 +2140,8 @@ func TestServiceActivityReconciliationMarksCompletedWhenDiagnosticExportFails(t 
 			t.Errorf("close service: %v", err)
 		}
 	}()
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(context.Context, string, string, string, string, *string, string) ([]sessionActivityItem, error) {
-		return nil, context.DeadlineExceeded
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
+		return context.DeadlineExceeded
 	}
 	session, err := service.CreateSession(context.Background(), "Diagnostic failure", `{"model":"test-model"}`)
 	if err != nil {
@@ -2178,18 +2178,17 @@ func TestServiceActivityReconciliationContinuesBeyondFormerEventAndByteCaps(t *t
 			t.Errorf("close planning service: %v", err)
 		}
 	}()
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(context.Context, string, string, string, string, *string, string) ([]sessionActivityItem, error) {
-		items := make([]sessionActivityItem, state.MaxPlanningActivityReconciliationEvents*2)
-		for index := range items {
-			items[index] = sessionActivityItem{
-				ID:    fmt.Sprintf("recovered-tool-%d", index),
-				Kind:  "tool",
-				Label: fmt.Sprintf("Fetched https://example.com/%d", index),
-				Input: strings.Repeat("x", 4096),
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
+		for index := 0; index < state.MaxPlanningActivityReconciliationEvents*2; index++ {
+			input := strings.Repeat("x", 4096)
+			if index == 0 {
+				input = strings.Repeat("x", 300<<10) + "activity-tail"
+			}
+			if err := visit(ProviderActivity{ProviderPartID: fmt.Sprintf("recovered-tool-%d", index), Kind: "tool", ToolName: "webfetch", ToolStatus: "completed", ToolTitle: fmt.Sprintf("https://example.com/%d", index), Input: providerexecution.ActivityText(input)}); err != nil {
+				return err
 			}
 		}
-		items[0].Input = strings.Repeat("x", 300<<10) + "activity-tail"
-		return items, nil
+		return nil
 	}
 
 	session, err := service.CreateSession(context.Background(), "Bounded reconciliation", `{"model":"test-model"}`)
@@ -2208,28 +2207,48 @@ func TestServiceActivityReconciliationContinuesBeyondFormerEventAndByteCaps(t *t
 		t.Fatalf("list reconciliation events: %v", err)
 	}
 	activityCount := 0
-	activityBytes := 0
-	foundLargeTail := false
+	var largeEventID string
 	for _, event := range events {
-		var payload map[string]any
-		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
-			t.Fatalf("decode event payload: %v", err)
+		var payload struct {
+			Kind  string                            `json:"kind"`
+			Input providerexecution.ActivityContent `json:"input"`
 		}
-		if _, ok := payload["activity_id"]; ok {
-			activityCount++
-			activityBytes += len(event.PayloadJSON)
-			foundLargeTail = foundLargeTail || strings.Contains(event.PayloadJSON, "activity-tail")
+		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if payload.Kind != acp.KingdomToolKind {
+			continue
+		}
+		activityCount++
+		if len(event.PayloadJSON) > 6000 {
+			t.Fatal("large body inflated replay metadata")
+		}
+		if payload.Input.ByteLength != nil && *payload.Input.ByteLength > 300<<10 {
+			largeEventID = event.EventID
 		}
 	}
 	if activityCount != state.MaxPlanningActivityReconciliationEvents*2 {
 		t.Fatalf("recovered activity count=%d, want every event", activityCount)
 	}
-	if activityBytes <= state.MaxPlanningActivityReconciliationEventBytes {
-		t.Fatalf("test did not exercise continuing byte batches: %d", activityBytes)
+	if largeEventID == "" {
+		t.Fatal("missing complete large content descriptor")
 	}
-	if !foundLargeTail {
-		t.Fatal("a single activity larger than a batch lost its tail")
+	var recovered strings.Builder
+	for offset := int64(0); ; {
+		page, err := state.ReadActivityContentPage(context.Background(), db, state.ActivityScope{OperationID: created.Operation.OperationID}, largeEventID, "input", offset, state.ActivityContentPageBytes)
+		if err != nil {
+			t.Fatal(err)
+		}
+		recovered.WriteString(page.Text)
+		if page.NextOffset == 0 {
+			break
+		}
+		offset = page.NextOffset
 	}
+	if recovered.String() != strings.Repeat("x", 300<<10)+"activity-tail" {
+		t.Fatal("diagnostic content lost its exact tail")
+	}
+
 	if len(events) == 0 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType {
 		t.Fatalf("expected marker after bounded recovered activity, got %+v", events)
 	}
@@ -2275,7 +2294,7 @@ func TestServiceBoundsStartupActivityRecoveryAndContinuesInBackground(t *testing
 	inspectionCalls := make(map[string]int)
 	activeInspections := 0
 	maxActiveInspections := 0
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, operationID string, _ string, _ string, _ *string, _ string) ([]sessionActivityItem, error) {
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, operationID string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
 		inspectionMu.Lock()
 		inspectionCalls[operationID]++
 		activeInspections++
@@ -2288,7 +2307,7 @@ func TestServiceBoundsStartupActivityRecoveryAndContinuesInBackground(t *testing
 			activeInspections--
 			inspectionMu.Unlock()
 		}()
-		return nil, nil
+		return nil
 	}
 
 	if err := service.RecoverOperations(context.Background()); err != nil {
@@ -2366,14 +2385,14 @@ func TestServiceActivityRecoveryContinuationDrainsOnClose(t *testing.T) {
 	}
 	continuationStarted := make(chan struct{})
 	var calls int
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(ctx context.Context, _ string, _ string, _ string, _ string, _ *string, _ string) ([]sessionActivityItem, error) {
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(ctx context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
 		calls++
 		if calls == 1 {
-			return nil, nil // The synchronous startup pass.
+			return nil // The synchronous startup pass.
 		}
 		close(continuationStarted)
 		<-ctx.Done()
-		return nil, ctx.Err()
+		return ctx.Err()
 	}
 	if err := service.RecoverOperations(context.Background()); err != nil {
 		t.Fatalf("run bounded startup activity reconciliation: %v", err)

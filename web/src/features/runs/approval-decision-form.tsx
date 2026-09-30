@@ -80,7 +80,7 @@ export function ApprovalDecisionForm({
         >
           {notesLabel}
         </label>
-        <textarea
+        <textarea data-ui-field=""
           id="approval-notes"
           value={notes}
           onChange={(event) => {
@@ -92,7 +92,7 @@ export function ApprovalDecisionForm({
           rows={3}
           placeholder={notesPlaceholder}
           disabled={disabled || recoveryAction !== null}
-          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold resize-none"
+          className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent resize-none"
         />
         {notesHint && (
           <p className="mt-1 text-xs text-foreground-subtle">{notesHint}</p>

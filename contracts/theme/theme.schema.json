@@ -1,0 +1,1140 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Kingdom Theme Package",
+  "description": "Version 1 presentation-only theme package. Structural validation is followed by asset and catalog validation, with advisory readability warnings.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint only. Runtime never fetches arbitrary schema URLs."
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "resolverVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,63}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 500
+    },
+    "base": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "enum": [
+            "obsidian-court",
+            "nautilus",
+            "astral-council",
+            "software-lab",
+            "workstation-98"
+          ]
+        },
+        "version": {
+          "type": "string",
+          "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+        }
+      },
+      "required": [
+        "id",
+        "version"
+      ]
+    },
+    "palette": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "accent": {
+          "$ref": "#/definitions/color"
+        },
+        "canvas": {
+          "$ref": "#/definitions/color"
+        },
+        "surface": {
+          "$ref": "#/definitions/color"
+        },
+        "text": {
+          "$ref": "#/definitions/color"
+        }
+      }
+    },
+    "tokens": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "canvas": {
+          "$ref": "#/definitions/color"
+        },
+        "surface.base": {
+          "$ref": "#/definitions/color"
+        },
+        "surface.inset": {
+          "$ref": "#/definitions/color"
+        },
+        "surface.elevated": {
+          "$ref": "#/definitions/color"
+        },
+        "surface.overlay": {
+          "$ref": "#/definitions/color"
+        },
+        "text.primary": {
+          "$ref": "#/definitions/color"
+        },
+        "text.secondary": {
+          "$ref": "#/definitions/color"
+        },
+        "text.subtle": {
+          "$ref": "#/definitions/color"
+        },
+        "text.inverse": {
+          "$ref": "#/definitions/color"
+        },
+        "border.default": {
+          "$ref": "#/definitions/color"
+        },
+        "border.strong": {
+          "$ref": "#/definitions/color"
+        },
+        "accent.base": {
+          "$ref": "#/definitions/color"
+        },
+        "accent.hover": {
+          "$ref": "#/definitions/color"
+        },
+        "accent.pressed": {
+          "$ref": "#/definitions/color"
+        },
+        "accent.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "accent.subtle": {
+          "$ref": "#/definitions/color"
+        },
+        "focus.ring": {
+          "$ref": "#/definitions/color"
+        },
+        "focus.offset": {
+          "$ref": "#/definitions/color"
+        },
+        "selection.background": {
+          "$ref": "#/definitions/color"
+        },
+        "selection.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "control.disabledBackground": {
+          "$ref": "#/definitions/color"
+        },
+        "control.disabledForeground": {
+          "$ref": "#/definitions/color"
+        },
+        "code.background": {
+          "$ref": "#/definitions/color"
+        },
+        "code.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "tool.background": {
+          "$ref": "#/definitions/color"
+        },
+        "tool.border": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.axis": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.grid": {
+          "$ref": "#/definitions/color"
+        },
+        "dag.edge": {
+          "$ref": "#/definitions/color"
+        },
+        "dag.edgeCompleted": {
+          "$ref": "#/definitions/color"
+        },
+        "dag.edgeActive": {
+          "$ref": "#/definitions/color"
+        },
+        "dag.nodeActiveBackground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.neutral.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.neutral.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.neutral.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.running.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.running.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.running.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.attention.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.attention.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.attention.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.succeeded.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.succeeded.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.succeeded.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.failed.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.failed.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.failed.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.cancelled.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.cancelled.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.cancelled.border": {
+          "$ref": "#/definitions/color"
+        },
+        "status.rework.foreground": {
+          "$ref": "#/definitions/color"
+        },
+        "status.rework.background": {
+          "$ref": "#/definitions/color"
+        },
+        "status.rework.border": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category1": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category2": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category3": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category4": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category5": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category6": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category7": {
+          "$ref": "#/definitions/color"
+        },
+        "chart.category8": {
+          "$ref": "#/definitions/color"
+        }
+      }
+    },
+    "typography": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "$ref": "#/definitions/font"
+        },
+        "display": {
+          "$ref": "#/definitions/font"
+        },
+        "mono": {
+          "$ref": "#/definitions/font"
+        },
+        "bodyWeight": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "headingWeight": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000
+        }
+      }
+    },
+    "surfaces": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "radius": {
+          "type": "number",
+          "minimum": 0
+        },
+        "borderWidth": {
+          "type": "number",
+          "minimum": 0
+        },
+        "elevation": {
+          "enum": [
+            "flat",
+            "soft"
+          ]
+        },
+        "ornamentation": {
+          "enum": [
+            "minimal",
+            "balanced"
+          ]
+        },
+        "chrome": {
+          "enum": [
+            "flat",
+            "classic"
+          ],
+          "description": "Application-owned structural styling. Omission uses flat chrome."
+        },
+        "iconRendering": {
+          "enum": [
+            "mask",
+            "original"
+          ],
+          "description": "Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask."
+        }
+      }
+    },
+    "icons": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "brand": {
+          "$ref": "#/definitions/icon"
+        },
+        "work-order": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.overview": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.planning": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.runs": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.agents": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.analytics": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.connections": {
+          "$ref": "#/definitions/icon"
+        },
+        "nav.appearance": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.operator": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.governance": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.coordinator": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.plan-author": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.architecture-advisor": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.risk-advisor": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.systems-advisor": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.usability-advisor": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.builder": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.reviewer": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.qa-validator": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.security-validator": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.resilience-validator": {
+          "$ref": "#/definitions/icon"
+        },
+        "role.planning-assistant": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.work-intake": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.advisor-consultation": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.advisory-synthesis": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.plan-drafting": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.plan-decision": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.execution-kickoff": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.implementation": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.execution-review": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.quality-validation": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.security-validation": {
+          "$ref": "#/definitions/icon"
+        },
+        "node.completion": {
+          "$ref": "#/definitions/icon"
+        }
+      }
+    },
+    "identities": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "operator": {
+          "$ref": "#/definitions/identity"
+        },
+        "governance": {
+          "$ref": "#/definitions/identity"
+        },
+        "coordinator": {
+          "$ref": "#/definitions/identity"
+        },
+        "plan-author": {
+          "$ref": "#/definitions/identity"
+        },
+        "architecture-advisor": {
+          "$ref": "#/definitions/identity"
+        },
+        "risk-advisor": {
+          "$ref": "#/definitions/identity"
+        },
+        "systems-advisor": {
+          "$ref": "#/definitions/identity"
+        },
+        "usability-advisor": {
+          "$ref": "#/definitions/identity"
+        },
+        "builder": {
+          "$ref": "#/definitions/identity"
+        },
+        "reviewer": {
+          "$ref": "#/definitions/identity"
+        },
+        "qa-validator": {
+          "$ref": "#/definitions/identity"
+        },
+        "security-validator": {
+          "$ref": "#/definitions/identity"
+        },
+        "resilience-validator": {
+          "$ref": "#/definitions/identity"
+        },
+        "planning-assistant": {
+          "$ref": "#/definitions/identity"
+        }
+      }
+    },
+    "copy": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overview.welcome": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "planning.emptyTitle": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "planning.emptyDescription": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "agents.heading": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "appearance.description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "workOrder.singular": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "workOrder.plural": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "brand.tagline": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        }
+      }
+    },
+    "artwork": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "overview": {
+          "$ref": "#/definitions/assetReference"
+        },
+        "planningEmpty": {
+          "$ref": "#/definitions/assetReference"
+        },
+        "agentBackdrop": {
+          "$ref": "#/definitions/assetReference"
+        }
+      }
+    },
+    "assets": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9-]{0,63}$"
+      },
+      "additionalProperties": {
+        "$ref": "#/definitions/asset"
+      },
+      "maxProperties": 64
+    },
+    "colorScheme": {
+      "enum": [
+        "light",
+        "dark"
+      ],
+      "description": "Inherited from base when omitted; required for a complete resolved package."
+    }
+  },
+  "required": [
+    "schemaVersion",
+    "resolverVersion",
+    "id",
+    "version",
+    "name"
+  ],
+  "anyOf": [
+    {
+      "required": [
+        "base"
+      ],
+      "properties": {
+        "base": {}
+      }
+    },
+    {
+      "required": [
+        "palette",
+        "tokens",
+        "typography",
+        "surfaces",
+        "icons",
+        "identities",
+        "copy",
+        "artwork",
+        "assets",
+        "colorScheme"
+      ],
+      "properties": {
+        "palette": {
+          "type": "object",
+          "properties": {
+            "accent": {},
+            "canvas": {},
+            "surface": {},
+            "text": {}
+          },
+          "required": [
+            "accent",
+            "canvas",
+            "surface",
+            "text"
+          ]
+        },
+        "tokens": {
+          "type": "object",
+          "properties": {
+            "canvas": {},
+            "surface.base": {},
+            "surface.inset": {},
+            "surface.elevated": {},
+            "surface.overlay": {},
+            "text.primary": {},
+            "text.secondary": {},
+            "text.subtle": {},
+            "text.inverse": {},
+            "border.default": {},
+            "border.strong": {},
+            "accent.base": {},
+            "accent.hover": {},
+            "accent.pressed": {},
+            "accent.foreground": {},
+            "accent.subtle": {},
+            "focus.ring": {},
+            "focus.offset": {},
+            "selection.background": {},
+            "selection.foreground": {},
+            "control.disabledBackground": {},
+            "control.disabledForeground": {},
+            "code.background": {},
+            "code.foreground": {},
+            "tool.background": {},
+            "tool.border": {},
+            "chart.axis": {},
+            "chart.grid": {},
+            "dag.edge": {},
+            "dag.edgeCompleted": {},
+            "dag.edgeActive": {},
+            "dag.nodeActiveBackground": {},
+            "status.neutral.foreground": {},
+            "status.neutral.background": {},
+            "status.neutral.border": {},
+            "status.running.foreground": {},
+            "status.running.background": {},
+            "status.running.border": {},
+            "status.attention.foreground": {},
+            "status.attention.background": {},
+            "status.attention.border": {},
+            "status.succeeded.foreground": {},
+            "status.succeeded.background": {},
+            "status.succeeded.border": {},
+            "status.failed.foreground": {},
+            "status.failed.background": {},
+            "status.failed.border": {},
+            "status.cancelled.foreground": {},
+            "status.cancelled.background": {},
+            "status.cancelled.border": {},
+            "status.rework.foreground": {},
+            "status.rework.background": {},
+            "status.rework.border": {},
+            "chart.category1": {},
+            "chart.category2": {},
+            "chart.category3": {},
+            "chart.category4": {},
+            "chart.category5": {},
+            "chart.category6": {},
+            "chart.category7": {},
+            "chart.category8": {}
+          },
+          "required": [
+            "canvas",
+            "surface.base",
+            "surface.inset",
+            "surface.elevated",
+            "surface.overlay",
+            "text.primary",
+            "text.secondary",
+            "text.subtle",
+            "text.inverse",
+            "border.default",
+            "border.strong",
+            "accent.base",
+            "accent.hover",
+            "accent.pressed",
+            "accent.foreground",
+            "accent.subtle",
+            "focus.ring",
+            "focus.offset",
+            "selection.background",
+            "selection.foreground",
+            "control.disabledBackground",
+            "control.disabledForeground",
+            "code.background",
+            "code.foreground",
+            "tool.background",
+            "tool.border",
+            "chart.axis",
+            "chart.grid",
+            "dag.edge",
+            "dag.edgeCompleted",
+            "dag.edgeActive",
+            "dag.nodeActiveBackground",
+            "status.neutral.foreground",
+            "status.neutral.background",
+            "status.neutral.border",
+            "status.running.foreground",
+            "status.running.background",
+            "status.running.border",
+            "status.attention.foreground",
+            "status.attention.background",
+            "status.attention.border",
+            "status.succeeded.foreground",
+            "status.succeeded.background",
+            "status.succeeded.border",
+            "status.failed.foreground",
+            "status.failed.background",
+            "status.failed.border",
+            "status.cancelled.foreground",
+            "status.cancelled.background",
+            "status.cancelled.border",
+            "status.rework.foreground",
+            "status.rework.background",
+            "status.rework.border",
+            "chart.category1",
+            "chart.category2",
+            "chart.category3",
+            "chart.category4",
+            "chart.category5",
+            "chart.category6",
+            "chart.category7",
+            "chart.category8"
+          ]
+        },
+        "typography": {
+          "type": "object",
+          "properties": {
+            "body": {},
+            "display": {},
+            "mono": {},
+            "bodyWeight": {},
+            "headingWeight": {}
+          },
+          "required": [
+            "body",
+            "display",
+            "mono",
+            "bodyWeight",
+            "headingWeight"
+          ]
+        },
+        "surfaces": {
+          "type": "object",
+          "properties": {
+            "radius": {},
+            "borderWidth": {},
+            "elevation": {},
+            "ornamentation": {}
+          },
+          "required": [
+            "radius",
+            "borderWidth",
+            "elevation",
+            "ornamentation"
+          ]
+        },
+        "icons": {
+          "type": "object",
+          "properties": {
+            "brand": {},
+            "work-order": {},
+            "nav.overview": {},
+            "nav.planning": {},
+            "nav.runs": {},
+            "nav.agents": {},
+            "nav.analytics": {},
+            "nav.connections": {},
+            "nav.appearance": {},
+            "role.operator": {},
+            "role.governance": {},
+            "role.coordinator": {},
+            "role.plan-author": {},
+            "role.architecture-advisor": {},
+            "role.risk-advisor": {},
+            "role.systems-advisor": {},
+            "role.usability-advisor": {},
+            "role.builder": {},
+            "role.reviewer": {},
+            "role.qa-validator": {},
+            "role.security-validator": {},
+            "role.resilience-validator": {},
+            "role.planning-assistant": {},
+            "node.work-intake": {},
+            "node.advisor-consultation": {},
+            "node.advisory-synthesis": {},
+            "node.plan-drafting": {},
+            "node.plan-decision": {},
+            "node.execution-kickoff": {},
+            "node.implementation": {},
+            "node.execution-review": {},
+            "node.quality-validation": {},
+            "node.security-validation": {},
+            "node.completion": {}
+          },
+          "required": [
+            "brand",
+            "work-order",
+            "nav.overview",
+            "nav.planning",
+            "nav.runs",
+            "nav.agents",
+            "nav.analytics",
+            "nav.connections",
+            "nav.appearance",
+            "role.operator",
+            "role.governance",
+            "role.coordinator",
+            "role.plan-author",
+            "role.architecture-advisor",
+            "role.risk-advisor",
+            "role.systems-advisor",
+            "role.usability-advisor",
+            "role.builder",
+            "role.reviewer",
+            "role.qa-validator",
+            "role.security-validator",
+            "role.resilience-validator",
+            "role.planning-assistant",
+            "node.work-intake",
+            "node.advisor-consultation",
+            "node.advisory-synthesis",
+            "node.plan-drafting",
+            "node.plan-decision",
+            "node.execution-kickoff",
+            "node.implementation",
+            "node.execution-review",
+            "node.quality-validation",
+            "node.security-validation",
+            "node.completion"
+          ]
+        },
+        "identities": {
+          "type": "object",
+          "properties": {
+            "operator": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "governance": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "coordinator": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "plan-author": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "architecture-advisor": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "risk-advisor": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "systems-advisor": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "usability-advisor": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "builder": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "reviewer": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "qa-validator": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "security-validator": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "resilience-validator": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            },
+            "planning-assistant": {
+              "type": "object",
+              "properties": {
+                "name": {},
+                "description": {}
+              },
+              "required": [
+                "name",
+                "description"
+              ]
+            }
+          },
+          "required": [
+            "operator",
+            "governance",
+            "coordinator",
+            "plan-author",
+            "architecture-advisor",
+            "risk-advisor",
+            "systems-advisor",
+            "usability-advisor",
+            "builder",
+            "reviewer",
+            "qa-validator",
+            "security-validator",
+            "resilience-validator",
+            "planning-assistant"
+          ]
+        },
+        "copy": {
+          "type": "object",
+          "properties": {
+            "overview.welcome": {},
+            "planning.emptyTitle": {},
+            "planning.emptyDescription": {},
+            "agents.heading": {},
+            "appearance.description": {},
+            "workOrder.singular": {},
+            "workOrder.plural": {},
+            "brand.tagline": {}
+          },
+          "required": [
+            "overview.welcome",
+            "planning.emptyTitle",
+            "planning.emptyDescription",
+            "agents.heading",
+            "appearance.description",
+            "workOrder.singular",
+            "workOrder.plural",
+            "brand.tagline"
+          ]
+        },
+        "artwork": {},
+        "assets": {},
+        "colorScheme": {}
+      }
+    }
+  ],
+  "definitions": {
+    "color": {
+      "type": "string",
+      "pattern": "^#[0-9a-fA-F]{6}$"
+    },
+    "icon": {
+      "type": "string",
+      "pattern": "^(lucide:[a-z][a-z0-9-]*|asset:[a-z][a-z0-9-]{0,63})$",
+      "description": "Semantic validation verifies symbol existence or an allowed SVG asset."
+    },
+    "font": {
+      "type": "string",
+      "anyOf": [
+        {
+          "enum": [
+            "bundled:system-sans",
+            "bundled:system-serif",
+            "bundled:system-mono",
+            "bundled:classic-sans",
+            "bundled:dm-sans",
+            "bundled:instrument-serif",
+            "bundled:jetbrains-mono"
+          ]
+        },
+        {
+          "pattern": "^asset:[a-z][a-z0-9-]{0,63}$"
+        }
+      ],
+      "description": "An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks."
+    },
+    "assetReference": {
+      "type": "string",
+      "pattern": "^asset:[a-z][a-z0-9-]{0,63}$"
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 400
+        },
+        "lore": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1600
+        },
+        "portrait": {
+          "$ref": "#/definitions/assetReference"
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "path": {
+          "type": "string",
+          "pattern": "^assets/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.(?:svg|png|jpg|jpeg|webp|avif|woff2)$"
+        },
+        "mediaType": {
+          "enum": [
+            "image/svg+xml",
+            "image/png",
+            "image/jpeg",
+            "image/webp",
+            "image/avif",
+            "font/woff2"
+          ]
+        },
+        "license": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      },
+      "required": [
+        "path",
+        "mediaType"
+      ]
+    }
+  }
+}

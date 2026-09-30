@@ -1,229 +1,174 @@
 @import "tailwindcss";
+@import "./theme/fonts.css";
+@import "./theme/classic-theme.css";
 
-/*
- * Kingdom Design System
- * Dark-first command center with medieval/Viking accents.
- */
-
-@theme {
-  /* Core palette - deep blues and golds */
-  --color-background: #0a0e17;
-  --color-background-secondary: #111827;
-  --color-background-tertiary: #1a2332;
-
-  --color-foreground: #e8e6e1;
-  --color-foreground-muted: #9ca3af;
-  --color-foreground-subtle: #6b7280;
-
-  /* Kingdom gold accent */
-  --color-gold: #c9a84c;
-  --color-gold-dim: #a68a3e;
-  --color-gold-bright: #e4c65a;
-
-  /* Borders and surfaces */
-  --color-border: #1f2937;
-  --color-border-strong: #374151;
-  --color-surface: #111827;
-  --color-surface-raised: #1a2332;
-  --color-surface-overlay: #1e293b;
-
-  /* Status colors */
-  --color-status-running: #3b82f6;
-  --color-status-succeeded: #22c55e;
-  --color-status-failed: #ef4444;
-  --color-status-pending: #6b7280;
-  --color-status-blocked: #f59e0b;
-  --color-status-cancelled: #8b5cf6;
-  --color-status-rework: #ec4899;
-  --color-status-skipped: #64748b;
-
-  /* Role accent colors */
-  --color-role-king: #c9a84c;
-  --color-role-chancellor: #8b5cf6;
-  --color-role-council: #3b82f6;
-  --color-role-noble: #14b8a6;
-  --color-role-clergy: #f472b6;
-  --color-role-burgher: #f59e0b;
-  --color-role-peasant: #22c55e;
-  --color-role-berserker: #ef4444;
-  --color-role-shieldmaiden: #06b6d4;
-  --color-role-scout: #a3e635;
-  --color-role-nightraven: #8b5cf6;
-  --color-role-loki: #f97316;
-
-  /* Spacing */
-  --spacing-page: 1.5rem;
-
-  /* Border radius */
-  --radius-sm: 0.375rem;
-  --radius-md: 0.5rem;
-  --radius-lg: 0.75rem;
-
-  /* Fonts */
-  --font-sans: "Inter", system-ui, sans-serif;
-  --font-display: "Cinzel", "Inter", serif;
-  --font-mono: "JetBrains Mono", "Fira Code", monospace;
+/* Semantic application vocabulary. Values come from the canonical resolved
+   theme; layout, interaction, focus and state meaning remain application-owned. */
+@theme static {
+  --color-background: var(--theme-canvas);
+  --color-background-secondary: var(--theme-surface-inset);
+  --color-background-tertiary: var(--theme-surface-elevated);
+  --color-foreground: var(--theme-text-primary);
+  --color-foreground-muted: var(--theme-text-secondary);
+  --color-foreground-subtle: var(--theme-text-subtle);
+  --color-foreground-inverse: var(--theme-text-inverse);
+  --color-accent: var(--theme-accent-base);
+  --color-accent-dim: var(--theme-accent-pressed);
+  --color-accent-bright: var(--theme-accent-hover);
+  --color-accent-foreground: var(--theme-accent-foreground);
+  --color-accent-subtle: var(--theme-accent-subtle);
+  --color-border: var(--theme-border-default);
+  --color-border-strong: var(--theme-border-strong);
+  --color-surface: var(--theme-surface-base);
+  --color-surface-raised: var(--theme-surface-elevated);
+  --color-surface-overlay: var(--theme-surface-overlay);
+  --color-status-running: var(--theme-status-running-foreground);
+  --color-status-succeeded: var(--theme-status-succeeded-foreground);
+  --color-status-failed: var(--theme-status-failed-foreground);
+  --color-status-pending: var(--theme-status-neutral-foreground);
+  --color-status-blocked: var(--theme-status-attention-foreground);
+  --color-status-attention: var(--theme-status-attention-foreground);
+  --color-status-cancelled: var(--theme-status-cancelled-foreground);
+  --color-status-rework: var(--theme-status-rework-foreground);
+  --color-status-skipped: var(--theme-status-neutral-foreground);
+  --color-status-neutral: var(--theme-status-neutral-foreground);
+  --color-code: var(--theme-code-background);
+  --color-code-foreground: var(--theme-code-foreground);
+  --color-tool: var(--theme-tool-background);
+  --color-tool-border: var(--theme-tool-border);
+  --color-card: var(--theme-surface-base);
+  --color-destructive: var(--theme-status-failed-foreground);
+  --color-success: var(--theme-status-succeeded-foreground);
+  --color-primary-foreground: var(--theme-accent-foreground);
+  --color-muted: var(--theme-text-secondary);
+  --spacing-page: clamp(1rem, 2.6vw, 2.25rem);
+  --radius-xs: calc(var(--theme-radius) * .25);
+  --radius-sm: calc(var(--theme-radius) * .5);
+  --radius-md: var(--theme-radius);
+  --radius-lg: calc(var(--theme-radius) * 1.25);
+  --radius-xl: calc(var(--theme-radius) * 1.5);
+  --radius-2xl: calc(var(--theme-radius) * 2);
+  --radius-3xl: calc(var(--theme-radius) * 3);
+  --radius-4xl: calc(var(--theme-radius) * 4);
+  --font-sans: var(--theme-font-body);
+  --font-display: var(--theme-font-display);
+  --font-mono: var(--theme-font-mono);
 }
 
-/* Base layer */
-
-/* Kingdom is dark-only. Declaring it at the root is what makes every native
-   control - select popups, checkboxes, scrollbars, date pickers - render in the
-   dark scheme instead of the OS default on top of a near-black UI. */
 :root {
+  /* Pre-bootstrap canvas only; no stored presentation is inserted as CSS. */
   color-scheme: dark;
-  accent-color: var(--color-gold);
+  background: var(--theme-canvas, #0d1110);
+  color: var(--theme-text-primary, #f3eee2);
+  accent-color: var(--theme-accent-base);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  --motion-fast: 140ms;
+  --motion-normal: 220ms;
+  --motion-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
 }
-
 body {
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  font-family: var(--font-sans);
+  margin: 0;
+  min-width: 320px;
+  background: var(--theme-canvas);
+  color: var(--theme-text-primary);
+  font-family: var(--theme-font-body, system-ui, sans-serif);
+  font-weight: var(--theme-weight-body, 400);
+  line-height: 1.55;
 }
+h1, h2, h3, h4 { text-wrap: balance; }
+.font-display { font-weight: var(--theme-weight-heading, 400); font-optical-sizing: auto; }
+/* Tailwind preflight inherits control fonts; utility sizes must remain effective. */
+button, a, input, select, textarea, summary { touch-action: manipulation; }
+button:not(:disabled), summary { cursor: pointer; }
+button:disabled { cursor: not-allowed; }
+input::placeholder, textarea::placeholder { color: var(--theme-text-subtle); opacity: 1; }
+::selection { background: var(--theme-selection-background); color: var(--theme-selection-foreground); }
+:focus-visible { outline: 2px solid var(--theme-focus-ring); outline-offset: 3px; }
+.text-wrap-anywhere { overflow-wrap: anywhere; word-break: break-word; }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
+* { scrollbar-width: thin; scrollbar-color: var(--theme-border-strong) var(--theme-canvas); }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: var(--theme-canvas); }
+::-webkit-scrollbar-thumb { background: var(--theme-border-strong); border: 2px solid var(--theme-canvas); border-radius: 8px; }
+::-webkit-scrollbar-thumb:hover { background: var(--theme-text-subtle); }
 
-::-webkit-scrollbar-track {
-  background: var(--color-background);
-}
-
-::-webkit-scrollbar-thumb {
-  background: var(--color-border-strong);
-  border-radius: 4px;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background: var(--color-foreground-subtle);
-}
-
-/* Focus ring */
-*:focus-visible {
-  outline: 2px solid var(--color-gold);
-  outline-offset: 2px;
-}
-
-.text-wrap-anywhere {
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-/* Glow-pulse animation for busy/running elements.
-   --glow-color: glow hue (falls back to currentColor for HTML elements).
-   --glow-r1..r4: shadow radii, overridable per utility class for intensity control. */
-@keyframes glow-pulse {
-  0%, 100% {
-    filter: drop-shadow(0 0 var(--glow-r1, 2px) var(--glow-color, currentColor))
-            drop-shadow(0 0 var(--glow-r2, 6px) var(--glow-color, currentColor));
-    opacity: 1;
+.theme-loading { min-height: 100dvh; display: flex; align-items: center; justify-content: center; gap: 0.8rem; color: var(--theme-text-secondary); font-size: 0.875rem; }
+.theme-loading-mark { width: 1rem; height: 1rem; border: 1px solid var(--theme-border-strong); border-top-color: var(--theme-accent-base); border-radius: 50%; animation: loading-turn 1s linear infinite; }
+.theme-role-identity { display: inline-flex; align-items: center; gap: 0.65rem; min-width: 0; }
+.theme-role-name { display: block; }
+.theme-role-responsibility { display: block; font-size: 0.75rem; color: var(--theme-text-secondary); }
+.theme-ornament { pointer-events: none; }
+/* Each draft preview owns its ornament setting, independently of the page. */
+@scope ([data-ornamentation]) to ([data-ornamentation]) {
+  :scope[data-ornamentation="minimal"] .theme-ornament { display: none; }
+  :scope[data-ornamentation="balanced"] .ui-page-header { position: relative; }
+  :scope[data-ornamentation="balanced"] .ui-page-header::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    left: var(--spacing-page);
+    bottom: 4px;
+    width: 2.5rem;
+    height: 2px;
+    background: var(--theme-accent-base);
+    opacity: .6;
   }
-  50% {
-    filter: drop-shadow(0 0 var(--glow-r3, 4px) var(--glow-color, currentColor))
-            drop-shadow(0 0 var(--glow-r4, 12px) var(--glow-color, currentColor));
-    opacity: 0.85;
-  }
-}
-
-/* Full-intensity glow — role icons, DAG node rects */
-.animate-glow-pulse {
-  animation: glow-pulse 2s ease-in-out infinite;
-}
-
-/* Card-border glow — uses box-shadow (not drop-shadow) so children
-   are unaffected.  Paired with .animate-glow-pulse for the full system. */
-@keyframes card-glow-pulse {
-  0%, 100% {
-    box-shadow: 0 0 3px var(--glow-color, currentColor),
-                0 0 1px var(--glow-color, currentColor);
-  }
-  50% {
-    box-shadow: 0 0 6px var(--glow-color, currentColor),
-                0 0 2px var(--glow-color, currentColor);
+  :scope[data-chrome="flat"][data-ornamentation="balanced"] .ui-page-header,
+  :scope[data-chrome="flat"][data-ornamentation="balanced"] .ui-window-titlebar {
+    background-image: linear-gradient(110deg, color-mix(in srgb, var(--theme-accent-base), transparent 91%), transparent 65%);
   }
 }
-
-.animate-glow-pulse-subtle {
-  animation: card-glow-pulse 2s ease-in-out infinite;
-}
-
-/* Quill-writing animation for planner typing indicator */
-@keyframes quill-write {
-  0%, 100% { transform: rotate(-4deg) translateX(0); }
-  25%      { transform: rotate(2deg) translateX(2px); }
-  50%      { transform: rotate(-2deg) translateX(4px); }
-  75%      { transform: rotate(3deg) translateX(2px); }
-}
-
-.animate-quill-write {
-  animation: quill-write 1.4s ease-in-out infinite;
-  transform-origin: bottom left;
-}
-
-/* Streaming text cursor — blinking caret appended via ::after.
-   Activated by [data-streaming] attribute on the content wrapper. */
-@keyframes streaming-cursor-blink {
-  0%, 100% { opacity: 0.8; }
-  50% { opacity: 0; }
-}
-
-[data-streaming] > p::after {
-  content: "";
-  display: inline-block;
-  width: 2px;
-  height: 1.15em;
-  background-color: var(--color-gold);
-  vertical-align: text-bottom;
-  margin-left: 2px;
-  border-radius: 1px;
-  animation: streaming-cursor-blink 1s step-end infinite;
-}
-
-/* Chat bubble entrance animation */
-@keyframes chat-bubble-in {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
+@scope ([data-chrome="flat"]) to ([data-chrome]) {
+  .ui-card:not(.border-0), .ui-field, [data-ui-field], .ui-button--outline,
+  .ui-inset-panel, .ui-workspace-info, .appearance-input,
+  .appearance-theme-card, .appearance-source-list, .appearance-notice {
+    border-width: var(--theme-border-width);
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
+  .ui-card:not(.border-0), .ui-notification, .appearance-theme-card {
+    box-shadow: var(--theme-shadow);
   }
 }
+.theme-surface { background: var(--theme-surface-base); border: var(--theme-border-width) solid var(--theme-border-default); border-radius: var(--theme-radius); }
+.theme-overlay { background: var(--theme-surface-overlay); border: var(--theme-border-width) solid var(--theme-border-default); border-radius: var(--theme-radius); box-shadow: var(--theme-shadow); }
+.theme-tool { background: var(--theme-tool-background); border: var(--theme-border-width) solid var(--theme-tool-border); border-radius: var(--theme-radius); }
+.theme-code { background: var(--theme-code-background); color: var(--theme-code-foreground); font-family: var(--theme-font-mono); }
 
-.animate-chat-bubble-in {
-  animation: chat-bubble-in 300ms ease-out both;
+/* Use a status word/icon alongside color. These tones never rename outcomes. */
+.theme-status { display: inline-flex; align-items: center; gap: 0.4rem; color: var(--status-foreground); background: var(--status-background); border: 1px solid var(--status-border); border-radius: 999px; padding: 0.2rem 0.6rem; font-size: 0.75rem; line-height: 1.4; }
+[data-tone="neutral"] { --status-foreground: var(--theme-status-neutral-foreground); --status-background: var(--theme-status-neutral-background); --status-border: var(--theme-status-neutral-border); }
+[data-tone="running"] { --status-foreground: var(--theme-status-running-foreground); --status-background: var(--theme-status-running-background); --status-border: var(--theme-status-running-border); }
+[data-tone="attention"] { --status-foreground: var(--theme-status-attention-foreground); --status-background: var(--theme-status-attention-background); --status-border: var(--theme-status-attention-border); }
+[data-tone="succeeded"] { --status-foreground: var(--theme-status-succeeded-foreground); --status-background: var(--theme-status-succeeded-background); --status-border: var(--theme-status-succeeded-border); }
+[data-tone="failed"] { --status-foreground: var(--theme-status-failed-foreground); --status-background: var(--theme-status-failed-background); --status-border: var(--theme-status-failed-border); }
+[data-tone="cancelled"] { --status-foreground: var(--theme-status-cancelled-foreground); --status-background: var(--theme-status-cancelled-background); --status-border: var(--theme-status-cancelled-border); }
+[data-tone="rework"] { --status-foreground: var(--theme-status-rework-foreground); --status-background: var(--theme-status-rework-background); --status-border: var(--theme-status-rework-border); }
+
+.dag-edge { stroke: var(--theme-dag-edge); }
+.dag-edge[data-completed="true"] { stroke: var(--theme-dag-edge-completed); }
+.dag-node[data-provider-running="true"] { background: var(--theme-dag-node-active-background); animation: node-presence 2.4s ease-in-out infinite; }
+.dag-edge[data-provider-running="true"] { stroke: var(--theme-dag-edge-active); animation: edge-presence 2.4s ease-in-out infinite; }
+.dag-agent-icon[data-provider-running="true"] { color: var(--theme-accent-base); animation: live-presence 2.4s ease-in-out infinite; }
+@keyframes node-presence { 0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-dag-edge-active), transparent 75%); } 50% { box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-dag-edge-active), transparent 60%); } }
+@keyframes edge-presence { 0%, 100% { opacity: 0.6; } 50% { opacity: 1; } }
+@keyframes live-presence { 0%, 100% { opacity: 0.72; } 50% { opacity: 1; } }
+@keyframes loading-turn { to { transform: rotate(360deg); } }
+@keyframes chat-bubble-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+.animate-chat-bubble-in { animation: chat-bubble-in var(--motion-normal) var(--motion-ease) both; }
+@keyframes title-word-reveal { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes notification-slide-in { from { opacity: 0; transform: translateX(1rem); } to { opacity: 1; transform: translateX(0); } }
+@keyframes notification-slide-out { to { opacity: 0; transform: translateX(1rem); } }
+.animate-notification-in { animation: notification-slide-in var(--motion-normal) var(--motion-ease) forwards; }
+.animate-notification-out { animation: notification-slide-out var(--motion-fast) ease-in forwards; }
+@keyframes streaming-cursor-blink { 0%, 100% { opacity: 0.8; } 50% { opacity: 0; } }
+[data-streaming] > p:last-of-type::after { content: ""; display: inline-block; width: 2px; height: 1.1em; background: var(--theme-accent-base); vertical-align: text-bottom; margin-left: 3px; animation: streaming-cursor-blink 1s step-end infinite; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; scroll-behavior: auto !important; }
+  .dag-node[data-provider-running="true"] { box-shadow: 0 0 0 2px var(--theme-dag-edge-active); }
+  .dag-edge[data-provider-running="true"], .dag-agent-icon[data-provider-running="true"] { opacity: 1; }
 }
-
-/* Word-by-word title reveal animation */
-@keyframes title-word-reveal {
-  from { opacity: 0; transform: translateY(4px); filter: blur(2px); }
-  to   { opacity: 1; transform: translateY(0); filter: blur(0); }
-}
-
-/* Notification slide animations */
-@keyframes notification-slide-in {
-  from { transform: translateX(calc(100% + 1rem)); opacity: 0; }
-  to   { transform: translateX(0); opacity: 1; }
-}
-
-@keyframes notification-slide-out {
-  from { transform: translateX(0); opacity: 1; }
-  to   { transform: translateX(calc(100% + 1rem)); opacity: 0; }
-}
-
-.animate-notification-in {
-  animation: notification-slide-in 300ms ease-out forwards;
-}
-
-.animate-notification-out {
-  animation: notification-slide-out 250ms ease-in forwards;
-}
-
-/* Dark-theme native date/time pickers */
-input[type="date"]::-webkit-calendar-picker-indicator,
-input[type="datetime-local"]::-webkit-calendar-picker-indicator {
-  filter: invert(0.8);
+@media (forced-colors: active) {
+  :focus-visible { outline-color: Highlight; }
+  .theme-status, .theme-surface, .theme-overlay, .theme-tool { border-color: CanvasText; }
 }

@@ -20,35 +20,35 @@ global_denies:
     - 169.254.169.254
 
 roles:
-  king:
+  governance:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  chancellor:
+  coordinator:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  council-member:
+  plan-author:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  noble-delegate:
+  architecture-advisor:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  clergy-delegate:
+  risk-advisor:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  burgher-delegate:
+  systems-advisor:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  peasant-delegate:
+  usability-advisor:
     default_allowed_domains: []
     node_class_overrides: {}
 
-  builder-berserker:
+  builder:
     default_allowed_domains: []
     node_class_overrides:
       dependency_install:
@@ -60,7 +60,7 @@ roles:
         - sum.golang.org
         - registry.npmjs.org
 
-  reviewer-shieldmaiden:
+  reviewer:
     default_allowed_domains: []
     node_class_overrides:
       dependency_install:
@@ -72,7 +72,7 @@ roles:
         - sum.golang.org
         - registry.npmjs.org
 
-  intelligence-qa-scout:
+  qa-validator:
     default_allowed_domains: []
     node_class_overrides:
       dependency_install:
@@ -84,7 +84,7 @@ roles:
         - sum.golang.org
         - registry.npmjs.org
 
-  intelligence-nightraven:
+  security-validator:
     default_allowed_domains: []
     node_class_overrides:
       dependency_install:
@@ -96,7 +96,7 @@ roles:
         - sum.golang.org
         - registry.npmjs.org
 
-  intelligence-loki-chaos:
+  resilience-validator:
     default_allowed_domains: []
     node_class_overrides:
       dependency_install:

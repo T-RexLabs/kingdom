@@ -1,5 +1,7 @@
 import { FloatingFocusManager, FloatingPortal, type FloatingContext } from "@floating-ui/react";
 import { resolveOverlayContainer } from "@/lib/overlay-system";
+import { cn } from "@/lib/utils";
+import { useEffect } from "react";
 
 /**
  * The portalled, focus-managed body every Kingdom popover renders into.
@@ -25,19 +27,33 @@ export function PopoverSurface({
 	modalOwned: boolean;
 	floatingProps: Record<string, unknown>;
 	/** -1 focuses the panel itself; use it when the panel owns its own focus. */
-	initialFocus?: number;
+	initialFocus?: number | React.MutableRefObject<HTMLElement | null>;
 	className?: string;
 	onKeyDownCapture?: React.KeyboardEventHandler<HTMLDivElement>;
 	children: React.ReactNode;
 }) {
+	const reference = context.elements.domReference;
+	const floating = context.elements.floating;
+	useEffect(() => {
+		if (!floating) return;
+		return () => {
+			// A choice can open a dialog in the same commit. Check focus after
+			// that handoff, rather than restoring from a pre-unmount snapshot.
+			queueMicrotask(() => {
+				const active = document.activeElement;
+				if (active instanceof HTMLElement && active !== document.body && active !== document.documentElement && active.isConnected && !floating.contains(active)) return;
+				if (reference instanceof HTMLElement && reference.isConnected && !reference.matches(":disabled") && !reference.closest("[inert]")) reference.focus();
+			});
+		};
+	}, [reference, floating]);
 	return (
 		<FloatingPortal root={resolveOverlayContainer()}>
-			<FloatingFocusManager context={context} modal={modalOwned} initialFocus={initialFocus} returnFocus>
+			<FloatingFocusManager context={context} modal={modalOwned} initialFocus={initialFocus} returnFocus={false}>
 				<div
 					ref={panelRef}
 					style={style}
 					data-popover-placement={context.placement}
-					className={className ?? "flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"}
+					className={cn("ui-popover theme-overlay flex flex-col overflow-hidden text-foreground", className)}
 					{...floatingProps}
 					onKeyDownCapture={onKeyDownCapture}
 				>

@@ -72,7 +72,7 @@ github:
 - `autonomous_approvals`
   - default: `true`
   - when `true`, Kingdom auto-approves plan and final closure
-  - when `false`, Kingdom pauses for allfather approval at both gates
+  - when `false`, Kingdom pauses for operator approval at both gates
 
 ### `publish`
 

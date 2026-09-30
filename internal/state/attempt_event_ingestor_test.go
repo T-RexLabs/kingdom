@@ -469,7 +469,7 @@ func baseAttemptEventIngestionRequest() AttemptEventIngestionRequest {
 		Seq:             1,
 		PayloadJSON:     `{"message":"ok"}`,
 		ActorID:         "actor_1",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "system",
 		ReasonCode:      "internal_error",
 		ReasonText:      "event ingest test",

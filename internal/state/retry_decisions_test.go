@@ -15,7 +15,7 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
 	svc = NewTransitionService(db, loadStateTestSchemas(t))
-	queued, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	queued, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil || !scheduled {
 		t.Fatalf("record automatic retry: scheduled=%t err=%v", scheduled, err)
 	}
@@ -37,7 +37,7 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode automatic retry payload: %v", err)
 	}
-	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != "nr_1" || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
+	if payload["node_id"] != "work_intake" || payload["node_run_id"] != "nr_1" || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "work_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
 		t.Fatalf("unexpected automatic retry payload: %#v", payload)
 	}
 	var publicScheduledEvents int
@@ -47,7 +47,7 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if publicScheduledEvents != 1 {
 		t.Fatalf("public scheduled retry events = %d, want 1", publicScheduledEvents)
 	}
-	if _, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err == nil {
+	if _, _, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err == nil {
 		t.Fatal("expected retry decision replay to conflict after source settlement")
 	}
 	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE event_type = 'attempt.retry_scheduled' AND attempt_id = 'source_attempt'`).Scan(&publicScheduledEvents); err != nil {
@@ -56,11 +56,11 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if publicScheduledEvents != 1 {
 		t.Fatalf("replayed public scheduled retry events = %d, want 1", publicScheduledEvents)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("early release = %#v, %v", released, err)
 	}
 	restarted := NewTransitionService(db, nil)
-	if released, err := restarted.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != queued.NodeRunID {
+	if released, err := restarted.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != queued.NodeRunID {
 		t.Fatalf("due release = %#v, %v", released, err)
 	}
 	if err := db.QueryRow(`SELECT payload_json FROM events WHERE event_type = 'attempt.retry_queued'`).Scan(&payloadJSON); err != nil {
@@ -69,10 +69,10 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode released retry payload: %v", err)
 	}
-	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
+	if payload["node_id"] != "work_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "timeout" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "work_intake", queued.Attempt) || payload["retry_index"] != float64(1) || payload["retry_max"] != float64(3) || payload["scheduled_at"] != dueAt {
 		t.Fatalf("unexpected released retry payload: %#v", payload)
 	}
-	started := retryTargetStartTransition(queued.NodeRunID, composeAttemptID("run_1", "decree_intake", queued.Attempt), now.Add(90*time.Second), 2)
+	started := retryTargetStartTransition(queued.NodeRunID, composeAttemptID("run_1", "work_intake", queued.Attempt), now.Add(90*time.Second), 2)
 	started.PayloadJSON = `{"attempt":2,"existing":"preserved"}`
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+started.AttemptID+`', 'run_1', '`+queued.NodeRunID+`', 'queued', 'provider_backed', 'server_response', '`+now.Format(time.RFC3339Nano)+`', '`+now.Format(time.RFC3339Nano)+`')`)
 	if err := restarted.RecordExecutionStart(context.Background(), ExecutionStartRecordRequest{Transition: started}); err != nil {
@@ -84,7 +84,7 @@ func TestTransitionServicePersistsAutomaticRetryDueTimeAcrossRestart(t *testing.
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode observed retry start payload: %v", err)
 	}
-	if payload["node_id"] != "decree_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "running" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || payload["existing"] != "preserved" || payload["attempt"] != float64(2) {
+	if payload["node_id"] != "work_intake" || payload["node_run_id"] != queued.NodeRunID || payload["recovery_trigger"] != "automatic_retry" || payload["recovery_phase"] != "running" || payload["source_attempt_id"] != "source_attempt" || payload["target_attempt_id"] != composeAttemptID("run_1", "work_intake", queued.Attempt) || payload["existing"] != "preserved" || payload["attempt"] != float64(2) {
 		t.Fatalf("unexpected observed retry start payload: %#v", payload)
 	}
 }
@@ -93,17 +93,17 @@ func TestTransitionServiceDoesNotReleaseFractionalRetryBeforeSecondPrecisionTick
 	t.Parallel()
 	_, svc, now := newAutomaticRetryTestService(t)
 	now = now.Add(100 * time.Millisecond)
-	if _, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil || !scheduled {
+	if _, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil || !scheduled {
 		t.Fatalf("record automatic retry: scheduled=%t err=%v", scheduled, err)
 	}
 
 	// A fractional RFC3339 timestamp sorts before a whole-second timestamp as
 	// text, even though it is chronologically after it.
 	beforeDue := now.Add(time.Minute).Truncate(time.Second)
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", beforeDue.Format(time.RFC3339)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", beforeDue.Format(time.RFC3339)); err != nil || len(released) != 0 {
 		t.Fatalf("released retry before fractional deadline: released=%#v err=%v", released, err)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 1 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 1 {
 		t.Fatalf("released retry at fractional deadline: released=%#v err=%v", released, err)
 	}
 }
@@ -111,7 +111,7 @@ func TestTransitionServiceDoesNotReleaseFractionalRetryBeforeSecondPrecisionTick
 func TestTransitionServiceReleasesDueRetryExactlyOnceConcurrently(t *testing.T) {
 	t.Parallel()
 	_, svc, now := newAutomaticRetryTestService(t)
-	if _, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil {
+	if _, _, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry)); err != nil {
 		t.Fatal(err)
 	}
 	const workers = 8
@@ -124,7 +124,7 @@ func TestTransitionServiceReleasesDueRetryExactlyOnceConcurrently(t *testing.T) 
 		go func() {
 			defer group.Done()
 			<-start
-			released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano))
+			released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano))
 			if err != nil {
 				errs <- err
 				return
@@ -151,8 +151,8 @@ func TestTransitionServiceReleasesDueRetryExactlyOnceConcurrently(t *testing.T) 
 func TestTransitionServicePagesDueRetriesPastBlockedCandidates(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	const blockedCount = decreeRetryReleasePageSize + 1
-	const eligibleCount = decreeRetryReleasePageSize + 2
+	const blockedCount = workOrderRetryReleasePageSize + 1
+	const eligibleCount = workOrderRetryReleasePageSize + 2
 	const total = blockedCount + eligibleCount + 1
 	due := now.Add(time.Minute)
 	for i := total - 1; i >= 0; i-- {
@@ -174,9 +174,9 @@ func TestTransitionServicePagesDueRetriesPastBlockedCandidates(t *testing.T) {
 		wantOrder = append(wantOrder, blockedCount+i, blockedCount+i+1)
 	}
 	seen := 0
-	for _, wantCount := range []int{decreeRetryReleasePageSize, 2, 0} {
+	for _, wantCount := range []int{workOrderRetryReleasePageSize, 2, 0} {
 		svc = NewTransitionService(db, nil)
-		released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", due.Add(2*time.Second).Format(time.RFC3339Nano))
+		released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", due.Add(2*time.Second).Format(time.RFC3339Nano))
 		if err != nil || len(released) != wantCount {
 			t.Fatalf("release page: count=%d want=%d err=%v", len(released), wantCount, err)
 		}
@@ -199,13 +199,13 @@ func TestTransitionServicePagesDueRetriesPastBlockedCandidates(t *testing.T) {
 		t.Fatalf("dispatched=%d pending=%d", dispatched, pending)
 	}
 	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'released'`)
-	for _, wantCount := range []int{decreeRetryReleasePageSize, 1, 0} {
-		released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", due.Add(time.Second).Format(time.RFC3339Nano))
+	for _, wantCount := range []int{workOrderRetryReleasePageSize, 1, 0} {
+		released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", due.Add(time.Second).Format(time.RFC3339Nano))
 		if err != nil || len(released) != wantCount {
 			t.Fatalf("release after quiescence: count=%d want=%d err=%v", len(released), wantCount, err)
 		}
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", due.Add(time.Hour).Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != fmt.Sprintf("page_target_%04d", total-1) {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", due.Add(time.Hour).Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != fmt.Sprintf("page_target_%04d", total-1) {
 		t.Fatalf("future retry release=%#v err=%v", released, err)
 	}
 }
@@ -217,7 +217,7 @@ func TestTransitionServiceDueRetryPageRollsBackClaimsAndResultsTogether(t *testi
 		seedDueRetryCandidate(t, db, i, now, now.Add(time.Minute), false)
 	}
 	mustExec(t, db, `CREATE TRIGGER reject_second_retry BEFORE UPDATE OF node_status ON node_runs WHEN NEW.node_run_id = 'page_target_0001' AND NEW.node_status = 'ready' BEGIN SELECT RAISE(ABORT, 'test release failure'); END`)
-	released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano))
+	released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano))
 	if err == nil || len(released) != 0 {
 		t.Fatalf("failed transaction returned releases=%#v err=%v", released, err)
 	}
@@ -229,7 +229,7 @@ func TestTransitionServiceDueRetryPageRollsBackClaimsAndResultsTogether(t *testi
 		t.Fatalf("pending after rollback=%d, want 2", pending)
 	}
 	mustExec(t, db, `DROP TRIGGER reject_second_retry`)
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 2 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 2 {
 		t.Fatalf("release after rollback=%#v err=%v", released, err)
 	}
 }
@@ -249,8 +249,8 @@ func seedDueRetryCandidate(t *testing.T, db *sql.DB, index int, now, due time.Ti
 		sql  string
 		args []any
 	}{
-		{`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, 'wfdef_1', ?, 'king', 'decree_intake', ?)`, []any{nodeID, nodeID, retryTimeString(now)}},
-		{`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, 'run_1', ?, 1, 1, 'failed', 'king', 'agent_king', 1), (?, 'run_1', ?, 2, 1, 'pending', 'king', 'agent_king', 1)`, []any{source, nodeID, target, nodeID}},
+		{`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, 'wfdef_1', ?, 'governance', 'work_intake', ?)`, []any{nodeID, nodeID, retryTimeString(now)}},
+		{`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, 'run_1', ?, 1, 1, 'failed', 'governance', 'agent_governance', 1), (?, 'run_1', ?, 2, 1, 'pending', 'governance', 'agent_governance', 1)`, []any{source, nodeID, target, nodeID}},
 		{`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, 'run_1', ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, []any{attempt, source, retryTimeString(now), retryTimeString(now)}},
 	} {
 		if _, err := tx.Exec(query.sql, query.args...); err != nil {
@@ -280,17 +280,17 @@ func seedDueRetryCandidate(t *testing.T, db *sql.DB, index int, now, due time.Ti
 func TestTransitionServiceResolvesDispatchedRetryOnSuccess(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	queued, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	queued, _, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
+	if _, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Apply(context.Background(), TransitionRequest{TransitionID: "tr_start", EventID: "evt_start", RunID: "run_1", NodeRunID: sql.NullString{String: queued.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "ready", ToState: "running", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "orchestration_progress", ReasonText: "started", CorrelationID: "corr", CausationID: "caus_start", OccurredAt: now.Add(90 * time.Second).UTC().Format(time.RFC3339Nano), AttemptID: composeAttemptID("run_1", "decree_intake", queued.Attempt), SchemaVersion: "v1", EventType: "attempt.started", EventSeq: 2, PayloadJSON: `{}`}); err != nil {
+	if err := svc.Apply(context.Background(), TransitionRequest{TransitionID: "tr_start", EventID: "evt_start", RunID: "run_1", NodeRunID: sql.NullString{String: queued.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "ready", ToState: "running", ActorID: "runtime", RoleID: "governance", AuthoritySource: "runtime", ReasonCode: "orchestration_progress", ReasonText: "started", CorrelationID: "corr", CausationID: "caus_start", OccurredAt: now.Add(90 * time.Second).UTC().Format(time.RFC3339Nano), AttemptID: composeAttemptID("run_1", "work_intake", queued.Attempt), SchemaVersion: "v1", EventType: "attempt.started", EventSeq: 2, PayloadJSON: `{}`}); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.RecordNodeCompletion(context.Background(), NodeCompletionRecordRequest{Transition: TransitionRequest{TransitionID: "tr_success", EventID: "evt_success", RunID: "run_1", NodeRunID: sql.NullString{String: queued.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "succeeded", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "execution_completed", ReasonText: "success", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.Add(2 * time.Minute).UTC().Format(time.RFC3339Nano), AttemptID: composeAttemptID("run_1", "decree_intake", queued.Attempt), SchemaVersion: "v1", EventType: "attempt.succeeded", EventSeq: 3, PayloadJSON: `{}`}}); err != nil {
+	if err := svc.RecordNodeCompletion(context.Background(), NodeCompletionRecordRequest{Transition: TransitionRequest{TransitionID: "tr_success", EventID: "evt_success", RunID: "run_1", NodeRunID: sql.NullString{String: queued.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "succeeded", ActorID: "runtime", RoleID: "governance", AuthoritySource: "runtime", ReasonCode: "execution_completed", ReasonText: "success", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.Add(2 * time.Minute).UTC().Format(time.RFC3339Nano), AttemptID: composeAttemptID("run_1", "work_intake", queued.Attempt), SchemaVersion: "v1", EventType: "attempt.succeeded", EventSeq: 3, PayloadJSON: `{}`}}); err != nil {
 		t.Fatal(err)
 	}
 	var resolution string
@@ -306,15 +306,15 @@ func TestTransitionServiceResolvesEachFailedRetryTargetBeforeItsSuccessor(t *tes
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
 
-	first, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	first, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil || !scheduled {
 		t.Fatalf("schedule first retry: queued=%#v scheduled=%t err=%v", first, scheduled, err)
 	}
 	firstDue := now.Add(time.Minute)
-	if _, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", firstDue.Format(time.RFC3339Nano)); err != nil {
+	if _, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", firstDue.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("release first retry: %v", err)
 	}
-	firstAttemptID := composeAttemptID("run_1", "decree_intake", first.Attempt)
+	firstAttemptID := composeAttemptID("run_1", "work_intake", first.Attempt)
 	if err := svc.Apply(context.Background(), retryTargetStartTransition(first.NodeRunID, firstAttemptID, firstDue.Add(time.Second), 2)); err != nil {
 		t.Fatalf("start first retry target: %v", err)
 	}
@@ -334,17 +334,17 @@ func TestTransitionServiceResolvesEachFailedRetryTargetBeforeItsSuccessor(t *tes
 	secondRequest.Decision.SourceAttemptID = firstAttemptID
 	secondRequest.Decision.RetryIndex = 2
 	secondRequest.Decision.MaxRetries = 2
-	second, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), secondRequest)
+	second, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), secondRequest)
 	if err != nil || !scheduled {
 		t.Fatalf("schedule second retry: queued=%#v scheduled=%t err=%v", second, scheduled, err)
 	}
 	assertRetryDecisionState(t, db, "retry_source_attempt", RetryDispatchStateDispatched, RetryDecisionResolutionFailed, 1)
 
 	secondDue := secondAt.Add(time.Minute)
-	if _, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", secondDue.Format(time.RFC3339Nano)); err != nil {
+	if _, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", secondDue.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("release second retry: %v", err)
 	}
-	secondAttemptID := composeAttemptID("run_1", "decree_intake", second.Attempt)
+	secondAttemptID := composeAttemptID("run_1", "work_intake", second.Attempt)
 	if err := svc.Apply(context.Background(), retryTargetStartTransition(second.NodeRunID, secondAttemptID, secondDue.Add(time.Second), 2)); err != nil {
 		t.Fatalf("start second retry target: %v", err)
 	}
@@ -364,7 +364,7 @@ func TestTransitionServiceResolvesEachFailedRetryTargetBeforeItsSuccessor(t *tes
 	exhaustedRequest.Decision.SourceAttemptID = secondAttemptID
 	exhaustedRequest.Decision.RetryIndex = 2
 	exhaustedRequest.Decision.MaxRetries = 2
-	if _, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), exhaustedRequest); err != nil || scheduled {
+	if _, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), exhaustedRequest); err != nil || scheduled {
 		t.Fatalf("record exhausted retry: scheduled=%t err=%v", scheduled, err)
 	}
 
@@ -383,7 +383,7 @@ func TestTransitionServiceResolvesEachFailedRetryTargetBeforeItsSuccessor(t *tes
 }
 
 func retryTargetStartTransition(nodeRunID, attemptID string, occurredAt time.Time, eventSeq int) TransitionRequest {
-	return TransitionRequest{TransitionID: "tr_start_" + nodeRunID, EventID: "evt_start_" + nodeRunID, RunID: "run_1", NodeRunID: sql.NullString{String: nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "ready", ToState: "running", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "orchestration_progress", ReasonText: "started", CorrelationID: "corr", CausationID: "caus_start_" + nodeRunID, OccurredAt: occurredAt.UTC().Format(time.RFC3339Nano), AttemptID: attemptID, SchemaVersion: "v1", EventType: "attempt.started", EventSeq: eventSeq, PayloadJSON: `{}`}
+	return TransitionRequest{TransitionID: "tr_start_" + nodeRunID, EventID: "evt_start_" + nodeRunID, RunID: "run_1", NodeRunID: sql.NullString{String: nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "ready", ToState: "running", ActorID: "runtime", RoleID: "governance", AuthoritySource: "runtime", ReasonCode: "orchestration_progress", ReasonText: "started", CorrelationID: "corr", CausationID: "caus_start_" + nodeRunID, OccurredAt: occurredAt.UTC().Format(time.RFC3339Nano), AttemptID: attemptID, SchemaVersion: "v1", EventType: "attempt.started", EventSeq: eventSeq, PayloadJSON: `{}`}
 }
 
 func assertRetryDecisionState(t *testing.T, db *sql.DB, decisionID string, dispatch RetryDispatchState, resolution RetryDecisionResolution, retryIndex int) {
@@ -402,13 +402,13 @@ func assertRetryDecisionState(t *testing.T, db *sql.DB, decisionID string, dispa
 func TestTransitionServiceResolvesScheduledRetryWhenRunIsCancelled(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	queued, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	queued, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil || !scheduled {
 		t.Fatalf("record automatic retry: scheduled=%t err=%v", scheduled, err)
 	}
 	if err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{Transition: TransitionRequest{
 		TransitionID: "tr_cancel_run", EventID: "evt_cancel_run", RunID: "run_1", Entity: EntityTypeRun, FromState: "running", ToState: "cancelled",
-		ActorID: "operator", RoleID: "king", AuthoritySource: "api.cancel_run", ReasonCode: "run_cancelled_by_user", ReasonText: "cancelled",
+		ActorID: "operator", RoleID: "governance", AuthoritySource: "api.cancel_run", ReasonCode: "run_cancelled_by_user", ReasonText: "cancelled",
 		CorrelationID: "corr_cancel", CausationID: "caus_cancel", OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano), AttemptID: "run:run_1:status", SchemaVersion: "v1", EventType: "run.state_changed", EventSeq: 1, PayloadJSON: `{}`,
 	}}); err != nil {
 		t.Fatalf("cancel run: %v", err)
@@ -422,7 +422,7 @@ func TestTransitionServiceResolvesScheduledRetryWhenRunIsCancelled(t *testing.T)
 	if dispatchState != string(RetryDispatchStateNotApplicable) || resolution != string(RetryDecisionResolutionCancelled) || !resolvedAt.Valid {
 		t.Fatalf("cancelled retry decision dispatch=%q resolution=%q resolved_at=%#v", dispatchState, resolution, resolvedAt)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("cancelled retry release=%#v err=%v", released, err)
 	}
 }
@@ -430,20 +430,20 @@ func TestTransitionServiceResolvesScheduledRetryWhenRunIsCancelled(t *testing.T)
 func TestTransitionServiceRequiresBothStaleQuiescenceAndDueTime(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	queued, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	queued, _, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, db, `UPDATE node_runs SET handoff_source_attempt_id = 'source_attempt' WHERE node_run_id = '`+queued.NodeRunID+`'`)
 	mustExec(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, requested_at, status, handoff_state, created_at, updated_at) VALUES ('cancel_source', 'source_attempt', 'run_1', 'nr_1', '2026-03-01T12:00:00Z', 'published', 'awaiting_quiescence', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("release before quiescence = %#v, %v", released, err)
 	}
 	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'released' WHERE cancel_outbox_id = 'cancel_source'`)
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("release before due = %#v, %v", released, err)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 1 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).UTC().Format(time.RFC3339Nano)); err != nil || len(released) != 1 {
 		t.Fatalf("release after quiescence and due = %#v, %v", released, err)
 	}
 }
@@ -451,10 +451,10 @@ func TestTransitionServiceRequiresBothStaleQuiescenceAndDueTime(t *testing.T) {
 func TestTransitionServiceRecordsExhaustionEscalationOnce(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	if _, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionExhausted)); err != nil || scheduled {
+	if _, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionExhausted)); err != nil || scheduled {
 		t.Fatalf("record exhausted retry: scheduled=%t err=%v", scheduled, err)
 	}
-	if _, _, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionExhausted)); err == nil {
+	if _, _, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionExhausted)); err == nil {
 		t.Fatal("expected replay after terminal source transition to conflict")
 	}
 	var resolution string
@@ -469,7 +469,7 @@ func TestTransitionServiceRecordsExhaustionEscalationOnce(t *testing.T) {
 	if err := db.QueryRow(`SELECT to_agent_id, payload_json FROM mailbox_messages WHERE message_type = 'escalation'`).Scan(&deliveredTo, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if resolution != "escalated" || escalations != 1 || deliveredTo != "agent_chancellor" || !strings.Contains(payload, `"escalation_target":"chancellor"`) {
+	if resolution != "escalated" || escalations != 1 || deliveredTo != "agent_coordinator" || !strings.Contains(payload, `"escalation_target":"coordinator"`) {
 		t.Fatalf("exhaustion resolution=%q escalations=%d delivered_to=%q payload=%s", resolution, escalations, deliveredTo, payload)
 	}
 }
@@ -481,9 +481,9 @@ func TestTransitionServiceAllowsAutomaticRetryBeyondSixtyRunAttempts(t *testing.
 	// attempt gate must not repurpose or remove those separate loop caps.
 	mustExec(t, db, `UPDATE workflow_runs SET max_execution_review_cycles = 0, max_validation_rework_cycles = 0, run_until_all_approve = 0 WHERE run_id = 'run_1'`)
 	for i := 0; i < 60; i++ {
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-%d', 'run_1', 'budget-node-%d', 1, 1, 'failed', 'king', 'agent_king', 1, '%s', '%s')`, i, i, now.Format(time.RFC3339), now.Format(time.RFC3339)))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-%d', 'run_1', 'budget-node-%d', 1, 1, 'failed', 'governance', 'agent_governance', 1, '%s', '%s')`, i, i, now.Format(time.RFC3339), now.Format(time.RFC3339)))
 	}
-	queued, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
+	queued, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), automaticRetryRecord(now, RetryDecisionRetry))
 	if err != nil || !scheduled || queued.NodeRunID == "" {
 		t.Fatalf("retry beyond sixty attempts: queued=%#v scheduled=%t err=%v", queued, scheduled, err)
 	}
@@ -515,10 +515,10 @@ func TestTransitionServiceAllowsAutomaticRetryBeyondSixtyRunAttempts(t *testing.
 	if retryDispositionEvents != 1 {
 		t.Fatalf("retry emitted %d retry disposition events, want 1", retryDispositionEvents)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute-time.Nanosecond).Format(time.RFC3339Nano)); err != nil || len(released) != 0 {
 		t.Fatalf("early release beyond sixty attempts = %#v, %v", released, err)
 	}
-	if released, err := svc.ReleaseDueDecreeRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != queued.NodeRunID {
+	if released, err := svc.ReleaseDueWorkOrderRetries(context.Background(), "run_1", now.Add(time.Minute).Format(time.RFC3339Nano)); err != nil || len(released) != 1 || released[0].NodeRunID != queued.NodeRunID {
 		t.Fatalf("due release beyond sixty attempts = %#v, %v", released, err)
 	}
 }
@@ -526,10 +526,10 @@ func TestTransitionServiceAllowsAutomaticRetryBeyondSixtyRunAttempts(t *testing.
 func TestTransitionServiceConcurrentAutomaticRetriesBeyondSixtyRunAttempts(t *testing.T) {
 	t.Parallel()
 	db, svc, now := newAutomaticRetryTestService(t)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-concurrent', 'run_1', 'budget-concurrent', 1, 1, 'running', 'king', 'agent_king', 1, '2026-03-01T12:00:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-concurrent', 'run_1', 'budget-concurrent', 1, 1, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:00:00Z', NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('source-attempt-concurrent', 'run_1', 'nr-budget-concurrent', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	for i := 0; i < 58; i++ {
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-concurrent-%d', 'run_1', 'budget-concurrent-%d', 1, 1, 'failed', 'king', 'agent_king', 1, '%s', '%s')`, i, i, now.Format(time.RFC3339), now.Format(time.RFC3339)))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-concurrent-%d', 'run_1', 'budget-concurrent-%d', 1, 1, 'failed', 'governance', 'agent_governance', 1, '%s', '%s')`, i, i, now.Format(time.RFC3339), now.Format(time.RFC3339)))
 	}
 	first := automaticRetryRecord(now, RetryDecisionRetry)
 	second := automaticRetryRecord(now, RetryDecisionRetry)
@@ -546,12 +546,12 @@ func TestTransitionServiceConcurrentAutomaticRetriesBeyondSixtyRunAttempts(t *te
 	var group sync.WaitGroup
 	results := make(chan bool, 2)
 	errs := make(chan error, 2)
-	for _, request := range []AutomaticDecreeRetryRecordRequest{first, second} {
+	for _, request := range []AutomaticWorkOrderRetryRecordRequest{first, second} {
 		group.Add(1)
-		go func(request AutomaticDecreeRetryRecordRequest) {
+		go func(request AutomaticWorkOrderRetryRecordRequest) {
 			defer group.Done()
 			<-start
-			_, scheduled, err := svc.RecordAutomaticDecreeRetry(context.Background(), request)
+			_, scheduled, err := svc.RecordAutomaticWorkOrderRetry(context.Background(), request)
 			errs <- err
 			results <- scheduled
 		}(request)
@@ -584,11 +584,11 @@ func newAutomaticRetryTestService(t *testing.T) (*sql.DB, *TransitionService, ti
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('source_attempt', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	return db, NewTransitionService(db, nil), time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 }
 
-func automaticRetryRecord(now time.Time, decision RetryDecisionKind) AutomaticDecreeRetryRecordRequest {
-	return AutomaticDecreeRetryRecordRequest{Transition: TransitionRequest{TransitionID: "tr_failure", EventID: "evt_failure", RunID: "run_1", NodeRunID: sql.NullString{String: "nr_1", Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "failed", ActorID: "runtime", RoleID: "king", AuthoritySource: "runtime", ReasonCode: "timeout", ReasonText: "timeout", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: "source_attempt", SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 2, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: "retry_source_attempt", SubjectKind: RetrySubjectKindDecreeAttempt, RunID: "run_1", NodeID: "decree_intake", NodeRunID: "nr_1", SourceAttemptID: "source_attempt", PolicyID: "policy", RetryClass: "transient_transport", ErrorCode: "timeout", OperatorText: "retry", MeaningfulProgress: false, Decision: decision, RetryIndex: 1, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: now.Add(time.Minute), CreatedAt: now, EscalationTarget: "chancellor"}}
+func automaticRetryRecord(now time.Time, decision RetryDecisionKind) AutomaticWorkOrderRetryRecordRequest {
+	return AutomaticWorkOrderRetryRecordRequest{Transition: TransitionRequest{TransitionID: "tr_failure", EventID: "evt_failure", RunID: "run_1", NodeRunID: sql.NullString{String: "nr_1", Valid: true}, Entity: EntityTypeNode, FromState: "running", ToState: "failed", ActorID: "runtime", RoleID: "governance", AuthoritySource: "runtime", ReasonCode: "timeout", ReasonText: "timeout", CorrelationID: "corr", CausationID: "caus", OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: "source_attempt", SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 2, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: "retry_source_attempt", SubjectKind: RetrySubjectKindWorkOrderAttempt, RunID: "run_1", NodeID: "work_intake", NodeRunID: "nr_1", SourceAttemptID: "source_attempt", PolicyID: "policy", RetryClass: "transient_transport", ErrorCode: "timeout", OperatorText: "retry", MeaningfulProgress: false, Decision: decision, RetryIndex: 1, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: now.Add(time.Minute), CreatedAt: now, EscalationTarget: "coordinator"}}
 }

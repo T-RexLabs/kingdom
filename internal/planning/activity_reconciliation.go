@@ -154,95 +154,50 @@ func (r *planningActivityReconciler) recoverActivityBatches(ctx context.Context,
 		return 0, err
 	}
 	inspectionCtx, cancel := context.WithTimeout(ctx, planningActivityReconciliationBudget)
-	items, err := r.deps.inspectPlannerProviderSessionActivity(inspectionCtx, r.deps.projectRoot, operation.OperationID, invocation.ProviderSessionID, invocation.PlanningProviderInvocationID, operation.StartedAt, operation.CreatedAt)
-	cancel()
-	if err != nil {
-		return 0, nil // Diagnostic export failure still completes with a marker.
-	}
-	seenIDs := make(map[string]struct{})
-	seen := make(map[string]struct{})
-	for after := 0; ; {
-		storedEvents, err := r.deps.store.ListOperationEventMetadataAfterSeqPage(ctx, operation.OperationID, after, state.DefaultPlanningOperationEventListLimit)
-		if err != nil {
-			return 0, err
-		}
-		for _, event := range storedEvents {
-			if activityID, ok := plannerActivityIDFromStoredEvent(event); ok {
-				seenIDs[activityID] = struct{}{}
-			}
-			if signature, ok := plannerActivitySignatureFromStoredEvent(event); ok {
-				seen[signature] = struct{}{}
-			}
-			after = event.Seq
-		}
-		if len(storedEvents) < state.DefaultPlanningOperationEventListLimit {
-			break
-		}
-	}
-	events := make([]state.AppendPlanningOperationEventRequest, 0, min(len(items), state.MaxPlanningActivityReconciliationEvents))
-	activityBytes := 0
+	defer cancel()
 	count := 0
-	flush := func() error {
-		if len(events) == 0 {
-			return nil
-		}
-		now := nowTime(r.deps.nowString())
-		if err := r.deps.store.AppendPlanningActivityReconciliationBatch(ctx, claimed, events, now.Format(time.RFC3339Nano), now.Add(planningActivityReconciliationLeaseTTL).Format(time.RFC3339Nano)); err != nil {
+	var persistenceErr error
+	err = r.deps.inspectPlannerProviderSessionActivity(inspectionCtx, r.deps.projectRoot, operation.OperationID, invocation.ProviderSessionID, invocation.PlanningProviderInvocationID, operation.StartedAt, operation.CreatedAt, func(activity ProviderActivity) error {
+		activity.InvocationID = invocation.PlanningProviderInvocationID
+		signature := acp.ActivitySignature(activity)
+		activityID := acp.ActivityIdentity(activity, signature)
+		appendEvent, err := r.deps.store.ShouldAppendPlanningActivity(ctx, operation.OperationID, activityID, signature, activity.OccurredAt)
+		if err != nil {
+			persistenceErr = err
 			return err
 		}
-		count += len(events)
-		clear(events)
-		events = events[:0]
-		activityBytes = 0
-		return nil
-	}
-	for _, item := range items {
-		activity := providerActivityFromSessionActivityItem(item)
-		if activity.Kind == "" {
-			continue
-		}
-		itemID := strings.TrimSpace(item.ID)
-		if _, exists := seenIDs[itemID]; itemID != "" && exists {
-			continue
-		}
-		signature := plannerActivitySignature(activity)
-		if _, exists := seen[signature]; exists {
-			continue
-		}
-		activityID := itemID
-		if activityID == "" {
-			activityID = r.deps.nextID("planning_activity")
+		if !appendEvent {
+			return nil
 		}
 		payload := plannerActivityPayload(operation, activityID, activity)
 		if len(payload) == 0 {
-			continue
+			return nil
 		}
 		raw, err := json.Marshal(payload)
 		if err != nil {
-			continue
+			persistenceErr = err
+			return err
 		}
-		if len(events) > 0 && (len(events) >= state.MaxPlanningActivityReconciliationEvents || activityBytes+len(raw) > state.MaxPlanningActivityReconciliationEventBytes) {
-			if err := flush(); err != nil {
-				return count, err
-			}
+		now := nowTime(r.deps.nowString())
+		event := state.AppendPlanningOperationEventRequest{EventID: operation.OperationID + ":recovered", OperationID: operation.OperationID, Seq: 1, EventType: acp.GenericEventType, PayloadJSON: string(raw), ActivityContents: activity.ContentSources(), CreatedAt: now.Format(time.RFC3339Nano)}
+		// Each visitor owns its sources only until return. Persist its metadata and
+		// complete byte streams atomically under the existing reconciliation fence.
+		if err := r.deps.store.AppendPlanningActivityReconciliationBatch(ctx, claimed, []state.AppendPlanningOperationEventRequest{event}, now.Format(time.RFC3339Nano), now.Add(planningActivityReconciliationLeaseTTL).Format(time.RFC3339Nano)); err != nil {
+			persistenceErr = err
+			return err
 		}
-		events = append(events, state.AppendPlanningOperationEventRequest{
-			EventID:     fmt.Sprintf("%s:recovered:%d", operation.OperationID, len(events)+1),
-			OperationID: operation.OperationID,
-			Seq:         len(events) + 1,
-			EventType:   acp.GenericEventType,
-			PayloadJSON: string(raw),
-			CreatedAt:   r.deps.nowString(),
-		})
-		activityBytes += len(raw)
-		if itemID != "" {
-			seenIDs[itemID] = struct{}{}
+		count++
+		if r.deps.broker != nil {
+			r.deps.broker.Publish(operation.OperationID)
 		}
-		seen[signature] = struct{}{}
+		return nil
+	})
+	if persistenceErr != nil {
+		return count, persistenceErr
 	}
-	if err := flush(); err != nil {
-		return count, err
-	}
+	if err != nil {
+		return count, nil
+	} // Diagnostic failure still permits the completion marker.
 	return count, nil
 }
 

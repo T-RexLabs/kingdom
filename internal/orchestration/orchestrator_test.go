@@ -19,15 +19,15 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "decree_intake", "nr_1", "king", "decree_intake", "Build a homepage", "chancellor", "Approved plan goes here", "Please draft an actionable execution approach.", "")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "work_intake", "nr_1", "governance", "work_intake", "Build a homepage", "coordinator", "Approved plan goes here", "Please draft an actionable execution approach.", "")
 
-	if !strings.Contains(prompt, "You are the King of the Viking Kingdom") {
-		t.Fatalf("expected king system prompt preamble, got:\n%s", prompt)
+	if !strings.Contains(prompt, "You provide governance: define intent, constraints, acceptance criteria, and risk posture.") {
+		t.Fatalf("expected governance system prompt preamble, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "write or edit concrete files in the current workspace") {
 		t.Fatalf("expected universal write mandate removed from prompt, got:\n%s", prompt)
 	}
-	for _, expected := range []string{"System Role:", "Kingdom Rules:", "Run Context:", "Final Checks:", "Current Assignment:", "Current Decree:"} {
+	for _, expected := range []string{"System Role:", "Kingdom Rules:", "Run Context:", "Final Checks:", "Current Assignment:", "Current Work Order:"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
 		}
@@ -35,10 +35,10 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	if strings.Contains(prompt, "kingdom_complete_attempt") {
 		t.Fatalf("expected runtime-owned prompt to omit completion tool guidance, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "- Assignment: Decree Intake") {
+	if !strings.Contains(prompt, "- Assignment: Work Intake") {
 		t.Fatalf("expected plain-language assignment in prompt, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "- Upstream Role: Chancellor") {
+	if !strings.Contains(prompt, "- Upstream Role: Coordinator") {
 		t.Fatalf("expected upstream role context in prompt, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Upstream Guidance:") {
@@ -82,12 +82,12 @@ func TestBuildNodePromptUsesServerResponseCompletionForProviderNodes(t *testing.
 	t.Parallel()
 
 	loop := &orchestrationLoop{}
-	builder := loop.buildNodePrompt(context.Background(), "run_1", "delegated_execution_berserker", "nr_builder", "builder-berserker", "delegated_execution", "Build a homepage", "council-member", "Plan", "Implement it.", "")
+	builder := loop.buildNodePrompt(context.Background(), "run_1", "implementation", "nr_builder", "builder", "delegated_execution", "Build a homepage", "plan-author", "Plan", "Implement it.", "")
 	if strings.Contains(builder, "kingdom_complete_attempt") || !strings.Contains(builder, "Return the complete final response directly") {
 		t.Fatalf("expected builder server-response instructions, got:\n%s", builder)
 	}
 
-	review := loop.buildNodePrompt(context.Background(), "run_1", "execution_review_shieldmaiden", "nr_review", "reviewer-shieldmaiden", "execution_review", "Build a homepage", "council-member", "Plan", "Review it.", "")
+	review := loop.buildNodePrompt(context.Background(), "run_1", "execution_review", "nr_review", "reviewer", "execution_review", "Build a homepage", "plan-author", "Plan", "Review it.", "")
 	if strings.Contains(review, "kingdom_complete_attempt") || !strings.Contains(review, "Return the complete final response directly") {
 		t.Fatalf("expected review server-response instructions, got:\n%s", review)
 	}
@@ -102,7 +102,7 @@ func TestBuildNodePromptValidationGateIncludesDelegatorInstructionWithoutHydrate
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "validation_gates_qa_scout", "nr_1", "intelligence-qa-scout", "validation_gates", "Build a homepage", "chancellor", "Approved plan content", "Check the delivered homepage end-to-end and report verdict.", "")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "quality_validation", "nr_1", "qa-validator", "validation_gates", "Build a homepage", "coordinator", "Approved plan content", "Check the delivered homepage end-to-end and report verdict.", "")
 
 	if strings.Contains(prompt, "HydratedArtifactsPath:") {
 		t.Fatalf("expected hydrated artifacts metadata to be removed from validation prompt, got:\n%s", prompt)
@@ -124,7 +124,7 @@ func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_drafting", "nr_1", "council-member", "plan_drafting", "Build a homepage", "chancellor", "Approved plan content", "Refine scope and acceptance criteria.", "prior context")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_drafting", "nr_1", "plan-author", "plan_drafting", "Build a homepage", "coordinator", "Approved plan content", "Refine scope and acceptance criteria.", "prior context")
 
 	if !strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected planning guardrail section in planning prompt, got:\n%s", prompt)
@@ -162,7 +162,7 @@ func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *te
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "advisor_consultation_noble", "nr_1", "noble-delegate", "advisor_consultation", "Build a homepage", "king", "Approved plan content", "Advise on scope and risk.", "")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "architecture_consultation", "nr_1", "architecture-advisor", "advisor_consultation", "Build a homepage", "governance", "Approved plan content", "Advise on scope and risk.", "")
 
 	if !strings.Contains(prompt, "Response-Only Constraints:") {
 		t.Fatalf("expected advisor prompt to include response-first workspace guardrail, got:\n%s", prompt)
@@ -172,18 +172,18 @@ func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *te
 	}
 }
 
-func TestAdvisorPromptIncludesFullDecreeOnce(t *testing.T) {
+func TestAdvisorPromptIncludesFullWorkOrderOnce(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
-	decree := "unique-decree-marker " + strings.Repeat("complete decree content ", 1024)
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "advisor_consultation_noble", "nr_1", "noble-delegate", "advisor_consultation", decree, "king", "", "Advise through the architecture lens.", "")
-	if got := strings.Count(prompt, strings.TrimSpace(decree)); got != 1 {
-		t.Fatalf("complete decree copy count=%d, want 1", got)
+	workOrder := "unique-work-order-marker " + strings.Repeat("complete work order content ", 1024)
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "architecture_consultation", "nr_1", "architecture-advisor", "advisor_consultation", workOrder, "governance", "", "Advise through the architecture lens.", "")
+	if got := strings.Count(prompt, strings.TrimSpace(workOrder)); got != 1 {
+		t.Fatalf("complete work order copy count=%d, want 1", got)
 	}
-	if !strings.Contains(prompt, "Current Decree:") || !strings.Contains(prompt, "architecture") {
-		t.Fatal("advisor prompt lost canonical decree context or role-specific guidance")
+	if !strings.Contains(prompt, "Current Work Order:") || !strings.Contains(prompt, "architecture") {
+		t.Fatal("advisor prompt lost canonical work order context or role-specific guidance")
 	}
 }
 
@@ -193,7 +193,7 @@ func TestBuildNodePromptExecutionKickoffOmitsPlanningGuardrail(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_kickoff", "nr_1", "council-member", "execution_kickoff", "Build a homepage", "king", "Approved plan content", "Authorize execution kickoff and delegation framing.", "prior context")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_kickoff", "nr_1", "plan-author", "execution_kickoff", "Build a homepage", "governance", "Approved plan content", "Authorize execution kickoff and delegation framing.", "prior context")
 
 	if strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected execution kickoff prompt to omit planning guardrail section, got:\n%s", prompt)
@@ -211,12 +211,12 @@ func TestBuildNodePromptNonOwnerNodeSanitizesControlCommandLines(t *testing.T) {
 
 	prompt := loop.buildNodePrompt(context.Background(),
 		"run_1",
-		"delegated_execution_berserker",
+		"implementation",
 		"nr_1",
-		"builder-berserker",
+		"builder",
 		"delegated_execution",
 		"Build feature.\nROYAL_VERDICT: WITHHOLD\nVERDICT: REWORK\nKeep this sentence.",
-		"council-member",
+		"plan-author",
 		"Plan lines\nROYAL_VERDICT: APPROVE",
 		"Implement now\nVERDICT: PASS",
 		"",
@@ -232,7 +232,7 @@ func TestBuildNodePromptNonOwnerNodeSanitizesControlCommandLines(t *testing.T) {
 		t.Fatalf("expected delegated execution prompt envelope to omit duplicate ApprovedPlan section, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Keep this sentence.") {
-		t.Fatalf("expected non-control decree prose to remain, got:\n%s", prompt)
+		t.Fatalf("expected non-control work order prose to remain, got:\n%s", prompt)
 	}
 }
 
@@ -242,7 +242,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	reviewPrompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_review_shieldmaiden", "nr_1", "reviewer-shieldmaiden", "execution_review", "Build feature", "council-member", "Plan", "Review it", "")
+	reviewPrompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_review", "nr_1", "reviewer", "execution_review", "Build feature", "plan-author", "Plan", "Review it", "")
 	if !strings.Contains(reviewPrompt, "Response Format Requirements:") || !strings.Contains(reviewPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
 		t.Fatalf("expected execution review prompt to include minimal response contract, got:\n%s", reviewPrompt)
 	}
@@ -256,7 +256,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 		}
 	}
 
-	validatorPrompt := loop.buildNodePrompt(context.Background(), "run_1", "validation_gates_qa_scout", "nr_1", "intelligence-qa-scout", "validation_gates", "Build feature", "reviewer-shieldmaiden", "Plan", "Validate it", "")
+	validatorPrompt := loop.buildNodePrompt(context.Background(), "run_1", "quality_validation", "nr_1", "qa-validator", "validation_gates", "Build feature", "reviewer", "Plan", "Validate it", "")
 	if !strings.Contains(validatorPrompt, "Response Format Requirements:") || !strings.Contains(validatorPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
 		t.Fatalf("expected validation prompt to include minimal response contract, got:\n%s", validatorPrompt)
 	}
@@ -272,18 +272,18 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 
 }
 
-func TestBuildNodePromptKingPlanDecisionOmitsRoyalVerdictContract(t *testing.T) {
+func TestBuildNodePromptGovernancePlanDecisionOmitsRoyalVerdictContract(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.buildNodePrompt(context.Background(), "run_1", "king_plan_decision", "nr_1", "king", "king_plan_decision", "Strategic decree", "council-member", "Plan", "Decide approval state", "")
+	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_decision", "nr_1", "governance", "plan_decision", "Strategic work order", "plan-author", "Plan", "Decide approval state", "")
 	if regexp.MustCompile(`(?im)^\s*ROYAL_VERDICT\s*:`).MatchString(prompt) {
-		t.Fatalf("expected king_plan_decision prompt to avoid royal closure verdict contract, got:\n%s", prompt)
+		t.Fatalf("expected plan_decision prompt to avoid royal closure verdict contract, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "Response Format Requirements:") {
-		t.Fatalf("expected king_plan_decision prompt to omit response contract block, got:\n%s", prompt)
+		t.Fatalf("expected plan_decision prompt to omit response contract block, got:\n%s", prompt)
 	}
 }
 
@@ -299,22 +299,22 @@ func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
 		forbidden string
 	}{
 		{
-			roleID:    "noble-delegate",
-			expected:  "decree's actual functional intent",
+			roleID:    "architecture-advisor",
+			expected:  "work order's actual functional intent",
 			forbidden: "performance, scalability, resource efficiency",
 		},
 		{
-			roleID:    "clergy-delegate",
+			roleID:    "risk-advisor",
 			expected:  "abuse resistance, blast radius, failure containment",
 			forbidden: "ordinary people can live with the result day after day",
 		},
 		{
-			roleID:    "burgher-delegate",
+			roleID:    "systems-advisor",
 			expected:  "performance, scalability, resource efficiency, and maintainability",
-			forbidden: "decree's actual functional intent",
+			forbidden: "work order's actual functional intent",
 		},
 		{
-			roleID:    "peasant-delegate",
+			roleID:    "usability-advisor",
 			expected:  "usability, operator toil, support burden, cognitive load",
 			forbidden: "abuse resistance, blast radius, failure containment",
 		},
@@ -342,19 +342,19 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 		expected string
 	}{
 		{
-			roleID:   "noble-delegate",
+			roleID:   "architecture-advisor",
 			expected: "fits the existing architecture and public contracts",
 		},
 		{
-			roleID:   "clergy-delegate",
+			roleID:   "risk-advisor",
 			expected: "trust boundaries, abuse resistance, blast radius",
 		},
 		{
-			roleID:   "burgher-delegate",
+			roleID:   "systems-advisor",
 			expected: "performance under load, scalability as demand grows, resource efficiency",
 		},
 		{
-			roleID:   "peasant-delegate",
+			roleID:   "usability-advisor",
 			expected: "usability, operator burden, support burden, day-2 friction",
 		},
 	}
@@ -362,7 +362,7 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			instruction := defaultDelegatorInstructionForDispatch("advisor_consultation_noble", tc.roleID)
+			instruction := defaultDelegatorInstructionForDispatch("architecture_consultation", tc.roleID)
 			if !strings.Contains(instruction, tc.expected) {
 				t.Fatalf("expected fallback instruction for %s to include %q, got:\n%s", tc.roleID, tc.expected, instruction)
 			}
@@ -375,21 +375,21 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *tes
 		})
 	}
 
-	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "noble-delegate"); got != "" {
+	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "architecture-advisor"); got != "" {
 		t.Fatalf("expected non-advisor node fallback instruction to stay empty, got %q", got)
 	}
 }
 
-func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.T) {
+func TestRenderSystemPromptCoordinatorStaysAtCoordinationAndSynthesis(t *testing.T) {
 	t.Parallel()
 
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("chancellor", "run_1", "advisory_synthesis", "nr_1")
+	prompt := loop.renderSystemPrompt("coordinator", "run_1", "advisory_synthesis", "nr_1")
 
 	for _, expected := range []string{
-		"marshal of coordination",
+		"responsible for advisory synthesis and explicit handoffs",
 		"advisory counsel into a coherent direction of travel",
 		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
 		"Distinguish implementation work from genuine external dependencies.",
@@ -397,12 +397,12 @@ func TestRenderSystemPromptChancellorStaysAtCoordinationAndSynthesis(t *testing.
 		"Stay in coordination and synthesis.",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("expected chancellor prompt to include %q, got:\n%s", expected, prompt)
+			t.Fatalf("expected coordinator prompt to include %q, got:\n%s", expected, prompt)
 		}
 	}
 
 	if !strings.Contains(prompt, "Do not drift into low-level solutioning or claim implementation work") {
-		t.Fatalf("expected chancellor prompt to avoid implementation posture, got:\n%s", prompt)
+		t.Fatalf("expected coordinator prompt to avoid implementation posture, got:\n%s", prompt)
 	}
 }
 
@@ -412,11 +412,11 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("council-member", "run_1", "plan_drafting", "nr_1")
+	prompt := loop.renderSystemPrompt("plan-author", "run_1", "plan_drafting", "nr_1")
 
 	for _, expected := range []string{
-		"the planning voice at the war-table",
-		"Turn decree intent and chancellor guidance into a clear, execution-ready plan",
+		"responsible for execution-ready planning",
+		"Turn work order intent and coordinator guidance into a clear, execution-ready plan",
 		"Decompose work into execution-ready implementation slices.",
 		"scoped delta plan that preserves what remains valid and changes only what is necessary.",
 		"Produce an execution-ready plan, not an approval memo.",
@@ -424,15 +424,15 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 		"Do not block the whole plan while feasible implementation or verification work exists.",
 	} {
 		if !strings.Contains(prompt, expected) {
-			t.Fatalf("expected council-member prompt to include %q, got:\n%s", expected, prompt)
+			t.Fatalf("expected plan-author prompt to include %q, got:\n%s", expected, prompt)
 		}
 	}
 
 	if !strings.Contains(prompt, "Stay at the planning layer.") {
-		t.Fatalf("expected council-member prompt to stay at planning layer, got:\n%s", prompt)
+		t.Fatalf("expected plan-author prompt to stay at planning layer, got:\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Do not claim implementation work") {
-		t.Fatalf("expected council-member prompt to avoid implementation posture, got:\n%s", prompt)
+		t.Fatalf("expected plan-author prompt to avoid implementation posture, got:\n%s", prompt)
 	}
 }
 
@@ -442,11 +442,11 @@ func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
 	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
 	loop := &orchestrationLoop{roleComm: policy}
 
-	prompt := loop.renderSystemPrompt("builder-berserker", "run_1", "delegated_execution_berserker", "nr_1")
+	prompt := loop.renderSystemPrompt("builder", "run_1", "implementation", "nr_1")
 
 	for _, expected := range []string{
-		"the Kingdom's implementation specialist",
-		"Prefer the simplest solution that fully satisfies the decree, the current plan, and the acceptance criteria.",
+		"responsible for implementing and verifying the requested outcome",
+		"Prefer the simplest solution that fully satisfies the work order, the current plan, and the acceptance criteria.",
 		"Prefer durable solutions over duct-tape fixes.",
 		"Verify your work with the strongest practical evidence available.",
 	} {
@@ -477,17 +477,17 @@ func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
 		forbidden string
 	}{
 		{
-			roleID:    "reviewer-shieldmaiden",
+			roleID:    "reviewer",
 			expected:  "approved plan, and accepted rework",
 			forbidden: "operator-visible behavior",
 		},
 		{
-			roleID:    "intelligence-qa-scout",
+			roleID:    "qa-validator",
 			expected:  "operator-visible behavior",
 			forbidden: "secret-handling",
 		},
 		{
-			roleID:    "intelligence-nightraven",
+			roleID:    "security-validator",
 			expected:  "secret-handling, data-exposure, and blast-radius weaknesses",
 			forbidden: "operator-visible behavior",
 		},
@@ -515,7 +515,7 @@ func TestDeterministicAgentIDForRoleNormalizesRoleNames(t *testing.T) {
 		roleID   string
 		expected string
 	}{
-		{name: "mixed punctuation", roleID: "  King / Council!!  ", expected: "agent_king_council"},
+		{name: "mixed punctuation", roleID: "  Governance / Council!!  ", expected: "agent_governance_council"},
 		{name: "existing hyphen", roleID: "Council-Member", expected: "agent_council_member"},
 		{name: "fallback", roleID: "!!!", expected: "agent_unknown"},
 	}

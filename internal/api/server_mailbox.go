@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/workflow"
 	"kingdom/internal/mailboxview"
 	"kingdom/internal/state"
 )
@@ -504,11 +505,10 @@ func mailboxVerdictSummary(_ any, nodeID, reasonCode string) (string, string) {
 }
 
 func mailboxVerdictType(nodeID string) string {
-	trimmed := strings.TrimSpace(nodeID)
-	if strings.HasPrefix(trimmed, "execution_review") {
+	switch workflow.CanonicalNodeClassForNodeID(nodeID) {
+	case workflow.NodeClassExecutionReview:
 		return "review"
-	}
-	if strings.HasPrefix(trimmed, "validation_gates") {
+	case workflow.NodeClassValidationGates:
 		return "validation"
 	}
 	return ""

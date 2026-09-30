@@ -26,7 +26,7 @@ const components = {
       href={safeMarkdownURL(href)}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-medium text-gold underline underline-offset-4 transition-colors hover:text-gold/80"
+      className="font-medium text-accent underline underline-offset-4 transition-colors hover:text-accent/80"
     >
       {children}
     </a>
@@ -61,7 +61,7 @@ const components = {
     </div>
   ),
   code: ({ children }: { children?: React.ReactNode }) => (
-    <code className="text-wrap-anywhere rounded bg-surface-raised px-1 py-0.5 font-mono text-[11px]">
+    <code className="text-wrap-anywhere rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px]">
       {children}
     </code>
   ),
@@ -70,6 +70,11 @@ const components = {
       {children}
     </pre>
   ),
+};
+
+const textLinkComponents = {
+  ...components,
+  a: ({ children }: { children?: React.ReactNode }) => <span>{children}</span>,
 };
 
 function safeMarkdownURL(raw?: string): string | undefined {
@@ -83,7 +88,7 @@ function safeMarkdownURL(raw?: string): string | undefined {
 }
 
 /**
- * Shared markdown renderer used across the plan panel, decree panel,
+ * Shared markdown renderer used across the plan panel, work order panel,
  * and mailbox message viewer.  Keeps styling consistent everywhere.
  *
  * Wrapped in React.memo — skips re-rendering (and re-parsing) when
@@ -92,16 +97,18 @@ function safeMarkdownURL(raw?: string): string | undefined {
 export const MarkdownBlock = memo(function MarkdownBlock({
   content,
   className,
+  interactiveLinks = true,
 }: {
   content: string;
   className?: string;
+  interactiveLinks?: boolean;
 }) {
   if (!content.trim()) {
     return null;
   }
   return (
     <div className={cn("text-wrap-anywhere", className)}>
-      <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} components={components}>
+      <ReactMarkdown skipHtml remarkPlugins={remarkPlugins} components={interactiveLinks ? components : textLinkComponents}>
         {content}
       </ReactMarkdown>
     </div>

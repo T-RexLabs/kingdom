@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/core/workflow"
 )
 
 type DelegationOutcome string
@@ -28,35 +30,35 @@ var protectedGovernanceNodeClasses = map[string]struct{}{
 	"delegated_execution": {},
 	"execution_review":    {},
 	"validation_gates":    {},
-	"royal_closure":       {},
+	"completion":          {},
 }
 
 var governancePrerequisiteNodeClasses = []string{
-	"decree_intake",
+	"work_intake",
 	"advisor_consultation",
 	"advisory_synthesis",
 	"plan_drafting",
-	"king_plan_decision",
+	"plan_decision",
 }
 
 var lockedSpawnMatrix = map[string]map[string]struct{}{
-	"king": {
-		"chancellor":       {},
-		"council-member":   {},
-		"noble-delegate":   {},
-		"clergy-delegate":  {},
-		"burgher-delegate": {},
-		"peasant-delegate": {},
+	"governance": {
+		"coordinator":          {},
+		"plan-author":          {},
+		"architecture-advisor": {},
+		"risk-advisor":         {},
+		"systems-advisor":      {},
+		"usability-advisor":    {},
 	},
-	"chancellor": {
-		"council-member": {},
+	"coordinator": {
+		"plan-author": {},
 	},
-	"council-member": {
-		"builder-berserker":       {},
-		"reviewer-shieldmaiden":   {},
-		"intelligence-qa-scout":   {},
-		"intelligence-nightraven": {},
-		"intelligence-loki-chaos": {},
+	"plan-author": {
+		"builder":              {},
+		"reviewer":             {},
+		"qa-validator":         {},
+		"security-validator":   {},
+		"resilience-validator": {},
 	},
 }
 
@@ -130,12 +132,12 @@ func (e *DelegationPolicyEngine) Delegate(ctx context.Context, req DelegationReq
 	if err != nil {
 		var depthErr *SpawnDepthExceededError
 		if errors.As(err, &depthErr) {
-			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonSpawnDepthExceeded, EscalationTarget: "chancellor"}, nil
+			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonSpawnDepthExceeded, EscalationTarget: "coordinator"}, nil
 		}
 
 		var cycleErr *LineageCycleError
 		if errors.As(err, &cycleErr) {
-			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "chancellor"}, nil
+			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "coordinator"}, nil
 		}
 
 		return DelegationDecision{}, err
@@ -154,7 +156,7 @@ func (e *DelegationPolicyEngine) evaluate(ctx context.Context, req DelegationReq
 		return DelegationDecision{}, "", false, err
 	}
 	if !canSpawn {
-		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "chancellor"}, "", false, nil
+		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "coordinator"}, "", false, nil
 	}
 
 	delegateRole, delegateExists, err := e.resolveDelegateRole(ctx, req.DelegateAgentID, req.DelegateRoleID)
@@ -163,27 +165,27 @@ func (e *DelegationPolicyEngine) evaluate(ctx context.Context, req DelegationReq
 	}
 
 	if !isSpawnableTarget(delegatorRole, delegateRole) {
-		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
+		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "coordinator"}, delegateRole, delegateExists, nil
 	}
 
-	requiredRole, err := e.requiredRoleForNode(ctx, req.RunID, req.NodeID)
+	node, err := e.nodeContractForRun(ctx, req.RunID, req.NodeID)
 	if err != nil {
 		return DelegationDecision{}, "", false, err
 	}
-	if requiredRole != delegateRole {
-		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
+	if node.requiredRole != delegateRole {
+		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonPolicyViolation, EscalationTarget: "coordinator"}, delegateRole, delegateExists, nil
 	}
 
-	blocked, err := e.isGovernanceBlocked(ctx, req.RunID, req.NodeID)
+	blocked, err := e.isGovernanceBlocked(ctx, req.RunID, node)
 	if err != nil {
 		return DelegationDecision{}, "", false, err
 	}
 	if blocked {
-		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonDependencyBlocked, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
+		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonDependencyBlocked, EscalationTarget: "coordinator"}, delegateRole, delegateExists, nil
 	}
 
 	if req.DelegateAgentID == req.DelegatorAgentID {
-		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
+		return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "coordinator"}, delegateRole, delegateExists, nil
 	}
 
 	if delegateExists {
@@ -192,7 +194,7 @@ func (e *DelegationPolicyEngine) evaluate(ctx context.Context, req DelegationReq
 			return DelegationDecision{}, "", false, err
 		}
 		if hasCycle {
-			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
+			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "coordinator"}, delegateRole, delegateExists, nil
 		}
 	}
 
@@ -338,41 +340,40 @@ func isSpawnableTarget(delegatorRole, delegateRole string) bool {
 	return ok
 }
 
-func (e *DelegationPolicyEngine) requiredRoleForNode(ctx context.Context, runID, nodeID string) (string, error) {
-	var requiredRole string
+type delegationNodeContract struct {
+	requiredRole string
+	nodeClass    string
+	planState    string
+}
+
+func (e *DelegationPolicyEngine) nodeContractForRun(ctx context.Context, runID, nodeID string) (delegationNodeContract, error) {
+	var node delegationNodeContract
 	err := e.db.QueryRowContext(ctx,
-		`SELECT wn.required_role
+		`SELECT wn.required_role, wn.node_class, wr.plan_state
 		 FROM workflow_runs wr
 		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id
 		 WHERE wr.run_id = ? AND wn.node_id = ?`,
-		runID,
-		nodeID,
-	).Scan(&requiredRole)
+		runID, nodeID,
+	).Scan(&node.requiredRole, &node.nodeClass, &node.planState)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("required role not found for run=%q node=%q", runID, nodeID)
+		return delegationNodeContract{}, fmt.Errorf("node contract not found for run=%q node=%q", runID, nodeID)
 	}
 	if err != nil {
-		return "", fmt.Errorf("load required role for run=%q node=%q: %w", runID, nodeID, err)
+		return delegationNodeContract{}, fmt.Errorf("load node contract for run=%q node=%q: %w", runID, nodeID, err)
 	}
-	return requiredRole, nil
+	node.nodeClass = strings.TrimSpace(node.nodeClass)
+	if _, err := workflow.BehaviorForNodeContract(node.nodeClass, node.requiredRole); err != nil {
+		return delegationNodeContract{}, fmt.Errorf("invalid node contract for run=%q node=%q: %w", runID, nodeID, err)
+	}
+	return node, nil
 }
 
-func (e *DelegationPolicyEngine) isGovernanceBlocked(ctx context.Context, runID, nodeID string) (bool, error) {
-	nodeClass := nodeClassFromID(nodeID)
-	if _, restricted := protectedGovernanceNodeClasses[nodeClass]; !restricted {
+func (e *DelegationPolicyEngine) isGovernanceBlocked(ctx context.Context, runID string, node delegationNodeContract) (bool, error) {
+	if _, restricted := protectedGovernanceNodeClasses[node.nodeClass]; !restricted {
 		return false, nil
 	}
 
-	var planState string
-	err := e.db.QueryRowContext(ctx, `SELECT plan_state FROM workflow_runs WHERE run_id = ?`, runID).Scan(&planState)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, fmt.Errorf("run not found: %q", runID)
-	}
-	if err != nil {
-		return false, fmt.Errorf("load plan state for run=%q: %w", runID, err)
-	}
-
-	if planState != "approved" {
+	if node.planState != "approved" {
 		return true, nil
 	}
 
@@ -412,27 +413,6 @@ func (e *DelegationPolicyEngine) isGovernanceBlocked(ctx context.Context, runID,
 	}
 
 	return false, nil
-}
-
-func nodeClassFromID(nodeID string) string {
-	value := strings.TrimSpace(strings.ToLower(nodeID))
-	for _, classID := range []string{
-		"decree_intake",
-		"advisor_consultation",
-		"advisory_synthesis",
-		"plan_drafting",
-		"king_plan_decision",
-		"execution_kickoff",
-		"delegated_execution",
-		"execution_review",
-		"validation_gates",
-		"royal_closure",
-	} {
-		if value == classID || strings.HasPrefix(value, classID+"_") {
-			return classID
-		}
-	}
-	return value
 }
 
 func (e *DelegationPolicyEngine) wouldCreateCycle(ctx context.Context, agentID, newParentAgentID string) (bool, error) {

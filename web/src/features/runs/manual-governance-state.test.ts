@@ -5,7 +5,7 @@ describe("manual governance state", () => {
   it("requires autonomous_approvals to be false before exposing manual actions", () => {
     const state = describeManualGovernanceState({
       display_state: "awaiting_plan_decision",
-      plan_state: "awaiting_king_decision",
+      plan_state: "awaiting_plan_decision",
       autonomous_approvals: true,
     });
 
@@ -17,7 +17,7 @@ describe("manual governance state", () => {
   it("keeps autonomous plan-state copy neutral for inconsistent rows", () => {
     expect(runPlanStateLabel({
       display_state: "awaiting_plan_decision",
-      plan_state: "awaiting_king_decision",
+      plan_state: "awaiting_plan_decision",
       autonomous_approvals: true,
     })).toBe("Awaiting Plan Decision");
   });
@@ -30,6 +30,6 @@ describe("manual governance state", () => {
     });
 
     expect(state.isAwaitingFinalApproval).toBe(true);
-    expect(state.noticeTitle).toBe("Awaiting your final approval");
+    expect(state.noticeTitle).toBe("Awaiting Your Final Approval");
   });
 });

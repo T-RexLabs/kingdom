@@ -90,85 +90,6 @@ export function isCurrentActivityExecutionStatus(status?: string | null): boolea
 	return isQueuedExecutionStatus(status) || isActiveExecutionStatus(status) || isBlockedExecutionStatus(status);
 }
 
-export function operatorLiveExecutionLabel(label?: string | null): string | null {
-		switch ((label ?? "").trim()) {
-			case "Workspace prepared":
-				return "This step is getting ready.";
-			case "Launching":
-				return "This step is launching now.";
-			case "Blocked":
-			case "Blocked for retry":
-				return "This step is blocked while Kingdom decides or performs recovery.";
-			case "Provider running":
-			case "Execution started":
-				return "This step is still running.";
-		case "Completion observed":
-			return "This step is finishing up.";
-		case "Retry queued":
-			return "This step is queued to retry.";
-		case "Rerun queued":
-			return "This step is queued to rerun.";
-		case "Recovered for retry":
-			return "This step recovered and is continuing through retry handling.";
-		case "Retry exhausted":
-			return "Kingdom exhausted provider retries for this step.";
-		default: {
-			const trimmed = (label ?? "").trim();
-			return trimmed === "" ? null : trimmed;
-		}
-	}
-}
-
-export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null, handoffState?: string | null): string | null {
-	if (normalizedToken(status) === "paused") {
-		switch (normalizedToken(handoffState)) {
-			case "stop_retry_requested":
-				return "Kingdom is sending another stop request before retrying this step.";
-			case "cancellation_dispatched":
-			case "stop_retry_dispatched":
-				return "Kingdom is confirming that the previous stop request completed.";
-			case "workspace_restore_failed":
-				return "Kingdom stopped the previous attempt but could not restore the trusted workspace.";
-			case "awaiting_workspace_quiescence":
-				return "Kingdom is waiting for another active step to release the shared workspace.";
-			default:
-				return "Kingdom is waiting for the previous attempt to stop before starting the retry.";
-		}
-	}
-	const liveBody = operatorLiveExecutionLabel(liveLabel);
-	if (liveBody) {
-		return liveBody;
-	}
-		switch (normalizedToken(status)) {
-			case "starting":
-				return "This step is launching now.";
-			case "running":
-				return "This step is still running.";
-		case "blocked":
-			return "This step is blocked while Kingdom decides or performs recovery.";
-			case "verifying":
-				return "Kingdom is still confirming the final result for this step.";
-		case "queued":
-		case "pending":
-			return "This step is queued to start.";
-		default:
-			return null;
-	}
-}
-
-export function executionProgressLabel(
-	status?: string | null,
-	progressReasonCode?: string | null,
-	progressEventType?: string | null,
-	liveLabel?: string | null,
-): string | undefined {
-	const trimmedLiveLabel = typeof liveLabel === "string" ? liveLabel.trim() : "";
-	if (trimmedLiveLabel !== "") {
-		return trimmedLiveLabel;
-	}
-	return liveExecutionLabel(progressReasonCode ?? undefined, progressEventType ?? undefined, status ?? undefined);
-}
-
 function isPreLaunchProgressReasonCode(reasonCode?: string | null): boolean {
 	switch (normalizedToken(reasonCode)) {
 		case "workspace_prepared":
@@ -185,6 +106,10 @@ export function liveExecutionLabel(
 	nodeState?: string,
 ): string | undefined {
 	switch ((reasonCode ?? "").trim()) {
+		case "preparation_admitted":
+			return "Preparation Queued";
+		case "workspace_preparing":
+			return "Preparing Workspace";
 		case "workspace_prepared":
 			return "Workspace prepared";
 		case "provider_launching":
@@ -315,6 +240,9 @@ export function badgeToneForLabel(label: string | undefined, fallbackTone: RunSt
 	export function timelineEventTone(event: Pick<TimelineEvent, "event_type" | "reason_code" | "payload_json">): RunStatusTone {
 	if (isReworkTimelineEvent(event)) {
 		return "rework";
+	}
+	if (normalizedToken(event.event_type) === "attempt.progress" && ["preparation_admitted", "workspace_preparing"].includes(normalizedToken(event.reason_code))) {
+		return "ready";
 	}
 	if (normalizedToken(event.event_type) === "attempt.progress" && isPreLaunchProgressReasonCode(event.reason_code)) {
 		return "starting";

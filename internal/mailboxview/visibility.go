@@ -14,9 +14,9 @@ var userFacingCommunicationTypes = map[string]struct{}{
 }
 
 var suppressedReasonCodes = map[string]struct{}{
-	"advisor_scope_drift":    {},
-	"king_instruction_drift": {},
-	"council_scope_drift":    {},
+	"advisor_scope_drift":          {},
+	"governance_instruction_drift": {},
+	"planning_scope_drift":          {},
 }
 
 type Projection struct {
@@ -115,5 +115,5 @@ func UserFacingMailboxPredicate(alias string) string {
 	return fmt.Sprintf(`COALESCE(%sfrom_agent_id, '') != COALESCE(%sto_agent_id, '')
 	  AND lower(COALESCE(json_extract(%s, '$.message_source'), '')) = 'communication'
 	  AND lower(COALESCE(json_extract(%s, '$.communication_type'), '')) IN ('instruction_dispatched', 'response_received', 'approval_request', 'approval_response')
-	  AND lower(COALESCE(json_extract(%s, '$.reason_code'), '')) NOT IN ('advisor_scope_drift', 'king_instruction_drift', 'council_scope_drift')`, prefix, prefix, payloadColumn, payloadColumn, payloadColumn)
+	  AND lower(COALESCE(json_extract(%s, '$.reason_code'), '')) NOT IN ('advisor_scope_drift', 'governance_instruction_drift', 'planning_scope_drift')`, prefix, prefix, payloadColumn, payloadColumn, payloadColumn)
 }

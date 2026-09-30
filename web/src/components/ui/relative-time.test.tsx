@@ -13,12 +13,12 @@ describe("RelativeTime", () => {
 
     render(<RelativeTime iso="2026-03-06T10:01:00.000Z" />);
 
-    expect(screen.getByText("35s ago")).toBeInTheDocument();
+    expect(screen.getByText("35 s ago")).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(5_000);
     });
 
-    expect(screen.getByText("40s ago")).toBeInTheDocument();
+    expect(screen.getByText("40 s ago")).toBeInTheDocument();
   });
 });

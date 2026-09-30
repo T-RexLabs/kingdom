@@ -24,13 +24,13 @@ func TestOpenAPIRejectsLargeForbiddenPropertiesWithBoundedAllocations(t *testing
 	}
 	const size = (17 << 20) + 1
 	for _, tc := range []struct{ name, prefix, suffix string }{
-		{"string value", `{"decree_title":"test","decree_text":"valid","unexpected":"`, `"}`},
-		{"object value", `{"decree_title":"test","decree_text":"valid","unexpected":{"nested":"`, `"}}`},
-		{"property name", `{"decree_title":"test","decree_text":"valid","decree_te`, `":true}`},
+		{"string value", `{"work_order_title":"test","work_order_text":"valid","unexpected":"`, `"}`},
+		{"object value", `{"work_order_title":"test","work_order_text":"valid","unexpected":{"nested":"`, `"}}`},
+		{"property name", `{"work_order_title":"test","work_order_text":"valid","work_order_te`, `":true}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := io.MultiReader(strings.NewReader(tc.prefix), io.LimitReader(requestTextRepeatReader('x'), size), strings.NewReader(tc.suffix))
-			req := httptest.NewRequest(http.MethodPost, "/decrees", body)
+			req := httptest.NewRequest(http.MethodPost, "/work-orders", body)
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "forbidden-property", time.Now()))
 			req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
@@ -158,8 +158,8 @@ func TestOpenAPISecurityValidationDoesNotMaterializeValidLargeBody(t *testing.T)
 		t.Fatal(err)
 	}
 	const size = (17 << 20) + 1
-	prefix, suffix := `{"decree_title":"test","decree_text":"`, `"}`
-	req := httptest.NewRequest(http.MethodPost, "/decrees", io.MultiReader(strings.NewReader(prefix), io.LimitReader(requestTextRepeatReader('x'), size), strings.NewReader(suffix)))
+	prefix, suffix := `{"work_order_title":"test","work_order_text":"`, `"}`
+	req := httptest.NewRequest(http.MethodPost, "/work-orders", io.MultiReader(strings.NewReader(prefix), io.LimitReader(requestTextRepeatReader('x'), size), strings.NewReader(suffix)))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "valid-large-property", time.Now()))
 	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
@@ -220,7 +220,7 @@ func TestRequestAuthorityAndHeaderRejectionPrecedeBodySpooling(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			probe := &forbiddenValueProbe{}
-			req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/decrees", probe)
+			req := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/work-orders", probe)
 			req.RemoteAddr = "127.0.0.1:49152"
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "body-auth-order", time.Now()))

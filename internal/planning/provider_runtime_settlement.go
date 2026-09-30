@@ -23,7 +23,7 @@ func newPlanningProviderInvocationID(operationID string, now time.Time) string {
 
 func sanitizePlannerToken(raw string) string {
 	if strings.TrimSpace(raw) == "" {
-		return "planner"
+		return "planning-assistant"
 	}
 	builder := strings.Builder{}
 	builder.Grow(len(raw))
@@ -36,7 +36,7 @@ func sanitizePlannerToken(raw string) string {
 	}
 	value := strings.Trim(builder.String(), "._-")
 	if value == "" {
-		return "planner"
+		return "planning-assistant"
 	}
 	return value
 }
@@ -146,7 +146,7 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 func planningLogicalSessionID(sessionID string, operationType state.PlanningOperationType) string {
 	trimmedSessionID := strings.TrimSpace(sessionID)
 	if trimmedSessionID == "" {
-		trimmedSessionID = "planner"
+		trimmedSessionID = "planning-assistant"
 	}
 	switch operationType {
 	case state.PlanningOperationTypeGenerateTitle:

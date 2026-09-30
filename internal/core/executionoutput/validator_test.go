@@ -10,7 +10,7 @@ import (
 
 func TestValidateCanonicalizesGenericOutput(t *testing.T) {
 	t.Parallel()
-	result, err := Validate("delegated_execution_berserker", workflow.NodeClassDelegatedExecution, "  complete  ", `{"z":2,"a":1}`)
+	result, err := Validate("implementation", workflow.NodeClassDelegatedExecution, "  complete  ", `{"z":2,"a":1}`)
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -21,7 +21,7 @@ func TestValidateCanonicalizesGenericOutput(t *testing.T) {
 
 func TestValidateRejectsEmptyOutput(t *testing.T) {
 	t.Parallel()
-	_, err := Validate("advisor_consultation_noble", workflow.NodeClassAdvisorConsultation, " \n ", "")
+	_, err := Validate("architecture_consultation", workflow.NodeClassAdvisorConsultation, " \n ", "")
 	assertValidationReason(t, err, "provider_empty_output")
 }
 
@@ -44,7 +44,7 @@ func TestValidateReviewVerdicts(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := Validate("execution_review_shieldmaiden", workflow.NodeClassExecutionReview, tc.text, tc.structured)
+			result, err := Validate("execution_review", workflow.NodeClassExecutionReview, tc.text, tc.structured)
 			if tc.errorCode != "" {
 				assertValidationReason(t, err, tc.errorCode)
 				return
@@ -61,7 +61,7 @@ func TestValidateReviewVerdicts(t *testing.T) {
 
 func TestValidateValidationVerdict(t *testing.T) {
 	t.Parallel()
-	result, err := Validate("validation_gates_qa_scout", workflow.NodeClassValidationGates, "VERDICT: REWORK\nRun tests.", "")
+	result, err := Validate("quality_validation", workflow.NodeClassValidationGates, "VERDICT: REWORK\nRun tests.", "")
 	if err != nil {
 		t.Fatalf("validate: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestValidateValidationVerdict(t *testing.T) {
 
 func TestValidateRejectsNonObjectStructuredOutput(t *testing.T) {
 	t.Parallel()
-	_, err := Validate("delegated_execution_berserker", workflow.NodeClassDelegatedExecution, "complete", `[]`)
+	_, err := Validate("implementation", workflow.NodeClassDelegatedExecution, "complete", `[]`)
 	assertValidationReason(t, err, "llm_invalid_response")
 }
 

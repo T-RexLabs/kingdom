@@ -1,5 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
-import * as d3 from "d3";
+import { memo } from "react";
 
 export interface BarDatum {
   label: string;
@@ -10,9 +9,9 @@ export interface BarDatum {
 interface HorizontalBarChartProps {
   data: BarDatum[];
   ariaLabel?: string;
-  /** Width in pixels */
+  /** Width in pixels; otherwise fills the available space. */
   width?: number;
-  /** Height per bar in pixels */
+  /** Minimum height per bar in pixels. Labels can wrap to additional lines. */
   barHeight?: number;
   /** Empty-state height in pixels */
   emptyHeight?: number;
@@ -20,146 +19,63 @@ interface HorizontalBarChartProps {
   formatValue?: (v: number) => string;
 }
 
-let labelMeasureContext: CanvasRenderingContext2D | null | undefined;
-
-function measureLabelWidth(label: string): number {
-  if (typeof document === "undefined") {
-    return label.length * 7;
-  }
-
-  if (typeof navigator !== "undefined" && /jsdom/i.test(navigator.userAgent)) {
-    return label.length * 7;
-  }
-
-  if (labelMeasureContext === undefined) {
-    try {
-      labelMeasureContext = document.createElement("canvas").getContext("2d");
-    } catch {
-      labelMeasureContext = null;
-    }
-  }
-
-  if (!labelMeasureContext) {
-    return label.length * 7;
-  }
-
-  labelMeasureContext.font = "11px sans-serif";
-  return labelMeasureContext.measureText(label).width;
-}
-
-/**
- * Horizontal bar chart for role-based breakdowns.
- * Dark theme with gold accent, JetBrains Mono for numbers.
- */
+/** Native text layout keeps role labels and values readable in every theme font. */
 export const HorizontalBarChart = memo(function HorizontalBarChart({
   data,
   ariaLabel = "Horizontal bar chart",
   width,
-  barHeight = 28,
+  barHeight = 40,
   emptyHeight = 250,
   formatValue = (v) => v.toLocaleString(),
 }: HorizontalBarChartProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [autoWidth, setAutoWidth] = useState(400);
-
-  useEffect(() => {
-    if (width !== undefined || !containerRef.current) return;
-    const node = containerRef.current;
-    const observer = new ResizeObserver((entries) => {
-      const next = Math.max(220, Math.floor(entries[0]?.contentRect.width ?? 400));
-      setAutoWidth((current) => (current === next ? current : next));
-    });
-    observer.observe(node);
-    return () => observer.disconnect();
-  }, [width]);
-
-  const resolvedWidth = width ?? autoWidth;
-  const isEmpty = data.length === 0;
-
-  const height = data.length * barHeight + 8;
-
-  const { margin, x, y } = useMemo(() => {
-    const maxLabelWidth = d3.max(data, (datum) => measureLabelWidth(datum.label)) ?? 0;
-    const dynamicLeftMargin = Math.max(100, Math.min(240, Math.ceil(maxLabelWidth) + 14));
-    const nextMargin = { top: 4, right: 60, bottom: 4, left: dynamicLeftMargin };
-    const nextChartWidth = Math.max(40, resolvedWidth - nextMargin.left - nextMargin.right);
-    const nextChartHeight = data.length * barHeight;
-
-    return {
-      margin: nextMargin,
-      x: d3
-        .scaleLinear()
-        .domain([0, d3.max(data, (datum) => datum.value) || 1])
-        .range([0, nextChartWidth]),
-      y: d3
-        .scaleBand<number>()
-        .domain(d3.range(data.length))
-        .range([0, nextChartHeight])
-        .padding(0.25),
-    };
-  }, [barHeight, data, resolvedWidth]);
-
-  if (isEmpty) {
+  if (data.length === 0) {
     return (
-      <div ref={containerRef} className="h-full w-full overflow-hidden">
-        <div
-          style={{ height: emptyHeight }}
-          className="flex h-full w-full items-center justify-center text-xs text-foreground-subtle"
-        >
-          No data
-        </div>
+      <div
+        style={{ height: emptyHeight, width }}
+        className="flex w-full max-w-full items-center justify-center text-xs text-foreground-subtle"
+      >
+        No data
       </div>
     );
   }
 
+  const maxValue = data.reduce((max, datum) => Math.max(max, datum.value), 0) || 1;
+
   return (
-    <div ref={containerRef} className="w-full overflow-hidden">
-      <svg width={resolvedWidth} height={height} role="img" aria-label={ariaLabel}>
-        <g transform={`translate(${margin.left},${margin.top})`}>
-          {data.map((datum, index) => (
-            <rect
-              key={`${datum.label}-${index}`}
-              className="bar"
-              x={0}
-              y={y(index) ?? 0}
-              width={datum.value > 0 ? Math.max(x(datum.value), 2) : 0}
-              height={y.bandwidth()}
-              rx={3}
-              fill={datum.color ?? "var(--color-gold)"}
-              opacity={0.8}
-            />
-          ))}
-          {data.map((datum, index) => (
-            <text
-              key={`label-${datum.label}-${index}`}
-              className="label"
-              x={-8}
-              y={(y(index) ?? 0) + y.bandwidth() / 2}
-              dy="0.35em"
-              textAnchor="end"
-              fill="var(--color-foreground-muted)"
-              fontSize="11px"
-              fontFamily="var(--font-sans)"
-            >
+    <div
+      role="img"
+      aria-label={ariaLabel}
+      aria-description={data
+        .map((datum) => `${datum.label}: ${formatValue(datum.value)}`)
+        .join("; ")}
+      style={{ width }}
+      className="w-full min-w-0 max-w-full"
+    >
+      {data.map((datum, index) => (
+        <div
+          key={`${datum.label}-${index}`}
+          style={{ minHeight: barHeight }}
+          className="horizontal-bar-row flex min-w-0 flex-col justify-center gap-1.5 py-1"
+        >
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_fit-content(35%)] items-start gap-x-3">
+            <span className="label min-w-0 break-words text-xs leading-snug text-foreground-muted">
               {datum.label}
-            </text>
-          ))}
-          {data.map((datum, index) => (
-            <text
-              key={`value-${datum.label}-${index}`}
-              className="value"
-              x={x(datum.value) + 6}
-              y={(y(index) ?? 0) + y.bandwidth() / 2}
-              dy="0.35em"
-              fill="var(--color-foreground-subtle)"
-              fontSize="11px"
-              fontFamily="var(--font-mono)"
-            >
+            </span>
+            <span className="value min-w-0 break-all text-right font-mono text-[11px] leading-snug text-foreground-subtle">
               {formatValue(datum.value)}
-            </text>
-          ))}
-        </g>
-      </svg>
+            </span>
+          </div>
+          <div className="bar-track w-full min-w-0 overflow-hidden rounded-sm bg-border/30">
+            <div
+              className="bar h-2 rounded-sm opacity-80"
+              style={{
+                width: `${(Math.max(0, datum.value) / maxValue) * 100}%`,
+                backgroundColor: datum.color ?? "var(--color-accent)",
+              }}
+            />
+          </div>
+        </div>
+      ))}
     </div>
   );
 });

@@ -247,9 +247,9 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 	if err := json.Unmarshal(capture.Body.Bytes(), &captured); err != nil {
 		t.Fatal(err)
 	}
-	decree := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "e2e-external-decree", body: map[string]any{"decree_title": "Operator edit", "decree_text": "Immutable operator text", "external_source_snapshot_id": captured.SnapshotID}})
-	if decree.Code != http.StatusCreated {
-		t.Fatalf("decree: %d %s", decree.Code, decree.Body.String())
+	workOrder := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "e2e-external-work order", body: map[string]any{"work_order_title": "Operator edit", "work_order_text": "Immutable operator text", "external_source_snapshot_id": captured.SnapshotID}})
+	if workOrder.Code != http.StatusCreated {
+		t.Fatalf("work order: %d %s", workOrder.Code, workOrder.Body.String())
 	}
 	planning := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "e2e-external-planning", body: map[string]any{"title": "External intake"}})
 	if planning.Code != http.StatusCreated {
@@ -274,7 +274,7 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 		t.Fatalf("link count=%d", count)
 	}
 	var linkID string
-	if err := env.db.QueryRow(`SELECT link_id FROM external_source_links WHERE target_kind='decree'`).Scan(&linkID); err != nil {
+	if err := env.db.QueryRow(`SELECT link_id FROM external_source_links WHERE target_kind='work_order'`).Scan(&linkID); err != nil {
 		t.Fatal(err)
 	}
 	adapter.update("Changed deterministic issue", "Provider-neutral intake body", "2026-03-01T14:00:00Z")
@@ -282,17 +282,17 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 	if refresh.Code != http.StatusOK || !strings.Contains(refresh.Body.String(), `"outcome":"changed"`) {
 		t.Fatalf("refresh: %d %s", refresh.Code, refresh.Body.String())
 	}
-	var decreeID string
-	if err := env.db.QueryRow(`SELECT decree_id FROM decrees WHERE decree_title='Operator edit'`).Scan(&decreeID); err != nil {
+	var workOrderID string
+	if err := env.db.QueryRow(`SELECT work_order_id FROM work_orders WHERE work_order_title='Operator edit'`).Scan(&workOrderID); err != nil {
 		t.Fatal(err)
 	}
-	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/decrees/" + decreeID})
+	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/work-orders/" + workOrderID})
 	if detailResponse.Code != http.StatusOK {
-		t.Fatalf("read refreshed decree: %d %s", detailResponse.Code, detailResponse.Body.String())
+		t.Fatalf("read refreshed work order: %d %s", detailResponse.Code, detailResponse.Body.String())
 	}
-	var detail gen.DecreeDetail
-	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil || detail.DecreeText != "Immutable operator text" {
-		t.Fatalf("decree text=%q err=%v", detail.DecreeText, err)
+	var detail gen.WorkOrderDetail
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil || detail.WorkOrderText != "Immutable operator text" {
+		t.Fatalf("work order text=%q err=%v", detail.WorkOrderText, err)
 	}
 }
 
@@ -463,38 +463,38 @@ func (e *e2eEnv) request(t *testing.T, spec requestSpec) *httptest.ResponseRecor
 func (e *e2eEnv) createRun(t *testing.T) string {
 	t.Helper()
 
-	decreeRes := e.request(t, requestSpec{
+	workOrderRes := e.request(t, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "H3 decree",
-			"decree_text":  "H3 decree text",
+			"work_order_title": "H3 work order",
+			"work_order_text":  "H3 work order text",
 		},
-		idempotencyKey: "idem-h3-decree",
+		idempotencyKey: "idem-h3-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("create decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("create work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree struct {
-		DecreeID string `json:"decree_id"`
+	var workOrder struct {
+		WorkOrderID string `json:"work_order_id"`
 	}
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree response: %v", err)
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order response: %v", err)
 	}
 
 	publishRes := e.request(t, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/workflows/publish",
 		body: map[string]any{
-			"workflow_id": "royal-decree-v1",
+			"workflow_id": "work-order-v1",
 			"version":     "h3-e2e",
 			"definition_json": map[string]any{
 				"version":     "v1",
-				"workflow_id": "royal-decree-v1",
+				"workflow_id": "work-order-v1",
 				"nodes": []map[string]any{
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
-					{"node_id": "delegated_execution", "required_role": "builder-berserker", "node_class": "delegated_execution"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
+					{"node_id": "delegated_execution", "required_role": "builder", "node_class": "delegated_execution"},
 				},
 				"edges": []map[string]any{
 					{"from": "execution_kickoff", "to": "delegated_execution", "on": "success"},
@@ -511,8 +511,8 @@ func (e *e2eEnv) createRun(t *testing.T) string {
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decree.DecreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrder.WorkOrderID,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"global": map[string]any{"model": "github-copilot/gpt-5.3-codex"},
 			},
@@ -562,8 +562,8 @@ func (e *e2eEnv) seedAttemptEvents(t *testing.T, runID string) {
 			EventType:       "attempt.progress",
 			Seq:             i,
 			PayloadJSON:     string(payload),
-			ActorID:         "actor-chancellor",
-			RoleID:          "chancellor",
+			ActorID:         "actor-coordinator",
+			RoleID:          "coordinator",
 			AuthoritySource: "test.e2e",
 			ReasonCode:      "internal_error",
 			ReasonText:      "seed",
@@ -586,7 +586,7 @@ func (e *e2eEnv) setRunStatus(t *testing.T, runID, status string) {
 func seedRoles(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	roles := []string{"king", "chancellor", "council-member", "builder", "intelligence"}
+	roles := []string{"governance", "coordinator", "plan-author", "builder", "intelligence"}
 	now := "2026-03-01T13:00:00Z"
 
 	for _, roleID := range roles {

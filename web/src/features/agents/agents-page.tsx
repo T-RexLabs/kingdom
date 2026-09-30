@@ -1,306 +1,225 @@
-import { createElement, useMemo } from "react";
-import { useAgents, usePendingGovernanceRuns, useRoles, useRuns, type RunAgent, type Role } from "@/api/hooks";
-import { Card, CardContent } from "@/components/ui/card";
+import { useMemo, useState } from "react";
+import { useAgents, useRoles, type RunAgent } from "@/api/hooks";
+import { WorkspacePage } from "@/components/workspace-page";
+import { Button } from "@/components/ui/button";
+import { Modal } from "@/components/ui/modal-shell";
 import {
-  cn,
-  getRoleColor,
-  getRoleGlowStyle,
-  getRoleIcon,
-  isAgentRole,
-  ROLE_HIERARCHY_ORDER,
-  AGENT_STATUS_ORDER,
-} from "@/lib/utils";
-import type { AgentStatus } from "@/lib/utils";
-import { statusDotClass, statusLabel } from "@/lib/status-system";
-import { Users, Shield } from "lucide-react";
-import { PageHeader, PageContent } from "@/components/page-layout";
+  ThemeIcon,
+  ThemeArtwork,
+  RolePortrait,
+  useRoleIdentity,
+  useThemeCopy,
+} from "@/theme";
+import { isAgentRole, ROLE_HIERARCHY_ORDER } from "@/lib/utils";
+import { agentAvailability } from "./agent-availability";
 
-function StatusSummaryBar({
-  agents,
-  totalRoles,
-  hasActiveRun,
-}: {
-  agents: RunAgent[];
-  totalRoles: number;
-  hasActiveRun: boolean;
-}) {
-  const counts = useMemo(() => {
-    const result: Record<AgentStatus, number> = {
-      busy: 0,
-      idle: 0,
-      blocked: 0,
-      offline: 0,
-      failed: 0,
-    };
-    for (const agent of agents) {
-      result[agent.status as AgentStatus] =
-        (result[agent.status as AgentStatus] ?? 0) + 1;
-    }
-    return result;
-  }, [agents]);
-
-  const assignedRoleCount = useMemo(() => {
-    return new Set(agents.map((a) => a.role_id)).size;
-  }, [agents]);
-
-  return (
-    <div className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-surface px-4 py-3">
-      <div className="flex items-center gap-1.5 text-xs text-foreground-muted">
-        <Shield className="h-3.5 w-3.5" />
-        <span className="font-medium">{totalRoles}</span>
-        <span>roles</span>
-      </div>
-      <div className="hidden h-4 w-px bg-border md:block" />
-      <div className="flex items-center gap-1.5 text-xs text-foreground-muted">
-        <Users className="h-3.5 w-3.5" />
-        <span className="font-medium">{agents.length}</span>
-        <span>{hasActiveRun ? "agents active" : "agents registered"}</span>
-      </div>
-      {!hasActiveRun && (
-        <>
-          <div className="hidden h-4 w-px bg-border md:block" />
-          <span className="text-xs text-foreground-subtle">No active run</span>
-        </>
-      )}
-      {assignedRoleCount < totalRoles && (
-        <>
-          <div className="hidden h-4 w-px bg-border md:block" />
-          <span className="text-xs text-foreground-subtle">
-            {totalRoles - assignedRoleCount} roles awaiting assignment
-          </span>
-        </>
-      )}
-      {agents.length > 0 && (
-        <>
-          <div className="hidden h-4 w-px bg-border md:block" />
-          {AGENT_STATUS_ORDER.map((status) => {
-            const count = counts[status];
-            if (count === 0) return null;
-            return (
-              <div key={status} className="flex items-center gap-1.5">
-                <span className={cn("h-2 w-2 rounded-full", statusDotClass(status))} />
-                <span className="text-xs text-foreground-muted">
-                  {count} {statusLabel(status)}
-                </span>
-              </div>
-            );
-          })}
-        </>
-      )}
-    </div>
-  );
-}
-
-interface RoleGroup {
-  roleId: string;
-  roleName: string;
-  roleDescription: string;
-  canSpawn: boolean;
-  agents: RunAgent[];
-}
-
+type RoleGroup = { id: string; description: string; agents: RunAgent[] };
 export function AgentsPage() {
-  const { data: agentsData, isLoading: agentsLoading } = useAgents();
-  const { data: rolesData, isLoading: rolesLoading } = useRoles();
-  const { data: runningRuns } = useRuns({ stateFilter: "running", limit: 1 });
-  const { data: pendingDecisionRuns } = usePendingGovernanceRuns(1);
-
-  const agents = useMemo(
-    () => (agentsData?.items ?? []).filter((agent) => isAgentRole(agent.role_id)),
-    [agentsData?.items],
-  );
-  const roles = useMemo(
-    () => (rolesData?.items ?? []).filter((role) => isAgentRole(role.role_id)),
-    [rolesData],
-  );
-  const isLoading = agentsLoading || rolesLoading;
-  const hasActiveRun =
-    (runningRuns?.items.length ?? 0) > 0
-    || (pendingDecisionRuns?.items.length ?? 0) > 0;
-
+  const agentQuery = useAgents();
+  const roleQuery = useRoles();
+  const title = useThemeCopy("agents.heading");
+  const [selectedID, setSelectedID] = useState<string | null>(null);
+  const groups = useMemo(() => {
+    const result = new Map<string, RoleGroup>();
+    for (const role of roleQuery.data?.items ?? []) {
+      if (isAgentRole(role.role_id))
+        result.set(role.role_id, {
+          id: role.role_id,
+          description: role.description,
+          agents: [],
+        });
+    }
+    for (const agent of agentQuery.data?.items ?? []) {
+      if (!isAgentRole(agent.role_id)) continue;
+      const group = result.get(agent.role_id) ?? {
+        id: agent.role_id,
+        description: "This role is registered by the runtime.",
+        agents: [],
+      };
+      group.agents.push(agent);
+      result.set(agent.role_id, group);
+    }
+    return [...result.values()].sort(
+      (a, b) =>
+        (ROLE_HIERARCHY_ORDER[a.id] ?? 99) -
+          (ROLE_HIERARCHY_ORDER[b.id] ?? 99) || a.id.localeCompare(b.id),
+    );
+  }, [roleQuery.data, agentQuery.data]);
+  const availabilityKnowledge = agentQuery.data
+    ? "known"
+    : agentQuery.isLoading
+      ? "loading"
+      : "unknown";
+  const selected = groups.find((group) => group.id === selectedID);
+  const loading = agentQuery.isLoading || roleQuery.isLoading;
+  const error = agentQuery.error || roleQuery.error;
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PageHeader>
-        <div className="w-full">
-          <h1 className="font-display text-2xl font-bold text-gold">Agent Registry</h1>
-          <p className="text-sm text-foreground-muted">
-            Court roster, delegation depth, and live runtime status.
+    <WorkspacePage
+      section="Agents"
+      title={title}
+      description="Meet the agents and their responsibilities. Availability reflects all their work across this workspace."
+    >
+      {error && (
+        <div
+          role="alert"
+          className="mb-6 rounded-lg border border-status-failed/40 p-4 text-sm"
+        >
+          <p>
+            Agent availability could not be refreshed.{" "}
+            {agentQuery.data
+              ? "Showing the last known availability."
+              : "Availability is unknown until the registry can be loaded."}
+          </p>
+          <Button
+            variant="outline"
+            size="sm"
+            className="mt-3"
+            onClick={() => {
+              void agentQuery.refetch();
+              void roleQuery.refetch();
+            }}
+          >
+            Try Again
+          </Button>
+        </div>
+      )}
+      {loading && groups.length === 0 ? (
+        <p role="status" className="text-sm text-foreground-muted">
+          Loading agents…
+        </p>
+      ) : groups.length === 0 && !error ? (
+        <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
+          <h2 className="text-lg">No Agents Yet</h2>
+          <p className="mt-2 text-sm text-foreground-muted">
+            Agents will appear when the runtime registers its roles.
           </p>
         </div>
-      </PageHeader>
-
-      <PageContent className="space-y-6">
-        <AgentList
-          agents={agents}
-          roles={roles}
-          hasActiveRun={hasActiveRun}
-          isLoading={isLoading}
-        />
-      </PageContent>
-    </div>
-  );
-}
-
-function AgentList({
-  agents,
-  roles,
-  hasActiveRun,
-  isLoading,
-}: {
-  agents: RunAgent[];
-  roles: Role[];
-  hasActiveRun: boolean;
-  isLoading: boolean;
-}) {
-  const groupedByRole = useMemo((): RoleGroup[] => {
-    const agentsByRole = agents.reduce<Record<string, RunAgent[]>>((acc, agent) => {
-      (acc[agent.role_id] ??= []).push(agent);
-      return acc;
-    }, {});
-
-    // One card per canonical role
-    const groups: RoleGroup[] = roles.map((role) => ({
-      roleId: role.role_id,
-      roleName: role.display_name,
-      roleDescription: role.description,
-      canSpawn: role.can_spawn,
-      agents: (agentsByRole[role.role_id] ?? []).sort(
-        (a, b) =>
-          a.spawn_depth - b.spawn_depth ||
-          a.display_name.localeCompare(b.display_name),
-      ),
-    }));
-
-    // Safety: include agents whose role_id isn't in the canonical list
-    const knownRoleIds = new Set(roles.map((r) => r.role_id));
-    for (const [roleId, roleAgents] of Object.entries(agentsByRole)) {
-      if (!knownRoleIds.has(roleId)) {
-        groups.push({
-          roleId,
-          roleName: roleAgents[0]?.display_name ?? roleId,
-          roleDescription: "Unknown role.",
-          canSpawn: false,
-          agents: [...roleAgents].sort(
-            (a, b) =>
-              a.spawn_depth - b.spawn_depth ||
-              a.display_name.localeCompare(b.display_name),
-          ),
-        });
-      }
-    }
-
-    // Sort by kingdom hierarchy order
-    return groups.sort((a, b) => {
-      const aOrder = ROLE_HIERARCHY_ORDER[a.roleId] ?? 99;
-      const bOrder = ROLE_HIERARCHY_ORDER[b.roleId] ?? 99;
-      return aOrder - bOrder;
-    });
-  }, [agents, roles]);
-
-  if (isLoading) {
-    return <div className="py-10 text-sm text-foreground-subtle">Loading agent roster...</div>;
-  }
-
-  if (roles.length === 0 && agents.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-border bg-surface px-6 py-16 text-center">
-        <Users className="mb-3 h-12 w-12 text-foreground-subtle" />
-        <p className="text-base font-medium text-foreground">No agents or roles found</p>
-        <p className="mt-1 max-w-md text-sm text-foreground-muted">
-          The system has not been initialized. Start the orchestrator to seed canonical roles.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-4">
-      <StatusSummaryBar
-        agents={agents}
-        totalRoles={roles.length}
-        hasActiveRun={hasActiveRun}
-      />
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-        {groupedByRole.map((group) => (
-          <RoleGroupCard key={group.roleId} group={group} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function RoleGroupCard({ group }: { group: RoleGroup }) {
-  const { roleId, roleName, roleDescription, agents } = group;
-  const hasAgents = agents.length > 0;
-  const hasBusyAgent = agents.some((a) => a.status === "busy");
-
-  const roleStatusCounts = useMemo(() => {
-    const counts: Record<AgentStatus, number> = {
-      busy: 0,
-      idle: 0,
-      blocked: 0,
-      offline: 0,
-      failed: 0,
-    };
-    for (const agent of agents) {
-      counts[agent.status as AgentStatus] =
-        (counts[agent.status as AgentStatus] ?? 0) + 1;
-    }
-    return counts;
-  }, [agents]);
-
-  return (
-    <Card
-      className={cn(
-        "border-border transition-opacity duration-200",
-        hasAgents
-          ? "bg-surface-raised/60"
-          : "bg-surface-raised/30 opacity-60 hover:opacity-80",
-        hasBusyAgent && "animate-glow-pulse-subtle",
-      )}
-      style={hasBusyAgent ? getRoleGlowStyle(roleId) : undefined}
-    >
-      <CardContent className="p-0">
-        <div className="space-y-1 px-3 py-2.5">
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-2">
-              {createElement(getRoleIcon(roleId), {
-                className: cn(
-                  "h-4 w-4 shrink-0",
-                  hasAgents ? getRoleColor(roleId) : "text-foreground-subtle",
-                  hasBusyAgent && "animate-glow-pulse",
-                ),
-              })}
-              <h3
-                className={cn(
-                  "truncate text-sm font-semibold",
-                  hasAgents ? getRoleColor(roleId) : "text-foreground-subtle",
-                )}
-              >
-                {roleName}
-              </h3>
-            </div>
-            {hasAgents ? (
-              <div className="flex shrink-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
-                {AGENT_STATUS_ORDER.map((status) => {
-                  const count = roleStatusCounts[status];
-                  if (count === 0) return null;
-                  return (
-                    <span key={status} className="inline-flex items-center gap-1 text-xs text-foreground-subtle">
-                      <span className={cn("h-1.5 w-1.5 rounded-full", statusDotClass(status))} />
-                      {count} {statusLabel(status)}
-                    </span>
-                  );
-                })}
-              </div>
-            ) : null}
-          </div>
-          <p className="text-[11px] text-foreground-muted">{roleDescription}</p>
-          {!hasAgents ? (
-            <p className="text-xs italic text-foreground-subtle">Awaiting assignment</p>
-          ) : null}
+      ) : (
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {groups.map((group) => (
+            <AgentCard
+              key={group.id}
+              group={group}
+              knowledge={availabilityKnowledge}
+              onSelect={() => setSelectedID(group.id)}
+            />
+          ))}
         </div>
-      </CardContent>
-    </Card>
+      )}
+      {selected && (
+        <AgentDetails
+          group={selected}
+          knowledge={availabilityKnowledge}
+          onClose={() => setSelectedID(null)}
+        />
+      )}
+    </WorkspacePage>
   );
+}
+function AgentCard({
+  group,
+  knowledge,
+  onSelect,
+}: {
+  group: RoleGroup;
+  knowledge: AvailabilityKnowledge;
+  onSelect: () => void;
+}) {
+  const identity = useRoleIdentity(group.id);
+  const availability = knownAvailability(group.agents, knowledge);
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="ui-card group flex min-h-60 flex-col rounded-xl border border-border bg-surface p-6 text-left transition-colors hover:border-accent/60 hover:bg-surface-raised"
+      aria-label={`About ${identity.name}`}
+    >
+      <ThemeArtwork slot="agentBackdrop" className="mb-5 h-24 w-full rounded-lg object-cover" />
+      <span className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/10 text-accent">
+        <ThemeIcon slot={`role.${group.id}`} className="h-5 w-5" />
+      </span>
+      <h2 className="font-display text-3xl leading-tight">{identity.name}</h2>
+      {identity.name !== identity.canonicalName && (
+        <p className="mt-1 text-xs text-accent">{identity.canonicalName}</p>
+      )}
+      <p className="mb-6 mt-3 text-sm leading-relaxed text-foreground-muted">
+        {identity.description}
+      </p>
+      <span
+        className="mt-auto inline-flex items-center gap-2 text-xs text-foreground-muted"
+        title={availability.details}
+      >
+        <span
+          aria-hidden="true"
+          className="h-1.5 w-1.5 rounded-full"
+          style={{
+            backgroundColor: `var(--theme-status-${availability.tone}-foreground)`,
+          }}
+        />
+        {availability.label}
+      </span>
+    </button>
+  );
+}
+function AgentDetails({
+  group,
+  knowledge,
+  onClose,
+}: {
+  group: RoleGroup;
+  knowledge: AvailabilityKnowledge;
+  onClose: () => void;
+}) {
+  const identity = useRoleIdentity(group.id);
+  const availability = knownAvailability(group.agents, knowledge);
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title={identity.name}
+      caption={identity.canonicalName}
+      size="md"
+    >
+      <div className="space-y-6">
+        <RolePortrait
+          role={group.id}
+          className="h-24 w-24 rounded-xl object-cover"
+        />
+        {identity.lore && (
+          <p className="font-display text-2xl leading-relaxed text-foreground-muted">
+            {identity.lore}
+          </p>
+        )}
+        <section className="border-t border-border pt-5">
+          <h3 className="text-sm font-medium">Responsibility</h3>
+          <p className="mt-2 text-sm leading-relaxed text-foreground-muted">
+            {group.description}
+          </p>
+        </section>
+        <dl className="text-sm">
+          <div className="flex items-center justify-between gap-4">
+            <dt className="text-foreground-muted">Availability</dt>
+            <dd>{availability.label}</dd>
+          </div>
+        </dl>
+        <p className="text-xs text-foreground-muted">{availability.details}</p>
+      </div>
+    </Modal>
+  );
+}
+
+type AvailabilityKnowledge = "known" | "loading" | "unknown";
+function knownAvailability(
+  agents: RunAgent[],
+  knowledge: AvailabilityKnowledge,
+) {
+  if (knowledge === "known") return agentAvailability(agents);
+  return {
+    label: knowledge === "loading" ? "Loading" : "Unknown",
+    tone: "neutral",
+    details:
+      knowledge === "loading"
+        ? "Loading agent availability…"
+        : "Agent availability could not be loaded.",
+  };
 }

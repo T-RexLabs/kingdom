@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({ children, className }: { children: ReactNode; className?: string }) {
-  return <header className={cn("flex h-[76px] items-center border-b border-border px-page", className)}>{children}</header>;
+  return <header className={cn("ui-page-header flex h-12 shrink-0 items-center sm:h-[76px] border-b border-border px-page", className)}>{children}</header>;
 }
 
 /**
@@ -17,5 +17,5 @@ export function PageHeader({ children, className }: { children: ReactNode; class
  * so every visually hidden label inside a page would otherwise leak out.
  */
 export function PageContent({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("relative min-h-0 flex-1 overflow-auto px-page py-4", className)}>{children}</div>;
+  return <div className={cn("ui-page-content relative min-h-0 flex-1 overflow-auto px-page py-4", className)}>{children}</div>;
 }

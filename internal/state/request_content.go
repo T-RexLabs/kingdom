@@ -22,7 +22,7 @@ type RequestContentReference struct {
 }
 
 // RequestContentSource binds a staged reader to the exact bytes validated by
-// the request decoder. A short or changed source cannot publish a decree.
+// the request decoder. A short or changed source cannot publish a work order.
 type RequestContentSource struct {
 	Reader    io.Reader
 	SHA256    string
@@ -117,42 +117,42 @@ func CopyRequestContent(ctx context.Context, db *sql.DB, id string, dst io.Write
 	return ref, nil
 }
 
-func persistDecreeTextTx(ctx context.Context, tx *sql.Tx, req CreateDecreeRequest) error {
+func persistWorkOrderTextTx(ctx context.Context, tx *sql.Tx, req CreateWorkOrderRequest) error {
 	source := req.TextContent
 	if source == nil {
 		sum := sha256.Sum256([]byte(req.Text))
 		source = &RequestContentSource{Reader: strings.NewReader(req.Text), SizeBytes: int64(len(req.Text)), SHA256: hex.EncodeToString(sum[:])}
 	}
-	ref, err := WriteRequestContentTx(ctx, tx, "decree-text:"+req.DecreeID, *source, req.CreatedAt)
+	ref, err := WriteRequestContentTx(ctx, tx, "work-order-text:"+req.WorkOrderID, *source, req.CreatedAt)
 	if err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO decree_text_refs(decree_id,content_id) VALUES (?,?)`, req.DecreeID, ref.ContentID)
+	_, err = tx.ExecContext(ctx, `INSERT INTO work_order_text_refs(work_order_id,content_id) VALUES (?,?)`, req.WorkOrderID, ref.ContentID)
 	return err
 }
 
-// CopyDecreeText selects canonical chunk authority for new decrees. Historical
+// CopyWorkOrderText selects canonical chunk authority for new work orders. Historical
 // SQLite TEXT rows are read in bounded substrings until migrated by their owner;
 // a corrupt/missing chunk manifest never falls back to the old column.
-func CopyDecreeText(ctx context.Context, db *sql.DB, decreeID string, dst io.Writer) error {
+func CopyWorkOrderText(ctx context.Context, db *sql.DB, workOrderID string, dst io.Writer) error {
 	var id sql.NullString
 	var storage string
-	if err := db.QueryRowContext(ctx, `SELECT r.content_id,d.text_storage FROM decrees d LEFT JOIN decree_text_refs r ON r.decree_id=d.decree_id WHERE d.decree_id=?`, decreeID).Scan(&id, &storage); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT r.content_id,d.text_storage FROM work_orders d LEFT JOIN work_order_text_refs r ON r.work_order_id=d.work_order_id WHERE d.work_order_id=?`, workOrderID).Scan(&id, &storage); err != nil {
 		return err
 	}
 	if storage == "chunked" {
 		if !id.Valid {
-			return fmt.Errorf("canonical decree text reference is missing")
+			return fmt.Errorf("canonical work order text reference is missing")
 		}
 		_, err := CopyRequestContent(ctx, db, id.String, dst)
 		return err
 	}
 	if storage != "inline" || id.Valid {
-		return fmt.Errorf("decree text authority is inconsistent")
+		return fmt.Errorf("work order text authority is inconsistent")
 	}
 	for offset := int64(1); ; offset += requestContentChunkBytes {
 		var chunk []byte
-		if err := db.QueryRowContext(ctx, `SELECT substr(CAST(decree_text AS BLOB),?,?) FROM decrees WHERE decree_id=?`, offset, requestContentChunkBytes, decreeID).Scan(&chunk); err != nil {
+		if err := db.QueryRowContext(ctx, `SELECT substr(CAST(work_order_text AS BLOB),?,?) FROM work_orders WHERE work_order_id=?`, offset, requestContentChunkBytes, workOrderID).Scan(&chunk); err != nil {
 			return err
 		}
 		if _, err := io.Copy(dst, bytes.NewReader(chunk)); err != nil {
@@ -164,15 +164,15 @@ func CopyDecreeText(ctx context.Context, db *sql.DB, decreeID string, dst io.Wri
 	}
 }
 
-// OpenDecreeText returns a verified, replayable private file; Close removes it.
+// OpenWorkOrderText returns a verified, replayable private file; Close removes it.
 // SQLite remains authoritative, and no path supplied by a caller is opened.
-func OpenDecreeText(ctx context.Context, db *sql.DB, id string) (io.ReadCloser, error) {
-	file, err := os.CreateTemp("", "kingdom-decree-text-*")
+func OpenWorkOrderText(ctx context.Context, db *sql.DB, id string) (io.ReadCloser, error) {
+	file, err := os.CreateTemp("", "kingdom-work-order-text-*")
 	if err != nil {
 		return nil, err
 	}
 	reader := &requestContentFile{File: file}
-	err = CopyDecreeText(ctx, db, id, file)
+	err = CopyWorkOrderText(ctx, db, id, file)
 	if err == nil {
 		_, err = file.Seek(0, io.SeekStart)
 	}

@@ -46,7 +46,7 @@ let runPlanState: {
 	last_activity_at: string;
 } = {
 	run_id: "run-1",
-	plan_state: "awaiting_king_decision",
+	plan_state: "awaiting_plan_decision",
 	revision_status: "ready",
 	plan_revision_id: "planrev-1",
 	components: [{
@@ -61,7 +61,7 @@ let runPlanState: {
 		"",
 		"| Step | Owner |",
 		"| --- | --- |",
-		"| Implement endpoint | Builder Berserker |",
+		"| Implement endpoint | Builder Builder |",
 		"| Verify response | Scout |",
 	].join("\n"),
 	created_at: "2026-03-06T10:00:00.000Z",
@@ -142,7 +142,7 @@ describe("current plan panel", () => {
 		}));
 		runPlanState = {
 			run_id: "run-1",
-			plan_state: "awaiting_king_decision",
+			plan_state: "awaiting_plan_decision",
 			revision_status: "ready",
 			plan_revision_id: "planrev-1",
 			components: [{
@@ -157,7 +157,7 @@ describe("current plan panel", () => {
 				"",
 				"| Step | Owner |",
 				"| --- | --- |",
-				"| Implement endpoint | Builder Berserker |",
+				"| Implement endpoint | Builder Builder |",
 				"| Verify response | Scout |",
 			].join("\n"),
 			created_at: "2026-03-06T10:00:00.000Z",
@@ -174,14 +174,14 @@ describe("current plan panel", () => {
     vi.useRealTimers();
   });
 
-  it("uses fixed scroll panel without expand toggle", () => {
+  it("renders one always-open plan document without a nested scroll region", () => {
     render(
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "running",
@@ -189,11 +189,16 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
 
     expect(screen.getByText("Current Plan")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Current Plan/ })).not.toBeInTheDocument();
+    const document = screen.getByRole("region", { name: "Current plan document" });
+    expect(document.querySelector('[class*="overflow-auto"], [class*="max-h-"]')).toBeNull();
+    expect(document).not.toHaveClass("overflow-auto");
     expect(screen.queryByRole("button", { name: /Expand full plan/i })).not.toBeInTheDocument();
   });
 
@@ -202,9 +207,9 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "running",
@@ -212,6 +217,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -224,9 +230,9 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "running",
@@ -234,13 +240,14 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
 
     expect(screen.getByRole("table")).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Step" })).toBeInTheDocument();
-    expect(screen.getByRole("cell", { name: "Builder Berserker" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "Builder Builder" })).toBeInTheDocument();
   });
 
   it("renders direct plan approval actions without a selector toggle", () => {
@@ -248,16 +255,17 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "awaiting_plan_decision",
-          plan_state: "awaiting_king_decision",
+          plan_state: "awaiting_plan_decision",
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -267,21 +275,22 @@ describe("current plan panel", () => {
     expect(screen.getByRole("button", { name: /^Request Rework$/i })).toBeInTheDocument();
   });
 
-  it("keeps autonomous runs in awaiting_king_decision non-actionable", () => {
+  it("keeps autonomous runs in awaiting_plan_decision non-actionable", () => {
     render(
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: true,
           status: "running",
           display_state: "awaiting_plan_decision",
-          plan_state: "awaiting_king_decision",
+          plan_state: "awaiting_plan_decision",
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -297,16 +306,17 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "awaiting_plan_decision",
-          plan_state: "awaiting_king_decision",
+          plan_state: "awaiting_plan_decision",
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -328,16 +338,17 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "awaiting_plan_decision",
-          plan_state: "awaiting_king_decision",
+          plan_state: "awaiting_plan_decision",
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -360,21 +371,22 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "awaiting_plan_decision",
-					plan_state: "awaiting_king_decision",
+					plan_state: "awaiting_plan_decision",
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
-		expect(screen.getByText("Syncing the current council plan revision for review.")).toBeInTheDocument();
+		expect(screen.getByText("Syncing the current plan revision for review.")).toBeInTheDocument();
 		expect(screen.getByText(/approval actions will unlock automatically once the current revision is ready/i)).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /Confirm Plan/i })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /^Request Rework$/i })).not.toBeInTheDocument();
@@ -388,21 +400,22 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "awaiting_plan_decision",
-					plan_state: "awaiting_king_decision",
+					plan_state: "awaiting_plan_decision",
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
-		expect(screen.getByText(/current council plan revision could not be loaded/i)).toBeInTheDocument();
+		expect(screen.getByText(/current plan revision could not be loaded/i)).toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /Confirm Plan/i })).not.toBeInTheDocument();
 		expect(screen.queryByRole("button", { name: /^Request Rework$/i })).not.toBeInTheDocument();
 	});
@@ -414,16 +427,17 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "awaiting_plan_decision",
-					plan_state: "awaiting_king_decision",
+					plan_state: "awaiting_plan_decision",
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -440,16 +454,17 @@ describe("current plan panel", () => {
       <CurrentPlanPanel
         run={{
           run_id: "run-1",
-          decree_id: "decree-1",
-          decree_title: "Title",
-          workflow_id: "royal-decree-v1",
+          work_order_id: "work order-1",
+          work_order_title: "Title",
+          workflow_id: "work-order-v1",
           autonomous_approvals: false,
           status: "running",
           display_state: "awaiting_plan_decision",
-          plan_state: "awaiting_king_decision",
+          plan_state: "awaiting_plan_decision",
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -473,9 +488,9 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "running",
@@ -483,16 +498,17 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
-		expect(screen.getByText("Allfather Guidance")).toBeInTheDocument();
+		expect(screen.getByText("Operator Guidance")).toBeInTheDocument();
 		expect(screen.getByText("Tighten the rollout scope before approval.")).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 
-		expect(screen.getByRole("dialog", { name: "Allfather Decision History" })).toBeInTheDocument();
+		expect(screen.getByRole("dialog", { name: "Operator Decision History" })).toBeInTheDocument();
 		expect(screen.getAllByText("Requested Plan Rework").length).toBeGreaterThan(0);
 	});
 
@@ -502,9 +518,9 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "running",
@@ -512,13 +528,14 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
 		expect(useRunGovernanceDecisionsMock).toHaveBeenCalledWith("run-1", { enabled: false });
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 
 		expect(
 			useRunGovernanceDecisionsMock.mock.calls.some(
@@ -533,9 +550,9 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "running",
@@ -543,11 +560,12 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 		await user.click(screen.getByRole("button", { name: /Load Older Decisions/i }));
 
 		expect(fetchNextGovernancePage).toHaveBeenCalledTimes(1);
@@ -582,9 +600,9 @@ describe("current plan panel", () => {
 			<CurrentPlanPanel
 				run={{
 					run_id: "run-1",
-					decree_id: "decree-1",
-					decree_title: "Title",
-					workflow_id: "royal-decree-v1",
+					work_order_id: "work order-1",
+					work_order_title: "Title",
+					workflow_id: "work-order-v1",
 					autonomous_approvals: false,
 					status: "running",
 					display_state: "running",
@@ -592,12 +610,13 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
 
-		expect(screen.getByText("Allfather Guidance")).toBeInTheDocument();
+		expect(screen.getByText("Operator Guidance")).toBeInTheDocument();
 		expect(screen.queryByText("Tighten the rollout scope before approval.")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: /View the complete Allfather decision history for this run\./i })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /View History/i })).toBeInTheDocument();
 	});
 });

@@ -12,7 +12,7 @@ import (
 type RetrySubjectKind string
 
 const (
-	RetrySubjectKindDecreeAttempt      RetrySubjectKind = "decree_attempt"
+	RetrySubjectKindWorkOrderAttempt   RetrySubjectKind = "work_order_attempt"
 	RetrySubjectKindPlanningInvocation RetrySubjectKind = "planning_invocation"
 )
 
@@ -148,9 +148,9 @@ func normalizeRetryDecisionCreateRequest(req RetryDecisionCreateRequest) (RetryD
 		return RetryDecision{}, fmt.Errorf("due_at must not precede provider_retry_at")
 	}
 	switch decision.SubjectKind {
-	case RetrySubjectKindDecreeAttempt:
+	case RetrySubjectKindWorkOrderAttempt:
 		if decision.RunID == "" || decision.NodeID == "" || decision.NodeRunID == "" || decision.SourceAttemptID == "" || decision.PlanningOperationID != "" || decision.SourcePlanningInvocationID != "" {
-			return RetryDecision{}, fmt.Errorf("decree attempt retry decisions require run_id, node_id, node_run_id, and source_attempt_id")
+			return RetryDecision{}, fmt.Errorf("work order attempt retry decisions require run_id, node_id, node_run_id, and source_attempt_id")
 		}
 	case RetrySubjectKindPlanningInvocation:
 		if decision.PlanningOperationID == "" || decision.SourcePlanningInvocationID == "" || decision.RunID != "" || decision.NodeID != "" || decision.NodeRunID != "" || decision.SourceAttemptID != "" || decision.TargetNodeRunID != "" {
@@ -161,8 +161,8 @@ func normalizeRetryDecisionCreateRequest(req RetryDecisionCreateRequest) (RetryD
 	}
 	switch decision.Decision {
 	case RetryDecisionRetry:
-		if decision.SubjectKind == RetrySubjectKindDecreeAttempt && decision.TargetNodeRunID == "" {
-			return RetryDecision{}, fmt.Errorf("decree retry decisions require target_node_run_id")
+		if decision.SubjectKind == RetrySubjectKindWorkOrderAttempt && decision.TargetNodeRunID == "" {
+			return RetryDecision{}, fmt.Errorf("work order retry decisions require target_node_run_id")
 		}
 		decision.DispatchState = RetryDispatchStatePending
 		decision.Resolution = RetryDecisionResolutionPending

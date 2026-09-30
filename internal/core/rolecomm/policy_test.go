@@ -8,19 +8,19 @@ import (
 )
 
 var canonicalRoleIDsForTest = []string{
-	"allfather",
-	"king",
-	"chancellor",
-	"council-member",
-	"noble-delegate",
-	"clergy-delegate",
-	"burgher-delegate",
-	"peasant-delegate",
-	"builder-berserker",
-	"reviewer-shieldmaiden",
-	"intelligence-qa-scout",
-	"intelligence-nightraven",
-	"intelligence-loki-chaos",
+	"operator",
+	"governance",
+	"coordinator",
+	"plan-author",
+	"architecture-advisor",
+	"risk-advisor",
+	"systems-advisor",
+	"usability-advisor",
+	"builder",
+	"reviewer",
+	"qa-validator",
+	"security-validator",
+	"resilience-validator",
 }
 
 func TestLoadPolicyFromFileValidPolicy(t *testing.T) {
@@ -55,19 +55,19 @@ func TestCanonicalPolicyIncludesStrictVerdictContracts(t *testing.T) {
 		t.Fatalf("load role communication policy: %v", err)
 	}
 
-	reviewerPrompt := policy.Roles["reviewer-shieldmaiden"].SystemPromptTemplate
+	reviewerPrompt := policy.Roles["reviewer"].SystemPromptTemplate
 	if !strings.Contains(reviewerPrompt, "VERDICT: PASS") || !strings.Contains(reviewerPrompt, "VERDICT: REWORK") {
 		t.Fatalf("expected reviewer prompt to include strict review verdict contract, got: %q", reviewerPrompt)
 	}
 
-	qaPrompt := policy.Roles["intelligence-qa-scout"].SystemPromptTemplate
+	qaPrompt := policy.Roles["qa-validator"].SystemPromptTemplate
 	if !strings.Contains(qaPrompt, "VERDICT: PASS") || !strings.Contains(qaPrompt, "VERDICT: REWORK") {
 		t.Fatalf("expected QA prompt to include strict verdict contract, got: %q", qaPrompt)
 	}
 
-	nightravenPrompt := policy.Roles["intelligence-nightraven"].SystemPromptTemplate
-	if !strings.Contains(nightravenPrompt, "VERDICT: PASS") || !strings.Contains(nightravenPrompt, "VERDICT: REWORK") {
-		t.Fatalf("expected nightraven prompt to include strict verdict contract, got: %q", nightravenPrompt)
+	securityValidatorPrompt := policy.Roles["security-validator"].SystemPromptTemplate
+	if !strings.Contains(securityValidatorPrompt, "VERDICT: PASS") || !strings.Contains(securityValidatorPrompt, "VERDICT: REWORK") {
+		t.Fatalf("expected nightraven prompt to include strict verdict contract, got: %q", securityValidatorPrompt)
 	}
 }
 
@@ -85,8 +85,8 @@ default_role_template:
     signoff_template: "c"
     signature_template: "d"
 roles:
-  king:
-    system_prompt_template: "king"
+  governance:
+    system_prompt_template: "governance"
     mailbox_template:
       salutation_template: "a"
       body_template: "b"
@@ -94,7 +94,7 @@ roles:
       signature_template: "d"
 `)
 
-	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "role_communication_policy.schema.json"), []string{"king", "chancellor"})
+	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "role_communication_policy.schema.json"), []string{"governance", "coordinator"})
 	if err == nil {
 		t.Fatal("expected missing required role to fail")
 	}
@@ -117,8 +117,8 @@ default_role_template:
     signoff_template: "c"
     signature_template: "d"
 roles:
-  king:
-    system_prompt_template: "king"
+  governance:
+    system_prompt_template: "governance"
     mailbox_template:
       salutation_template: "a"
       body_template: "b"
@@ -133,7 +133,7 @@ roles:
       signature_template: "d"
 `)
 
-	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "role_communication_policy.schema.json"), []string{"king"})
+	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "role_communication_policy.schema.json"), []string{"governance"})
 	if err == nil {
 		t.Fatal("expected unknown role to fail")
 	}

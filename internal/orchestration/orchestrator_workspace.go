@@ -801,9 +801,9 @@ func validateRunWorktreeRecord(record workspace.RunWorktreeRecord, topology work
 }
 
 func (o *orchestrationLoop) resolveManagedRunWorktreeName(ctx context.Context, runID string) (string, error) {
-	title, err := o.decreeTitleForRun(ctx, runID)
+	title, err := o.workOrderTitleForRun(ctx, runID)
 	if err != nil {
-		return "", fmt.Errorf("resolve decree title for run worktree: %w", err)
+		return "", fmt.Errorf("resolve work order title for run worktree: %w", err)
 	}
 	return workspace.RunPathName(title, runID), nil
 }

@@ -1,5 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
-import { Shield, RefreshCw, Home } from "lucide-react";
+import { AlertCircle, RefreshCw, Home } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
 interface ErrorBoundaryProps {
@@ -16,7 +16,10 @@ interface ErrorBoundaryState {
  * Top-level error boundary that catches unhandled rendering errors
  * and shows a themed fallback UI instead of a white screen.
  */
-export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+export class ErrorBoundary extends Component<
+  ErrorBoundaryProps,
+  ErrorBoundaryState
+> {
   constructor(props: ErrorBoundaryProps) {
     super(props);
     this.state = { hasError: false, error: null };
@@ -27,7 +30,11 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("[Kingdom] Unhandled render error:", error, info.componentStack);
+    console.error(
+      "[Kingdom] Unhandled render error:",
+      error,
+      info.componentStack,
+    );
   }
 
   handleReset = () => {
@@ -42,7 +49,13 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render() {
     if (this.state.hasError) {
       if (this.props.fallback) return this.props.fallback;
-      return <ErrorFallback error={this.state.error} onReset={this.handleReset} onHome={this.handleHome} />;
+      return (
+        <ErrorFallback
+          error={this.state.error}
+          onReset={this.handleReset}
+          onHome={this.handleHome}
+        />
+      );
     }
     return this.props.children;
   }
@@ -61,20 +74,26 @@ function ErrorFallback({
     <div className="flex h-screen w-screen items-center justify-center bg-background">
       <div className="mx-4 max-w-lg text-center">
         <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border-2 border-status-failed/30 bg-status-failed/10">
-          <Shield className="h-10 w-10 text-status-failed" />
+          <AlertCircle
+            className="h-10 w-10 text-status-failed"
+            aria-hidden="true"
+          />
         </div>
         <h1 className="mb-2 font-display text-2xl font-bold text-foreground">
-          The Kingdom Has Fallen
+          Unable to Display This Page
         </h1>
         <p className="mb-6 text-foreground-muted">
-          An unexpected error disrupted the realm. The council has been notified.
+          An unexpected error interrupted this page. Try again or return to the
+          overview.
         </p>
         {error && (
           <div className="mb-6 rounded-lg border border-border bg-surface p-4 text-left">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wider text-foreground-subtle">
+            <p className="mb-1 text-xs font-medium text-foreground-subtle">
               Error Details
             </p>
-            <p className="font-mono text-sm text-status-failed">{error.message}</p>
+            <p className="font-mono text-sm text-status-failed">
+              {error.message}
+            </p>
           </div>
         )}
         <div className="flex items-center justify-center gap-3">
@@ -84,7 +103,7 @@ function ErrorFallback({
           </Button>
           <Button onClick={onHome}>
             <Home className="h-4 w-4" />
-            Return to Throne Room
+            Return to Overview
           </Button>
         </div>
       </div>
@@ -99,19 +118,19 @@ export function NotFoundPage() {
   return (
     <div className="flex h-full items-center justify-center">
       <div className="mx-4 max-w-lg text-center">
-        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border-2 border-gold/30 bg-gold/10">
-          <Shield className="h-10 w-10 text-gold" />
+        <div className="mx-auto mb-6 flex h-20 w-20 items-center justify-center rounded-full border-2 border-accent/30 bg-accent/10">
+          <AlertCircle className="h-10 w-10 text-accent" aria-hidden="true" />
         </div>
         <h1 className="mb-2 font-display text-2xl font-bold text-foreground">
-          Uncharted Territory
+          Page Not Found
         </h1>
         <p className="mb-2 text-4xl font-bold text-foreground-subtle">404</p>
         <p className="mb-6 text-foreground-muted">
-          This path leads beyond the borders of the kingdom. No decree governs these lands.
+          This address does not match a page in this workspace.
         </p>
         <Button onClick={() => (window.location.href = "/")}>
           <Home className="h-4 w-4" />
-          Return to Throne Room
+          Return to Overview
         </Button>
       </div>
     </div>

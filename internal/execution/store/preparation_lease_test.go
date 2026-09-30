@@ -11,7 +11,7 @@ func TestQueuedPreparationLeaseRenewsWithoutAdvancingLifecycle(t *testing.T) {
 	seedMinimumGraph(t, db)
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestReleasePreparationLeasePreservesForeignGenerationAndActiveExecution(t *
 	seedMinimumGraph(t, db)
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	seedMinimumGraph(t, db)
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatal(err)
 	}

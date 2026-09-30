@@ -35,7 +35,16 @@ func insertPlanningOperationEvent(ctx context.Context, exec sqlExecutor, req App
 		PayloadJSON: strings.TrimSpace(req.PayloadJSON),
 		CreatedAt:   strings.TrimSpace(req.CreatedAt),
 	}
-	_, err := exec.ExecContext(ctx,
+	tx, ok := exec.(*sql.Tx)
+	if !ok {
+		return PlanningOperationEvent{}, fmt.Errorf("planning event publication requires a transaction")
+	}
+	var err error
+	row.PayloadJSON, err = persistActivityEventTx(ctx, tx, ActivityScope{OperationID: row.OperationID}, row.EventID, row.Seq, row.CreatedAt, row.PayloadJSON, req.ActivityContents)
+	if err != nil {
+		return PlanningOperationEvent{}, err
+	}
+	_, err = exec.ExecContext(ctx,
 		`INSERT INTO planning_operation_events (event_id, operation_id, seq, event_type, payload_json, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
 		row.EventID, row.OperationID, row.Seq, row.EventType, row.PayloadJSON, row.CreatedAt,

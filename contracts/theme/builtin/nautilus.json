@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "nautilus",
+  "version": "1.0.0",
+  "name": "Nautilus",
+  "description": "A capable crew and a steady course.",
+  "colorScheme": "light",
+  "palette": {
+    "canvas": "#f3f0e7",
+    "surface": "#faf8f1",
+    "text": "#213f43",
+    "accent": "#23616a"
+  },
+  "tokens": {
+    "canvas": "#f3f0e7",
+    "surface.base": "#faf8f1",
+    "surface.inset": "#f6f3eb",
+    "surface.elevated": "#f0f0e9",
+    "surface.overlay": "#ebebe5",
+    "text.primary": "#213f43",
+    "text.secondary": "#4d6364",
+    "text.subtle": "#536261",
+    "text.inverse": "#ffffff",
+    "border.default": "#cacfcb",
+    "border.strong": "#727d7b",
+    "accent.base": "#23616a",
+    "accent.hover": "#235d65",
+    "accent.pressed": "#40757c",
+    "accent.foreground": "#ffffff",
+    "accent.subtle": "#e0e6e1",
+    "focus.ring": "#23616a",
+    "focus.offset": "#faf8f1",
+    "selection.background": "#23616a",
+    "selection.foreground": "#ffffff",
+    "control.disabledBackground": "#f7f4ec",
+    "control.disabledForeground": "#8e9c9a",
+    "code.background": "#f3f0e7",
+    "code.foreground": "#213f43",
+    "tool.background": "#f8f6ef",
+    "tool.border": "#cacfcb",
+    "chart.axis": "#4d6364",
+    "chart.grid": "#d9dcd7",
+    "dag.edge": "#718281",
+    "dag.edgeCompleted": "#23616a",
+    "dag.edgeActive": "#23616a",
+    "dag.nodeActiveBackground": "#e5e9e4",
+    "status.neutral.background": "#edede8",
+    "status.neutral.foreground": "#616c74",
+    "status.neutral.border": "#7b8993",
+    "status.running.background": "#e8edf1",
+    "status.running.foreground": "#336ab6",
+    "status.running.border": "#438cef",
+    "status.attention.background": "#f7eedd",
+    "status.attention.foreground": "#916219",
+    "status.attention.border": "#c18321",
+    "status.succeeded.background": "#e5efe4",
+    "status.succeeded.foreground": "#1e7854",
+    "status.succeeded.border": "#28a271",
+    "status.failed.background": "#f7e8e2",
+    "status.failed.foreground": "#b3454c",
+    "status.failed.border": "#dd555e",
+    "status.cancelled.background": "#f0eaed",
+    "status.cancelled.foreground": "#7d5ca2",
+    "status.cancelled.border": "#9970c5",
+    "status.rework.background": "#f4e9e9",
+    "status.rework.foreground": "#9b5184",
+    "status.rework.border": "#c265a5",
+    "chart.category1": "#23616a",
+    "chart.category2": "#438cef",
+    "chart.category3": "#28a271",
+    "chart.category4": "#9970c5",
+    "chart.category5": "#c18321",
+    "chart.category6": "#c265a5",
+    "chart.category7": "#369ea2",
+    "chart.category8": "#dd555e"
+  },
+  "typography": {
+    "body": "bundled:dm-sans",
+    "display": "bundled:instrument-serif",
+    "mono": "bundled:jetbrains-mono",
+    "bodyWeight": 400,
+    "headingWeight": 400
+  },
+  "surfaces": {
+    "radius": 10,
+    "borderWidth": 1,
+    "elevation": "soft",
+    "ornamentation": "balanced"
+  },
+  "icons": {
+    "nav.overview": "lucide:compass",
+    "nav.planning": "lucide:notebook-pen",
+    "nav.runs": "lucide:workflow",
+    "nav.agents": "lucide:users-round",
+    "nav.analytics": "lucide:chart-no-axes-combined",
+    "nav.connections": "lucide:link",
+    "nav.appearance": "lucide:palette",
+    "work-order": "lucide:file-text",
+    "node.work-intake": "lucide:inbox",
+    "node.advisor-consultation": "lucide:messages-square",
+    "node.advisory-synthesis": "lucide:combine",
+    "node.plan-drafting": "lucide:notebook-pen",
+    "node.plan-decision": "lucide:circle-check",
+    "node.execution-kickoff": "lucide:play",
+    "node.implementation": "lucide:wrench",
+    "node.execution-review": "lucide:shield-check",
+    "node.quality-validation": "lucide:binoculars",
+    "node.security-validation": "lucide:radar",
+    "node.completion": "lucide:circle-check-big",
+    "brand": "lucide:compass",
+    "role.operator": "lucide:ship-wheel",
+    "role.governance": "lucide:anchor",
+    "role.coordinator": "lucide:compass",
+    "role.plan-author": "lucide:map",
+    "role.architecture-advisor": "lucide:telescope",
+    "role.risk-advisor": "lucide:life-buoy",
+    "role.systems-advisor": "lucide:coins",
+    "role.usability-advisor": "lucide:sailboat",
+    "role.builder": "lucide:wrench",
+    "role.reviewer": "lucide:shield-check",
+    "role.qa-validator": "lucide:binoculars",
+    "role.security-validator": "lucide:radar",
+    "role.resilience-validator": "lucide:waves",
+    "role.planning-assistant": "lucide:notebook-pen"
+  },
+  "identities": {
+    "operator": {
+      "name": "Captain",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "governance": {
+      "name": "Bridge",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "coordinator": {
+      "name": "First Mate",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "plan-author": {
+      "name": "Navigator",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "architecture-advisor": {
+      "name": "Cartographer",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "risk-advisor": {
+      "name": "Lookout",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "systems-advisor": {
+      "name": "Purser",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "usability-advisor": {
+      "name": "Deckhand",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "builder": {
+      "name": "Chief Engineer",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "reviewer": {
+      "name": "Quartermaster",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "qa-validator": {
+      "name": "Surveyor",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "security-validator": {
+      "name": "Watchkeeper",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "resilience-validator": {
+      "name": "Stormchaser",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    },
+    "planning-assistant": {
+      "name": "Logkeeper",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "A member of the crew, keeping the voyage purposeful and the handoff clear."
+    }
+  },
+  "copy": {
+    "overview.welcome": "Clear intent. Observable progress.",
+    "planning.emptyTitle": "Start with an Idea",
+    "planning.emptyDescription": "Describe the outcome you want. Work through the details, then turn the conversation into a plan.",
+    "agents.heading": "The Crew",
+    "appearance.description": "Choose the world your work lives in.",
+    "workOrder.singular": "Mission",
+    "workOrder.plural": "Missions",
+    "brand.tagline": "A steady course. A capable crew."
+  },
+  "artwork": {},
+  "assets": {}
+}

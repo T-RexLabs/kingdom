@@ -581,16 +581,16 @@ func TestWorkflowSeedIncludesCanonicalRoleFamilies(t *testing.T) {
 	}
 
 	for _, classID := range []string{
-		"decree_intake",
+		"work_intake",
 		"advisor_consultation",
 		"advisory_synthesis",
 		"plan_drafting",
-		"king_plan_decision",
+		"plan_decision",
 		"execution_kickoff",
 		"delegated_execution",
 		"execution_review",
 		"validation_gates",
-		"royal_closure",
+		"completion",
 	} {
 		if _, ok := nodeClasses[classID]; !ok {
 			t.Fatalf("expected workflow seed to include node class %q", classID)
@@ -598,10 +598,10 @@ func TestWorkflowSeedIncludesCanonicalRoleFamilies(t *testing.T) {
 	}
 
 	for _, roleID := range []string{
-		"builder-berserker",
-		"reviewer-shieldmaiden",
-		"intelligence-qa-scout",
-		"intelligence-nightraven",
+		"builder",
+		"reviewer",
+		"qa-validator",
+		"security-validator",
 	} {
 		if _, ok := roles[roleID]; !ok {
 			t.Fatalf("expected workflow seed to include role %q", roleID)
@@ -609,7 +609,7 @@ func TestWorkflowSeedIncludesCanonicalRoleFamilies(t *testing.T) {
 	}
 }
 
-func TestWorkflowSeedUsesSingleBuilderWithShieldmaidenReviewStage(t *testing.T) {
+func TestWorkflowSeedUsesSingleBuilderWithReviewerReviewStage(t *testing.T) {
 	t.Parallel()
 
 	raw, err := bootstrapassets.ReadWorkflowSeed(defaultWorkflowSeedName)
@@ -634,51 +634,51 @@ func TestWorkflowSeedUsesSingleBuilderWithShieldmaidenReviewStage(t *testing.T) 
 	}
 
 	delegatedExecutionNodes := 0
-	hasShieldmaidenReviewNode := false
-	hasLegacyShieldmaidenExecution := false
+	hasReviewerReviewNode := false
+	hasLegacyReviewerExecution := false
 	for _, node := range seed.Nodes {
 		if node.NodeClass == "delegated_execution" {
 			delegatedExecutionNodes++
 		}
-		if node.NodeID == "execution_review_shieldmaiden" && node.NodeClass == "execution_review" && node.RequiredRole == "reviewer-shieldmaiden" {
-			hasShieldmaidenReviewNode = true
+		if node.NodeID == "execution_review" && node.NodeClass == "execution_review" && node.RequiredRole == "reviewer" {
+			hasReviewerReviewNode = true
 		}
 		if node.NodeID == "delegated_execution_shieldmaiden" {
-			hasLegacyShieldmaidenExecution = true
+			hasLegacyReviewerExecution = true
 		}
 	}
 
 	if delegatedExecutionNodes != 1 {
 		t.Fatalf("expected exactly one delegated_execution node, got %d", delegatedExecutionNodes)
 	}
-	if !hasShieldmaidenReviewNode {
-		t.Fatal("expected execution_review_shieldmaiden review node with reviewer-shieldmaiden role")
+	if !hasReviewerReviewNode {
+		t.Fatal("expected execution_review review node with reviewer role")
 	}
-	if hasLegacyShieldmaidenExecution {
+	if hasLegacyReviewerExecution {
 		t.Fatal("expected delegated_execution_shieldmaiden legacy builder node to be removed")
 	}
 
-	hasKickoffToBerserker := false
-	hasBerserkerToReview := false
+	hasKickoffToBuilder := false
+	hasBuilderToReview := false
 	hasReviewToQA := false
-	hasReviewToNightraven := false
+	hasReviewToSecurityValidator := false
 	for _, edge := range seed.Edges {
-		if edge.From == "execution_kickoff" && edge.To == "delegated_execution_berserker" && edge.On == "success" {
-			hasKickoffToBerserker = true
+		if edge.From == "execution_kickoff" && edge.To == "implementation" && edge.On == "success" {
+			hasKickoffToBuilder = true
 		}
-		if edge.From == "delegated_execution_berserker" && edge.To == "execution_review_shieldmaiden" && edge.On == "success" {
-			hasBerserkerToReview = true
+		if edge.From == "implementation" && edge.To == "execution_review" && edge.On == "success" {
+			hasBuilderToReview = true
 		}
-		if edge.From == "execution_review_shieldmaiden" && edge.To == "validation_gates_qa_scout" && edge.On == "success" {
+		if edge.From == "execution_review" && edge.To == "quality_validation" && edge.On == "success" {
 			hasReviewToQA = true
 		}
-		if edge.From == "execution_review_shieldmaiden" && edge.To == "validation_gates_nightraven" && edge.On == "success" {
-			hasReviewToNightraven = true
+		if edge.From == "execution_review" && edge.To == "security_validation" && edge.On == "success" {
+			hasReviewToSecurityValidator = true
 		}
 	}
 
-	if !hasKickoffToBerserker || !hasBerserkerToReview || !hasReviewToQA || !hasReviewToNightraven {
-		t.Fatalf("expected single-builder review edges (kickoff->berserker=%t berserker->review=%t review->qa=%t review->nightraven=%t)", hasKickoffToBerserker, hasBerserkerToReview, hasReviewToQA, hasReviewToNightraven)
+	if !hasKickoffToBuilder || !hasBuilderToReview || !hasReviewToQA || !hasReviewToSecurityValidator {
+		t.Fatalf("expected single-builder review edges (kickoff->berserker=%t berserker->review=%t review->qa=%t review->nightraven=%t)", hasKickoffToBuilder, hasBuilderToReview, hasReviewToQA, hasReviewToSecurityValidator)
 	}
 }
 
@@ -717,13 +717,13 @@ func TestInitScaffoldIncludesManagedOpenCodeAgentProfiles(t *testing.T) {
 	for _, rel := range []string{
 		filepath.Join(".kingdom", "opencode", "agents", "advisor.md"),
 		filepath.Join(".kingdom", "opencode", "agents", "builder.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "chancellor.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "council.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "king.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "nightraven.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "qa_scout.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "coordinator.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "plan-author.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "governance.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "security-validator.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "qa-validator.md"),
 		filepath.Join(".kingdom", "opencode", "agents", "reviewer.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "tester.md"),
+		filepath.Join(".kingdom", "opencode", "agents", "resilience-validator.md"),
 	} {
 		if _, err := os.Stat(filepath.Join(projectRoot, rel)); err != nil {
 			t.Fatalf("expected managed opencode agent profile %s: %v", rel, err)
@@ -2037,7 +2037,7 @@ func TestReadInstallConfigRejectsUnknownFields(t *testing.T) {
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n"
+		"operator:\n  actor_id: summon-system\n  role_id: operator\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}

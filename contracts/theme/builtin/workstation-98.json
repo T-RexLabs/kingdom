@@ -1,0 +1,324 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "workstation-98",
+  "version": "1.0.0",
+  "name": "Workstation 98",
+  "description": "A warm sepia desktop for a dependable corporate team.",
+  "colorScheme": "light",
+  "palette": {
+    "accent": "#5a3e2b",
+    "canvas": "#e9e1d2",
+    "surface": "#d8cbb5",
+    "text": "#332c24"
+  },
+  "tokens": {
+    "accent.base": "#5a3e2b",
+    "accent.foreground": "#ffffff",
+    "accent.hover": "#553c2a",
+    "accent.pressed": "#6e5542",
+    "accent.subtle": "#c9baa4",
+    "border.default": "#b4a895",
+    "border.strong": "#655d52",
+    "canvas": "#e9e1d2",
+    "chart.axis": "#4a443c",
+    "chart.category1": "#5a3e2b",
+    "chart.category2": "#3671c2",
+    "chart.category3": "#208059",
+    "chart.category4": "#8561ab",
+    "chart.category5": "#9a681a",
+    "chart.category6": "#a5568c",
+    "chart.category7": "#2b7d80",
+    "chart.category8": "#c04a52",
+    "chart.grid": "#bfb39f",
+    "code.background": "#e9e1d2",
+    "code.foreground": "#332c24",
+    "control.disabledBackground": "#e1d6c4",
+    "control.disabledForeground": "#867c6d",
+    "dag.edge": "#787166",
+    "dag.edgeActive": "#5a3e2b",
+    "dag.edgeCompleted": "#5a3e2b",
+    "dag.nodeActiveBackground": "#cbbda7",
+    "focus.offset": "#d8cbb5",
+    "focus.ring": "#5a3e2b",
+    "selection.background": "#5a3e2b",
+    "selection.foreground": "#ffffff",
+    "status.attention.background": "#d8c5a7",
+    "status.attention.border": "#9a681a",
+    "status.attention.foreground": "#714c13",
+    "status.cancelled.background": "#d2c2b7",
+    "status.cancelled.border": "#8561ab",
+    "status.cancelled.foreground": "#60477c",
+    "status.failed.background": "#d9bfac",
+    "status.failed.border": "#c04a52",
+    "status.failed.foreground": "#89353a",
+    "status.neutral.background": "#cfc4b2",
+    "status.neutral.border": "#67737b",
+    "status.neutral.foreground": "#4a5258",
+    "status.rework.background": "#d6c1b3",
+    "status.rework.border": "#a5568c",
+    "status.rework.foreground": "#763e65",
+    "status.running.background": "#c9c5bb",
+    "status.running.border": "#3671c2",
+    "status.running.foreground": "#27518b",
+    "status.succeeded.background": "#c6c7ae",
+    "status.succeeded.border": "#208059",
+    "status.succeeded.foreground": "#175c40",
+    "surface.base": "#d8cbb5",
+    "surface.elevated": "#d1c4ae",
+    "surface.inset": "#fffaf0",
+    "surface.overlay": "#ccc0ab",
+    "text.inverse": "#ffffff",
+    "text.primary": "#332c24",
+    "text.secondary": "#4a443c",
+    "text.subtle": "#4a443e",
+    "tool.background": "#dcd1bc",
+    "tool.border": "#b4a895"
+  },
+  "typography": {
+    "body": "bundled:classic-sans",
+    "display": "bundled:classic-sans",
+    "mono": "bundled:system-mono",
+    "bodyWeight": 400,
+    "headingWeight": 700
+  },
+  "surfaces": {
+    "radius": 0,
+    "borderWidth": 2,
+    "elevation": "flat",
+    "ornamentation": "minimal",
+    "chrome": "classic",
+    "iconRendering": "original"
+  },
+  "icons": {
+    "brand": "asset:workstation",
+    "nav.overview": "asset:workstation",
+    "nav.planning": "asset:conversation",
+    "nav.runs": "asset:network",
+    "nav.agents": "asset:personnel",
+    "nav.analytics": "asset:chart",
+    "nav.connections": "asset:connection",
+    "nav.appearance": "asset:palette",
+    "work-order": "asset:document",
+    "node.work-intake": "asset:inbox",
+    "node.advisor-consultation": "asset:conversation",
+    "node.advisory-synthesis": "asset:merge",
+    "node.plan-drafting": "asset:clipboard",
+    "node.plan-decision": "asset:approve",
+    "node.execution-kickoff": "asset:network",
+    "node.implementation": "asset:code",
+    "node.execution-review": "asset:review",
+    "node.quality-validation": "asset:checklist",
+    "node.security-validation": "asset:lock",
+    "node.completion": "asset:approve",
+    "role.operator": "asset:personnel",
+    "role.governance": "asset:briefcase",
+    "role.coordinator": "asset:network",
+    "role.plan-author": "asset:clipboard",
+    "role.architecture-advisor": "asset:architecture",
+    "role.risk-advisor": "asset:warning",
+    "role.systems-advisor": "asset:server",
+    "role.usability-advisor": "asset:pointer",
+    "role.builder": "asset:code",
+    "role.reviewer": "asset:review",
+    "role.qa-validator": "asset:checklist",
+    "role.security-validator": "asset:lock",
+    "role.resilience-validator": "asset:pulse",
+    "role.planning-assistant": "asset:conversation"
+  },
+  "identities": {
+    "operator": {
+      "name": "Workstation User",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "governance": {
+      "name": "Managing Director",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "coordinator": {
+      "name": "Project Manager",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "plan-author": {
+      "name": "Business Analyst",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "architecture-advisor": {
+      "name": "Systems Architect",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "risk-advisor": {
+      "name": "Risk Analyst",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "systems-advisor": {
+      "name": "Systems Engineer",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "usability-advisor": {
+      "name": "Usability Specialist",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "builder": {
+      "name": "Software Engineer",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "reviewer": {
+      "name": "Code Reviewer",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "qa-validator": {
+      "name": "Quality Assurance",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "security-validator": {
+      "name": "Security Analyst",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "resilience-validator": {
+      "name": "Reliability Engineer",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    },
+    "planning-assistant": {
+      "name": "Planning Consultant",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "A member of the workstation team, keeping projects organized and work dependable."
+    }
+  },
+  "copy": {
+    "overview.welcome": "Welcome to your workstation.",
+    "planning.emptyTitle": "Start a Project Brief",
+    "planning.emptyDescription": "Describe the result you need. Your planning consultant will help turn it into a clear brief.",
+    "agents.heading": "The Project Team",
+    "appearance.description": "Choose the look of your workstation.",
+    "workOrder.singular": "Work Order",
+    "workOrder.plural": "Work Orders",
+    "brand.tagline": "Your team. Your workstation."
+  },
+  "artwork": {},
+  "assets": {
+    "workstation": {
+      "path": "assets/workstation-98/workstation.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "document": {
+      "path": "assets/workstation-98/document.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "clipboard": {
+      "path": "assets/workstation-98/clipboard.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "network": {
+      "path": "assets/workstation-98/network.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "personnel": {
+      "path": "assets/workstation-98/personnel.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "chart": {
+      "path": "assets/workstation-98/chart.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "connection": {
+      "path": "assets/workstation-98/connection.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "palette": {
+      "path": "assets/workstation-98/palette.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "briefcase": {
+      "path": "assets/workstation-98/briefcase.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "architecture": {
+      "path": "assets/workstation-98/architecture.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "warning": {
+      "path": "assets/workstation-98/warning.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "server": {
+      "path": "assets/workstation-98/server.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "pointer": {
+      "path": "assets/workstation-98/pointer.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "code": {
+      "path": "assets/workstation-98/code.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "review": {
+      "path": "assets/workstation-98/review.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "checklist": {
+      "path": "assets/workstation-98/checklist.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "lock": {
+      "path": "assets/workstation-98/lock.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "pulse": {
+      "path": "assets/workstation-98/pulse.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "conversation": {
+      "path": "assets/workstation-98/conversation.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "inbox": {
+      "path": "assets/workstation-98/inbox.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "merge": {
+      "path": "assets/workstation-98/merge.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    },
+    "approve": {
+      "path": "assets/workstation-98/approve.svg",
+      "mediaType": "image/svg+xml",
+      "license": "Original Kingdom artwork."
+    }
+  }
+}

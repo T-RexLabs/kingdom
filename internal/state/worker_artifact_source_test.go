@@ -70,7 +70,7 @@ func (c *generatedWorkerArtifacts) Close() error {
 }
 
 func streamedWorkerRequest(source WorkerArtifactSource) WorkerOutputValidationRequest {
-	return WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "streamed-attempt", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"streamed artifacts","payload_json":{},"artifacts":[],"error_reason":null}`), Artifacts: source}
+	return WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "streamed-attempt", ProducerRole: "governance", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"streamed artifacts","payload_json":{},"artifacts":[],"error_reason":null}`), Artifacts: source}
 }
 
 func TestWorkerArtifactSourceRollsBackLateMetadataCloseSchemaAndHashFailures(t *testing.T) {

@@ -46,7 +46,7 @@ func (o *orchestrationLoop) ensureSessionLease(ctx context.Context, sessionID, a
 		return nil
 	}
 	if strings.TrimSpace(agentID) == "" {
-		agentID = deterministicAgentIDForRole("king")
+		agentID = deterministicAgentIDForRole("governance")
 	}
 
 	nowTime, err := time.Parse(time.RFC3339, now)

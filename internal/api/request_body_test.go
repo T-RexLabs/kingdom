@@ -38,7 +38,7 @@ func TestRequestSpoolReplaysBeyondFormerLimitsAndCleansUp(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusNoContent)
 		}))
-		req := httptest.NewRequest(http.MethodPost, "/decrees", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, "/work-orders", bytes.NewReader(body))
 		req.ContentLength = length
 		res := httptest.NewRecorder()
 		handler.ServeHTTP(res, req)
@@ -56,7 +56,7 @@ func TestOpenAPIValidatorStreamsLargeContentAndPreservesRawBytes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	body := []byte(`{ "decree_title":"test", "decree_text":"` + string(bytes.Repeat([]byte("x"), (17<<20)+1)) + `" }`)
+	body := []byte(`{ "work_order_title":"test", "work_order_text":"` + string(bytes.Repeat([]byte("x"), (17<<20)+1)) + `" }`)
 	called := false
 	handler := validator(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
@@ -67,7 +67,7 @@ func TestOpenAPIValidatorStreamsLargeContentAndPreservesRawBytes(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
-	req := httptest.NewRequest(http.MethodPost, "/decrees", bytes.NewReader(body))
+	req := httptest.NewRequest(http.MethodPost, "/work-orders", bytes.NewReader(body))
 	req.ContentLength = -1
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "large-content", time.Now()))
@@ -130,7 +130,7 @@ func TestRequestSpoolFailureAndCancellationRemoveStagingBeforeMutation(t *testin
 	for _, canceled := range []bool{false, true} {
 		called := false
 		handler := spoolRequestBody(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { called = true }))
-		req := httptest.NewRequest(http.MethodPost, "/decrees", io.MultiReader(bytes.NewReader([]byte("partial")), requestSpoolFailure{}))
+		req := httptest.NewRequest(http.MethodPost, "/work-orders", io.MultiReader(bytes.NewReader([]byte("partial")), requestSpoolFailure{}))
 		if canceled {
 			ctx, cancel := context.WithCancel(req.Context())
 			cancel()

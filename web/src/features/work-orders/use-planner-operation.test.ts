@@ -1,0 +1,159 @@
+import { QueryClient } from "@tanstack/react-query";
+import { describe, expect, it } from "vitest";
+import type { AcpRun, AcpRunEvent, PlanningSessionDetail } from "@/api/hooks";
+import { plannerKeys } from "./planner-query-keys";
+import { patchPlannerTerminalCaches, reconcileTerminalOperationSnapshot } from "./use-planner-operation";
+
+function buildSession(overrides: Partial<PlanningSessionDetail> = {}): PlanningSessionDetail {
+  return {
+    planning_session_id: "ps_1",
+    acp_session_id: "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
+    title: "Planner kickoff",
+    title_state: "custom",
+    auto_title_eligible: false,
+    lifecycle_state: "active",
+    conversation_state: "processing",
+    active_leaf_message_id: "msg_old",
+    current_run_id: "run_1",
+    current_draft_id: undefined,
+    context_snapshot_id: "snap_1",
+    created_at: "2026-04-21T10:00:00Z",
+    updated_at: "2026-04-21T10:05:00Z",
+    project_root: "/tmp/project",
+    model_selection: { model: "github-copilot/gpt-5.4" },
+    ...overrides,
+    external_sources: overrides.external_sources ?? [],
+  };
+}
+
+function buildRun(overrides: Partial<AcpRun> = {}): AcpRun {
+  return {
+    run_id: "run_1",
+    session_id: "8cfa85f2-f95a-53ec-ae58-2c46f21495dc",
+    planning_session_id: "ps_1",
+    agent_name: "planner-reply",
+    status: "completed",
+    created_at: "2026-04-21T10:00:00Z",
+    finished_at: "2026-04-21T10:05:00Z",
+    ...overrides,
+  };
+}
+
+function buildEvent(overrides: Partial<AcpRunEvent> = {}): AcpRunEvent {
+  return {
+    event_id: "run_1:9",
+    run_id: "run_1",
+    seq: 9,
+    type: "run.completed",
+    payload: {
+      planning_message_id: "msg_new",
+      result_ref: "msg_new",
+    },
+    created_at: "2026-04-21T10:05:00Z",
+    ...overrides,
+  };
+}
+
+describe("patchPlannerTerminalCaches", () => {
+  it("unlocks the next selectable answer without waiting for a full refresh", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.messages("ps_1"), { pages: [], pageParams: [] });
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(qc, buildRun(), buildEvent());
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    const messagesState = qc.getQueryState(plannerKeys.messages("ps_1"));
+    const activityState = qc.getQueryState(plannerKeys.activity("run_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+    expect(detail?.active_leaf_message_id).toBe("msg_new");
+    expect(messagesState?.isInvalidated).toBe(true);
+    expect(activityState?.isInvalidated).toBe(true);
+  });
+
+  it("invalidates the cached plan when formalize completes live", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.plan("ps_1"), { work_order_text: "Old draft" });
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ agent_name: "planner-formalize" }),
+      buildEvent({
+        payload: {
+          planning_draft_id: "draft_new",
+          result_ref: "draft_new",
+        },
+      }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    const planState = qc.getQueryState(plannerKeys.plan("ps_1"));
+    const activityState = qc.getQueryState(plannerKeys.activity("run_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+    expect(detail?.current_draft_id).toBe("draft_new");
+    expect(planState?.isInvalidated).toBe(true);
+    expect(activityState?.isInvalidated).toBe(true);
+  });
+
+  it("clears current_run_id when a reply fails live", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ status: "failed" }),
+      buildEvent({ type: "run.failed", payload: { error: "planner failed" } }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+  });
+
+  it("clears current_title_run_id when title generation is cancelled", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession({ current_run_id: undefined, current_title_run_id: "run_1" }));
+    qc.setQueryData(plannerKeys.activity("run_1"), { items: [] });
+
+    patchPlannerTerminalCaches(
+      qc,
+      buildRun({ agent_name: "planner-generate-title", status: "cancelled" }),
+      buildEvent({ type: "run.cancelled", payload: { reason: "cancelled" } }),
+    );
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.current_title_run_id).toBeUndefined();
+  });
+});
+
+describe("reconcileTerminalOperationSnapshot", () => {
+  it("reconciles a completion first observed from the canonical run query", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"), buildSession());
+    qc.setQueryData(plannerKeys.messages("ps_1"), { pages: [], pageParams: [] });
+
+    reconcileTerminalOperationSnapshot(qc, buildRun({ status: "completed" }));
+
+    const detail = qc.getQueryData<PlanningSessionDetail>(plannerKeys.detail("ps_1"));
+    expect(detail?.conversation_state).toBe("ready");
+    expect(detail?.current_run_id).toBeUndefined();
+    expect(qc.getQueryState(plannerKeys.messages("ps_1"))?.isInvalidated).toBe(true);
+  });
+});
+
+
+describe("late planner completion ownership", () => {
+  it("cannot clear a newer operation or move its active branch during replay", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(plannerKeys.detail("ps_1"), buildSession({ current_run_id: "new-run", active_leaf_message_id: "new-leaf" }));
+    reconcileTerminalOperationSnapshot(qc, buildRun());
+    patchPlannerTerminalCaches(qc, buildRun(), buildEvent());
+    expect(qc.getQueryData(plannerKeys.detail("ps_1"))).toMatchObject({ current_run_id: "new-run", active_leaf_message_id: "new-leaf", conversation_state: "processing" });
+  });
+});

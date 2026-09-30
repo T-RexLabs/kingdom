@@ -12,7 +12,7 @@ import (
 	"kingdom/internal/state"
 )
 
-func projectDecreeForNode(_ string, text string) string {
+func projectWorkOrderForNode(_ string, text string) string {
 	return strings.TrimSpace(stripControlCommandLines(text))
 }
 func joinInstructionBlocks(parts ...string) string {
@@ -40,10 +40,10 @@ func formatExecutionFailureContexts(contexts []executionFailureContext) string {
 }
 
 // Independent string oracle for exact section/stripping compatibility tests.
-func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, decreeText, delegatorRoleID, approvedPlan, delegatorInstruction, priorWithholdContext string) string {
+func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, workOrderText, delegatorRoleID, approvedPlan, delegatorInstruction, priorWithholdContext string) string {
 	classID := resolvedNodeClass(nodeID, nodeClass)
 	frame := o.buildNodePromptFrame(ctx, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRoleID)
-	blocks := []string{renderPromptSection("Current Assignment", frame.Assignment), renderPromptSection("Current Decree", firstNonEmptyString(projectDecreeForNode(classID, decreeText), "No decree text was provided."))}
+	blocks := []string{renderPromptSection("Current Assignment", frame.Assignment), renderPromptSection("Current Work Order", firstNonEmptyString(projectWorkOrderForNode(classID, workOrderText), "No work order text was provided."))}
 	if plan := stripControlCommandLines(approvedPlan); plan != "" && classID != workflow.NodeClassDelegatedExecution {
 		blocks = append(blocks, renderPromptSection("Approved Plan", plan))
 	}

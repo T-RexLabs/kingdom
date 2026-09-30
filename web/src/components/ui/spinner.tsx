@@ -5,7 +5,7 @@ export function Spinner({ className }: { className?: string }) {
     <div
       aria-hidden="true"
       className={cn(
-        "animate-spin rounded-full border-2 border-gold border-t-transparent",
+        "animate-spin rounded-full border-2 border-accent border-t-transparent",
         className,
       )}
     />

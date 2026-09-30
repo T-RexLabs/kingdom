@@ -487,7 +487,7 @@ func (r *AgentRegistry) ListRunAgents(ctx context.Context, runID string) ([]RunP
 		JOIN agents a ON a.agent_id = rp.agent_id
 		LEFT JOIN run_participant_status rps ON rps.agent_id = rp.agent_id
 		WHERE rp.run_id = ?
-		  AND rp.role_id != 'allfather'
+		  AND rp.role_id != 'operator'
 		ORDER BY rp.spawn_depth ASC, rp.first_seen_at ASC, rp.agent_id ASC`,
 		runID,
 		runID,
@@ -532,7 +532,7 @@ func CountRunAgentsWithQuerier(ctx context.Context, q agentRegistryReadQuerier, 
 		`SELECT COUNT(1)
 		 FROM run_participants
 		 WHERE run_id = ?
-		   AND role_id != 'allfather'`,
+		   AND role_id != 'operator'`,
 		runID,
 	).Scan(&count)
 	if err != nil {
@@ -569,7 +569,7 @@ func (r *AgentRegistry) ListAllAgents(ctx context.Context) ([]AgentRecord, error
 			a.created_at
 		FROM agents a
 		JOIN roles role ON role.role_id = a.role_id
-		WHERE a.role_id != 'allfather'
+		WHERE a.role_id != 'operator'
 		ORDER BY a.spawn_depth ASC, a.created_at ASC, a.agent_id ASC`,
 	)
 	if err != nil {

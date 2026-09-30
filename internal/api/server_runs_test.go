@@ -118,7 +118,7 @@ func TestServerTimelinePreservesRunEventOrderingAcrossAttempts(t *testing.T) {
 			Seq:             attemptSeq,
 			PayloadJSON:     string(payload),
 			ActorID:         "actor-1",
-			RoleID:          "chancellor",
+			RoleID:          "coordinator",
 			AuthoritySource: "test.seed",
 			ReasonCode:      "internal_error",
 			ReasonText:      "seed",
@@ -171,23 +171,23 @@ func TestServerTimelineIncludesAutomaticRetryWhenItIsScheduled(t *testing.T) {
 	now := time.Date(2026, 3, 12, 14, 30, 0, 0, time.UTC)
 	dueAt := now.Add(5 * time.Minute)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = ?`, runID)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_timeline_retry', 'council-member', 'Council', 'busy', NULL, 0, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES (?, ?, 'plan_drafting', 1, 1, 'running', 'council-member', 'agent_timeline_retry', 1, ?)`, sourceNodeRunID, runID, now.Format(time.RFC3339Nano))
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_timeline_retry', 'plan-author', 'Council', 'busy', NULL, 0, ?, ?)`, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES (?, ?, 'plan_drafting', 1, 1, 'running', 'plan-author', 'agent_timeline_retry', 1, ?)`, sourceNodeRunID, runID, now.Format(time.RFC3339Nano))
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', 'server_response', ?, ?)`, sourceAttemptID, runID, sourceNodeRunID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 
-	queued, scheduled, err := state.NewTransitionService(db, nil).RecordAutomaticDecreeRetry(context.Background(), state.AutomaticDecreeRetryRecordRequest{
+	queued, scheduled, err := state.NewTransitionService(db, nil).RecordAutomaticWorkOrderRetry(context.Background(), state.AutomaticWorkOrderRetryRecordRequest{
 		Transition: state.TransitionRequest{
 			TransitionID: "tr_timeline_retry_failure", EventID: "evt_timeline_retry_failure", RunID: runID,
 			NodeRunID: sql.NullString{String: sourceNodeRunID, Valid: true}, Entity: state.EntityTypeNode, FromState: "running", ToState: "failed",
-			ActorID: "runtime_orchestrator", RoleID: "council-member", AuthoritySource: "runtime.orchestrator", ReasonCode: "timeout", ReasonText: "provider timed out",
+			ActorID: "runtime_orchestrator", RoleID: "plan-author", AuthoritySource: "runtime.orchestrator", ReasonCode: "timeout", ReasonText: "provider timed out",
 			CorrelationID: "corr_timeline_retry", CausationID: "caus_timeline_retry", OccurredAt: now.Format(time.RFC3339Nano), AttemptID: sourceAttemptID,
 			SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 1, PayloadJSON: `{}`,
 		},
 		Decision: state.RetryDecisionCreateRequest{
-			DecisionID: "retry_timeline_source", SubjectKind: state.RetrySubjectKindDecreeAttempt, RunID: runID, NodeID: "plan_drafting", NodeRunID: sourceNodeRunID,
+			DecisionID: "retry_timeline_source", SubjectKind: state.RetrySubjectKindWorkOrderAttempt, RunID: runID, NodeID: "plan_drafting", NodeRunID: sourceNodeRunID,
 			SourceAttemptID: sourceAttemptID, PolicyID: "retry-policy-mvp-v1", RetryClass: "transient_transport_provider_session", ErrorCode: "timeout",
 			OperatorText: "The provider timed out and will retry automatically.", Decision: state.RetryDecisionRetry, RetryIndex: 1, MaxRetries: 3,
-			PolicyDelay: 5 * time.Minute, DueAt: dueAt, CreatedAt: now, EscalationTarget: "chancellor",
+			PolicyDelay: 5 * time.Minute, DueAt: dueAt, CreatedAt: now, EscalationTarget: "coordinator",
 		},
 	})
 	if err != nil || !scheduled {
@@ -229,8 +229,8 @@ func TestServerTimelineIncludesMailboxRevisionsForSameLogicalMessage(t *testing.
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_mailbox_revision_from', 'council-member', 'Council', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_mailbox_revision_to', 'king', 'King', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_mailbox_revision_from', 'plan-author', 'Council', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_mailbox_revision_to', 'governance', 'Governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	mailbox := state.NewMailboxStore(db, nil)
 	messageID := "msg_mailbox_timeline_revision"
@@ -310,7 +310,7 @@ func TestServerListRunPlanReviewsReturnsLatestFirst(t *testing.T) {
 		olderPlanMessageID,
 		runID,
 		"agent_council_"+runID,
-		"agent_king_"+runID,
+		"agent_governance_"+runID,
 		"thread_"+runID+"_plan_old",
 		`{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Older plan revision"}`,
 		"2026-03-01T12:00:00Z",
@@ -318,8 +318,8 @@ func TestServerListRunPlanReviewsReturnsLatestFirst(t *testing.T) {
 	seedAttemptExecution(t, db, runID+":plan_drafting:historic", runID, "nr_plan_rework_plan_"+runID, "2026-03-01T12:00:00Z")
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES (?, ?, 'plan_drafting', ?, ?, ?, ?, 'plan_revision', 'Older plan revision', '2026-03-01T12:00:00Z')`, olderPlanRevisionID, runID, "nr_plan_rework_plan_"+runID, runID+":plan_drafting:historic", "agent_council_"+runID, olderPlanMessageID)
 	olderRunPlanRevisionID := mustRefreshRunPlanRevision(t, db, runID).PlanRevisionID
-	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_old', ?, ?, 'approved', 'Approved baseline direction.', 'god-operator', 'allfather', NULL, NULL, '2026-03-01T12:01:00Z')`, runID, olderRunPlanRevisionID)
-	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_new', ?, ?, 'needs_rework', 'Tighten acceptance criteria.', 'god-operator', 'allfather', 2, 2, '2026-03-01T12:02:00Z')`, runID, currentPlanRevisionID)
+	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_old', ?, ?, 'approved', 'Approved baseline direction.', 'god-operator', 'operator', NULL, NULL, '2026-03-01T12:01:00Z')`, runID, olderRunPlanRevisionID)
+	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_new', ?, ?, 'needs_rework', 'Tighten acceptance criteria.', 'god-operator', 'operator', 2, 2, '2026-03-01T12:02:00Z')`, runID, currentPlanRevisionID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -352,15 +352,15 @@ func TestServerListRunGovernanceDecisionsReturnsUnifiedNewestFirstHistory(t *tes
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_hist_from', 'council-member', 'Council', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_hist_to', 'king', 'King', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_hist_from', 'plan-author', 'Council', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_hist_to', 'governance', 'Governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_hist', ?, 'agent_hist_from', 'agent_hist_to', 'thread_hist', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Historic plan"}', '2026-03-01T12:00:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_hist', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_hist_from', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_hist', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_hist_from', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, runID)
 	seedAttemptExecution(t, db, runID+":plan_drafting:hist", runID, "nr_plan_hist", "2026-03-01T12:00:00Z")
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_hist', ?, 'plan_drafting', 'nr_plan_hist', ?, 'agent_hist_from', 'msg_plan_hist', 'plan_revision', 'Historic plan', '2026-03-01T12:00:00Z')`, runID, runID+":plan_drafting:hist")
 	historicPlanRevisionID := mustRefreshRunPlanRevision(t, db, runID).PlanRevisionID
-	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_hist', ?, ?, 'needs_rework', 'Narrow the scope.', 'god-operator', 'allfather', 2, 2, '2026-03-01T12:01:00Z')`, runID, historicPlanRevisionID)
-	mustExecSQL(t, db, `INSERT INTO run_final_reviews (final_review_id, run_id, decision, feedback_markdown, actor_id, role_id, queued_plan_attempt, created_at) VALUES ('final_review_hist', ?, 'confirmed', '', 'god-operator', 'allfather', NULL, '2026-03-01T12:02:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_hist', ?, ?, 'needs_rework', 'Narrow the scope.', 'god-operator', 'operator', 2, 2, '2026-03-01T12:01:00Z')`, runID, historicPlanRevisionID)
+	mustExecSQL(t, db, `INSERT INTO run_final_reviews (final_review_id, run_id, decision, feedback_markdown, actor_id, role_id, queued_plan_attempt, created_at) VALUES ('final_review_hist', ?, 'confirmed', '', 'god-operator', 'operator', NULL, '2026-03-01T12:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -399,13 +399,13 @@ func TestServerListRunsOrdersNewestFirstAndHonorsLimit(t *testing.T) {
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-list-1', 'First', 'First', '{}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-list-2', 'Second', 'Second', '{}', '2026-03-02T10:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-1', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-2', 'royal-decree-v2', 'v2', '{"version":"v2","workflow_id":"royal-decree-v2","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T10:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-list-1', 'First', 'First', '{}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-list-2', 'Second', 'Second', '{}', '2026-03-02T10:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-1', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-2', 'work-order-v2', 'v2', '{"version":"v2","workflow_id":"work-order-v2","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T10:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-old', NULL, 'decree-list-1', 'wfdef-list-1', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-new', NULL, 'decree-list-2', 'wfdef-list-2', 'running', 'draft', 0, 1, '2026-03-02T10:10:00Z', '2026-03-02T10:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-old', NULL, 'work-order-list-1', 'wfdef-list-1', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-new', NULL, 'work-order-list-2', 'wfdef-list-2', 'running', 'draft', 0, 1, '2026-03-02T10:10:00Z', '2026-03-02T10:20:00Z')`)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -430,8 +430,8 @@ func TestServerListRunsOrdersNewestFirstAndHonorsLimit(t *testing.T) {
 	if payload.Items[0].RunId != "run-new" {
 		t.Fatalf("expected newest run first, got %s", payload.Items[0].RunId)
 	}
-	if payload.Items[0].DecreeTitle != "Second" {
-		t.Fatalf("expected decree title Second, got %q", payload.Items[0].DecreeTitle)
+	if payload.Items[0].WorkOrderTitle != "Second" {
+		t.Fatalf("expected work order title Second, got %q", payload.Items[0].WorkOrderTitle)
 	}
 }
 
@@ -440,14 +440,14 @@ func TestServerListRunsSupportsCursorPaginationAndSearch(t *testing.T) {
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-list-search-1', 'Alpha decree', 'Alpha decree', '{}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-list-search-2', 'Bravo decree', 'Bravo decree', '{}', '2026-03-02T10:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-list-search-3', 'Charlie decree', 'Charlie decree', '{}', '2026-03-02T11:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-search-1', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-list-search-1', 'Alpha work order', 'Alpha work order', '{}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-list-search-2', 'Bravo work order', 'Bravo work order', '{}', '2026-03-02T10:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-list-search-3', 'Charlie work order', 'Charlie work order', '{}', '2026-03-02T11:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-list-search-1', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-02T09:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-alpha', NULL, 'decree-list-search-1', 'wfdef-list-search-1', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-bravo', NULL, 'decree-list-search-2', 'wfdef-list-search-1', 'running', 'draft', 0, 1, '2026-03-02T10:10:00Z', '2026-03-02T10:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-charlie', NULL, 'decree-list-search-3', 'wfdef-list-search-1', 'failed', 'approved', 0, 1, '2026-03-02T11:10:00Z', '2026-03-02T11:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-alpha', NULL, 'work-order-list-search-1', 'wfdef-list-search-1', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-bravo', NULL, 'work-order-list-search-2', 'wfdef-list-search-1', 'running', 'draft', 0, 1, '2026-03-02T10:10:00Z', '2026-03-02T10:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-charlie', NULL, 'work-order-list-search-3', 'wfdef-list-search-1', 'failed', 'approved', 0, 1, '2026-03-02T11:10:00Z', '2026-03-02T11:20:00Z')`)
 
 	first := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -514,14 +514,14 @@ func TestServerListRunsSearchRanksRunIDMatchesAheadOfTitleMatches(t *testing.T) 
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-search-rank-1', 'Archived exact run', 'Archived exact run', '{}', '2026-03-01T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-search-rank-2', 'Recent prefix run', 'Recent prefix run', '{}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-search-rank-3', 'run-target incident review', 'run-target incident review', '{}', '2026-03-03T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-search-rank', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-search-rank-1', 'Archived exact run', 'Archived exact run', '{}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-search-rank-2', 'Recent prefix run', 'Recent prefix run', '{}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-search-rank-3', 'run-target incident review', 'run-target incident review', '{}', '2026-03-03T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-search-rank', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-target', NULL, 'decree-search-rank-1', 'wfdef-search-rank', 'succeeded', 'approved', 0, 1, '2026-03-01T09:10:00Z', '2026-03-01T09:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-target-archive', NULL, 'decree-search-rank-2', 'wfdef-search-rank', 'running', 'draft', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-unrelated', NULL, 'decree-search-rank-3', 'wfdef-search-rank', 'failed', 'approved', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-target', NULL, 'work-order-search-rank-1', 'wfdef-search-rank', 'succeeded', 'approved', 0, 1, '2026-03-01T09:10:00Z', '2026-03-01T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-target-archive', NULL, 'work-order-search-rank-2', 'wfdef-search-rank', 'running', 'draft', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-unrelated', NULL, 'work-order-search-rank-3', 'wfdef-search-rank', 'failed', 'approved', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
 
 	first := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -587,12 +587,12 @@ func TestServerListRunsSearchUsesTokenPrefixAndRejectsMiddleSubstrings(t *testin
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-search-prefix-1', 'Older historical run', 'Older historical run', '{}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-search-prefix-2', 'Older archival run', 'Older archival run', '{}', '2026-03-03T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-search-prefix', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-search-prefix-1', 'Older historical run', 'Older historical run', '{}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-search-prefix-2', 'Older archival run', 'Older archival run', '{}', '2026-03-03T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-search-prefix', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-historical', NULL, 'decree-search-prefix-1', 'wfdef-search-prefix', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-archival', NULL, 'decree-search-prefix-2', 'wfdef-search-prefix', 'running', 'draft', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-historical', NULL, 'work-order-search-prefix-1', 'wfdef-search-prefix', 'succeeded', 'approved', 0, 1, '2026-03-02T09:10:00Z', '2026-03-02T09:20:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-archival', NULL, 'work-order-search-prefix-2', 'wfdef-search-prefix', 'running', 'draft', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
 
 	prefixRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -636,14 +636,14 @@ func TestServerListRunsCanFilterPendingManualGovernanceByRecentActivity(t *testi
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-pending-old', 'Pending Old', 'Pending Old', '{}', '2026-03-01T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-pending-new', 'Pending New', 'Pending New', '{}', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-ignored', 'Ignored', 'Ignored', '{}', '2026-03-03T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-pending', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-pending-old', 'Pending Old', 'Pending Old', '{}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-pending-new', 'Pending New', 'Pending New', '{}', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-ignored', 'Ignored', 'Ignored', '{}', '2026-03-03T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-pending', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-pending-old', NULL, 'decree-pending-old', 'wfdef-pending', 'awaiting_human_confirmation', 'approved', 0, 'final:gate-pending-old', 0, 1, '2026-03-01T09:10:00Z', '2026-03-05T11:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-pending-new', NULL, 'decree-pending-new', 'wfdef-pending', 'running', 'awaiting_king_decision', 0, 'plan:gate-pending-new', 0, 1, '2026-03-02T09:10:00Z', '2026-03-05T12:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-ignored', NULL, 'decree-ignored', 'wfdef-pending', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-03T09:10:00Z', '2026-03-05T13:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-pending-old', NULL, 'work-order-pending-old', 'wfdef-pending', 'awaiting_human_confirmation', 'approved', 0, 'final:gate-pending-old', 0, 1, '2026-03-01T09:10:00Z', '2026-03-05T11:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-pending-new', NULL, 'work-order-pending-new', 'wfdef-pending', 'running', 'awaiting_plan_decision', 0, 'plan:gate-pending-new', 0, 1, '2026-03-02T09:10:00Z', '2026-03-05T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-ignored', NULL, 'work-order-ignored', 'wfdef-pending', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-03T09:10:00Z', '2026-03-05T13:00:00Z')`)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -689,9 +689,9 @@ func TestServerListRunsKeepsPlanPendingApprovalKeyStableAcrossProjectionCatchUp(
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-plan-stable', 'Plan Stable', 'Plan Stable', '{}', '2026-03-01T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-plan-stable', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[]}', '2026-03-01T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-plan-stable', NULL, 'decree-plan-stable', 'wfdef-plan-stable', 'running', 'awaiting_king_decision', 0, 'plan:gate-stable', 0, 1, '2026-03-01T09:10:00Z', '2026-03-05T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-plan-stable', 'Plan Stable', 'Plan Stable', '{}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-plan-stable', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[]}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-plan-stable', NULL, 'work-order-plan-stable', 'wfdef-plan-stable', 'running', 'awaiting_plan_decision', 0, 'plan:gate-stable', 0, 1, '2026-03-01T09:10:00Z', '2026-03-05T12:00:00Z')`)
 
 	assertPendingApprovalKey := func() {
 		t.Helper()
@@ -729,16 +729,16 @@ func TestServerListRunsStateFilterKeepsOperatorBucketsNonOverlapping(t *testing.
 
 	handler, db := newAPIServerForTest(t)
 
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-running', 'Running', 'Running', '{}', '2026-03-01T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-plan', 'Plan Wait', 'Plan Wait', '{}', '2026-03-01T09:01:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-final', 'Final Wait', 'Final Wait', '{}', '2026-03-01T09:02:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-auto-final', 'Autonomous Final', 'Autonomous Final', '{}', '2026-03-01T09:03:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-filter', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"kickoff","required_role":"council-member","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-running', 'Running', 'Running', '{}', '2026-03-01T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-plan', 'Plan Wait', 'Plan Wait', '{}', '2026-03-01T09:01:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-final', 'Final Wait', 'Final Wait', '{}', '2026-03-01T09:02:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work-order-auto-final', 'Autonomous Final', 'Autonomous Final', '{}', '2026-03-01T09:03:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef-filter', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"kickoff","required_role":"plan-author","node_class":"execution_kickoff"}],"edges":[]}', '2026-03-01T09:00:00Z')`)
 
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-running', NULL, 'decree-running', 'wfdef-filter', 'running', 'approved', 1, 0, 1, '2026-03-01T09:10:00Z', '2026-03-01T09:10:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-plan', NULL, 'decree-plan', 'wfdef-filter', 'running', 'awaiting_king_decision', 0, 0, 1, '2026-03-01T09:11:00Z', '2026-03-01T09:11:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-final', NULL, 'decree-final', 'wfdef-filter', 'awaiting_human_confirmation', 'approved', 0, 0, 1, '2026-03-01T09:12:00Z', '2026-03-01T09:12:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-auto-final', NULL, 'decree-auto-final', 'wfdef-filter', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-01T09:13:00Z', '2026-03-01T09:13:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-running', NULL, 'work-order-running', 'wfdef-filter', 'running', 'approved', 1, 0, 1, '2026-03-01T09:10:00Z', '2026-03-01T09:10:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-plan', NULL, 'work-order-plan', 'wfdef-filter', 'running', 'awaiting_plan_decision', 0, 0, 1, '2026-03-01T09:11:00Z', '2026-03-01T09:11:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-final', NULL, 'work-order-final', 'wfdef-filter', 'awaiting_human_confirmation', 'approved', 0, 0, 1, '2026-03-01T09:12:00Z', '2026-03-01T09:12:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-auto-final', NULL, 'work-order-auto-final', 'wfdef-filter', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-01T09:13:00Z', '2026-03-01T09:13:00Z')`)
 
 	runningRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -818,7 +818,7 @@ func TestServerGetRunOmitsStalePlanPendingApprovalKeyForTerminalRun(t *testing.T
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'cancelled', plan_state = 'awaiting_king_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate-run-detail', row_version = 7 WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'cancelled', plan_state = 'awaiting_plan_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate-run-detail', row_version = 7 WHERE run_id = ?`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -847,8 +847,8 @@ func TestServerGetRunIncludesPendingSettlementNodeInFailedNodes(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-recovery-pending', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-recovery-pending', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-run-recovery-pending', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-recovery-pending', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-recovery-pending', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-run-recovery-pending', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-run-recovery-pending', ?, 'nr-run-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-run-recovery-pending', 'ses-run-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider terminal response was not clean', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -866,7 +866,7 @@ func TestServerGetRunIncludesPendingSettlementNodeInFailedNodes(t *testing.T) {
 	if len(summary.FailedNodes) != 1 {
 		t.Fatalf("expected pending-settlement node to remain in failed_nodes, got %#v", summary.FailedNodes)
 	}
-	if summary.FailedNodes[0].NodeId != "delegated_execution_berserker" {
+	if summary.FailedNodes[0].NodeId != "implementation" {
 		t.Fatalf("unexpected failed node payload: %#v", summary.FailedNodes[0])
 	}
 }
@@ -911,10 +911,10 @@ func TestServerGetRunUpdatedAtReflectsNodeTransitionActivity(t *testing.T) {
 	setRunStatus(t, db, runID, "running")
 
 	now := "2026-03-03T11:20:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-updated-at', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-updated-at', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 	nodeRunID := "nr-updated-at"
 	fromNodeState := "pending"
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'kickoff', 1,1, ?, 'council-member', 'agent-updated-at', 1, NULL, NULL)`, nodeRunID, runID, fromNodeState)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'kickoff', 1,1, ?, 'plan-author', 'agent-updated-at', 1, NULL, NULL)`, nodeRunID, runID, fromNodeState)
 
 	targetState := "ready"
 
@@ -929,7 +929,7 @@ func TestServerGetRunUpdatedAtReflectsNodeTransitionActivity(t *testing.T) {
 		FromState:           fromNodeState,
 		ToState:             targetState,
 		ActorID:             "actor-1",
-		RoleID:              "chancellor",
+		RoleID:              "coordinator",
 		AuthoritySource:     "api.test",
 		ReasonCode:          "internal_error",
 		ReasonText:          "run freshness test",
@@ -968,8 +968,8 @@ func TestServerGetRunUpdatedAtReflectsNodeTransitionActivity(t *testing.T) {
 	if run.UpdatedAt.Before(occurredAtTime) {
 		t.Fatalf("expected run updated_at >= %s, got %s", occurredAt, run.UpdatedAt.Format(time.RFC3339))
 	}
-	if run.DecreeTitle != "Linear replay decree" {
-		t.Fatalf("expected decree title Linear replay decree, got %q", run.DecreeTitle)
+	if run.WorkOrderTitle != "Linear replay work order" {
+		t.Fatalf("expected work order title Linear replay work order, got %q", run.WorkOrderTitle)
 	}
 }
 
@@ -980,15 +980,15 @@ func TestServerGetRunIncludesTabCountsForRunDetailChrome(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-counts-root', 'king', 'King', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-counts-council', 'council-member', 'Council', 'idle', 'agent-run-counts-root', 1, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-run-counts-root', 'king', 'King', NULL, 0, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-run-counts-council', 'council-member', 'Council', 'agent-run-counts-root', 1, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-counts-root', ?, 'plan_drafting', 1,1, 'running', 'king', 'agent-run-counts-root', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-counts-root', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-counts-council', 'plan-author', 'Council', 'idle', 'agent-run-counts-root', 1, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-run-counts-root', 'governance', 'Governance', NULL, 0, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-run-counts-council', 'plan-author', 'Council', 'agent-run-counts-root', 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-counts-root', ?, 'plan_drafting', 1,1, 'running', 'governance', 'agent-run-counts-root', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-run-count-visible', ?, 'agent-run-counts-root', 'agent-run-counts-council', 'thread-1', 'status_update', 'normal', '{"message_source":"communication","communication_type":"instruction_dispatched"}', ?)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-run-count-self', ?, 'agent-run-counts-root', 'agent-run-counts-root', 'thread-2', 'status_update', 'normal', '{"message_source":"communication","communication_type":"instruction_dispatched"}', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-count-1', ?, 1, 'nr-run-counts-root', 'attempt-run-count-1', 'v1', 'attempt.started', 1, '{"step":1}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-count', 'caus-run-count', 'prev-run-count', 'entry-run-count', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-count-2', ?, 2, 'nr-run-counts-root', 'attempt-run-count-2', 'v1', 'attempt.progress', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-count', 'caus-run-count', 'prev-run-count-2', 'entry-run-count-2', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-count-1', ?, 1, 'nr-run-counts-root', 'attempt-run-count-1', 'v1', 'attempt.started', 1, '{"step":1}', 'actor-1', 'coordinator', 'test', 'internal_error', 'seed', 'corr-run-count', 'caus-run-count', 'prev-run-count', 'entry-run-count', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-count-2', ?, 2, 'nr-run-counts-root', 'attempt-run-count-2', 'v1', 'attempt.progress', 2, '{"step":2}', 'actor-1', 'coordinator', 'test', 'internal_error', 'seed', 'corr-run-count', 'caus-run-count', 'prev-run-count-2', 'entry-run-count-2', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1025,8 +1025,8 @@ func TestServerGetRunLastActivityReflectsMailboxMessage(t *testing.T) {
 	messageAt := "2026-03-03T11:25:00Z"
 	mustExecSQL(t, db, `UPDATE workflow_runs SET updated_at = ? WHERE run_id = ?`, baseline, runID)
 	mustExecSQL(t, db, `UPDATE run_activity SET last_activity_at = ? WHERE run_id = ?`, baseline, runID)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mailbox-last-activity-a', 'chancellor', 'idle', NULL, 0, ?, ?)`, baseline, baseline)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mailbox-last-activity-b', 'council-member', 'idle', NULL, 0, ?, ?)`, baseline, baseline)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mailbox-last-activity-a', 'coordinator', 'idle', NULL, 0, ?, ?)`, baseline, baseline)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mailbox-last-activity-b', 'plan-author', 'idle', NULL, 0, ?, ?)`, baseline, baseline)
 
 	mailbox := state.NewMailboxStore(db, nil)
 	if _, err := mailbox.SendMessage(context.Background(), state.SendMailboxMessageRequest{
@@ -1071,8 +1071,8 @@ func TestServerListRunsReturnsLastActivityFromScheduledRetryEvent(t *testing.T) 
 	retryAt := "2026-03-06T10:08:00Z"
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', updated_at = ? WHERE run_id = ?`, baseline, runID)
 	mustExecSQL(t, db, `UPDATE run_activity SET last_activity_at = ? WHERE run_id = ?`, baseline, runID)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-list-last-activity', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, baseline, baseline)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-list-last-activity', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-list-last-activity', 1, ?, NULL)`, runID, baseline)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-list-last-activity', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, baseline, baseline)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-list-last-activity', ?, 'implementation', 1,1, 'running', 'builder', 'agent-list-last-activity', 1, ?, NULL)`, runID, baseline)
 
 	ingestor := state.NewAttemptEventIngestor(db, nil)
 	if _, err := ingestor.Ingest(context.Background(), state.AttemptEventIngestionRequest{
@@ -1083,9 +1083,9 @@ func TestServerListRunsReturnsLastActivityFromScheduledRetryEvent(t *testing.T) 
 		SchemaVersion:   "v1",
 		EventType:       "attempt.retry_scheduled",
 		Seq:             1,
-		PayloadJSON:     `{"node_id":"delegated_execution_berserker","node_run_id":"nr-list-last-activity","recovery_trigger":"automatic_retry","recovery_phase":"scheduled","error_code":"provider_empty_output","retry_index":2,"retry_max":3,"scheduled_at":"2026-03-06T10:08:10Z"}`,
+		PayloadJSON:     `{"node_id":"implementation","node_run_id":"nr-list-last-activity","recovery_trigger":"automatic_retry","recovery_phase":"scheduled","error_code":"provider_empty_output","retry_index":2,"retry_max":3,"scheduled_at":"2026-03-06T10:08:10Z"}`,
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "builder-berserker",
+		RoleID:          "builder",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "provider_empty_output",
 		ReasonText:      "automatic retry scheduled after empty provider output",
@@ -1132,10 +1132,10 @@ func TestServerGetRunIncludesAuthoritativeStreamCursor(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-cursor', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-cursor', ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent-run-cursor', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-1', ?, 1, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.started', 1, '{"step":1}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-1', 'caus-run-cursor-1', 'prev-run-cursor-1', 'entry-run-cursor-1', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-2', ?, 2, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.retry_scheduled', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-2', 'caus-run-cursor-2', 'prev-run-cursor-2', 'entry-run-cursor-2', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-run-cursor', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-run-cursor', ?, 'implementation', 1,1, 'running', 'builder', 'agent-run-cursor', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-1', ?, 1, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.started', 1, '{"step":1}', 'actor-1', 'coordinator', 'test', 'internal_error', 'seed', 'corr-run-cursor-1', 'caus-run-cursor-1', 'prev-run-cursor-1', 'entry-run-cursor-1', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-2', ?, 2, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.retry_scheduled', 2, '{"step":2}', 'actor-1', 'coordinator', 'test', 'internal_error', 'seed', 'corr-run-cursor-2', 'caus-run-cursor-2', 'prev-run-cursor-2', 'entry-run-cursor-2', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1167,8 +1167,8 @@ func TestServerGetRunGraphIncludesFailedNodeReason(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-failed', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-failed', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-graph-failed', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-failed', 'builder', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-failed', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-graph-failed', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-failed', ?, 'nr-graph-failed', 'committed_failure', 'provider_backed', 'server_response', 'execution_setup_failed', 'Builder crashed while preparing workspace.', ?, ?)`, runID, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1185,7 +1185,7 @@ func TestServerGetRunGraphIncludesFailedNodeReason(t *testing.T) {
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeId != "delegated_execution_berserker" {
+		if node.NodeId != "implementation" {
 			continue
 		}
 		if node.FailureReason == nil || *node.FailureReason != "Builder crashed while preparing workspace." {
@@ -1193,7 +1193,7 @@ func TestServerGetRunGraphIncludesFailedNodeReason(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerGetRunGraphFallsBackToDurableFailureText(t *testing.T) {
@@ -1203,10 +1203,10 @@ func TestServerGetRunGraphFallsBackToDurableFailureText(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-failed-durable', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-failed-durable', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-graph-failed-durable', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-failed-durable', 'builder', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-failed-durable', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-graph-failed-durable', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-failed-durable', ?, 'nr-graph-failed-durable', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-failed-durable', 'ses-graph-failed-durable', ?, ?, ?, 'agent_unresponsive', 'Agent became unresponsive before completion could be confirmed.', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-failed-durable', ?, 1, 'nr-graph-failed-durable', 'attempt-graph-failed-durable', 'v1', 'attempt.failed', 1, '{"reason":"stale_attempt"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'agent_unresponsive', 'stale running attempt recovered as failed', 'corr-graph-failed-durable', 'caus-graph-failed-durable', 'prev-graph-failed-durable', 'entry-graph-failed-durable', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-failed-durable', ?, 1, 'nr-graph-failed-durable', 'attempt-graph-failed-durable', 'v1', 'attempt.failed', 1, '{"reason":"stale_attempt"}', 'runtime_orchestrator', 'builder', 'runtime.orchestrator', 'agent_unresponsive', 'stale running attempt recovered as failed', 'corr-graph-failed-durable', 'caus-graph-failed-durable', 'prev-graph-failed-durable', 'entry-graph-failed-durable', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1222,7 +1222,7 @@ func TestServerGetRunGraphFallsBackToDurableFailureText(t *testing.T) {
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeId != "delegated_execution_berserker" {
+		if node.NodeId != "implementation" {
 			continue
 		}
 		if node.FailureReason == nil || *node.FailureReason != "Agent became unresponsive before completion could be confirmed." {
@@ -1230,7 +1230,7 @@ func TestServerGetRunGraphFallsBackToDurableFailureText(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T) {
@@ -1240,11 +1240,11 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-incomplete-turn', 'intelligence-nightraven', 'Validator', 'failed', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) SELECT 'wn-graph-incomplete-turn', workflow_definition_id, 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', ? FROM workflow_runs WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM workflow_nodes WHERE workflow_definition_id = workflow_runs.workflow_definition_id AND node_id = 'validation_gates_nightraven')`, now, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-incomplete-turn', ?, 'validation_gates_nightraven', 1,1, 'failed', 'intelligence-nightraven', 'agent-graph-incomplete-turn', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-incomplete-turn', 'security-validator', 'Validator', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) SELECT 'wn-graph-incomplete-turn', workflow_definition_id, 'security_validation', 'security-validator', 'validation_gates', ? FROM workflow_runs WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM workflow_nodes WHERE workflow_definition_id = workflow_runs.workflow_definition_id AND node_id = 'security_validation')`, now, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-incomplete-turn', ?, 'security_validation', 1,1, 'failed', 'security-validator', 'agent-graph-incomplete-turn', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-incomplete-turn', ?, 'nr-graph-incomplete-turn', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-incomplete-turn', 'ses-graph-incomplete-turn', ?, ?, ?, 'provider_incomplete_turn', 'decode opencode export: unexpected end of JSON input', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-incomplete-turn', ?, 1, 'nr-graph-incomplete-turn', 'attempt-graph-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-incomplete-turn', 'caus-graph-incomplete-turn', 'prev-graph-incomplete-turn', 'entry-graph-incomplete-turn', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-incomplete-turn', ?, 1, 'nr-graph-incomplete-turn', 'attempt-graph-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'security-validator', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-incomplete-turn', 'caus-graph-incomplete-turn', 'prev-graph-incomplete-turn', 'entry-graph-incomplete-turn', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1260,7 +1260,7 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeId != "validation_gates_nightraven" {
+		if node.NodeId != "security_validation" {
 			continue
 		}
 		if node.FailureReason == nil || *node.FailureReason != providerIncompleteTurnFailureText {
@@ -1268,7 +1268,7 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 		}
 		return
 	}
-	t.Fatal("expected validation_gates_nightraven node in graph response")
+	t.Fatal("expected security_validation node in graph response")
 }
 
 func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
@@ -1278,8 +1278,8 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-06T10:01:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-recovery-pending', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-recovery-pending', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-graph-recovery-pending', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-recovery-pending', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-recovery-pending', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-graph-recovery-pending', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-recovery-pending', ?, 'nr-graph-recovery-pending', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-recovery-pending', 'ses-graph-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider terminal response was not clean', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1296,7 +1296,7 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeId != "delegated_execution_berserker" {
+		if node.NodeId != "implementation" {
 			continue
 		}
 		if node.State != gen.RunGraphNodeStateFailed {
@@ -1307,7 +1307,7 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerGetRunGraphReportsRequestedReworkAsReworkNotFailed(t *testing.T) {
@@ -1320,8 +1320,8 @@ func TestServerGetRunGraphReportsRequestedReworkAsReworkNotFailed(t *testing.T) 
 		failureCode string
 		failureText string
 	}{
-		{"execution review", "execution_review_shieldmaiden", "reviewer-shieldmaiden", coreverdict.ReworkReasonCodeExecutionReview, "review requested rework"},
-		{"validation gate", "validation_gates_qa_scout", "intelligence-qa-scout", coreverdict.ReworkReasonCodeValidationGate, "validation requested rework"},
+		{"execution review", "execution_review", "reviewer", coreverdict.ReworkReasonCodeExecutionReview, "review requested rework"},
+		{"validation gate", "quality_validation", "qa-validator", coreverdict.ReworkReasonCodeValidationGate, "validation requested rework"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
@@ -1385,8 +1385,8 @@ func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
 
 	// A reviewer whose response was invalid really did fail. Only a requested
 	// rework earns the softer state.
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review', 1,1, 'failed', 'reviewer', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-invalid-verdict', ?, 'nr-invalid-verdict', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-invalid-verdict', 'ses-invalid-verdict', ?, ?, ?, 'llm_invalid_response', 'execution review response missing required verdict line', ?, ?)`, runID, now, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1403,7 +1403,7 @@ func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeId != "execution_review_shieldmaiden" {
+		if node.NodeId != "execution_review" {
 			continue
 		}
 		if node.State != gen.RunGraphNodeStateFailed {
@@ -1411,7 +1411,7 @@ func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("expected execution_review_shieldmaiden node in graph response")
+	t.Fatal("expected execution_review node in graph response")
 }
 
 func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
@@ -1422,9 +1422,9 @@ func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 	now := "2026-03-06T10:01:00Z"
 	later := "2026-03-06T10:05:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-lineage', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-lineage-1', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-graph-lineage', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-lineage-2', ?, 'delegated_execution_berserker', 2,2, 'running', 'builder-berserker', 'agent-graph-lineage', 1, ?, NULL)`, runID, later)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-lineage', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-lineage-1', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-graph-lineage', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-lineage-2', ?, 'implementation', 2,2, 'running', 'builder', 'agent-graph-lineage', 1, ?, NULL)`, runID, later)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-lineage-1', ?, 'nr-graph-lineage-1', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-lineage-1', 'ses-graph-lineage-1', ?, ?, ?, 'provider_incomplete_turn', 'older failed attempt', ?, ?)`, runID, now, now, now, later, later)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-lineage-2', ?, 'nr-graph-lineage-2', 'running', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-lineage-2', 'ses-graph-lineage-2', ?, NULL, NULL, '', '', ?, ?)`, runID, later, later, later)
 
@@ -1449,7 +1449,7 @@ func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeID != "delegated_execution_berserker" {
+		if node.NodeID != "implementation" {
 			continue
 		}
 		if node.State != "running" {
@@ -1463,7 +1463,7 @@ func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testing.T) {
@@ -1474,9 +1474,9 @@ func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testin
 	now := "2026-03-06T10:01:00Z"
 	later := "2026-03-06T10:05:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-blocked-visible', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-1', ?, 'delegated_execution_berserker', 1,1, 'blocked', 'builder-berserker', 'agent-graph-blocked-visible', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-2', ?, 'delegated_execution_berserker', 2,2, 'ready', 'builder-berserker', 'agent-graph-blocked-visible', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-blocked-visible', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-1', ?, 'implementation', 1,1, 'blocked', 'builder', 'agent-graph-blocked-visible', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-blocked-visible-2', ?, 'implementation', 2,2, 'ready', 'builder', 'agent-graph-blocked-visible', 1, NULL, NULL)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-blocked-visible-1', ?, 'nr-graph-blocked-visible-1', 'starting', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-blocked-visible-1', 'ses-graph-blocked-visible-1', ?, NULL, NULL, NULL, 'agent_unresponsive', 'blocked while retry is queued', ?, ?)`, runID, now, later, later)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-blocked-visible-2', ?, 'nr-graph-blocked-visible-2', 'queued', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-blocked-visible-2', '', NULL, NULL, NULL, NULL, '', '', ?, ?)`, runID, later, later)
 
@@ -1501,7 +1501,7 @@ func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testin
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeID != "delegated_execution_berserker" {
+		if node.NodeID != "implementation" {
 			continue
 		}
 		if node.State != "blocked" {
@@ -1515,7 +1515,7 @@ func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testin
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t *testing.T) {
@@ -1526,9 +1526,9 @@ func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t
 	now := "2026-03-06T10:01:00Z"
 	later := "2026-03-06T10:05:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-superseded-visible', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-superseded-visible-1', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-graph-superseded-visible', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr-graph-superseded-visible-2', ?, 'delegated_execution_berserker', 2,2, 'blocked', 'builder-berserker', 'agent-graph-superseded-visible', 1, ?, ?, ?)`, runID, later, later, later)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-graph-superseded-visible', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, later)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-graph-superseded-visible-1', ?, 'implementation', 1,1, 'succeeded', 'builder', 'agent-graph-superseded-visible', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr-graph-superseded-visible-2', ?, 'implementation', 2,2, 'blocked', 'builder', 'agent-graph-superseded-visible', 1, ?, ?, ?)`, runID, later, later, later)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-superseded-visible-1', ?, 'nr-graph-superseded-visible-1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-superseded-visible-1', 'ses-graph-superseded-visible-1', ?, ?, ?, ?, '', '', ?, ?)`, runID, now, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-superseded-visible-2', ?, 'nr-graph-superseded-visible-2', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session-graph-superseded-visible-2', 'ses-graph-superseded-visible-2', ?, NULL, ?, ?, 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', ?, ?)`, runID, later, later, later, later, later, later)
 
@@ -1553,7 +1553,7 @@ func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t
 	}
 
 	for _, node := range payload.Nodes {
-		if node.NodeID != "delegated_execution_berserker" {
+		if node.NodeID != "implementation" {
 			continue
 		}
 		if node.State != "blocked" {
@@ -1567,7 +1567,7 @@ func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t
 		}
 		return
 	}
-	t.Fatal("expected delegated_execution_berserker node in graph response")
+	t.Fatal("expected implementation node in graph response")
 }
 
 func TestServerRunPlanSnapshotReturnsLatestPlanDraftingResponse(t *testing.T) {
@@ -1576,14 +1576,14 @@ func TestServerRunPlanSnapshotReturnsLatestPlanDraftingResponse(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_chancellor', 'chancellor', 'Chancellor', 'idle', NULL, 0, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_council', 'council-member', 'Council Member', 'idle', NULL, 0, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_snapshot', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_plan_council', 1, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_coordinator', 'coordinator', 'Coordinator', 'idle', NULL, 0, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_snapshot', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_plan_council', 1, '2026-03-02T09:00:00Z', '2026-03-02T09:00:00Z')`, runID)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_old', ?, 'agent_plan_council', 'agent_plan_chancellor', 'thread_plan', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Old plan"}', '2026-03-02T09:01:00Z')`, runID)
+	VALUES ('msg_plan_old', ?, 'agent_plan_council', 'agent_plan_coordinator', 'thread_plan', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Old plan"}', '2026-03-02T09:01:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_new', ?, 'agent_plan_council', 'agent_plan_chancellor', 'thread_plan', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Latest plan\n- Step one\n- Step two"}', '2026-03-02T09:02:00Z')`, runID)
+	VALUES ('msg_plan_new', ?, 'agent_plan_council', 'agent_plan_coordinator', 'thread_plan', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Latest plan\n- Step one\n- Step two"}', '2026-03-02T09:02:00Z')`, runID)
 	seedAttemptExecution(t, db, runID+":plan_drafting:old", runID, "nr_plan_snapshot", "2026-03-02T09:01:00Z")
 	seedAttemptExecution(t, db, runID+":plan_drafting:new", runID, "nr_plan_snapshot", "2026-03-02T09:02:00Z")
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_old', ?, 'plan_drafting', 'nr_plan_snapshot', ?, 'agent_plan_council', 'msg_plan_old', 'plan_revision', 'Old plan', '2026-03-02T09:01:00Z')`, runID, runID+":plan_drafting:old")
@@ -1638,13 +1638,13 @@ func TestServerRunPlanSnapshotUsesCanonicalRevisionIndependentOfMailboxVisibilit
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
 	createdAt := "2026-03-02T09:02:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_visible_king', 'king', 'King', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_visible_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_hidden_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_visible', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_plan_visible_council', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_visible_governance', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_visible_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_hidden_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_visible', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_plan_visible_council', 1, ?, ?)`, runID, createdAt, createdAt)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_visible', ?, 'agent_plan_visible_council', 'agent_plan_visible_king', 'thread_plan_visible', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Visible plan revision"}', '2026-03-02T09:01:00Z')`, runID)
+	VALUES ('msg_plan_visible', ?, 'agent_plan_visible_council', 'agent_plan_visible_governance', 'thread_plan_visible', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Visible plan revision"}', '2026-03-02T09:01:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
 	VALUES ('msg_plan_hidden_self', ?, 'agent_plan_hidden_council', 'agent_plan_hidden_council', 'thread_plan_hidden', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Hidden internal note"}', ?)`, runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:visible", runID, "nr_plan_visible", "2026-03-02T09:01:00Z")
@@ -1682,14 +1682,14 @@ func TestServerRunPlanSnapshotUsesLatestCanonicalRevision(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
 	createdAt := "2026-03-02T09:02:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_suppressed_king', 'king', 'King', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_suppressed_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_latest', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_plan_suppressed_council', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_suppressed_governance', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_suppressed_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_latest', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_plan_suppressed_council', 1, ?, ?)`, runID, createdAt, createdAt)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_visible', ?, 'agent_plan_suppressed_council', 'agent_plan_suppressed_king', 'thread_plan_visible', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Changed files plan: tighten auth handling and expand tests before implementation."}', '2026-03-02T09:01:00Z')`, runID)
+	VALUES ('msg_plan_visible', ?, 'agent_plan_suppressed_council', 'agent_plan_suppressed_governance', 'thread_plan_visible', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Changed files plan: tighten auth handling and expand tests before implementation."}', '2026-03-02T09:01:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_latest', ?, 'agent_plan_suppressed_council', 'agent_plan_suppressed_king', 'thread_plan_latest', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Latest canonical plan drift text"}', ?)`, runID, createdAt)
+	VALUES ('msg_plan_latest', ?, 'agent_plan_suppressed_council', 'agent_plan_suppressed_governance', 'thread_plan_latest', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Latest canonical plan drift text"}', ?)`, runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:visible", runID, "nr_plan_latest", "2026-03-02T09:01:00Z")
 	seedAttemptExecution(t, db, runID+":plan_drafting:latest", runID, "nr_plan_latest", createdAt)
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_visible', ?, 'plan_drafting', 'nr_plan_latest', ?, 'agent_plan_suppressed_council', 'msg_plan_visible', 'plan_revision', 'Changed files plan: tighten auth handling and expand tests before implementation.', '2026-03-02T09:01:00Z')`, runID, runID+":plan_drafting:visible")
@@ -1727,11 +1727,11 @@ func TestServerRunPlanSnapshotUsesCanonicalCurrentPlanWhenProjectionRowIsMissing
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	createdAt := "2026-03-02T09:02:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_missing_projection_king', 'king', 'King', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_missing_projection_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_missing_projection', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_plan_missing_projection_council', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_missing_projection_governance', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_missing_projection_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_missing_projection', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_plan_missing_projection_council', 1, ?, ?)`, runID, createdAt, createdAt)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_missing_projection', ?, 'agent_plan_missing_projection_council', 'agent_plan_missing_projection_king', 'thread_plan_missing_projection', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Canonical plan without persisted projection"}', ?)`, runID, createdAt)
+	VALUES ('msg_plan_missing_projection', ?, 'agent_plan_missing_projection_council', 'agent_plan_missing_projection_governance', 'thread_plan_missing_projection', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Canonical plan without persisted projection"}', ?)`, runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:missing_projection", runID, "nr_plan_missing_projection", createdAt)
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_missing_projection', ?, 'plan_drafting', 'nr_plan_missing_projection', ?, 'agent_plan_missing_projection_council', 'msg_plan_missing_projection', 'plan_revision', 'Canonical plan without persisted projection', ?)`, runID, runID+":plan_drafting:missing_projection", createdAt)
 
@@ -1786,8 +1786,8 @@ func TestServerRunPlanSnapshotReturnsPendingAfterFreshPlanningWaveQueued(t *test
 	_ = seedReadyPlanReworkNodes(t, db, runID)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET plan_state = 'needs_rework' WHERE run_id = ?`, runID)
 	now := "2026-03-02T09:10:00Z"
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', 2,2, 'pending', 'chancellor', ?, 1, NULL, NULL)`, "nr_plan_rework_advisory_2_"+runID, runID, "agent_chancellor_"+runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', 2,2, 'pending', 'council-member', ?, 1, NULL, NULL)`, "nr_plan_rework_plan_2_"+runID, runID, "agent_council_"+runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', 2,2, 'pending', 'coordinator', ?, 1, NULL, NULL)`, "nr_plan_rework_advisory_2_"+runID, runID, "agent_coordinator_"+runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', 2,2, 'pending', 'plan-author', ?, 1, NULL, NULL)`, "nr_plan_rework_plan_2_"+runID, runID, "agent_council_"+runID)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET updated_at = ? WHERE run_id = ?`, now, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1832,13 +1832,13 @@ func TestServerRunTabCountsSuppressStructuredPlanningMessages(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	createdAt := "2026-03-02T09:02:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_counts_king', 'king', 'King', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_counts_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_counts_governance', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_counts_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_counts_visible', ?, 'agent_plan_counts_council', 'agent_plan_counts_king', 'thread_plan_counts_visible', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Visible approval revision"}', '2026-03-02T09:01:00Z')`, runID)
+	VALUES ('msg_plan_counts_visible', ?, 'agent_plan_counts_council', 'agent_plan_counts_governance', 'thread_plan_counts_visible', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Visible approval revision"}', '2026-03-02T09:01:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_counts_suppressed', ?, 'agent_plan_counts_council', 'agent_plan_counts_king', 'thread_plan_counts_suppressed', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest planning response"}', ?)`, runID, createdAt)
+	VALUES ('msg_plan_counts_suppressed', ?, 'agent_plan_counts_council', 'agent_plan_counts_governance', 'thread_plan_counts_suppressed', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest planning response"}', ?)`, runID, createdAt)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -1864,14 +1864,14 @@ func TestServerRunPlanSnapshotPrefersLatestPersistedRevisionWhenTimestampsTie(t 
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	createdAt := "2026-03-02T09:02:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_same_ts_chancellor', 'chancellor', 'Chancellor', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_same_ts_council', 'council-member', 'Council Member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_same_ts', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_plan_same_ts_council', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_same_ts_coordinator', 'coordinator', 'Coordinator', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_same_ts_council', 'plan-author', 'Plan Author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_same_ts', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_plan_same_ts_council', 1, ?, ?)`, runID, createdAt, createdAt)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_z_same_ts', ?, 'agent_plan_same_ts_council', 'agent_plan_same_ts_chancellor', 'thread_plan_same_ts', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Plan revision one"}', ?)`, runID, createdAt)
+	VALUES ('msg_plan_z_same_ts', ?, 'agent_plan_same_ts_council', 'agent_plan_same_ts_coordinator', 'thread_plan_same_ts', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Plan revision one"}', ?)`, runID, createdAt)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at)
-	VALUES ('msg_plan_a_same_ts', ?, 'agent_plan_same_ts_council', 'agent_plan_same_ts_chancellor', 'thread_plan_same_ts', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Plan revision two"}', ?)`, runID, createdAt)
+	VALUES ('msg_plan_a_same_ts', ?, 'agent_plan_same_ts_council', 'agent_plan_same_ts_coordinator', 'thread_plan_same_ts', 'status_update', 'normal', '{"communication_type":"response_received","message_source":"communication","node_id":"plan_drafting","response_full":"Plan revision two"}', ?)`, runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:one", runID, "nr_plan_same_ts", createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:two", runID, "nr_plan_same_ts", createdAt)
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_z_same_ts', ?, 'plan_drafting', 'nr_plan_same_ts', ?, 'agent_plan_same_ts_council', 'msg_plan_z_same_ts', 'plan_revision', 'Plan revision one', ?)`, runID, runID+":plan_drafting:one", createdAt)
@@ -2085,9 +2085,9 @@ func TestServerListRunGovernanceDecisionsSupportsPagination(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	planRevisionID := seedCurrentPlanRevisionForNode(t, db, runID, "plan_drafting", "Historic plan")
-	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_1', ?, ?, 'approved', 'Approved v1', 'god-operator', 'allfather', NULL, NULL, '2026-03-01T12:01:00Z')`, runID, planRevisionID)
-	mustExecSQL(t, db, `INSERT INTO run_final_reviews (final_review_id, run_id, decision, feedback_markdown, actor_id, role_id, queued_plan_attempt, created_at) VALUES ('final_review_1', ?, 'needs_rework', 'Final rework v1', 'god-operator', 'allfather', 1, '2026-03-01T12:02:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_2', ?, ?, 'needs_rework', 'Plan rework v2', 'god-operator', 'allfather', 2, 2, '2026-03-01T12:03:00Z')`, runID, planRevisionID)
+	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_1', ?, ?, 'approved', 'Approved v1', 'god-operator', 'operator', NULL, NULL, '2026-03-01T12:01:00Z')`, runID, planRevisionID)
+	mustExecSQL(t, db, `INSERT INTO run_final_reviews (final_review_id, run_id, decision, feedback_markdown, actor_id, role_id, queued_plan_attempt, created_at) VALUES ('final_review_1', ?, 'needs_rework', 'Final rework v1', 'god-operator', 'operator', 1, '2026-03-01T12:02:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_2', ?, ?, 'needs_rework', 'Plan rework v2', 'god-operator', 'operator', 2, 2, '2026-03-01T12:03:00Z')`, runID, planRevisionID)
 
 	first := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -2164,23 +2164,23 @@ func TestServerGetRunReturnsCurrentAndReworkLoopCycleMetrics(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'Intelligence QA Scout', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Intelligence Nightraven', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_shieldmaiden', 'reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_qa_scout', 'intelligence-qa-scout', 'Intelligence QA Scout', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_nightraven', 'intelligence-nightraven', 'Intelligence Nightraven', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer Reviewer', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Intelligence QA Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Intelligence Security Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_shieldmaiden', 'reviewer', 'Reviewer Reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_qa_scout', 'qa-validator', 'Intelligence QA Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_nightraven', 'security-validator', 'Intelligence Security Validator', 'idle', NULL, 0, ?, ?)`, now, now)
 
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_review', ?, 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_a', ?, 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_b', ?, 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_review', ?, 'execution_review', 'reviewer', 'execution_review', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_a', ?, 'quality_validation', 'qa-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_b', ?, 'security_validation', 'security-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
 
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_review_1', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_review_2', ?, 'execution_review_shieldmaiden', 2,2, 'succeeded', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_a_1', ?, 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_b_1', ?, 'validation_gates_nightraven', 1,1, 'succeeded', 'intelligence-nightraven', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_a_2', ?, 'validation_gates_qa_scout', 2,2, 'succeeded', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_b_2', ?, 'validation_gates_nightraven', 2,2, 'succeeded', 'intelligence-nightraven', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_review_1', ?, 'execution_review', 1,1, 'failed', 'reviewer', 'agent_reviewer_shieldmaiden', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_review_2', ?, 'execution_review', 2,2, 'succeeded', 'reviewer', 'agent_reviewer_shieldmaiden', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_a_1', ?, 'quality_validation', 1,1, 'failed', 'qa-validator', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_b_1', ?, 'security_validation', 1,1, 'succeeded', 'security-validator', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_a_2', ?, 'quality_validation', 2,2, 'succeeded', 'qa-validator', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_b_2', ?, 'security_validation', 2,2, 'succeeded', 'security-validator', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_attempt_1', ?, 'nr_cycle_review_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('validation_attempt_qa_1', ?, 'nr_cycle_validation_a_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validator requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
@@ -2222,14 +2222,14 @@ func TestServerGetRunUsesWaveLineageInsteadOfLatestAttemptNumber(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer Reviewer', 0, ?)`, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-sentinel', 'Reviewer Sentinel', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_primary', 'reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_primary', 'reviewer', 'Reviewer Reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_wave_secondary', 'reviewer-sentinel', 'Reviewer Sentinel', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_lineage_primary', ?, 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_lineage_primary', ?, 'execution_review', 'reviewer', 'execution_review', ?)`, workflowDefinitionID, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_lineage_secondary', ?, 'execution_review_sentinel', 'reviewer-sentinel', 'execution_review', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_lineage_primary_1', ?, 'execution_review_shieldmaiden', 1, 1, 'blocked', 'reviewer-shieldmaiden', 'agent_wave_primary', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_lineage_primary_2', ?, 'execution_review_shieldmaiden', 2, 1, 'failed', 'reviewer-shieldmaiden', 'agent_wave_primary', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_lineage_primary_1', ?, 'execution_review', 1, 1, 'blocked', 'reviewer', 'agent_wave_primary', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_lineage_primary_2', ?, 'execution_review', 2, 1, 'failed', 'reviewer', 'agent_wave_primary', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_lineage_secondary_1', ?, 'execution_review_sentinel', 1, 1, 'failed', 'reviewer-sentinel', 'agent_wave_secondary', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_lineage_primary_attempt_2', ?, 'nr_review_wave_lineage_primary_2', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_lineage_secondary_attempt_1', ?, 'nr_review_wave_lineage_secondary_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
@@ -2263,15 +2263,15 @@ func TestServerGetRunIgnoresCancelledValidationWaveInReworkMetrics(t *testing.T)
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'Intelligence QA Scout', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Intelligence Nightraven', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_qa_scout', 'intelligence-qa-scout', 'Intelligence QA Scout', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_nightraven', 'intelligence-nightraven', 'Intelligence Nightraven', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_a_cancelled', ?, 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_b_cancelled', ?, 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_a_1', ?, 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_b_1', ?, 'validation_gates_nightraven', 1,1, 'cancelled', 'intelligence-nightraven', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_a_2', ?, 'validation_gates_qa_scout', 2,2, 'ready', 'intelligence-qa-scout', 'agent_intelligence_qa_scout', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Intelligence QA Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Intelligence Security Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_qa_scout', 'qa-validator', 'Intelligence QA Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_intelligence_nightraven', 'security-validator', 'Intelligence Security Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_a_cancelled', ?, 'quality_validation', 'qa-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_cycle_metrics_validation_b_cancelled', ?, 'security_validation', 'security-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_a_1', ?, 'quality_validation', 1,1, 'failed', 'qa-validator', 'agent_intelligence_qa_scout', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_b_1', ?, 'security_validation', 1,1, 'cancelled', 'security-validator', 'agent_intelligence_nightraven', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_cycle_validation_cancelled_a_2', ?, 'quality_validation', 2,2, 'ready', 'qa-validator', 'agent_intelligence_qa_scout', 1, NULL, NULL)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('validation_attempt_cancelled_qa_1', ?, 'nr_cycle_validation_cancelled_a_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validator requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('validation_attempt_cancelled_night_1', ?, 'nr_cycle_validation_cancelled_b_1', 'committed_cancelled', 'provider_backed', 'server_response', 'provider_cancelled', 'validator cancelled', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
@@ -2307,13 +2307,13 @@ func TestServerGetRunUsesCanonicalReviewWaveCounting(t *testing.T) {
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer Reviewer', 0, ?)`, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-sentinel', 'Reviewer Sentinel', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_primary', 'reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_primary', 'reviewer', 'Reviewer Reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_secondary', 'reviewer-sentinel', 'Reviewer Sentinel', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_primary', ?, 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_primary', ?, 'execution_review', 'reviewer', 'execution_review', ?)`, workflowDefinitionID, now)
 	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_wave_secondary', ?, 'execution_review_sentinel', 'reviewer-sentinel', 'execution_review', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_primary_1', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_primary', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_primary_1', ?, 'execution_review', 1,1, 'failed', 'reviewer', 'agent_reviewer_primary', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_wave_secondary_1', ?, 'execution_review_sentinel', 1,1, 'failed', 'reviewer-sentinel', 'agent_reviewer_secondary', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_primary_attempt_1', ?, 'nr_review_wave_primary_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_secondary_attempt_1', ?, 'nr_review_wave_secondary_1', 'committed_failure', 'provider_backed', 'server_response', 'provider_process_failed', 'review process crashed', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
@@ -2347,19 +2347,19 @@ func TestServerGetRunCountsAutoSucceededLoopsFromCanonicalAttemptEventsOnly(t *t
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'Intelligence QA Scout', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_auto_success', 'reviewer-shieldmaiden', 'Reviewer Shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_success', 'intelligence-qa-scout', 'Intelligence QA Scout', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_review', ?, 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation', ?, 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_review', ?, 'execution_review_shieldmaiden', 2,2, 'succeeded', 'reviewer-shieldmaiden', 'agent_review_auto_success', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation', ?, 'validation_gates_qa_scout', 3,3, 'succeeded', 'intelligence-qa-scout', 'agent_validation_auto_success', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer Reviewer', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Intelligence QA Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_auto_success', 'reviewer', 'Reviewer Reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_success', 'qa-validator', 'Intelligence QA Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_review', ?, 'execution_review', 'reviewer', 'execution_review', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation', ?, 'quality_validation', 'qa-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_review', ?, 'execution_review', 2,2, 'succeeded', 'reviewer', 'agent_review_auto_success', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation', ?, 'quality_validation', 3,3, 'succeeded', 'qa-validator', 'agent_validation_auto_success', 1, ?, ?)`, runID, now, now)
 
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_review_attempt', ?, 1, 'nr_auto_success_review', 'attempt_auto_success_review', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'reviewer-shieldmaiden', 'runtime.orchestrator', 'execution_review_cap_auto_succeeded', 'review auto-succeeded at cap', 'corr_auto_success_review', 'caus_auto_success_review_attempt', 'prev_auto_success_review_attempt', 'entry_auto_success_review_attempt', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_review_mailbox', ?, 2, 'nr_auto_success_review', 'run:mailbox', 'v1', 'mailbox.message_recorded', 1, '{"message_id":"msg_auto_success_review","node_id":"execution_review_shieldmaiden","node_run_id":"nr_auto_success_review","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent_review_auto_success', 'reviewer-shieldmaiden', 'state.mailbox', 'execution_review_cap_auto_succeeded', 'mailbox message recorded', 'corr_auto_success_review_mailbox', 'caus_auto_success_review_mailbox', 'prev_auto_success_review_mailbox', 'entry_auto_success_review_mailbox', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_attempt', ?, 3, 'nr_auto_success_validation', 'attempt_auto_success_validation', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'intelligence-qa-scout', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation', 'caus_auto_success_validation_attempt', 'prev_auto_success_validation_attempt', 'entry_auto_success_validation_attempt', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_mailbox', ?, 4, 'nr_auto_success_validation', 'run:mailbox', 'v1', 'mailbox.message_recorded', 2, '{"message_id":"msg_auto_success_validation","node_id":"validation_gates_qa_scout","node_run_id":"nr_auto_success_validation","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent_validation_auto_success', 'intelligence-qa-scout', 'state.mailbox', 'validation_gate_cap_auto_succeeded', 'mailbox message recorded', 'corr_auto_success_validation_mailbox', 'caus_auto_success_validation_mailbox', 'prev_auto_success_validation_mailbox', 'entry_auto_success_validation_mailbox', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_review_attempt', ?, 1, 'nr_auto_success_review', 'attempt_auto_success_review', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'reviewer', 'runtime.orchestrator', 'execution_review_cap_auto_succeeded', 'review auto-succeeded at cap', 'corr_auto_success_review', 'caus_auto_success_review_attempt', 'prev_auto_success_review_attempt', 'entry_auto_success_review_attempt', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_review_mailbox', ?, 2, 'nr_auto_success_review', 'run:mailbox', 'v1', 'mailbox.message_recorded', 1, '{"message_id":"msg_auto_success_review","node_id":"execution_review","node_run_id":"nr_auto_success_review","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent_review_auto_success', 'reviewer', 'state.mailbox', 'execution_review_cap_auto_succeeded', 'mailbox message recorded', 'corr_auto_success_review_mailbox', 'caus_auto_success_review_mailbox', 'prev_auto_success_review_mailbox', 'entry_auto_success_review_mailbox', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_attempt', ?, 3, 'nr_auto_success_validation', 'attempt_auto_success_validation', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'qa-validator', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation', 'caus_auto_success_validation_attempt', 'prev_auto_success_validation_attempt', 'entry_auto_success_validation_attempt', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_mailbox', ?, 4, 'nr_auto_success_validation', 'run:mailbox', 'v1', 'mailbox.message_recorded', 2, '{"message_id":"msg_auto_success_validation","node_id":"quality_validation","node_run_id":"nr_auto_success_validation","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent_validation_auto_success', 'qa-validator', 'state.mailbox', 'validation_gate_cap_auto_succeeded', 'mailbox message recorded', 'corr_auto_success_validation_mailbox', 'caus_auto_success_validation_mailbox', 'prev_auto_success_validation_mailbox', 'entry_auto_success_validation_mailbox', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -2393,16 +2393,16 @@ func TestServerGetRunCountsValidationAutoSucceededByWaveNotPerValidator(t *testi
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'Intelligence QA Scout', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Intelligence Nightraven', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_wave_qa', 'intelligence-qa-scout', 'Intelligence QA Scout', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_wave_night', 'intelligence-nightraven', 'Intelligence Nightraven', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation_wave_qa', ?, 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation_wave_night', ?, 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', ?)`, workflowDefinitionID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation_wave_qa', ?, 'validation_gates_qa_scout', 4,4, 'succeeded', 'intelligence-qa-scout', 'agent_validation_auto_wave_qa', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation_wave_night', ?, 'validation_gates_nightraven', 4,4, 'succeeded', 'intelligence-nightraven', 'agent_validation_auto_wave_night', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_wave_qa', ?, 1, 'nr_auto_success_validation_wave_qa', 'attempt_auto_success_validation_wave_qa', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'intelligence-qa-scout', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation_wave_qa', 'caus_auto_success_validation_wave_qa', 'prev_auto_success_validation_wave_qa', 'entry_auto_success_validation_wave_qa', ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_wave_night', ?, 2, 'nr_auto_success_validation_wave_night', 'attempt_auto_success_validation_wave_night', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation_wave_night', 'caus_auto_success_validation_wave_night', 'prev_auto_success_validation_wave_night', 'entry_auto_success_validation_wave_night', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Intelligence QA Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Intelligence Security Validator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_wave_qa', 'qa-validator', 'Intelligence QA Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_auto_wave_night', 'security-validator', 'Intelligence Security Validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation_wave_qa', ?, 'quality_validation', 'qa-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_auto_success_validation_wave_night', ?, 'security_validation', 'security-validator', 'validation_gates', ?)`, workflowDefinitionID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation_wave_qa', ?, 'quality_validation', 4,4, 'succeeded', 'qa-validator', 'agent_validation_auto_wave_qa', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_auto_success_validation_wave_night', ?, 'security_validation', 4,4, 'succeeded', 'security-validator', 'agent_validation_auto_wave_night', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_wave_qa', ?, 1, 'nr_auto_success_validation_wave_qa', 'attempt_auto_success_validation_wave_qa', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'qa-validator', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation_wave_qa', 'caus_auto_success_validation_wave_qa', 'prev_auto_success_validation_wave_qa', 'entry_auto_success_validation_wave_qa', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_wave_night', ?, 2, 'nr_auto_success_validation_wave_night', 'attempt_auto_success_validation_wave_night', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'security-validator', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation_wave_night', 'caus_auto_success_validation_wave_night', 'prev_auto_success_validation_wave_night', 'entry_auto_success_validation_wave_night', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -2428,9 +2428,9 @@ func TestServerRunDetailIncludesFailedNodeSummaries(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-builder', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-builder', 'builder', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'failed', updated_at = ? WHERE run_id = ?`, now, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-builder', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-failed-builder', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-builder', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-failed-builder', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-failed-builder', ?, 'nr-failed-builder', 'committed_failure', 'provider_backed', 'server_response', 'execution_setup_failed', 'Builder crashed while preparing workspace.', ?, ?)`, runID, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -2448,8 +2448,8 @@ func TestServerRunDetailIncludesFailedNodeSummaries(t *testing.T) {
 	if len(run.FailedNodes) != 1 {
 		t.Fatalf("expected one failed node summary, got %#v", run.FailedNodes)
 	}
-	if run.FailedNodes[0].NodeId != "delegated_execution_berserker" {
-		t.Fatalf("expected delegated_execution_berserker failed node, got %#v", run.FailedNodes[0].NodeId)
+	if run.FailedNodes[0].NodeId != "implementation" {
+		t.Fatalf("expected implementation failed node, got %#v", run.FailedNodes[0].NodeId)
 	}
 	if run.FailedNodes[0].FailureReason == nil || *run.FailedNodes[0].FailureReason != "Builder crashed while preparing workspace." {
 		t.Fatalf("expected failed node reason, got %#v", run.FailedNodes[0].FailureReason)
@@ -2463,9 +2463,9 @@ func TestServerRunDetailFailedNodeSummariesUsePhysicalFailureText(t *testing.T) 
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-builder-reason-text', 'builder-berserker', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-builder-reason-text', 'builder', 'Builder', 'failed', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'failed', updated_at = ? WHERE run_id = ?`, now, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-builder-reason-text', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-failed-builder-reason-text', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-builder-reason-text', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-failed-builder-reason-text', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-failed-builder-reason-text', ?, 'nr-failed-builder-reason-text', 'committed_failure', 'provider_backed', 'server_response', 'agent_unresponsive', 'Agent became unresponsive before completion could be confirmed.', ?, ?)`, runID, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -2495,12 +2495,12 @@ func TestServerRunDetailFailedNodeSummariesUseFriendlyProviderIncompleteTurnReas
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-validator-incomplete-turn', 'intelligence-nightraven', 'Validator', 'failed', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-failed-validator-incomplete-turn', 'security-validator', 'Validator', 'failed', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'failed', updated_at = ? WHERE run_id = ?`, now, runID)
-	mustExecSQL(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) SELECT 'wn-failed-validator-incomplete-turn', workflow_definition_id, 'validation_gates_nightraven', 'intelligence-nightraven', 'validation_gates', ? FROM workflow_runs WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM workflow_nodes WHERE workflow_definition_id = workflow_runs.workflow_definition_id AND node_id = 'validation_gates_nightraven')`, now, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-validator-incomplete-turn', ?, 'validation_gates_nightraven', 1,1, 'failed', 'intelligence-nightraven', 'agent-failed-validator-incomplete-turn', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) SELECT 'wn-failed-validator-incomplete-turn', workflow_definition_id, 'security_validation', 'security-validator', 'validation_gates', ? FROM workflow_runs WHERE run_id = ? AND NOT EXISTS (SELECT 1 FROM workflow_nodes WHERE workflow_definition_id = workflow_runs.workflow_definition_id AND node_id = 'security_validation')`, now, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-failed-validator-incomplete-turn', ?, 'security_validation', 1,1, 'failed', 'security-validator', 'agent-failed-validator-incomplete-turn', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-failed-validator-incomplete-turn', ?, 'nr-failed-validator-incomplete-turn', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-failed-validator-incomplete-turn', 'ses-failed-validator-incomplete-turn', ?, ?, ?, 'provider_incomplete_turn', 'decode opencode export: unexpected end of JSON input', ?, ?)`, runID, now, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-failed-validator-incomplete-turn', ?, 1, 'nr-failed-validator-incomplete-turn', 'attempt-failed-validator-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-failed-validator-incomplete-turn', 'caus-failed-validator-incomplete-turn', 'prev-failed-validator-incomplete-turn', 'entry-failed-validator-incomplete-turn', ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-failed-validator-incomplete-turn', ?, 1, 'nr-failed-validator-incomplete-turn', 'attempt-failed-validator-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'security-validator', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-failed-validator-incomplete-turn', 'caus-failed-validator-incomplete-turn', 'prev-failed-validator-incomplete-turn', 'entry-failed-validator-incomplete-turn', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -2530,16 +2530,16 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	builderCreatedAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-root', 'king', 'Sovereign', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council', 'council-member', 'Council', 'idle', 'agent-root', 1, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder', 'council-member', 'Builder', 'busy', 'agent-council', 2, ?, ?)`, builderCreatedAt, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-ignore', 'council-member', 'Ignore', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-root', 'king', 'Sovereign', NULL, 0, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-council', 'council-member', 'Council', 'agent-root', 1, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-builder', 'council-member', 'Builder', 'agent-council', 2, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-root', 'governance', 'Sovereign', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council', 'plan-author', 'Council', 'idle', 'agent-root', 1, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder', 'plan-author', 'Builder', 'busy', 'agent-council', 2, ?, ?)`, builderCreatedAt, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-ignore', 'plan-author', 'Ignore', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-root', 'governance', 'Sovereign', NULL, 0, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-council', 'plan-author', 'Council', 'agent-root', 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-builder', 'plan-author', 'Builder', 'agent-council', 2, ?)`, runID, now)
 
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-agent-root', ?, 'kickoff', 1,1, 'running', 'king', 'agent-root', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-agent-builder', ?, 'implementation', 1,1, 'running', 'council-member', 'agent-builder', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-agent-root', ?, 'kickoff', 1,1, 'running', 'governance', 'agent-root', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-agent-builder', ?, 'implementation', 1,1, 'running', 'plan-author', 'agent-builder', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-agent-builder', 'running', 'provider_backed', 'server_response', 'worker-1', '2026-03-01T14:00:00Z', 1, 'session-agent-builder', 'ses-agent-builder', ?, NULL, NULL, '', '', ?, ?)`, runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-run-agents-1', ?, 'agent-root', 'agent-council', 'thread-agents', 'status_update', 'normal', '{}', ?)`, runID, now)
 
@@ -2596,12 +2596,12 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 	const now = "2026-03-06T10:01:00Z"
 	sourceAttemptID := "attempt-visible-source"
 	targetAttemptID := "attempt-visible-target"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-visible-recovery', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-visible-source', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-visible-recovery', 1, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-visible-target', ?, 'delegated_execution_berserker', 2, 1, 'pending', 'builder-berserker', 'agent-visible-recovery', 1)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-visible-recovery', 'builder', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-visible-source', ?, 'implementation', 1, 1, 'blocked', 'builder', 'agent-visible-recovery', 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-visible-target', ?, 'implementation', 2, 1, 'pending', 'builder', 'agent-visible-recovery', 1)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-visible-source', 'committed_failure', 'provider_backed', 'server_response', 'timeout', 'Timed out while waiting for the provider.', ?, ?)`, sourceAttemptID, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, 'nr-visible-target', 'queued', 'provider_backed', 'server_response', ?, ?)`, targetAttemptID, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-visible', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-visible-source', ?, 'nr-visible-target', 'policy', 'transient_transport_provider_session', 'timeout', 'Timed out while waiting for the provider.', 0, 'retry', 1, 3, 0, '2026-03-06T10:02:00Z', 'pending', 'chancellor', 'pending', ?)`, runID, sourceAttemptID, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-visible', 'work_order_attempt', ?, 'implementation', 'nr-visible-source', ?, 'nr-visible-target', 'policy', 'transient_transport_provider_session', 'timeout', 'Timed out while waiting for the provider.', 0, 'retry', 1, 3, 0, '2026-03-06T10:02:00Z', 'pending', 'coordinator', 'pending', ?)`, runID, sourceAttemptID, now)
 
 	getNode := func() gen.RunNodeExecution {
 		t.Helper()
@@ -2614,7 +2614,7 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 			t.Fatal(err)
 		}
 		for _, node := range payload.Items {
-			if node.NodeId == "delegated_execution_berserker" {
+			if node.NodeId == "implementation" {
 				return node
 			}
 		}
@@ -2623,7 +2623,7 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 	}
 	assertAttemptRelationshipPhase := func(want string) {
 		t.Helper()
-		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 		var payload gen.RunNodeAttemptsResponse
 		if res.Code != http.StatusOK || json.Unmarshal(res.Body.Bytes(), &payload) != nil {
 			t.Fatalf("list retry relationships: %d %s", res.Code, res.Body.String())
@@ -2656,7 +2656,7 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 		t.Fatalf("fetch graph projection: %d %s", graphRes.Code, graphRes.Body.String())
 	}
 	for _, graphNode := range graph.Nodes {
-		if graphNode.NodeId == "delegated_execution_berserker" && (graphNode.NodeRunId == nil || *graphNode.NodeRunId != "nr-visible-source") {
+		if graphNode.NodeId == "implementation" && (graphNode.NodeRunId == nil || *graphNode.NodeRunId != "nr-visible-source") {
 			t.Fatalf("graph and execution selected different visible attempts: %#v", graphNode)
 		}
 	}
@@ -2666,7 +2666,7 @@ func TestServerListRunExecutionsProjectsVisibleLogicalRecoveryState(t *testing.T
 	if blocked.Failure == nil || blocked.Failure.Code != "timeout" || blocked.Failure.Classification != "transient_transport" || blocked.Failure.Category != "core" || !blocked.Failure.Retryable {
 		t.Fatalf("typed failure mismatch: %#v", blocked.Failure)
 	}
-	attemptsRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+	attemptsRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 	var attempts gen.RunNodeAttemptsResponse
 	if attemptsRes.Code != http.StatusOK || json.Unmarshal(attemptsRes.Body.Bytes(), &attempts) != nil || attempts.CurrentNodeRunId == nil || *attempts.CurrentNodeRunId != "nr-visible-source" || attempts.CurrentAttemptId == nil || *attempts.CurrentAttemptId != sourceAttemptID {
 		t.Fatalf("attempt history must use the same visible lineage: %d %s", attemptsRes.Code, attemptsRes.Body.String())
@@ -2700,10 +2700,10 @@ func TestServerListRunExecutionsProjectsExhaustedRecovery(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	const now = "2026-03-06T10:01:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-exhausted-recovery', 'council-member', 'Council', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES ('nr-exhausted', ?, 'plan_drafting', 1, 1, 'failed', 'council-member', 'agent-exhausted-recovery', 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-exhausted-recovery', 'plan-author', 'Council', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES ('nr-exhausted', ?, 'plan_drafting', 1, 1, 'failed', 'plan-author', 'agent-exhausted-recovery', 1, ?)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-exhausted', ?, 'nr-exhausted', 'committed_failure', 'provider_backed', 'server_response', 'timeout', 'Retry policy is exhausted.', ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-exhausted', 'decree_attempt', ?, 'plan_drafting', 'nr-exhausted', 'attempt-exhausted', 'policy', 'transient_transport', 'timeout', 'Retry policy is exhausted.', 0, 'exhausted', 3, 3, 0, ?, 'not_applicable', 'chancellor', 'escalated', ?, ?)`, runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-exhausted', 'work_order_attempt', ?, 'plan_drafting', 'nr-exhausted', 'attempt-exhausted', 'policy', 'transient_transport', 'timeout', 'Retry policy is exhausted.', 0, 'exhausted', 3, 3, 0, ?, 'not_applicable', 'coordinator', 'escalated', ?, ?)`, runID, now, now, now)
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("list logical executions: %d %s", res.Code, res.Body.String())
@@ -2728,12 +2728,12 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	const now = "2026-03-06T10:01:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-history', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-history', 'builder', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
 	for _, row := range []struct {
 		nodeRunID, attemptID, status string
 		attempt                      int
 	}{{"nr-history-1", "attempt-history-1", "failed", 1}, {"nr-history-2", "attempt-history-2", "succeeded", 2}} {
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, superseded_at) VALUES (?, ?, 'delegated_execution_berserker', ?, 1, ?, 'builder-berserker', 'agent-attempt-history', 1, ?)`, row.nodeRunID, runID, row.attempt, row.status, map[bool]any{true: now, false: nil}[row.attempt == 1])
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, superseded_at) VALUES (?, ?, 'implementation', ?, 1, ?, 'builder', 'agent-attempt-history', 1, ?)`, row.nodeRunID, runID, row.attempt, row.status, map[bool]any{true: now, false: nil}[row.attempt == 1])
 		failureCode, failureText := "", ""
 		if row.attempt == 1 {
 			failureCode, failureText = "timeout", "Timed out while waiting for the provider."
@@ -2743,10 +2743,10 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('invocation-history-2a', 'attempt-history-2', ?, 'nr-history-2', 'superseded', 'server_response', ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('invocation-history-2', 'attempt-history-2', ?, 'nr-history-2', 'settled_success', 'server_response', ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'invocation-history-2' WHERE attempt_id = 'attempt-history-2'`)
-	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2a', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2a', 'builder-berserker', 2, 3, 5, 1, 1, 1, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2', 'builder-berserker', 11, 13, 24, 7, 3, 5, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-1', 'attempt-history-1', 'nr-history-2', 'policy', 'transient_transport_provider_session', 'timeout', 'Timed out while waiting for the provider.', 0, 'retry', 1, 3, 0, '2026-03-06T10:02:00Z', 'pending', 'chancellor', 'pending', ?)`, runID, now)
-	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=1"})
+	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2a', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2a', 'builder', 2, 3, 5, 1, 1, 1, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage-history-2', ?, 'nr-history-2', 'attempt-history-2', 'invocation-history-2', 'builder', 11, 13, 24, 7, 3, 5, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history', 'work_order_attempt', ?, 'implementation', 'nr-history-1', 'attempt-history-1', 'nr-history-2', 'policy', 'transient_transport_provider_session', 'timeout', 'Timed out while waiting for the provider.', 0, 'retry', 1, 3, 0, '2026-03-06T10:02:00Z', 'pending', 'coordinator', 'pending', ?)`, runID, now)
+	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts?limit=1"})
 	if first.Code != http.StatusOK {
 		t.Fatalf("list first history page: %d %s", first.Code, first.Body.String())
 	}
@@ -2775,7 +2775,7 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	if len(firstItem.RetryRelationships) != 1 || firstItem.RetryRelationships[0].Direction != gen.Target || firstItem.RetryRelationships[0].Trigger != gen.RunAttemptRetryRelationshipTriggerAutomaticRetry || firstItem.RetryRelationships[0].SourceAttemptId != "attempt-history-1" || firstItem.RetryRelationships[0].TargetAttemptId == nil || *firstItem.RetryRelationships[0].TargetAttemptId != "attempt-history-2" || firstItem.RetryRelationships[0].ReasonCode != "timeout" {
 		t.Fatalf("enriched target retry lineage mismatch: %#v", firstItem.RetryRelationships)
 	}
-	second := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=1&cursor=" + *firstPage.NextCursor})
+	second := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts?limit=1&cursor=" + *firstPage.NextCursor})
 	var secondPage gen.RunNodeAttemptsResponse
 	if second.Code != http.StatusOK || json.Unmarshal(second.Body.Bytes(), &secondPage) != nil || len(secondPage.Items) != 1 || secondPage.Items[0].AttemptId != "attempt-history-1" {
 		t.Fatalf("unexpected second history page: %d %s", second.Code, second.Body.String())
@@ -2791,7 +2791,7 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	if wrongScope.Code != http.StatusBadRequest {
 		t.Fatalf("expected node-scoped cursor rejection, got %d", wrongScope.Code)
 	}
-	empty := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/royal_closure/attempts"})
+	empty := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/completion/attempts"})
 	if empty.Code != http.StatusOK {
 		t.Fatalf("expected valid empty node history, got %d", empty.Code)
 	}
@@ -2799,7 +2799,7 @@ func TestServerListRunNodeAttemptsPaginatesAndScopesCursor(t *testing.T) {
 	if missing.Code != http.StatusNotFound {
 		t.Fatalf("expected unknown node 404, got %d", missing.Code)
 	}
-	unknownRun := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/missing/nodes/delegated_execution_berserker/attempts"})
+	unknownRun := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/missing/nodes/implementation/attempts"})
 	if unknownRun.Code != http.StatusNotFound {
 		t.Fatalf("expected unknown run 404, got %d", unknownRun.Code)
 	}
@@ -2810,7 +2810,7 @@ func TestServerListRunNodeAttemptsOrdersRetryRelationshipsAndPreservesCurrentLin
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	const now = "2026-03-06T10:01:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-history-lineage', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-history-lineage', 'builder', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
 	for _, row := range []struct {
 		nodeRunID, attemptID, status, state string
 		attempt                             int
@@ -2819,13 +2819,13 @@ func TestServerListRunNodeAttemptsOrdersRetryRelationshipsAndPreservesCurrentLin
 		{"nr-history-lineage-2", "attempt-history-lineage-2", "failed", "committed_failure", 2},
 		{"nr-history-lineage-3", "attempt-history-lineage-3", "ready", "queued", 3},
 	} {
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, ?, 'delegated_execution_berserker', ?, 1, ?, 'builder-berserker', 'agent-history-lineage', 1)`, row.nodeRunID, runID, row.attempt, row.status)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES (?, ?, 'implementation', ?, 1, ?, 'builder', 'agent-history-lineage', 1)`, row.nodeRunID, runID, row.attempt, row.status)
 		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', 'server_response', ?, ?)`, row.attemptID, runID, row.nodeRunID, row.state, now, now)
 	}
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-history-lineage-1', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-lineage-1', 'attempt-history-lineage-1', 'nr-history-lineage-2', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 0, ?, 'dispatched', ?, 'chancellor', 'failed', ?, ?)`, runID, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history-lineage-2', 'decree_attempt', ?, 'delegated_execution_berserker', 'nr-history-lineage-2', 'attempt-history-lineage-2', 'nr-history-lineage-3', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 2, 3, 0, ?, 'pending', 'chancellor', 'pending', ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at) VALUES ('retry-history-lineage-1', 'work_order_attempt', ?, 'implementation', 'nr-history-lineage-1', 'attempt-history-lineage-1', 'nr-history-lineage-2', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 1, 3, 0, ?, 'dispatched', ?, 'coordinator', 'failed', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry-history-lineage-2', 'work_order_attempt', ?, 'implementation', 'nr-history-lineage-2', 'attempt-history-lineage-2', 'nr-history-lineage-3', 'policy', 'transient_transport_provider_session', 'timeout', 'retry', 0, 'retry', 2, 3, 0, ?, 'pending', 'coordinator', 'pending', ?)`, runID, now, now)
 
-	pageResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?limit=3"})
+	pageResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts?limit=3"})
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("list attempt history: %d %s", pageResponse.Code, pageResponse.Body.String())
 	}
@@ -2848,8 +2848,8 @@ func TestServerListRunNodeAttemptsOrdersRetryRelationshipsAndPreservesCurrentLin
 	if !ok {
 		t.Fatal("test handler is not a server")
 	}
-	cursor := server.encodeRunNodeAttemptsCursor(runID, "delegated_execution_berserker", runNodeAttemptsCursor{Attempt: 1, NodeRunID: "nr-history-lineage-1"})
-	emptyResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts?cursor=" + cursor})
+	cursor := server.encodeRunNodeAttemptsCursor(runID, "implementation", runNodeAttemptsCursor{Attempt: 1, NodeRunID: "nr-history-lineage-1"})
+	emptyResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts?cursor=" + cursor})
 	if emptyResponse.Code != http.StatusOK {
 		t.Fatalf("list empty attempt history: %d %s", emptyResponse.Code, emptyResponse.Body.String())
 	}
@@ -2867,13 +2867,13 @@ func TestServerListRunExecutionsOrdersLogicalNodesByCurrentActivity(t *testing.T
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	const now = "2026-03-06T10:00:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-logical-order', 'king', 'King', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-builder', ?, 'delegated_execution_berserker', 1, 1, 'starting', 'builder-berserker', 'agent-logical-order', 1, '2026-03-06T10:02:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-review', ?, 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent-logical-order', 1, '2026-03-06T10:03:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-validation', ?, 'validation_gates_qa_scout', 1, 1, 'blocked', 'intelligence-qa-scout', 'agent-logical-order', 1, '2026-03-06T11:00:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-logical-order-plan', ?, 'plan_drafting', 1, 1, 'ready', 'council-member', 'agent-logical-order', 1)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-logical-order', 'governance', 'Governance', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-builder', ?, 'implementation', 1, 1, 'starting', 'builder', 'agent-logical-order', 1, '2026-03-06T10:02:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-review', ?, 'execution_review', 1, 1, 'running', 'reviewer', 'agent-logical-order', 1, '2026-03-06T10:03:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr-logical-order-validation', ?, 'quality_validation', 1, 1, 'blocked', 'qa-validator', 'agent-logical-order', 1, '2026-03-06T11:00:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr-logical-order-plan', ?, 'plan_drafting', 1, 1, 'ready', 'plan-author', 'agent-logical-order', 1)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('attempt-logical-order-plan', ?, 'nr-logical-order-plan', 'queued', 'provider_backed', 'server_response', '2026-03-06T10:50:00Z', '2026-03-06T10:50:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES ('nr-logical-order-closure', ?, 'royal_closure', 1, 1, 'succeeded', 'king', 'agent-logical-order', 1, '2026-03-06T12:00:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES ('nr-logical-order-closure', ?, 'completion', 1, 1, 'succeeded', 'governance', 'agent-logical-order', 1, '2026-03-06T12:00:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
@@ -2887,7 +2887,7 @@ func TestServerListRunExecutionsOrdersLogicalNodesByCurrentActivity(t *testing.T
 	for _, item := range payload.Items {
 		got = append(got, item.NodeId)
 	}
-	want := []string{"execution_review_shieldmaiden", "delegated_execution_berserker", "validation_gates_qa_scout", "plan_drafting", "execution_kickoff", "royal_closure"}
+	want := []string{"execution_review", "implementation", "quality_validation", "plan_drafting", "execution_kickoff", "completion"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("expected server current-activity order %v, got %v", want, got)
 	}
@@ -2900,11 +2900,11 @@ func TestServerListRunExecutionsUsesVerifyingStatusForPendingSettlement(t *testi
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-recovery', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-recovery', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-builder-recovery', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-builder-recovery', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-recovery', 'ses-builder-recovery', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-recovery', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-recovery', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-builder-recovery', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-builder-recovery', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-recovery', 'ses-builder-recovery', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2921,7 +2921,7 @@ func TestServerListRunExecutionsUsesVerifyingStatusForPendingSettlement(t *testi
 	if len(payload.Items) != 1 {
 		t.Fatalf("expected 1 execution, got %#v", payload.Items)
 	}
-	if payload.Items[0].AttemptID != runID+`:delegated_execution_berserker:1` {
+	if payload.Items[0].AttemptID != runID+`:implementation:1` {
 		t.Fatalf("unexpected execution payload: %#v", payload.Items[0])
 	}
 	if payload.Items[0].Status != "verifying" {
@@ -2936,11 +2936,11 @@ func TestServerListRunExecutionsUsesBlockedStatusFromNodeState(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-blocked', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-blocked', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-blocked', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-builder-blocked', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-blocked', 'ses-builder-blocked', ?, ?, ?, ?, 'dependency_blocked', 'validator blocked', ?, ?)`, runID, now, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-blocked', 'builder', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-blocked', ?, 'implementation', 1, 1, 'blocked', 'builder', 'agent-builder-blocked', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-builder-blocked', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-blocked', 'ses-builder-blocked', ?, ?, ?, ?, 'dependency_blocked', 'validator blocked', ?, ?)`, runID, now, now, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2964,11 +2964,11 @@ func TestServerListRunExecutionsUsesPausedStatusOnlyWhileStaleCancellationIsPend
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
-	attemptID := runID + `:delegated_execution_berserker:1`
+	attemptID := runID + `:implementation:1`
 	store := executionstore.New(db)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-paused', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-paused', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-paused', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-paused', 'builder', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-paused', ?, 'implementation', 1, 1, 'blocked', 'builder', 'agent-builder-paused', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-paused', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-paused', 'ses-builder-paused', ?, ?, ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now, now, now)
 	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
 		CancelOutboxID: "cancel-builder-paused",
@@ -2987,7 +2987,7 @@ func TestServerListRunExecutionsUsesPausedStatusOnlyWhileStaleCancellationIsPend
 
 	assertExecutionStatus := func(expectedStatus, expectedHandoffState string) {
 		t.Helper()
-		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 		}
@@ -3028,11 +3028,11 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
-	attemptID := runID + `:execution_review_shieldmaiden:1`
+	attemptID := runID + `:execution_review:1`
 	execStore := executionstore.New(db)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-detail', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-detail', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-review-detail', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-detail', 'reviewer', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-detail', ?, 'execution_review', 1,1, 'failed', 'reviewer', 'agent-review-detail', 1, ?, ?)`, runID, now, now)
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:         attemptID,
 		RunID:             runID,
@@ -3118,7 +3118,7 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 		ExpectedLeaseOwner:   claim.LeaseOwner,
 		ExpectedLeaseVersion: claim.LeaseVersion,
 		TerminalHandoffID:    handoff.Handoff.HandoffID,
-		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "reviewer-shieldmaiden"},
+		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "reviewer"},
 		Terminal: executionstore.CommitTerminalRequest{
 			OutboxID:           "outbox-review-detail",
 			AttemptID:          attemptID,
@@ -3157,7 +3157,7 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode run execution detail payload: %v", err)
 	}
-	if payload.AttemptID != attemptID || payload.NodeID != "execution_review_shieldmaiden" {
+	if payload.AttemptID != attemptID || payload.NodeID != "execution_review" {
 		t.Fatalf("unexpected execution detail payload: %#v", payload)
 	}
 	if payload.ProviderInvocationID == nil || *payload.ProviderInvocationID != "inv-review-detail" {
@@ -3199,12 +3199,12 @@ func TestServerGetRunExecutionIgnoresPendingOutboxOutputWithoutCanonicalSettleme
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-pending-detail', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-pending-detail', ?, 'execution_review_shieldmaiden', 1,1, 'running', 'reviewer-shieldmaiden', 'agent-review-pending-detail', 1, ?, NULL)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:execution_review_shieldmaiden:1', ?, 'nr-review-pending-detail', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-review-pending-detail', 'ses-review-pending-detail', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES ('outbox-review-pending-detail', ?, ?, 'nr-review-pending-detail', 1, 'committed_success', ?, 'pending', 0, '', ?, ?, NULL)`, runID+`:execution_review_shieldmaiden:1`, runID, `{"provider_invocation_id":"inv-review-pending-detail","provider_invocation_at":"2026-03-01T12:59:59Z","output_text":"Context summary\nVERDICT: PASS\n\nCaptured reviewer response."}`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-pending-detail', 'reviewer', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-pending-detail', ?, 'execution_review', 1,1, 'running', 'reviewer', 'agent-review-pending-detail', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:execution_review:1', ?, 'nr-review-pending-detail', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session-review-pending-detail', 'ses-review-pending-detail', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES ('outbox-review-pending-detail', ?, ?, 'nr-review-pending-detail', 1, 'committed_success', ?, 'pending', 0, '', ?, ?, NULL)`, runID+`:execution_review:1`, runID, `{"provider_invocation_id":"inv-review-pending-detail","provider_invocation_at":"2026-03-01T12:59:59Z","output_text":"Context summary\nVERDICT: PASS\n\nCaptured reviewer response."}`, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:execution_review_shieldmaiden:1`})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:execution_review:1`})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3252,10 +3252,10 @@ func TestServerGetRunExecutionReturnsDurableProgressFields(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
-	attemptID := runID + `:execution_review_shieldmaiden:1`
+	attemptID := runID + `:execution_review:1`
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-progress-detail', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-progress-detail', ?, 'execution_review_shieldmaiden', 1,1, 'starting', 'reviewer-shieldmaiden', 'agent-review-progress-detail', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-review-progress-detail', 'reviewer', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-progress-detail', ?, 'execution_review', 1,1, 'starting', 'reviewer', 'agent-review-progress-detail', 1, NULL, NULL)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, progress_event_type, progress_reason_code, progress_at, created_at, updated_at) VALUES (?, ?, 'nr-review-progress-detail', 'starting', 'provider_backed', 'server_response', '', NULL, 1, 'session-review-progress-detail', '', ?, NULL, NULL, NULL, '', '', 'attempt.progress', 'provider_invoked', ?, ?, ?)`, attemptID, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
@@ -3314,8 +3314,8 @@ func TestServerGetRunExecutionTreatsCommittedProviderAttemptsWithoutInvocationAs
 		attemptID := fmt.Sprintf("attempt-provider-settlement-pending-%d", idx+1)
 		nodeRunID := fmt.Sprintf("nr-provider-settlement-pending-%d", idx+1)
 		agentID := fmt.Sprintf("agent-provider-settlement-pending-%d", idx+1)
-		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review_shieldmaiden', ?, 1, 'running', 'reviewer-shieldmaiden', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, agentID, now, now)
+		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer', 'Reviewer', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review', ?, 1, 'running', 'reviewer', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, agentID, now, now)
 		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', 'server_response', '', NULL, 1, ?, ?, ?, ?, ?, '', '', ?, ?)`, attemptID, runID, nodeRunID, tt.state, fmt.Sprintf("session-%d", idx+1), fmt.Sprintf("ses-%d", idx+1), now, now, now, now, now)
 
 		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
@@ -3363,8 +3363,8 @@ func TestServerGetRunExecutionTreatsCommittedProviderFailuresWithInvocationAsTer
 		attemptID := fmt.Sprintf("attempt-provider-terminal-with-invocation-%d", idx+1)
 		nodeRunID := fmt.Sprintf("nr-provider-terminal-with-invocation-%d", idx+1)
 		agentID := fmt.Sprintf("agent-provider-terminal-with-invocation-%d", idx+1)
-		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review_shieldmaiden', ?, 1, ?, 'reviewer-shieldmaiden', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, tt.expectedNodeState, agentID, now, now)
+		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer', 'Reviewer', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review', ?, 1, ?, 'reviewer', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, tt.expectedNodeState, agentID, now, now)
 		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', 'server_response', '', NULL, 1, ?, ?, ?, ?, ?, 'provider_incomplete_turn', 'terminalized before settlement linked', ?, ?)`, attemptID, runID, nodeRunID, tt.state, fmt.Sprintf("session-%d", idx+1), fmt.Sprintf("ses-%d", idx+1), now, now, now, now, now)
 		execStore := executionstore.New(db)
 		if _, err := execStore.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
@@ -3455,14 +3455,14 @@ func TestServerListRunExecutionsOrdersByActivityAt(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder Berserker', 1, ?)`, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-order-builder', 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-order-old', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-order-builder', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-order-newer-start', ?, 'delegated_execution_berserker', 2,2, 'running', 'builder-berserker', 'agent-order-builder', 1, '2026-03-01T12:01:00Z', NULL)`, runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-order-old', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 0, 'session-order-old', 'ses-order-old', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', 'provider_process_failed', 'older start, latest activity', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`, runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:2', ?, 'nr-order-newer-start', 'running', 'provider_backed', 'server_response', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session-order-new', 'ses-order-new', '2026-03-01T12:01:00Z', NULL, NULL, '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:04:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder Builder', 1, ?)`, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-order-builder', 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-order-old', ?, 'implementation', 1,1, 'failed', 'builder', 'agent-order-builder', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-order-newer-start', ?, 'implementation', 2,2, 'running', 'builder', 'agent-order-builder', 1, '2026-03-01T12:01:00Z', NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-order-old', 'committed_failure', 'provider_backed', 'server_response', '', NULL, 0, 'session-order-old', 'ses-order-old', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', 'provider_process_failed', 'older start, latest activity', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:2', ?, 'nr-order-newer-start', 'running', 'provider_backed', 'server_response', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session-order-new', 'ses-order-new', '2026-03-01T12:01:00Z', NULL, NULL, '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:04:00Z')`, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/delegated_execution_berserker/attempts"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/nodes/implementation/attempts"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3479,7 +3479,7 @@ func TestServerListRunExecutionsOrdersByActivityAt(t *testing.T) {
 	if len(payload.Items) < 2 {
 		t.Fatalf("expected at least 2 executions, got %#v", payload.Items)
 	}
-	if payload.Items[0].AttemptID != runID+`:delegated_execution_berserker:2` {
+	if payload.Items[0].AttemptID != runID+`:implementation:2` {
 		t.Fatalf("expected newest physical attempt first, got %#v", payload.Items)
 	}
 	if payload.Items[0].ActivityAt != "2026-03-01T12:04:00Z" {
@@ -3494,10 +3494,10 @@ func TestServerListRunAgentsPreservesUnavailableStatuses(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-offline', 'council-member', 'Offline Scout', 'offline', 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-failed', 'council-member', 'Failed Scout', 'failed', 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-offline', 'council-member', 'Offline Scout', NULL, 0, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-failed', 'council-member', 'Failed Scout', NULL, 0, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-offline', 'plan-author', 'Offline Scout', 'offline', 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-failed', 'plan-author', 'Failed Scout', 'failed', 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-offline', 'plan-author', 'Offline Scout', NULL, 0, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-failed', 'plan-author', 'Failed Scout', NULL, 0, ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents"})
 	if res.Code != http.StatusOK {
@@ -3533,10 +3533,10 @@ func TestServerRunAgentApisPreserveHistoricalMembershipSnapshots(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('allfather', 'Allfather', 0, ?)`, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-role-transition-api', 'allfather', 'Transition Agent', 'idle', 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-role-transition-api', 'allfather', 'Transition Agent', NULL, 0, ?)`, runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-role-transition-api', ?, 'plan_drafting', 1,1, 'running', 'council-member', 'agent-role-transition-api', 1, ?, NULL)`, runID, now)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, ?)`, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, spawn_depth, created_at, updated_at) VALUES ('agent-role-transition-api', 'operator', 'Transition Agent', 'idle', 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-role-transition-api', 'operator', 'Transition Agent', NULL, 0, ?)`, runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-role-transition-api', ?, 'plan_drafting', 1,1, 'running', 'plan-author', 'agent-role-transition-api', 1, ?, NULL)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-role-transition-api', ?, 'agent-role-transition-api', 'agent-role-transition-api', 'thread-role-transition-api', 'status_update', 'normal', '{}', ?)`, runID, now)
 
 	assertRunAgentAPIState := func(expectedCount int) {
@@ -3573,10 +3573,10 @@ func TestServerRunAgentApisPreserveHistoricalMembershipSnapshots(t *testing.T) {
 
 	assertRunAgentAPIState(0)
 
-	mustExecSQL(t, db, `UPDATE agents SET role_id = 'council-member', updated_at = ? WHERE agent_id = 'agent-role-transition-api'`, time.Now().UTC().Add(time.Second).Format(time.RFC3339))
+	mustExecSQL(t, db, `UPDATE agents SET role_id = 'plan-author', updated_at = ? WHERE agent_id = 'agent-role-transition-api'`, time.Now().UTC().Add(time.Second).Format(time.RFC3339))
 	assertRunAgentAPIState(0)
 
-	mustExecSQL(t, db, `UPDATE agents SET role_id = 'allfather', updated_at = ? WHERE agent_id = 'agent-role-transition-api'`, time.Now().UTC().Add(2*time.Second).Format(time.RFC3339))
+	mustExecSQL(t, db, `UPDATE agents SET role_id = 'operator', updated_at = ? WHERE agent_id = 'agent-role-transition-api'`, time.Now().UTC().Add(2*time.Second).Format(time.RFC3339))
 	assertRunAgentAPIState(0)
 }
 
@@ -3602,7 +3602,7 @@ func TestServerListRunExecutionsReturnsNotFoundForUnknownRun(t *testing.T) {
 	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
 }
 
-func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
+func TestServerRunExecutionActivityReturnsAppendOnlyScopedRevisions(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -3611,25 +3611,27 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 	const attemptID = "attempt-activity-1"
 	const otherAttemptID = "attempt-activity-2"
 	now := "2026-06-14T10:00:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-1', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_1', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_2', ?, 'delegated_execution_berserker', 2,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-1', 'builder', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_1', ?, 'implementation', 1,1, 'succeeded', 'builder', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_2', ?, 'implementation', 2,1, 'succeeded', 'builder', 'agent-attempt-activity-1', 1, ?, ?)`, runID, now, now)
 	seedAttemptExecution(t, db, attemptID, runID, "nr_attempt_activity_1", "2026-06-14T10:00:00Z")
 	seedAttemptExecution(t, db, otherAttemptID, runID, "nr_attempt_activity_2", "2026-06-14T10:00:00Z")
 	insertActivityEvent := func(eventID, attempt string, runEventSeq, seq int, payloadJSON string) {
 		t.Helper()
-		mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, NULL, ?, 'v1', 'attempt.activity', ?, ?, 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', ?, ?, ?, '2026-06-14T10:00:00Z')`,
+		mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, ?, NULL, ?, 'v1', 'attempt.activity', ?, ?, 'runtime_orchestrator', 'builder', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', ?, ?, ?, '2026-06-14T10:00:00Z')`,
 			eventID, runID, runEventSeq, attempt, seq, payloadJSON, "caus-"+eventID, "prev-"+eventID, "entry-"+eventID)
 	}
 
 	insertActivityEvent("evt-act-r1", attemptID, 9001, 1, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
 	insertActivityEvent("evt-act-t1", attemptID, 9002, 2, `{"kind":"kingdom.tool","activity_id":"part-t1","tool_name":"read","tool_status":"completed","tool_title":"foo.go","occurred_at":"2026-06-14T10:00:02Z"}`)
-	// Same provider part streamed again — must collapse to one item on read.
+	// Each immutable observation remains available; clients merge by sequence.
 	insertActivityEvent("evt-act-r1-dup", attemptID, 9003, 3, `{"kind":"kingdom.reasoning","activity_id":"part-r1","detail":"Considering layout","occurred_at":"2026-06-14T10:00:01Z"}`)
 	// A different attempt's activity must not leak into this attempt's feed.
 	insertActivityEvent("evt-act-other", otherAttemptID, 9004, 1, `{"kind":"kingdom.reasoning","activity_id":"part-other","detail":"Other","occurred_at":"2026-06-14T10:00:03Z"}`)
 	// A coarse lifecycle event for the same attempt must be ignored by the activity feed.
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-progress', ?, 9005, NULL, ?, 'v1', 'attempt.progress', 4, '{"step":1}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_invoked', 'progress', 'corr-activity', 'caus-act-progress', 'prev-act-progress', 'entry-act-progress', '2026-06-14T10:00:04Z')`, runID, attemptID)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-progress', ?, 9005, NULL, ?, 'v1', 'attempt.progress', 4, '{"step":1}', 'runtime_orchestrator', 'builder', 'runtime.orchestrator', 'provider_invoked', 'progress', 'corr-activity', 'caus-act-progress', 'prev-act-progress', 'entry-act-progress', '2026-06-14T10:00:04Z')`, runID, attemptID)
+
+	insertActivityEvent("evt-act-message", attemptID, 9006, 5, `{"kind":"kingdom.message","activity_id":"message-part","invocation_id":"inv-message","provider_part_id":"message-part","message":{"availability":"available","preview":"Actual provider reply","byte_length":21,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","content_url":"/runs/scoped/content/message"}}`)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -3643,14 +3645,22 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode activity response: %v", err)
 	}
-	if len(response.Items) != 2 {
-		t.Fatalf("expected 2 deduped activity items for the attempt, got %d: %#v", len(response.Items), response.Items)
+	if len(response.Items) != 4 {
+		t.Fatalf("expected 4 append-only activity observations for the attempt, got %d: %#v", len(response.Items), response.Items)
 	}
-	if response.Items[0].Id != "part-r1" || response.Items[0].Kind != gen.Thinking {
+	if response.Items[0].Id != "part-r1" || response.Items[0].Kind != gen.AcpRunActivityItemKindThinking {
 		t.Fatalf("expected first item to be reasoning part-r1, got %#v", response.Items[0])
 	}
-	if response.Items[1].Id != "part-t1" || response.Items[1].Kind != gen.Tool {
+	if response.Items[1].Id != "part-t1" || response.Items[1].Kind != gen.AcpRunActivityItemKindTool {
 		t.Fatalf("expected second item to be tool part-t1, got %#v", response.Items[1])
+	}
+
+	if response.Items[2].Id != "part-r1" || response.Items[2].Sequence != 3 || response.Items[2].EventId != "evt-act-r1-dup" {
+		t.Fatalf("lost later activity revision: %+v", response.Items[2])
+	}
+
+	if response.Items[3].Kind != gen.AcpRunActivityItemKindMessage || response.Items[3].Message.Preview == nil || *response.Items[3].Message.Preview != "Actual provider reply" {
+		t.Fatalf("message omitted from run activity: %+v", response.Items[3])
 	}
 
 	// The coarse timeline must never surface activity events.
@@ -3696,10 +3706,10 @@ func TestServerRunExecutionActivityReturnsNotFoundForMismatchedRunAttempt(t *tes
 	otherRunID := seedRunWithCustomPlanDraftingWorkflow(t, handler, "plan_drafting_cross_run")
 	const attemptID = "attempt-activity-cross-run"
 	now := "2026-06-14T10:00:00Z"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-cross-run', 'builder-berserker', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_cross_run', ?, 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent-attempt-activity-cross-run', 1, ?, ?)`, otherRunID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-attempt-activity-cross-run', 'builder', 'Builder', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_attempt_activity_cross_run', ?, 'implementation', 1,1, 'succeeded', 'builder', 'agent-attempt-activity-cross-run', 1, ?, ?)`, otherRunID, now, now)
 	seedAttemptExecution(t, db, attemptID, otherRunID, "nr_attempt_activity_cross_run", "2026-06-14T10:00:00Z")
-	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-cross-run', ?, 9001, NULL, ?, 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","activity_id":"part-cross-run","detail":"Other run","occurred_at":"2026-06-14T10:00:01Z"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', 'caus-cross-run', 'prev-cross-run', 'entry-cross-run', '2026-06-14T10:00:00Z')`, otherRunID, attemptID)
+	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-cross-run', ?, 9001, NULL, ?, 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","activity_id":"part-cross-run","detail":"Other run","occurred_at":"2026-06-14T10:00:01Z"}', 'runtime_orchestrator', 'builder', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', 'caus-cross-run', 'prev-cross-run', 'entry-cross-run', '2026-06-14T10:00:00Z')`, otherRunID, attemptID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,

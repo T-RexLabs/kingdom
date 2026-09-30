@@ -3,6 +3,50 @@ import { describe, expect, it } from "vitest";
 import { HorizontalBarChart } from "./horizontal-bar-chart";
 
 describe("horizontal bar chart", () => {
+  it("puts each label and value above a full-width track instead of reserving a label gutter", () => {
+    const { container, getByText } = render(
+      <HorizontalBarChart
+        data={[
+          { label: "Architecture Advisor With a Long Department Name", value: 42 },
+          { label: "Reviewer", value: 21 },
+        ]}
+      />,
+    );
+
+    const label = getByText("Architecture Advisor With a Long Department Name");
+    const value = getByText("42");
+    const bar = container.querySelector<HTMLElement>(".bar");
+    const rowHeader = label.parentElement;
+    expect(rowHeader).toContainElement(value);
+    expect(rowHeader).not.toContainElement(bar);
+    expect(rowHeader?.nextElementSibling).toContainElement(bar);
+    expect(bar?.parentElement).toHaveClass("w-full");
+    expect(rowHeader?.parentElement).toHaveStyle({ minHeight: "40px" });
+  });
+
+  it("retains long labels and values in a responsive chart without fixed SVG margins", () => {
+    const label = "Architecture Advisor With a Long Department Name";
+    const value = "1,234,567,890,123";
+    const { container, getByText, getByRole } = render(
+      <HorizontalBarChart
+        width={180}
+        data={[{ label, value: 1234567890123 }, { label: "Reviewer", value: 0 }]}
+        formatValue={() => value}
+      />,
+    );
+
+    expect(getByText(label)).toBeVisible();
+    expect(getByText(label)).toHaveClass("break-words");
+    expect(container.querySelector("svg")).toBeNull();
+    expect(getByRole("img")).toHaveClass("max-w-full");
+    const values = Array.from(container.querySelectorAll(".value"));
+    expect(values[0]).toHaveTextContent(value);
+    expect(values[0]).toHaveClass("break-all");
+    const bars = container.querySelectorAll<HTMLElement>(".bar");
+    expect(bars[0].style.width).toBe("100%");
+    expect(bars[1].style.width).toBe("0%");
+  });
+
   it("reuses bars and labels across value updates", () => {
     const { container, rerender } = render(
       <HorizontalBarChart
@@ -14,9 +58,9 @@ describe("horizontal bar chart", () => {
       />,
     );
 
-    const firstBarBefore = container.querySelector("rect.bar");
-    const firstLabelBefore = container.querySelector("text.label");
-    const firstValueBefore = container.querySelector("text.value");
+    const firstBarBefore = container.querySelector(".bar");
+    const firstLabelBefore = container.querySelector(".label");
+    const firstValueBefore = container.querySelector(".value");
 
     expect(firstBarBefore).toBeTruthy();
     expect(firstLabelBefore).toBeTruthy();
@@ -32,37 +76,46 @@ describe("horizontal bar chart", () => {
       />,
     );
 
-    expect(container.querySelector("rect.bar")).toBe(firstBarBefore);
-    expect(container.querySelector("text.label")).toBe(firstLabelBefore);
-    expect(container.querySelector("text.value")).toBe(firstValueBefore);
-    expect(container.querySelector("text.value")?.textContent).toBe("55");
+    expect(container.querySelector(".bar")).toBe(firstBarBefore);
+    expect(container.querySelector(".label")).toBe(firstLabelBefore);
+    expect(container.querySelector(".value")).toBe(firstValueBefore);
+    expect(container.querySelector(".value")?.textContent).toBe("55");
   });
 
-  it("expands left margin for long role labels", () => {
-    const { container } = render(
+  it("preserves proportional bars with long role labels", () => {
+    const { container, getByRole } = render(
       <HorizontalBarChart
         width={520}
         data={[
           {
-            label: "Intelligence NightRaven Extended Role Label For Visibility",
+            label: "Architecture Advisor With an Extended Role Label",
             value: 42,
           },
+          { label: "Reviewer", value: 21 },
         ]}
       />,
     );
 
-    const chartGroup = container.querySelector("svg g");
-    expect(chartGroup).toBeTruthy();
-    if (!chartGroup) {
-      throw new Error("expected chart group to be rendered");
-    }
+    const bars = container.querySelectorAll<HTMLElement>(".bar");
+    expect(bars[0].style.width).toBe("100%");
+    expect(bars[1].style.width).toBe("50%");
+    expect(getByRole("img")).toHaveAccessibleDescription(
+      "Architecture Advisor With an Extended Role Label: 42; Reviewer: 21",
+    );
+  });
 
-    const transform = chartGroup.getAttribute("transform") ?? "";
-    const match = transform.match(/translate\((\d+),/);
-    expect(match).toBeTruthy();
-    const leftMargin = Number(match?.[1] ?? 0);
-    expect(leftMargin).toBeGreaterThan(120);
-    expect(leftMargin).toBeLessThan(280);
+  it("scales subsecond durations across the full track", () => {
+    const { container } = render(
+      <HorizontalBarChart
+        data={[
+          { label: "Builder", value: 0.5 },
+          { label: "Reviewer", value: 0.25 },
+        ]}
+      />,
+    );
+    const bars = container.querySelectorAll<HTMLElement>(".bar");
+    expect(bars[0].style.width).toBe("100%");
+    expect(bars[1].style.width).toBe("50%");
   });
 
   it("uses explicit empty-state height for vertical centering", () => {
@@ -99,9 +152,9 @@ describe("horizontal bar chart", () => {
 			/>,
 		);
 
-		const bar = container.querySelector("rect.bar");
+		const bar = container.querySelector<HTMLElement>(".bar");
 		expect(bar).toBeTruthy();
-		expect(Number(bar?.getAttribute("width") ?? Number.NaN)).toBe(0);
+		expect(bar?.style.width).toBe("0%");
 	});
 
   it("exposes an accessible chart label", () => {

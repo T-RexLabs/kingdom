@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 
 export const BASE_SPEED = 3;
 export const CATCHUP_THRESHOLD = 100;
@@ -6,6 +6,20 @@ export const CATCHUP_DIVISOR = 15;
 export const DRAIN_DIVISOR = 5;
 export const DRAIN_MIN_SPEED = 10;
 export const THROTTLE_MS = 30;
+
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
+
+function prefersReducedMotion() {
+  return typeof window !== "undefined" && typeof window.matchMedia === "function"
+    && window.matchMedia(REDUCED_MOTION_QUERY).matches;
+}
+
+function subscribeReducedMotion(onChange: () => void) {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return () => {};
+  const query = window.matchMedia(REDUCED_MOTION_QUERY);
+  query.addEventListener("change", onChange);
+  return () => query.removeEventListener("change", onChange);
+}
 
 type RevealMode = "baseline" | "zero";
 
@@ -35,7 +49,11 @@ function reconcileRevealState(
   targetText: string,
   isStreaming: boolean,
   mode: RevealMode,
+  reducedMotion: boolean,
 ): RevealState {
+  if (reducedMotion && (state.isStreamActive || state.displayText !== targetText)) {
+    return initialRevealState(targetText, false, mode);
+  }
   if (state.targetText === targetText && state.isStreaming === isStreaming && state.mode === mode) {
     return state;
   }
@@ -73,6 +91,7 @@ function reconcileRevealState(
  * `isStreamActive = false` so the caller can switch to markdown rendering.
  *
  * When `isStreaming` is false on mount the hook is a no-op.
+ * Reduced motion shows the full current text immediately and schedules no reveal.
  *
  * **Target shrink safety**: `targetText` can shrink mid-stream (e.g. when
  * `parseStreamingQuestion` strips a partial structured_question block from
@@ -88,10 +107,12 @@ export function useTextReveal(
   isStreaming: boolean,
   mode: RevealMode = "baseline",
 ) {
-  const [revealState, setRevealState] = useState(() => initialRevealState(targetText, isStreaming, mode));
+  const reducedMotion = useSyncExternalStore(subscribeReducedMotion, prefersReducedMotion, () => false);
+  const animateStream = isStreaming && !reducedMotion;
+  const [revealState, setRevealState] = useState(() => initialRevealState(targetText, animateStream, mode));
   const lastRenderRef = useRef(0);
 
-  const reconciledState = reconcileRevealState(revealState, targetText, isStreaming, mode);
+  const reconciledState = reconcileRevealState(revealState, targetText, animateStream, mode, reducedMotion);
   if (reconciledState !== revealState) {
     setRevealState(reconciledState);
   }
@@ -113,14 +134,14 @@ export function useTextReveal(
       setRevealState((current) => {
         if (
           current.targetText !== targetText ||
-          current.isStreaming !== isStreaming ||
+          current.isStreaming !== animateStream ||
           current.mode !== mode
         ) {
           return current;
         }
 
         const behind = targetText.length - current.cursor;
-        const speed = isStreaming
+        const speed = animateStream
           ? behind > CATCHUP_THRESHOLD
             ? Math.max(BASE_SPEED, Math.ceil(behind / CATCHUP_DIVISOR))
             : BASE_SPEED
@@ -131,7 +152,7 @@ export function useTextReveal(
           ...current,
           cursor,
           displayText: targetText.slice(0, cursor),
-          isStreamActive: isStreaming || cursor < targetText.length,
+          isStreamActive: animateStream || cursor < targetText.length,
         };
       });
     };
@@ -143,7 +164,7 @@ export function useTextReveal(
         cancelAnimationFrame(rafId);
       }
     };
-  }, [isStreaming, mode, reconciledState.cursor, reconciledState.isStreamActive, targetText]);
+  }, [animateStream, mode, reconciledState.cursor, reconciledState.isStreamActive, targetText]);
 
   const safeDisplayText = reconciledState.isStreamActive
     ? (targetText.startsWith(reconciledState.displayText) ? reconciledState.displayText : targetText)

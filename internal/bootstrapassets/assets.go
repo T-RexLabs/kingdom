@@ -182,7 +182,7 @@ func ValidateManagedOpenCodeAgentProfiles(overlayRoot string) error {
 }
 
 func ValidateManagedOpenCodePlannerAssets(overlayRoot string) error {
-	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planner.md"}, "managed opencode planner profile")
+	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planning-assistant.md"}, "managed opencode planner profile")
 }
 
 func writeDir(sourceDir string, canonicalDir string, targetDir string, force bool) error {

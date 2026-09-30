@@ -52,61 +52,71 @@ func roleSet(roles ...string) map[string]struct{} {
 }
 
 var canonicalNodeContracts = map[string]canonicalNodeContract{
-	NodeClassDecreeIntake: {
+	NodeClassWorkIntake: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
-		requiredRoles: roleSet("king"),
+		requiredRoles: roleSet("governance"),
 	},
 	NodeClassAdvisorConsultation: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("noble-delegate", "clergy-delegate", "burgher-delegate", "peasant-delegate"),
+		requiredRoles: roleSet("architecture-advisor", "risk-advisor", "systems-advisor", "usability-advisor"),
 	},
 	NodeClassAdvisorySynthesis: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("chancellor"),
+		requiredRoles: roleSet("coordinator"),
 	},
 	NodeClassPlanDrafting: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("council-member"),
+		requiredRoles: roleSet("plan-author"),
 	},
-	NodeClassKingPlanDecision: {
+	NodeClassPlanDecision: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect, WaitsForRecordedPlanDecision: true},
-		requiredRoles: roleSet("king"),
+		requiredRoles: roleSet("governance"),
 	},
 	NodeClassExecutionKickoff: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
-		requiredRoles: roleSet("council-member"),
+		requiredRoles: roleSet("plan-author"),
 	},
 	NodeClassDelegatedExecution: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("builder-berserker"),
+		requiredRoles: roleSet("builder"),
 	},
 	NodeClassExecutionReview: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("reviewer-shieldmaiden"),
+		requiredRoles: roleSet("reviewer"),
 	},
 	NodeClassValidationGates: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
-		requiredRoles: roleSet("intelligence-qa-scout", "intelligence-nightraven", "intelligence-loki-chaos"),
+		requiredRoles: roleSet("qa-validator", "security-validator", "resilience-validator"),
 	},
-	NodeClassRoyalClosure: {
+	NodeClassCompletion: {
 		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipRuntimeOwned, ProviderCompletionMode: ProviderCompletionModeNotApplicable, ArtifactPersistence: NodeArtifactPersistenceDirect},
-		requiredRoles: roleSet("king"),
+		requiredRoles: roleSet("governance"),
 	},
 }
 
 func CanonicalNodeClassForNodeID(nodeID string) string {
 	value := strings.TrimSpace(strings.ToLower(nodeID))
+	// Built-in node names describe their purpose; execution classes describe
+	// their authority and settlement contract. Keep that mapping canonical.
+	switch value {
+	case "architecture_consultation", "risk_consultation", "systems_consultation", "usability_consultation":
+		return NodeClassAdvisorConsultation
+	case "implementation":
+		return NodeClassDelegatedExecution
+	case "quality_validation", "security_validation", "resilience_validation":
+		return NodeClassValidationGates
+	}
 	for _, classID := range []string{
-		NodeClassDecreeIntake,
+		NodeClassWorkIntake,
 		NodeClassAdvisorConsultation,
 		NodeClassAdvisorySynthesis,
 		NodeClassPlanDrafting,
-		NodeClassKingPlanDecision,
+		NodeClassPlanDecision,
 		NodeClassExecutionKickoff,
 		NodeClassDelegatedExecution,
 		NodeClassExecutionReview,
 		NodeClassValidationGates,
-		NodeClassRoyalClosure,
+		NodeClassCompletion,
 	} {
 		if value == classID || strings.HasPrefix(value, classID+"_") {
 			return classID

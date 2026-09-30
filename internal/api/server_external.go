@@ -602,10 +602,10 @@ func (s *Server) handleGetExternalSourceSnapshot(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, map[string]any{"snapshot_id": snapshot.SnapshotID, "source_id": snapshot.SourceID, "issue": snapshot.Issue, "profile": snapshot.Profile, "provider_updated_at": snapshot.ProviderUpdatedAt, "fetched_at": snapshot.FetchedAt, "comment_count": snapshot.ProviderCommentCount, "fetched_comment_count": snapshot.FetchedCommentCount, "fetched_comment_pages": snapshot.FetchedCommentPages, "omitted_comment_count": snapshot.OmittedCommentCount, "omitted_comment_pages": snapshot.OmittedCommentPages, "retained_comment_count": snapshot.RetainedCommentCount, "retained_comment_bytes": snapshot.RetainedCommentBytes, "comments_truncated": snapshot.CommentsTruncated})
 }
 
-// handleGetExternalSourceDecreeText renders a captured issue as the decree text
+// handleGetExternalSourceWorkOrderText renders a captured issue as the work order text
 // an operator is about to review.
 //
-// Importing an issue prefilled the decree from the issue body alone, so ticking
+// Importing an issue prefilled the work order from the issue body alone, so ticking
 // "Include Comments" bought GitHub round-trips and an audit row and changed
 // nothing about what the agents would execute — comments were consumed only by
 // planning sessions, and nothing in the orchestrator has ever read them. They
@@ -614,24 +614,24 @@ func (s *Server) handleGetExternalSourceSnapshot(w http.ResponseWriter, r *http.
 //
 // Rendering walks immutable comments incrementally and stages the response on
 // disk. It applies no content budget and never publishes a hidden prefix.
-func (s *Server) handleGetExternalSourceDecreeText(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetExternalSourceWorkOrderText(w http.ResponseWriter, r *http.Request) {
 	snapshot, err := s.externalStore.GetSnapshotMetadata(r.Context(), r.PathValue("id"))
 	if err != nil {
-		writeExternalError(w, err, "api.get_external_decree_text")
+		writeExternalError(w, err, "api.get_external_work_order_text")
 		return
 	}
 	err = writeExternalResponse(w, func(out io.Writer) error {
 		if _, err := io.WriteString(out, `{"markdown":"`); err != nil {
 			return err
 		}
-		if err := writeDecreeText(r.Context(), externalJSONStringWriter{out}, snapshot, s.externalStore.SnapshotComments(snapshot.SnapshotID)); err != nil {
+		if err := writeWorkOrderText(r.Context(), externalJSONStringWriter{out}, snapshot, s.externalStore.SnapshotComments(snapshot.SnapshotID)); err != nil {
 			return err
 		}
 		_, err := io.WriteString(out, `"}`)
 		return err
 	})
 	if err != nil {
-		s.writeInternalError(w, "render external decree text failed")
+		s.writeInternalError(w, "render external work order text failed")
 	}
 }
 
@@ -648,13 +648,13 @@ func (w externalJSONStringWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// renderDecreeText is the issue body, plus the retained comments when the
+// renderWorkOrderText is the issue body, plus the retained comments when the
 // operator asked for them.
 //
 // Both issue content and comments are framed and attributed rather than merged
 // into operator-authored instructions. That distinction must survive once the
-// text becomes the decree agents execute against.
-func writeDecreeText(ctx context.Context, out io.Writer, snapshot state.ExternalSourceSnapshot, comments state.ExternalCommentSource) error {
+// text becomes the work order agents execute against.
+func writeWorkOrderText(ctx context.Context, out io.Writer, snapshot state.ExternalSourceSnapshot, comments state.ExternalCommentSource) error {
 	write := func(s string) error { _, err := io.WriteString(out, s); return err }
 	body := strings.TrimRight(snapshot.Issue.Body, "\n")
 	hasBody := strings.TrimSpace(body) != ""
@@ -1033,8 +1033,8 @@ func compareExternalResult(ctx context.Context, old state.ExternalSourceSnapshot
 	return changes, same, nil
 }
 func refreshMessage(outcome string, v state.ExternalLinkSummary) string {
-	if v.TargetKind == "decree" && outcome == "changed" {
-		return "The GitHub source changed; this decree was not changed."
+	if v.TargetKind == "work_order" && outcome == "changed" {
+		return "The GitHub source changed; this work order was not changed."
 	}
 	switch outcome {
 	case "changed":

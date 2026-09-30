@@ -16,25 +16,25 @@ import (
 	"kingdom/internal/state"
 )
 
-func TestCreateDecreeRejectsUnknownExternalSnapshotWithoutPersisting(t *testing.T) {
+func TestCreateWorkOrderRejectsUnknownExternalSnapshotWithoutPersisting(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
-	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-unknown-external-snapshot", body: map[string]any{"decree_title": "Linked", "decree_text": "Text", "external_source_snapshot_id": "does-not-exist"}})
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "work-order-unknown-external-snapshot", body: map[string]any{"work_order_title": "Linked", "work_order_text": "Text", "external_source_snapshot_id": "does-not-exist"}})
 	if response.Code != http.StatusNotFound {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Linked'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_title='Linked'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
-		t.Fatal("decree persisted despite missing external snapshot")
+		t.Fatal("work order persisted despite missing external snapshot")
 	}
 }
 
-func TestCreateDecreeRejectsPlanningLineageWithDirectSnapshot(t *testing.T) {
+func TestCreateWorkOrderRejectsPlanningLineageWithDirectSnapshot(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
-	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-mixed-provenance", body: map[string]any{
-		"decree_title": "Mixed", "decree_text": "Text", "external_source_snapshot_id": "snapshot-direct",
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "work-order-mixed-provenance", body: map[string]any{
+		"work_order_title": "Mixed", "work_order_text": "Text", "external_source_snapshot_id": "snapshot-direct",
 		"planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a"},
 	}})
 	if response.Code != http.StatusBadRequest {
@@ -42,30 +42,30 @@ func TestCreateDecreeRejectsPlanningLineageWithDirectSnapshot(t *testing.T) {
 	}
 	assertErrorCode(t, response.Body.Bytes(), "policy_violation")
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Mixed'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_title='Mixed'`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
-		t.Fatal("mixed provenance request persisted a decree")
+		t.Fatal("mixed provenance request persisted a work order")
 	}
 }
 
-func TestCreateDecreeMapsInvalidPlanningLineageToBadRequest(t *testing.T) {
+func TestCreateWorkOrderMapsInvalidPlanningLineageToBadRequest(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
-	seedAPIDecreeLineage(t, db)
+	seedAPIWorkOrderLineage(t, db)
 	tests := []struct {
-		name      string
-		lineage   map[string]any
-		decreeKey string
+		name         string
+		lineage      map[string]any
+		workOrderKey string
 	}{
-		{name: "cross-session draft", decreeKey: "cross-draft", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-b"}},
-		{name: "formalize missing context binding", decreeKey: "missing-context", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-unbound"}},
-		{name: "failed formalize", decreeKey: "failed-formalize", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-failed"}},
-		{name: "non-formalize", decreeKey: "reply-operation", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-reply"}},
+		{name: "cross-session draft", workOrderKey: "cross-draft", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-b"}},
+		{name: "formalize missing context binding", workOrderKey: "missing-context", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-unbound"}},
+		{name: "failed formalize", workOrderKey: "failed-formalize", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-failed"}},
+		{name: "non-formalize", workOrderKey: "reply-operation", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-reply"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "invalid-lineage-" + test.decreeKey, body: map[string]any{"decree_title": test.decreeKey, "decree_text": "Text", "planning_lineage": test.lineage}})
+			response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "invalid-lineage-" + test.workOrderKey, body: map[string]any{"work_order_title": test.workOrderKey, "work_order_text": "Text", "planning_lineage": test.lineage}})
 			if response.Code != http.StatusBadRequest {
 				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 			}
@@ -73,18 +73,18 @@ func TestCreateDecreeMapsInvalidPlanningLineageToBadRequest(t *testing.T) {
 		})
 	}
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title IN ('cross-draft','missing-context','failed-formalize','reply-operation')`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_title IN ('cross-draft','missing-context','failed-formalize','reply-operation')`).Scan(&count); err != nil {
 		t.Fatal(err)
 	}
 	if count != 0 {
-		t.Fatalf("invalid lineage persisted %d decrees", count)
+		t.Fatalf("invalid lineage persisted %d work orders", count)
 	}
 }
 
-func TestCreateDecreeRejectsClientSuppliedPlanningContextLineage(t *testing.T) {
+func TestCreateWorkOrderRejectsClientSuppliedPlanningContextLineage(t *testing.T) {
 	handler, _ := newAPIServerForTest(t)
-	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "client-context-lineage", body: map[string]any{
-		"decree_title": "Invalid", "decree_text": "Text",
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "client-context-lineage", body: map[string]any{
+		"work_order_title": "Invalid", "work_order_text": "Text",
 		"planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a", "planning_context_snapshot_id": "context-a"},
 	}})
 	if response.Code != http.StatusBadRequest {
@@ -92,9 +92,9 @@ func TestCreateDecreeRejectsClientSuppliedPlanningContextLineage(t *testing.T) {
 	}
 }
 
-func TestCreateDecreeMapsDuplicateDerivedSourceToConflictAtomically(t *testing.T) {
+func TestCreateWorkOrderMapsDuplicateDerivedSourceToConflictAtomically(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
-	seedAPIDecreeLineage(t, db)
+	seedAPIWorkOrderLineage(t, db)
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -116,20 +116,20 @@ func TestCreateDecreeMapsDuplicateDerivedSourceToConflictAtomically(t *testing.T
 		mustExecSQL(t, db, `INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES ('operation-good',?,?,?,0,0,?)`, snapshotID, state.ExternalAssemblerVersion, strings.Repeat("0", 64), at)
 	}
 
-	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-source-conflict", body: map[string]any{"decree_title": "Conflict", "decree_text": "Text", "planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a"}}})
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", idempotencyKey: "work-order-source-conflict", body: map[string]any{"work_order_title": "Conflict", "work_order_text": "Text", "planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a"}}})
 	if response.Code != http.StatusConflict {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	assertErrorCode(t, response.Body.Bytes(), "idempotency_conflict")
-	var decrees, links int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Conflict'`).Scan(&decrees); err != nil {
+	var workOrders, links int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_title='Conflict'`).Scan(&workOrders); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='decree'`).Scan(&links); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='work_order'`).Scan(&links); err != nil {
 		t.Fatal(err)
 	}
-	if decrees != 0 || links != 0 {
-		t.Fatalf("conflict escaped transaction: decrees=%d links=%d", decrees, links)
+	if workOrders != 0 || links != 0 {
+		t.Fatalf("conflict escaped transaction: work orders=%d links=%d", workOrders, links)
 	}
 }
 
@@ -140,19 +140,19 @@ func TestServerReplaysIdempotentMutations(t *testing.T) {
 
 	first := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Replay",
-			"decree_text":  "Same body",
+			"work_order_title": "Replay",
+			"work_order_text":  "Same body",
 		},
 		idempotencyKey: "idem-replay",
 	})
 	second := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Replay",
-			"decree_text":  "Same body",
+			"work_order_title": "Replay",
+			"work_order_text":  "Same body",
 		},
 		idempotencyKey: "idem-replay",
 	})
@@ -161,17 +161,17 @@ func TestServerReplaysIdempotentMutations(t *testing.T) {
 		t.Fatalf("expected 201 responses, got first=%d second=%d", first.Code, second.Code)
 	}
 
-	var firstBody gen.CreateDecreeResult
+	var firstBody gen.CreateWorkOrderResult
 	if err := json.Unmarshal(first.Body.Bytes(), &firstBody); err != nil {
 		t.Fatalf("decode first response: %v", err)
 	}
-	var secondBody gen.CreateDecreeResult
+	var secondBody gen.CreateWorkOrderResult
 	if err := json.Unmarshal(second.Body.Bytes(), &secondBody); err != nil {
 		t.Fatalf("decode second response: %v", err)
 	}
 
-	if firstBody.DecreeId != secondBody.DecreeId {
-		t.Fatalf("expected same decree id on replay, got first=%q second=%q", firstBody.DecreeId, secondBody.DecreeId)
+	if firstBody.WorkOrderId != secondBody.WorkOrderId {
+		t.Fatalf("expected same work order id on replay, got first=%q second=%q", firstBody.WorkOrderId, secondBody.WorkOrderId)
 	}
 
 	if !firstBody.CreatedAt.UTC().Equal(firstBody.CreatedAt) {
@@ -219,7 +219,7 @@ func TestServerPublishWorkflowDistinguishesExactAndDifferentExistingDefinitions(
 			"version":     "v1",
 			"workflow_id": "wf-seed-conflict-v1",
 			"nodes": []map[string]any{{
-				"node_id": nodeID, "required_role": "council-member", "node_class": "execution_kickoff",
+				"node_id": nodeID, "required_role": "plan-author", "node_class": "execution_kickoff",
 			}},
 			"edges": []map[string]any{},
 		}
@@ -272,7 +272,7 @@ func TestServerPublishWorkflowRejectsUnknownDefinitionFields(t *testing.T) {
 				"workflow_id": "wf-unknown-field-v1",
 				"nodes": []map[string]any{{
 					"node_id":       "kickoff",
-					"required_role": "council-member",
+					"required_role": "plan-author",
 					"node_class":    "execution_kickoff",
 					"unexpected":    true,
 				}},
@@ -304,7 +304,7 @@ func TestServerPublishWorkflowRejectsInvalidNodeClass(t *testing.T) {
 				"workflow_id": "wf-invalid-node-class-v1",
 				"nodes": []map[string]any{{
 					"node_id":       "kickoff",
-					"required_role": "council-member",
+					"required_role": "plan-author",
 					"node_class":    "totally_unknown_class",
 				}},
 				"edges": []map[string]any{},
@@ -324,18 +324,18 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: repoRootForAPITests(t)})
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/decrees",
-		body:           map[string]any{"decree_title": "D", "decree_text": "T"},
-		idempotencyKey: "idem-rework-decree",
+		path:           "/api/v1/work-orders",
+		body:           map[string]any{"work_order_title": "D", "work_order_text": "T"},
+		idempotencyKey: "idem-rework-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("expected decree 201, got %d", decreeRes.Code)
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("expected work order 201, got %d", workOrderRes.Code)
 	}
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -349,7 +349,7 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{{
 					"node_id":       "kickoff",
-					"required_role": "council-member",
+					"required_role": "plan-author",
 					"node_class":    "execution_kickoff",
 				}},
 				"edges": []map[string]any{},
@@ -365,7 +365,7 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decree.DecreeId,
+			"work_order_id":   workOrder.WorkOrderId,
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -379,8 +379,8 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode run: %v", err)
 	}
-	if run.DecreeTitle != "D" {
-		t.Fatalf("expected decree title D, got %q", run.DecreeTitle)
+	if run.WorkOrderTitle != "D" {
+		t.Fatalf("expected work order title D, got %q", run.WorkOrderTitle)
 	}
 }
 
@@ -389,18 +389,18 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: repoRootForAPITests(t)})
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/decrees",
-		body:           map[string]any{"decree_title": "Loop", "decree_text": "Mode"},
-		idempotencyKey: "idem-loop-mode-decree",
+		path:           "/api/v1/work-orders",
+		body:           map[string]any{"work_order_title": "Loop", "work_order_text": "Mode"},
+		idempotencyKey: "idem-loop-mode-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("expected decree 201, got %d", decreeRes.Code)
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("expected work order 201, got %d", workOrderRes.Code)
 	}
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -415,17 +415,17 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 				"nodes": []map[string]any{
 					{
 						"node_id":       "builder",
-						"required_role": "builder-berserker",
+						"required_role": "builder",
 						"node_class":    "delegated_execution",
 					},
 					{
 						"node_id":       "review",
-						"required_role": "reviewer-shieldmaiden",
+						"required_role": "reviewer",
 						"node_class":    "execution_review",
 					},
 					{
 						"node_id":       "validation",
-						"required_role": "intelligence-qa-scout",
+						"required_role": "qa-validator",
 						"node_class":    "validation_gates",
 					},
 				},
@@ -445,7 +445,7 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":                    decree.DecreeId,
+			"work_order_id":                workOrder.WorkOrderId,
 			"publish_mode":                 "direct",
 			"model_selection":              defaultTestRunModelSelectionBody(),
 			"run_until_all_approve":        true,
@@ -489,14 +489,14 @@ func TestServerCreateRunPersistsPublishMode(t *testing.T) {
 
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: repoRootForAPITests(t)})
 
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decreeID,
+			"work_order_id":   workOrderID,
 			"publish_mode":    "git_worktree",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -528,7 +528,7 @@ func TestServerCreateRunDefaultsReviewLoopsToZeroWhenWorkflowOmitsQualityGates(t
 
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: repoRootForAPITests(t)})
 
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	publishRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/workflows/publish",
@@ -541,18 +541,18 @@ func TestServerCreateRunDefaultsReviewLoopsToZeroWhenWorkflowOmitsQualityGates(t
 				"nodes": []map[string]any{
 					{
 						"node_id":       "kickoff",
-						"required_role": "council-member",
+						"required_role": "plan-author",
 						"node_class":    "execution_kickoff",
 					},
 					{
 						"node_id":       "builder",
-						"required_role": "builder-berserker",
+						"required_role": "builder",
 						"node_class":    "delegated_execution",
 					},
 					{
 						"node_id":       "close",
-						"required_role": "king",
-						"node_class":    "royal_closure",
+						"required_role": "governance",
+						"node_class":    "completion",
 					},
 				},
 				"edges": []map[string]any{
@@ -571,7 +571,7 @@ func TestServerCreateRunDefaultsReviewLoopsToZeroWhenWorkflowOmitsQualityGates(t
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":                    decreeID,
+			"work_order_id":                workOrderID,
 			"publish_mode":                 "direct",
 			"skip_reviews_and_validations": true,
 			"model_selection":              defaultTestRunModelSelectionBody(),
@@ -613,7 +613,7 @@ func TestServerCreateRunPersistsZeroCycleOverridesWhenQualityGatesExist(t *testi
 
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: repoRootForAPITests(t)})
 
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	publishRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/workflows/publish",
@@ -630,17 +630,17 @@ func TestServerCreateRunPersistsZeroCycleOverridesWhenQualityGatesExist(t *testi
 				"nodes": []map[string]any{
 					{
 						"node_id":       "builder",
-						"required_role": "builder-berserker",
+						"required_role": "builder",
 						"node_class":    "delegated_execution",
 					},
 					{
 						"node_id":       "review",
-						"required_role": "reviewer-shieldmaiden",
+						"required_role": "reviewer",
 						"node_class":    "execution_review",
 					},
 					{
 						"node_id":       "validation",
-						"required_role": "intelligence-qa-scout",
+						"required_role": "qa-validator",
 						"node_class":    "validation_gates",
 					},
 				},
@@ -660,7 +660,7 @@ func TestServerCreateRunPersistsZeroCycleOverridesWhenQualityGatesExist(t *testi
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":                    decreeID,
+			"work_order_id":                workOrderID,
 			"publish_mode":                 "direct",
 			"model_selection":              defaultTestRunModelSelectionBody(),
 			"max_execution_review_cycles":  0,
@@ -722,18 +722,18 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 	}}
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/decrees",
-		body:           map[string]any{"decree_title": "Model", "decree_text": "Selection"},
-		idempotencyKey: "idem-model-select-decree",
+		path:           "/api/v1/work-orders",
+		body:           map[string]any{"work_order_title": "Model", "work_order_text": "Selection"},
+		idempotencyKey: "idem-model-select-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("expected decree 201, got %d", decreeRes.Code)
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("expected work order 201, got %d", workOrderRes.Code)
 	}
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -747,7 +747,7 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{{
 					"node_id":       "kickoff",
-					"required_role": "council-member",
+					"required_role": "plan-author",
 					"node_class":    "execution_kickoff",
 				}},
 				"edges": []map[string]any{},
@@ -763,15 +763,15 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decree.DecreeId,
-			"publish_mode": "direct",
+			"work_order_id": workOrder.WorkOrderId,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"global": map[string]any{
 					"model":           "github-copilot/gpt-5.3-codex",
 					"thinking_effort": "high",
 				},
 				"role_overrides": map[string]any{
-					"reviewer-shieldmaiden": map[string]any{
+					"reviewer": map[string]any{
 						"model":           "opencode/gpt-5-nano",
 						"thinking_effort": "minimal",
 					},
@@ -794,10 +794,10 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 	if summary.ModelSelection.Global.ThinkingEffort == nil || *summary.ModelSelection.Global.ThinkingEffort != "high" {
 		t.Fatalf("expected global thinking effort in response, got %#v", summary.ModelSelection.Global)
 	}
-	if summary.ModelSelection.RoleOverrides == nil || (*summary.ModelSelection.RoleOverrides)["reviewer-shieldmaiden"].Model != "opencode/gpt-5-nano" {
+	if summary.ModelSelection.RoleOverrides == nil || (*summary.ModelSelection.RoleOverrides)["reviewer"].Model != "opencode/gpt-5-nano" {
 		t.Fatalf("expected reviewer role override in response, got %#v", summary.ModelSelection)
 	}
-	if effort := (*summary.ModelSelection.RoleOverrides)["reviewer-shieldmaiden"].ThinkingEffort; effort == nil || *effort != "minimal" {
+	if effort := (*summary.ModelSelection.RoleOverrides)["reviewer"].ThinkingEffort; effort == nil || *effort != "minimal" {
 		t.Fatalf("expected reviewer thinking effort in response, got %#v", summary.ModelSelection)
 	}
 
@@ -812,7 +812,7 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 	if storedSelection.Global.Model != "github-copilot/gpt-5.3-codex" {
 		t.Fatalf("expected stored global selection, got %#v", storedSelection)
 	}
-	if storedSelection.RoleOverrides == nil || (*storedSelection.RoleOverrides)["reviewer-shieldmaiden"].Model != "opencode/gpt-5-nano" {
+	if storedSelection.RoleOverrides == nil || (*storedSelection.RoleOverrides)["reviewer"].Model != "opencode/gpt-5-nano" {
 		t.Fatalf("expected stored reviewer selection, got %#v", storedSelection)
 	}
 }
@@ -821,15 +821,15 @@ func TestServerCreateRunRejectsUnknownAgentModelOverrideRole(t *testing.T) {
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrderID,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"role_overrides": map[string]any{
 					"unknown-role": map[string]any{
@@ -849,15 +849,15 @@ func TestServerCreateRunRequiresModelSelectionWhenProviderEngineIsOpenCode(t *te
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrderID,
+			"publish_mode":  "direct",
 		},
 		idempotencyKey: "idem-model-required",
 	})
@@ -880,15 +880,15 @@ func TestServerCreateRunRejectsUnavailableGlobalModel(t *testing.T) {
 		ThinkingEffortOptions: []gen.ThinkingEffortOption{{Value: "low", Label: "Low"}},
 	}}}
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrderID,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"global": map[string]any{
 					"model": "github-copilot/gpt-5.4-mini",
@@ -916,18 +916,18 @@ func TestServerCreateRunRejectsUnavailableAgentModelOverride(t *testing.T) {
 		ThinkingEffortOptions: []gen.ThinkingEffortOption{{Value: "medium", Label: "Medium"}},
 	}}}
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrderID,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"role_overrides": map[string]any{
-					"reviewer-shieldmaiden": map[string]any{
+					"reviewer": map[string]any{
 						"model": "github-copilot/gpt-5.4-mini",
 					},
 				},
@@ -938,7 +938,7 @@ func TestServerCreateRunRejectsUnavailableAgentModelOverride(t *testing.T) {
 	if runRes.Code != http.StatusBadRequest {
 		t.Fatalf("expected run 400 for unavailable role model, got %d (%s)", runRes.Code, runRes.Body.String())
 	}
-	if !strings.Contains(runRes.Body.String(), "reviewer-shieldmaiden") || !strings.Contains(runRes.Body.String(), "github-copilot/gpt-5.4-mini") {
+	if !strings.Contains(runRes.Body.String(), "reviewer") || !strings.Contains(runRes.Body.String(), "github-copilot/gpt-5.4-mini") {
 		t.Fatalf("expected role/model validation message, got %s", runRes.Body.String())
 	}
 }
@@ -948,15 +948,15 @@ func TestServerCreateRunReturnsServiceUnavailableWhenModelCatalogLookupFails(t *
 
 	mockCatalog := staticProviderModelCatalog{err: &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonTimeout, cause: context.DeadlineExceeded}}
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog})
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	runRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":    decreeID,
-			"publish_mode": "direct",
+			"work_order_id": workOrderID,
+			"publish_mode":  "direct",
 			"model_selection": map[string]any{
 				"global": map[string]any{
 					"model": "github-copilot/gpt-5.3-codex",
@@ -976,12 +976,12 @@ func TestServerCreateRunReturnsWhenRequestContextIsCancelledDuringModelCatalogLo
 
 	called := make(chan struct{})
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: blockingProviderModelCatalog{called: called}})
-	decreeID := seedDecree(t, handler)
+	workOrderID := seedWorkOrder(t, handler)
 	seedWorkflow(t, handler, workflow.DefaultWorkflowID)
 
 	rawBody, err := json.Marshal(map[string]any{
-		"decree_id":    decreeID,
-		"publish_mode": "direct",
+		"work_order_id": workOrderID,
+		"publish_mode":  "direct",
 		"model_selection": map[string]any{
 			"global": map[string]any{
 				"model": "github-copilot/gpt-5.3-codex",
@@ -1055,11 +1055,11 @@ func TestServerCreateRunPersistsAutonomousApprovalsOverride(t *testing.T) {
 	}
 }
 
-func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
+func TestServerWorkOrderMetadataLineageSurvivesCreation(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
-	seedAPIDecreeLineage(t, db)
+	seedAPIWorkOrderLineage(t, db)
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1080,10 +1080,10 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 	}
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Planner lineage decree",
-			"decree_text":  "Issue from selected planner draft",
+			"work_order_title": "Planner lineage work order",
+			"work_order_text":  "Issue from selected planner draft",
 			"metadata": map[string]any{
 				"priority":                     "high",
 				"planning_session_id":          "untrusted-session",
@@ -1095,59 +1095,59 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 				"planning_draft_id":   "draft-a",
 			},
 		},
-		idempotencyKey: "idem-decree-lineage",
+		idempotencyKey: "idem-work-order-lineage",
 	})
 	if createRes.Code != http.StatusCreated {
-		t.Fatalf("expected create decree 201, got %d (%s)", createRes.Code, createRes.Body.String())
+		t.Fatalf("expected create work order 201, got %d (%s)", createRes.Code, createRes.Body.String())
 	}
 
-	var created gen.CreateDecreeResult
+	var created gen.CreateWorkOrderResult
 	if err := json.Unmarshal(createRes.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode create decree result: %v", err)
+		t.Fatalf("decode create work order result: %v", err)
 	}
 
 	getRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
-		path:   "/api/v1/decrees/" + created.DecreeId,
+		path:   "/api/v1/work-orders/" + created.WorkOrderId,
 	})
 	if getRes.Code != http.StatusOK {
-		t.Fatalf("expected get decree 200, got %d (%s)", getRes.Code, getRes.Body.String())
+		t.Fatalf("expected get work order 200, got %d (%s)", getRes.Code, getRes.Body.String())
 	}
 
-	var decree gen.DecreeDetail
-	if err := json.Unmarshal(getRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree detail: %v", err)
+	var workOrder gen.WorkOrderDetail
+	if err := json.Unmarshal(getRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order detail: %v", err)
 	}
-	if decree.Metadata == nil {
-		t.Fatal("expected decree metadata to be present")
+	if workOrder.Metadata == nil {
+		t.Fatal("expected work order metadata to be present")
 	}
-	metadata := *decree.Metadata
+	metadata := *workOrder.Metadata
 	if metadata["priority"] != "high" || metadata["planning_session_id"] != "session-a" || metadata["planning_draft_id"] != "draft-a" || metadata["planning_context_snapshot_id"] != "context-a" {
 		t.Fatalf("expected planner lineage metadata to survive, got %#v", metadata)
 	}
-	if len(decree.ExternalSources) != 2 {
-		t.Fatalf("expected both formalize-bound sources, got %#v", decree.ExternalSources)
+	if len(workOrder.ExternalSources) != 2 {
+		t.Fatalf("expected both formalize-bound sources, got %#v", workOrder.ExternalSources)
 	}
 	snapshots := map[string]bool{}
-	for _, source := range decree.ExternalSources {
+	for _, source := range workOrder.ExternalSources {
 		snapshots[source.UsedSnapshotId] = true
 	}
 	if !snapshots["snapshot-a"] || !snapshots["snapshot-b"] {
-		t.Fatalf("decree detail hid formalize provenance: %#v", decree.ExternalSources)
+		t.Fatalf("work order detail hid formalize provenance: %#v", workOrder.ExternalSources)
 	}
 	if strings.Contains(getRes.Body.String(), `"external_source":`) {
-		t.Fatalf("decree detail retained dead singular provenance: %s", getRes.Body.String())
+		t.Fatalf("work order detail retained dead singular provenance: %s", getRes.Body.String())
 	}
 }
 
-func seedAPIDecreeLineage(t *testing.T, db *sql.DB) {
+func seedAPIWorkOrderLineage(t *testing.T, db *sql.DB) {
 	t.Helper()
 	at := "2026-08-12T10:00:00Z"
 	for _, sessionID := range []string{"session-a", "session-b"} {
 		mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES (?,?,'custom','active','ready','/tmp','{}',?,?)`, sessionID, sessionID, at, at)
 	}
 	for _, draft := range []struct{ id, session string }{{"draft-a", "session-a"}, {"draft-b", "session-b"}, {"draft-failed", "session-a"}, {"draft-reply", "session-a"}, {"draft-unbound", "session-a"}} {
-		mustExecSQL(t, db, `INSERT INTO planning_drafts (planning_draft_id,planning_session_id,decree_title,decree_text,summary_json,created_at) VALUES (?,?,?,?,'{}',?)`, draft.id, draft.session, draft.id, "text", at)
+		mustExecSQL(t, db, `INSERT INTO planning_drafts (planning_draft_id,planning_session_id,work_order_title,work_order_text,summary_json,created_at) VALUES (?,?,?,?,'{}',?)`, draft.id, draft.session, draft.id, "text", at)
 	}
 	for _, contextSnapshot := range []struct{ id, session string }{{"context-a", "session-a"}, {"context-b", "session-b"}} {
 		mustExecSQL(t, db, `INSERT INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES (?,?,?,'[]','[]',?)`, contextSnapshot.id, contextSnapshot.session, "context", at)

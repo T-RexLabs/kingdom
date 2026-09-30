@@ -84,10 +84,10 @@ func TestMaintenanceOutboxScanAdvancesPastBusyBatch(t *testing.T) {
 		result.occurredAt = time.Date(2026, 9, 30, 11, 59, i, 0, time.UTC).Format(time.RFC3339Nano)
 		mustExec(t, loop.db, fmt.Sprintf(`INSERT INTO workflow_nodes
 			(workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at)
-			VALUES (%q, 'wfdef_1', %q, 'king', 'decree_intake', '2026-09-30T11:59:00Z')`, "wn_"+result.node.NodeID, result.node.NodeID))
+			VALUES (%q, 'wfdef_1', %q, 'governance', 'work_intake', '2026-09-30T11:59:00Z')`, "wn_"+result.node.NodeID, result.node.NodeID))
 		mustExec(t, loop.db, fmt.Sprintf(`INSERT INTO node_runs
 			(node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at)
-			VALUES (%q, 'run_1', %q, 1, 1, 'running', 'king', 'agent_king', 1, '2026-09-30T11:59:00Z')`, result.attempt.NodeRunID, result.node.NodeID))
+			VALUES (%q, 'run_1', %q, 1, 1, 'running', 'governance', 'agent_governance', 1, '2026-09-30T11:59:00Z')`, result.attempt.NodeRunID, result.node.NodeID))
 		seedCompletionTimestampOutbox(t, loop.db, result)
 		if i <= executionOutboxPassLimit {
 			if !loop.markExecutionInflight(result.attemptID, result.run.RunID) {

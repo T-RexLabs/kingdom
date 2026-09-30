@@ -17,8 +17,8 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-a', 'chancellor', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-b', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-a', 'coordinator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-b', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-mail-1",
@@ -73,7 +73,7 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 		"thread-mail-2",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"instruction_dispatched","reason_code":"COUNCIL_SCOPE_DRIFT","instruction_full":"council response drifted into implementation claims; return planning-only recommendations"}`,
+		`{"message_source":"communication","communication_type":"instruction_dispatched","reason_code":"PLANNING_SCOPE_DRIFT","instruction_full":"council response drifted into implementation claims; return planning-only recommendations"}`,
 		"2026-03-02T20:04:30Z",
 	)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
@@ -156,8 +156,8 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 	if instructionItem.Format != "plain_text" {
 		t.Fatalf("expected plain_text format, got %s", instructionItem.Format)
 	}
-	if instructionItem.FromName != "Chancellor" || instructionItem.ToName != "Council Member" {
-		t.Fatalf("expected resolved mailbox names Chancellor -> Council Member, got %q -> %q", instructionItem.FromName, instructionItem.ToName)
+	if instructionItem.FromName != "Coordinator" || instructionItem.ToName != "Plan Author" {
+		t.Fatalf("expected resolved mailbox names Coordinator -> Plan Author, got %q -> %q", instructionItem.FromName, instructionItem.ToName)
 	}
 	if instructionItem.Source != "communication" {
 		t.Fatalf("expected mailbox source communication, got %q", instructionItem.Source)
@@ -279,8 +279,8 @@ func TestServerRunMailboxMessageEndpoints(t *testing.T) {
 	if !strings.Contains(detail.Content, "Begin implementation") {
 		t.Fatalf("expected detail content to include communication body")
 	}
-	if detail.FromName != "Chancellor" || detail.ToName != "Council Member" {
-		t.Fatalf("expected detail mailbox names Chancellor -> Council Member, got %q -> %q", detail.FromName, detail.ToName)
+	if detail.FromName != "Coordinator" || detail.ToName != "Plan Author" {
+		t.Fatalf("expected detail mailbox names Coordinator -> Plan Author, got %q -> %q", detail.FromName, detail.ToName)
 	}
 	if detail.Source != "communication" {
 		t.Fatalf("expected detail source communication, got %q", detail.Source)
@@ -311,8 +311,8 @@ func TestServerRunMailboxMessagesReturnsLatestCommunicationWindow(t *testing.T) 
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-old-a', 'chancellor', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-old-b', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-old-a', 'coordinator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-old-b', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 
 	for i := 0; i < 120; i++ {
 		createdAt := fmt.Sprintf("2026-03-02T20:%02d:%02dZ", (i/60)%60, i%60)
@@ -373,11 +373,11 @@ func TestServerMarkRunMailboxMessageReadRejectsCrossRunMessageID(t *testing.T) {
 	runA := seedRunViaAPI(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
 	runB := "run-cross-scope-b"
-	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at)
-		SELECT ?, decree_id, workflow_definition_id, run_status, plan_state, 1, ?, ?
+	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at)
+		SELECT ?, work_order_id, workflow_definition_id, run_status, plan_state, 1, ?, ?
 		FROM workflow_runs WHERE run_id = ?`, runB, now, now, runA)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-cross-run-a', 'chancellor', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-cross-run-b', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-cross-run-a', 'coordinator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-cross-run-b', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-cross-run",
 		runB,
@@ -415,8 +415,8 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-reviewer', 'reviewer-shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-reviewer', 'reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-review-pass",
@@ -426,7 +426,7 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		"thread-review",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review_shieldmaiden","reason_code":"execution_completed","response_full":"VERDICT: PASS\nLooks good."}`,
+		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review","reason_code":"execution_completed","response_full":"VERDICT: PASS\nLooks good."}`,
 		"2026-03-03T10:00:00Z",
 	)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
@@ -437,7 +437,7 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		"thread-review-invalid",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review_shieldmaiden","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
+		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
 		"2026-03-03T10:01:00Z",
 	)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
@@ -448,7 +448,7 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		"thread-validation",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
+		`{"message_source":"communication","communication_type":"response_received","node_id":"quality_validation","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
 		"2026-03-03T10:02:00Z",
 	)
 
@@ -526,8 +526,8 @@ func TestServerRunMailboxMessageDetailCarriesStructuredVerdictFields(t *testing.
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-reviewer-detail', 'reviewer-shieldmaiden', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-detail', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-reviewer-detail', 'reviewer', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-detail', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-review-cap-detail",
 		runID,
@@ -536,7 +536,7 @@ func TestServerRunMailboxMessageDetailCarriesStructuredVerdictFields(t *testing.
 		"thread-review-detail",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review_shieldmaiden","reason_code":"execution_review_cap_auto_succeeded","response_full":"Review cycle cap reached; auto-succeeded."}`,
+		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review","reason_code":"execution_review_cap_auto_succeeded","response_full":"Review cycle cap reached; auto-succeeded."}`,
 		"2026-03-03T10:02:00Z",
 	)
 
@@ -574,8 +574,8 @@ func TestServerRunMailboxMessagesPreferAutoSucceededReasonOverStaleExplicitRewor
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-validation-cap-a', 'intelligence-qa-scout', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-cap-a', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-validation-cap-a', 'qa-validator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-council-cap-a', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-validation-cap-overrides-rework",
 		runID,
@@ -584,7 +584,7 @@ func TestServerRunMailboxMessagesPreferAutoSucceededReasonOverStaleExplicitRewor
 		"thread-validation-cap-a",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"validation_gate_cap_auto_succeeded","response_full":"VERDICT: REWORK\n\nOriginal validator body should remain visible."}`,
+		`{"message_source":"communication","communication_type":"response_received","node_id":"quality_validation","reason_code":"validation_gate_cap_auto_succeeded","response_full":"VERDICT: REWORK\n\nOriginal validator body should remain visible."}`,
 		"2026-03-03T10:02:00Z",
 	)
 
@@ -643,8 +643,8 @@ func TestServerRunMailboxMessagesDoesNotDropOlderUserFacingMessagesWhenNewerSyst
 	runID := seedRunViaAPI(t, handler)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-reg-a', 'chancellor', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-reg-b', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-reg-a', 'coordinator', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-mail-reg-b', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
 
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-old-user-facing",

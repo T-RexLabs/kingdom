@@ -14,6 +14,7 @@ import (
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/timestamporder"
 )
@@ -95,7 +96,7 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 	if err := r.convergeProviderSettledAttempts(ctx, nowTime); err != nil {
 		return ReconcileResult{}, err
 	}
-	if err := r.recoverUnprojectedAutomaticDecreeRetries(ctx, nowTime); err != nil {
+	if err := r.recoverUnprojectedAutomaticWorkOrderRetries(ctx, nowTime); err != nil {
 		return ReconcileResult{}, err
 	}
 
@@ -198,20 +199,20 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 	return result, nil
 }
 
-func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Context, now time.Time) error {
+func (r *Reconciler) recoverUnprojectedAutomaticWorkOrderRetries(ctx context.Context, now time.Time) error {
 	rows, err := r.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, nr.node_id, nr.required_role, nr.node_status, COALESCE(ae.failure_code, ''), COALESCE(pcs.provider_diagnostics_json, '{}'), COALESCE(pce.payload_json, '{}'), COALESCE(ae.committed_at, ae.updated_at)
 		FROM attempt_executions ae
 		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		JOIN workflow_runs wr ON wr.run_id = ae.run_id
 		LEFT JOIN provider_completion_settlements pcs ON pcs.settlement_id = ae.canonical_settlement_id
 		LEFT JOIN provider_completion_evidence pce ON pce.provider_invocation_id = ae.active_provider_invocation_id AND pce.evidence_kind = 'stream_observation'
-		LEFT JOIN retry_decisions rd ON rd.source_attempt_id = ae.attempt_id AND rd.subject_kind = 'decree_attempt'
+		LEFT JOIN retry_decisions rd ON rd.source_attempt_id = ae.attempt_id AND rd.subject_kind = 'work_order_attempt'
 		WHERE ae.execution_mode = 'provider_backed' AND ae.state = 'committed_failure' AND nr.node_status IN ('starting', 'running') AND wr.run_status = 'running' AND rd.retry_decision_id IS NULL
 		  AND COALESCE(ae.failure_code, '') NOT IN ('execution_review_rework', 'validation_gate_rework')
 		  AND NOT EXISTS (SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending')
 		ORDER BY ae.committed_at, ae.attempt_id`)
 	if err != nil {
-		return fmt.Errorf("list unprojected automatic decree retries: %w", err)
+		return fmt.Errorf("list unprojected automatic work order retries: %w", err)
 	}
 	defer rows.Close()
 	type candidate struct {
@@ -221,7 +222,7 @@ func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Contex
 	for rows.Next() {
 		var candidate candidate
 		if err := rows.Scan(&candidate.attemptID, &candidate.runID, &candidate.nodeRunID, &candidate.nodeID, &candidate.roleID, &candidate.nodeStatus, &candidate.code, &candidate.diagnostics, &candidate.evidence, &candidate.settledAt); err != nil {
-			return fmt.Errorf("scan unprojected automatic decree retry: %w", err)
+			return fmt.Errorf("scan unprojected automatic work order retry: %w", err)
 		}
 		candidates = append(candidates, candidate)
 	}
@@ -237,7 +238,7 @@ func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Contex
 			Observation providerexecution.InvocationStreamObservation `json:"observation"`
 		}
 		_ = json.Unmarshal([]byte(candidate.evidence), &evidence)
-		count, err := r.transition.CountDecreeRetryDecisions(ctx, candidate.runID, candidate.nodeID)
+		count, err := r.transition.CountWorkOrderRetryDecisions(ctx, candidate.runID, candidate.nodeID)
 		if err != nil {
 			return err
 		}
@@ -268,7 +269,7 @@ func (r *Reconciler) recoverUnprojectedAutomaticDecreeRetries(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		err = r.transition.recoverAutomaticDecreeRetry(ctx, AutomaticDecreeRetryRecordRequest{Transition: TransitionRequest{TransitionID: fmt.Sprintf("tr_reconcile_%s_retry_projection", candidate.attemptID), EventID: fmt.Sprintf("evt_reconcile_%s_retry_projection", candidate.attemptID), RunID: candidate.runID, NodeRunID: sql.NullString{String: candidate.nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: candidate.nodeStatus, ToState: "failed", ActorID: "reconciler", RoleID: candidate.roleID, AuthoritySource: "system.reconciler", ReasonCode: string(code), ReasonText: "recovered settled provider failure", CorrelationID: "corr_reconcile_" + candidate.runID, CausationID: "caus_reconcile_" + candidate.attemptID, OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: candidate.attemptID, SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: eventSeq, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(candidate.attemptID, ":", "_")), SubjectKind: RetrySubjectKindDecreeAttempt, RunID: candidate.runID, NodeID: candidate.nodeID, NodeRunID: candidate.nodeRunID, SourceAttemptID: candidate.attemptID, PolicyID: retryPlannerPolicyID(r.retryPlanner), RetryClass: plan.RetryClass, ErrorCode: string(code), OperatorText: automaticRetryDecisionText(kind, evidence.Observation.MeaningfulProgress), MeaningfulProgress: evidence.Observation.MeaningfulProgress, Decision: kind, RetryIndex: retryIndex, MaxRetries: plan.MaxRetries, PolicyDelay: plan.NextDelay, ProviderRetryAt: providerRetryAt, DueAt: dueAt, CreatedAt: settledAt.UTC(), EscalationTarget: plan.EscalationTarget}})
+		err = r.transition.recoverAutomaticWorkOrderRetry(ctx, AutomaticWorkOrderRetryRecordRequest{Transition: TransitionRequest{TransitionID: fmt.Sprintf("tr_reconcile_%s_retry_projection", candidate.attemptID), EventID: fmt.Sprintf("evt_reconcile_%s_retry_projection", candidate.attemptID), RunID: candidate.runID, NodeRunID: sql.NullString{String: candidate.nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: candidate.nodeStatus, ToState: "failed", ActorID: "reconciler", RoleID: candidate.roleID, AuthoritySource: "system.reconciler", ReasonCode: string(code), ReasonText: "recovered settled provider failure", CorrelationID: "corr_reconcile_" + candidate.runID, CausationID: "caus_reconcile_" + candidate.attemptID, OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: candidate.attemptID, SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: eventSeq, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(candidate.attemptID, ":", "_")), SubjectKind: RetrySubjectKindWorkOrderAttempt, RunID: candidate.runID, NodeID: candidate.nodeID, NodeRunID: candidate.nodeRunID, SourceAttemptID: candidate.attemptID, PolicyID: retryPlannerPolicyID(r.retryPlanner), RetryClass: plan.RetryClass, ErrorCode: string(code), OperatorText: automaticRetryDecisionText(kind, evidence.Observation.MeaningfulProgress), MeaningfulProgress: evidence.Observation.MeaningfulProgress, Decision: kind, RetryIndex: retryIndex, MaxRetries: plan.MaxRetries, PolicyDelay: plan.NextDelay, ProviderRetryAt: providerRetryAt, DueAt: dueAt, CreatedAt: settledAt.UTC(), EscalationTarget: plan.EscalationTarget}})
 		if err != nil {
 			return err
 		}
@@ -418,6 +419,7 @@ type staleAttempt struct {
 	NodeRunID      string
 	RunID          string
 	NodeID         string
+	NodeClass      string
 	Attempt        int
 	Wave           int
 	RequiredRole   string
@@ -469,7 +471,7 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 	if err != nil {
 		return recoveryOutcome{}, err
 	}
-	retriesAttempted, err := r.transition.CountDecreeRetryDecisions(ctx, attempt.RunID, attempt.NodeID)
+	retriesAttempted, err := r.transition.CountWorkOrderRetryDecisions(ctx, attempt.RunID, attempt.NodeID)
 	if err != nil {
 		return recoveryOutcome{}, err
 	}
@@ -489,7 +491,7 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 	}
 	// A same-agent execution retry remains fenced behind the cancellation and
 	// workspace handoff. Planning retains its narrower first-attempt policy.
-	allowSelfRetry := plan.ShouldRetry && !meaningfulProgress && !hasReplacement && (!isPlanningNodeID(attempt.NodeID) || attempt.Attempt <= 1)
+	allowSelfRetry := plan.ShouldRetry && !meaningfulProgress && !hasReplacement && (!isPlanningNodeClass(workflow.ResolveNodeClass(attempt.NodeID, attempt.NodeClass)) || attempt.Attempt <= 1)
 	if allowSelfRetry {
 		replacementAgentID = attempt.AgentID
 	}
@@ -500,7 +502,7 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 		if plan.RetryClass != "" && plan.EscalationTarget != "" {
 			retryDecision = &RetryDecisionCreateRequest{
 				DecisionID:       fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(currentAttemptID, ":", "_")),
-				SubjectKind:      RetrySubjectKindDecreeAttempt,
+				SubjectKind:      RetrySubjectKindWorkOrderAttempt,
 				RunID:            attempt.RunID,
 				NodeID:           attempt.NodeID,
 				NodeRunID:        attempt.NodeRunID,
@@ -615,7 +617,7 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			StaleAttempt: &attempt,
 			Decision: RetryDecisionCreateRequest{
 				DecisionID:         fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(currentAttemptID, ":", "_")),
-				SubjectKind:        RetrySubjectKindDecreeAttempt,
+				SubjectKind:        RetrySubjectKindWorkOrderAttempt,
 				RunID:              attempt.RunID,
 				NodeID:             attempt.NodeID,
 				NodeRunID:          attempt.NodeRunID,
@@ -1109,6 +1111,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 	query := fmt.Sprintf(`SELECT n.node_run_id,
 		        n.run_id,
 		        n.node_id,
+		        COALESCE(wn.node_class, ''),
 		        n.attempt,
 		        n.wave,
 		        n.required_role,
@@ -1125,6 +1128,8 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		          ELSE COALESCE(n.started_at, '')
 		        END AS candidate_started_at
 		 FROM node_runs n
+		 JOIN workflow_runs wr ON wr.run_id = n.run_id
+		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = n.node_id
 		 JOIN agents a ON a.agent_id = n.agent_id
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = n.run_id || ':' || n.node_id || ':' || n.attempt
 		 LEFT JOIN session_leases sl ON sl.session_id = ae.session_ref AND sl.status = 'active'
@@ -1180,6 +1185,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 			&candidate.NodeRunID,
 			&candidate.RunID,
 			&candidate.NodeID,
+			&candidate.NodeClass,
 			&candidate.Attempt,
 			&candidate.Wave,
 			&candidate.RequiredRole,
@@ -1209,7 +1215,7 @@ func findStaleAttemptsWithQuerier(ctx context.Context, q staleAttemptQuerier, no
 		if parseErr != nil || startedAt.UTC().After(cutoff) {
 			continue
 		}
-		if isPlanningNodeID(candidate.NodeID) {
+		if isPlanningNodeClass(workflow.ResolveNodeClass(candidate.NodeID, candidate.NodeClass)) {
 			planningCutoff := nowTime.Add(-(threshold + defaultPlanningStaleGraceWindow())).UTC()
 			if startedAt.UTC().After(planningCutoff) {
 				continue
@@ -1236,16 +1242,9 @@ func defaultPlanningStaleGraceWindow() time.Duration {
 	return 4 * time.Minute
 }
 
-func isPlanningNodeID(nodeID string) bool {
-	trimmed := strings.TrimSpace(nodeID)
-	if trimmed == "" {
-		return false
-	}
-	if strings.HasPrefix(trimmed, "advisor_consultation_") {
-		return true
-	}
-	switch trimmed {
-	case "decree_intake", "advisory_synthesis", "plan_drafting", "king_plan_decision":
+func isPlanningNodeClass(nodeClass string) bool {
+	switch nodeClass {
+	case workflow.NodeClassWorkIntake, workflow.NodeClassAdvisorConsultation, workflow.NodeClassAdvisorySynthesis, workflow.NodeClassPlanDrafting, workflow.NodeClassPlanDecision:
 		return true
 	default:
 		return false

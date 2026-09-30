@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "obsidian-court",
+  "version": "1.0.0",
+  "name": "Obsidian Court",
+  "description": "Ink, brass and quiet ceremony.",
+  "colorScheme": "dark",
+  "palette": {
+    "canvas": "#0d1110",
+    "surface": "#151b19",
+    "text": "#f3eee2",
+    "accent": "#d0ad66"
+  },
+  "tokens": {
+    "canvas": "#0d1110",
+    "surface.base": "#151b19",
+    "surface.inset": "#101514",
+    "surface.elevated": "#1f2422",
+    "surface.overlay": "#252a27",
+    "text.primary": "#f3eee2",
+    "text.secondary": "#c0bdb4",
+    "text.subtle": "#a3a199",
+    "text.inverse": "#000000",
+    "border.default": "#464945",
+    "border.strong": "#84857e",
+    "accent.base": "#d0ad66",
+    "accent.hover": "#d4b575",
+    "accent.pressed": "#b5975a",
+    "accent.foreground": "#000000",
+    "accent.subtle": "#2b2d22",
+    "focus.ring": "#d0ad66",
+    "focus.offset": "#151b19",
+    "selection.background": "#d0ad66",
+    "selection.foreground": "#000000",
+    "control.disabledBackground": "#111615",
+    "control.disabledForeground": "#84857e",
+    "code.background": "#0d1110",
+    "code.foreground": "#f3eee2",
+    "tool.background": "#131917",
+    "tool.border": "#464945",
+    "chart.axis": "#c0bdb4",
+    "chart.grid": "#363b37",
+    "dag.edge": "#9c9a92",
+    "dag.edgeCompleted": "#d0ad66",
+    "dag.edgeActive": "#d0ad66",
+    "dag.nodeActiveBackground": "#282a21",
+    "status.neutral.background": "#1f2625",
+    "status.neutral.foreground": "#7f8d96",
+    "status.neutral.border": "#7b8993",
+    "status.running.background": "#1a262e",
+    "status.running.foreground": "#438cef",
+    "status.running.border": "#438cef",
+    "status.attention.background": "#29271a",
+    "status.attention.foreground": "#d99325",
+    "status.attention.border": "#d99325",
+    "status.succeeded.background": "#172922",
+    "status.succeeded.foreground": "#28a271",
+    "status.succeeded.border": "#28a271",
+    "status.failed.background": "#292120",
+    "status.failed.foreground": "#df6169",
+    "status.failed.border": "#dd555e",
+    "status.cancelled.background": "#22242a",
+    "status.cancelled.foreground": "#a07ac9",
+    "status.cancelled.border": "#9970c5",
+    "status.rework.background": "#262227",
+    "status.rework.foreground": "#c56daa",
+    "status.rework.border": "#c265a5",
+    "chart.category1": "#d0ad66",
+    "chart.category2": "#438cef",
+    "chart.category3": "#28a271",
+    "chart.category4": "#9970c5",
+    "chart.category5": "#d99325",
+    "chart.category6": "#c265a5",
+    "chart.category7": "#39a6ab",
+    "chart.category8": "#dd555e"
+  },
+  "typography": {
+    "body": "bundled:dm-sans",
+    "display": "bundled:instrument-serif",
+    "mono": "bundled:jetbrains-mono",
+    "bodyWeight": 400,
+    "headingWeight": 400
+  },
+  "surfaces": {
+    "radius": 10,
+    "borderWidth": 1,
+    "elevation": "soft",
+    "ornamentation": "balanced"
+  },
+  "icons": {
+    "nav.overview": "lucide:crown",
+    "nav.planning": "lucide:feather",
+    "nav.runs": "lucide:workflow",
+    "nav.agents": "lucide:users-round",
+    "nav.analytics": "lucide:chart-no-axes-combined",
+    "nav.connections": "lucide:link",
+    "nav.appearance": "lucide:palette",
+    "work-order": "lucide:file-text",
+    "node.work-intake": "lucide:inbox",
+    "node.advisor-consultation": "lucide:messages-square",
+    "node.advisory-synthesis": "lucide:combine",
+    "node.plan-drafting": "lucide:notebook-pen",
+    "node.plan-decision": "lucide:circle-check",
+    "node.execution-kickoff": "lucide:play",
+    "node.implementation": "lucide:axe",
+    "node.execution-review": "lucide:shield",
+    "node.quality-validation": "lucide:binoculars",
+    "node.security-validation": "lucide:bird",
+    "node.completion": "lucide:circle-check-big",
+    "brand": "lucide:crown",
+    "role.operator": "lucide:crown",
+    "role.governance": "lucide:landmark",
+    "role.coordinator": "lucide:scroll-text",
+    "role.plan-author": "lucide:notebook-pen",
+    "role.architecture-advisor": "lucide:castle",
+    "role.risk-advisor": "lucide:shield-check",
+    "role.systems-advisor": "lucide:store",
+    "role.usability-advisor": "lucide:wheat",
+    "role.builder": "lucide:axe",
+    "role.reviewer": "lucide:shield",
+    "role.qa-validator": "lucide:binoculars",
+    "role.security-validator": "lucide:bird",
+    "role.resilience-validator": "lucide:flame",
+    "role.planning-assistant": "lucide:feather"
+  },
+  "identities": {
+    "operator": {
+      "name": "Allfather",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "governance": {
+      "name": "King",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "coordinator": {
+      "name": "Chancellor",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "plan-author": {
+      "name": "Council Member",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "architecture-advisor": {
+      "name": "Noble Delegate",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "risk-advisor": {
+      "name": "Clergy Delegate",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "systems-advisor": {
+      "name": "Burgher Delegate",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "usability-advisor": {
+      "name": "Peasant Delegate",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "builder": {
+      "name": "Berserker",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "reviewer": {
+      "name": "Shieldmaiden",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "qa-validator": {
+      "name": "Scout",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "security-validator": {
+      "name": "Nightraven",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "resilience-validator": {
+      "name": "Loki Servant",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    },
+    "planning-assistant": {
+      "name": "Scribe",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "A member of the court, bound to a clear responsibility and an accountable record."
+    }
+  },
+  "copy": {
+    "overview.welcome": "Clear intent. Observable progress.",
+    "planning.emptyTitle": "Start with an Idea",
+    "planning.emptyDescription": "Describe the outcome you want. Work through the details, then turn the conversation into a plan.",
+    "agents.heading": "The Court",
+    "appearance.description": "Choose the world your work lives in.",
+    "workOrder.singular": "Decree",
+    "workOrder.plural": "Decrees",
+    "brand.tagline": "Purpose, craft and a clear record."
+  },
+  "artwork": {},
+  "assets": {}
+}

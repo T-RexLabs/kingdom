@@ -1,0 +1,43 @@
+{
+  "version": "v1",
+  "workflow_id": "work-order-v1",
+  "nodes": [
+    {
+      "node_id": "plan_decision",
+      "required_role": "governance",
+      "node_class": "plan_decision"
+    },
+    {
+      "node_id": "execution_review",
+      "required_role": "reviewer",
+      "node_class": "execution_review"
+    },
+    {
+      "node_id": "plan_drafting",
+      "required_role": "plan-author",
+      "node_class": "plan_drafting"
+    },
+    {
+      "node_id": "quality_validation",
+      "required_role": "qa-validator",
+      "node_class": "validation_gates"
+    }
+  ],
+  "edges": [
+    {
+      "from": "plan_decision",
+      "to": "execution_review",
+      "on": "needs_rework"
+    },
+    {
+      "from": "execution_review",
+      "to": "plan_drafting",
+      "on": "failed"
+    },
+    {
+      "from": "execution_review",
+      "to": "quality_validation",
+      "on": "success"
+    }
+  ]
+}

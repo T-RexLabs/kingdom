@@ -8,7 +8,7 @@
     "non_retryable": {
       "max_retries": 0,
       "escalation": {
-        "target_role": "chancellor"
+        "target_role": "coordinator"
       }
     }
   },

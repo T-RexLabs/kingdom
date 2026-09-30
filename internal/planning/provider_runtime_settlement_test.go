@@ -217,7 +217,7 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 			MaxRetries:                 1,
 			DueAt:                      mustParsePlanningTime(t, "2026-05-22T08:41:00Z"),
 			CreatedAt:                  mustParsePlanningTime(t, "2026-05-22T08:41:00Z"),
-			EscalationTarget:           "chancellor",
+			EscalationTarget:           "coordinator",
 		},
 		Event: &state.AppendPlanningOperationEventRequest{
 			EventID:     "po_stale_callback:1",

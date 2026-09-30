@@ -25,7 +25,7 @@ func TestPreparationTerminalRequiresCurrentLeaseAndClosesSessionAtomically(t *te
 			if err != nil || !acquired {
 				t.Fatalf("claim: acquired=%t err=%v", acquired, err)
 			}
-			mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_prep', 'agent_king', 'active', '2026-03-01T12:01:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+			mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_prep', 'agent_governance', 'active', '2026-03-01T12:01:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 			if strings.Contains(scenario, "replaced") {
 				mustExec(t, db, `UPDATE attempt_executions SET lease_owner = 'replacement', lease_version = lease_version + 1 WHERE attempt_id = 'att_prep'`)
 			}
@@ -38,7 +38,7 @@ func TestPreparationTerminalRequiresCurrentLeaseAndClosesSessionAtomically(t *te
 			}
 			svc := NewTransitionService(db, nil)
 			if scenario == "retry_replaced" {
-				err = svc.RecordDirectExecutionTerminalWithRetry(ctx, DirectExecutionTerminalWithRetryRequest{Transition: req, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, Decision: RetryDecisionCreateRequest{Decision: RetryDecisionFailFast, SubjectKind: RetrySubjectKindDecreeAttempt, SourceAttemptID: req.AttemptID}})
+				err = svc.RecordDirectExecutionTerminalWithRetry(ctx, DirectExecutionTerminalWithRetryRequest{Transition: req, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, Decision: RetryDecisionCreateRequest{Decision: RetryDecisionFailFast, SubjectKind: RetrySubjectKindWorkOrderAttempt, SourceAttemptID: req.AttemptID}})
 			} else {
 				err = svc.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: req, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
 			}

@@ -51,6 +51,7 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	var createdAt string
 	var updatedAt string
 	var lastActivityAt string
+	var startedAt sql.NullString
 	var autonomousApprovalsInt int
 	var runUntilAllApproveInt int
 	var maxExecutionReviewCycles int
@@ -60,15 +61,15 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	var pendingApprovalKey sql.NullString
 	err = tx.QueryRowContext(
 		r.Context(),
-		`SELECT wr.run_id, wd.workflow_name, wr.decree_id, d.decree_title, wr.run_status, wr.plan_state, wr.created_at, wr.updated_at, ra.last_activity_at,
-		        COALESCE(wr.autonomous_approvals, 1), COALESCE(wr.run_until_all_approve, 0), COALESCE(wr.max_execution_review_cycles, 2), COALESCE(wr.max_validation_rework_cycles, 2), COALESCE(wr.publish_mode, 'direct'), COALESCE(wr.model_selection_json, '{}'), `+state.PendingApprovalKeySelectExpr("wr")+`
+		`SELECT wr.run_id, wd.workflow_name, wr.work_order_id, d.work_order_title, wr.run_status, wr.plan_state, wr.created_at, wr.updated_at, ra.last_activity_at,
+		        COALESCE(wr.autonomous_approvals, 1), COALESCE(wr.run_until_all_approve, 0), COALESCE(wr.max_execution_review_cycles, 2), COALESCE(wr.max_validation_rework_cycles, 2), COALESCE(wr.publish_mode, 'direct'), COALESCE(wr.model_selection_json, '{}'), `+state.PendingApprovalKeySelectExpr("wr")+`, `+state.RunStartedAtSelectExpr("wr")+`, `+state.RunStartStateSelectExpr("wr")+`
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-		 JOIN decrees d ON d.decree_id = wr.decree_id
+		 JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.run_id = ?`,
 		runID,
-	).Scan(&summary.RunId, &summary.WorkflowId, &summary.DecreeId, &summary.DecreeTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &runUntilAllApproveInt, &maxExecutionReviewCycles, &maxValidationReworkCycles, &publishMode, &modelSelectionJSON, &pendingApprovalKey)
+	).Scan(&summary.RunId, &summary.WorkflowId, &summary.WorkOrderId, &summary.WorkOrderTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &runUntilAllApproveInt, &maxExecutionReviewCycles, &maxValidationReworkCycles, &publishMode, &modelSelectionJSON, &pendingApprovalKey, &startedAt, &summary.StartState)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run", map[string]any{"run_id": runID})
 		return
@@ -81,6 +82,10 @@ func (s *Server) handleGetRun(w http.ResponseWriter, r *http.Request) {
 	summary.CreatedAt = mustParseRFC3339(createdAt)
 	summary.UpdatedAt = mustParseRFC3339(updatedAt)
 	summary.LastActivityAt = mustParseRFC3339(lastActivityAt)
+	if startedAt.Valid {
+		parsed := mustParseRFC3339(startedAt.String)
+		summary.StartedAt = &parsed
+	}
 	autonomousApprovals := autonomousApprovalsInt != 0
 	summary.AutonomousApprovals = &autonomousApprovals
 	summary.DisplayState = gen.RunDisplayState(state.DeriveRunDisplayState(string(summary.Status), string(summary.PlanState)))
@@ -586,18 +591,18 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 
 	runIDSearchTerm := runSearchRunIDTerm(search)
 	titleSearchTerms := tokenizeRunSearchTerms(search)
-	titleSearchQuery := buildRunSearchColumnPrefixQuery("decree_title_search", titleSearchTerms)
+	titleSearchQuery := buildRunSearchColumnPrefixQuery("work_order_title_search", titleSearchTerms)
 	if search != "" && runIDSearchTerm == "" && titleSearchQuery == "" {
 		writeJSON(w, http.StatusOK, runListResponse{Items: []gen.RunSummary{}})
 		return
 	}
 
-	baseSelect := `wr.run_id, wd.workflow_name, wr.decree_id, d.decree_title, wr.run_status, wr.plan_state, wr.created_at, wr.updated_at, ra.last_activity_at,
-	        COALESCE(wr.autonomous_approvals, 1), COALESCE(wr.publish_mode, 'direct'), COALESCE(wr.model_selection_json, '{}'), ` + state.PendingApprovalKeySelectExpr("wr")
+	baseSelect := `wr.run_id, wd.workflow_name, wr.work_order_id, d.work_order_title, wr.run_status, wr.plan_state, wr.created_at, wr.updated_at, ra.last_activity_at,
+	        COALESCE(wr.autonomous_approvals, 1), COALESCE(wr.publish_mode, 'direct'), COALESCE(wr.model_selection_json, '{}'), ` + state.PendingApprovalKeySelectExpr("wr") + `, ` + state.RunStartedAtSelectExpr("wr") + `, ` + state.RunStartStateSelectExpr("wr")
 	baseJoins := `
 	 JOIN run_activity ra ON ra.run_id = wr.run_id
 	 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-	 JOIN decrees d ON d.decree_id = wr.decree_id`
+	 JOIN work_orders d ON d.work_order_id = wr.work_order_id`
 	query := `SELECT ` + baseSelect + `
 	 FROM workflow_runs wr` + baseJoins
 	args := make([]any, 0, 10)
@@ -681,15 +686,16 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		var createdAt string
 		var updatedAt string
 		var lastActivityAt string
+		var startedAt sql.NullString
 		var autonomousApprovalsInt int
 		var publishMode string
 		var modelSelectionJSON string
 		var pendingApprovalKey sql.NullString
 		var scanErr error
 		if searchEnabled {
-			scanErr = rows.Scan(&matchPriority, &summary.RunId, &summary.WorkflowId, &summary.DecreeId, &summary.DecreeTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &publishMode, &modelSelectionJSON, &pendingApprovalKey)
+			scanErr = rows.Scan(&matchPriority, &summary.RunId, &summary.WorkflowId, &summary.WorkOrderId, &summary.WorkOrderTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &publishMode, &modelSelectionJSON, &pendingApprovalKey, &startedAt, &summary.StartState)
 		} else {
-			scanErr = rows.Scan(&summary.RunId, &summary.WorkflowId, &summary.DecreeId, &summary.DecreeTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &publishMode, &modelSelectionJSON, &pendingApprovalKey)
+			scanErr = rows.Scan(&summary.RunId, &summary.WorkflowId, &summary.WorkOrderId, &summary.WorkOrderTitle, &summary.Status, &summary.PlanState, &createdAt, &updatedAt, &lastActivityAt, &autonomousApprovalsInt, &publishMode, &modelSelectionJSON, &pendingApprovalKey, &startedAt, &summary.StartState)
 		}
 		if scanErr != nil {
 			s.writeInternalError(w, "list runs failed")
@@ -698,6 +704,10 @@ func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {
 		summary.CreatedAt = mustParseRFC3339(createdAt)
 		summary.UpdatedAt = mustParseRFC3339(updatedAt)
 		summary.LastActivityAt = mustParseRFC3339(lastActivityAt)
+		if startedAt.Valid {
+			parsed := mustParseRFC3339(startedAt.String)
+			summary.StartedAt = &parsed
+		}
 		autonomousApprovals := autonomousApprovalsInt != 0
 		summary.AutonomousApprovals = &autonomousApprovals
 		summary.DisplayState = gen.RunDisplayState(state.DeriveRunDisplayState(string(summary.Status), string(summary.PlanState)))
@@ -1042,119 +1052,13 @@ func (s *Server) handleGetRunExecution(w http.ResponseWriter, r *http.Request) {
 	}
 
 	item := buildRunExecutionDetailItem(record)
-	if status, summary, entries, err := s.loadRunExecutionPublication(r.Context(), attemptID); err == nil {
-		if strings.TrimSpace(status) != "" {
-			item.PublicationStatus = &status
-		}
-		if strings.TrimSpace(summary) != "" {
-			item.PublicationSummary = &summary
-		}
-		item.PublicationEntries = entries
+	publication, err := s.loadRunExecutionPublication(r.Context(), runID, attemptID)
+	if err != nil {
+		s.writeInternalError(w, "fetch execution publication failed")
+		return
 	}
+	item.Publication = publication
 	writeJSON(w, http.StatusOK, item)
-}
-
-// handleGetRunExecutionActivity returns the durable, fine-grained provider activity
-// (agent reasoning + tool calls) for a single node attempt. It is the durable
-// backstop for the run Activity tab; live activity arrives over the run event
-// stream. The payload shape mirrors the planner's activity endpoint so the same
-// frontend renderer serves both.
-func (s *Server) handleGetRunExecutionActivity(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_execution_activity"); !ok {
-		return
-	}
-
-	runID := strings.TrimSpace(r.PathValue("id"))
-	if !s.runExists(r.Context(), runID) {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run_execution_activity", map[string]any{"run_id": runID})
-		return
-	}
-	attemptID := strings.TrimSpace(r.PathValue("attemptId"))
-	if attemptID == "" {
-		s.writeBadRequest(w, "attempt id is required")
-		return
-	}
-
-	store := executionstore.New(s.db)
-	if _, found, err := store.GetRunExecutionDetail(r.Context(), runID, attemptID); err != nil {
-		s.writeInternalError(w, "get run execution activity failed")
-		return
-	} else if !found {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run execution not found", "api.get_run_execution_activity", map[string]any{"run_id": runID, "attempt_id": attemptID})
-		return
-	}
-
-	rows, err := s.db.QueryContext(
-		r.Context(),
-		`SELECT event_id, payload_json, created_at
-		 FROM events
-		 WHERE run_id = ? AND attempt_id = ? AND event_type = ?
-		 ORDER BY seq ASC`,
-		runID,
-		attemptID,
-		state.AttemptActivityEventType,
-	)
-	if err != nil {
-		s.writeInternalError(w, "fetch run execution activity failed")
-		return
-	}
-	defer rows.Close()
-
-	items := make([]gen.AcpRunActivityItem, 0)
-	for rows.Next() {
-		var eventID string
-		var payloadJSON string
-		var createdAt string
-		if err := rows.Scan(&eventID, &payloadJSON, &createdAt); err != nil {
-			s.writeInternalError(w, "decode run execution activity row failed")
-			return
-		}
-		if item, ok := acpActivityItemFromPayload(payloadJSON, eventID, createdAt); ok {
-			items = append(items, item)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		s.writeInternalError(w, "read run execution activity failed")
-		return
-	}
-
-	writeJSON(w, http.StatusOK, gen.AcpRunActivityResponse{Items: dedupeAcpRunActivityItems(items)})
-}
-
-func (s *Server) loadRunExecutionPublication(ctx context.Context, attemptID string) (string, string, []runExecutionPublicationEntryItem, error) {
-	if s == nil || s.db == nil || strings.TrimSpace(attemptID) == "" {
-		return "", "", nil, nil
-	}
-	var batchID string
-	var status string
-	var publishedCount int
-	var conflictedCount int
-	var failedCount int
-	err := s.db.QueryRowContext(ctx, `SELECT publication_batch_id, status, published_count, conflicted_count, failed_count FROM run_publication_batches WHERE attempt_id = ? ORDER BY created_at DESC LIMIT 1`, strings.TrimSpace(attemptID)).Scan(&batchID, &status, &publishedCount, &conflictedCount, &failedCount)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", "", nil, nil
-	}
-	if err != nil {
-		return "", "", nil, err
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT path, action, status, reason_code, reason_text FROM run_publication_entries WHERE publication_batch_id = ? ORDER BY publication_entry_id ASC`, batchID)
-	if err != nil {
-		return "", "", nil, err
-	}
-	defer rows.Close()
-	entries := make([]runExecutionPublicationEntryItem, 0)
-	for rows.Next() {
-		var entry runExecutionPublicationEntryItem
-		if err := rows.Scan(&entry.Path, &entry.Action, &entry.Status, &entry.ReasonCode, &entry.ReasonText); err != nil {
-			return "", "", nil, err
-		}
-		entries = append(entries, entry)
-	}
-	if err := rows.Err(); err != nil {
-		return "", "", nil, err
-	}
-	summary := fmt.Sprintf("Published %d path(s); %d conflicted; %d failed.", publishedCount, conflictedCount, failedCount)
-	return status, summary, entries, nil
 }
 
 func buildRunExecutionItem(record executionstore.RunExecutionRecord) runExecutionItem {

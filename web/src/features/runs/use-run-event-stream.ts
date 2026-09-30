@@ -4,7 +4,6 @@ import { API_BASE, buildAuthHeaders } from "@/api/client";
 import {
 	invalidateRunDetailRecoveryQueries,
 	invalidateRunQuerySurfaces,
-	runQueryKeys,
 	type RunQuerySurface,
 } from "@/api/hooks-runs";
 import type { RunDetailSummary, RunExecution, TimelineEvent } from "@/api/hooks-types";
@@ -16,16 +15,16 @@ import { liveExecutionLabel, patchLiveExecutionProjection } from "./run-live-exe
 import {
 	applyRunStreamHighWaterMark,
 	clearRunStreamResumeToken,
-	incrementRunTabCount,
 	patchRunDetailFields,
 	readRunStreamBootstrapState,
+	readRunStartProjection,
 	writeRunStreamResumeCursor,
 } from "./run-cache-updates";
 import { markRunQuerySurfacesDirty } from "./run-surface-freshness";
 
 export const RUN_STREAM_RECONNECT_DELAY_MS = 3_000;
 const FATAL_RUN_STREAM_ERRORS = new Set(["HTTP 404", "HTTP 410"]);
-const RUN_STREAM_EXECUTION_IMPACT_SURFACES: readonly RunQuerySurface[] = ["detail", "graph", "executions", "agents"];
+const RUN_STREAM_EXECUTION_IMPACT_SURFACES: readonly RunQuerySurface[] = ["detail", "graph", "executions"];
 const RUN_STREAM_REOPEN_IMPACT_SURFACES: readonly RunQuerySurface[] = [
 	"detail",
 	"plan",
@@ -33,7 +32,6 @@ const RUN_STREAM_REOPEN_IMPACT_SURFACES: readonly RunQuerySurface[] = [
 	"governanceHistory",
 	"graph",
 	"executions",
-	"agents",
 ];
 const RUN_STREAM_TIMELINE_ONLY_EVENT_TYPES = new Set([
 	"attempt.progress",
@@ -233,9 +231,7 @@ function applyRunStreamSideEffects(
 		markHiddenSurfacesDirty(surfaces);
 		invalidateRunQuerySurfaces(queryClient, runId, surfaces);
 	};
-	const invalidateMailboxRoot = () => {
-		void queryClient.invalidateQueries({ queryKey: runQueryKeys.mailboxRoot(runId), exact: false });
-	};
+
 
 			switch (event.eventType) {
 				case "run.state_changed":
@@ -252,17 +248,9 @@ function applyRunStreamSideEffects(
 					invalidateSurfaces(RUN_STREAM_EXECUTION_IMPACT_SURFACES);
 					return;
 			case "mailbox.message_recorded":
-				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
-				if (readBoolean(event.payload.visible_to_operator) === true) {
-					const messageVersion = readInt(event.payload.message_version);
-					if (messageVersion === undefined || messageVersion <= 1) {
-					incrementRunTabCount(queryClient, runId, "messages");
-					}
-					markHiddenSurfacesDirty(["mailbox"]);
-					invalidateMailboxRoot();
-			}
-			invalidateSurfaces(["agents"]);
-			return;
+        patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
+        return;
+
 		case "attempt.started":
 		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
@@ -476,6 +464,7 @@ function patchRunStateChange(
   event: NormalizedRunStreamData,
 ) {
   const detailFields: Partial<RunDetailSummary> = {};
+	Object.assign(detailFields, readRunStartProjection(event.payload));
 
 	for (const [payloadKey, detailKey] of [["status", "status"], ["display_state", "display_state"], ["plan_state", "plan_state"]] as const) {
 		const value = readString(event.payload[payloadKey]);
@@ -527,10 +516,6 @@ function readInt(value: unknown): number | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() !== "" ? value : undefined;
-}
-
-function readBoolean(value: unknown): boolean | undefined {
-	return typeof value === "boolean" ? value : undefined;
 }
 
 function readExecutionMode(value: unknown): "provider_backed" | "runtime_owned" | undefined {

@@ -25,7 +25,7 @@ func TestMailboxStoreSendListAndMarkReadFlow(t *testing.T) {
 	firstMessage, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_governance",
 		MessageType: MailboxMessageTypeClarification,
 		Priority:    MailboxPriorityNormal,
@@ -38,7 +38,7 @@ func TestMailboxStoreSendListAndMarkReadFlow(t *testing.T) {
 
 	secondMessage, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		RunID:       "run_1",
-		FromAgentID: "agent_chancellor",
+		FromAgentID: "agent_coordinator",
 		ToAgentID:   "agent_council",
 		ThreadID:    "thread_run_1_governance",
 		MessageType: MailboxMessageTypeStatus,
@@ -94,7 +94,7 @@ func TestMailboxStoreRejectsUnsupportedMessageTypeAndPriority(t *testing.T) {
 	_, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_governance",
 		MessageType: MailboxMessageType("policy_override"),
 		Priority:    MailboxPriority("urgent"),
@@ -122,7 +122,7 @@ func TestMailboxStoreRecordsThinMailboxEventProjection(t *testing.T) {
 	message, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_projection",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
@@ -175,11 +175,11 @@ func TestMailboxStoreSendMessageUpsertsExistingMessagePayload(t *testing.T) {
 		MessageID:   messageID,
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_upsert",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
-		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"validation_gate_rework","response_full":"validator requested rework"}`,
+		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"quality_validation","reason_code":"validation_gate_rework","response_full":"validator requested rework"}`,
 		CreatedAt:   "2026-03-01T16:20:00Z",
 	}); err != nil {
 		t.Fatalf("send initial mailbox message: %v", err)
@@ -188,11 +188,11 @@ func TestMailboxStoreSendMessageUpsertsExistingMessagePayload(t *testing.T) {
 		MessageID:   messageID,
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_upsert",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
-		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"validation_gate_cap_auto_succeeded","response_full":"validation cap reached; auto-succeeded"}`,
+		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"quality_validation","reason_code":"validation_gate_cap_auto_succeeded","response_full":"validation cap reached; auto-succeeded"}`,
 		CreatedAt:   "2026-03-01T16:21:00Z",
 	}); err != nil {
 		t.Fatalf("send replacement mailbox message: %v", err)
@@ -226,11 +226,11 @@ func TestMailboxStoreSendMessageUpsertsExistingMessagePayload(t *testing.T) {
 		MessageID:   messageID,
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_upsert",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
-		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"validation_gate_cap_auto_succeeded","response_full":"validation cap reached; auto-succeeded"}`,
+		PayloadJSON: `{"message_source":"communication","communication_type":"response_received","node_id":"quality_validation","reason_code":"validation_gate_cap_auto_succeeded","response_full":"validation cap reached; auto-succeeded"}`,
 		CreatedAt:   "2026-03-01T16:22:00Z",
 	}); err != nil {
 		t.Fatalf("send identical mailbox message replay: %v", err)
@@ -256,7 +256,7 @@ func TestMailboxStoreUpdatedLogicalMessageBecomesLatestInMailboxList(t *testing.
 		MessageID:   "msg_mailbox_reordered",
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_reordered",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
@@ -268,7 +268,7 @@ func TestMailboxStoreUpdatedLogicalMessageBecomesLatestInMailboxList(t *testing.
 	otherMessage, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		MessageID:   "msg_mailbox_other",
 		RunID:       "run_1",
-		FromAgentID: "agent_chancellor",
+		FromAgentID: "agent_coordinator",
 		ToAgentID:   "agent_council",
 		ThreadID:    "thread_run_1_mailbox_other",
 		MessageType: MailboxMessageTypeStatus,
@@ -283,7 +283,7 @@ func TestMailboxStoreUpdatedLogicalMessageBecomesLatestInMailboxList(t *testing.
 		MessageID:   "msg_mailbox_reordered",
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_reordered",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
@@ -319,7 +319,7 @@ func TestMailboxStoreHidesSuppressedPlanningMessagesFromOperatorProjection(t *te
 	message, err := store.SendMessage(context.Background(), SendMailboxMessageRequest{
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_king",
+		ToAgentID:   "agent_governance",
 		ThreadID:    "thread_run_1_plan_suppressed",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
@@ -356,7 +356,7 @@ func TestMailboxStoreRejectsMailboxEventEnvelopeThatViolatesSchema(t *testing.T)
 		MessageID:   "msg_invalid_contract",
 		RunID:       "run_1",
 		FromAgentID: "agent_council",
-		ToAgentID:   "agent_chancellor",
+		ToAgentID:   "agent_coordinator",
 		ThreadID:    "thread_run_1_mailbox_projection",
 		MessageType: MailboxMessageTypeStatus,
 		Priority:    MailboxPriorityNormal,
@@ -400,7 +400,7 @@ func TestDelegationHardFailWritesEscalationMailboxMessage(t *testing.T) {
 		NodeID:           "plan_drafting",
 		DelegatorAgentID: "agent_noble_existing",
 		DelegateAgentID:  "agent_council_2",
-		DelegateRoleID:   "council-member",
+		DelegateRoleID:   "plan-author",
 		MaxSpawnDepth:    3,
 		OccurredAt:       "2026-03-01T17:00:00Z",
 	})
@@ -414,7 +414,7 @@ func TestDelegationHardFailWritesEscalationMailboxMessage(t *testing.T) {
 	messages, err := mailbox.ListMessages(context.Background(), ListMailboxMessagesRequest{
 		RunID:     "run_1",
 		ThreadID:  "thread_run_1_delegation_plan_drafting",
-		ToAgentID: "agent_chancellor",
+		ToAgentID: "agent_coordinator",
 		Limit:     10,
 	})
 	if err != nil {

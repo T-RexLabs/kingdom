@@ -26,10 +26,10 @@ func (s *Server) manualRerunPlan(ctx context.Context, runID, requestedNodeID str
 		return replayTargetPlan{}, fmt.Errorf("requested rerun node %q not found in workflow graph", trimmedRequestedNodeID)
 	}
 	anchorNodeIDs := []string{node.NodeID}
-	if node.NodeClass == workflow.NodeClassRoyalClosure {
+	if node.NodeClass == workflow.NodeClassCompletion {
 		anchorNodeIDs = replayAnchorNodeIDsForClass(graph, workflow.NodeClassPlanDrafting)
 		if len(anchorNodeIDs) == 0 {
-			return replayTargetPlan{}, fmt.Errorf("rerun from royal_closure requires a %s node", workflow.NodeClassPlanDrafting)
+			return replayTargetPlan{}, fmt.Errorf("rerun from completion requires a %s node", workflow.NodeClassPlanDrafting)
 		}
 	}
 	targetNodeIDs := replayTargetNodeIDs(graph, anchorNodeIDs, false)

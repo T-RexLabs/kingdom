@@ -65,7 +65,7 @@ func seedOtherHistoryRun(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost, path: "/api/v1/runs", idempotencyKey: "history-other-run",
-		body: map[string]any{"decree_id": seedDecree(t, handler), "publish_mode": "direct", "model_selection": defaultTestRunModelSelectionBody()},
+		body: map[string]any{"work_order_id": seedWorkOrder(t, handler), "publish_mode": "direct", "model_selection": defaultTestRunModelSelectionBody()},
 	})
 	if res.Code != http.StatusCreated {
 		t.Fatalf("create other run: %d %s", res.Code, res.Body.String())
@@ -163,7 +163,7 @@ func TestHistoryPaginationPlanReviewsBeyond100(t *testing.T) {
 	otherRun := seedOtherHistoryRun(t, handler)
 	mustExecSQL(t, db, `INSERT INTO run_plan_revisions (plan_revision_id,run_id,content_markdown,components_json,created_at) VALUES ('history-plan',?,'Plan','[]','2026-09-29T10:00:00Z')`, runID)
 	for i := 0; i < 205; i++ {
-		mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id,run_id,reviewed_plan_revision_id,decision,feedback_markdown,actor_id,role_id,created_at) VALUES (?,?,'history-plan','approved','Approved','local-operator','allfather','2026-09-29T10:00:00Z')`, fmt.Sprintf("review-%03d", i), runID)
+		mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id,run_id,reviewed_plan_revision_id,decision,feedback_markdown,actor_id,role_id,created_at) VALUES (?,?,'history-plan','approved','Approved','local-operator','operator','2026-09-29T10:00:00Z')`, fmt.Sprintf("review-%03d", i), runID)
 	}
 	path := "/api/v1/runs/" + runID + "/plan-reviews?limit=50"
 	first := readHistoryTestPage(t, handler, path)
@@ -182,7 +182,7 @@ func TestHistoryPaginationMailboxBeyond200AndFilterScope(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	otherRun := seedOtherHistoryRun(t, handler)
 	for _, agent := range []string{"history-a", "history-b"} {
-		mustExecSQL(t, db, `INSERT INTO agents (agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'chancellor','idle',0,'2026-09-29T10:00:00Z','2026-09-29T10:00:00Z')`, agent)
+		mustExecSQL(t, db, `INSERT INTO agents (agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES (?,'coordinator','idle',0,'2026-09-29T10:00:00Z','2026-09-29T10:00:00Z')`, agent)
 	}
 	for i := 0; i < 245; i++ {
 		for _, kind := range []string{"instruction_dispatched", "response_received", "hidden"} {

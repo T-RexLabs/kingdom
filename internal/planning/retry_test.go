@@ -387,7 +387,7 @@ func (a *formalizeRetrySequenceAgent) FormalizePlanStream(_ context.Context, inp
 	if err != nil {
 		return FormalizedPlan{}, err
 	}
-	return FormalizedPlan{DecreeTitle: "Retried Plan", DecreeText: metadata.FinalText, Metadata: metadata}, nil
+	return FormalizedPlan{WorkOrderTitle: "Retried Plan", WorkOrderText: metadata.FinalText, Metadata: metadata}, nil
 }
 
 func (a *formalizeRetrySequenceAgent) GenerateTitle(context.Context, AgentContext, func(string)) (GeneratedTitle, error) {

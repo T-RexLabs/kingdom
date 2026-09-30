@@ -106,15 +106,15 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 		}
 	}
 	for _, statement := range []string{
-		`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '2026-03-01T12:00:00Z')`,
-		`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king', 'king', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'royal-decree', 'v1', '{}', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_1', 'wfdef_1', 'decree_intake', 'king', 'decree_intake', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_2', 'wfdef_1', 'royal_closure', 'king', 'royal_closure', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_1', 'wfdef_1', 'decree_intake', 'royal_closure', 'always', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'decree_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
-		`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_1', 'run_1', 'decree_intake', 1, 1, 'running', 'king', 'agent_king', 1, NULL, NULL)`,
+		`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '2026-03-01T12:00:00Z')`,
+		`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance', 'governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'work-order', 'v1', '{}', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_1', 'wfdef_1', 'work_intake', 'governance', 'work_intake', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_2', 'wfdef_1', 'completion', 'governance', 'completion', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_1', 'wfdef_1', 'work_intake', 'completion', 'always', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'work_order_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`,
+		`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_1', 'run_1', 'work_intake', 1, 1, 'running', 'governance', 'agent_governance', 1, NULL, NULL)`,
 	} {
 		if _, err := db.Exec(statement); err != nil {
 			t.Fatalf("seed provider attempt fixture: %v", err)
@@ -126,7 +126,7 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 	startedAt := time.Now().UTC()
 	startedAtText := startedAt.Format(time.RFC3339Nano)
 	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
-		AttemptID: "run_1:decree_intake:1", RunID: "run_1", NodeRunID: "nr_1",
+		AttemptID: "run_1:work_intake:1", RunID: "run_1", NodeRunID: "nr_1",
 		ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 		CreatedAt: startedAtText,
 	}); err != nil {
@@ -134,7 +134,7 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 	}
 	leaseExpiresAt := startedAt.Add(5 * time.Minute).Format(time.RFC3339Nano)
 	claim, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{
-		AttemptID: "run_1:decree_intake:1", LeaseOwner: "worker-commit-test", LeaseUntil: leaseExpiresAt, ClaimedAt: startedAtText,
+		AttemptID: "run_1:work_intake:1", LeaseOwner: "worker-commit-test", LeaseUntil: leaseExpiresAt, ClaimedAt: startedAtText,
 	})
 	if err != nil || !acquired || claim.LeaseVersion != 1 {
 		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)

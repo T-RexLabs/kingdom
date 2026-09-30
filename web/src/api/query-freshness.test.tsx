@@ -27,9 +27,9 @@ vi.mock("./client", () => ({
 function buildRun(overrides: Record<string, unknown> = {}) {
 	return {
 		run_id: "run-1",
-		decree_id: "decree-1",
-		decree_title: "Fresh run",
-		workflow_id: "royal-decree-v1",
+		work_order_id: "work order-1",
+		work_order_title: "Fresh run",
+		workflow_id: "work-order-v1",
 		autonomous_approvals: true,
 		status: "running",
 		display_state: "running",

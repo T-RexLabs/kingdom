@@ -17,23 +17,23 @@ func TestCompilerDeterministicCanonicalOutput(t *testing.T) {
 
 	compiler := newTestCompiler(t)
 	input := []byte(`version: v1
-workflow_id: royal-decree-v1
-name: Royal Decree
+workflow_id: work-order-v1
+name: Work Order
 nodes:
   - node_id: plan_drafting
-    required_role: council-member
+    required_role: plan-author
     node_class: plan_drafting
-  - node_id: decree_intake
-    required_role: king
-    node_class: decree_intake
-  - node_id: royal_closure
-    required_role: king
-    node_class: royal_closure
+  - node_id: work_intake
+    required_role: governance
+    node_class: work_intake
+  - node_id: completion
+    required_role: governance
+    node_class: completion
 edges:
   - from: plan_drafting
-    to: royal_closure
+    to: completion
     on: approved
-  - from: decree_intake
+  - from: work_intake
     to: plan_drafting
 `)
 
@@ -72,23 +72,23 @@ func TestCompilerAppliesReviewAndValidationDefaultsWhenNodesExist(t *testing.T) 
 
 	compiler := newTestCompiler(t)
 	input := []byte(`version: v1
-workflow_id: royal-decree-v1
+workflow_id: work-order-v1
 nodes:
-  - node_id: delegated_execution_berserker
-    required_role: builder-berserker
+  - node_id: implementation
+    required_role: builder
     node_class: delegated_execution
-  - node_id: execution_review_shieldmaiden
-    required_role: reviewer-shieldmaiden
+  - node_id: execution_review
+    required_role: reviewer
     node_class: execution_review
-  - node_id: validation_gates_qa_scout
-    required_role: intelligence-qa-scout
+  - node_id: quality_validation
+    required_role: qa-validator
     node_class: validation_gates
 edges:
-  - from: delegated_execution_berserker
-    to: execution_review_shieldmaiden
+  - from: implementation
+    to: execution_review
     on: success
-  - from: execution_review_shieldmaiden
-    to: validation_gates_qa_scout
+  - from: execution_review
+    to: quality_validation
     on: success
 `)
 
@@ -110,33 +110,33 @@ func TestCompilerEquivalentInputsYieldSameHash(t *testing.T) {
 
 	compiler := newTestCompiler(t)
 	firstYAML := []byte(`version: v1
-workflow_id: royal-decree-v1
+workflow_id: work-order-v1
 nodes:
-  - node_id: decree_intake
-    required_role: king
-    node_class: decree_intake
+  - node_id: work_intake
+    required_role: governance
+    node_class: work_intake
   - node_id: plan_drafting
-    required_role: council-member
+    required_role: plan-author
     node_class: plan_drafting
 edges:
-  - from: decree_intake
+  - from: work_intake
     to: plan_drafting
     on: success
 `)
 
-	secondYAML := []byte(`workflow_id: royal-decree-v1
+	secondYAML := []byte(`workflow_id: work-order-v1
 version: v1
 edges:
   - to: plan_drafting
-    from: decree_intake
+    from: work_intake
     on: success
 nodes:
-  - required_role: council-member
+  - required_role: plan-author
     node_class: plan_drafting
     node_id: plan_drafting
-  - node_class: decree_intake
-    node_id: decree_intake
-    required_role: king
+  - node_class: work_intake
+    node_id: work_intake
+    required_role: governance
 `)
 
 	first, err := compiler.CompileYAML(firstYAML)
@@ -163,11 +163,11 @@ func TestCompilerRejectsInvalidWorkflowsPrePublish(t *testing.T) {
 		t.Parallel()
 
 		_, err := compiler.CompileYAML([]byte(`version: v1
-workflow_id: royal-decree-v1
+workflow_id: work-order-v1
 nodes:
-  - node_id: decree_intake
-    required_role: king
-    node_class: decree_intake
+  - node_id: work_intake
+    required_role: governance
+    node_class: work_intake
 bad_field: true
 `))
 		assertCompileStage(t, err, CompileStageDecodeYAML)
@@ -177,7 +177,7 @@ bad_field: true
 		t.Parallel()
 
 		_, err := compiler.CompileYAML([]byte(`version: v1
-workflow_id: royal-decree-v1
+workflow_id: work-order-v1
 edges: []
 `))
 		assertCompileStage(t, err, CompileStageSchemaValidate)
@@ -187,13 +187,13 @@ edges: []
 		t.Parallel()
 
 		_, err := compiler.CompileYAML([]byte(`version: v1
-workflow_id: royal-decree-v1
+workflow_id: work-order-v1
 nodes:
   - node_id: a
-    required_role: king
-    node_class: decree_intake
+    required_role: governance
+    node_class: work_intake
   - node_id: b
-    required_role: king
+    required_role: governance
     node_class: plan_drafting
 edges:
   - from: a
@@ -245,18 +245,18 @@ func newTestCompiler(t *testing.T) *Compiler {
 	}
 
 	parser := NewParser([]string{
-		"king",
-		"chancellor",
-		"council-member",
-		"noble-delegate",
-		"clergy-delegate",
-		"burgher-delegate",
-		"peasant-delegate",
-		"builder-berserker",
-		"reviewer-shieldmaiden",
-		"intelligence-qa-scout",
-		"intelligence-nightraven",
-		"intelligence-loki-chaos",
+		"governance",
+		"coordinator",
+		"plan-author",
+		"architecture-advisor",
+		"risk-advisor",
+		"systems-advisor",
+		"usability-advisor",
+		"builder",
+		"reviewer",
+		"qa-validator",
+		"security-validator",
+		"resilience-validator",
 	})
 
 	return NewCompiler(schemaSet, parser)

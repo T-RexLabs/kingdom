@@ -700,7 +700,7 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 	if !resourceLimitFailure {
 		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
 	}
-	retry, planned, err := o.planAutomaticDecreeRetry(ctx, asyncExecutionResult{
+	retry, planned, err := o.planAutomaticWorkOrderRetry(ctx, asyncExecutionResult{
 		run:       run,
 		node:      node,
 		attempt:   attempt,

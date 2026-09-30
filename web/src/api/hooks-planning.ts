@@ -1,9 +1,9 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch } from "./client";
+import { useActivityHistory } from "./hooks-activity";
 import { manualRefetchQueryOptions } from "./query-freshness";
 import type {
   AcpRun,
-  AcpRunActivityResponse,
   CreateAcpRunRequest,
   CreatePlanningSessionRequest,
   CreatePlanningSessionResult,
@@ -18,8 +18,8 @@ import type {
   PlanningSessionListResponse,
   UpdatePlanningSessionRequest,
 } from "./hooks-types";
-import { applyPlanningSessionFields } from "@/features/decrees/planner-session-cache";
-import { plannerKeys } from "@/features/decrees/planner-query-keys";
+import { applyPlanningSessionFields, invalidatePlanningBranch, removeDeletedPlanningSession } from "@/features/work-orders/planner-session-cache";
+import { plannerKeys } from "@/features/work-orders/planner-query-keys";
 import { useSlicedMutation } from "./use-sliced-mutation";
 import { historyItems } from "./history-pages";
 import type { components } from "./schema";
@@ -33,10 +33,11 @@ const plannerQueryOptions = {
 
 export const ACP_RUN_REFETCH_INTERVAL_MS = 10_000;
 
-export function usePlanningSessions(limit = 100) {
+export function usePlanningSessions(limit = 100, search = "") {
+  const query = search.trim();
   return useInfiniteQuery({
-    queryKey: plannerKeys.list(limit),
-    queryFn: ({ pageParam, signal }) => apiFetch<PlanningSessionListResponse>("/planning-sessions", { params: { limit, cursor: pageParam }, signal }),
+    queryKey: plannerKeys.list(limit, query),
+    queryFn: ({ pageParam, signal }) => apiFetch<PlanningSessionListResponse>("/planning-sessions", { params: { limit, cursor: pageParam, q: query || undefined }, signal }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor,
     select: (data) => ({ items: historyItems(data.pages, (item) => item.planning_session_id) }),
@@ -135,12 +136,14 @@ export function useUpdatePlanningSessionTitle(sessionId: string) {
         signal,
       }),
     (updated) => {
-      applyPlanningSessionFields(qc, sessionId, {
+      applyPlanningSessionFields(qc, updated.planning_session_id, {
         title: updated.title,
         title_state: updated.title_state,
       });
+      void qc.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
     },
-    sessionId,
+    `${sessionId}:title`,
+    "planning-session-update",
   );
 }
 
@@ -162,11 +165,12 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
         signal,
       }),
     (updated) => {
-      applyPlanningSessionFields(qc, sessionId, {
+      applyPlanningSessionFields(qc, updated.planning_session_id, {
         model_selection: updated.model_selection,
       });
     },
-    sessionId,
+    `${sessionId}:model`,
+    "planning-session-update",
   );
 }
 
@@ -183,10 +187,10 @@ export function useGeneratePlanningSessionTitle(sessionId: string) {
         } satisfies CreateAcpRunRequest),
       }),
     onSuccess: (run) => {
-      applyPlanningSessionFields(qc, sessionId, {
+      applyPlanningSessionFields(qc, run.planning_session_id, {
         current_title_run_id: run.run_id,
       });
-      void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
+      void qc.invalidateQueries({ queryKey: plannerKeys.detail(run.planning_session_id) });
     },
   });
 }
@@ -200,15 +204,12 @@ export function useDeletePlanningSession() {
         headers: { "Idempotency-Key": key },
       }),
     onSuccess: (_data, { value: sessionId }) => {
-      qc.invalidateQueries({ queryKey: plannerKeys.all() });
-      qc.removeQueries({ queryKey: plannerKeys.detail(sessionId) });
-      qc.removeQueries({ queryKey: plannerKeys.messages(sessionId) });
-      qc.removeQueries({ queryKey: plannerKeys.plan(sessionId) });
+      removeDeletedPlanningSession(qc, sessionId);
     },
   });
 }
 
-export function useCreatePlanningOperation(sessionId: string) {
+export function useCreatePlanningOperation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ body, key }: MutationWithBody<CreateAcpRunRequest>) =>
@@ -217,13 +218,14 @@ export function useCreatePlanningOperation(sessionId: string) {
         headers: { "Idempotency-Key": key },
         body: JSON.stringify(body),
       }),
-    onSuccess: (run) => {
+    onSuccess: (run, { body }) => {
+      const owningSessionId = body.planning_session_id;
       qc.setQueryData<AcpRun>(plannerKeys.operation(run.run_id), run);
-      applyPlanningSessionFields(qc, sessionId, {
+      applyPlanningSessionFields(qc, owningSessionId, {
         conversation_state: "processing",
         current_run_id: run.run_id,
       });
-      void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
+      void qc.invalidateQueries({ queryKey: plannerKeys.detail(owningSessionId) });
     },
   });
 }
@@ -249,15 +251,8 @@ export function useAcpRunActivity(
   options?: { enabled?: boolean; refetchIntervalMs?: number | false },
 ) {
   const enabled = options?.enabled ?? true;
-  return useQuery({
-    queryKey: runId ? plannerKeys.activity(runId) : ["planning-operations", "__pending__", "activity"],
-    queryFn: runId
-      ? () => apiFetch<AcpRunActivityResponse>(`/acp/runs/${runId}/activity`)
-      : skipToken,
-    enabled: enabled && Boolean(runId),
-    refetchInterval: options?.refetchIntervalMs,
-    ...plannerQueryOptions,
-  });
+  return useActivityHistory(runId ? `/acp/runs/${runId}/activity` : undefined,
+    runId ? plannerKeys.activity(runId) : ["planning-operations", "__pending__", "activity"],{...options,enabled});
 }
 
 
@@ -269,10 +264,8 @@ export function useActivateVariant(sessionId: string) {
         method: "PUT",
         headers: { "Idempotency-Key": key },
       }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: plannerKeys.messages(sessionId) });
-      qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
-      qc.invalidateQueries({ queryKey: ["planning-sessions", sessionId, "variants"] });
+    onSuccess: (message) => {
+      invalidatePlanningBranch(qc, message.planning_session_id);
     },
   });
 }

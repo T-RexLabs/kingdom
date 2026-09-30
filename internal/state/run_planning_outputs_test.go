@@ -14,11 +14,11 @@ func TestValidateRunPlanningOutputLineageTxRejectsAttemptFromDifferentNodeRun(t 
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_validation', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_validation_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_validation_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_validation', 'wfdef_1', 'plan_drafting', 'plan-author', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_validation_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_validation_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'plan-author', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_validation_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 
 	tx, err := db.BeginTx(context.Background(), nil)
@@ -144,13 +144,13 @@ func seedRunPlanningOutputProjectionGraph(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_projection_retry', 'council-member', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_projection_retry', 'Projection Retry', 'text', '{}', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_projection_retry', 'royal-decree', 'v1', '{}', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_projection_retry', 'wfdef_projection_retry', 'plan_drafting', 'council-member', 'plan_drafting', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_projection_retry', NULL, 'decree_projection_retry', 'wfdef_projection_retry', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_projection_retry', 'run_projection_retry', 'plan_drafting', 1, 1, 'succeeded', 'council-member', 'agent_projection_retry', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_projection_retry', 'plan-author', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_projection_retry', 'Projection Retry', 'text', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_projection_retry', 'work-order', 'v1', '{}', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_projection_retry', 'wfdef_projection_retry', 'plan_drafting', 'plan-author', 'plan_drafting', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_projection_retry', NULL, 'work_order_projection_retry', 'wfdef_projection_retry', 'running', 'draft', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_projection_retry', 'run_projection_retry', 'plan_drafting', 1, 1, 'succeeded', 'plan-author', 'agent_projection_retry', 1, '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_projection_retry:plan_drafting:1', 'run_projection_retry', 'nr_projection_retry', 'committed_success', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '`+now+`', '`+now+`', '`+now+`', '`+now+`', '', '', '`+now+`', '`+now+`')`)
 	canonicalEvent, err := canonicalEventJSON(eventAuditRecord{
 		EventID:         "evt_projection_retry_started",
@@ -163,7 +163,7 @@ func seedRunPlanningOutputProjectionGraph(t *testing.T, db *sql.DB) {
 		Seq:             1,
 		PayloadJSON:     `{}`,
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "council-member",
+		RoleID:          "plan-author",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "orchestration_progress",
 		ReasonText:      "seed",
@@ -175,7 +175,7 @@ func seedRunPlanningOutputProjectionGraph(t *testing.T, db *sql.DB) {
 		t.Fatalf("canonicalize projection retry seed event: %v", err)
 	}
 	entryHash := entryHashFromCanonical(AuditGenesisPrevHash, canonicalEvent)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_projection_retry_started', 'run_projection_retry', 1, 'nr_projection_retry', 'run_projection_retry:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'runtime_orchestrator', 'council-member', 'runtime.orchestrator', 'orchestration_progress', 'seed', 'corr_projection_retry', 'caus_projection_retry', '`+AuditGenesisPrevHash+`', '`+entryHash+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_projection_retry_started', 'run_projection_retry', 1, 'nr_projection_retry', 'run_projection_retry:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'runtime_orchestrator', 'plan-author', 'runtime.orchestrator', 'orchestration_progress', 'seed', 'corr_projection_retry', 'caus_projection_retry', '`+AuditGenesisPrevHash+`', '`+entryHash+`', '`+now+`')`)
 }
 
 func testPlanRevisionOutputRequest() CreateRunPlanningOutputRequest {

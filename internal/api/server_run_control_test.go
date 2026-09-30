@@ -34,13 +34,13 @@ func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
 		},
 		headers: map[string]string{
 			"X-Actor-Id": "actor-user",
-			"X-Role-Id":  "chancellor",
+			"X-Role-Id":  "coordinator",
 		},
 		idempotencyKey: "idem-final-approval-forbidden",
 	})
 
 	if res.Code == http.StatusForbidden || res.Code == http.StatusUnauthorized {
-		t.Fatalf("verified local operator must retain allfather authority regardless of forged role, got %d", res.Code)
+		t.Fatalf("verified local operator must retain operator authority regardless of forged role, got %d", res.Code)
 	}
 }
 
@@ -50,13 +50,13 @@ func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := "2026-03-01T13:00:00Z"
-	attemptID := runID + ":delegated_execution_berserker:1"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-stop-retry', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-stop-retry', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-stop-retry', 1, ?, ?)`, runID, now, now)
+	attemptID := runID + ":implementation:1"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-stop-retry', 'builder', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-stop-retry', ?, 'implementation', 1, 1, 'blocked', 'builder', 'agent-builder-stop-retry', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-stop-retry', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-stop-retry', 'ses-builder-stop-retry', ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'session-builder-stop-retry', 'ses-builder-stop-retry', 'superseded', 'server_response', ?, ?)`, attemptID, runID, now, now)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-stop-retry' WHERE attempt_id = ?`, attemptID)
-	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'decree_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'work_order_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'ses-builder-stop-retry', 'agent_unresponsive', 'provider stopped responding', ?, 'pending', 'guardian_evidence_lost', 1, 'Kingdom proved the managed provider process is absent, but guardian quiescence evidence is missing or invalid.', ?, ?)`, attemptID, runID, now, now, now)
 	projection := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if projection.Code != http.StatusOK {
@@ -68,7 +68,7 @@ func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
 	}
 	var current *gen.RunExecution
 	for _, node := range executions.Items {
-		if node.NodeId == "delegated_execution_berserker" {
+		if node.NodeId == "implementation" {
 			current = node.CurrentExecution
 			break
 		}
@@ -136,7 +136,7 @@ func TestServerFinalApprovalConfirmTransitionsRunToSucceeded(t *testing.T) {
 		path:   "/api/v1/runs/" + runID + "/final-approval",
 		body: map[string]any{
 			"action": "confirm",
-			"reason": "approved by allfather",
+			"reason": "approved by operator",
 		},
 		idempotencyKey: "idem-final-approval-confirm",
 	})
@@ -160,7 +160,7 @@ func TestServerFinalApprovalConfirmTransitionsRunToSucceeded(t *testing.T) {
 	if decision != "confirmed" {
 		t.Fatalf("expected final review decision confirmed, got %q", decision)
 	}
-	if feedback != "approved by allfather" {
+	if feedback != "approved by operator" {
 		t.Fatalf("expected final review feedback to preserve operator note, got %q", feedback)
 	}
 }
@@ -268,10 +268,10 @@ func TestServerFinalApprovalReworkReopensRunThroughPlanDrafting(t *testing.T) {
 
 	assertLatestAttempt(t, db, runID, "plan_drafting", 1, "ready")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 1, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
-	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "execution_review", 1, "pending")
+	assertLatestAttempt(t, db, runID, "quality_validation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "completion", 1, "pending")
 
 	var decision string
 	var feedback string
@@ -320,7 +320,7 @@ func TestServerFinalApprovalReworkProjectsSingleCanonicalCollectionEvent(t *test
 		path:   "/api/v1/runs/" + runID + "/final-approval",
 		body: map[string]any{
 			"action": "rework",
-			"reason": "Revise the decree from the planning stage.",
+			"reason": "Revise the work order from the planning stage.",
 		},
 		idempotencyKey: "idem-final-approval-rework-collection-single",
 	})
@@ -365,7 +365,7 @@ func TestServerFinalApprovalReworkAllowsSixthGovernanceAttempt(t *testing.T) {
 		path:   "/api/v1/runs/" + runID + "/final-approval",
 		body: map[string]any{
 			"action": "rework",
-			"reason": "Revise the decree and rerun the downstream execution path.",
+			"reason": "Revise the work order and rerun the downstream execution path.",
 		},
 		idempotencyKey: "idem-final-approval-rework-sixth-attempt",
 	})
@@ -375,10 +375,10 @@ func TestServerFinalApprovalReworkAllowsSixthGovernanceAttempt(t *testing.T) {
 
 	assertLatestAttempt(t, db, runID, "plan_drafting", 6, "ready")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 6, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 6, "pending")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 6, "pending")
-	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 6, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 6, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 6, "pending")
+	assertLatestAttempt(t, db, runID, "execution_review", 6, "pending")
+	assertLatestAttempt(t, db, runID, "quality_validation", 6, "pending")
+	assertLatestAttempt(t, db, runID, "completion", 6, "pending")
 
 	var queuedPlanAttempt sql.NullInt64
 	if err := db.QueryRow(`SELECT queued_plan_attempt FROM run_final_reviews WHERE run_id = ? ORDER BY created_at DESC, final_review_id DESC LIMIT 1`, runID).Scan(&queuedPlanAttempt); err != nil {
@@ -402,7 +402,7 @@ func TestServerFinalApprovalReworkResolvesCustomPlanDraftingNodeID(t *testing.T)
 		path:   "/api/v1/runs/" + runID + "/final-approval",
 		body: map[string]any{
 			"action": "rework",
-			"reason": "Reopen the decree from the custom planning node.",
+			"reason": "Reopen the work order from the custom planning node.",
 		},
 		idempotencyKey: "idem-final-approval-custom-plan-node",
 	})
@@ -412,8 +412,8 @@ func TestServerFinalApprovalReworkResolvesCustomPlanDraftingNodeID(t *testing.T)
 
 	assertLatestAttempt(t, db, runID, planNodeID, 1, "ready")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 1, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "completion", 1, "pending")
 
 	var queuedPlanAttempt sql.NullInt64
 	if err := db.QueryRow(`SELECT queued_plan_attempt FROM run_final_reviews WHERE run_id = ? ORDER BY created_at DESC, final_review_id DESC LIMIT 1`, runID).Scan(&queuedPlanAttempt); err != nil {
@@ -437,7 +437,7 @@ func TestServerFinalApprovalReworkStillBlocksExecutionStartUntilRenewedPlanAppro
 		path:   "/api/v1/runs/" + runID + "/final-approval",
 		body: map[string]any{
 			"action": "rework",
-			"reason": "Reopen the decree from the custom planning node.",
+			"reason": "Reopen the work order from the custom planning node.",
 		},
 		idempotencyKey: "idem-final-approval-custom-plan-node-gate",
 	})
@@ -460,7 +460,7 @@ func TestServerFinalApprovalReworkStillBlocksExecutionStartUntilRenewedPlanAppro
 		FromState:       "pending",
 		ToState:         "ready",
 		ActorID:         "actor-1",
-		RoleID:          "council-member",
+		RoleID:          "plan-author",
 		AuthoritySource: "api.test",
 		ReasonCode:      "orchestration_progress",
 		ReasonText:      "force execution node ready for guard verification",
@@ -485,10 +485,10 @@ func TestServerFinalApprovalReworkStillBlocksExecutionStartUntilRenewedPlanAppro
 		FromState:       "ready",
 		ToState:         "running",
 		ActorID:         "actor-1",
-		RoleID:          "council-member",
+		RoleID:          "plan-author",
 		AuthoritySource: "api.test",
 		ReasonCode:      "execution_start",
-		ReasonText:      "attempt execution before renewed allfather approval",
+		ReasonText:      "attempt execution before renewed operator approval",
 		CorrelationID:   "corr-final-rework-running",
 		CausationID:     "caus-final-rework-running",
 		OccurredAt:      "2026-03-03T12:00:01Z",
@@ -513,8 +513,8 @@ func TestServerFinalApprovalReworkExcludesNeedsReworkBranchFromReplayTargets(t *
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithGovernanceBranchWorkflow(t, handler)
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'awaiting_human_confirmation', plan_state = 'approved', autonomous_approvals = 0 WHERE run_id = ?`, runID)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_seed_review_branch', 'reviewer-shieldmaiden', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_seed_review_branch', ?, 'execution_review_shieldmaiden', 1,1, 'pending', 'reviewer-shieldmaiden', 'agent_seed_review_branch', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_seed_review_branch', 'reviewer', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_seed_review_branch', ?, 'execution_review', 1,1, 'pending', 'reviewer', 'agent_seed_review_branch', 1, NULL, NULL)`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -530,14 +530,14 @@ func TestServerFinalApprovalReworkExcludesNeedsReworkBranchFromReplayTargets(t *
 	}
 
 	assertLatestAttempt(t, db, runID, "plan_drafting", 1, "ready")
-	assertLatestAttempt(t, db, runID, "king_plan_decision", 1, "pending")
+	assertLatestAttempt(t, db, runID, "plan_decision", 1, "pending")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 1, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "completion", 1, "pending")
+	assertLatestAttempt(t, db, runID, "execution_review", 1, "pending")
 
 	var queuedReviewBranchCount int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'execution_review_shieldmaiden'`, runID).Scan(&queuedReviewBranchCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'execution_review'`, runID).Scan(&queuedReviewBranchCount); err != nil {
 		t.Fatalf("count review branch attempts: %v", err)
 	}
 	if queuedReviewBranchCount != 1 {
@@ -553,8 +553,8 @@ func TestServerFinalApprovalReworkConflictWhenReplayWaveAlreadyActive(t *testing
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'awaiting_human_confirmation', plan_state = 'approved', autonomous_approvals = 0 WHERE run_id = ?`, runID)
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_active_plan_replay', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_plan_replay', ?, 'plan_drafting', 2,2, 'pending', 'council-member', 'agent_active_plan_replay', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_active_plan_replay', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_active_plan_replay', ?, 'plan_drafting', 2,2, 'pending', 'plan-author', 'agent_active_plan_replay', 1, NULL, NULL)`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -606,7 +606,7 @@ func TestServerPlanApprovalIgnoresClientSuppliedRole(t *testing.T) {
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithPlanningWaveWorkflow(t, handler)
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision' WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision' WHERE run_id = ?`, runID)
 	planRevisionID := seedReadyPlanReworkNodes(t, db, runID)
 
 	staleRes := performJSONRequest(t, handler, requestSpec{
@@ -632,13 +632,13 @@ func TestServerPlanApprovalIgnoresClientSuppliedRole(t *testing.T) {
 		},
 		headers: map[string]string{
 			"X-Actor-Id": "actor-user",
-			"X-Role-Id":  "king",
+			"X-Role-Id":  "governance",
 		},
 		idempotencyKey: "idem-plan-approval-forbidden",
 	})
 
 	if res.Code == http.StatusForbidden || res.Code == http.StatusUnauthorized {
-		t.Fatalf("verified local operator must retain allfather authority regardless of forged role, got %d", res.Code)
+		t.Fatalf("verified local operator must retain operator authority regardless of forged role, got %d", res.Code)
 	}
 }
 
@@ -656,7 +656,7 @@ func TestServerPlanApprovalConfirmTransitionsPlanToApproved(t *testing.T) {
 		body: map[string]any{
 			"action":           "confirm",
 			"plan_revision_id": planRevisionID,
-			"reason":           "approved by allfather",
+			"reason":           "approved by operator",
 		},
 		idempotencyKey: "idem-plan-approval-confirm",
 	})
@@ -691,7 +691,7 @@ func TestServerPlanApprovalConfirmSupportsCustomPlanDraftingNodeID(t *testing.T)
 	const planNodeID = "plan_drafting_scope"
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithCustomPlanDraftingWorkflow(t, handler, planNodeID)
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision', autonomous_approvals = 0 WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision', autonomous_approvals = 0 WHERE run_id = ?`, runID)
 	planRevisionID := seedCurrentPlanRevisionForNode(t, db, runID, planNodeID, "Current scoped plan revision")
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -722,17 +722,17 @@ func TestServerPlanApprovalUsesLatestPersistedRevisionWhenPlanTimestampsTie(t *t
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithPlanningWaveWorkflow(t, handler, withCreateRunBody(map[string]any{"autonomous_approvals": false}))
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision' WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision' WHERE run_id = ?`, runID)
 	createdAt := "2026-03-02T09:02:00Z"
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_chancellor', 'chancellor', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_council', 'council-member', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_king', 'king', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_advisory', ?, 'advisory_synthesis', 1,1, 'succeeded', 'chancellor', 'agent_same_ts_chancellor', 1, ?, ?)`, runID, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_plan', ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_same_ts_council', 1, ?, ?)`, runID, createdAt, createdAt)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_king', ?, 'king_plan_decision', 1,1, 'pending', 'king', 'agent_same_ts_king', 1, NULL, NULL)`, runID)
-	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_z_same_ts', ?, 'agent_same_ts_council', 'agent_same_ts_king', 'thread_same_ts_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Plan revision one"}', ?)`, runID, createdAt)
-	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_a_same_ts', ?, 'agent_same_ts_council', 'agent_same_ts_king', 'thread_same_ts_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Plan revision two"}', ?)`, runID, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_coordinator', 'coordinator', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_council', 'plan-author', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_same_ts_governance', 'governance', 'idle', NULL, 0, ?, ?)`, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_advisory', ?, 'advisory_synthesis', 1,1, 'succeeded', 'coordinator', 'agent_same_ts_coordinator', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_plan', ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_same_ts_council', 1, ?, ?)`, runID, createdAt, createdAt)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_same_ts_governance', ?, 'plan_decision', 1,1, 'pending', 'governance', 'agent_same_ts_governance', 1, NULL, NULL)`, runID)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_z_same_ts', ?, 'agent_same_ts_council', 'agent_same_ts_governance', 'thread_same_ts_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Plan revision one"}', ?)`, runID, createdAt)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_a_same_ts', ?, 'agent_same_ts_council', 'agent_same_ts_governance', 'thread_same_ts_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Plan revision two"}', ?)`, runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:one", runID, "nr_same_ts_plan", createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:two", runID, "nr_same_ts_plan", createdAt)
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_z_same_ts', ?, 'plan_drafting', 'nr_same_ts_plan', ?, 'agent_same_ts_council', 'msg_plan_z_same_ts', 'plan_revision', 'Plan revision one', ?)`, runID, runID+":plan_drafting:one", createdAt)
@@ -832,8 +832,8 @@ func TestServerPlanApprovalRejectsAutonomousApprovalRuns(t *testing.T) {
 	if err := db.QueryRow(`SELECT plan_state FROM workflow_runs WHERE run_id = ?`, runID).Scan(&planState); err != nil {
 		t.Fatalf("query autonomous run plan state: %v", err)
 	}
-	if planState != "awaiting_king_decision" {
-		t.Fatalf("expected plan state to remain awaiting_king_decision, got %q", planState)
+	if planState != "awaiting_plan_decision" {
+		t.Fatalf("expected plan state to remain awaiting_plan_decision, got %q", planState)
 	}
 }
 
@@ -874,11 +874,11 @@ func TestServerPlanApprovalUsesLatestCanonicalPlanRevision(t *testing.T) {
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithPlanningWaveWorkflow(t, handler, withCreateRunBody(map[string]any{"autonomous_approvals": false}))
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision' WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision' WHERE run_id = ?`, runID)
 	_ = seedReadyPlanReworkNodes(t, db, runID)
 	createdAt := "2026-03-02T09:02:00Z"
-	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_visible_latest', ?, ?, ?, 'thread_visible_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Visible approval revision"}', '2026-03-02T09:01:00Z')`, runID, "agent_council_"+runID, "agent_king_"+runID)
-	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_latest', ?, ?, ?, 'thread_latest_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest canonical revision"}', ?)`, runID, "agent_council_"+runID, "agent_king_"+runID, createdAt)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_visible_latest', ?, ?, ?, 'thread_visible_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Visible approval revision"}', '2026-03-02T09:01:00Z')`, runID, "agent_council_"+runID, "agent_governance_"+runID)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_latest', ?, ?, ?, 'thread_latest_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest canonical revision"}', ?)`, runID, "agent_council_"+runID, "agent_governance_"+runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:visible", runID, "nr_plan_rework_plan_"+runID, "2026-03-02T09:01:00Z")
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_visible_latest', ?, 'plan_drafting', ?, ?, ?, 'msg_plan_visible_latest', 'plan_revision', 'Visible approval revision', '2026-03-02T09:01:00Z')`, runID, "nr_plan_rework_plan_"+runID, runID+":plan_drafting:visible", "agent_council_"+runID)
 	stalePlanRevisionID := mustRefreshRunPlanRevision(t, db, runID).PlanRevisionID
@@ -934,10 +934,10 @@ func TestServerPlanApprovalMaterializesCurrentProjectionWhenMissing(t *testing.T
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithPlanningWaveWorkflow(t, handler, withCreateRunBody(map[string]any{"autonomous_approvals": false}))
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision' WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision' WHERE run_id = ?`, runID)
 	_ = seedReadyPlanReworkNodes(t, db, runID)
 	createdAt := "2026-03-02T09:02:00Z"
-	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_missing_projection_latest', ?, ?, ?, 'thread_missing_projection_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest canonical revision without persisted projection"}', ?)`, runID, "agent_council_"+runID, "agent_king_"+runID, createdAt)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg_plan_missing_projection_latest', ?, ?, ?, 'thread_missing_projection_plan', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest canonical revision without persisted projection"}', ?)`, runID, "agent_council_"+runID, "agent_governance_"+runID, createdAt)
 	seedAttemptExecution(t, db, runID+":plan_drafting:missing_projection_latest", runID, "nr_plan_rework_plan_"+runID, createdAt)
 	mustExecSQL(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_missing_projection_latest', ?, 'plan_drafting', ?, ?, ?, 'msg_plan_missing_projection_latest', 'plan_revision', 'Latest canonical revision without persisted projection', ?)`, runID, "nr_plan_rework_plan_"+runID, runID+":plan_drafting:missing_projection_latest", "agent_council_"+runID, createdAt)
 
@@ -989,7 +989,7 @@ func TestServerPlanApprovalUsesCanonicalBundleAcrossMultiplePlanDraftingNodes(t 
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithMultiPlanDraftingWorkflow(t, handler)
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_king_decision', autonomous_approvals = 0 WHERE run_id = ?`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'awaiting_plan_decision', autonomous_approvals = 0 WHERE run_id = ?`, runID)
 	seedPlanOutputForNode(t, db, runID, "plan_drafting_scope", "Scope plan v1")
 	seedPlanOutputForNode(t, db, runID, "plan_drafting_delivery", "Delivery plan v1")
 	stalePlanRevisionID := mustRefreshRunPlanRevision(t, db, runID).PlanRevisionID
@@ -1172,11 +1172,11 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	setRunPlanState(t, db, runID, "approved")
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'builder-berserker', 'Builder', 'busy', NULL, 0, ?, ?)`, "agent_cancel_builder_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, ?, ?)`, "agent_cancel_reviewer_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', ?, 1, ?, NULL)`, "nr_cancel_builder_"+runID, runID, "agent_cancel_builder_"+runID, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review_shieldmaiden', 1,1, 'ready', 'reviewer-shieldmaiden', ?, 1, NULL, NULL)`, "nr_cancel_review_"+runID, runID, "agent_cancel_reviewer_"+runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'running', 'provider_backed', 'server_response', 'worker-1', ?, 1, ?, ?, NULL, NULL, '', '', ?, ?)`, runID+":delegated_execution_berserker:1", runID, "nr_cancel_builder_"+runID, now, "session_cancel_builder_"+runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'builder', 'Builder', 'busy', NULL, 0, ?, ?)`, "agent_cancel_builder_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer', 'Reviewer', 'idle', NULL, 0, ?, ?)`, "agent_cancel_reviewer_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'implementation', 1,1, 'running', 'builder', ?, 1, ?, NULL)`, "nr_cancel_builder_"+runID, runID, "agent_cancel_builder_"+runID, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review', 1,1, 'ready', 'reviewer', ?, 1, NULL, NULL)`, "nr_cancel_review_"+runID, runID, "agent_cancel_reviewer_"+runID)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'running', 'provider_backed', 'server_response', 'worker-1', ?, 1, ?, ?, NULL, NULL, '', '', ?, ?)`, runID+":implementation:1", runID, "nr_cancel_builder_"+runID, now, "session_cancel_builder_"+runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?)`, "session_cancel_builder_"+runID, "agent_cancel_builder_"+runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1205,11 +1205,11 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 		t.Fatalf("expected run_status=cancelled, got %q", storedStatus)
 	}
 
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "cancelled")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "cancelled")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "cancelled")
+	assertLatestAttempt(t, db, runID, "execution_review", 1, "cancelled")
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, runID+":delegated_execution_berserker:1").Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, runID+":implementation:1").Scan(&attemptState); err != nil {
 		t.Fatalf("query cancelled attempt execution: %v", err)
 	}
 	if attemptState != "committed_cancelled" {
@@ -1225,7 +1225,7 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	}
 
 	var cancelOutboxStatus string
-	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE attempt_id = ?`, runID+":delegated_execution_berserker:1").Scan(&cancelOutboxStatus); err != nil {
+	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE attempt_id = ?`, runID+":implementation:1").Scan(&cancelOutboxStatus); err != nil {
 		t.Fatalf("query attempt cancel outbox status: %v", err)
 	}
 	if cancelOutboxStatus != "pending" {
@@ -1422,7 +1422,7 @@ func TestServerRetryReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	setRunStatus(t, db, runID, "failed")
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_member', 'council-member', 'Council Member', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_member', 'plan-author', 'Plan Author', 'blocked', NULL, 0, ?, ?)`, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
@@ -1435,7 +1435,7 @@ func TestServerRetryReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	}
 
 	var systemAgentCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM agents WHERE role_id = 'council-member' AND agent_id LIKE 'agent_system_%'`).Scan(&systemAgentCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM agents WHERE role_id = 'plan-author' AND agent_id LIKE 'agent_system_%'`).Scan(&systemAgentCount); err != nil {
 		t.Fatalf("query system council agents: %v", err)
 	}
 	if systemAgentCount != 0 {
@@ -1451,7 +1451,7 @@ func TestServerRerunReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	setRunStatus(t, db, runID, "failed")
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_member', 'council-member', 'Council Member', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_member', 'plan-author', 'Plan Author', 'blocked', NULL, 0, ?, ?)`, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
@@ -1464,7 +1464,7 @@ func TestServerRerunReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	}
 
 	var systemAgentCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM agents WHERE role_id = 'council-member' AND agent_id LIKE 'agent_system_%'`).Scan(&systemAgentCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM agents WHERE role_id = 'plan-author' AND agent_id LIKE 'agent_system_%'`).Scan(&systemAgentCount); err != nil {
 		t.Fatalf("query system council agents: %v", err)
 	}
 	if systemAgentCount != 0 {
@@ -1628,8 +1628,8 @@ func TestServerRerunFromCancelledWaitsForCancellationOutbox(t *testing.T) {
 	agentID := "agent_cancelled_replay_" + runID
 	nodeRunID := "node_run_cancelled_replay_" + runID
 	attemptID := runID + ":kickoff:1"
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES (?, ?, 'kickoff', 1, 1, 'cancelled', 'council-member', ?, 1, ?)`, nodeRunID, runID, agentID, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'plan-author', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES (?, ?, 'kickoff', 1, 1, 'cancelled', 'plan-author', ?, 1, ?)`, nodeRunID, runID, agentID, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, committed_at, created_at, updated_at) VALUES (?, ?, ?, 'committed_cancelled', 'provider_backed', 'server_response', ?, ?, ?, ?)`, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'run_cancelled_by_user', 'cancel settling', ?, 'pending', ?, ?)`, "cancel_outbox_"+runID, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
 	setRunStatus(t, db, runID, "cancelled")
@@ -1745,23 +1745,23 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 	}
 }
 
-func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t *testing.T) {
+func TestServerRerunFromCompletionPromotesToPlanDraftingAndQueuesDescendants(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 	now := time.Now().UTC().Format(time.RFC3339)
-	kingAgentID := "agent_royal_closure_retry_" + runID
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, kingAgentID, now, now)
+	governanceAgentID := "agent_completion_retry_" + runID
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'governance', 'idle', NULL, 0, ?, ?)`, governanceAgentID, now, now)
 	const priorAttempts = 25
 	for attempt := 1; attempt <= priorAttempts; attempt++ {
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'royal_closure', ?, ?, 'succeeded', 'king', ?, 1, ?, ?)`, fmt.Sprintf("nr_royal_closure_%d_%s", attempt, runID), runID, attempt, attempt, kingAgentID, now, now)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'completion', ?, ?, 'succeeded', 'governance', ?, 1, ?, ?)`, fmt.Sprintf("nr_completion_%d_%s", attempt, runID), runID, attempt, attempt, governanceAgentID, now, now)
 	}
 	setRunStatus(t, db, runID, "failed")
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/rerun-from/royal_closure",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/completion",
 		body:           map[string]any{"reason": "rerun from final decision"},
 		idempotencyKey: "idem-rerun-royal-closure",
 	})
@@ -1779,10 +1779,10 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 
 	assertLatestAttempt(t, db, runID, "plan_drafting", 1, "ready")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 1, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
-	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", priorAttempts+1, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "execution_review", 1, "pending")
+	assertLatestAttempt(t, db, runID, "quality_validation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "completion", priorAttempts+1, "pending")
 
 	var runStatus string
 	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
@@ -1811,11 +1811,11 @@ func TestServerRerunFromPlanDraftingIncludesNeedsReworkBranchTargets(t *testing.
 	}
 
 	assertLatestAttempt(t, db, runID, "plan_drafting", 1, "ready")
-	assertLatestAttempt(t, db, runID, "king_plan_decision", 1, "pending")
+	assertLatestAttempt(t, db, runID, "plan_decision", 1, "pending")
 	assertLatestAttempt(t, db, runID, "execution_kickoff", 1, "pending")
-	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
-	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
+	assertLatestAttempt(t, db, runID, "implementation", 1, "pending")
+	assertLatestAttempt(t, db, runID, "completion", 1, "pending")
+	assertLatestAttempt(t, db, runID, "execution_review", 1, "pending")
 }
 
 func TestServerRetryQueuesOnlyTargetNode(t *testing.T) {
@@ -1827,7 +1827,7 @@ func TestServerRetryQueuesOnlyTargetNode(t *testing.T) {
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/royal_closure/retry",
+		path:           "/api/v1/runs/" + runID + "/nodes/completion/retry",
 		body:           map[string]any{"reason": "retry final decision"},
 		idempotencyKey: "idem-retry-royal-closure",
 	})
@@ -1835,9 +1835,9 @@ func TestServerRetryQueuesOnlyTargetNode(t *testing.T) {
 		t.Fatalf("expected 202 retry accepted, got %d (%s)", res.Code, res.Body.String())
 	}
 
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "ready")
+	assertLatestAttempt(t, db, runID, "completion", 1, "ready")
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = ? AND node_id IN ('plan_drafting','execution_kickoff','delegated_execution_berserker','execution_review_shieldmaiden','validation_gates_qa_scout')`, runID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = ? AND node_id IN ('plan_drafting','execution_kickoff','implementation','execution_review','quality_validation')`, runID).Scan(&count); err != nil {
 		t.Fatalf("count non-target replay attempts: %v", err)
 	}
 	if count != 0 {

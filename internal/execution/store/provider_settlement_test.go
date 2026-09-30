@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/dbmigrations"
 	"kingdom/internal/testutil"
 )
 
@@ -189,60 +188,42 @@ func TestReferencedSettlementProjectionUsesVerifiedVerdictBeyondPreview(t *testi
 	}
 }
 
-func TestProviderStreamContentMigrationPreservesPromotedBytes(t *testing.T) {
-	db := openTestDB(t)
-	names, err := dbmigrations.List()
+func TestProviderStreamContentBaselinePreservesSettledBytes(t *testing.T) {
+	s, db, req := phase2ProviderSettlementFixture(t)
+	ctx := context.Background()
+	body := strings.Repeat("complete response 界", 100000)
+	ref := providerexecution.ReferenceText(req.Settlement.ProviderInvocationID, body)
+	req.StreamObservation.CanonicalTerminalText = ""
+	req.StreamObservation.CanonicalTerminalTextRef = &ref
+	handoffReq := terminalHandoffRequest(req)
+	handoffReq.ContentReferences = []providerexecution.ContentReference{ref}
+	handoffReq.CopyContent = func(_ providerexecution.ContentReference, w io.Writer) error {
+		_, err := io.WriteString(w, body)
+		return err
+	}
+	handoff, err := s.PersistProviderTerminalHandoff(ctx, handoffReq)
 	if err != nil {
 		t.Fatal(err)
 	}
-	apply := func(name string) {
-		raw, err := dbmigrations.Read(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := db.Exec(string(raw)); err != nil {
-			t.Fatalf("apply %s: %v", name, err)
-		}
-	}
-	for _, name := range names {
-		if name <= "0008_provider_content.up.sql" {
-			apply(name)
-		}
-	}
-	seedMinimumGraph(t, db)
-	s := New(db)
-	const at = "2026-03-01T12:00:00Z"
-	if err := s.EnqueueAttempt(context.Background(), EnqueueAttemptRequest{AttemptID: "legacy-attempt", RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: at}); err != nil {
+	req.TerminalHandoffID = handoff.Handoff.HandoffID
+	if _, err := s.SettleProviderCompletionAndTerminal(ctx, req); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES('legacy-invocation','legacy-attempt','run_1','nr_1','settled_success','server_response',?,?)`, at, at); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO provider_completion_evidence(evidence_id,provider_invocation_id,attempt_id,run_id,node_run_id,evidence_kind,payload_json,created_at) VALUES('legacy-evidence','legacy-invocation','legacy-attempt','run_1','nr_1','stream_observation','{}',?)`, at); err != nil {
-		t.Fatal(err)
-	}
-	body := strings.Repeat("legacy response 界", 100000)
-	if _, err := db.Exec(`INSERT INTO provider_completion_settlements(settlement_id,provider_invocation_id,attempt_id,run_id,node_run_id,outcome,primary_evidence_id,final_text,settled_at,created_at) VALUES('legacy-settlement','legacy-invocation','legacy-attempt','run_1','nr_1','success','legacy-evidence',?,?,?)`, body, at, at); err != nil {
-		t.Fatal(err)
-	}
-	ref := providerexecution.ReferenceText("legacy-invocation", body)
-	if _, err := db.Exec(`INSERT INTO provider_contents(provider_invocation_id,sha256,size_bytes) VALUES(?,?,?)`, ref.InvocationID, ref.SHA256, ref.SizeBytes); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO provider_content_settlements(provider_invocation_id,sha256,settlement_id,field) VALUES(?,?,'legacy-settlement','final_text')`, ref.InvocationID, ref.SHA256); err != nil {
-		t.Fatal(err)
-	}
-	for _, name := range names {
-		if name > "0008_provider_content.up.sql" {
-			apply(name)
-		}
-	}
-	settled, found, err := s.GetProviderCompletionSettlement(context.Background(), "legacy-settlement")
+	settled, found, err := s.GetProviderCompletionSettlement(ctx, req.Settlement.SettlementID)
 	if err != nil || !found || settled.FinalTextRef == nil || *settled.FinalTextRef != ref || settled.FinalText != "" {
-		t.Fatalf("migrated settlement=%+v found=%t err=%v", settled, found, err)
+		t.Fatalf("settlement lost canonical reference: %+v found=%t err=%v", settled, found, err)
 	}
-	if err := s.CopyProviderContent(context.Background(), ref, io.Discard); err != nil {
-		t.Fatalf("migrated bytes failed verification: %v", err)
+	var copied strings.Builder
+	if err := s.CopyProviderContent(ctx, ref, &copied); err != nil || copied.String() != body {
+		t.Fatalf("settled content lost bytes: %v", err)
+	}
+	for _, mutation := range []string{
+		`UPDATE provider_contents SET size_bytes=0`,
+		`UPDATE provider_content_chunks SET content=X'00'`,
+	} {
+		if _, err := db.Exec(mutation); err == nil {
+			t.Fatalf("immutable provider content accepted %s", mutation)
+		}
 	}
 }
 
@@ -255,14 +236,14 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:         attemptID,
 		RunID:             "run_1",
 		NodeRunID:         "nr_1",
 		ExecutionMode:     ExecutionModeProviderBacked,
 		CompletionMode:    ProviderCompletionModeServerResponse,
-		SessionRef:        "session_run_1_decree_intake_1",
+		SessionRef:        "session_run_1_work_intake_1",
 		ProviderSessionID: "",
 		CreatedAt:         "2026-03-01T12:00:01Z",
 	}); err != nil {
@@ -274,7 +255,7 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -294,7 +275,7 @@ func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -353,7 +334,7 @@ func TestStoreCreateProviderInvocationRejectsAttemptLineageMismatch(t *testing.T
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_2', 'run_1', 'royal_closure', 1, 1, 'running', 'king', 'agent_king', 1)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('nr_2', 'run_1', 'completion', 1, 1, 'running', 'governance', 'agent_governance', 1)`)
 	s := New(db)
 	const attemptID = "run_1:lineage:1"
 	if err := s.EnqueueAttempt(context.Background(), EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z"}); err != nil {
@@ -373,7 +354,7 @@ func TestStoreCreateProviderInvocationRejectsAttemptLineageMismatch(t *testing.T
 	if _, err := s.CreateProviderInvocation(context.Background(), CreateProviderInvocationRequest{ProviderInvocationID: "invocation_valid_lineage", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("create valid provider invocation: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, created_at) VALUES ('usage_wrong_lineage', 'run_1', 'nr_2', ?, 'invocation_valid_lineage', 'king', '2026-03-01T12:00:03Z')`, attemptID); err == nil {
+	if _, err := db.Exec(`INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, created_at) VALUES ('usage_wrong_lineage', 'run_1', 'nr_2', ?, 'invocation_valid_lineage', 'governance', '2026-03-01T12:00:03Z')`, attemptID); err == nil {
 		t.Fatal("expected SQL constraints to reject cross-lineage provider token usage")
 	}
 }
@@ -421,7 +402,7 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   "worker_atomic",
 		ExpectedLeaseVersion: 1,
-		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "king", Model: "github-copilot/gpt-5.4-mini", Variant: "low"},
+		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "governance", Model: "github-copilot/gpt-5.4-mini", Variant: "low"},
 		Terminal:             CommitTerminalRequest{OutboxID: "outbox_atomic_1", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_success", PayloadJSON: `{"output_text":"canonical response"}`, ProviderSessionID: "ses_atomic"},
 	}
 	attachTerminalHandoffToSettlement(t, s, &settleReq)
@@ -478,7 +459,7 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 	replayWithLaterCallerTime.Settlement.SettledAt = clockNow.Format(time.RFC3339Nano)
 	replayWithLaterCallerTime.Terminal.CommittedAt = clockNow.Format(time.RFC3339Nano)
 	replayWithLaterCallerTime.TokenUsage = &ProviderInvocationTokenUsage{
-		RequiredRole: "king",
+		RequiredRole: "governance",
 		Model:        "github-copilot/gpt-5.4-mini",
 		Variant:      "low",
 		CreatedAt:    clockNow.Format(time.RFC3339Nano),
@@ -521,7 +502,7 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 		t.Fatalf("expected contradictory terminal replay conflict, got %v", err)
 	}
 	conflictingTokenUsage := settleReq
-	conflictingTokenUsage.TokenUsage = &ProviderInvocationTokenUsage{RequiredRole: "king", Model: "changed-model", Variant: "low"}
+	conflictingTokenUsage.TokenUsage = &ProviderInvocationTokenUsage{RequiredRole: "governance", Model: "changed-model", Variant: "low"}
 	_, err = s.SettleProviderCompletionAndTerminal(ctx, conflictingTokenUsage)
 	var tokenConflict *ProviderSettlementError
 	if !errors.As(err, &tokenConflict) || tokenConflict.Reason != "token_usage_conflict" {
@@ -533,7 +514,7 @@ func TestStoreSettleProviderCompletionAndTerminalCommitsOneCanonicalBoundary(t *
 	_, err = s.SettleProviderCompletionAndTerminal(ctx, SettleProviderCompletionAndTerminalRequest{
 		Settlement:        FinalizeProviderCompletionSettlementRequest{SettlementID: "settlement_atomic_stale", ProviderInvocationID: "invocation_atomic_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: ProviderCompletionOutcomeFailed, PrimaryEvidenceID: "unused", ProviderDiagnosticsJSON: `{}`, SettledAt: "2026-03-01T12:00:06Z"},
 		StreamObservation: &observation,
-		TokenUsage:        &ProviderInvocationTokenUsage{RequiredRole: "king", CreatedAt: "2026-03-01T12:00:06Z"},
+		TokenUsage:        &ProviderInvocationTokenUsage{RequiredRole: "governance", CreatedAt: "2026-03-01T12:00:06Z"},
 		Terminal:          CommitTerminalRequest{OutboxID: "outbox_atomic_stale", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_failure", PayloadJSON: `{}`, CommittedAt: "2026-03-01T12:00:06Z"},
 	})
 	var settlementErr *ProviderSettlementError
@@ -1159,7 +1140,7 @@ func TestStoreListPendingProviderTerminalHandoffsUsesInvocationKeyset(t *testing
 		sequence := i + 2
 		nodeRunID := fmt.Sprintf("nr_handoff_%d", sequence)
 		attemptID := fmt.Sprintf("run_1:handoff:%d", sequence)
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('%s', 'run_1', 'decree_intake', %d, %d, 'running', 'king', 'agent_king', 1)`, nodeRunID, sequence, sequence))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('%s', 'run_1', 'work_intake', %d, %d, 'running', 'governance', 'agent_governance', 1)`, nodeRunID, sequence, sequence))
 		if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 			t.Fatalf("enqueue handoff fixture %q: %v", invocationID, err)
 		}
@@ -1652,7 +1633,7 @@ func atomicProviderSettlementFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *s
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   "worker-a",
 		ExpectedLeaseVersion: 1,
-		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "king", CreatedAt: "2026-03-01T12:00:04Z"},
+		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "governance", CreatedAt: "2026-03-01T12:00:04Z"},
 		Terminal:             CommitTerminalRequest{OutboxID: "outbox_atomic_lease_rejection", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_success", PayloadJSON: `{"output_text":"canonical response"}`, CommittedAt: "2026-03-01T12:00:04Z", ProviderSessionID: "ses_atomic"},
 	}
 }
@@ -1702,7 +1683,7 @@ func phase2ProviderSettlementFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *s
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   "worker-phase2",
 		ExpectedLeaseVersion: 1,
-		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "king", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
+		TokenUsage:           &ProviderInvocationTokenUsage{RequiredRole: "governance", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
 		Terminal:             CommitTerminalRequest{OutboxID: "outbox_phase2_success", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_success", PayloadJSON: `{"output_text":"canonical response"}`, CommittedAt: "2026-03-01T12:00:04Z", ProviderSessionID: "ses_phase2"},
 	}
 }
@@ -2016,14 +1997,14 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsChangedReplay(t *te
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeServerResponse,
-		SessionRef:     "session_run_1_decree_intake_1",
+		SessionRef:     "session_run_1_work_intake_1",
 		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
@@ -2033,7 +2014,7 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsChangedReplay(t *te
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -2102,14 +2083,14 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeServerResponse,
-		SessionRef:     "session_run_1_decree_intake_1",
+		SessionRef:     "session_run_1_work_intake_1",
 		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
@@ -2119,7 +2100,7 @@ func TestStoreEnsureTerminalProviderCompletionEvidenceRejectsUnknownEvidenceSour
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -2159,14 +2140,14 @@ func TestStoreMarkProviderInvocationOpenRejectsProviderSessionLineageConflict(t 
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeServerResponse,
-		SessionRef:     "session_run_1_decree_intake_1",
+		SessionRef:     "session_run_1_work_intake_1",
 		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
@@ -2176,7 +2157,7 @@ func TestStoreMarkProviderInvocationOpenRejectsProviderSessionLineageConflict(t 
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -2241,14 +2222,14 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeServerResponse,
-		SessionRef:     "session_run_1_decree_intake_1",
+		SessionRef:     "session_run_1_work_intake_1",
 		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
@@ -2258,7 +2239,7 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -2279,7 +2260,7 @@ func TestStoreActivateProviderInvocationAtomicallyReplacesActiveInvocation(t *te
 		AttemptID:                    attemptID,
 		RunID:                        "run_1",
 		NodeRunID:                    "nr_1",
-		LogicalSessionID:             "session_run_1_decree_intake_1",
+		LogicalSessionID:             "session_run_1_work_intake_1",
 		CompletionMode:               ProviderCompletionModeServerResponse,
 		IssuedAt:                     "2026-03-01T12:00:04Z",
 		CreatedAt:                    "2026-03-01T12:00:04Z",
@@ -2329,7 +2310,7 @@ func TestStoreActivateProviderInvocationConfirmsDurableCommitError(t *testing.T)
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:activation_commit_ambiguous"
+	const attemptID = "run_1:work_intake:activation_commit_ambiguous"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
@@ -2451,14 +2432,14 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 
 	s := New(db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
 		NodeRunID:      "nr_1",
 		ExecutionMode:  ExecutionModeProviderBacked,
 		CompletionMode: ProviderCompletionModeServerResponse,
-		SessionRef:     "session_run_1_decree_intake_1",
+		SessionRef:     "session_run_1_work_intake_1",
 		CreatedAt:      "2026-03-01T12:00:01Z",
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
@@ -2468,7 +2449,7 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
-		LogicalSessionID:     "session_run_1_decree_intake_1",
+		LogicalSessionID:     "session_run_1_work_intake_1",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		IssuedAt:             "2026-03-01T12:00:02Z",
 		CreatedAt:            "2026-03-01T12:00:02Z",
@@ -2489,7 +2470,7 @@ func TestStoreActivateProviderInvocationRollsBackOnReplacementConflict(t *testin
 		AttemptID:                    attemptID,
 		RunID:                        "run_1",
 		NodeRunID:                    "nr_1",
-		LogicalSessionID:             "session_run_1_decree_intake_1",
+		LogicalSessionID:             "session_run_1_work_intake_1",
 		CompletionMode:               ProviderCompletionModeServerResponse,
 		IssuedAt:                     "2026-03-01T12:00:04Z",
 		CreatedAt:                    "2026-03-01T12:00:04Z",

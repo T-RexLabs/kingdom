@@ -94,8 +94,8 @@ func TestServerCancelQueuedPreparationsRetriesConcurrentWALWriter(t *testing.T) 
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{DB: db})
-	decreeID := seedDecree(t, handler)
-	roles := []string{"burgher-delegate", "clergy-delegate", "noble-delegate", "peasant-delegate"}
+	workOrderID := seedWorkOrder(t, handler)
+	roles := []string{"systems-advisor", "risk-advisor", "architecture-advisor", "usability-advisor"}
 	nodes := make([]map[string]any, 0, len(roles))
 	for index, role := range roles {
 		nodes = append(nodes, map[string]any{"node_id": fmt.Sprintf("advisor_%d", index), "required_role": role, "node_class": workflow.NodeClassAdvisorConsultation})
@@ -111,7 +111,7 @@ func TestServerCancelQueuedPreparationsRetriesConcurrentWALWriter(t *testing.T) 
 	}
 	created := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost, path: "/api/v1/runs", idempotencyKey: "cancel-preparation-run",
-		body: map[string]any{"decree_id": decreeID, "publish_mode": "direct", "model_selection": defaultTestRunModelSelectionBody()},
+		body: map[string]any{"work_order_id": workOrderID, "publish_mode": "direct", "model_selection": defaultTestRunModelSelectionBody()},
 	})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create advisor run: %d %s", created.Code, created.Body.String())

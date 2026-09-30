@@ -30,7 +30,7 @@ func TestArtifactModeContractAndPersistence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "mode-attempt", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", ArtifactContentByPath: map[string][]byte{"file": []byte("content")}, OutputJSON: []byte(fmt.Sprintf(`{"schema_version":"v1","status":"succeeded","summary":"done","payload_json":{},"artifacts":[%s],"error_reason":null}`, raw))}
+			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "mode-attempt", ProducerRole: "governance", CreatedAt: "2026-03-01T12:00:00Z", ArtifactContentByPath: map[string][]byte{"file": []byte("content")}, OutputJSON: []byte(fmt.Sprintf(`{"schema_version":"v1","status":"succeeded","summary":"done","payload_json":{},"artifacts":[%s],"error_reason":null}`, raw))}
 			_, err = NewWorkerOutputValidator(db, loadSchemaSet(t)).ValidateAndPersist(context.Background(), req)
 			if (err == nil) != tc.valid {
 				t.Fatalf("valid=%v err=%v", tc.valid, err)
@@ -65,7 +65,7 @@ func TestArtifactModeDatabaseConstraints(t *testing.T) {
 		mode   any
 		valid  bool
 	}{{"write", nil, false}, {"write", 0, true}, {"write", 0700, true}, {"write", 01000, false}, {"write", -1, false}, {"delete", nil, true}, {"delete", 0644, false}} {
-		_, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_action,name,mime,path,sha256,size_bytes,mode_bits,producer_role,created_at) VALUES ('mode-row','run_1','nr_1','mode-attempt',?,'file','text/plain','file','',0,?,'king','2026-03-01T12:00:00Z')`, tc.action, tc.mode)
+		_, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_action,name,mime,path,sha256,size_bytes,mode_bits,producer_role,created_at) VALUES ('mode-row','run_1','nr_1','mode-attempt',?,'file','text/plain','file','',0,?,'governance','2026-03-01T12:00:00Z')`, tc.action, tc.mode)
 		if (err == nil) != tc.valid {
 			t.Fatalf("action=%s mode=%v valid=%v err=%v", tc.action, tc.mode, tc.valid, err)
 		}

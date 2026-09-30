@@ -54,7 +54,7 @@ func TestExecuteReturnsUsageForUnknownCommand(t *testing.T) {
 	if !strings.Contains(stderr.String(), "usage error") {
 		t.Fatalf("expected usage error output, got %q", stderr.String())
 	}
-	assertContainsAll(t, stderr.String(), "Usage:", "clean", "run start", "Global Flags For API Commands")
+	assertContainsAll(t, stderr.String(), "Usage:", "clean", "run start", "Global Flags for API Commands")
 }
 
 func TestExecuteRootHelp(t *testing.T) {
@@ -70,11 +70,11 @@ func TestExecuteRootHelp(t *testing.T) {
 	assertContainsAll(t, stdout.String(),
 		"Usage:",
 		"kd <command>",
-		"Workspace And Runtime:",
+		"Workspace and Runtime:",
 		"clean",
-		"create decree",
+		"create work-order",
 		"run start",
-		"Global Flags For API Commands:",
+		"Global Flags for API Commands:",
 		"Use `kd help <command>` for command details.",
 	)
 	if stderr.Len() != 0 {
@@ -92,7 +92,7 @@ func TestExecuteRunHelp(t *testing.T) {
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
-	assertContainsAll(t, stdout.String(), "run", "kd run start --decree-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]")
+	assertContainsAll(t, stdout.String(), "run", "kd run start --work-order-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]")
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
 	}
@@ -114,33 +114,33 @@ func TestExecuteCleanHelp(t *testing.T) {
 	}
 }
 
-func TestExecuteCreateDecreeHelpIncludesPublishMode(t *testing.T) {
+func TestExecuteCreateWorkOrderHelpIncludesPublishMode(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "--help"})
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "work-order", "--help"})
 
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
 	assertContainsAll(t, stdout.String(),
-		"Create a decree and immediately start a run.",
-		"kd create decree --title <title> --text <text> [flags]",
+		"Create a work order and immediately start a run.",
+		"kd create work order --title <title> --text <text> [flags]",
 		"--global-model <provider/model>",
 		"example: github-copilot/gpt-5.4-mini",
 		"--agent-model-overrides <role=model>",
-		"builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini",
+		"builder=github-copilot/gpt-5.4-mini,reviewer=github-copilot/gpt-5.4-mini",
 		"--autonomous-approvals <value>",
 		"(default: true)",
 		"--max-execution-review-cycles <cycles>",
 		"(default: 2)",
 		"auto-succeeds review at the cap",
 		"--publish-mode <mode>",
-		"Global Flags For API Commands:",
+		"Global Flags for API Commands:",
 	)
 	if strings.Contains(stdout.String(), "inherit") {
-		t.Fatalf("expected create decree help to stop documenting inherit, got %q", stdout.String())
+		t.Fatalf("expected create work order help to stop documenting inherit, got %q", stdout.String())
 	}
 	if strings.Index(stdout.String(), "--global-model <provider/model>") > strings.Index(stdout.String(), "--metadata-json <object>") {
 		t.Fatalf("expected global model help before metadata, got %q", stdout.String())
@@ -161,8 +161,8 @@ func TestExecuteRunStartHelpIncludesPublishMode(t *testing.T) {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
 	assertContainsAll(t, stdout.String(),
-		"Start a run for an existing decree.",
-		"kd run start --decree-id <id> [flags]",
+		"Start a run for an existing work order.",
+		"kd run start --work-order-id <id> [flags]",
 		"--global-model <provider/model>",
 		"example: github-copilot/gpt-5.4-mini",
 		"--agent-model-overrides <role=model>",
@@ -221,17 +221,17 @@ func TestExecuteNodeRetryHelpIsSpecific(t *testing.T) {
 	}
 }
 
-func TestExecuteRejectsLegacyDecreeCommand(t *testing.T) {
+func TestExecuteRejectsLegacyWorkOrderCommand(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{"decree", "issue", "--title", "Legacy", "--text", "Nope"})
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"work-order", "issue", "--title", "Legacy", "--text", "Nope"})
 
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
 	}
-	if !strings.Contains(stderr.String(), `invalid command "decree"`) {
+	if !strings.Contains(stderr.String(), `invalid command "work-order"`) {
 		t.Fatalf("expected unsupported command error, got %q", stderr.String())
 	}
 }
@@ -260,7 +260,7 @@ func TestExecuteRejectsInvalidRunSubcommandWithRunHelp(t *testing.T) {
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
-	assertContainsAll(t, stderr.String(), `invalid command "bogus"`, "kd run start --decree-id <id> [flags]", "kd run status --run-id <id>")
+	assertContainsAll(t, stderr.String(), `invalid command "bogus"`, "kd run start --work-order-id <id> [flags]", "kd run status --run-id <id>")
 	if strings.Contains(stderr.String(), "kd <command>") {
 		t.Fatalf("expected run help instead of root help, got %q", stderr.String())
 	}
@@ -271,13 +271,13 @@ func TestExecuteRejectsUnexpectedLeafArguments(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "extra"})
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "work-order", "extra"})
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
-	assertContainsAll(t, stderr.String(), `unexpected argument(s): extra`, "kd create decree --title <title> --text <text> [flags]")
+	assertContainsAll(t, stderr.String(), `unexpected argument(s): extra`, "kd create work order --title <title> --text <text> [flags]")
 	if strings.Contains(stderr.String(), "kd <command>") {
-		t.Fatalf("expected create decree help instead of root help, got %q", stderr.String())
+		t.Fatalf("expected create work order help instead of root help, got %q", stderr.String())
 	}
 }
 
@@ -299,7 +299,7 @@ func TestExecuteRejectsUnexpectedSummonStatusArguments(t *testing.T) {
 	assertContainsAll(t, stderr.String(), `unexpected argument(s): extra`, "kd summon status [flags]")
 }
 
-func TestExecuteCreateDecreeUsesConnectAddressForWildcardActiveSummon(t *testing.T) {
+func TestExecuteCreateWorkOrderUsesConnectAddressForWildcardActiveSummon(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
 	originalFindActive := findActiveSummonForCLI
@@ -307,15 +307,15 @@ func TestExecuteCreateDecreeUsesConnectAddressForWildcardActiveSummon(t *testing
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/custom/decrees":
+		case "/api/custom/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
-				"decree_id":  "decree-install-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work-order-install-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/custom/runs":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
 				"run_id":      "run-install-456",
-				"workflow_id": "royal-decree-v1",
+				"workflow_id": "work-order-v1",
 				"status":      "running",
 				"created_at":  "2026-03-01T10:00:01Z",
 				"updated_at":  "2026-03-01T10:00:01Z",
@@ -347,7 +347,7 @@ func TestExecuteCreateDecreeUsesConnectAddressForWildcardActiveSummon(t *testing
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
-		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
+		"create", "work-order", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
@@ -381,7 +381,7 @@ func TestExecuteAPICommandDiscoversWorkspaceCredentialWithExplicitLoopbackServer
 			t.Fatalf("request path=%q authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
 		}
 		writeJSONResponse(t, w, http.StatusOK, map[string]any{
-			"run_id": "run-1", "workflow_id": "royal-decree-v1", "status": "running",
+			"run_id": "run-1", "workflow_id": "work-order-v1", "status": "running",
 			"created_at": "2026-08-13T12:00:00Z", "updated_at": "2026-08-13T12:01:00Z",
 		})
 	}))
@@ -401,7 +401,7 @@ func TestLocalCredentialDiscoveryRejectsRemoteExplicitServer(t *testing.T) {
 	}
 }
 
-func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
+func TestExecuteCreateWorkOrderHumanOutput(t *testing.T) {
 	t.Parallel()
 
 	requestCount := 0
@@ -412,18 +412,18 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 		}
 
 		switch r.URL.Path {
-		case "/api/v1/decrees":
+		case "/api/v1/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
-				"decree_id":  "decree-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work order-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/v1/runs":
 			var payload map[string]any
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 				t.Fatalf("decode run request body: %v", err)
 			}
-			if got := payload["decree_id"]; got != "decree-123" {
-				t.Fatalf("expected decree id decree-123, got %#v", got)
+			if got := payload["work_order_id"]; got != "work order-123" {
+				t.Fatalf("expected work order id work order-123, got %#v", got)
 			}
 			if _, ok := payload["workflow_id"]; ok {
 				t.Fatalf("did not expect workflow_id in create run request, got %#v", payload["workflow_id"])
@@ -445,7 +445,7 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 			}
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
 				"run_id":      "run-456",
-				"workflow_id": "royal-decree-v1",
+				"workflow_id": "work-order-v1",
 				"status":      "running",
 				"created_at":  "2026-03-01T10:00:01Z",
 				"updated_at":  "2026-03-01T10:00:01Z",
@@ -460,29 +460,29 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"create", "decree", "--title", "Launch", "--text", "Build it",
+		"create", "work-order", "--title", "Launch", "--text", "Build it",
 	})
 
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
 	if requestCount != 2 {
-		t.Fatalf("expected 2 API calls (create decree + run start), got %d", requestCount)
+		t.Fatalf("expected 2 API calls (create work order + run start), got %d", requestCount)
 	}
-	if !strings.Contains(stdout.String(), "decree issued: decree-123 run=run-456") {
-		t.Fatalf("expected combined create decree output, got %q", stdout.String())
+	if !strings.Contains(stdout.String(), "work order issued: work order-123 run=run-456") {
+		t.Fatalf("expected combined create work order output, got %q", stdout.String())
 	}
 }
 
-func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
+func TestExecuteCreateWorkOrderSendsSkipReviewFlag(t *testing.T) {
 	t.Parallel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/decrees":
+		case "/api/v1/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
-				"decree_id":  "decree-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work order-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/v1/runs":
 			var payload map[string]any
@@ -494,7 +494,7 @@ func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
 			}
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
 				"run_id":      "run-456",
-				"workflow_id": "royal-decree-skip-review-validation-v1",
+				"workflow_id": "work-order-skip-review-validation-v1",
 				"status":      "running",
 				"created_at":  "2026-03-01T10:00:01Z",
 				"updated_at":  "2026-03-01T10:00:01Z",
@@ -509,7 +509,7 @@ func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"create", "decree", "--title", "Launch", "--text", "Build it", "--skip-reviews-and-validations",
+		"create", "work-order", "--title", "Launch", "--text", "Build it", "--skip-reviews-and-validations",
 	})
 
 	if exitCode != ExitSuccess {
@@ -517,7 +517,7 @@ func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
 	}
 }
 
-func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.T) {
+func TestExecuteCreateWorkOrderUsesInstallConfigServerBasePathByDefault(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
 	originalFindActive := findActiveSummonForCLI
@@ -535,15 +535,15 @@ func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestPaths = append(requestPaths, r.URL.Path)
 		switch r.URL.Path {
-		case "/api/custom/decrees":
+		case "/api/custom/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
-				"decree_id":  "decree-install-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work-order-install-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/custom/runs":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
 				"run_id":      "run-install-456",
-				"workflow_id": "royal-decree-v1",
+				"workflow_id": "work-order-v1",
 				"status":      "running",
 				"created_at":  "2026-03-01T10:00:01Z",
 				"updated_at":  "2026-03-01T10:00:01Z",
@@ -566,17 +566,17 @@ func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.
 	stdout.Reset()
 	stderr.Reset()
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
-		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
+		"create", "work-order", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
-	if len(requestPaths) != 2 || requestPaths[0] != "/api/custom/decrees" || requestPaths[1] != "/api/custom/runs" {
+	if len(requestPaths) != 2 || requestPaths[0] != "/api/custom/work-orders" || requestPaths[1] != "/api/custom/runs" {
 		t.Fatalf("expected install config base path requests, got %#v", requestPaths)
 	}
 }
 
-func TestExecuteCreateDecreePrefersActiveSummonAddressByDefault(t *testing.T) {
+func TestExecuteCreateWorkOrderPrefersActiveSummonAddressByDefault(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
 	originalFindActive := findActiveSummonForCLI
@@ -584,15 +584,15 @@ func TestExecuteCreateDecreePrefersActiveSummonAddressByDefault(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/custom/decrees":
+		case "/api/custom/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
-				"decree_id":  "decree-install-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work-order-install-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/custom/runs":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]interface{}{
 				"run_id":      "run-install-456",
-				"workflow_id": "royal-decree-v1",
+				"workflow_id": "work-order-v1",
 				"status":      "running",
 				"created_at":  "2026-03-01T10:00:01Z",
 				"updated_at":  "2026-03-01T10:00:01Z",
@@ -620,14 +620,14 @@ func TestExecuteCreateDecreePrefersActiveSummonAddressByDefault(t *testing.T) {
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
-		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
+		"create", "work-order", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
 	}
 }
 
-func TestExecuteCreateDecreeRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testing.T) {
+func TestExecuteCreateWorkOrderRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
 	loadInstallConfigForCLI = func() (installConfig, bool) {
@@ -641,7 +641,7 @@ func TestExecuteCreateDecreeRequiresGlobalModelWhenInstallModeUsesOpenCode(t *te
 	stdout.Reset()
 	stderr.Reset()
 	exitCode := Execute(context.Background(), stdout, stderr, []string{
-		"create", "decree", "--title", "Launch", "--text", "Build it",
+		"create", "work-order", "--title", "Launch", "--text", "Build it",
 	})
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code for missing global model, got %d stderr=%q", exitCode, stderr.String())
@@ -649,9 +649,9 @@ func TestExecuteCreateDecreeRequiresGlobalModelWhenInstallModeUsesOpenCode(t *te
 	if !strings.Contains(stderr.String(), "--global-model is required when provider.engine=opencode") {
 		t.Fatalf("expected missing global model message, got %q", stderr.String())
 	}
-	assertContainsAll(t, stderr.String(), "kd create decree --title <title> --text <text> [flags]", "--global-model <provider/model>")
+	assertContainsAll(t, stderr.String(), "kd create work order --title <title> --text <text> [flags]", "--global-model <provider/model>")
 	if strings.Contains(stderr.String(), "kd <command>") {
-		t.Fatalf("expected create decree usage help instead of root help, got %q", stderr.String())
+		t.Fatalf("expected create work order usage help instead of root help, got %q", stderr.String())
 	}
 }
 
@@ -669,7 +669,7 @@ func TestExecuteRunStartRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testin
 	stdout.Reset()
 	stderr.Reset()
 	exitCode := Execute(context.Background(), stdout, stderr, []string{
-		"run", "start", "--decree-id", "decree-123",
+		"run", "start", "--work-order-id", "work order-123",
 	})
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code for missing global model, got %d stderr=%q", exitCode, stderr.String())
@@ -677,23 +677,23 @@ func TestExecuteRunStartRequiresGlobalModelWhenInstallModeUsesOpenCode(t *testin
 	if !strings.Contains(stderr.String(), "--global-model is required when provider.engine=opencode") {
 		t.Fatalf("expected missing global model message, got %q", stderr.String())
 	}
-	assertContainsAll(t, stderr.String(), "kd run start --decree-id <id> [flags]", "--global-model <provider/model>")
+	assertContainsAll(t, stderr.String(), "kd run start --work-order-id <id> [flags]", "--global-model <provider/model>")
 	if strings.Contains(stderr.String(), "kd <command>") {
 		t.Fatalf("expected run start usage help instead of root help, got %q", stderr.String())
 	}
 }
 
-func TestExecuteCreateDecreeBadFlagShowsSpecificHelp(t *testing.T) {
+func TestExecuteCreateWorkOrderBadFlagShowsSpecificHelp(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "decree", "--bogus"})
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"create", "work-order", "--bogus"})
 
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
 	}
-	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd create decree --title <title> --text <text> [flags]")
+	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd create work order --title <title> --text <text> [flags]")
 	if strings.Contains(stderr.String(), "kd <command>") {
 		t.Fatalf("expected command-specific help, got %q", stderr.String())
 	}
@@ -709,22 +709,22 @@ func TestExecuteRunStartBadFlagShowsSpecificHelp(t *testing.T) {
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code %d, got %d", ExitUsage, exitCode)
 	}
-	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd run start --decree-id <id> [flags]")
+	assertContainsAll(t, stderr.String(), "flag provided but not defined: -bogus", "kd run start --work-order-id <id> [flags]")
 	if strings.Contains(stderr.String(), "kd <command>") {
 		t.Fatalf("expected command-specific help, got %q", stderr.String())
 	}
 }
 
-func TestExecuteCreateDecreeAllowsZeroLoopOverrides(t *testing.T) {
+func TestExecuteCreateWorkOrderAllowsZeroLoopOverrides(t *testing.T) {
 	t.Parallel()
 
 	var createRunRequest map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/api/v1/decrees":
+		case "/api/v1/work-orders":
 			writeJSONResponse(t, w, http.StatusCreated, map[string]any{
-				"decree_id":  "decree-123",
-				"created_at": "2026-03-01T10:00:00Z",
+				"work_order_id": "work order-123",
+				"created_at":    "2026-03-01T10:00:00Z",
 			})
 		case "/api/v1/runs":
 			defer r.Body.Close()
@@ -733,9 +733,9 @@ func TestExecuteCreateDecreeAllowsZeroLoopOverrides(t *testing.T) {
 			}
 			writeJSONResponse(t, w, http.StatusCreated, map[string]any{
 				"run_id":                       "run-123",
-				"workflow_id":                  "royal-decree-v1",
-				"decree_id":                    "decree-123",
-				"decree_title":                 "Launch",
+				"workflow_id":                  "work-order-v1",
+				"work_order_id":                "work order-123",
+				"work_order_title":             "Launch",
 				"status":                       "pending",
 				"display_state":                "pending",
 				"plan_state":                   "draft",
@@ -758,7 +758,7 @@ func TestExecuteCreateDecreeAllowsZeroLoopOverrides(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"create", "decree",
+		"create", "work-order",
 		"--title", "Launch",
 		"--text", "Build it",
 		"--global-model", "github-copilot/gpt-5.3-codex",
@@ -785,9 +785,9 @@ func TestExecuteRunStartAllowsZeroValidationLoopOverrides(t *testing.T) {
 			}
 			writeJSONResponse(t, w, http.StatusCreated, map[string]any{
 				"run_id":                       "run-123",
-				"workflow_id":                  "royal-decree-v1",
-				"decree_id":                    "decree-123",
-				"decree_title":                 "Launch",
+				"workflow_id":                  "work-order-v1",
+				"work_order_id":                "work order-123",
+				"work_order_title":             "Launch",
 				"status":                       "pending",
 				"display_state":                "pending",
 				"plan_state":                   "draft",
@@ -811,7 +811,7 @@ func TestExecuteRunStartAllowsZeroValidationLoopOverrides(t *testing.T) {
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"run", "start",
-		"--decree-id", "decree-123",
+		"--work-order-id", "work order-123",
 		"--global-model", "github-copilot/gpt-5.3-codex",
 		"--max-validation-rework-cycles", "0",
 	})
@@ -837,9 +837,9 @@ func TestExecuteRunStartAllowsLoopOptionsWithSkipReviewsAndValidations(t *testin
 		}
 		writeJSONResponse(t, w, http.StatusCreated, map[string]any{
 			"run_id":                       "run-123",
-			"workflow_id":                  "royal-decree-skip-review-validation-v1",
-			"decree_id":                    "decree-123",
-			"decree_title":                 "Launch",
+			"workflow_id":                  "work-order-skip-review-validation-v1",
+			"work_order_id":                "work order-123",
+			"work_order_title":             "Launch",
 			"status":                       "pending",
 			"display_state":                "pending",
 			"plan_state":                   "draft",
@@ -860,7 +860,7 @@ func TestExecuteRunStartAllowsLoopOptionsWithSkipReviewsAndValidations(t *testin
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"run", "start",
-		"--decree-id", "decree-123",
+		"--work-order-id", "work order-123",
 		"--global-model", "github-copilot/gpt-5.3-codex",
 		"--skip-reviews-and-validations",
 		"--run-until-all-approve",
@@ -884,7 +884,7 @@ func TestExecuteRunStartAllowsLoopOptionsWithSkipReviewsAndValidations(t *testin
 	}
 }
 
-func TestExecuteCreateDecreeRejectsGitWorktreeWhenLocalProjectIsNotGit(t *testing.T) {
+func TestExecuteCreateWorkOrderRejectsGitWorktreeWhenLocalProjectIsNotGit(t *testing.T) {
 	originalLoader := loadInstallConfigForCLI
 	defer func() { loadInstallConfigForCLI = originalLoader }()
 	loadInstallConfigForCLI = func() (installConfig, bool) {
@@ -896,7 +896,7 @@ func TestExecuteCreateDecreeRejectsGitWorktreeWhenLocalProjectIsNotGit(t *testin
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
 	exitCode := Execute(context.Background(), stdout, stderr, []string{
-		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex", "--publish-mode", "git_worktree",
+		"create", "work-order", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex", "--publish-mode", "git_worktree",
 	})
 	if exitCode != ExitUsage {
 		t.Fatalf("expected usage exit code for unsupported git worktree publish mode, got %d stderr=%q", exitCode, stderr.String())
@@ -1055,7 +1055,7 @@ func TestExecuteRunStatusJSONOutput(t *testing.T) {
 		}
 		writeJSONResponse(t, w, http.StatusOK, map[string]interface{}{
 			"run_id":      "run-1",
-			"workflow_id": "royal-decree-v1",
+			"workflow_id": "work-order-v1",
 			"status":      "running",
 			"created_at":  "2026-03-01T10:00:00Z",
 			"updated_at":  "2026-03-01T10:01:00Z",
@@ -1089,7 +1089,7 @@ func TestExecuteGraphShowMermaid(t *testing.T) {
 		writeJSONResponse(t, w, http.StatusOK, map[string]interface{}{
 			"run_id": "run-1",
 			"nodes": []map[string]interface{}{
-				{"node_id": "kickoff", "required_role": "chancellor", "state": "succeeded"},
+				{"node_id": "kickoff", "required_role": "coordinator", "state": "succeeded"},
 				{"node_id": "build-node", "required_role": "builder", "state": "running"},
 			},
 			"edges": []map[string]interface{}{
@@ -1328,7 +1328,7 @@ func TestExecuteApprovalsPlanDecideFetchesCurrentPlanAndCallsPlanApprovalEndpoin
 			requestedPlan = true
 			writeJSONResponse(t, w, http.StatusOK, map[string]interface{}{
 				"run_id":           "run-1",
-				"plan_state":       "awaiting_king_decision",
+				"plan_state":       "awaiting_plan_decision",
 				"revision_status":  "ready",
 				"plan_revision_id": "planrev-1",
 				"components": []map[string]interface{}{{
@@ -1418,7 +1418,7 @@ func TestExecuteApprovalsPlanDecideFailsWhenCurrentPlanRevisionUnavailable(t *te
 		}
 		writeJSONResponse(t, w, http.StatusOK, map[string]interface{}{
 			"run_id":          "run-1",
-			"plan_state":      "awaiting_king_decision",
+			"plan_state":      "awaiting_plan_decision",
 			"revision_status": "pending",
 			"components":      []map[string]interface{}{},
 			"created_at":      "2026-03-04T09:55:00Z",

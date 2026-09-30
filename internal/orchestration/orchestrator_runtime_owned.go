@@ -12,27 +12,27 @@ import (
 
 func (o *orchestrationLoop) runtimeOwnedNodeResponse(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt) (string, error) {
 	switch resolvedNodeClass(node.NodeID, node.NodeClass) {
-	case coreworkflow.NodeClassDecreeIntake:
-		return strings.TrimSpace(`Royal intake is complete: the decree now stands before the Crown, and the advisory banners are raised.
+	case coreworkflow.NodeClassWorkIntake:
+		return strings.TrimSpace(`Work intake is complete. The work order is ready for planning.
 
-The realm will proceed through advisor counsel, chancellor synthesis, and council planning before the King is called to grant assent.`), nil
-	case coreworkflow.NodeClassKingPlanDecision:
-		return o.runtimeOwnedKingPlanDecisionResponse(ctx, run)
+Advisors will assess the request, the coordinator will synthesize their findings, and the plan author will prepare a plan for approval.`), nil
+	case coreworkflow.NodeClassPlanDecision:
+		return o.runtimeOwnedGovernancePlanDecisionResponse(ctx, run)
 	case coreworkflow.NodeClassExecutionKickoff:
-		return strings.TrimSpace(`Execution kickoff is complete: the approved plan now stands opened for implementation, and the builder plus review and validation lanes are active.`), nil
-	case coreworkflow.NodeClassRoyalClosure:
+		return "Execution kickoff is complete. The approved plan is ready for implementation, review, and validation.", nil
+	case coreworkflow.NodeClassCompletion:
 		if run.AutonomousApprovals {
-			return strings.TrimSpace(`Royal closure is complete: the decree is sealed, the final record is entered, and the realm may reckon this matter concluded.`), nil
+			return "Completion is recorded. The work order is complete.", nil
 		}
-		return strings.TrimSpace(`Royal closure is complete: the decree's final record is sealed and now awaits the Allfather's final confirmation before the realm may call it done.`), nil
+		return "The final record is ready. The work order awaits operator confirmation before it is complete.", nil
 	default:
 		return "", fmt.Errorf("runtime-owned response is not defined for node class %q", resolvedNodeClass(node.NodeID, node.NodeClass))
 	}
 }
 
-func (o *orchestrationLoop) runtimeOwnedKingPlanDecisionResponse(ctx context.Context, run runSnapshot) (string, error) {
+func (o *orchestrationLoop) runtimeOwnedGovernancePlanDecisionResponse(ctx context.Context, run runSnapshot) (string, error) {
 	if run.AutonomousApprovals {
-		return strings.TrimSpace(`Royal assent is recorded automatically under autonomous governance. The council's plan now stands approved, and execution may proceed.`), nil
+		return "Plan approval is recorded under autonomous governance. Execution may proceed.", nil
 	}
 	review, ok, err := latestRunPlanReview(ctx, o.db, run.RunID)
 	if err != nil {
@@ -45,17 +45,17 @@ func (o *orchestrationLoop) runtimeOwnedKingPlanDecisionResponse(ctx context.Con
 	switch review.Decision {
 	case state.RunPlanReviewDecisionApproved:
 		if feedback == "" {
-			return strings.TrimSpace(`Allfather approval is recorded. The council's plan stands confirmed, and execution may proceed.`), nil
+			return "Operator approval is recorded. The plan is approved, and execution may proceed.", nil
 		}
-		return strings.TrimSpace(fmt.Sprintf(`Allfather approval is recorded. The council's plan stands confirmed.
+		return strings.TrimSpace(fmt.Sprintf(`Operator approval is recorded. The plan is approved.
 
-Guidance preserved with the decree:
+Guidance preserved with the work order:
 %s`, feedback)), nil
 	case state.RunPlanReviewDecisionNeedsRework:
 		if feedback == "" {
-			return strings.TrimSpace(`Allfather rework is recorded. The council must revise the plan before execution may continue.`), nil
+			return "Operator rework is recorded. The plan author must revise the plan before execution may continue.", nil
 		}
-		return strings.TrimSpace(fmt.Sprintf(`Allfather rework is recorded. The council must revise the plan before execution may continue.
+		return strings.TrimSpace(fmt.Sprintf(`Operator rework is recorded. The plan author must revise the plan before execution may continue.
 
 Required rework guidance:
 %s`, feedback)), nil
@@ -65,7 +65,7 @@ Required rework guidance:
 }
 
 func (o *orchestrationLoop) ensureDecisionNodeAttempts(ctx context.Context, run runSnapshot, nodes []nodeDefinition, occurredAt string) error {
-	if run.PlanState != "awaiting_king_decision" {
+	if run.PlanState != "awaiting_plan_decision" {
 		return nil
 	}
 	latest, err := o.loadLatestAttempts(ctx, run.RunID)

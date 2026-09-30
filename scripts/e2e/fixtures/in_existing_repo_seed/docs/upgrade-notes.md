@@ -1,3 +1,3 @@
 # Upgrade Notes
 
-Placeholder notes for automated upgrade decrees.
+Placeholder notes for automated upgrade work orders.

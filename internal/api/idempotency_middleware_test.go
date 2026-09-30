@@ -93,27 +93,27 @@ func TestIdempotencyMiddlewareSpoolsLargeUnknownLengthBodyBeforeReservation(t *t
 	}
 }
 
-func TestIdempotencyMiddlewareAcceptsDecreeBodyAboveGenericLimit(t *testing.T) {
+func TestIdempotencyMiddlewareAcceptsWorkOrderBodyAboveGenericLimit(t *testing.T) {
 	store := newIdempotencyStoreForAPITest(t)
 	body := bytes.Repeat([]byte("x"), (1<<20)+1)
 	called := false
 	var bodyBytes int64
 	routes := http.NewServeMux()
-	routes.HandleFunc("POST /api/v1/decrees", func(w http.ResponseWriter, r *http.Request) {
+	routes.HandleFunc("POST /api/v1/work-orders", func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		bodyBytes, _ = io.Copy(io.Discard, r.Body)
 		w.WriteHeader(http.StatusNoContent)
 	})
 	handler := NewIdempotencyMiddleware(store, time.Now)(routes)
-	req := httptest.NewRequest(http.MethodPost, "/api/v1/decrees", bytes.NewReader(body))
-	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "large-decree-body", time.Now()))
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/work-orders", bytes.NewReader(body))
+	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "large-work-order-body", time.Now()))
 	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
 	res := httptest.NewRecorder()
 
 	handler.ServeHTTP(res, req)
 
 	if res.Code != http.StatusNoContent || !called || bodyBytes != int64(len(body)) {
-		t.Fatalf("decree idempotency request status=%d called=%t bytes=%d, want success with %d body bytes: %s", res.Code, called, bodyBytes, len(body), res.Body.String())
+		t.Fatalf("work order idempotency request status=%d called=%t bytes=%d, want success with %d body bytes: %s", res.Code, called, bodyBytes, len(body), res.Body.String())
 	}
 }
 
@@ -125,13 +125,13 @@ func TestIdempotencyMiddlewareHashesExactLargeRawBodyAfterValidation(t *testing.
 	}
 	mutations := 0
 	routes := http.NewServeMux()
-	routes.HandleFunc("POST /decrees", func(w http.ResponseWriter, _ *http.Request) { mutations++; w.WriteHeader(http.StatusCreated) })
+	routes.HandleFunc("POST /work-orders", func(w http.ResponseWriter, _ *http.Request) { mutations++; w.WriteHeader(http.StatusCreated) })
 	handler := validator(NewIdempotencyMiddleware(store, time.Now)(routes))
 	key := testIdempotencyKey(t, "large-raw-hash", time.Now())
-	body := append([]byte(`{ "decree_title":"test","decree_text":"`), bytes.Repeat([]byte("x"), (17<<20)+1)...)
+	body := append([]byte(`{ "work_order_title":"test","work_order_text":"`), bytes.Repeat([]byte("x"), (17<<20)+1)...)
 	body = append(body, []byte(`" }`)...)
 	request := func(raw []byte) int {
-		req := httptest.NewRequest(http.MethodPost, "/decrees?b=2&a=1", bytes.NewReader(raw))
+		req := httptest.NewRequest(http.MethodPost, "/work-orders?b=2&a=1", bytes.NewReader(raw))
 		req.ContentLength = -1
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(idempotencyKeyHeader, key)
@@ -152,11 +152,11 @@ func TestIdempotencyMiddlewareHashesExactLargeRawBodyAfterValidation(t *testing.
 	if mutations != 1 {
 		t.Fatalf("mutations=%d", mutations)
 	}
-	record, found, err := store.Lookup(context.Background(), "POST /decrees", "actor_1", key)
+	record, found, err := store.Lookup(context.Background(), "POST /work-orders", "actor_1", key)
 	if err != nil || !found {
 		t.Fatalf("lookup found=%t err=%v", found, err)
 	}
-	if record.RequestHash != requestHash(http.MethodPost, "/decrees?a=1&b=2\x00auth=test", body) {
+	if record.RequestHash != requestHash(http.MethodPost, "/work-orders?a=1&b=2\x00auth=test", body) {
 		t.Fatal("raw-body/target/auth hash changed")
 	}
 }

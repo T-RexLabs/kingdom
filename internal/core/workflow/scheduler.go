@@ -110,7 +110,7 @@ func (s *Scheduler) Escalations(now time.Time, ready []ReadyNode) []EscalationEv
 			NodeID:     node.NodeID,
 			Attempt:    node.Attempt,
 			EventType:  "escalation.raised",
-			TargetRole: "chancellor",
+			TargetRole: "coordinator",
 			ReasonCode: "ready_threshold_breached",
 			WaitFor:    wait,
 		})

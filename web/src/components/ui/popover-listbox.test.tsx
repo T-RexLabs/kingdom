@@ -4,6 +4,19 @@ import { describe, expect, it, vi } from "vitest";
 import { PopoverListbox } from "./popover-listbox";
 
 describe("popover listbox", () => {
+	it("closes an open choice when its owner becomes locked", async () => {
+		const user = userEvent.setup();
+		const onSelect = vi.fn();
+		const control = (disabled: boolean) => <PopoverListbox triggerId="locked-choice" triggerRole="button" triggerContent="Choose a font" triggerDisabled={disabled} items={[{ id: "sans", label: "Sans" }]} selectedId="sans" onSelect={onSelect} />;
+		const view = render(control(false));
+		await user.click(screen.getByRole("button", { name: "Choose a font" }));
+		expect(screen.getByRole("option", { name: "Sans" })).toBeInTheDocument();
+		view.rerender(control(true));
+		await waitFor(() => expect(screen.queryByRole("option", { name: "Sans" })).not.toBeInTheDocument());
+		view.rerender(control(false));
+		expect(screen.queryByRole("option", { name: "Sans" })).not.toBeInTheDocument();
+		expect(onSelect).not.toHaveBeenCalled();
+	});
 	it("keeps a stable trigger label while still rendering the current value", () => {
 		render(
 			<PopoverListbox

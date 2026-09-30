@@ -22,8 +22,9 @@ function renderBoundary(children: ReactNode, queryClient = new QueryClient({ def
 
 function sessionResponse(csrf = "csrf-session"): Response {
   return new Response(JSON.stringify({
+    session_id: `binding-${csrf}`,
     actor_id: "local-operator",
-    role_id: "allfather",
+    role_id: "operator",
     csrf_token: csrf,
     expires_at: "2026-08-18T00:00:00Z",
   }), { status: 201, headers: { "Content-Type": "application/json" } });

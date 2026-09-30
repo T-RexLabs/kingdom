@@ -1,11 +1,11 @@
 {
   "version": "v2",
-  "workflow_id": "royal-decree-v1",
+  "workflow_id": "work-order-v1",
   "nodes": [
     {
-      "node_id": "decree_intake",
-      "required_role": "king",
-      "node_class": "decree_intake"
+      "node_id": "work_intake",
+      "required_role": "governance",
+      "node_class": "work_intake"
     }
   ],
   "edges": []

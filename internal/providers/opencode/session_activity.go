@@ -1,13 +1,12 @@
 package opencode
 
 import (
-	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
-	"sort"
+	"os"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -25,275 +24,394 @@ type SessionActivityRequest struct {
 	AttemptID           string
 	InvocationID        string
 	InvocationStartedAt time.Time
-	// DiagnosticSink persists complete export stdout/stderr before their
-	// temporary captures are retired. InvocationID supplies storage lineage.
-	DiagnosticSink func(context.Context, providerexecution.StagedContent) error
+	DiagnosticSink      func(context.Context, providerexecution.StagedContent) error
 }
 
-type SessionActivityItem struct {
-	ID         string
-	Kind       string
-	Label      string
-	Detail     string
-	Input      string
-	Output     string
-	OccurredAt string
-}
-
-func InspectSessionActivity(ctx context.Context, req SessionActivityRequest) ([]SessionActivityItem, error) {
+// InspectSessionActivity visits the complete provider export in source order.
+// Exact content sources are valid until the synchronous visitor returns. The
+// caller persists/merges by invocation and provider identity; this transport
+// neither caps history nor collapses distinct provider calls with equal text.
+func InspectSessionActivity(ctx context.Context, req SessionActivityRequest, visit func(providerexecution.ActivityObservation) error) error {
 	binaryPath := strings.TrimSpace(req.BinaryPath)
 	if binaryPath == "" {
 		binaryPath = "opencode"
 	}
-	exporter := cliSessionDiagnosticExporter{binaryPath: binaryPath}
-	return inspectSessionActivityWithExporter(ctx, req, exporter)
+	return inspectSessionActivityWithExporter(ctx, req, cliSessionDiagnosticExporter{binaryPath: binaryPath}, visit)
 }
-
-func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter) ([]SessionActivityItem, error) {
-	return inspectSessionActivityWithExporterAt(ctx, req, exporter, time.Now)
+func inspectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter, visit func(providerexecution.ActivityObservation) error) error {
+	return inspectSessionActivityWithExporterAt(ctx, req, exporter, time.Now, visit)
 }
-
-func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter, now func() time.Time) ([]SessionActivityItem, error) {
-	if !sessionDiagnosticExportMayStartAt(ctx, now()) {
-		return nil, nil
+func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter, now func() time.Time, visit func(providerexecution.ActivityObservation) error) error {
+	if visit == nil {
+		return fmt.Errorf("activity visitor is required")
 	}
-	result, err := exporter.Export(ctx, sessionDiagnosticExportRequest{
-		ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
-		WorkDir:           strings.TrimSpace(req.WorkDir),
-		ConfigDir:         strings.TrimSpace(req.ConfigDir),
-		DatabasePath:      strings.TrimSpace(req.DatabasePath),
-		Mode:              sessionDiagnosticExportModeRaw,
-		InvocationID:      req.InvocationID, DiagnosticSink: req.DiagnosticSink,
-	})
-	if result.Close != nil {
-		defer result.Close()
-	}
-	if err != nil {
-		return nil, err
-	}
-	parseReq := sessionActivityScope{
-		AttemptID:           strings.TrimSpace(req.AttemptID),
-		InvocationID:        strings.TrimSpace(req.InvocationID),
-		InvocationStartedAt: req.InvocationStartedAt,
-	}
-	items := parseSessionActivityReader(result.Stdout, parseReq)
-	if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-		items = parseSessionActivityReader(result.Stdout, sessionActivityScope{
-			AttemptID:           strings.TrimSpace(req.AttemptID),
-			InvocationStartedAt: req.InvocationStartedAt,
-		})
-	}
-	if len(items) == 0 {
+	parseReq := sessionActivityScope{AttemptID: strings.TrimSpace(req.AttemptID), InvocationID: strings.TrimSpace(req.InvocationID), InvocationStartedAt: req.InvocationStartedAt}
+	hasInvocationBoundaries := false
+	for _, mode := range []sessionDiagnosticExportMode{sessionDiagnosticExportModeRaw, sessionDiagnosticExportModeSanitized} {
 		if !sessionDiagnosticExportMayStartAt(ctx, now()) {
-			return nil, nil
-		}
-		sanitizedResult, sanitizedErr := exporter.Export(ctx, sessionDiagnosticExportRequest{
-			ProviderSessionID: strings.TrimSpace(req.ProviderSessionID),
-			WorkDir:           strings.TrimSpace(req.WorkDir),
-			ConfigDir:         strings.TrimSpace(req.ConfigDir),
-			DatabasePath:      strings.TrimSpace(req.DatabasePath),
-			Mode:              sessionDiagnosticExportModeSanitized,
-			InvocationID:      req.InvocationID, DiagnosticSink: req.DiagnosticSink,
-		})
-		if sanitizedResult.Close != nil {
-			defer sanitizedResult.Close()
-		}
-		if sanitizedErr == nil {
-			items = parseSessionActivityReader(sanitizedResult.Stdout, parseReq)
-			if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-				items = parseSessionActivityReader(sanitizedResult.Stdout, sessionActivityScope{
-					AttemptID:           strings.TrimSpace(req.AttemptID),
-					InvocationStartedAt: req.InvocationStartedAt,
-				})
-			}
-		}
-	}
-	return items, nil
-}
-
-func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionActivityItem {
-	return parseSessionActivityReader(bytes.NewReader(raw), req)
-}
-
-func parseSessionActivityReader(reader io.ReadSeeker, req sessionActivityScope) []SessionActivityItem {
-	if reader == nil {
-		return nil
-	}
-	if _, err := reader.Seek(0, io.SeekStart); err != nil {
-		return nil
-	}
-	compacted, err := compactEventStrings(reader)
-	if err != nil {
-		return nil
-	}
-	defer compacted.close()
-	decoder := &boundedJSONTokens{Decoder: json.NewDecoder(compacted.projected)}
-	decoder.UseNumber()
-	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
-		return nil
-	}
-
-	trimmedInvocationID := strings.TrimSpace(req.InvocationID)
-	currentBoundary := sessionActivityInvocationBoundary{}
-	haveBoundary := trimmedInvocationID == ""
-	items := make([]SessionActivityItem, 0)
-
-	visit := func(node map[string]any) {
-		if err := restoreActivityPreview(compacted, node); err != nil {
-			return
-		}
-		metadata, metadataSeparate := sessionDiagnosticMessageMetadata(node)
-		role := strings.ToLower(strings.TrimSpace(stringValue(metadata["role"])))
-		if role == "user" {
-			boundary, foundBoundary := sessionActivityInvocationBoundaryFromMap(node)
-			if foundBoundary {
-				currentBoundary = boundary
-				haveBoundary = true
-			}
-			return
-		}
-		if role != "assistant" || !haveBoundary {
-			return
-		}
-		if trimmedInvocationID != "" {
-			if !sessionActivityBoundaryMatchesScope(currentBoundary, req) {
-				return
-			}
-		} else if !req.InvocationStartedAt.IsZero() && assistantCompletedBeforeInvocation(metadata, req.InvocationStartedAt) {
-			return
-		}
-		fallbackOccurredAt := sessionDiagnosticNestedStringValue(metadata, "time", "completed")
-		for _, contentNode := range sessionDiagnosticMessageContentNodes(node, metadata, metadataSeparate) {
-			visitSessionActivityItems(contentNode, fallbackOccurredAt, func(item SessionActivityItem) {
-				// Activity reconciliation is a preview of the complete disk-backed
-				// export, not another copy of the session transcript in memory.
-				if len(item.ID) > 4096 {
-					item.ID = fmt.Sprintf("provider_part_%x", sha256.Sum256([]byte(item.ID)))
-				}
-				item.Label = activityPreview(item.Label)
-				item.Detail = activityPreview(item.Detail)
-				item.Input = activityPreview(item.Input)
-				item.Output = activityPreview(item.Output)
-				if len(items) == 256 {
-					copy(items, items[1:])
-					items = items[:255]
-				}
-				items = append(items, item)
-			})
-		}
-	}
-	for decoder.More() {
-		key, err := decoder.Token()
-		if err != nil {
 			return nil
 		}
-		if key != "messages" {
-			token, err := decoder.Token()
-			if err != nil || skipJSONToken(decoder, token) != nil {
-				return nil
-			}
-			continue
-		}
-		if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
-			return nil
-		}
-		for decoder.More() {
-			token, err := decoder.Token()
-			if err != nil {
-				return nil
-			}
-			budget := 256 * 1024
-			value, err := previewJSONToken(decoder, token, &budget)
-			if err != nil {
-				return nil
-			}
-			if node, ok := value.(map[string]any); ok {
-				visit(node)
-			}
-		}
-		if _, err := decoder.Token(); err != nil {
-			return nil
-		}
-	}
-	if _, err := decoder.Token(); err != nil {
-		return nil
-	}
-	if _, err := decoder.Token(); err != io.EOF {
-		return nil
-	}
-
-	sort.SliceStable(items, func(i, j int) bool {
-		if items[i].OccurredAt == items[j].OccurredAt {
-			return items[i].ID < items[j].ID
-		}
-		return items[i].OccurredAt < items[j].OccurredAt
-	})
-	return dedupeSessionActivityItems(items)
-}
-
-func restoreActivityPreview(compacted *eventStrings, node any) error {
-	preview := func(value string) (string, error) {
-		if value == compacted.numberMarker {
-			return "Full numeric value is preserved in the provider stream diagnostic.", nil
-		}
-		content, err := compacted.resolve(value)
-		if err != nil || content == nil {
-			return value, err
-		}
-		prefix, err := io.ReadAll(io.NewSectionReader(content.reader, content.offset, min(content.size, int64(4096))))
+		result, err := exporter.Export(ctx, sessionDiagnosticExportRequest{ProviderSessionID: strings.TrimSpace(req.ProviderSessionID), WorkDir: strings.TrimSpace(req.WorkDir), ConfigDir: strings.TrimSpace(req.ConfigDir), DatabasePath: strings.TrimSpace(req.DatabasePath), Mode: mode, InvocationID: req.InvocationID, DiagnosticSink: req.DiagnosticSink})
 		if err != nil {
-			return "", err
-		}
-		if content.size <= 4096 {
-			return string(prefix), nil
-		}
-		tail, err := io.ReadAll(io.NewSectionReader(content.reader, content.offset+content.size-4096, 4096))
-		if err != nil {
-			return "", err
-		}
-		return string(prefix) + "\n… [diagnostic preview] …\n" + string(tail), nil
-	}
-	switch value := node.(type) {
-	case map[string]any:
-		for key, item := range value {
-			if text, ok := item.(string); ok {
-				replacement, err := preview(text)
-				if err != nil {
-					return err
-				}
-				value[key] = replacement
-			} else if err := restoreActivityPreview(compacted, item); err != nil {
-				return err
+			if result.Close != nil {
+				_ = result.Close()
 			}
+			return err
 		}
-	case []any:
-		for index, item := range value {
-			if text, ok := item.(string); ok {
-				replacement, err := preview(text)
-				if err != nil {
-					return err
-				}
-				value[index] = replacement
-			} else if err := restoreActivityPreview(compacted, item); err != nil {
-				return err
-			}
+		count, foundBoundaries, parseErr := visitSessionActivityReader(ctx, result.Stdout, parseReq, req.InvocationID, visit)
+		// A valid boundary is stronger evidence than timestamps, even when the
+		// requested invocation emitted no activity. Preserve that evidence across
+		// raw and sanitized exports so fallback cannot relabel another turn.
+		hasInvocationBoundaries = hasInvocationBoundaries || foundBoundaries
+		if parseErr == nil && count == 0 && parseReq.InvocationID != "" && !hasInvocationBoundaries {
+			fallback := parseReq
+			fallback.InvocationID = ""
+			count, _, parseErr = visitSessionActivityReader(ctx, result.Stdout, fallback, req.InvocationID, visit)
+		}
+		if result.Close != nil {
+			parseErr = errors.Join(parseErr, result.Close())
+		}
+		if parseErr != nil {
+			return parseErr
+		}
+		if count > 0 {
+			return nil
 		}
 	}
 	return nil
 }
 
-func assistantCompletedBeforeInvocation(metadata map[string]any, startedAt time.Time) bool {
-	completedAt, ok := parseSessionDiagnosticTimestamp(sessionDiagnosticNestedStringValue(metadata, "time", "completed"))
-	if !ok {
-		return false
+func visitSessionActivityReader(ctx context.Context, reader io.ReadSeeker, scope sessionActivityScope, invocationID string, visit func(providerexecution.ActivityObservation) error) (int, bool, error) {
+	if reader == nil {
+		return 0, false, nil
 	}
-	return completedAt.Before(startedAt.UTC())
+	size, err := reader.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, false, err
+	}
+	if size == 0 {
+		return 0, false, nil
+	}
+	if _, err = reader.Seek(0, io.SeekStart); err != nil {
+		return 0, false, err
+	}
+	source, ok := reader.(io.ReaderAt)
+	if !ok {
+		file, err := os.CreateTemp("", "kingdom-activity-export-*")
+		if err != nil {
+			return 0, false, err
+		}
+		defer func() { file.Close(); os.Remove(file.Name()) }()
+		if _, err = io.Copy(file, reader); err != nil {
+			return 0, false, err
+		}
+		source = file
+	}
+	// Standard decoding is syntax authority, including large scalar lexical
+	// validation. Only bounded compacted strings enter the token decoder.
+	compacted, err := compactEventStrings(activityContextReader{ctx: ctx, reader: io.NewSectionReader(source, 0, size)})
+	if err != nil {
+		return 0, false, err
+	}
+	decoder := &boundedJSONTokens{Decoder: json.NewDecoder(compacted.projected)}
+	decoder.UseNumber()
+	first, err := decoder.Token()
+	if err == nil {
+		err = skipJSONToken(decoder, first)
+	}
+	if err == nil {
+		_, err = decoder.Token()
+		if err == io.EOF {
+			err = nil
+		} else if err == nil {
+			err = fmt.Errorf("trailing activity export JSON")
+		}
+	}
+	compacted.close()
+	if err != nil {
+		return 0, false, err
+	}
+	count := 0
+	hasInvocationBoundaries := false
+	boundary := sessionActivityInvocationBoundary{}
+	haveBoundary := strings.TrimSpace(scope.InvocationID) == ""
+	err = walkJSONSpans(ctx, source, jsonValueSpan{size: size}, func(path []string, span jsonValueSpan) error {
+		if strings.Join(path, ".") != "messages.*" || span.kind != '{' {
+			return nil
+		}
+		role, completed, err := diagnosticMessageMetadata(ctx, source, span)
+		if err != nil {
+			return err
+		}
+		if role == "user" {
+			found, ok, err := diagnosticMessageBoundary(ctx, source, span)
+			if err != nil {
+				return err
+			}
+			if ok {
+				hasInvocationBoundaries = true
+				boundary = found
+				haveBoundary = true
+			}
+			return nil
+		}
+		if role != "assistant" || !haveBoundary {
+			return nil
+		}
+		if scope.InvocationID != "" && !sessionActivityBoundaryMatchesScope(boundary, scope) {
+			return nil
+		}
+		if scope.InvocationID == "" && !scope.InvocationStartedAt.IsZero() {
+			if at, ok := parseSessionDiagnosticTimestamp(completed); ok && at.Before(scope.InvocationStartedAt.UTC()) {
+				return nil
+			}
+		}
+		return walkJSONSpans(ctx, source, span, func(path []string, part jsonValueSpan) error {
+			if part.kind != '{' || !diagnosticPartPath(path) {
+				return nil
+			}
+			item, cleanup, ok, err := diagnosticActivityPart(ctx, source, part, completed)
+			if err != nil {
+				return err
+			}
+			defer cleanup()
+			if !ok {
+				return nil
+			}
+			item.InvocationID = invocationID
+			if err = visit(item); err != nil {
+				return err
+			}
+			count++
+			return nil
+		})
+	})
+	return count, hasInvocationBoundaries, err
+}
+func diagnosticMessageMetadata(ctx context.Context, source io.ReaderAt, span jsonValueSpan) (string, string, error) {
+	values := map[string]string{}
+	err := walkJSONSpans(ctx, source, span, func(path []string, value jsonValueSpan) error {
+		key := strings.Join(path, ".")
+		switch key {
+		case "role", "time.completed", "info.role", "info.time.completed":
+			text, err := readActivityScalar(source, value)
+			if err != nil {
+				return err
+			}
+			values[key] = text
+		}
+		return nil
+	})
+	role, ok := values["info.role"]
+	completed := values["info.time.completed"]
+	if !ok {
+		role = values["role"]
+		completed = values["time.completed"]
+	}
+	return strings.ToLower(strings.TrimSpace(role)), completed, err
+}
+func diagnosticPartPath(path []string) bool {
+	seen := false
+	for i, key := range path {
+		switch key {
+		case "info":
+			if i != 0 {
+				return false
+			}
+		case "parts", "content":
+			seen = true
+		case "*":
+		default:
+			return false
+		}
+	}
+	return seen
+}
+func diagnosticPartFields(ctx context.Context, source io.ReaderAt, span jsonValueSpan) (map[string]string, map[string]jsonValueSpan, error) {
+	values := map[string]string{}
+	contents := map[string]jsonValueSpan{}
+	err := walkJSONSpans(ctx, source, span, func(path []string, value jsonValueSpan) error {
+		key := strings.Join(path, ".")
+		switch key {
+		case "state.input":
+			contents["input"] = value
+		case "state.output":
+			contents["output"] = value
+		case "text":
+			contents["text"] = value
+		case "type", "id", "callID", "tool", "name", "state.status", "state.title", "time.end", "time.start", "state.time.end", "state.time.start", "metadata.redacted", "metadata.openai.reasoningEncryptedContent":
+			if strings.HasPrefix(key, "metadata.") {
+				if value.kind == 'n' || value.kind == 'f' || (value.kind == '"' && value.size == 2) {
+					return nil
+				}
+				values[key] = "present"
+				return nil
+			}
+			text, err := readActivityScalar(source, value)
+			if err != nil {
+				return err
+			}
+			values[key] = text
+		}
+		return nil
+	})
+	return values, contents, err
+}
+func diagnosticActivityPart(ctx context.Context, source io.ReaderAt, span jsonValueSpan, fallbackTime string) (providerexecution.ActivityObservation, func(), bool, error) {
+	fields, contents, err := diagnosticPartFields(ctx, source, span)
+	if err != nil {
+		return providerexecution.ActivityObservation{}, func() {}, false, err
+	}
+	item := providerexecution.ActivityObservation{ProviderPartID: fields["id"], ToolCallID: fields["callID"], Input: providerexecution.ActivityContent{Availability: "not_provided"}, Output: providerexecution.ActivityContent{Availability: "not_provided"}, Reasoning: providerexecution.ActivityContent{Availability: "not_provided"}}
+	for _, raw := range []string{fields["time.end"], fields["state.time.end"], fields["time.start"], fields["state.time.start"], fallbackTime} {
+		if at, ok := parseSessionDiagnosticTimestamp(raw); ok {
+			item.OccurredAt = at.UTC().Format(time.RFC3339)
+			break
+		}
+	}
+	partType := normalizeActivityEventType(fields["type"])
+	var closeFns []func() error
+	cleanup := func() {
+		for _, close := range closeFns {
+			_ = close()
+		}
+	}
+	capture := func(key string, target *providerexecution.ActivityContent) error {
+		span, ok := contents[key]
+		if !ok {
+			return nil
+		}
+		content, close, err := stageActivityValue(ctx, source, span)
+		if err != nil {
+			return err
+		}
+		*target = content
+		closeFns = append(closeFns, close)
+		return nil
+	}
+	switch {
+	case partType == "text":
+		item.Kind = ExecuteActivityKindMessage
+		item.Label = "Provider Message"
+		err = capture("text", &item.Message)
+		if err == nil && item.Message.Availability != "available" {
+			return item, cleanup, false, nil
+		}
+	case partType == "reasoning":
+		item.Kind = ExecuteActivityKindReasoning
+		item.Label = "Thinking"
+		err = capture("text", &item.Reasoning)
+		if item.Reasoning.Availability != "available" {
+			item.Summary = reasoningDetailFromMetadata(fields["metadata.redacted"], fields["metadata.openai.reasoningEncryptedContent"])
+			if item.Summary != "" {
+				item.Reasoning = providerexecution.ActivityContent{Availability: "unavailable"}
+			}
+		}
+	case strings.Contains(partType, "tool"):
+		item.Kind = ExecuteActivityKindTool
+		item.ToolName = firstNonEmpty(fields["tool"], fields["name"])
+		item.ToolStatus = fields["state.status"]
+		item.ToolTitle = fields["state.title"]
+		if err = capture("input", &item.Input); err == nil {
+			err = capture("output", &item.Output)
+		}
+		item.Label = acp.ToolActivityLabel(item.ToolName, item.ToolStatus, item.ToolTitle, item.Input.PreviewText())
+		item.Summary = acp.ToolActivityDetail(item.ToolStatus)
+	case partType == "step_start":
+		item.Kind = ExecuteActivityKindProgress
+		item.Label = "Processing"
+	default:
+		return item, cleanup, false, nil
+	}
+	if err != nil {
+		cleanup()
+		return item, func() {}, false, err
+	}
+	return item, cleanup, true, nil
 }
 
-func activityPreview(text string) string {
-	return textPreview(text, 4096)
+type activityBoundaryScan struct {
+	line              strings.Builder
+	oversized, inside bool
+	current           sessionActivityInvocationBoundary
 }
 
+func (s *activityBoundaryScan) Write(raw []byte) (int, error) {
+	for _, b := range raw {
+		if b == '\n' {
+			s.flush()
+			continue
+		}
+		if s.line.Len() < 4096 {
+			s.line.WriteByte(b)
+		} else {
+			s.oversized = true
+		}
+	}
+	return len(raw), nil
+}
+func (s *activityBoundaryScan) flush() {
+	if !s.oversized {
+		line := normalizeSessionActivityInvocationMetadataLine(s.line.String())
+		switch {
+		case line == providerInvocationMetadataHeader:
+			s.inside = true
+			s.current = sessionActivityInvocationBoundary{}
+		case s.inside && strings.HasPrefix(line, providerInvocationAttemptLabel):
+			s.current.AttemptID = normalizeSessionActivityInvocationMetadataValue(strings.TrimPrefix(line, providerInvocationAttemptLabel))
+		case s.inside && strings.HasPrefix(line, providerInvocationIDLabel):
+			s.current.InvocationID = normalizeSessionActivityInvocationMetadataValue(strings.TrimPrefix(line, providerInvocationIDLabel))
+		}
+	}
+	s.line.Reset()
+	s.oversized = false
+}
+func diagnosticMessageBoundary(ctx context.Context, source io.ReaderAt, span jsonValueSpan) (sessionActivityInvocationBoundary, bool, error) {
+	var joined, separated activityBoundaryScan
+	parts := 0
+	err := walkJSONSpans(ctx, source, span, func(path []string, part jsonValueSpan) error {
+		if part.kind != '{' || !diagnosticPartPath(path) {
+			return nil
+		}
+		fields, contents, err := diagnosticPartFields(ctx, source, part)
+		if err != nil {
+			return err
+		}
+		if sessionDiagnosticShouldIgnoreTextPart(strings.ToLower(fields["type"])) {
+			return nil
+		}
+		text, ok := contents["text"]
+		if !ok {
+			return nil
+		}
+		content, cleanup, err := stageActivityValue(ctx, source, text)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		reader, err := content.Open(ctx)
+		if err != nil {
+			return err
+		}
+		defer reader.Close()
+		if parts > 0 {
+			_, _ = separated.Write([]byte{'\n'})
+		}
+		parts++
+		_, err = io.Copy(io.MultiWriter(&joined, &separated), reader)
+		return err
+	})
+	joined.flush()
+	separated.flush()
+	for _, scan := range []*activityBoundaryScan{&separated, &joined} {
+		if scan.current.AttemptID != "" && scan.current.InvocationID != "" {
+			return scan.current, true, err
+		}
+	}
+	return sessionActivityInvocationBoundary{}, false, err
+}
+
+func activityPreview(text string) string { return textPreview(text, 4096) }
 func textPreview(text string, limit int) string {
 	if len(text) <= limit {
 		return text
@@ -303,121 +421,4 @@ func textPreview(text string, limit int) string {
 		end--
 	}
 	return strings.Clone(text[:end]) + "…"
-}
-
-func visitSessionActivityItems(node any, fallbackOccurredAt string, visit func(SessionActivityItem)) {
-	switch typed := node.(type) {
-	case []any:
-		for _, item := range typed {
-			visitSessionActivityItems(item, fallbackOccurredAt, visit)
-		}
-	case map[string]any:
-		if item, ok := sessionActivityItemFromPart(typed, fallbackOccurredAt); ok {
-			visit(item)
-		}
-		if parts, ok := typed["parts"]; ok {
-			visitSessionActivityItems(parts, fallbackOccurredAt, visit)
-		}
-		if content, ok := typed["content"]; ok {
-			visitSessionActivityItems(content, fallbackOccurredAt, visit)
-		}
-	}
-}
-
-func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string) (SessionActivityItem, bool) {
-	partType := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(stringValue(node["type"]))), "_", "-")
-	occurredAt := activityTimestampRFC3339(node, fallbackOccurredAt)
-	id := strings.TrimSpace(stringValue(node["id"]))
-	if id == "" {
-		id = fmt.Sprintf("%s:%s", partType, occurredAt)
-	}
-	switch {
-	case partType == "reasoning":
-		detail := firstNonEmpty(strings.TrimSpace(stringValue(node["text"])), redactedReasoningDetail(node))
-		if detail == "" {
-			return SessionActivityItem{}, false
-		}
-		return SessionActivityItem{ID: id, Kind: "thinking", Label: "Thinking", Detail: detail, OccurredAt: occurredAt}, true
-	case strings.Contains(partType, "tool"):
-		toolName := firstNonEmpty(strings.TrimSpace(stringValue(node["tool"])), strings.TrimSpace(stringValue(node["name"])))
-		if toolName == "" {
-			return SessionActivityItem{}, false
-		}
-		status := sessionDiagnosticToolState(node)
-		toolTitle := sessionDiagnosticNestedStringValue(node, "state", "title")
-		input := formatActivityValue(nestedAny(node, "state", "input"))
-		label := acp.ToolActivityLabel(toolName, status, toolTitle, input)
-		output := formatActivityValue(nestedAny(node, "state", "output"))
-		detail := acp.ToolActivityDetail(status)
-		return SessionActivityItem{ID: id, Kind: "tool", Label: label, Detail: detail, Input: input, Output: output, OccurredAt: occurredAt}, true
-	case partType == "step-start":
-		return SessionActivityItem{ID: id, Kind: "progress", Label: "Processing", OccurredAt: occurredAt}, true
-	default:
-		return SessionActivityItem{}, false
-	}
-}
-
-func redactedReasoningDetail(node map[string]any) string {
-	return reasoningDetailFromMetadata(
-		sessionDiagnosticNestedStringValue(node, "metadata", "redacted"),
-		sessionDiagnosticNestedStringValue(node, "metadata", "openai", "reasoningEncryptedContent"),
-	)
-}
-
-func activityTimestampRFC3339(node map[string]any, fallback string) string {
-	for _, candidate := range []string{
-		sessionDiagnosticNestedStringValue(node, "time", "end"),
-		sessionDiagnosticNestedStringValue(node, "time", "start"),
-		strings.TrimSpace(fallback),
-	} {
-		if parsed, ok := parseSessionDiagnosticTimestamp(candidate); ok {
-			return parsed.UTC().Format(time.RFC3339)
-		}
-	}
-	return time.Time{}.UTC().Format(time.RFC3339)
-}
-
-func nestedAny(node map[string]any, path ...string) any {
-	current := any(node)
-	for _, key := range path {
-		object, ok := current.(map[string]any)
-		if !ok {
-			return nil
-		}
-		current = object[key]
-	}
-	return current
-}
-
-func formatActivityValue(value any) string {
-	if value == nil {
-		return ""
-	}
-	switch typed := value.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	default:
-		raw, err := json.MarshalIndent(typed, "", "  ")
-		if err != nil {
-			return ""
-		}
-		return strings.TrimSpace(string(raw))
-	}
-}
-
-func dedupeSessionActivityItems(items []SessionActivityItem) []SessionActivityItem {
-	if len(items) < 2 {
-		return items
-	}
-	result := make([]SessionActivityItem, 0, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		key := strings.Join([]string{item.Kind, item.Label, item.Detail, item.Input, item.Output, item.OccurredAt}, "\x00")
-		if _, exists := seen[key]; exists {
-			continue
-		}
-		seen[key] = struct{}{}
-		result = append(result, item)
-	}
-	return result
 }

@@ -126,7 +126,7 @@ describe("run-live-execution-projection", () => {
 			node_id: "execution_kickoff",
 			attempt: 1,
 			agent_id: "agent-council",
-			required_role: "council-member",
+			required_role: "plan-author",
 			execution_mode: "runtime_owned",
 			status: "succeeded",
 			queued_at: "2026-03-01T10:08:00Z",
@@ -164,10 +164,10 @@ describe("run-live-execution-projection", () => {
 		const execution = {
 			attempt_id: "attempt-2",
 			node_run_id: "nr-2",
-			node_id: "delegated_execution_berserker",
+			node_id: "implementation",
 			attempt: 2,
 			agent_id: "agent-builder",
-			required_role: "builder-berserker",
+			required_role: "builder",
 			execution_mode: "provider_backed",
 			status: "verifying",
 			queued_at: "2026-03-01T10:08:00Z",
@@ -223,10 +223,10 @@ describe("run-live-execution-projection", () => {
 		expect(overlayExecutionDetail({
 			attempt_id: "attempt-1",
 			node_run_id: "nr-1",
-			node_id: "delegated_execution_berserker",
+			node_id: "implementation",
 			attempt: 1,
 			agent_id: "agent-builder",
-			required_role: "builder-berserker",
+			required_role: "builder",
 			execution_mode: "provider_backed",
 			status: "running",
 			queued_at: "2026-03-01T10:08:00Z",
@@ -258,9 +258,9 @@ describe("run-live-execution-projection", () => {
 			"nr-live-only": {
 				node_run_id: "nr-live-only",
 				attempt_id: "attempt-live-only",
-				node_id: "delegated_execution_berserker",
+				node_id: "implementation",
 				attempt: 2,
-				required_role: "builder-berserker",
+				required_role: "builder",
 				execution_mode: "provider_backed",
 				activity_at: "2026-03-01T10:09:00Z",
 				status: "running",
@@ -274,14 +274,14 @@ describe("run-live-execution-projection", () => {
 
 	it("overlays only a matching canonical current execution", () => {
 		const [merged] = mergeRunNodeExecutionItems([{
-			node_id: "delegated_execution_berserker",
-			required_role: "builder-berserker",
+			node_id: "implementation",
+			required_role: "builder",
 			execution_ownership: "provider_backed",
 			status: "running",
 			attempt_count: 1,
 			current_execution: {
-				attempt_id: "attempt-1", node_run_id: "nr-1", node_id: "delegated_execution_berserker", attempt: 1,
-				agent_id: "agent-1", required_role: "builder-berserker", execution_mode: "provider_backed", status: "running",
+				attempt_id: "attempt-1", node_run_id: "nr-1", node_id: "implementation", attempt: 1,
+				agent_id: "agent-1", required_role: "builder", execution_mode: "provider_backed", status: "running",
 				queued_at: "2026-03-01T10:08:00Z", activity_at: "2026-03-01T10:08:00Z", updated_at: "2026-03-01T10:08:00Z", stop_retry_available: false,
 			},
 		}], {

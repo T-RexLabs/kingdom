@@ -5,11 +5,12 @@
 ## Read These First
 
 - [`system-architecture.md`](system-architecture.md): the accepted architecture, invariants, and design boundaries
-- [`how-runs-work.md`](how-runs-work.md): how planning, decrees, runs, reviews, and closure work end to end
+- [`how-runs-work.md`](how-runs-work.md): how planning, work orders, runs, reviews, and closure work end to end
 - [`local-setup-and-verification.md`](local-setup-and-verification.md): how to install, run, and verify Kingdom locally
 
 ## Reference Docs
 
+- [`themes.md`](themes.md): personal appearance, shared packages, and file/agent theme authoring.
 - [`github-connections-runbook.md`](github-connections-runbook.md): GitHub App setup, key lifecycle, recovery, and operator disclosures.
 
 - [`interfaces-overview.md`](interfaces-overview.md): the main web, CLI, API, metrics, and streaming interfaces

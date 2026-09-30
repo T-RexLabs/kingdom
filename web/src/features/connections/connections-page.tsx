@@ -1,3 +1,4 @@
+import { useNavigate, useSearch } from "@tanstack/react-router";
 import { ApiError, apiFetch } from "@/api/client";
 import { CopyButton } from "@/components/ui/copy-button";
 import { fieldClass } from "@/components/ui/field-styles";
@@ -10,7 +11,9 @@ import {
 import { safeGitHubInstallationManageURL } from "./github-url";
 import { InstallationPicker } from "./installation-picker";
 import type { components } from "@/api/schema";
-import { PageContent, PageHeader } from "@/components/page-layout";
+import { WorkspacePage } from "@/components/workspace-page";
+import { ConnectionList, ConnectionStatus } from "./connection-list";
+import { RelativeTime } from "@/components/ui/relative-time";
 import { newIdempotencyKey as idem } from "@/lib/idempotency";
 import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
@@ -37,7 +40,10 @@ import { connectionKeys, useConnections } from "@/api/hooks";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { externalSourceFailureGuidance } from "./external-source-status";
-import { shouldRetainMutationRequest, useRecoverableMutation } from "@/lib/use-recoverable-mutation";
+import {
+  shouldRetainMutationRequest,
+  useRecoverableMutation,
+} from "@/lib/use-recoverable-mutation";
 
 type Connection = components["schemas"]["Connection"];
 type FlowStatus = components["schemas"]["GitHubManifestFlowStatus"];
@@ -48,7 +54,10 @@ type StartManifestFlowPayload = {
   expires_at: string;
 };
 type ConnectionInstallation = components["schemas"]["ConnectionInstallation"];
-type ConnectionForm = Pick<Connection, "display_name" | "app_id" | "client_id"> & {
+type ConnectionForm = Pick<
+  Connection,
+  "display_name" | "app_id" | "client_id"
+> & {
   installation_id: string;
 };
 type SetupOptions = components["schemas"]["GitHubSetupOptions"];
@@ -108,12 +117,15 @@ const flowCopy: Record<FlowStatus["stage"], string> = {
 const manifestFailureCopy: Record<ManifestFailureStage, string> = {
   start: "Private App setup could not start.",
   awaiting_app_creation: "GitHub App creation did not return to Kingdom.",
-  app_created: "Kingdom could not secure the App credentials returned by GitHub.",
+  app_created:
+    "Kingdom could not secure the App credentials returned by GitHub.",
   converting_app: "GitHub App credential creation did not finish.",
   awaiting_installation: "Kingdom could not open GitHub App installation.",
-  installation_received: "Kingdom could not start temporary GitHub authorization.",
+  installation_received:
+    "Kingdom could not start temporary GitHub authorization.",
   awaiting_authorization: "GitHub authorization did not return to Kingdom.",
-  authorization_received: "Kingdom could not validate and save the GitHub connection.",
+  authorization_received:
+    "Kingdom could not validate and save the GitHub connection.",
   validating_connection: "GitHub connection validation did not finish.",
   completed: "The private GitHub App connection is ready.",
   failed: "This private App setup flow cannot continue.",
@@ -128,7 +140,9 @@ function InstallationList({
 }) {
   if (connection.installations.length === 0) {
     return (
-      <p className="mt-2 text-sm text-foreground-muted">No installations yet.</p>
+      <p className="mt-2 text-sm text-foreground-muted">
+        No installations yet.
+      </p>
     );
   }
   return (
@@ -139,29 +153,33 @@ function InstallationList({
           installation.account_id ?? "",
         );
         return (
-          <li key={installation.installation_id} className="flex flex-wrap items-center gap-2 text-sm">
+          <li
+            key={installation.installation_id}
+            className="flex flex-wrap items-center gap-2 text-sm"
+          >
             <span className="font-medium">
               @{installation.account_login ?? "Account pending validation"}
             </span>
-            {href && (managementLinksDisabled ? (
-              <span
-                aria-disabled="true"
-                className="inline-flex items-center gap-1 text-xs text-foreground-muted"
-              >
-                Manage Repositories on GitHub
-                <ExternalLink className="h-3 w-3" />
-              </span>
-            ) : (
-              <a
-                className="inline-flex items-center gap-1 text-xs text-gold underline-offset-2 hover:underline"
-                href={href}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Manage Repositories on GitHub
-                <ExternalLink className="h-3 w-3" />
-              </a>
-            ))}
+            {href &&
+              (managementLinksDisabled ? (
+                <span
+                  aria-disabled="true"
+                  className="inline-flex items-center gap-1 text-xs text-foreground-muted"
+                >
+                  Manage Repositories on GitHub
+                  <ExternalLink className="h-3 w-3" />
+                </span>
+              ) : (
+                <a
+                  className="inline-flex items-center gap-1 text-xs text-accent underline-offset-2 hover:underline"
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  Manage Repositories on GitHub
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              ))}
           </li>
         );
       })}
@@ -193,7 +211,7 @@ function MetadataFields({
   ) => (
     <label className="text-xs font-medium text-foreground-muted">
       {label}
-      <input
+      <input data-ui-field=""
         required
         disabled={disabled}
         maxLength={maxLength}
@@ -258,17 +276,41 @@ function ManifestSetupStatus({
       className={`rounded-lg border p-3 ${failed ? "border-destructive/40 bg-destructive/10" : "border-border/80 bg-background/70"}`}
     >
       <div className="flex items-start gap-2 text-sm font-medium">
-        {busy ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-gold" /> : <Github className="mt-0.5 h-4 w-4 shrink-0 text-gold" />}
+        {busy ? (
+          <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-accent" />
+        ) : (
+          <Github className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+        )}
         <div className="min-w-0">
           <p>{flow?.app_name || "Private GitHub App setup"}</p>
-          <p className={`mt-1 text-xs font-normal leading-relaxed ${failed ? "text-destructive" : "text-foreground-muted"}`}>
-            {error ? `${manifestFailureCopy[stage]} ${error.message}` : flow?.failure || (flow ? flowCopy[flow.stage] : manifestFailureCopy[stage])}
+          <p
+            className={`mt-1 text-xs font-normal leading-relaxed ${failed ? "text-destructive" : "text-foreground-muted"}`}
+          >
+            {error
+              ? `${manifestFailureCopy[stage]} ${error.message}`
+              : flow?.failure ||
+                (flow ? flowCopy[flow.stage] : manifestFailureCopy[stage])}
           </p>
-          {error?.retryAt ? <p className="mt-1 text-xs text-destructive">Retry after <time dateTime={error.retryAt}>{new Date(error.retryAt).toLocaleString()}</time>.</p> : null}
+          {error?.retryAt ? (
+            <p className="mt-1 text-xs text-destructive">
+              Retry after{" "}
+              <time dateTime={error.retryAt}>
+                {new Date(error.retryAt).toLocaleString()}
+              </time>
+              .
+            </p>
+          ) : null}
         </div>
       </div>
       {failed ? (
-        <Button type="button" size="sm" variant="outline" className="mt-3" disabled={busy} onClick={onRecover}>
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="mt-3"
+          disabled={busy}
+          onClick={onRecover}
+        >
           {recovery === "retry" ? "Retry This Step" : "Start Again"}
         </Button>
       ) : null}
@@ -316,7 +358,7 @@ function ManifestHandoffAction({
         className="flex items-center justify-center gap-2 text-xs text-foreground-muted"
         aria-live="polite"
       >
-        <Loader2 className="h-3.5 w-3.5 animate-spin text-gold" />
+        <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
         Kingdom continues as soon as GitHub returns
       </p>
     </div>
@@ -331,9 +373,19 @@ export function ConnectionsPage() {
   const connections = useConnections();
   const items = connections.data?.items ?? noConnections;
   const loading = connections.isPending;
+  const selectedConnectionID = useSearch({
+    from: "/connections",
+    select: (search) => search.connection ?? "",
+  });
+  const navigate = useNavigate({ from: "/connections" });
+  const setSelectedConnectionID = (connection: string) => {
+    void navigate({ search: connection ? { connection } : {} });
+  };
+  const [addOpen, setAddOpen] = useState(false);
   const [error, setError] = useState<RequestError>();
   const [manifestError, setManifestError] = useState<RequestError>();
-  const [manifestFailureStage, setManifestFailureStage] = useState<ManifestFailureStage>();
+  const [manifestFailureStage, setManifestFailureStage] =
+    useState<ManifestFailureStage>();
   const [manifestRecovery, setManifestRecovery] = useState<ManifestRecovery>();
   const [manifestRetryAttempt, setManifestRetryAttempt] = useState(0);
   const [manifestPollAttempt, setManifestPollAttempt] = useState(0);
@@ -346,12 +398,18 @@ export function ConnectionsPage() {
   const [sharedFlow, setSharedFlow] = useState<DeviceFlow>();
   const [sharedStatusAttempt, setSharedStatusAttempt] = useState(0);
   const [sharedOpen, setSharedOpen] = useState(false);
-  const [selectedInstallations, setSelectedInstallations] = useState<Set<string>>(new Set());
+  const [selectedInstallations, setSelectedInstallations] = useState<
+    Set<string>
+  >(new Set());
   // Which saved connection has its installation editor open, and what that
   // editor is offering.
   const [installationsEditingID, setInstallationsEditingID] = useState("");
-  const [installationCandidates, setInstallationCandidates] = useState<DeviceFlow["candidates"]>([]);
-  const [installationSelection, setInstallationSelection] = useState<Set<string>>(new Set());
+  const [installationCandidates, setInstallationCandidates] = useState<
+    DeviceFlow["candidates"]
+  >([]);
+  const [installationSelection, setInstallationSelection] = useState<
+    Set<string>
+  >(new Set());
   const [sharedReconnectID, setSharedReconnectID] = useState("");
   const [manifestOpen, setManifestOpen] = useState(false);
   // The GitHub URL for the current stage, opened only when the operator asks.
@@ -377,51 +435,57 @@ export function ConnectionsPage() {
   itemsRef.current = items;
   const createConnection = useRecoverableMutation(
     "connection",
-    (form: ConnectionForm, key) => apiFetch<Connection>("/connections", {
-      method: "POST",
-      headers: { "Idempotency-Key": key },
-      body: JSON.stringify({
-        provider: "github",
-        credential_strategy: "app_private_key",
-        ...form,
+    (form: ConnectionForm, key) =>
+      apiFetch<Connection>("/connections", {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify({
+          provider: "github",
+          credential_strategy: "app_private_key",
+          ...form,
+        }),
       }),
-    }),
   );
   const editConnection = useRecoverableMutation(
     "connection-edit",
-    (request: { connectionId: string; displayName: string }, key) => apiFetch(`/connections/${request.connectionId}`, {
-      method: "PATCH",
-      headers: { "Idempotency-Key": key },
-      body: JSON.stringify({ display_name: request.displayName }),
-    }),
+    (request: { connectionId: string; displayName: string }, key) =>
+      apiFetch(`/connections/${request.connectionId}`, {
+        method: "PATCH",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify({ display_name: request.displayName }),
+      }),
   );
   const checkConnection = useRecoverableMutation(
     "check",
-    (connectionId: string, key) => apiFetch(`/connections/${connectionId}/health-checks`, {
-      method: "POST",
-      headers: { "Idempotency-Key": key },
-    }),
+    (connectionId: string, key) =>
+      apiFetch(`/connections/${connectionId}/health-checks`, {
+        method: "POST",
+        headers: { "Idempotency-Key": key },
+      }),
   );
   const toggleConnection = useRecoverableMutation(
     "toggle",
-    (request: { connectionId: string; enabled: boolean }, key) => apiFetch(`/connections/${request.connectionId}`, {
-      method: "PATCH",
-      headers: { "Idempotency-Key": key },
-      body: JSON.stringify({ enabled: request.enabled }),
-    }),
+    (request: { connectionId: string; enabled: boolean }, key) =>
+      apiFetch(`/connections/${request.connectionId}`, {
+        method: "PATCH",
+        headers: { "Idempotency-Key": key },
+        body: JSON.stringify({ enabled: request.enabled }),
+      }),
   );
   const removeConnection = useRecoverableMutation(
     "remove",
-    (connectionId: string, key) => apiFetch(`/connections/${connectionId}`, {
-      method: "DELETE",
-      headers: { "Idempotency-Key": key },
-    }),
+    (connectionId: string, key) =>
+      apiFetch(`/connections/${connectionId}`, {
+        method: "DELETE",
+        headers: { "Idempotency-Key": key },
+      }),
   );
-  const ordinaryRecoveryPending = createConnection.hasPendingRecovery
-    || editConnection.hasPendingRecovery
-    || checkConnection.hasPendingRecovery
-    || toggleConnection.hasPendingRecovery
-    || removeConnection.hasPendingRecovery;
+  const ordinaryRecoveryPending =
+    createConnection.hasPendingRecovery ||
+    editConnection.hasPendingRecovery ||
+    checkConnection.hasPendingRecovery ||
+    toggleConnection.hasPendingRecovery ||
+    removeConnection.hasPendingRecovery;
 
   const setupRequestKey = (requestID: string, scope: string) => {
     const existing = setupRequestKeys.current.get(requestID);
@@ -443,62 +507,83 @@ export function ConnectionsPage() {
     [queryClient],
   );
 
-  const adoptSharedFlow = useCallback((next?: DeviceFlow, preserveFreshSelection = false) => {
-    const sameFlow = !!next && sharedFlowID.current === next.flow_id;
-    sharedFlowID.current = next?.flow_id;
-    setSharedFlow(next);
+  const adoptSharedFlow = useCallback(
+    (next?: DeviceFlow, preserveFreshSelection = false) => {
+      const sameFlow = !!next && sharedFlowID.current === next.flow_id;
+      sharedFlowID.current = next?.flow_id;
+      setSharedFlow(next);
 
-    const reconnectID = next?.reconnect_connection_id ?? "";
-    setSharedReconnectID(reconnectID);
-    if (!next) {
+      const reconnectID = next?.reconnect_connection_id ?? "";
+      setSharedReconnectID(reconnectID);
+      if (!next) {
+        setSelectedInstallations(new Set());
+        return;
+      }
+      if (reconnectID) {
+        const reconnect = itemsRef.current.find(
+          (connection) => connection.connection_id === reconnectID,
+        );
+        setSelectedInstallations(
+          new Set(
+            reconnect?.installations.map(
+              (installation) => installation.installation_id,
+            ) ?? [],
+          ),
+        );
+        return;
+      }
+      if (preserveFreshSelection && sameFlow) {
+        const candidateIDs = new Set(
+          next.candidates.map((candidate) => candidate.installation_id),
+        );
+        setSelectedInstallations(
+          (existing) =>
+            new Set(
+              [...existing].filter((installationID) =>
+                candidateIDs.has(installationID),
+              ),
+            ),
+        );
+        return;
+      }
       setSelectedInstallations(new Set());
-      return;
-    }
-    if (reconnectID) {
-      const reconnect = itemsRef.current.find(
-        (connection) => connection.connection_id === reconnectID,
-      );
-      setSelectedInstallations(new Set(
-        reconnect?.installations.map((installation) => installation.installation_id) ?? [],
-      ));
-      return;
-    }
-    if (preserveFreshSelection && sameFlow) {
-      const candidateIDs = new Set(next.candidates.map((candidate) => candidate.installation_id));
-      setSelectedInstallations((existing) => new Set(
-        [...existing].filter((installationID) => candidateIDs.has(installationID)),
-      ));
-      return;
-    }
-    setSelectedInstallations(new Set());
-  }, []);
+    },
+    [],
+  );
 
   const canAcceptSharedFlow = useCallback(
     (flowID: string) => mounted.current && sharedFlowID.current === flowID,
     [],
   );
 
-  const acceptSharedStatus = useCallback(async (
-    next: DeviceFlow,
-    expectedFlowID?: string,
-    preserveFreshSelection = true,
-  ) => {
-    if (expectedFlowID && !canAcceptSharedFlow(expectedFlowID)) return;
-    if (next.stage === "completed") {
-      await reloadConnections();
+  const acceptSharedStatus = useCallback(
+    async (
+      next: DeviceFlow,
+      expectedFlowID?: string,
+      preserveFreshSelection = true,
+    ) => {
       if (expectedFlowID && !canAcceptSharedFlow(expectedFlowID)) return;
-      adoptSharedFlow(undefined);
+      if (next.stage === "completed") {
+        await reloadConnections();
+        if (expectedFlowID && !canAcceptSharedFlow(expectedFlowID)) return;
+        adoptSharedFlow(undefined);
+        setSharedError(undefined);
+        setSharedOpen(false);
+        return;
+      }
+      adoptSharedFlow(next, preserveFreshSelection);
       setSharedError(undefined);
-      setSharedOpen(false);
-      return;
-    }
-    adoptSharedFlow(next, preserveFreshSelection);
-    setSharedError(undefined);
-  }, [adoptSharedFlow, canAcceptSharedFlow, reloadConnections]);
+    },
+    [adoptSharedFlow, canAcceptSharedFlow, reloadConnections],
+  );
 
   const discoverCurrentSharedFlow = useCallback(async () => {
     let lastError: unknown;
-    for (let attempt = 0; attempt < sharedConflictDiscoveryAttempts; attempt += 1) {
+    for (
+      let attempt = 0;
+      attempt < sharedConflictDiscoveryAttempts;
+      attempt += 1
+    ) {
       if (!mounted.current) return undefined;
       try {
         const current = await apiFetch<DeviceFlow | undefined>(
@@ -510,7 +595,9 @@ export function ConnectionsPage() {
         lastError = cause;
       }
       if (attempt + 1 < sharedConflictDiscoveryAttempts) {
-        await new Promise((resolve) => window.setTimeout(resolve, sharedConflictDiscoveryIntervalMs));
+        await new Promise((resolve) =>
+          window.setTimeout(resolve, sharedConflictDiscoveryIntervalMs),
+        );
       }
     }
     if (lastError) throw lastError;
@@ -580,17 +667,24 @@ export function ConnectionsPage() {
   useEffect(() => {
     if (!sharedFlow?.reconnect_connection_id) return;
     const reconnect = items.find(
-      (connection) => connection.connection_id === sharedFlow.reconnect_connection_id,
+      (connection) =>
+        connection.connection_id === sharedFlow.reconnect_connection_id,
     );
     if (!reconnect) return;
     setSharedReconnectID(reconnect.connection_id);
     setSelectedInstallations(
-      new Set(reconnect.installations.map((installation) => installation.installation_id)),
+      new Set(
+        reconnect.installations.map(
+          (installation) => installation.installation_id,
+        ),
+      ),
     );
   }, [items, sharedFlow?.flow_id, sharedFlow?.reconnect_connection_id]);
 
   useEffect(() => {
-    const advanceID = flow ? `${flow.flow_id}:${flow.stage}:${manifestRetryAttempt}` : "";
+    const advanceID = flow
+      ? `${flow.flow_id}:${flow.stage}:${manifestRetryAttempt}`
+      : "";
     if (!flow || advancing.current === advanceID) return;
     const advance = async () => {
       advancing.current = advanceID;
@@ -679,7 +773,9 @@ export function ConnectionsPage() {
         settleSetupRequest(requestID, cause);
         setManifestError(requestError(cause));
         setManifestFailureStage(flow.stage);
-        setManifestRecovery(isAmbiguousSetupFailure(cause) ? "retry" : "restart");
+        setManifestRecovery(
+          isAmbiguousSetupFailure(cause) ? "retry" : "restart",
+        );
       } finally {
         setOperation("");
       }
@@ -699,7 +795,8 @@ export function ConnectionsPage() {
   // callback produces. Without it the operator would have to reload the page to
   // see their own progress.
   useEffect(() => {
-    if (!flow || !manifestWaitingStages.has(flow.stage) || manifestError) return;
+    if (!flow || !manifestWaitingStages.has(flow.stage) || manifestError)
+      return;
     let active = true;
     const timer = window.setTimeout(() => {
       void (async () => {
@@ -741,10 +838,7 @@ export function ConnectionsPage() {
               {
                 method: "POST",
                 headers: {
-                  "Idempotency-Key": setupRequestKey(
-                    requestID,
-                    "device-poll",
-                  ),
+                  "Idempotency-Key": setupRequestKey(requestID, "device-poll"),
                 },
               },
             );
@@ -766,7 +860,10 @@ export function ConnectionsPage() {
                   ? { ...current, retry_at: nextRetryAt }
                   : current,
               );
-            } else if (!isAmbiguousSetupFailure(cause) && cause instanceof ApiError) {
+            } else if (
+              !isAmbiguousSetupFailure(cause) &&
+              cause instanceof ApiError
+            ) {
               setSharedError(undefined);
               setSharedFlow((current) =>
                 current?.flow_id === sharedFlow.flow_id
@@ -784,7 +881,10 @@ export function ConnectionsPage() {
               const nextRetryAt = new Date(
                 Date.now() + sharedFlow.interval_seconds * 1000,
               ).toISOString();
-              setSharedError({ message: devicePollRetry, retryAt: nextRetryAt });
+              setSharedError({
+                message: devicePollRetry,
+                retryAt: nextRetryAt,
+              });
               setSharedFlow((current) =>
                 current?.flow_id === sharedFlow.flow_id
                   ? { ...current, retry_at: nextRetryAt }
@@ -820,7 +920,12 @@ export function ConnectionsPage() {
       })();
     }, sharedStatusPollIntervalMs);
     return () => window.clearTimeout(timer);
-  }, [acceptSharedStatus, canAcceptSharedFlow, sharedFlow, sharedStatusAttempt]);
+  }, [
+    acceptSharedStatus,
+    canAcceptSharedFlow,
+    sharedFlow,
+    sharedStatusAttempt,
+  ]);
 
   const startShared = async (connectionID?: string) => {
     if (sharedFlowLive) {
@@ -836,7 +941,11 @@ export function ConnectionsPage() {
       (connection) => connection.connection_id === connectionID,
     );
     setSelectedInstallations(
-      new Set(reconnect?.installations.map((installation) => installation.installation_id) ?? []),
+      new Set(
+        reconnect?.installations.map(
+          (installation) => installation.installation_id,
+        ) ?? [],
+      ),
     );
     setSharedReconnectID(connectionID || "");
     setSharedOpen(true);
@@ -854,15 +963,18 @@ export function ConnectionsPage() {
         },
       );
       settleSetupRequest(requestID);
-      if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+      if (!mounted.current || sharedStartAttempt.current !== startAttempt)
+        return;
       await acceptSharedStatus(next, undefined, false);
     } catch (cause) {
       settleSetupRequest(requestID, cause);
-      if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+      if (!mounted.current || sharedStartAttempt.current !== startAttempt)
+        return;
       if (cause instanceof ApiError && cause.status === 409) {
         try {
           const current = await discoverCurrentSharedFlow();
-          if (!mounted.current || sharedStartAttempt.current !== startAttempt) return;
+          if (!mounted.current || sharedStartAttempt.current !== startAttempt)
+            return;
           if (current?.flow_id) {
             await acceptSharedStatus(current, undefined, false);
             setSharedOpen(false);
@@ -892,10 +1004,7 @@ export function ConnectionsPage() {
         {
           method: "POST",
           headers: {
-            "Idempotency-Key": setupRequestKey(
-              requestID,
-              "device-candidates",
-            ),
+            "Idempotency-Key": setupRequestKey(requestID, "device-candidates"),
           },
         },
       );
@@ -911,8 +1020,12 @@ export function ConnectionsPage() {
         );
         if (!canAcceptSharedFlow(refreshedFlowID)) return;
         await acceptSharedStatus(canonical, refreshedFlowID);
-        if (["selecting_installation", "needs_installation"].includes(canonical.stage)
-          && canAcceptSharedFlow(refreshedFlowID)) {
+        if (
+          ["selecting_installation", "needs_installation"].includes(
+            canonical.stage,
+          ) &&
+          canAcceptSharedFlow(refreshedFlowID)
+        ) {
           setSharedError(requestError(cause));
         }
       } catch {
@@ -937,7 +1050,11 @@ export function ConnectionsPage() {
     setInstallationsEditingID(connection.connection_id);
     setInstallationCandidates([]);
     setInstallationSelection(
-      new Set(connection.installations.map((item: ConnectionInstallation) => item.installation_id)),
+      new Set(
+        connection.installations.map(
+          (item: ConnectionInstallation) => item.installation_id,
+        ),
+      ),
     );
     setOperation(`${connection.connection_id}:installations-load`);
     setError(undefined);
@@ -960,7 +1077,9 @@ export function ConnectionsPage() {
       await apiFetch(`/connections/${connection.connection_id}/installations`, {
         method: "PUT",
         headers: { "Idempotency-Key": idem("connection-installations") },
-        body: JSON.stringify({ installation_ids: [...installationSelection].sort() }),
+        body: JSON.stringify({
+          installation_ids: [...installationSelection].sort(),
+        }),
       });
       await reloadConnections();
       setInstallationsEditingID("");
@@ -971,24 +1090,31 @@ export function ConnectionsPage() {
     }
   };
 
-  const toggleInstallation = (setter: typeof setInstallationSelection) => (installationID: string) => {
-    setter((existing) => {
-      const next = new Set(existing);
-      if (next.has(installationID)) next.delete(installationID);
-      else next.add(installationID);
-      return next;
-    });
-  };
+  const toggleInstallation =
+    (setter: typeof setInstallationSelection) => (installationID: string) => {
+      setter((existing) => {
+        const next = new Set(existing);
+        if (next.has(installationID)) next.delete(installationID);
+        else next.add(installationID);
+        return next;
+      });
+    };
 
   const finalizeShared = async () => {
     if (!sharedFlow || operation) return;
     const chosen = sharedFlow.candidates.filter((item) =>
       selectedInstallations.has(item.installation_id),
     );
-    if (sharedReconnectID && (!reconnectConnection || missingReconnectInstallations.length !== 0)) return;
+    if (
+      sharedReconnectID &&
+      (!reconnectConnection || missingReconnectInstallations.length !== 0)
+    )
+      return;
     if (!sharedReconnectID && chosen.length === 0) return;
     const installationIDs = sharedReconnectID
-      ? reconnectConnection!.installations.map((item) => item.installation_id).sort()
+      ? reconnectConnection!.installations
+          .map((item) => item.installation_id)
+          .sort()
       : chosen.map((item) => item.installation_id).sort();
     // The key follows the whole selection: changing what is ticked after an
     // ambiguous failure must mint a new key rather than replay the old body.
@@ -1026,8 +1152,10 @@ export function ConnectionsPage() {
         );
         if (!canAcceptSharedFlow(sharedFlow.flow_id)) return;
         await acceptSharedStatus(canonical, sharedFlow.flow_id);
-        if (canonical.stage === "selecting_installation"
-          && canAcceptSharedFlow(sharedFlow.flow_id)) {
+        if (
+          canonical.stage === "selecting_installation" &&
+          canAcceptSharedFlow(sharedFlow.flow_id)
+        ) {
           setSharedError(requestError(cause));
         }
       } catch {
@@ -1068,25 +1196,36 @@ export function ConnectionsPage() {
 
   // One source of truth for "a private-App setup is live and unfinished" so the
   // inline and modal surfaces cannot disagree about what is startable.
-  const manifestFlowLive = !!flow && flow.stage !== "completed" && flow.stage !== "failed";
-  const sharedFlowLive = !!sharedFlow && !["completed", "access_denied", "expired", "failed"].includes(sharedFlow.stage);
+  const manifestFlowLive =
+    !!flow && flow.stage !== "completed" && flow.stage !== "failed";
+  const sharedFlowLive =
+    !!sharedFlow &&
+    !["completed", "access_denied", "expired", "failed"].includes(
+      sharedFlow.stage,
+    );
   const reconnectConnection = sharedReconnectID
     ? items.find((connection) => connection.connection_id === sharedReconnectID)
     : undefined;
   const reconnectCandidateIDs = new Set(
     sharedFlow?.candidates
-      .filter((candidate) => reconnectConnection?.installations.some(
-        (installation) => installation.installation_id === candidate.installation_id
-          && installation.account_id === candidate.account_id,
-      ))
+      .filter((candidate) =>
+        reconnectConnection?.installations.some(
+          (installation) =>
+            installation.installation_id === candidate.installation_id &&
+            installation.account_id === candidate.account_id,
+        ),
+      )
       .map((candidate) => candidate.installation_id) ?? [],
   );
-  const reconnectCandidates = sharedFlow?.candidates.filter((candidate) =>
-    reconnectCandidateIDs.has(candidate.installation_id),
-  ) ?? [];
-  const missingReconnectInstallations = reconnectConnection?.installations.filter(
-    (installation) => !reconnectCandidateIDs.has(installation.installation_id),
-  ) ?? [];
+  const reconnectCandidates =
+    sharedFlow?.candidates.filter((candidate) =>
+      reconnectCandidateIDs.has(candidate.installation_id),
+    ) ?? [];
+  const missingReconnectInstallations =
+    reconnectConnection?.installations.filter(
+      (installation) =>
+        !reconnectCandidateIDs.has(installation.installation_id),
+    ) ?? [];
   const startManifestDisabled =
     !!operation ||
     !!manifestError ||
@@ -1189,7 +1328,11 @@ export function ConnectionsPage() {
   };
 
   const recoverManifest = () => {
-    if (manifestRecovery === "retry" && flow && manifestFailureStage !== "start") {
+    if (
+      manifestRecovery === "retry" &&
+      flow &&
+      manifestFailureStage !== "start"
+    ) {
       advancing.current = "";
       setManifestRetryAttempt((attempt) => attempt + 1);
       return;
@@ -1221,7 +1364,10 @@ export function ConnectionsPage() {
     setOperation(`${id}:edit`);
     setError(undefined);
     try {
-      await editConnection.mutateAsync({ connectionId: id, displayName: editName });
+      await editConnection.mutateAsync({
+        connectionId: id,
+        displayName: editName,
+      });
       setEditingID("");
       await reloadConnections();
     } catch (cause) {
@@ -1259,209 +1405,126 @@ export function ConnectionsPage() {
     }
   };
 
+  const selectedConnection = items.find(
+    (item) => item.connection_id === selectedConnectionID,
+  );
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <PageHeader>
-        <div className="flex w-full items-center justify-between">
-          <div>
-            <h1 className="font-display text-2xl font-bold text-gold">Connections</h1>
-            <p className="text-sm text-foreground-muted">
-              External services Kingdom may read from, owned and controlled by you.
+    <WorkspacePage
+      section="Connections"
+      title={selectedConnection?.display_name ?? "Connections"}
+      description={
+        selectedConnection
+          ? `GitHub · ${selectedConnection.credential_strategy === "user_access_token" ? "Kingdom App" : "Private App"}`
+          : "Bring work from your tools into Kingdom."
+      }
+      actions={
+        selectedConnectionID ? (
+          <Button variant="ghost" onClick={() => setSelectedConnectionID("")}>
+            All Connections
+          </Button>
+        ) : (
+          <Button
+            disabled={!!operation || sharedFlowLive || manifestFlowLive}
+            onClick={() => setAddOpen(true)}
+          >
+            Add Connection
+          </Button>
+        )
+      }
+    >
+      <div className="space-y-6">
+        <ErrorNotice
+          error={
+            error ??
+            (connections.error ? requestError(connections.error) : undefined)
+          }
+        />
+        {sharedFlowLive && !sharedOpen ? (
+          <section
+            className="mt-6 max-w-2xl rounded-lg border border-accent/30 bg-accent/5 p-4"
+            aria-labelledby="shared-setup-status"
+          >
+            <p id="shared-setup-status" className="text-sm font-medium">
+              {sharedReconnectID
+                ? "GitHub Reconnect in Progress"
+                : "GitHub Setup in Progress"}
             </p>
-          </div>
-        </div>
-      </PageHeader>
-      <PageContent className="space-y-5">
-        <ErrorNotice error={error ?? (connections.error ? requestError(connections.error) : undefined)} />
-        <Card className="overflow-hidden border-gold/30 bg-[radial-gradient(circle_at_top_right,hsl(var(--gold)/0.12),transparent_42%)]">
-          <CardContent className="p-5 sm:p-7">
-            <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_18rem] lg:items-end">
-              <div>
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl border border-gold/30 bg-gold/10 p-2.5">
-                    <Github className="h-6 w-6 text-gold" />
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gold">
-                      Issue Importer
-                    </p>
-                    <h2 className="font-display text-xl font-semibold">
-                      {setupOptions.shared_enabled
-                        ? "GitHub"
-                        : "Create a Private GitHub App"}
-                    </h2>
-                  </div>
-                </div>
-                <p className="mt-4 max-w-2xl text-sm leading-relaxed text-foreground-muted">
-                  {setupOptions.shared_enabled
-                    ? "Connect through Kingdom's public GitHub App, create a private App you own, or register one you already have. Whichever route you take, Kingdom requests only repository metadata read and Issues read, with no events and no webhook."
-                    : "GitHub creates an App owned by your personal account or organization, or you register one you already have. Kingdom requests only repository metadata read and Issues read, with no events and no webhook."}
-                </p>
-              </div>
-              {setupOptions.shared_enabled ? (
-                <div className="space-y-3" role="group" aria-label="GitHub Setup Options">
-                  <Button
-                    className="w-full"
-                    disabled={!!operation || sharedFlowLive}
-                    onClick={() => void startShared()}
-                  >
-                    {operation === "shared-start" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Github className="h-4 w-4" />
-                    )}
-                    Connect GitHub
-                  </Button>
-                  <Button
-                    type="button"
-                    className="w-full"
-                    variant="outline"
-                    onClick={() => setManifestOpen(true)}
-                  >
-                    Create a Private GitHub App
-                  </Button>
-                  <button
-                    type="button"
-                    className="w-full text-center text-xs text-foreground-muted underline decoration-border underline-offset-4 hover:text-foreground"
-                    onClick={() => {
-                      setManualOpen(true);
-                      setManualSaved(undefined);
-                    }}
-                  >
-                    Use Manual Setup
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-3" role="group" aria-label="GitHub Setup Options">
-                  <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-background/70 p-1">
-                    <button
-                      type="button"
-                      className={`rounded-md px-3 py-2 text-xs font-medium ${ownerType === "personal" ? "bg-gold text-primary-foreground" : "text-foreground-muted"}`}
-                      onClick={() => setOwnerType("personal")}
-                    >
-                      Personal
-                    </button>
-                    <button
-                      type="button"
-                      className={`rounded-md px-3 py-2 text-xs font-medium ${ownerType === "organization" ? "bg-gold text-primary-foreground" : "text-foreground-muted"}`}
-                      onClick={() => setOwnerType("organization")}
-                    >
-                      Organization
-                    </button>
-                  </div>
-                  {ownerType === "organization" && (
-                    <label className="block text-xs font-medium text-foreground-muted">
-                      Organization Login
-                      <input
-                        required
-                        aria-label="Organization Login"
-                        className={cn(fieldClass, "mt-1")}
-                        value={organization}
-                        onChange={(event) =>
-                          setOrganization(event.target.value)
-                        }
-                      />
-                    </label>
-                  )}
-                  <Button
-                    className="w-full"
-                    disabled={startManifestDisabled}
-                    onClick={() => void startManifest()}
-                  >
-                    {operation === "flow-start" ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Github className="h-4 w-4" />
-                    )}
-                    Create a Private GitHub App
-                  </Button>
-                  <button
-                    type="button"
-                    className="w-full text-center text-xs text-foreground-muted underline decoration-border underline-offset-4 hover:text-foreground"
-                    onClick={() => {
-                      setManualOpen(true);
-                      setManualSaved(undefined);
-                    }}
-                  >
-                    Use Manual Setup Instead
-                  </button>
-                </div>
-              )}
-            </div>
-            {sharedFlowLive && !sharedOpen ? (
-              <section className="mt-6 max-w-2xl rounded-lg border border-gold/30 bg-gold/5 p-4" aria-labelledby="shared-setup-status">
-                <p id="shared-setup-status" className="text-sm font-medium">
-                  {sharedReconnectID ? "GitHub Reconnect in Progress" : "GitHub Setup in Progress"}
-                </p>
-                <p className="mt-1 text-xs text-foreground-muted" aria-live="polite">
-                  This setup is preserved for this browser session until it is completed, discarded, or expires.
-                </p>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <Button ref={sharedResumeRef} type="button" size="sm" onClick={() => setSharedOpen(true)}>
-                    Resume Setup
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="outline"
-                    disabled={!!operation}
-                    onClick={() => void discardShared()}
-                  >
-                    {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                    Discard Setup
-                  </Button>
-                </div>
-                <ErrorNotice error={sharedError} />
-              </section>
-            ) : null}
-            {flow || manifestError ? (
-              <section className="mt-6 max-w-2xl space-y-3" aria-label="Private GitHub App Setup Status">
-                <ManifestSetupStatus
-                  flow={flow}
-                  error={manifestError}
-                  failureStage={manifestFailureStage}
-                  recovery={manifestRecovery}
-                  busy={operation.startsWith("flow-")}
-                  onRecover={recoverManifest}
-                />
-                <ManifestHandoffAction
-                  flow={flow}
-                  url={manifestHandoffURL}
-                  busy={!!operation}
-                  onBlocked={reportSetupWindowBlocked}
-                />
-                {setupOptions.shared_enabled && manifestFlowLive ? (
-                  <div className="flex flex-wrap gap-2">
-                    <Button type="button" size="sm" onClick={() => setManifestOpen(true)}>
-                      Resume Setup
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={!!operation}
-                      onClick={() => void abandonManifest()}
-                    >
-                      {operation === "flow-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                      Abandon Setup
-                    </Button>
-                  </div>
+            <p
+              className="mt-1 text-xs text-foreground-muted"
+              aria-live="polite"
+            >
+              This setup is preserved for this browser session until it is
+              completed, discarded, or expires.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button
+                ref={sharedResumeRef}
+                type="button"
+                size="sm"
+                onClick={() => setSharedOpen(true)}
+              >
+                Resume Setup
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={!!operation}
+                onClick={() => void discardShared()}
+              >
+                {operation === "shared-discard" ? (
+                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 ) : null}
-              </section>
+                Discard Setup
+              </Button>
+            </div>
+            <ErrorNotice error={sharedError} />
+          </section>
+        ) : null}
+        {!manifestOpen && (flow || manifestError) ? (
+          <section
+            className="mt-6 max-w-2xl space-y-3"
+            aria-label="Private GitHub App Setup Status"
+          >
+            <ManifestSetupStatus
+              flow={flow}
+              error={manifestError}
+              failureStage={manifestFailureStage}
+              recovery={manifestRecovery}
+              busy={operation.startsWith("flow-")}
+              onRecover={recoverManifest}
+            />
+            <ManifestHandoffAction
+              flow={flow}
+              url={manifestHandoffURL}
+              busy={!!operation}
+              onBlocked={reportSetupWindowBlocked}
+            />
+            {manifestFlowLive ? (
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setManifestOpen(true)}
+                >
+                  Resume Setup
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={!!operation}
+                  onClick={() => void abandonManifest()}
+                >
+                  {operation === "flow-discard" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : null}
+                  Abandon Setup
+                </Button>
+              </div>
             ) : null}
-          </CardContent>
-        </Card>
-
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="font-display text-lg font-semibold">
-              Saved Connections
-            </h2>
-            <p className="text-xs text-foreground-muted">
-              Installation access is validated independently before use.
-            </p>
-          </div>
-        </div>
+          </section>
+        ) : null}
         {loading ? (
           <div
             aria-label="Loading connections"
@@ -1470,17 +1533,34 @@ export function ConnectionsPage() {
             <div className="h-40 animate-pulse rounded-xl border border-border bg-card/60" />
             <div className="h-40 animate-pulse rounded-xl border border-border bg-card/60" />
           </div>
-        ) : items.length === 0 ? (
-          <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-foreground-muted">
-            No connections yet.{" "}
-            {setupOptions.shared_enabled
-              ? "Connect GitHub"
-              : "Create your private App"}{" "}
-            above.
+        ) : selectedConnectionID &&
+          !selectedConnection &&
+          !connections.error ? (
+          <div role="alert" className="rounded-xl border border-border p-6">
+            <h2 className="text-lg font-medium">Connection Unavailable</h2>
+            <p className="mt-2 text-sm text-foreground-muted">
+              This connection is no longer in the workspace. Return to All
+              Connections to choose another.
+            </p>
           </div>
+        ) : items.length === 0 && !connections.error ? (
+          <div className="rounded-xl border border-dashed border-border px-6 py-12 text-center">
+            <h2 className="font-display text-2xl">Connect Your First Tool</h2>
+            <p className="mb-6 mt-2 text-sm text-foreground-muted">
+              Bring GitHub issues into planning and new work.
+            </p>
+            <Button
+              disabled={!!operation || sharedFlowLive || manifestFlowLive}
+              onClick={() => setAddOpen(true)}
+            >
+              Connect GitHub
+            </Button>
+          </div>
+        ) : !selectedConnection ? (
+          <ConnectionList items={items} onManage={setSelectedConnectionID} />
         ) : (
-          <div className="grid gap-4 xl:grid-cols-2">
-            {items.map((connection) => {
+          <div className="space-y-6">
+            {[selectedConnection].map((connection) => {
               const mutable =
                 connection.lifecycle === "enabled" ||
                 connection.lifecycle === "disabled";
@@ -1515,7 +1595,7 @@ export function ConnectionsPage() {
                         </div>
                         <label className="block text-xs font-medium text-foreground-muted">
                           Display Name
-                          <input
+                          <input data-ui-field=""
                             required
                             maxLength={120}
                             className={cn(fieldClass, "mt-1")}
@@ -1533,7 +1613,9 @@ export function ConnectionsPage() {
                             operation === `${connection.connection_id}:edit`
                           }
                         >
-                          {editConnection.hasPendingRecovery ? "Retry save display name" : "Save display name"}
+                          {editConnection.hasPendingRecovery
+                            ? "Retry save display name"
+                            : "Save display name"}
                         </Button>
                       </form>
                     ) : (
@@ -1541,61 +1623,75 @@ export function ConnectionsPage() {
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div className="min-w-0">
                             <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="truncate font-semibold">
-                                {connection.display_name}
-                              </h3>
-                              <span className="rounded-full border border-border px-2 py-0.5 text-[10px] uppercase tracking-wide">
-                                {connection.health_class.replaceAll("_", " ")}
-                              </span>
+                              <ConnectionStatus connection={connection} />
+                              {connection.last_checked_at && (
+                                <span className="text-xs text-foreground-muted">
+                                  Checked{" "}
+                                  <RelativeTime
+                                    iso={connection.last_checked_at}
+                                  />
+                                </span>
+                              )}
                             </div>
-                            <p className="mt-1 text-sm text-foreground-muted">
-                              {connection.credential_strategy ===
-                              "user_access_token"
-                                ? "Shared GitHub App"
-                                : "Private App key"}{" "}
-                              / {connection.lifecycle}
-                            </p>
+
                             <div className="mt-3">
                               <div className="flex items-center gap-2">
                                 <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
-                                  Installations
+                                  Accounts and Access
                                 </h4>
                                 {mutable && (
                                   <button
                                     type="button"
-                                    className="text-xs text-gold underline-offset-2 hover:underline"
-                                    onClick={() => void openInstallationEditor(connection)}
+                                    className="text-xs text-accent underline-offset-2 hover:underline"
+                                    onClick={() =>
+                                      void openInstallationEditor(connection)
+                                    }
                                   >
-                                    {installationsEditingID === connection.connection_id ? "Close" : "Change"}
+                                    {installationsEditingID ===
+                                    connection.connection_id
+                                      ? "Close"
+                                      : "Change"}
                                   </button>
                                 )}
                               </div>
                               <InstallationList
                                 connection={connection}
-                                managementLinksDisabled={operation === "shared-finalize"}
+                                managementLinksDisabled={
+                                  operation === "shared-finalize"
+                                }
                               />
-                              {installationsEditingID === connection.connection_id && (
+                              {installationsEditingID ===
+                                connection.connection_id && (
                                 <div className="mt-3 rounded-xl border border-border bg-background/40 p-4">
                                   <p className="text-xs text-foreground-muted">
-                                    Kingdom reads every repository these installations grant. Install
-                                    the App on another account on GitHub, then reopen this list.
+                                    Kingdom reads every repository these
+                                    installations grant. Install the App on
+                                    another account on GitHub, then reopen this
+                                    list.
                                   </p>
                                   <div className="mt-3">
-                                    {operation === `${connection.connection_id}:installations-load` ? (
-                                      <p role="status" className="flex items-center gap-2 text-xs text-foreground-muted">
+                                    {operation ===
+                                    `${connection.connection_id}:installations-load` ? (
+                                      <p
+                                        role="status"
+                                        className="flex items-center gap-2 text-xs text-foreground-muted"
+                                      >
                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                         Loading installations...
                                       </p>
                                     ) : installationCandidates.length === 0 ? (
                                       <p className="rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">
-                                        No installations are available to this connection.
+                                        No installations are available to this
+                                        connection.
                                       </p>
                                     ) : (
                                       <InstallationPicker
                                         name={`installations-${connection.connection_id}`}
                                         candidates={installationCandidates}
                                         selected={installationSelection}
-                                        onToggle={toggleInstallation(setInstallationSelection)}
+                                        onToggle={toggleInstallation(
+                                          setInstallationSelection,
+                                        )}
                                       />
                                     )}
                                   </div>
@@ -1603,7 +1699,9 @@ export function ConnectionsPage() {
                                     <Button
                                       size="sm"
                                       variant="ghost"
-                                      onClick={() => setInstallationsEditingID("")}
+                                      onClick={() =>
+                                        setInstallationsEditingID("")
+                                      }
                                     >
                                       Cancel
                                     </Button>
@@ -1611,11 +1709,15 @@ export function ConnectionsPage() {
                                       size="sm"
                                       disabled={
                                         installationSelection.size === 0 ||
-                                        operation === `${connection.connection_id}:installations-save`
+                                        operation ===
+                                          `${connection.connection_id}:installations-save`
                                       }
-                                      onClick={() => void saveInstallations(connection)}
+                                      onClick={() =>
+                                        void saveInstallations(connection)
+                                      }
                                     >
-                                      {operation === `${connection.connection_id}:installations-save` && (
+                                      {operation ===
+                                        `${connection.connection_id}:installations-save` && (
                                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                                       )}
                                       Save Installations
@@ -1624,82 +1726,138 @@ export function ConnectionsPage() {
                                 </div>
                               )}
                             </div>
-                            {connection.health_class === "permission_mismatch" && (
-                              <p className="mt-2 max-w-2xl text-xs leading-5 text-amber-300">
-                                {externalSourceFailureGuidance(connection.health_class)}
+                            {connection.health_class ===
+                              "permission_mismatch" && (
+                              <p className="mt-2 max-w-2xl text-xs leading-5 text-status-blocked">
+                                {externalSourceFailureGuidance(
+                                  connection.health_class,
+                                )}
                               </p>
                             )}
                           </div>
                           {removable && (
-                            <div className="flex flex-wrap gap-2">
+                            <div className="flex flex-wrap items-start gap-3">
                               {mutable && (
-                                <>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                 disabled={!!operation || ordinaryRecoveryPending}
-                                onClick={() => {
-                                  setEditingID(connection.connection_id);
-                                  setEditName(connection.display_name);
-                                }}
-                              >
-                                <Pencil className="h-3.5 w-3.5" />
-                                Edit
-                              </Button>
-                              {connection.credential_strategy ===
-                                "user_access_token" && (
                                 <Button
                                   size="sm"
                                   variant="outline"
-                                  disabled={!!operation || ordinaryRecoveryPending || sharedFlowLive}
+                                  disabled={
+                                    !!operation ||
+                                    (ordinaryRecoveryPending &&
+                                      checkConnection.pendingRequest !==
+                                        connection.connection_id) ||
+                                    connection.lifecycle !== "enabled" ||
+                                    connection.credential_state !== "present"
+                                  }
                                   onClick={() =>
-                                    void startShared(connection.connection_id)
+                                    void mutate(connection, "check")
                                   }
                                 >
-                                  Reconnect Connection
+                                  <ShieldCheck className="h-3.5 w-3.5" />
+                                  {checkConnection.pendingRequest ===
+                                  connection.connection_id
+                                    ? "Retry check"
+                                    : "Check"}
                                 </Button>
                               )}
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                disabled={
-                                   !!operation || (ordinaryRecoveryPending && checkConnection.pendingRequest !== connection.connection_id) ||
-                                  connection.lifecycle !== "enabled" ||
-                                  connection.credential_state !== "present"
-                                }
-                                onClick={() => void mutate(connection, "check")}
-                              >
-                                <ShieldCheck className="h-3.5 w-3.5" />
-                                {checkConnection.pendingRequest === connection.connection_id ? "Retry check" : "Check"}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                 disabled={!!operation || (ordinaryRecoveryPending && toggleConnection.pendingRequest?.connectionId !== connection.connection_id)}
-                                onClick={() =>
-                                  void mutate(connection, "toggle")
-                                }
-                              >
-                                {toggleConnection.pendingRequest?.connectionId === connection.connection_id
-                                  ? `Retry ${toggleConnection.pendingRequest.enabled ? "enable" : "disable"}`
-                                  : connection.lifecycle === "enabled" ? "Disable" : "Enable"}
-                              </Button>
-                                </>
-                              )}
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                 disabled={!!operation || ordinaryRecoveryPending}
-                                onClick={() => {
-                                  setPendingRemoval(connection);
-                                  setRemovalError(undefined);
-                                }}
-                              >
-                                {connection.lifecycle === "removal_pending" ? "Retry Removal" : "Remove"}
-                              </Button>
+                              <details className="relative">
+                                <summary className="cursor-pointer rounded-lg border border-border px-3 py-2 text-sm">
+                                  Manage Connection
+                                </summary>
+                                <div className="mt-3 flex max-w-sm flex-wrap gap-2">
+                                  {mutable && (
+                                    <>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={
+                                          !!operation || ordinaryRecoveryPending
+                                        }
+                                        onClick={() => {
+                                          setEditingID(
+                                            connection.connection_id,
+                                          );
+                                          setEditName(connection.display_name);
+                                        }}
+                                      >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                        Edit
+                                      </Button>
+                                      {connection.credential_strategy ===
+                                        "user_access_token" && (
+                                        <Button
+                                          size="sm"
+                                          variant="outline"
+                                          disabled={
+                                            !!operation ||
+                                            ordinaryRecoveryPending ||
+                                            sharedFlowLive
+                                          }
+                                          onClick={() =>
+                                            void startShared(
+                                              connection.connection_id,
+                                            )
+                                          }
+                                        >
+                                          Reconnect Connection
+                                        </Button>
+                                      )}
+
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        disabled={
+                                          !!operation ||
+                                          (ordinaryRecoveryPending &&
+                                            toggleConnection.pendingRequest
+                                              ?.connectionId !==
+                                              connection.connection_id)
+                                        }
+                                        onClick={() =>
+                                          void mutate(connection, "toggle")
+                                        }
+                                      >
+                                        {toggleConnection.pendingRequest
+                                          ?.connectionId ===
+                                        connection.connection_id
+                                          ? `Retry ${toggleConnection.pendingRequest.enabled ? "enable" : "disable"}`
+                                          : connection.lifecycle === "enabled"
+                                            ? "Disable"
+                                            : "Enable"}
+                                      </Button>
+                                    </>
+                                  )}
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    disabled={
+                                      !!operation || ordinaryRecoveryPending
+                                    }
+                                    onClick={() => {
+                                      setPendingRemoval(connection);
+                                      setRemovalError(undefined);
+                                    }}
+                                  >
+                                    {connection.lifecycle === "removal_pending"
+                                      ? "Retry Removal"
+                                      : "Remove"}
+                                  </Button>
+                                </div>
+                              </details>
                             </div>
                           )}
                         </div>
+                        <section className="mt-6 border-t border-border pt-5">
+                          <h3 className="text-sm font-medium">Permissions</h3>
+                          <p className="mt-2 text-sm text-foreground-muted">
+                            Repository metadata and issues · Read only
+                          </p>
+                          <p className="mt-1 text-xs text-foreground-muted">
+                            Choose issues from a planning session or when
+                            creating work. You decide when source content is
+                            refreshed.
+                          </p>
+                        </section>
                         <details className="group mt-4 rounded-lg border border-border/70 bg-background/40">
                           <summary className="flex cursor-pointer list-none items-center justify-between px-3 py-2 text-xs font-medium text-foreground-muted">
                             Technical Details
@@ -1720,7 +1878,10 @@ export function ConnectionsPage() {
                               <dt>Installation IDs</dt>
                               <dd className="break-all">
                                 {connection.installations
-                                  .map((installation: ConnectionInstallation) => installation.installation_id)
+                                  .map(
+                                    (installation: ConnectionInstallation) =>
+                                      installation.installation_id,
+                                  )
                                   .join(", ") || "None"}
                               </dd>
                               <dt>Connection ID</dt>
@@ -1731,9 +1892,9 @@ export function ConnectionsPage() {
                             {mutable &&
                               connection.credential_strategy ===
                                 "app_private_key" && (
-                                <div className="mt-3 rounded-md border border-gold/20 bg-gold/5 p-2">
+                                <div className="mt-3 rounded-md border border-accent/20 bg-accent/5 p-2">
                                   <div className="flex items-center gap-2 font-medium text-foreground">
-                                    <KeyRound className="h-3.5 w-3.5 text-gold" />
+                                    <KeyRound className="h-3.5 w-3.5 text-accent" />
                                     {connection.credential_state === "present"
                                       ? "Rotate the private key from the host"
                                       : "Provision the private key from the host"}
@@ -1772,14 +1933,86 @@ export function ConnectionsPage() {
           </div>
         )}
 
+        {!selectedConnection && items.length > 0 && (
+          <p className="text-sm text-foreground-muted">
+            Choose issues from a planning session or when creating work. You
+            control when source content is refreshed.
+          </p>
+        )}
+        {addOpen && (
+          <Modal
+            open
+            onClose={() => setAddOpen(false)}
+            title="Add Connection"
+            description="Choose how to connect GitHub."
+            size="md"
+          >
+            <div className="space-y-5">
+              <div className="flex items-center gap-3">
+                <Github className="h-6 w-6 text-foreground-muted" />
+                <h3 className="text-lg font-medium">GitHub</h3>
+              </div>
+              <p className="text-sm text-foreground-muted">
+                Read issues and repository metadata. Kingdom does not write to
+                GitHub or subscribe to webhooks.
+              </p>
+              <div
+                className="space-y-3"
+                role="group"
+                aria-label="GitHub Setup Options"
+              >
+                {setupOptions.shared_enabled && (
+                  <Button
+                    className="w-full"
+                    disabled={!!operation || sharedFlowLive}
+                    onClick={() => {
+                      setAddOpen(false);
+                      void startShared();
+                    }}
+                  >
+                    Connect GitHub
+                  </Button>
+                )}
+                <Button
+                  className="w-full"
+                  variant={setupOptions.shared_enabled ? "outline" : "default"}
+                  onClick={() => {
+                    setAddOpen(false);
+                    setManifestOpen(true);
+                  }}
+                >
+                  Create a Private GitHub App
+                </Button>
+                <button
+                  type="button"
+                  className="w-full text-sm text-foreground-muted underline underline-offset-4"
+                  onClick={() => {
+                    setAddOpen(false);
+                    setManualOpen(true);
+                    setManualSaved(undefined);
+                  }}
+                >
+                  Use Manual Setup
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
         {sharedOpen ? (
           <Modal
             open
             onClose={() => setSharedOpen(false)}
-            getFinalFocus={sharedFlowLive ? () => sharedResumeRef.current : undefined}
+            getFinalFocus={
+              sharedFlowLive ? () => sharedResumeRef.current : undefined
+            }
             size="lg"
             title={sharedReconnectID ? "Reconnect GitHub" : "Connect GitHub"}
-            description={sharedReconnectID ? "Reauthorize every installation already saved on this connection." : "Authorize on GitHub, then choose the installations Kingdom may use."}
+            description={
+              sharedReconnectID
+                ? "Reauthorize every installation already saved on this connection."
+                : "Authorize on GitHub, then choose the installations Kingdom may use."
+            }
             footer={
               <ModalFooter>
                 {sharedFlowLive ? (
@@ -1788,7 +2021,9 @@ export function ConnectionsPage() {
                     disabled={!!operation}
                     onClick={() => void discardShared()}
                   >
-                    {operation === "shared-discard" ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                    {operation === "shared-discard" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : null}
                     Discard Setup
                   </Button>
                 ) : null}
@@ -1798,213 +2033,241 @@ export function ConnectionsPage() {
               </ModalFooter>
             }
           >
-              <div className="space-y-5">
-                <ErrorNotice error={sharedError} />
-                {operation === "shared-start" ? (
-                  <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-foreground-muted">
-                    <Loader2 className="h-4 w-4 animate-spin text-gold" />
-                    Preparing GitHub...
+            <div className="space-y-5">
+              <ErrorNotice error={sharedError} />
+              {operation === "shared-start" ? (
+                <div className="flex min-h-40 items-center justify-center gap-2 text-sm text-foreground-muted">
+                  <Loader2 className="h-4 w-4 animate-spin text-accent" />
+                  Preparing GitHub...
+                </div>
+              ) : !sharedFlow ? (
+                <p className="py-10 text-center text-sm text-foreground-muted">
+                  No active GitHub setup is available.
+                </p>
+              ) : sharedFlow.stage === "awaiting_authorization" ? (
+                <div className="space-y-5">
+                  <div className="rounded-xl border border-accent/30 bg-accent/5 p-5 text-center">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-foreground-muted">
+                      Enter This Code on GitHub
+                    </p>
+                    <div className="mt-3 flex items-center justify-center gap-2">
+                      <code className="font-display text-3xl font-semibold tracking-[0.18em] text-accent">
+                        {sharedFlow.user_code}
+                      </code>
+                      <CopyButton
+                        value={sharedFlow.user_code || ""}
+                        label="Copy GitHub code"
+                      />
+                    </div>
                   </div>
-                ) : !sharedFlow ? (
-                  <p className="py-10 text-center text-sm text-foreground-muted">
-                    No active GitHub setup is available.
+                  <a
+                    className={buttonVariants({ className: "w-full" })}
+                    href={sharedFlow.verification_uri}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open GitHub
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                  <p className="text-center text-xs text-foreground-muted">
+                    Authorizing lets Kingdom see the installations you already
+                    have. You can install the App on more accounts in the next
+                    step.
                   </p>
-                ) : sharedFlow.stage === "awaiting_authorization" ? (
-                  <div className="space-y-5">
-                    <div className="rounded-xl border border-gold/30 bg-gold/5 p-5 text-center">
-                      <p className="text-xs font-semibold uppercase tracking-[0.16em] text-foreground-muted">
-                        Enter This Code on GitHub
-                      </p>
-                      <div className="mt-3 flex items-center justify-center gap-2">
-                        <code className="font-display text-3xl font-semibold tracking-[0.18em] text-gold">
-                          {sharedFlow.user_code}
-                        </code>
-                        <CopyButton
-                          value={sharedFlow.user_code || ""}
-                          label="Copy GitHub code"
-                        />
-                      </div>
-                    </div>
-                    <a
-                      className={buttonVariants({ className: "w-full" })}
-                      href={sharedFlow.verification_uri}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Open GitHub
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                    <p className="text-center text-xs text-foreground-muted">
-                      Authorizing lets Kingdom see the installations you already
-                      have. You can install the App on more accounts in the next
-                      step.
-                    </p>
-                    <p
-                      className="flex items-center justify-center gap-2 text-xs text-foreground-muted"
-                      aria-live="polite"
-                    >
-                      <Loader2 className="h-3.5 w-3.5 animate-spin text-gold" />
-                      Waiting safely for GitHub authorization
-                    </p>
-                  </div>
-                ) : sharedFlow.stage === "needs_installation" ? (
-                  <div className="space-y-4 text-center">
-                    <div className="rounded-xl border border-border bg-background/50 p-6">
-                      <h3 className="font-display text-lg font-semibold">
-                        Choose Repositories on GitHub
-                      </h3>
-                      <p className="mt-2 text-sm text-foreground-muted">
-                        {sharedReconnectID
-                          ? "Install or restore the App on every account this connection already covers, then refresh the list. Use Change on the saved connection if the covered accounts should change."
-                          : "Install the App for an account and select the repositories Kingdom should be able to discover."}
-                      </p>
-                    </div>
-                    <a
-                      className={buttonVariants({ className: "w-full" })}
-                      href={sharedFlow.install_url}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Choose Repositories
-                      <ExternalLink className="h-4 w-4" />
-                    </a>
-                    <Button
-                      variant="outline"
-                      className="w-full"
-                      disabled={!!operation}
-                      onClick={() => void refreshCandidates()}
-                    >
-                      {operation === "shared-refresh" && (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      )}
-                      I Installed the App
-                    </Button>
-                  </div>
-                ) : sharedFlow.stage === "selecting_installation" ? (
-                  <div className="space-y-4">
-                    <div>
-                      <h3 className="font-display text-lg font-semibold">
-                        {sharedReconnectID ? "Saved Installations" : "Choose Installations"}
-                      </h3>
-                      <p className="mt-1 text-sm text-foreground-muted">
-                        {sharedReconnectID
-                          ? "Reconnect reauthorizes the complete saved set. To add or remove accounts, close this setup and use Change on the connection."
-                          : "One connection is created covering every account you tick, and it reads every repository those installations grant."}
-                      </p>
-                    </div>
-                    <InstallationPicker
-                      name="installation"
-                      candidates={sharedReconnectID ? reconnectCandidates : sharedFlow.candidates}
-                      selected={selectedInstallations}
-                      disabled={!!sharedReconnectID || operation === "shared-finalize"}
-                      managementLinksDisabled={operation === "shared-finalize"}
-                      onToggle={(installationID: string) =>
-                        setSelectedInstallations((existing) => {
-                          const next = new Set(existing);
-                          if (next.has(installationID)) next.delete(installationID);
-                          else next.add(installationID);
-                          return next;
-                        })
-                      }
-                    />
-                    <p className="text-xs text-foreground-muted" aria-live="polite">
+                  <p
+                    className="flex items-center justify-center gap-2 text-xs text-foreground-muted"
+                    aria-live="polite"
+                  >
+                    <Loader2 className="h-3.5 w-3.5 animate-spin text-accent" />
+                    Waiting safely for GitHub authorization
+                  </p>
+                </div>
+              ) : sharedFlow.stage === "needs_installation" ? (
+                <div className="space-y-4 text-center">
+                  <div className="rounded-xl border border-border bg-background/50 p-6">
+                    <h3 className="font-display text-lg font-semibold">
+                      Choose Repositories on GitHub
+                    </h3>
+                    <p className="mt-2 text-sm text-foreground-muted">
                       {sharedReconnectID
-                        ? `${selectedInstallations.size} saved`
-                        : `${selectedInstallations.size} selected`}
+                        ? "Install or restore the App on every account this connection already covers, then refresh the list. Use Change on the saved connection if the covered accounts should change."
+                        : "Install the App for an account and select the repositories Kingdom should be able to discover."}
                     </p>
-                    {sharedReconnectID && missingReconnectInstallations.length > 0 ? (
-                      <div role="alert" className="rounded-xl border border-amber-400/40 bg-amber-400/10 p-4 text-sm text-amber-200">
-                        <p className="font-medium">Some Saved Installations Are Missing</p>
-                        <p className="mt-1 text-xs leading-5">
-                          Restore App installation and user access for {missingReconnectInstallations.map((installation) => `@${installation.account_login ?? installation.installation_id}`).join(", ")}, then refresh. Use Change only if these accounts should no longer belong to the connection.
-                        </p>
-                      </div>
-                    ) : null}
-                    <Button
-                      className="w-full"
-                      disabled={
-                        selectedInstallations.size === 0 || missingReconnectInstallations.length > 0 || !!operation
-                      }
-                      onClick={() => void finalizeShared()}
-                    >
-                      {operation === "shared-finalize" && (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      )}
-                      {sharedReconnectID
-                        ? "Reconnect Connection"
-                        : "Connect Selected Installations"}
-                    </Button>
-                    <div className="rounded-xl border border-border bg-background/40 p-4">
-                      <p className="text-sm text-foreground-muted">
-                        {sharedReconnectID
-                          ? "Missing a saved account? Restore the App installation and your access on GitHub, then refresh. The saved set cannot be edited during reconnect."
-                          : "Missing an account, or need different repositories? Install the App on another account or change which repositories it can see, then refresh this list."}
-                      </p>
-                      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
-                        {operation === "shared-finalize" ? (
-                          <span
-                            aria-disabled="true"
-                            className={buttonVariants({
-                              variant: "outline",
-                              className: "flex-1 opacity-50",
-                            })}
-                          >
-                            Install on Another Account
-                            <ExternalLink className="h-4 w-4" />
-                          </span>
-                        ) : (
-                          <a
-                            className={buttonVariants({
-                              variant: "outline",
-                              className: "flex-1",
-                            })}
-                            href={sharedFlow.install_url}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Install on Another Account
-                            <ExternalLink className="h-4 w-4" />
-                          </a>
-                        )}
-                        <Button
-                          variant="outline"
-                          className="flex-1"
-                          disabled={!!operation}
-                          onClick={() => void refreshCandidates()}
-                        >
-                          {operation === "shared-refresh" && (
-                            <Loader2 className="h-4 w-4 animate-spin" />
-                          )}
-                          Refresh Installations
-                        </Button>
-                      </div>
-                    </div>
                   </div>
-                ) : (
-                  <div className="rounded-xl border border-border p-6 text-center">
-                    <p className="font-medium">
-                      {sharedFlow.failure ||
-                        (sharedFlow.stage === "access_denied"
-                          ? "GitHub authorization was declined."
-                          : sharedFlow.stage === "expired"
-                            ? "The GitHub code expired."
-                            : "Finishing your GitHub connection…")}
-                    </p>
-                    {["failed", "access_denied", "expired"].includes(
-                      sharedFlow.stage,
-                    ) && (
-                      <Button
-                        className="mt-4"
-                        onClick={() =>
-                          void startShared(sharedReconnectID || undefined)
-                        }
-                      >
-                        Start Again
-                      </Button>
+                  <a
+                    className={buttonVariants({ className: "w-full" })}
+                    href={sharedFlow.install_url}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Choose Repositories
+                    <ExternalLink className="h-4 w-4" />
+                  </a>
+                  <Button
+                    variant="outline"
+                    className="w-full"
+                    disabled={!!operation}
+                    onClick={() => void refreshCandidates()}
+                  >
+                    {operation === "shared-refresh" && (
+                      <Loader2 className="h-4 w-4 animate-spin" />
                     )}
+                    I Installed the App
+                  </Button>
+                </div>
+              ) : sharedFlow.stage === "selecting_installation" ? (
+                <div className="space-y-4">
+                  <div>
+                    <h3 className="font-display text-lg font-semibold">
+                      {sharedReconnectID
+                        ? "Saved Installations"
+                        : "Choose Installations"}
+                    </h3>
+                    <p className="mt-1 text-sm text-foreground-muted">
+                      {sharedReconnectID
+                        ? "Reconnect reauthorizes the complete saved set. To add or remove accounts, close this setup and use Change on the connection."
+                        : "One connection is created covering every account you tick, and it reads every repository those installations grant."}
+                    </p>
                   </div>
-                )}
-              </div>
+                  <InstallationPicker
+                    name="installation"
+                    candidates={
+                      sharedReconnectID
+                        ? reconnectCandidates
+                        : sharedFlow.candidates
+                    }
+                    selected={selectedInstallations}
+                    disabled={
+                      !!sharedReconnectID || operation === "shared-finalize"
+                    }
+                    managementLinksDisabled={operation === "shared-finalize"}
+                    onToggle={(installationID: string) =>
+                      setSelectedInstallations((existing) => {
+                        const next = new Set(existing);
+                        if (next.has(installationID))
+                          next.delete(installationID);
+                        else next.add(installationID);
+                        return next;
+                      })
+                    }
+                  />
+                  <p
+                    className="text-xs text-foreground-muted"
+                    aria-live="polite"
+                  >
+                    {sharedReconnectID
+                      ? `${selectedInstallations.size} saved`
+                      : `${selectedInstallations.size} selected`}
+                  </p>
+                  {sharedReconnectID &&
+                  missingReconnectInstallations.length > 0 ? (
+                    <div
+                      role="alert"
+                      className="rounded-xl border border-status-blocked/40 bg-status-blocked/10 p-4 text-sm text-status-blocked"
+                    >
+                      <p className="font-medium">
+                        Some Saved Installations Are Missing
+                      </p>
+                      <p className="mt-1 text-xs leading-5">
+                        Restore App installation and user access for{" "}
+                        {missingReconnectInstallations
+                          .map(
+                            (installation) =>
+                              `@${installation.account_login ?? installation.installation_id}`,
+                          )
+                          .join(", ")}
+                        , then refresh. Use Change only if these accounts should
+                        no longer belong to the connection.
+                      </p>
+                    </div>
+                  ) : null}
+                  <Button
+                    className="w-full"
+                    disabled={
+                      selectedInstallations.size === 0 ||
+                      missingReconnectInstallations.length > 0 ||
+                      !!operation
+                    }
+                    onClick={() => void finalizeShared()}
+                  >
+                    {operation === "shared-finalize" && (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    )}
+                    {sharedReconnectID
+                      ? "Reconnect Connection"
+                      : "Connect Selected Installations"}
+                  </Button>
+                  <div className="rounded-xl border border-border bg-background/40 p-4">
+                    <p className="text-sm text-foreground-muted">
+                      {sharedReconnectID
+                        ? "Missing a saved account? Restore the App installation and your access on GitHub, then refresh. The saved set cannot be edited during reconnect."
+                        : "Missing an account, or need different repositories? Install the App on another account or change which repositories it can see, then refresh this list."}
+                    </p>
+                    <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+                      {operation === "shared-finalize" ? (
+                        <span
+                          aria-disabled="true"
+                          className={buttonVariants({
+                            variant: "outline",
+                            className: "flex-1 opacity-50",
+                          })}
+                        >
+                          Install on Another Account
+                          <ExternalLink className="h-4 w-4" />
+                        </span>
+                      ) : (
+                        <a
+                          className={buttonVariants({
+                            variant: "outline",
+                            className: "flex-1",
+                          })}
+                          href={sharedFlow.install_url}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Install on Another Account
+                          <ExternalLink className="h-4 w-4" />
+                        </a>
+                      )}
+                      <Button
+                        variant="outline"
+                        className="flex-1"
+                        disabled={!!operation}
+                        onClick={() => void refreshCandidates()}
+                      >
+                        {operation === "shared-refresh" && (
+                          <Loader2 className="h-4 w-4 animate-spin" />
+                        )}
+                        Refresh Installations
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-xl border border-border p-6 text-center">
+                  <p className="font-medium">
+                    {sharedFlow.failure ||
+                      (sharedFlow.stage === "access_denied"
+                        ? "GitHub authorization was declined."
+                        : sharedFlow.stage === "expired"
+                          ? "The GitHub code expired."
+                          : "Finishing your GitHub connection…")}
+                  </p>
+                  {["failed", "access_denied", "expired"].includes(
+                    sharedFlow.stage,
+                  ) && (
+                    <Button
+                      className="mt-4"
+                      onClick={() =>
+                        void startShared(sharedReconnectID || undefined)
+                      }
+                    >
+                      Start Again
+                    </Button>
+                  )}
+                </div>
+              )}
+            </div>
           </Modal>
         ) : null}
 
@@ -2017,69 +2280,69 @@ export function ConnectionsPage() {
             description="Create and own a dedicated App for this Kingdom workspace."
             footer={
               <ModalFooter>
-                  {manifestFlowLive ? (
-                    <Button
-                      variant="outline"
-                      disabled={!!operation}
-                      onClick={() => void abandonManifest()}
-                    >
-                      {operation === "flow-discard" ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      ) : null}
-                      Abandon Setup
-                    </Button>
-                  ) : null}
+                {manifestFlowLive ? (
+                  <Button
+                    variant="outline"
+                    disabled={!!operation}
+                    onClick={() => void abandonManifest()}
+                  >
+                    {operation === "flow-discard" ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : null}
+                    Abandon Setup
+                  </Button>
+                ) : null}
                 <Button variant="ghost" onClick={() => setManifestOpen(false)}>
                   Close
                 </Button>
               </ModalFooter>
             }
           >
-              <div className="space-y-4">
-                <ManifestSetupStatus
-                  flow={flow}
-                  error={manifestError}
-                  failureStage={manifestFailureStage}
-                  recovery={manifestRecovery}
-                  busy={operation.startsWith("flow-")}
-                  onRecover={recoverManifest}
-                />
-                <ManifestHandoffAction
-                  flow={flow}
-                  url={manifestHandoffURL}
-                  busy={!!operation}
-                  onBlocked={reportSetupWindowBlocked}
-                />
-                <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-background/70 p-1">
-                  {(["personal", "organization"] as const).map((owner) => (
-                    <button
-                      key={owner}
-                      type="button"
-                      className={`rounded-md px-3 py-2 text-xs font-medium capitalize ${ownerType === owner ? "bg-gold text-primary-foreground" : "text-foreground-muted"}`}
-                      onClick={() => setOwnerType(owner)}
-                    >
-                      {owner}
-                    </button>
-                  ))}
-                </div>
-                {ownerType === "organization" && (
-                  <label className="block text-xs font-medium text-foreground-muted">
-                    Organization Login
-                    <input
-                      className={cn(fieldClass, "mt-1")}
-                      value={organization}
-                      onChange={(event) => setOrganization(event.target.value)}
-                    />
-                  </label>
-                )}
-                <Button
-                  className="w-full"
-                  disabled={startManifestDisabled}
-                  onClick={() => void startManifest()}
-                >
-                  Create Private App on GitHub
-                </Button>
+            <div className="space-y-4">
+              <ManifestSetupStatus
+                flow={flow}
+                error={manifestError}
+                failureStage={manifestFailureStage}
+                recovery={manifestRecovery}
+                busy={operation.startsWith("flow-")}
+                onRecover={recoverManifest}
+              />
+              <ManifestHandoffAction
+                flow={flow}
+                url={manifestHandoffURL}
+                busy={!!operation}
+                onBlocked={reportSetupWindowBlocked}
+              />
+              <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-background/70 p-1">
+                {(["personal", "organization"] as const).map((owner) => (
+                  <button
+                    key={owner}
+                    type="button"
+                    className={`rounded-md px-3 py-2 text-xs font-medium capitalize ${ownerType === owner ? "bg-accent text-primary-foreground" : "text-foreground-muted"}`}
+                    onClick={() => setOwnerType(owner)}
+                  >
+                    {owner}
+                  </button>
+                ))}
               </div>
+              {ownerType === "organization" && (
+                <label className="block text-xs font-medium text-foreground-muted">
+                  Organization Login
+                  <input data-ui-field=""
+                    className={cn(fieldClass, "mt-1")}
+                    value={organization}
+                    onChange={(event) => setOrganization(event.target.value)}
+                  />
+                </label>
+              )}
+              <Button
+                className="w-full"
+                disabled={startManifestDisabled}
+                onClick={() => void startManifest()}
+              >
+                Create Private App on GitHub
+              </Button>
+            </div>
           </Modal>
         ) : null}
 
@@ -2105,47 +2368,51 @@ export function ConnectionsPage() {
               </ModalFooter>
             }
           >
-              {manualSaved ? (
-                <div className="space-y-4">
-                  <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
-                    <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" />
-                    <div>
-                      <p className="text-sm font-medium">Metadata saved</p>
-                      <p className="text-xs text-foreground-muted">
-                        The connection stays unavailable until its key is
-                        provisioned and Check succeeds.
-                      </p>
-                    </div>
-                  </div>
-                  <div className="rounded-lg border border-border bg-background p-3">
-                    <code className="block overflow-x-auto text-xs">
-                      kd connections github key provision --connection-id{" "}
-                      {manualSaved.connection_id} --from ./private-key.pem
-                    </code>
-                    <p className="mt-2 text-xs text-foreground-muted">
-                      Then return here and run Check.
+            <ErrorNotice error={error} />
+            {manualSaved ? (
+              <div className="space-y-4">
+                <div className="flex items-start gap-3 rounded-lg border border-success/30 bg-success/10 p-3">
+                  <CheckCircle2 className="mt-0.5 h-4 w-4 text-success" />
+                  <div>
+                    <p className="text-sm font-medium">Metadata saved</p>
+                    <p className="text-xs text-foreground-muted">
+                      The connection stays unavailable until its key is
+                      provisioned and Check succeeds.
                     </p>
                   </div>
                 </div>
-              ) : (
-                <form className="space-y-4" onSubmit={createManual}>
-                  <MetadataFields value={manualForm} onChange={setManualForm} disabled={createConnection.hasPendingRecovery} />
-                  <p className={MODAL_BODY_TEXT_CLASS}>
-                    The App must have exactly Metadata read and Issues read, no
-                    events, and no additional permissions. Private keys never
-                    enter this browser form.
+                <div className="rounded-lg border border-border bg-background p-3">
+                  <code className="block overflow-x-auto text-xs">
+                    kd connections github key provision --connection-id{" "}
+                    {manualSaved.connection_id} --from ./private-key.pem
+                  </code>
+                  <p className="mt-2 text-xs text-foreground-muted">
+                    Then return here and run Check.
                   </p>
-                  <Button
-                    type="submit"
-                    disabled={operation === "manual-create"}
-                  >
-                    {operation === "manual-create" && (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    )}
-                    {createConnection.hasPendingRecovery ? "Retry Save Connection Metadata" : "Save Connection Metadata"}
-                  </Button>
-                </form>
-              )}
+                </div>
+              </div>
+            ) : (
+              <form className="space-y-4" onSubmit={createManual}>
+                <MetadataFields
+                  value={manualForm}
+                  onChange={setManualForm}
+                  disabled={createConnection.hasPendingRecovery}
+                />
+                <p className={MODAL_BODY_TEXT_CLASS}>
+                  The App must have exactly Metadata read and Issues read, no
+                  events, and no additional permissions. Private keys never
+                  enter this browser form.
+                </p>
+                <Button type="submit" disabled={operation === "manual-create"}>
+                  {operation === "manual-create" && (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  )}
+                  {createConnection.hasPendingRecovery
+                    ? "Retry Save Connection Metadata"
+                    : "Save Connection Metadata"}
+                </Button>
+              </form>
+            )}
           </Modal>
         ) : null}
 
@@ -2153,7 +2420,8 @@ export function ConnectionsPage() {
           <ConfirmDialog
             open
             onClose={() => {
-              if (!removeConnection.hasPendingRecovery) setPendingRemoval(undefined);
+              if (!removeConnection.hasPendingRecovery)
+                setPendingRemoval(undefined);
             }}
             onConfirm={() => void mutate(pendingRemoval, "remove")}
             title={pendingRemoval.display_name}
@@ -2162,22 +2430,26 @@ export function ConnectionsPage() {
             confirmLabel={
               operation === `${pendingRemoval.connection_id}:remove`
                 ? "Removing..."
-                : removeConnection.hasPendingRecovery ? "Retry Remove Connection" : "Remove Connection"
+                : removeConnection.hasPendingRecovery
+                  ? "Retry Remove Connection"
+                  : "Remove Connection"
             }
-            confirmDisabled={operation === `${pendingRemoval.connection_id}:remove`}
+            confirmDisabled={
+              operation === `${pendingRemoval.connection_id}:remove`
+            }
             dismissDisabled={removeConnection.hasPendingRecovery}
           >
             <div className="space-y-3">
               <p className={MODAL_BODY_TEXT_CLASS}>
-                Historical provenance remains available. This does not
-                uninstall or revoke the GitHub App; use GitHub as the external
-                kill switch.
+                Historical provenance remains available. This does not uninstall
+                or revoke the GitHub App; use GitHub as the external kill
+                switch.
               </p>
               <ErrorNotice error={removalError} />
             </div>
           </ConfirmDialog>
         ) : null}
-      </PageContent>
-    </div>
+      </div>
+    </WorkspacePage>
   );
 }

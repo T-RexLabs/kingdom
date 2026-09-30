@@ -106,7 +106,7 @@ describe("IssuePicker", () => {
     }));
     const onSelect = vi.fn();
     const user = userEvent.setup();
-    renderPicker(<IssuePicker onSelect={onSelect} actionLabel="Prefill Decree" />);
+    renderPicker(<IssuePicker onSelect={onSelect} actionLabel="Prefill WorkOrder" />);
 
     await user.click(screen.getByRole("button", { name: /import from github issue/i }));
     await chooseOption(user, "Connection", "App");
@@ -119,7 +119,7 @@ describe("IssuePicker", () => {
     await user.click(screen.getByRole("switch", { name: /include comments/i }));
     await waitFor(() => expect(requests.some((url) => url.includes("/issues/2/preview") && url.includes("include_comments=true") )).toBe(true));
     expect(await screen.findByText(/partial search results/i)).toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Prefill Decree" }));
+    await user.click(screen.getByRole("button", { name: "Prefill WorkOrder" }));
     expect(onSelect).toHaveBeenCalledWith(expect.objectContaining({ intake: expect.objectContaining({ repository_id: "repo-2", issue_number: 2, include_comments: true }) }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Import from GitHub Issues" })).not.toBeInTheDocument());
   });
@@ -597,7 +597,7 @@ describe("IssuePicker", () => {
     // The shell commits to a definite height rather than shrink-wrapping, so
     // mounting the repository field, the issue list, the preview pane and the
     // comment preview cannot resize or re-centre the dialog.
-    const panel = screen.getByTestId("issue-picker-layout").closest("div[class*='rounded-2xl']");
+    const panel = screen.getByTestId("issue-picker-layout").closest(".theme-overlay");
     expect(panel?.className).toContain("h-[min(85vh,44rem)]");
     expect(panel?.className).not.toContain("max-h-[85vh]");
 

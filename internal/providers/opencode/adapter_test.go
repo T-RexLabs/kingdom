@@ -210,7 +210,7 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 		RunID:          "run_1",
 		NodeRunID:      "nr_doc",
 		WorkspacePath:  docWorkspace,
-		Prompt:         "RoleID: king",
+		Prompt:         "RoleID: governance",
 		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
@@ -228,7 +228,7 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 		RunID:          "run_1",
 		NodeRunID:      "nr_builder",
 		WorkspacePath:  builderWorkspace,
-		Prompt:         "RoleID: builder-berserker",
+		Prompt:         "RoleID: builder",
 		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {

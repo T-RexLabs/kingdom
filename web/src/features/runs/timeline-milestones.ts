@@ -9,7 +9,6 @@ import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline
 const SPECIAL_REASON_LABELS: Record<string, string> = {
   execution_review_cap_auto_succeeded: "Review Cap Auto-Succeeded",
   validation_gate_cap_auto_succeeded: "Validation Cap Auto-Succeeded",
-  royal_summary_fallback: "Royal Summary Fallback",
   run_cancelled_by_user: "Run Cancelled by User",
 };
 
@@ -114,12 +113,12 @@ export function buildRawEventLabel(
 	if (event.event_type === "node.state_changed") {
 		const state = typeof payload.state === "string" ? payload.state : "";
 		if (state === "starting") {
-			return { label: `${name || "Node"} launching` };
+			return { label: `${name || "Node"} Launching` };
 		}
 		if (state === "ready") {
-		  return { label: `${name || "Node"} queued` };
+		  return { label: `${name || "Node"} Queued` };
 		}
-    const humanState = state ? state.replace(/_/g, " ") : "updated";
+    const humanState = state ? titleCaseEventFragment(state.replace(/_/g, " ")) : "Updated";
 		return { label: `${name || "Node"} ${humanState}` };
   }
 
@@ -127,22 +126,22 @@ export function buildRawEventLabel(
     const status = typeof payload.status === "string" ? payload.status : "";
     const planState = typeof payload.plan_state === "string" ? payload.plan_state : "";
 
-    if (status === "running") return { label: "Run started" };
+    if (status === "running") return { label: "Run Started" };
     if (status === "failed") {
-      const reason = event.reason_code && !isNoiseReasonCode(event.reason_code)
+      const reason = event.reason_code && !specialReasonLabel(event) && !isNoiseReasonCode(event.reason_code)
         ? event.reason_code.replace(/_/g, " ")
         : undefined;
       return {
-        label: "Run failed",
+        label: "Run Failed",
         detail: reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : undefined,
       };
     }
-	    if (status === "succeeded" || status === "completed") return { label: "Run succeeded" };
-    if (status === "cancelled") return { label: "Run cancelled" };
+	    if (status === "succeeded" || status === "completed") return { label: "Run Succeeded" };
+    if (status === "cancelled") return { label: "Run Cancelled" };
     if (planState) {
-      return { label: `Plan entered ${planState.replace(/_/g, " ")}` };
+      return { label: `Plan Entered ${titleCaseEventFragment(planState.replace(/_/g, " "))}` };
     }
-    return { label: "Run state changed" };
+    return { label: "Run State Changed" };
   }
 
 	if (event.event_type === "attempt.started") {
@@ -150,7 +149,7 @@ export function buildRawEventLabel(
 		const parts: string[] = [];
 		if (attempt > 1) parts.push(`attempt ${attempt}`);
 		return {
-			label: `${name || "Node"} started`,
+			label: `${name || "Node"} Started`,
 			detail: parts.length > 0 ? parts.join(" · ") : undefined,
 		};
 	}
@@ -164,32 +163,32 @@ export function buildRawEventLabel(
 
 	if (event.event_type === "attempt.succeeded") {
 		if (resolvedNodeId) {
-		  return { label: `${name} succeeded` };
+		  return { label: `${name} Succeeded` };
 		}
-		const reason = event.reason_code && !isNoiseReasonCode(event.reason_code)
+		const reason = event.reason_code && !specialReasonLabel(event) && !isNoiseReasonCode(event.reason_code)
 		  ? event.reason_code.replace(/_/g, " ")
 		  : undefined;
-		return { label: "Node succeeded", detail: reason || undefined };
+		return { label: "Node Succeeded", detail: reason || undefined };
 	}
 
 	if (event.event_type === "attempt.failed") {
 		if (isReworkTimelineEvent(event)) {
 			return {
-				label: resolvedNodeId ? `${name} requested rework` : reworkRequestLabel(event.reason_code),
+				label: resolvedNodeId ? `${name} Requested Rework` : titleCaseEventFragment(reworkRequestLabel(event.reason_code)),
 			};
 		}
 		const detail = failureDetailFromEvent(event, executionForEvent(event, lookups));
 		if (resolvedNodeId) {
-		  return { label: `${name} failed`, detail: detail || undefined };
+		  return { label: `${name} Failed`, detail: detail || undefined };
     }
-    return { label: "Node failed", detail: detail || undefined };
+    return { label: "Node Failed", detail: detail || undefined };
   }
 
   if (event.event_type === "attempt.timeout_warning") {
     const elapsedMs = typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : 0;
     const timeoutMs = typeof payload.timeout_ms === "number" ? payload.timeout_ms : 0;
     return {
-      label: `${name || "Node"} approaching timeout`,
+      label: `${name || "Node"} Approaching Timeout`,
       detail: elapsedMs > 0 && timeoutMs > 0
         ? `${Math.round(elapsedMs / 1000)}s / ${Math.round(timeoutMs / 1000)}s`
         : undefined,
@@ -199,7 +198,7 @@ export function buildRawEventLabel(
 	const attemptLabelFragment = attemptEventLabelFragment(event);
 	if (attemptLabelFragment) {
 		return {
-			label: `${name || "Node"} ${attemptLabelFragment}`,
+			label: `${name || "Node"} ${titleCaseEventFragment(attemptLabelFragment)}`,
 		};
 	}
 
@@ -210,23 +209,23 @@ export function buildRawEventLabel(
     switch (communicationType) {
       case "approval_request":
         return {
-          label: name ? `${name} awaiting approval` : "Approval requested",
+          label: name ? `${name} Awaiting Approval` : "Approval Requested",
         };
       case "approval_response":
         return {
-          label: name ? `${name} approval recorded` : "Approval recorded",
+          label: name ? `${name} Approval Recorded` : "Approval Recorded",
         };
       case "instruction_dispatched":
         return {
-				label: `${name || "Node"} instruction sent`,
+				label: `${name || "Node"} Instruction Sent`,
         };
       case "response_received":
         return {
-				label: `${name || "Node"} response received`,
+				label: `${name || "Node"} Response Received`,
         };
       default:
         return {
-				label: name ? `${name} activity recorded` : "Mailbox activity recorded",
+				label: name ? `${name} Activity Recorded` : "Mailbox Activity Recorded",
         };
     }
   }
@@ -235,25 +234,28 @@ export function buildRawEventLabel(
     const decision = typeof payload.decision === "string" ? payload.decision : "";
     const mode = typeof payload.mode === "string" ? payload.mode : "";
     return {
-      label: decision === "rework" ? "Rework requested" : "Approval recorded",
+      label: decision === "rework" ? "Rework Requested" : "Approval Recorded",
       detail: mode || undefined,
     };
   }
 
   if (event.event_type === "escalation.raised") {
-    const reason = event.reason_code && !isNoiseReasonCode(event.reason_code)
+    const reason = event.reason_code && !specialReasonLabel(event) && !isNoiseReasonCode(event.reason_code)
       ? event.reason_code.replace(/_/g, " ")
       : undefined;
     return {
-      label: "Escalation raised",
+      label: "Escalation Raised",
       detail: reason ? reason.charAt(0).toUpperCase() + reason.slice(1) : undefined,
     };
   }
 
-  const fallback = event.event_type
-    .replace(/\./g, " ")
-    .replace(/^(\w)/, (char) => char.toUpperCase());
+  const fallback = titleCaseEventFragment(event.event_type.replace(/[._]/g, " "));
   return { label: name ? `${name} - ${fallback}` : fallback };
+}
+
+// Only application-owned event fragments pass through here, never node names or payload text.
+function titleCaseEventFragment(fragment: string): string {
+  return fragment.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
 }
 
 export function synthesizeMilestones(
@@ -612,19 +614,19 @@ export function synthesizeMilestones(
 	      let label: string;
 	      let status: Milestone["status"];
 	      if (hardFailures > 0 && succeeded > 0) {
-	        label = `${succeeded + failed} background attempts - ${hardFailures} failed`;
+	        label = `${succeeded + failed} Background Attempts - ${hardFailures} Failed`;
 	        status = "failed";
 	      } else if (hardFailures > 0) {
-	        label = `${hardFailures} background attempt${hardFailures > 1 ? "s" : ""} failed`;
+	        label = `${hardFailures} Background Attempt${hardFailures > 1 ? "s" : ""} Failed`;
 	        status = "failed";
 	      } else if (rework > 0 && succeeded > 0) {
-	        label = `${succeeded + rework} background attempts - ${rework} requested rework`;
+	        label = `${succeeded + rework} Background Attempts - ${rework} Requested Rework`;
 	        status = "rework";
 	      } else if (rework > 0) {
-	        label = `${rework} background attempt${rework > 1 ? "s" : ""} requested rework`;
+	        label = `${rework} Background Attempt${rework > 1 ? "s" : ""} Requested Rework`;
 	        status = "rework";
 	      } else {
-	        label = `${succeeded} background completion${succeeded > 1 ? "s" : ""}`;
+	        label = `${succeeded} Background Completion${succeeded > 1 ? "s" : ""}`;
 	        status = "succeeded";
       }
 
@@ -650,14 +652,14 @@ export function synthesizeMilestones(
       next &&
       current.kind === "run_event" &&
       next.kind === "run_event" &&
-      current.label.startsWith("Plan entered") &&
-      next.label === "Run started" &&
+      current.label.startsWith("Plan Entered") &&
+      next.label === "Run Started" &&
       Math.abs(new Date(next.timestamp).getTime() - new Date(current.timestamp).getTime()) < 2000
     ) {
       merged.push({
         ...next,
         id: `merged-${current.id}-${next.id}`,
-        label: "Run started",
+        label: "Run Started",
         detail: current.label,
         events: [...current.events, ...next.events],
       });
@@ -1084,36 +1086,36 @@ function buildRunEventMilestone(
     const planState = typeof payload.plan_state === "string" ? payload.plan_state : "";
 
     if (statusValue === "running") {
-      return { label: "Run started", status: "neutral" };
+      return { label: "Run Started", status: "neutral" };
     }
     if (statusValue === "failed") {
       const reason = event.reason_code ? event.reason_code.replace(/_/g, " ") : undefined;
       const badge = specialReasonLabel(event) || undefined;
       return {
-        label: "Run failed",
+        label: "Run Failed",
         detail: reason && !badge ? reason.charAt(0).toUpperCase() + reason.slice(1) : undefined,
         status: "failed",
         badge,
       };
     }
     if (statusValue === "succeeded" || statusValue === "completed") {
-      return { label: "Run succeeded", status: "succeeded" };
+      return { label: "Run Succeeded", status: "succeeded" };
     }
     if (statusValue === "cancelled") {
       return {
-        label: "Run cancelled",
+        label: "Run Cancelled",
         status: "cancelled",
         badge: specialReasonLabel(event) || undefined,
       };
     }
     if (planState) {
       return {
-        label: `Plan entered ${planState.replace(/_/g, " ")}`,
+        label: `Plan Entered ${titleCaseEventFragment(planState.replace(/_/g, " "))}`,
         status: "neutral",
       };
     }
     return {
-      label: "Run state updated",
+      label: "Run State Updated",
       status: "neutral",
       badge: specialReasonLabel(event) || undefined,
     };

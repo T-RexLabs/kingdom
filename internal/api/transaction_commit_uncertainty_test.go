@@ -313,7 +313,7 @@ func (a *commitOutcomeBlockingPlannerAgent) ContinueTurnStream(ctx context.Conte
 	}
 }
 
-func TestCreateDecreeReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testing.T) {
+func TestCreateWorkOrderReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testing.T) {
 	for _, test := range []struct {
 		name              string
 		durable           bool
@@ -324,12 +324,12 @@ func TestCreateDecreeReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testi
 	}{
 		{name: "durable commit succeeds", durable: true, wantStatus: http.StatusCreated},
 		{name: "durable commit succeeds after request cancellation", durable: true, cancelAfterCommit: true, wantStatus: http.StatusCreated},
-		{name: "absent decree returns failure", wantStatus: http.StatusInternalServerError},
+		{name: "absent work order returns failure", wantStatus: http.StatusInternalServerError},
 		{name: "failed readback remains pending", durable: true, readbackFails: true, wantStatus: http.StatusConflict, wantPendingError: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, db, connector := newAPIServerForCommitOutcomeTest(t)
-			snapshotID := seedCommitOutcomeDecreeSnapshot(t, db)
+			snapshotID := seedCommitOutcomeWorkOrderSnapshot(t, db)
 			firstContext := context.Background()
 			var cancel context.CancelFunc
 			if test.cancelAfterCommit {
@@ -340,20 +340,20 @@ func TestCreateDecreeReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testi
 			if cancel != nil {
 				fault.afterCommit = cancel
 			}
-			connector.failNextCommitAfterExec("INSERT INTO decrees", fault)
+			connector.failNextCommitAfterExec("INSERT INTO work_orders", fault)
 			if test.readbackFails {
-				connector.failNextQuery("SELECT created_at FROM decrees WHERE decree_id = ?")
+				connector.failNextQuery("SELECT created_at FROM work_orders WHERE work_order_id = ?")
 			}
 
-			key := testIdempotencyKey(t, "commit-outcome-decree-"+strings.ReplaceAll(test.name, " ", "-"), time.Now())
+			key := testIdempotencyKey(t, "commit-outcome-work order-"+strings.ReplaceAll(test.name, " ", "-"), time.Now())
 			request := func(ctx context.Context) *httptest.ResponseRecorder {
 				return performCommitOutcomeJSONRequest(t, ctx, server, requestSpec{
 					method:         http.MethodPost,
-					path:           "/api/v1/decrees",
+					path:           "/api/v1/work-orders",
 					idempotencyKey: key,
 					body: map[string]any{
-						"decree_title":                "Commit Outcome Decree",
-						"decree_text":                 "Provenance stays atomic",
+						"work_order_title":            "Commit Outcome WorkOrder",
+						"work_order_text":             "Provenance stays atomic",
 						"external_source_snapshot_id": snapshotID,
 					},
 				})
@@ -366,9 +366,9 @@ func TestCreateDecreeReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testi
 			if test.cancelAfterCommit && firstContext.Err() != context.Canceled {
 				t.Fatalf("request context error=%v, want cancellation after commit", firstContext.Err())
 			}
-			decreeID := assertDecreeCommitOutcome(t, db, first, test.wantPendingError)
+			workOrderID := assertWorkOrderCommitOutcome(t, db, first, test.wantPendingError)
 			if test.wantPendingError {
-				assertCanonicalError(t, first.Body.Bytes(), "idempotency_pending", "api.create_decree", "control_plane", true)
+				assertCanonicalError(t, first.Body.Bytes(), "idempotency_pending", "api.create_work_order", "control_plane", true)
 				assertPendingCommitReservation(t, db, key)
 			} else if test.durable {
 				assertCompletedCommitReservation(t, db, key, first)
@@ -389,7 +389,7 @@ func TestCreateDecreeReconcilesCommitOutcomeAcrossIdempotencyMiddleware(t *testi
 					t.Fatalf("same-key replay status/body differ: first=%d %s second=%d %s", first.Code, first.Body.String(), second.Code, second.Body.String())
 				}
 			}
-			assertDecreeCommitOutcomeRows(t, db, decreeID, snapshotID, test.durable)
+			assertWorkOrderCommitOutcomeRows(t, db, workOrderID, snapshotID, test.durable)
 		})
 	}
 }
@@ -1690,28 +1690,28 @@ func assertPlanningExternalAttachCommitOutcomeRows(t *testing.T, db *sql.DB, pla
 	}
 }
 
-func seedCommitOutcomeDecreeSnapshot(t *testing.T, db *sql.DB) string {
+func seedCommitOutcomeWorkOrderSnapshot(t *testing.T, db *sql.DB) string {
 	t.Helper()
 
 	ctx := context.Background()
 	store := state.NewExternalStore(db)
 	at := "2026-09-01T10:00:00Z"
 	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{
-		ConnectionID: "conn_commit_outcome_decree", CredentialStrategy: "app_private_key", DisplayName: "Commit Outcome",
+		ConnectionID: "conn_commit_outcome_work_order", CredentialStrategy: "app_private_key", DisplayName: "Commit Outcome",
 		AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}},
-		CredentialHandle: "github-app:conn_commit_outcome_decree", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit_commit_outcome_decree_connection",
+		CredentialHandle: "github-app:conn_commit_outcome_work_order", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit_commit_outcome_work_order_connection",
 	})
 	if err != nil {
-		t.Fatalf("create decree provenance connection: %v", err)
+		t.Fatalf("create work order provenance connection: %v", err)
 	}
 	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{
-		SourceID: "source_commit_outcome_decree", SnapshotID: "snapshot_commit_outcome_decree", ConnectionID: connection.ConnectionID,
+		SourceID: "source_commit_outcome_work_order", SnapshotID: "snapshot_commit_outcome_work_order", ConnectionID: connection.ConnectionID,
 		ProviderNativeID: "100", RepositoryNativeID: "200",
 		Issue:             state.NormalizedExternalIssue{Title: "Issue", Body: "Context", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at},
 		ProviderUpdatedAt: at, FetchedAt: at,
 	})
 	if err != nil {
-		t.Fatalf("capture decree provenance snapshot: %v", err)
+		t.Fatalf("capture work order provenance snapshot: %v", err)
 	}
 	return snapshot.SnapshotID
 }
@@ -1753,7 +1753,7 @@ func seedCommitOutcomeRefreshLink(t *testing.T, db *sql.DB, requestedLinkID ...s
 	if len(requestedLinkID) > 0 && strings.TrimSpace(requestedLinkID[0]) != "" {
 		linkID = strings.TrimSpace(requestedLinkID[0])
 	}
-	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{DecreeID: "decree_commit_outcome_refresh", Title: "Refresh", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return linkID }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, state.CreateWorkOrderRequest{WorkOrderID: "work_order_commit_outcome_refresh", Title: "Refresh", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return linkID }, ActorID: "local-operator"}); err != nil {
 		t.Fatalf("create refresh link: %v", err)
 	}
 	return linkID
@@ -1808,45 +1808,45 @@ func seedCommitOutcomePlanningLink(t *testing.T, db *sql.DB) string {
 	return linkID
 }
 
-func assertDecreeCommitOutcome(t *testing.T, db *sql.DB, response *httptest.ResponseRecorder, pending bool) string {
+func assertWorkOrderCommitOutcome(t *testing.T, db *sql.DB, response *httptest.ResponseRecorder, pending bool) string {
 	t.Helper()
 	if response.Code == http.StatusCreated {
-		var result gen.CreateDecreeResult
+		var result gen.CreateWorkOrderResult
 		if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-			t.Fatalf("decode decree result: %v", err)
+			t.Fatalf("decode work order result: %v", err)
 		}
-		return result.DecreeId
+		return result.WorkOrderId
 	}
 	if pending {
 		envelope := decodeCanonicalErrorEnvelope(t, response.Body.Bytes())
-		decreeID, ok := envelope.Error.Details["decree_id"].(string)
-		if !ok || strings.TrimSpace(decreeID) == "" {
-			t.Fatalf("pending decree error omitted safe decree_id: %#v", envelope.Error.Details)
+		workOrderID, ok := envelope.Error.Details["work_order_id"].(string)
+		if !ok || strings.TrimSpace(workOrderID) == "" {
+			t.Fatalf("pending work order error omitted safe work_order_id: %#v", envelope.Error.Details)
 		}
 		var storedID string
-		if err := db.QueryRow(`SELECT decree_id FROM decrees WHERE decree_id = ?`, decreeID).Scan(&storedID); err != nil {
-			t.Fatalf("read durable decree named by pending error: %v", err)
+		if err := db.QueryRow(`SELECT work_order_id FROM work_orders WHERE work_order_id = ?`, workOrderID).Scan(&storedID); err != nil {
+			t.Fatalf("read durable work order named by pending error: %v", err)
 		}
-		return decreeID
+		return workOrderID
 	}
 	return ""
 }
 
-func assertDecreeCommitOutcomeRows(t *testing.T, db *sql.DB, decreeID, snapshotID string, durable bool) {
+func assertWorkOrderCommitOutcomeRows(t *testing.T, db *sql.DB, workOrderID, snapshotID string, durable bool) {
 	t.Helper()
 	want := 0
 	if durable {
 		want = 1
 	}
-	var decrees, links int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_id = ?`, decreeID).Scan(&decrees); err != nil {
-		t.Fatalf("count decree commit outcome rows: %v", err)
+	var workOrders, links int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_id = ?`, workOrderID).Scan(&workOrders); err != nil {
+		t.Fatalf("count work order commit outcome rows: %v", err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='decree' AND target_id=? AND used_snapshot_id=?`, decreeID, snapshotID).Scan(&links); err != nil {
-		t.Fatalf("count decree provenance commit outcome rows: %v", err)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='work_order' AND target_id=? AND used_snapshot_id=?`, workOrderID, snapshotID).Scan(&links); err != nil {
+		t.Fatalf("count work order provenance commit outcome rows: %v", err)
 	}
-	if decrees != want || links != want {
-		t.Fatalf("decree commit outcome rows=%d links=%d, want %d each", decrees, links, want)
+	if workOrders != want || links != want {
+		t.Fatalf("work order commit outcome rows=%d links=%d, want %d each", workOrders, links, want)
 	}
 }
 

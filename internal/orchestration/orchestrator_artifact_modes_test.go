@@ -88,13 +88,13 @@ func TestBuilderArtifactModeOnlyChangesSurviveCanonicalPublication(t *testing.T)
 			if err != nil {
 				t.Fatal(err)
 			}
-			node := nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker"}
+			node := nodeDefinition{NodeID: "implementation", RequiredRole: "builder"}
 			source := loop.builderArtifactSource(node, execution, base.SnapshotID, result.SnapshotID)
 			schemaSet, err := schemas.Load(filepath.Join(repoRoot(t), "contracts", "schemas"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			persisted, err := state.NewWorkerOutputValidator(db, schemaSet).ValidateAndPersist(ctx, state.WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "mode-attempt", ProducerRole: "builder-berserker", WorkspacePath: execution, Artifacts: source, OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"chmod only","payload_json":{},"artifacts":[],"error_reason":null}`), CreatedAt: at})
+			persisted, err := state.NewWorkerOutputValidator(db, schemaSet).ValidateAndPersist(ctx, state.WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "mode-attempt", ProducerRole: "builder", WorkspacePath: execution, Artifacts: source, OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"chmod only","payload_json":{},"artifacts":[],"error_reason":null}`), CreatedAt: at})
 			if err != nil || persisted.ArtifactCount != 1 {
 				t.Fatalf("persist chmod-only diff: %+v %v", persisted, err)
 			}

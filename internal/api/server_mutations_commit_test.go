@@ -47,7 +47,7 @@ func TestServerCreateRunReconcilesCommitOutcomeAfterError(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			server, db, connector := newAPIServerForCommitOutcomeTest(t)
-			decreeID := seedDecree(t, server)
+			workOrderID := seedWorkOrder(t, server)
 			seedWorkflow(t, server, workflow.DefaultWorkflowID)
 
 			ctx := context.Background()
@@ -66,7 +66,7 @@ func TestServerCreateRunReconcilesCommitOutcomeAfterError(t *testing.T) {
 			})
 
 			response := invokeCreateRunHandler(t, server, ctx, map[string]any{
-				"decree_id":       decreeID,
+				"work_order_id":   workOrderID,
 				"publish_mode":    "direct",
 				"model_selection": defaultTestRunModelSelectionBody(),
 			})
@@ -78,7 +78,7 @@ func TestServerCreateRunReconcilesCommitOutcomeAfterError(t *testing.T) {
 			}
 
 			var runCount int
-			if err := db.QueryRow(`SELECT COUNT(*) FROM workflow_runs WHERE decree_id = ?`, decreeID).Scan(&runCount); err != nil {
+			if err := db.QueryRow(`SELECT COUNT(*) FROM workflow_runs WHERE work_order_id = ?`, workOrderID).Scan(&runCount); err != nil {
 				t.Fatalf("count created runs: %v", err)
 			}
 			if runCount != test.wantRunCount {
@@ -90,15 +90,15 @@ func TestServerCreateRunReconcilesCommitOutcomeAfterError(t *testing.T) {
 				if err := json.Unmarshal(response.Body.Bytes(), &run); err != nil {
 					t.Fatalf("decode created run response: %v", err)
 				}
-				if run.RunId == "" || run.DecreeId != decreeID || run.Status != "pending" {
+				if run.RunId == "" || run.WorkOrderId != workOrderID || run.Status != "pending" {
 					t.Fatalf("unexpected created run response: %#v", run)
 				}
-				var storedDecreeID string
-				if err := db.QueryRow(`SELECT decree_id FROM workflow_runs WHERE run_id = ?`, run.RunId).Scan(&storedDecreeID); err != nil {
+				var storedWorkOrderID string
+				if err := db.QueryRow(`SELECT work_order_id FROM workflow_runs WHERE run_id = ?`, run.RunId).Scan(&storedWorkOrderID); err != nil {
 					t.Fatalf("read durable run row: %v", err)
 				}
-				if storedDecreeID != decreeID {
-					t.Fatalf("durable run decree_id=%q, want %q", storedDecreeID, decreeID)
+				if storedWorkOrderID != workOrderID {
+					t.Fatalf("durable run work_order_id=%q, want %q", storedWorkOrderID, workOrderID)
 				}
 			} else {
 				assertErrorCode(t, response.Body.Bytes(), "internal_error")
@@ -109,7 +109,7 @@ func TestServerCreateRunReconcilesCommitOutcomeAfterError(t *testing.T) {
 
 func TestServerCreateRunKeepsReservationPendingWhenCommitOutcomeIsUnknown(t *testing.T) {
 	server, db, connector := newAPIServerForCommitOutcomeTest(t)
-	decreeID := seedDecree(t, server)
+	workOrderID := seedWorkOrder(t, server)
 	seedWorkflow(t, server, workflow.DefaultWorkflowID)
 
 	catalog := &runCreationReconciliationFaultCatalog{connector: connector}
@@ -121,7 +121,7 @@ func TestServerCreateRunKeepsReservationPendingWhenCommitOutcomeIsUnknown(t *tes
 			path:           "/api/v1/runs",
 			idempotencyKey: key,
 			body: map[string]any{
-				"decree_id":       decreeID,
+				"work_order_id":   workOrderID,
 				"publish_mode":    "direct",
 				"model_selection": defaultTestRunModelSelectionBody(),
 			},
@@ -139,14 +139,14 @@ func TestServerCreateRunKeepsReservationPendingWhenCommitOutcomeIsUnknown(t *tes
 		t.Fatalf("expected safe run_id in pending error details, got %#v", firstError.Error.Details)
 	}
 	var durableRunID string
-	if err := db.QueryRow(`SELECT run_id FROM workflow_runs WHERE decree_id = ?`, decreeID).Scan(&durableRunID); err != nil {
+	if err := db.QueryRow(`SELECT run_id FROM workflow_runs WHERE work_order_id = ?`, workOrderID).Scan(&durableRunID); err != nil {
 		t.Fatalf("read durable run ID: %v", err)
 	}
 	if runID != durableRunID {
 		t.Fatalf("pending error run_id=%q, durable run_id=%q", runID, durableRunID)
 	}
 	assertPendingCreateRunReservation(t, db, key)
-	assertCreateRunCount(t, db, decreeID, 1)
+	assertCreateRunCount(t, db, workOrderID, 1)
 
 	second := request()
 	if second.Code != http.StatusConflict {
@@ -154,7 +154,7 @@ func TestServerCreateRunKeepsReservationPendingWhenCommitOutcomeIsUnknown(t *tes
 	}
 	assertCanonicalError(t, second.Body.Bytes(), "idempotency_pending", "idempotency-middleware", "control_plane", true)
 	assertPendingCreateRunReservation(t, db, key)
-	assertCreateRunCount(t, db, decreeID, 1)
+	assertCreateRunCount(t, db, workOrderID, 1)
 	if got := catalog.listCalls.Load(); got != 1 {
 		t.Fatalf("create-run handler model lookup calls=%d, want 1; same-key retry must not reexecute", got)
 	}
@@ -174,15 +174,15 @@ func assertPendingCreateRunReservation(t *testing.T, db *sql.DB, key string) {
 	}
 }
 
-func assertCreateRunCount(t *testing.T, db *sql.DB, decreeID string, want int) {
+func assertCreateRunCount(t *testing.T, db *sql.DB, workOrderID string, want int) {
 	t.Helper()
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM workflow_runs WHERE decree_id = ?`, decreeID).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM workflow_runs WHERE work_order_id = ?`, workOrderID).Scan(&count); err != nil {
 		t.Fatalf("count create-run rows: %v", err)
 	}
 	if count != want {
-		t.Fatalf("run count for decree %q=%d, want %d", decreeID, count, want)
+		t.Fatalf("run count for work order %q=%d, want %d", workOrderID, count, want)
 	}
 }
 
@@ -416,7 +416,7 @@ func normalizeCommitTestQuery(query string) string {
 }
 
 func isRunCreationReconciliationQuery(query string) bool {
-	const reconciliationQuery = "SELECT 1 FROM workflow_runs WHERE run_id = ? AND decree_id = ? LIMIT 1"
+	const reconciliationQuery = "SELECT 1 FROM workflow_runs WHERE run_id = ? AND work_order_id = ? LIMIT 1"
 	return strings.EqualFold(strings.Join(strings.Fields(query), " "), reconciliationQuery)
 }
 

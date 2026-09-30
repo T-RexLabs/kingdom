@@ -4,7 +4,7 @@ The `web/` app is the primary operator interface for Kingdom runtime.
 
 ## What it covers
 
-- Create decrees and start runs in one flow.
+- Create work orders and start runs in one flow.
 - Set run governance behavior (`autonomous_approvals`) and cycle controls.
 - Monitor run status, timeline, mailbox handoffs, node graph, and artifacts.
 - Perform approvals and run control actions from the run detail experience.
@@ -44,5 +44,5 @@ The production build is embedded into the `kd` binary and any locally built `kin
 
 ## Notes
 
-- Web defaults for bounded review/validation cycles follow seeded workflow expectations (`5` each in the decree form) and can be overridden per run.
+- Web defaults for bounded review/validation cycles follow seeded workflow expectations (`5` each in the work order form) and can be overridden per run.
 - API routes are governed by runtime policy. Direct clients use `Authorization: Bearer` with the initialized workspace credential; caller-supplied actor and role headers never grant authority.

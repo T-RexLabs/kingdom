@@ -146,7 +146,7 @@ func TestCanonicalWorktreeArtifactShapeProtectsUnexpectedDirectory(t *testing.T)
 		t.Fatal(err)
 	}
 	// A delete-only artifact has no descendant in the authoritative result.
-	mustExec(t, f.loop.db, `INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,artifact_action,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES ('shape-attempt_artifact_12','run_1','nr_builder_1','shape-attempt','deliverable','delete','unexpected','text/plain','unexpected','',0,'builder-berserker','2026-09-30T00:00:00Z')`)
+	mustExec(t, f.loop.db, `INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,artifact_action,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES ('shape-attempt_artifact_12','run_1','nr_builder_1','shape-attempt','deliverable','delete','unexpected','text/plain','unexpected','',0,'builder','2026-09-30T00:00:00Z')`)
 	if err := os.Mkdir(filepath.Join(f.project, "unexpected"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func newArtifactShapeFixture(t *testing.T) artifactShapeFixture {
 		t.Fatal(err)
 	}
 	loop := &orchestrationLoop{db: db, fsStore: fsStore, validator: state.NewWorkerOutputValidator(db, schemaSet), yoloRoot: project, now: func() time.Time { return time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC) }}
-	node := nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker"}
+	node := nodeDefinition{NodeID: "implementation", RequiredRole: "builder"}
 	attempt := nodeAttempt{NodeID: node.NodeID, NodeRunID: "nr_builder_1", Attempt: 1}
 	return artifactShapeFixture{loop: loop, project: project, workspace: workspace, node: node, attempt: attempt}
 }

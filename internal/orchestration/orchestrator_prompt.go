@@ -20,30 +20,32 @@ import (
 var controlCommandLinePattern = regexp.MustCompile(`(?i)^\s*(ROYAL_VERDICT|VERDICT)\s*:`)
 var controlTokenLiteralPattern = regexp.MustCompile(`(?i)\b(ROYAL_VERDICT|VERDICT)\s*:`)
 
-func (o *orchestrationLoop) decreeTextForRun(ctx context.Context, runID string) (providerexecution.ContentOpener, error) {
-	var decreeID string
+func (o *orchestrationLoop) workOrderTextForRun(ctx context.Context, runID string) (providerexecution.ContentOpener, error) {
+	var workOrderID string
 	err := o.db.QueryRowContext(ctx, `
-SELECT d.decree_id
+SELECT d.work_order_id
 FROM workflow_runs wr
-JOIN decrees d ON d.decree_id = wr.decree_id
-WHERE wr.run_id = ?`, runID).Scan(&decreeID)
+JOIN work_orders d ON d.work_order_id = wr.work_order_id
+WHERE wr.run_id = ?`, runID).Scan(&workOrderID)
 	if err != nil {
 		return nil, err
 	}
-	return func(ctx context.Context) (io.ReadCloser, error) { return state.OpenDecreeText(ctx, o.db, decreeID) }, nil
+	return func(ctx context.Context) (io.ReadCloser, error) {
+		return state.OpenWorkOrderText(ctx, o.db, workOrderID)
+	}, nil
 }
 
-func (o *orchestrationLoop) decreeTitleForRun(ctx context.Context, runID string) (string, error) {
-	var decreeTitle string
+func (o *orchestrationLoop) workOrderTitleForRun(ctx context.Context, runID string) (string, error) {
+	var workOrderTitle string
 	err := o.db.QueryRowContext(ctx, `
-SELECT d.decree_title
+SELECT d.work_order_title
 FROM workflow_runs wr
-JOIN decrees d ON d.decree_id = wr.decree_id
-WHERE wr.run_id = ?`, runID).Scan(&decreeTitle)
+JOIN work_orders d ON d.work_order_id = wr.work_order_id
+WHERE wr.run_id = ?`, runID).Scan(&workOrderTitle)
 	if err != nil {
 		return "", err
 	}
-	return decreeTitle, nil
+	return workOrderTitle, nil
 }
 
 type nodePromptFrame struct{ System, Rules, Assignment, Checks, Evidence string }
@@ -59,7 +61,7 @@ func (o *orchestrationLoop) buildNodePromptFrame(ctx context.Context, runID, nod
 			"- Do not present code changes, delivered files, or test execution as finished work.",
 			"- Resolve unspecified implementation details using repository evidence and, when correctness depends on current external facts, authoritative external sources. State material assumptions.",
 			"- Treat investigation, design, security hardening, implementation, and verification as executable plan work rather than approval gates.",
-			"- Preserve gates required by the decree, runtime policy, or accepted architecture, but do not invent internal ratification. If an unavailable external dependency affects one slice, isolate it and plan all independent work.",
+			"- Preserve gates required by the work order, runtime policy, or accepted architecture, but do not invent internal ratification. If an unavailable external dependency affects one slice, isolate it and plan all independent work.",
 		}, "\n")
 	}
 	responseOnlyConstraints := ""
@@ -74,9 +76,9 @@ func (o *orchestrationLoop) buildNodePromptFrame(ctx context.Context, runID, nod
 	protectedRuntimePaths := ""
 	if classID == workflow.NodeClassDelegatedExecution || classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
 		protectedRuntimePaths = strings.Join([]string{
-			"- Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not decree deliverables.",
-			"- Ignore those paths when checking whether only the intended project files changed, unless the decree explicitly targets them.",
-			"- Never delete, modify, or \"clean up\" those runtime-managed paths as part of decree work or rework.",
+			"- Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not work order deliverables.",
+			"- Ignore those paths when checking whether only the intended project files changed, unless the work order explicitly targets them.",
+			"- Never delete, modify, or \"clean up\" those runtime-managed paths as part of work order work or rework.",
 		}, "\n")
 	}
 	responseContract := nodeResponseContractForClass(classID)
@@ -147,16 +149,16 @@ func currentAssignmentForNodeClass(nodeClass, delegatorRoleID string) string {
 
 func humanizeNodeClass(nodeClass string) string {
 	switch strings.TrimSpace(nodeClass) {
-	case workflow.NodeClassDecreeIntake:
-		return "Decree Intake"
+	case workflow.NodeClassWorkIntake:
+		return "Work Intake"
 	case workflow.NodeClassAdvisorConsultation:
 		return "Advisory Consultation"
 	case workflow.NodeClassAdvisorySynthesis:
 		return "Advisory Synthesis"
 	case workflow.NodeClassPlanDrafting:
 		return "Plan Drafting"
-	case workflow.NodeClassKingPlanDecision:
-		return "King Plan Decision"
+	case workflow.NodeClassPlanDecision:
+		return "Governance Plan Decision"
 	case workflow.NodeClassExecutionKickoff:
 		return "Execution Kickoff"
 	case workflow.NodeClassDelegatedExecution:
@@ -165,8 +167,8 @@ func humanizeNodeClass(nodeClass string) string {
 		return "Execution Review"
 	case workflow.NodeClassValidationGates:
 		return "Validation Gates"
-	case workflow.NodeClassRoyalClosure:
-		return "Royal Closure"
+	case workflow.NodeClassCompletion:
+		return "Completion"
 	default:
 		return humanizePromptIdentifier(nodeClass)
 	}
@@ -293,10 +295,7 @@ func renderRoleTemplateOrFallback(policy rolecomm.Policy, roleID string, extract
 	if extract == nil {
 		return fallback
 	}
-	selected := policy.DefaultRoleTemplate
-	if templateConfig, ok := policy.Roles[strings.TrimSpace(roleID)]; ok {
-		selected = templateConfig
-	}
+	selected := rolecomm.ResolveTemplate(policy, roleID)
 
 	rawTemplate := strings.TrimSpace(extract(selected))
 	if rawTemplate == "" {
@@ -428,7 +427,7 @@ func (o *orchestrationLoop) roleIDForAgent(ctx context.Context, agentID string) 
 	return strings.TrimSpace(roleID)
 }
 
-func (o *orchestrationLoop) allfatherReworkFeedbackForAdvisoryAttempt(ctx context.Context, runID string, attempt int) string {
+func (o *orchestrationLoop) operatorReworkFeedbackForAdvisoryAttempt(ctx context.Context, runID string, attempt int) string {
 	trimmedRunID := strings.TrimSpace(runID)
 	if o == nil || o.db == nil || trimmedRunID == "" || attempt < 1 {
 		return ""
@@ -441,10 +440,10 @@ func (o *orchestrationLoop) allfatherReworkFeedbackForAdvisoryAttempt(ctx contex
 	if feedback == "" {
 		return ""
 	}
-	return fmt.Sprintf("Allfather Rework Feedback:\n%s", feedback)
+	return fmt.Sprintf("Operator Rework Feedback:\n%s", feedback)
 }
 
-func (o *orchestrationLoop) allfatherPlanReworkFeedbackForPlanAttempt(ctx context.Context, runID string, attempt int) string {
+func (o *orchestrationLoop) operatorPlanReworkFeedbackForPlanAttempt(ctx context.Context, runID string, attempt int) string {
 	trimmedRunID := strings.TrimSpace(runID)
 	if o == nil || o.db == nil || trimmedRunID == "" || attempt < 1 {
 		return ""
@@ -457,10 +456,10 @@ func (o *orchestrationLoop) allfatherPlanReworkFeedbackForPlanAttempt(ctx contex
 	if feedback == "" {
 		return ""
 	}
-	return fmt.Sprintf("Allfather Plan Rework Feedback:\n%s", feedback)
+	return fmt.Sprintf("Operator Plan Rework Feedback:\n%s", feedback)
 }
 
-func (o *orchestrationLoop) allfatherFinalReworkFeedbackForPlanAttempt(ctx context.Context, runID string, attempt int) string {
+func (o *orchestrationLoop) operatorFinalReworkFeedbackForPlanAttempt(ctx context.Context, runID string, attempt int) string {
 	trimmedRunID := strings.TrimSpace(runID)
 	if o == nil || o.db == nil || trimmedRunID == "" || attempt < 1 {
 		return ""
@@ -473,7 +472,7 @@ func (o *orchestrationLoop) allfatherFinalReworkFeedbackForPlanAttempt(ctx conte
 	if feedback == "" {
 		return ""
 	}
-	return fmt.Sprintf("Allfather Final Rework Feedback:\n%s", feedback)
+	return fmt.Sprintf("Operator Final Rework Feedback:\n%s", feedback)
 }
 
 func planningSafeInstructionFallback(nodeClass string) string {
@@ -534,13 +533,13 @@ func humanizedFailureActorName(nodeID string) string {
 		return ""
 	}
 	if strings.HasPrefix(trimmed, "execution_review") {
-		return "Reviewer Shieldmaiden"
+		return "Reviewer Reviewer"
 	}
-	if strings.HasPrefix(trimmed, "validation_gates_qa_scout") {
-		return "Intelligence QA Scout"
+	if strings.HasPrefix(trimmed, "quality_validation") {
+		return "Intelligence QA Validator"
 	}
-	if strings.HasPrefix(trimmed, "validation_gates_nightraven") {
-		return "Intelligence Nightraven"
+	if strings.HasPrefix(trimmed, "security_validation") {
+		return "Intelligence Security Validator"
 	}
 	if strings.HasPrefix(trimmed, "validation_gates") {
 		return "Intelligence Validator"
@@ -612,21 +611,21 @@ func defaultDelegatorInstructionForDispatch(nodeID, roleID string) string {
 	}
 	lensGuidance := "Focus on the strongest recommendation, why it follows from your role's lens, and the most important risks and tradeoffs."
 	switch roleLens {
-	case "noble-delegate":
-		lensGuidance = "Focus on whether the decree satisfies the requested behavior, fits the existing architecture and public contracts, and avoids harmful precedent or system drift."
-	case "clergy-delegate":
+	case "architecture-advisor":
+		lensGuidance = "Focus on whether the work order satisfies the requested behavior, fits the existing architecture and public contracts, and avoids harmful precedent or system drift."
+	case "risk-advisor":
 		lensGuidance = "Focus on trust boundaries, abuse resistance, blast radius, recovery posture, and any residual risk that remains after mitigation."
-	case "burgher-delegate":
+	case "systems-advisor":
 		lensGuidance = "Focus on performance under load, scalability as demand grows, resource efficiency, likely bottlenecks, and long-term maintainability."
-	case "peasant-delegate":
+	case "usability-advisor":
 		lensGuidance = "Focus on usability, operator burden, support burden, day-2 friction, and what ordinary users or operators can realistically sustain."
 	}
-	return fmt.Sprintf(`Provide advisory counsel for this decree through the %s lens.
+	return fmt.Sprintf(`Provide advisory counsel for this work order through the %s lens.
 
 - Return advice only. Do not claim implementation work, code edits, or produced artifacts.
 - Keep the response freeform but decision-ready: make a recommendation, explain it through your role's lens, and call out the most important risks and tradeoffs.
 - %s
 - If key evidence is missing, say what uncertainty materially affects the recommendation.
 
-Use the complete decree in the current run context when making your recommendation.`, roleLens, lensGuidance)
+Use the complete work order in the current run context when making your recommendation.`, roleLens, lensGuidance)
 }
