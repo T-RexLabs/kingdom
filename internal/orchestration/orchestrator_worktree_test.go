@@ -62,7 +62,7 @@ func TestEnsureOpenCodeProjectBoundaryShadowsAncestorCheckout(t *testing.T) {
 		t.Fatalf("create stale direct-target Git pointer: %v", err)
 	}
 
-	if err := (&orchestrationLoop{}).ensureOpenCodeProjectBoundary(projectRoot, false); err != nil {
+	if err := (&orchestrationLoop{}).ensureOpenCodeProjectBoundary(context.Background(), projectRoot, false); err != nil {
 		t.Fatalf("ensure direct execution project boundary: %v", err)
 	}
 	marker, err := os.Lstat(filepath.Join(projectRoot, ".git"))
@@ -127,7 +127,7 @@ func TestNestedManagedWorktreeProjectBoundaryKeepsParentGitMetadata(t *testing.T
 	runGit(scopedRoot, "init", "--quiet")
 
 	loop := orchestrationLoop{}
-	if err := loop.ensureOpenCodeProjectBoundary(scopedRoot, true); err != nil {
+	if err := loop.ensureOpenCodeProjectBoundary(context.Background(), scopedRoot, true); err != nil {
 		t.Fatalf("ensure nested managed-worktree project boundary: %v", err)
 	}
 	marker, err := os.Lstat(filepath.Join(scopedRoot, ".git"))
@@ -144,7 +144,7 @@ func TestNestedManagedWorktreeProjectBoundaryKeepsParentGitMetadata(t *testing.T
 	if err := os.WriteFile(filepath.Join(scopedRoot, ".git"), []byte("gitdir: "+unrelatedGitDir+"\n"), 0o600); err != nil {
 		t.Fatalf("replace nested Git metadata pointer: %v", err)
 	}
-	if err := loop.ensureOpenCodeProjectBoundary(scopedRoot, true); err != nil {
+	if err := loop.ensureOpenCodeProjectBoundary(context.Background(), scopedRoot, true); err != nil {
 		t.Fatalf("replace unrelated nested Git metadata pointer: %v", err)
 	}
 	if got := runGit(scopedRoot, "rev-parse", "--absolute-git-dir"); !sameOpenCodeProjectRoot(got, parentGitDir) {
@@ -243,7 +243,7 @@ func TestResponseOnlyDirectWorkspaceIsIsolatedWithoutPersistentTarget(t *testing
 	if workspaceCtx.TrustedSnapshotID == "" {
 		t.Fatal("first workspace-owning attempt has no trusted baseline")
 	}
-	if err := loop.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
+	if err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
 		t.Fatalf("prepare first workspace-owning target: %v", err)
 	}
 	if got, err := os.ReadFile(filepath.Join(workspaceCtx.ExecutionRoot, "README.md")); err != nil || string(got) != "changed during approval\n" {
@@ -476,7 +476,7 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 		t.Fatalf("expected OpenCode project boundary %q, got %q", wantScopedRoot, ctxInfo.ProjectRootBoundary)
 	}
 	workspaceRoot := ctxInfo.ExecutionRoot
-	if err := loop.prepareExecutionWorkspace(workspaceRoot, ctxInfo); err != nil {
+	if err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, ctxInfo); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 	if marker, err := os.Lstat(filepath.Join(workspaceRoot, ".git")); err != nil || !marker.Mode().IsRegular() {
@@ -998,7 +998,7 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 	if err := os.WriteFile(filepath.Join(workspaceRoot, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", worktreeName)+"\n"), 0o600); err != nil {
 		t.Fatalf("create linked-worktree marker for artifact workspace: %v", err)
 	}
-	if err := rt.orchestrator.prepareExecutionWorkspace(workspaceRoot, ctxInfo); err != nil {
+	if err := rt.orchestrator.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, ctxInfo); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(workspaceRoot, "docs", "upgrade-notes.md"), []byte("updated notes\n"), 0o644); err != nil {
@@ -1108,6 +1108,9 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 	}
 
 	loop := orchestrationLoop{db: db, yoloRoot: projectRoot, publishMode: PublishModeGitWorktree, gitRunner: fakeRunner, runWorktrees: workspace.NewRunWorktreeStore(db), now: time.Now}
+	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'deliverables/index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'king', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts WHERE artifact_id = 'artifact-1'`)
+	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, x'68656c6c6f')`)
 	if err := loop.publishArtifactsToProjectRoot(context.Background(), workspaceRoot, runID, []artifactOutputRecord{{ArtifactID: "artifact-1", ArtifactKind: "deliverable", RelativePath: "deliverables/index.html", ProducerRole: "builder-berserker", NodeID: "delegated_execution_berserker", Attempt: 1}}); err != nil {
 		t.Fatalf("publish to git worktree: %v", err)
 	}

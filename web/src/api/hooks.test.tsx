@@ -3,6 +3,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { plannerKeys } from "@/features/decrees/planner-query-keys";
+import { applyPlanningSessionFields, applyGeneratedPlanningSessionTitleIfPlaceholder, compareAndSwapPlanningSessionTitle } from "@/features/decrees/planner-session-cache";
 import {
   SUPERSEDED,
   useCancelRun,
@@ -30,6 +31,9 @@ import {
   useRuns,
   useTimeline,
   usePlanningOperation,
+  usePlanningSessions,
+  usePlanningContextEntries,
+  useRunPlanReviews,
   useUpdatePlanningSessionTitle,
   type PlanningSessionDetail,
 } from "./hooks";
@@ -111,6 +115,81 @@ afterEach(() => {
   vi.useRealTimers();
   focusManager.setFocused(undefined);
   qc.clear();
+});
+
+describe("cursor history queries", () => {
+  it("loads planning sessions beyond 200 and patches titles on older cached pages", async () => {
+    const items = Array.from({ length: 245 }, (_, index) => buildDetail({ planning_session_id: `ps_${index}`, title: `Session ${index}`, title_state: "placeholder" }));
+    apiFetchMock
+      .mockResolvedValueOnce({ items: items.slice(0, 100), next_cursor: "page-2" })
+      .mockResolvedValueOnce({ items: items.slice(100, 200), next_cursor: "page-3" })
+      .mockResolvedValueOnce({ items: items.slice(200) });
+    const { result } = renderHook(() => usePlanningSessions(), { wrapper: makeWrapper(qc) });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(100));
+    await act(async () => { await result.current.fetchNextPage(); });
+    await act(async () => { await result.current.fetchNextPage(); });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(245));
+    expect(result.current.hasNextPage).toBe(false);
+    expect(apiFetchMock).toHaveBeenNthCalledWith(3, "/planning-sessions", expect.objectContaining({ params: { limit: 100, cursor: "page-3" } }));
+    act(() => applyGeneratedPlanningSessionTitleIfPlaceholder(qc, "ps_244", "Generated"));
+    await waitFor(() => expect(result.current.data?.items[244].title).toBe("Generated"));
+    act(() => applyPlanningSessionFields(qc, "ps_244", { title: "Custom", title_state: "custom" }));
+    await waitFor(() => expect(result.current.data?.items[244].title).toBe("Custom"));
+    act(() => compareAndSwapPlanningSessionTitle(qc, "ps_244", "Custom", "custom", "Generated", "generated"));
+    await waitFor(() => expect(result.current.data?.items[244].title).toBe("Generated"));
+  });
+
+  it("loads mailbox history beyond 200 and starts a fresh cursor for changed filters", async () => {
+    const items = Array.from({ length: 245 }, (_, index) => ({ message_id: `message-${index}` }));
+    apiFetchMock
+      .mockResolvedValueOnce({ run_id: "run-1", items: items.slice(0, 100), next_cursor: "older-1" })
+      .mockResolvedValueOnce({ run_id: "run-1", items: items.slice(100, 200), next_cursor: "older-2" })
+      .mockResolvedValueOnce({ run_id: "run-1", items: [items[199], ...items.slice(200)] })
+      .mockResolvedValueOnce({ run_id: "run-1", items: [] });
+    const { result, rerender } = renderHook(({ communicationType }) => useMailbox("run-1", { communicationType }), {
+      wrapper: makeWrapper(qc), initialProps: { communicationType: "" },
+    });
+    await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+    await act(async () => { await result.current.fetchNextPage(); });
+    await act(async () => { await result.current.fetchNextPage(); });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(245));
+    expect(result.current.hasNextPage).toBe(false);
+    rerender({ communicationType: "response_received" });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(0));
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/runs/run-1/mailbox/messages", expect.objectContaining({
+      params: { limit: 100, cursor: undefined, communication_type: "response_received" },
+    }));
+  });
+
+  it("loads all plan reviews beyond 100", async () => {
+    const items = Array.from({ length: 125 }, (_, index) => ({ plan_review_id: `review-${index}` }));
+    apiFetchMock
+      .mockResolvedValueOnce({ run_id: "run-1", items: items.slice(0, 50), next_cursor: "review-2" })
+      .mockResolvedValueOnce({ run_id: "run-1", items: items.slice(50, 100), next_cursor: "review-3" })
+      .mockResolvedValueOnce({ run_id: "run-1", items: items.slice(100) });
+    const { result } = renderHook(() => useRunPlanReviews("run-1"), { wrapper: makeWrapper(qc) });
+    await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+    await act(async () => { await result.current.fetchNextPage(); });
+    await act(async () => { await result.current.fetchNextPage(); });
+    await waitFor(() => expect(result.current.data?.pages.flatMap((page) => page.items)).toHaveLength(125));
+    expect(result.current.hasNextPage).toBe(false);
+  });
+
+  it("keeps context entry pages scoped to snapshot and kind", async () => {
+    apiFetchMock
+      .mockResolvedValueOnce({ items: [{ path: "first" }], next_cursor: "entry-cursor" })
+      .mockResolvedValueOnce({ items: [{ path: "last" }] })
+      .mockResolvedValueOnce({ items: [{ path: "excluded" }] });
+    const { result, rerender } = renderHook(({ kind }: { kind: "included" | "excluded" }) => usePlanningContextEntries("ps_1", "snapshot-1", kind), {
+      wrapper: makeWrapper(qc), initialProps: { kind: "included" },
+    });
+    await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+    await act(async () => { await result.current.fetchNextPage(); });
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/planning-sessions/ps_1/context/snapshot-1/entries", expect.objectContaining({ params: { kind: "included", limit: 100, cursor: "entry-cursor" } }));
+    rerender({ kind: "excluded" });
+    await waitFor(() => expect(result.current.data?.pages[0].items[0].path).toBe("excluded"));
+    expect(apiFetchMock).toHaveBeenLastCalledWith("/planning-sessions/ps_1/context/snapshot-1/entries", expect.objectContaining({ params: { kind: "excluded", limit: 100, cursor: undefined } }));
+  });
 });
 
 describe("usePlanningOperation polling", () => {

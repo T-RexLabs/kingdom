@@ -1,4 +1,5 @@
-import type { QueryClient } from "@tanstack/react-query";
+import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import { mapHistoryPages } from "@/api/history-pages";
 import type { PlanningSessionDetail, PlanningSessionListResponse } from "@/api/hooks";
 import { plannerKeys } from "./planner-query-keys";
 
@@ -69,9 +70,9 @@ export function applyPlanningSessionFields(
   }
   if (Object.keys(listFields).length === 0) return;
 
-  qc.setQueriesData<PlanningSessionListResponse>(
+  qc.setQueriesData<InfiniteData<PlanningSessionListResponse>>(
     { queryKey: plannerKeys.listPrefix(), exact: false },
-    (current) => patchListItem(current, sessionId, listFields),
+    (current) => mapHistoryPages(current, (page) => patchListItem(page, sessionId, listFields)),
   );
 }
 
@@ -93,10 +94,9 @@ export function applyGeneratedPlanningSessionTitleIfPlaceholder(
     return { ...current, ...generatedListFields };
   });
 
-  qc.setQueriesData<PlanningSessionListResponse>(
+  qc.setQueriesData<InfiniteData<PlanningSessionListResponse>>(
     { queryKey: plannerKeys.listPrefix(), exact: false },
-    (current) => {
-      if (!current) return current;
+    (data) => mapHistoryPages(data, (current) => {
       let changed = false;
       const items = current.items.map((item) => {
         if (item.planning_session_id !== sessionId || item.title_state !== "placeholder") return item;
@@ -104,7 +104,7 @@ export function applyGeneratedPlanningSessionTitleIfPlaceholder(
         return { ...item, ...generatedListFields };
       });
       return changed ? { ...current, items } : current;
-    },
+    }),
   );
 }
 
@@ -121,11 +121,10 @@ function detailWouldChange(
 }
 
 function patchListItem(
-  current: PlanningSessionListResponse | undefined,
+  current: PlanningSessionListResponse,
   sessionId: string,
   fields: Partial<ListItem>,
-): PlanningSessionListResponse | undefined {
-  if (!current) return current;
+): PlanningSessionListResponse {
   let changed = false;
   const items = current.items.map((item) => {
     if (item.planning_session_id !== sessionId) return item;
@@ -174,10 +173,9 @@ export function compareAndSwapPlanningSessionTitle(
     }
     return { ...current, title: rollbackTitle, title_state: rollbackTitleState };
   });
-  qc.setQueriesData<PlanningSessionListResponse>(
+  qc.setQueriesData<InfiniteData<PlanningSessionListResponse>>(
     { queryKey: plannerKeys.listPrefix(), exact: false },
-    (current) => {
-      if (!current) return current;
+    (data) => mapHistoryPages(data, (current) => {
       let changed = false;
       const items = current.items.map((item) => {
         if (item.planning_session_id !== sessionId) return item;
@@ -186,6 +184,6 @@ export function compareAndSwapPlanningSessionTitle(
         return { ...item, title: rollbackTitle, title_state: rollbackTitleState };
       });
       return changed ? { ...current, items } : current;
-    },
+    }),
   );
 }

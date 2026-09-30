@@ -539,7 +539,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	limitErr := &providerlimits.LimitExceededError{Resource: "canonical output", Limit: providerlimits.CanonicalOutputBytes}
+	limitErr := &providerlimits.DepthExceededError{Resource: "snapshot lineage", Limit: providerlimits.SnapshotLineageDepth}
 	outcome := normalizeExecutionOutcome(opencode.ExecutionOutcome{}, limitErr)
 	if outcome.ReasonCode != "resource_limit_exceeded" || outcome.FailureText != limitErr.Error() {
 		t.Fatalf("resource-limit execution outcome=%+v", outcome)

@@ -27,7 +27,14 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req gen.CreatePlanningSessionRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/title")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	titleSource, err := planningRequestText(r.Context(), texts["/title"], true)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
@@ -42,20 +49,23 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		modelSelectionJSON = string(raw)
 	}
 
-	title := ""
-	if req.Title != nil {
-		title = *req.Title
-	}
-	session, err := s.planningService.CreateSession(r.Context(), title, modelSelectionJSON)
+	session, err := s.planningService.CreateSessionWithText(r.Context(), titleSource, modelSelectionJSON)
 	if err != nil {
 		var commitErr *state.CommitOutcomeUnknownError
-		if errors.As(err, &commitErr) {
-			result, persisted, readbackErr := s.readBackPlanningSessionCreation(r.Context(), commitErr.ResourceID)
+		var projectionErr *state.PostCommitProjectionError
+		if errors.As(err, &commitErr) || errors.As(err, &projectionErr) {
+			resourceID := ""
+			if commitErr != nil {
+				resourceID = commitErr.ResourceID
+			} else {
+				resourceID = projectionErr.ResourceID
+			}
+			result, persisted, readbackErr := s.readBackPlanningSessionCreation(r.Context(), resourceID)
 			if readbackErr != nil {
-				slog.Warn("planning session creation commit outcome unresolved", "planning_session_id", commitErr.ResourceID, "commit_error", err, "readback_error", readbackErr)
+				slog.Warn("planning session creation commit outcome unresolved", "planning_session_id", resourceID, "commit_error", err, "readback_error", readbackErr)
 				writeCommitOutcomePending(w, r, "api.create_planning_session",
 					"planning session creation outcome is still being confirmed; retry later with the same idempotency key",
-					map[string]any{"planning_session_id": commitErr.ResourceID})
+					map[string]any{"planning_session_id": resourceID})
 				return
 			}
 			if !persisted {
@@ -170,17 +180,28 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 	if _, _, ok := s.requirePrincipal(w, r, "api.list_planning_sessions"); !ok {
 		return
 	}
-	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 100)
+	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 50)
 	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
-	items, err := s.planningStore.ListSessions(r.Context(), limit)
+	cursor, err := s.decodeHistoryCursor("planning-sessions", "", strings.TrimSpace(r.URL.Query().Get("cursor")))
+	if err != nil {
+		s.writeBadRequest(w, "invalid cursor")
+		return
+	}
+	items, err := s.planningStore.ListSessionsPage(r.Context(), limit+1, cursor.OrderedAt, cursor.ID)
 	if err != nil {
 		s.writeInternalError(w, "list planning sessions failed")
 		return
 	}
 	response := gen.PlanningSessionListResponse{Items: make([]gen.PlanningSessionSummary, 0, len(items))}
+	if len(items) > limit {
+		last := items[limit-1]
+		next := s.encodeHistoryCursor("planning-sessions", "", last.UpdatedAt, last.PlanningSessionID)
+		response.NextCursor = &next
+		items = items[:limit]
+	}
 	for _, item := range items {
 		presentedRuns, resolveErr := s.presentPlanningSessionRuns(r.Context(), item)
 		if resolveErr != nil {
@@ -233,12 +254,19 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req gen.UpdatePlanningSessionRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/title")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	titleSource, err := planningRequestText(r.Context(), texts["/title"], true)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
 
-	input := planning.UpdateSessionInput{Title: req.Title}
+	input := planning.UpdateSessionInput{TitleSource: titleSource}
 	if req.ModelSelection != nil {
 		raw, err := json.Marshal(req.ModelSelection)
 		if err != nil {
@@ -251,6 +279,12 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 
 	updated, err := s.planningService.UpdateSession(r.Context(), planningSessionID, input)
 	if err != nil {
+		var unknown *state.CommitOutcomeUnknownError
+		var projection *state.PostCommitProjectionError
+		if errors.As(err, &unknown) || errors.As(err, &projection) {
+			writeCommitOutcomePending(w, r, "api.update_planning_session", "planning session update outcome is still being confirmed; retry later with the same idempotency key", map[string]any{"planning_session_id": planningSessionID})
+			return
+		}
 		handlePlanningError(w, err, "api.update_planning_session")
 		return
 	}

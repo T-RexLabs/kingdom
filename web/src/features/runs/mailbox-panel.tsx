@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { SelectField } from "@/components/ui/select-field";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
@@ -230,6 +231,10 @@ export function MailboxPanel({
   selectedDetail,
   filters,
   onChangeFilters,
+  hasMore = false,
+  isLoadingMore = false,
+  loadMoreError = false,
+  onLoadMore,
 }: {
   presentation: MailboxPresentation;
   isLoading?: boolean;
@@ -239,6 +244,10 @@ export function MailboxPanel({
   selectedDetail?: MailboxMessageDetail | null;
   filters: MailboxFilters;
   onChangeFilters: (filters: MailboxFilters) => void;
+  hasMore?: boolean;
+  isLoadingMore?: boolean;
+  loadMoreError?: boolean;
+  onLoadMore?: () => void;
 }) {
   const laneConversations = presentation.lanes;
   const filterId = useId();
@@ -376,7 +385,7 @@ export function MailboxPanel({
                     <p className="text-wrap-anywhere text-xs font-medium text-foreground">{lane.laneLabel}</p>
                     <div className="text-right">
                       <p className="shrink-0 text-[11px] text-foreground-subtle">{formatTimestamp(lane.latestAt)}</p>
-                      <p className="mt-0.5 whitespace-nowrap text-[11px] text-foreground-subtle">{lane.messages.length} messages</p>
+                      <p className="mt-0.5 whitespace-nowrap text-[11px] text-foreground-subtle">{lane.messages.length} messages{hasMore ? " loaded" : ""}</p>
                     </div>
                   </div>
                   <div className="mt-1 max-h-12 overflow-hidden text-wrap-anywhere text-xs text-foreground-muted">
@@ -403,6 +412,14 @@ export function MailboxPanel({
               );
             })
           )}
+          {hasMore && onLoadMore ? (
+            <div className="space-y-2 py-2">
+              {loadMoreError ? <p role="status" className="text-xs text-status-failed">Older messages could not be loaded.</p> : null}
+              <Button variant="ghost" size="sm" className="w-full" disabled={isLoadingMore} onClick={onLoadMore}>
+                {isLoadingMore ? "Loading messages..." : loadMoreError ? "Retry Older Messages" : "Load Older Messages"}
+              </Button>
+            </div>
+          ) : null}
         </div>
 
         <div className="flex min-h-0 flex-1 flex-col gap-3">
@@ -411,7 +428,7 @@ export function MailboxPanel({
             <p className="text-wrap-anywhere text-sm font-medium text-foreground">{activeLane?.laneLabel ?? "No lane selected"}</p>
             {activeLane && (
               <p className="mt-1 text-xs text-foreground-subtle">
-                {activeLane.messages.length} messages across {new Set(activeLane.messages.map((message) => message.thread_id || "_none")).size} thread(s)
+                {activeLane.messages.length} messages{hasMore ? " loaded" : ""} across {new Set(activeLane.messages.map((message) => message.thread_id || "_none")).size} thread(s)
               </p>
             )}
           </div>

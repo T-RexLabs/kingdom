@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"strings"
 	"time"
@@ -199,29 +200,29 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	resolvedModel := ""
 	resolvedVariant := ""
 	modelSource := string(executionSpec.Mode)
-	providerOutputPrompt := ""
+	var providerPromptOpen opencodePromptOpener
+	var providerPromptRef *state.RequestContentReference
 	scopedDelegatorInstruction := ""
 	agentForRole := ""
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
-		decreeText, decreeErr := o.decreeTextForRun(ctx, run.RunID)
-		if decreeErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve decree text", decreeErr, now)
-		}
 		if err := o.ensureSessionLease(ctx, sessionID, attempt.AgentID, now); err != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "ensure provider session lease", err, now)
 		}
 		resolvedModel, resolvedVariant, modelSource = o.resolveModelForRole(run, node.RequiredRole)
-		delegatorRoleID := o.roleIDForAgent(ctx, delegatorID)
-		delegatorInstruction := o.delegatorInstructionForDispatchForClass(ctx, run.RunID, node.NodeID, node.NodeClass, attempt.Attempt, delegatorID, attempt.AgentID)
-		scopedDelegatorInstruction = strings.TrimSpace(stripControlCommandLines(o.latestScopedInstructionForNode(ctx, run.RunID, node.NodeID, delegatorID, attempt.AgentID)))
-		if strings.TrimSpace(delegatorInstruction) == "" {
-			delegatorInstruction = defaultDelegatorInstructionForDispatch(node.NodeID, node.RequiredRole)
-			if scopedDelegatorInstruction == "" {
-				scopedDelegatorInstruction = strings.TrimSpace(stripControlCommandLines(delegatorInstruction))
-			}
+		prepared, scoped, promptErr := o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
+		if promptErr != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare provider prompt", promptErr, now)
 		}
-		approvedPlan := o.approvedPlanForRun(ctx, run.RunID)
-		providerOutputPrompt = o.buildNodePrompt(ctx, run.RunID, node.NodeID, attempt.NodeRunID, node.RequiredRole, node.NodeClass, decreeText, delegatorRoleID, approvedPlan, delegatorInstruction, "")
+		ref, promptErr := state.PersistExecutionPrompt(ctx, o.db, state.ExecutionPromptRequest{AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LeaseOwner: attempt.LeaseOwner, LeaseVersion: attempt.LeaseVersion, CreatedAt: o.now().UTC().Format(time.RFC3339Nano), Source: state.RequestContentSource{Reader: io.NewSectionReader(prepared.File, 0, prepared.size), SizeBytes: prepared.size, SHA256: prepared.sha}})
+		closeErr := prepared.Close()
+		if promptErr = errors.Join(promptErr, closeErr); promptErr != nil {
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "persist provider prompt", promptErr, now)
+		}
+		scopedDelegatorInstruction = scoped
+		providerPromptRef = &ref
+		providerPromptOpen = func(ctx context.Context) (io.ReadCloser, error) {
+			return state.OpenExecutionPrompt(ctx, o.db, attemptID, ref)
+		}
 		agentForRole = strings.TrimSpace(o.providerPolicy.AgentForRole(node.RequiredRole))
 	}
 	startPayloadRaw, payloadErr := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "orchestration_progress", map[string]any{
@@ -311,7 +312,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			workspaceCtxErr = fmt.Errorf("execution root is required for execution")
 		}
 		if workspaceCtxErr == nil {
-			workspaceCtxErr = o.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx)
+			workspaceCtxErr = o.prepareExecutionWorkspaceContext(ctx, workspaceCtx.ExecutionRoot, workspaceCtx)
 		}
 		if workspaceCtxErr == nil {
 			workspaceCtxErr = o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID)
@@ -364,7 +365,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		AuthoritySource:   "runtime.orchestrator",
 		OccurredAt:        now,
 		DelegatorScoped:   scopedDelegatorInstruction,
-		InstructionFull:   providerOutputPrompt,
+		InstructionRef:    providerPromptRef,
 	})
 	if err := o.recordExecutionPreparation(ctx, run, node, attempt, attemptID, "execution launch prepared", startingPayloadRaw, now); err != nil {
 		var outcomeUnknown *state.ExecutionStartOutcomeUnknownError
@@ -408,7 +409,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
 		projectRootBoundary:                  projectRootBoundary,
 		delegator:                            delegatorID,
-		prompt:                               providerOutputPrompt,
+		openPrompt:                           providerPromptOpen,
 		model:                                resolvedModel,
 		variant:                              resolvedVariant,
 		agent:                                agentForRole,
@@ -824,6 +825,7 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 			ConfigDir:           workspaceOpenCode.ConfigDir,
 			DatabasePath:        workspaceOpenCode.DatabasePath,
 			Prompt:              job.prompt,
+			OpenPrompt:          job.openPrompt,
 			OccurredAt:          job.occurredAt,
 			InvocationID:        job.providerInvocationID,
 			InvocationIssuedAt:  job.providerInvocationAt,

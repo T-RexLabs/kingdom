@@ -1,7 +1,9 @@
 package providerexecution
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -21,13 +23,24 @@ type TokenUsage struct {
 }
 
 type InvocationStreamObservation struct {
-	ProviderSessionID           string                      `json:"provider_session_id,omitempty"`
-	FinalTurnID                 string                      `json:"final_turn_id,omitempty"`
-	FinalStepID                 string                      `json:"final_step_id,omitempty"`
-	FinalSequence               int                         `json:"final_sequence"`
-	RawFinishReason             string                      `json:"raw_finish_reason,omitempty"`
-	NormalizedFinishReason      string                      `json:"normalized_finish_reason,omitempty"`
-	CanonicalTerminalText       string                      `json:"canonical_terminal_text,omitempty"`
+	ProviderSessionID        string            `json:"provider_session_id,omitempty"`
+	FinalTurnID              string            `json:"final_turn_id,omitempty"`
+	FinalStepID              string            `json:"final_step_id,omitempty"`
+	FinalSequence            int               `json:"final_sequence"`
+	RawFinishReason          string            `json:"raw_finish_reason,omitempty"`
+	NormalizedFinishReason   string            `json:"normalized_finish_reason,omitempty"`
+	CanonicalTerminalText    string            `json:"canonical_terminal_text,omitempty"`
+	CanonicalTerminalTextRef *ContentReference `json:"canonical_terminal_text_ref,omitempty"`
+	StagedTerminalContent    *StagedContent    `json:"-"`
+	TerminalTextOpener       ContentOpener     `json:"-"`
+	// ReleaseContent acknowledges durable ingestion of the complete terminal
+	// and diagnostic content. It retires adapter staging/replay storage.
+	ReleaseContent func() error `json:"-"`
+	// DiagnosticContent is the complete invocation stdout followed by stderr.
+	// StagedDiagnosticContent carries those same bytes to a durable consumer;
+	// consumers ingest and verify them before retiring the process-local files.
+	DiagnosticContent           []ContentReference          `json:"diagnostic_content,omitempty"`
+	StagedDiagnosticContent     []StagedContent             `json:"-"`
 	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
 	PendingToolCount            int                         `json:"pending_tool_count"`
 	Tokens                      TokenUsage                  `json:"tokens"`
@@ -209,8 +222,20 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if observation.FinalSequence <= 0 {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal step is missing a valid stream sequence")
 	}
-	if strings.TrimSpace(observation.CanonicalTerminalText) == "" {
+	reader, err := OpenTerminalText(context.Background(), observation)
+	if err != nil {
+		return fail("provider_unknown_failure", err.Error())
+	}
+	summary, readErr := InspectText(context.Background(), reader)
+	closeErr := reader.Close()
+	if readErr != nil || closeErr != nil {
+		return fail("provider_unknown_failure", fmt.Sprintf("verify provider terminal text: %v", errors.Join(readErr, closeErr)))
+	}
+	if summary.End == summary.Offset {
 		return fail("provider_empty_output", "provider returned an empty terminal response")
+	}
+	if ref := observation.CanonicalTerminalTextRef; ref != nil && (summary.Offset != 0 || summary.End != ref.SizeBytes) {
+		return fail("provider_unknown_failure", "referenced terminal text is not canonically trimmed")
 	}
 	if observation.PendingToolCount != 0 {
 		return fail("provider_incomplete_turn", "provider response has unresolved tool calls")

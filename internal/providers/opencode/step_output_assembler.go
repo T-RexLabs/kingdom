@@ -1,39 +1,62 @@
 package opencode
 
-import "strings"
+import "kingdom/internal/core/providerexecution"
 
-// stepOutputAssembler keeps provisional provider text separate from the text
-// that can settle a server-response turn. A tool-call step is real progress, but its
-// prose is not the terminal assistant answer.
+// Provisional steps are discarded as soon as they finish. Only a stop step can
+// supply terminal text; failed writes remain fatal even if a later step succeeds.
 type stepOutputAssembler struct {
-	currentStep  []string
-	terminalText string
-	stepOpen     bool
+	currentStep   textSpool
+	terminal      textSpool
+	terminalCache string
+	stepOpen      bool
+	err           error
 }
 
 func (a *stepOutputAssembler) startStep() {
-	a.currentStep = nil
+	if a.currentStep.err != nil {
+		a.err = a.currentStep.err
+	}
+	a.currentStep.close()
+	a.currentStep = textSpool{}
 	a.stepOpen = true
 }
 
-func (a *stepOutputAssembler) appendText(text string) {
-	if strings.TrimSpace(text) == "" {
-		return
-	}
+func (a *stepOutputAssembler) appendChunk(text string, first bool) {
 	if !a.stepOpen {
 		a.startStep()
 	}
-	a.currentStep = append(a.currentStep, text)
+	if first {
+		a.currentStep.append(text)
+	} else {
+		a.currentStep.write(text)
+	}
+	if a.currentStep.err != nil {
+		a.err = a.currentStep.err
+	}
 }
 
 func (a *stepOutputAssembler) finishStep(class stepFinishTerminalClass) {
 	if class == stepFinishTerminalSuccessCandidate {
-		a.terminalText = strings.TrimSpace(strings.Join(a.currentStep, "\n"))
+		a.terminalCache = ""
+		a.terminal.close()
+		a.terminal = a.currentStep
+		a.currentStep = textSpool{}
+	} else {
+		a.currentStep.close()
 	}
-	a.currentStep = nil
 	a.stepOpen = false
 }
 
+// terminalOutput is the bounded display preview. Complete terminal bytes are
+// available only through terminalContent's verified replay source.
 func (a *stepOutputAssembler) terminalOutput() string {
-	return strings.TrimSpace(a.terminalText)
+	if a.terminalCache == "" {
+		a.terminalCache = a.terminal.text()
+	}
+	return a.terminalCache
 }
+
+func (a *stepOutputAssembler) terminalContent(invocationID string) (*providerexecution.StagedContent, error) {
+	return a.terminal.content(invocationID)
+}
+func (a *stepOutputAssembler) close() { a.currentStep.close(); a.terminal.close() }

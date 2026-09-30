@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,12 +20,14 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
@@ -123,7 +126,10 @@ type Server struct {
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
 	// shutdown.
-	handler http.Handler
+	handler               http.Handler
+	plannerAdapterCloser  interface{ Close() error }
+	plannerAdapterCloseMu sync.Mutex
+	plannerAdapterClosed  bool
 }
 
 // ServeHTTP delegates to the composed mux/middleware tree. Having Server
@@ -157,7 +163,27 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.planningService != nil {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
+	if closeErr == nil && s.plannerAdapterCloser != nil {
+		closeErr = errors.Join(closeErr, s.closePlannerAdapter(ctx))
+	}
 	return closeErr
+}
+
+func (s *Server) closePlannerAdapter(ctx context.Context) error {
+	s.plannerAdapterCloseMu.Lock()
+	defer s.plannerAdapterCloseMu.Unlock()
+	if s.plannerAdapterClosed || s.plannerAdapterCloser == nil {
+		return nil
+	}
+	if closer, ok := s.plannerAdapterCloser.(interface{ CloseContext(context.Context) error }); ok {
+		if err := closer.CloseContext(ctx); err != nil {
+			return err
+		}
+	} else if err := s.plannerAdapterCloser.Close(); err != nil {
+		return err
+	}
+	s.plannerAdapterClosed = true
+	return nil
 }
 
 // providerModelCatalogTTL is how long a listed model catalog stays fresh
@@ -512,6 +538,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
 		}
 		s.plannerRuntimeWarmer = plannerAdapter
+		s.plannerAdapterCloser = plannerAdapter
 		plannerAgent = planning.NewOpenCodeAgent(plannerAdapter, idGenerator)
 	}
 	s.planningService = planning.NewServiceWithRetryEngine(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
@@ -533,7 +560,10 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		lifecycleCancel()
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(startupCtx), 10*time.Second)
 		defer cancel()
-		_ = s.planningService.Close(closeCtx)
+		drainErr := s.planningService.Close(closeCtx)
+		if drainErr == nil && s.plannerAdapterCloser != nil {
+			_ = s.closePlannerAdapter(closeCtx)
+		}
 	}()
 	if s.providerModelCatalog == nil {
 		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
@@ -564,7 +594,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	mux.Handle("GET "+basePath+"/acp/runs/{runId}/events", http.StripPrefix(basePath, wrappedStreaming))
 	mux.Handle(basePath+"/", http.StripPrefix(basePath, wrapped))
 
-	s.handler = limitRequestBody(mux)
+	s.handler = mux
 	constructorOK = true
 	lifecycleTransferred = true
 	return s, nil
@@ -646,6 +676,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /planning-sessions/{id}/messages/{messageId}/variants", s.handleListPlanningMessageVariants)
 	mux.HandleFunc("GET /planning-sessions/{id}/plan", s.handleGetPlanningSessionPlan)
 	mux.HandleFunc("POST /planning-sessions/{id}/context/refresh", s.handleRefreshPlanningSessionContext)
+	mux.HandleFunc("GET /planning-sessions/{id}/context/{snapshotId}/entries", s.handleListPlanningContextEntries)
 	mux.HandleFunc("POST /workflows/publish", s.handlePublishWorkflow)
 	mux.HandleFunc("POST /runs", s.handleCreateRun)
 	mux.HandleFunc("GET /runs", s.handleListRuns)
@@ -802,9 +833,9 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 	var metadataJSON string
 	err := s.db.QueryRowContext(
 		r.Context(),
-		`SELECT decree_id, decree_title, decree_text, metadata_json, created_at FROM decrees WHERE decree_id = ?`,
+		`SELECT decree_id, decree_title, metadata_json, created_at FROM decrees WHERE decree_id = ?`,
 		decreeID,
-	).Scan(&detail.DecreeId, &detail.DecreeTitle, &detail.DecreeText, &metadataJSON, &createdAt)
+	).Scan(&detail.DecreeId, &detail.DecreeTitle, &metadataJSON, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "decree not found", "api.get_decree", map[string]any{"decree_id": decreeID})
 		return
@@ -828,7 +859,45 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 	}
 	detail.ExternalSources = externalProvenanceListFromState(links, false)
 
-	writeJSON(w, http.StatusOK, detail)
+	text, err := state.OpenDecreeText(r.Context(), s.db, decreeID)
+	if err != nil {
+		s.writeInternalError(w, "fetch decree text failed")
+		return
+	}
+	defer text.Close()
+	metadata, err := json.Marshal(detail)
+	if err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	delete(fields, "decree_text")
+	prefix, err := json.Marshal(fields)
+	if err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	err = writeExternalResponse(w, func(out io.Writer) error {
+		if _, err := out.Write(prefix[:len(prefix)-1]); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(out, `,"decree_text":`); err != nil {
+			return err
+		}
+		if err := providerexecution.WriteJSONString(r.Context(), out, text); err != nil {
+			return err
+		}
+		_, err := io.WriteString(out, "}")
+		return err
+	})
+	if err != nil {
+		s.writeInternalError(w, "stream decree failed")
+	}
 }
 
 func externalProvenanceListFromState(links []state.ExternalLinkSummary, planning bool) []gen.ExternalProvenanceSummary {

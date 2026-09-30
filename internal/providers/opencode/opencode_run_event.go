@@ -3,15 +3,17 @@ package opencode
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/providerlimits"
 )
 
 // opencodeRunEventWire mirrors one line of `opencode run --format json`. The
@@ -66,8 +68,7 @@ func parseOpencodeRunEvent(line string) (opencodeRunEvent, error) {
 	if err != nil {
 		return opencodeRunEvent{}, err
 	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if _, err := decoder.Token(); err != io.EOF {
 		if err == nil {
 			return opencodeRunEvent{}, fmt.Errorf("multiple JSON values in provider event line")
 		}
@@ -76,59 +77,182 @@ func parseOpencodeRunEvent(line string) (opencodeRunEvent, error) {
 	return event, nil
 }
 
-func decodeOpencodeRunEventStream(stream io.Reader, onLine func(int) error, onEvent func(opencodeRunEvent) error, onMalformed func(string, error)) error {
-	scanner := bufio.NewScanner(stream)
-	// Let the split function classify every oversize line before Scanner can
-	// replace it with an untyped token-too-long error.
-	scanner.Buffer(make([]byte, 0, 64*1024), providerlimits.OpenCodeEventLineBytes+1)
-	scanner.Split(splitBoundedOpencodeRunEventLine)
-	for scanner.Scan() {
-		raw := scanner.Text()
+// onMalformed receives the SHA-256 of the complete raw JSONL frame, including
+// its newline when present. Provider bytes themselves stay in the full trace.
+func decodeOpencodeRunEventStream(stream io.Reader, onLine func(int) error, onEvent func(opencodeRunEvent) error, onMalformed func(string, error), activity ...func()) error {
+	// Frame JSONL on disk. Decoder owns at most one event, never the complete
+	// stream. In particular ReadString/Scanner must not accumulate a giant line
+	// in addition to encoding/json's allocation for its string values.
+	file, err := os.CreateTemp("", "kingdom-provider-frame-*")
+	if err != nil {
+		return err
+	}
+	defer func() { file.Close(); os.Remove(file.Name()) }()
+	noteActivity := func() {
+		for _, note := range activity {
+			note()
+		}
+	}
+	reader := bufio.NewReaderSize(stream, 64*1024)
+	for {
+		if err := file.Truncate(0); err != nil {
+			return err
+		}
+		if _, err := file.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		var size int64
+		frameHasContent := false
+		lineHash := sha256.New()
+		var readErr error
+		for {
+			part, err := reader.ReadSlice('\n')
+			if len(part) > 0 {
+				frameHasContent = frameHasContent || len(bytes.TrimSpace(part)) > 0
+				if frameHasContent {
+					noteActivity()
+				}
+				if _, writeErr := file.Write(part); writeErr != nil {
+					return writeErr
+				}
+				size += int64(len(part))
+				_, _ = lineHash.Write(part)
+			}
+			if err == bufio.ErrBufferFull {
+				continue
+			}
+			readErr = err
+			break
+		}
+		if readErr != nil && readErr != io.EOF {
+			return readErr
+		}
+		if size == 0 && readErr == io.EOF {
+			return nil
+		}
 		if onLine != nil {
-			if err := onLine(len(raw)); err != nil {
+			if err := onLine(int(size)); err != nil {
 				return err
 			}
 		}
-		line := strings.TrimSpace(raw)
-		if line == "" {
+		if !frameHasContent {
 			continue
 		}
-		event, err := parseOpencodeRunEvent(line)
-		if err != nil {
-			if onMalformed != nil {
-				onMalformed(line, err)
+		var source io.Reader = activityReader{io.NewSectionReader(file, 0, size), noteActivity}
+		var largeStrings *eventStrings
+		if size > streamPreviewBytes {
+			var err error
+			largeStrings, err = compactEventStrings(source)
+			if err != nil {
+				if !errors.Is(err, errInvalidEventString) && !errors.Is(err, errInvalidEventNumber) {
+					return err
+				}
+				if onMalformed != nil {
+					onMalformed(fmt.Sprintf("%x", lineHash.Sum(nil)), err)
+				}
+				continue
+			}
+			source = largeStrings.projected
+		}
+		decoder := json.NewDecoder(source)
+		numberMarker := ""
+		if largeStrings != nil {
+			numberMarker = largeStrings.numberMarker
+		}
+		event, err := decodeNextOpencodeRunEvent(decoder, numberMarker)
+		if err == io.EOF {
+			if largeStrings != nil {
+				largeStrings.close()
 			}
 			continue
 		}
-		if err := onEvent(event); err != nil {
+		if err == nil {
+			if _, trailingErr := decoder.Token(); trailingErr != io.EOF {
+				err = fmt.Errorf("trailing provider event data")
+			}
+		}
+		if err != nil {
+			if largeStrings != nil {
+				largeStrings.close()
+			}
+			if onMalformed != nil {
+				onMalformed(fmt.Sprintf("%x", lineHash.Sum(nil)), err)
+			}
+			continue
+		}
+		if largeStrings != nil {
+			// Identity and control fields retain their exact values. Provider
+			// bodies/tool payload strings remain disk-backed or diagnostic-only.
+			for _, field := range []*string{&event.Type, &event.SessionID, &event.Part.Type, &event.Part.ID, &event.Part.CallID, &event.Part.MessageID, &event.Part.Tool, &event.Part.Reason, &event.Part.State.Status, &event.ProviderErrorCode, &event.ProviderErrorCategory, &event.RetryAt} {
+				if err := largeStrings.restoreMetadata(field); err != nil {
+					largeStrings.close()
+					return err
+				}
+			}
+			for _, field := range []*string{&event.Part.State.Title, &event.ErrorText, &event.Part.Metadata.OpenAI.ReasoningEncryptedContent, &event.Part.Metadata.Redacted} {
+				if err := largeStrings.restorePreview(field); err != nil {
+					largeStrings.close()
+					return err
+				}
+			}
+			event.Part.State.Input, err = largeStrings.previewJSON(event.Part.State.Input)
+			if err != nil {
+				largeStrings.close()
+				return err
+			}
+			event.textContent, err = largeStrings.resolve(event.Part.Text)
+			if err != nil {
+				largeStrings.close()
+				return err
+			}
+			if event.textContent != nil {
+				preview, readErr := io.ReadAll(io.NewSectionReader(event.textContent.reader, event.textContent.offset, min(event.textContent.size, int64(streamPreviewBytes))))
+				if readErr != nil {
+					largeStrings.close()
+					return readErr
+				}
+				event.Part.Text = string(preview)
+			}
+		}
+		err = onEvent(event)
+		if largeStrings != nil {
+			largeStrings.close()
+		}
+		if err != nil {
 			return err
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-	return nil
 }
 
-func splitBoundedOpencodeRunEventLine(data []byte, atEOF bool) (advance int, token []byte, err error) {
-	if newline := bytes.IndexByte(data, '\n'); newline >= 0 {
-		if newline > providerlimits.OpenCodeEventLineBytes {
-			return 0, nil, &providerlimits.LimitExceededError{Resource: "event line", Limit: int64(providerlimits.OpenCodeEventLineBytes)}
-		}
-		return newline + 1, data[:newline], nil
-	}
-	if len(data) > providerlimits.OpenCodeEventLineBytes {
-		return 0, nil, &providerlimits.LimitExceededError{Resource: "event line", Limit: int64(providerlimits.OpenCodeEventLineBytes)}
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
+type activityReader struct {
+	io.Reader
+	activity func()
 }
 
-func decodeNextOpencodeRunEvent(decoder *json.Decoder) (opencodeRunEvent, error) {
+func (r activityReader) Read(raw []byte) (int, error) {
+	n, err := r.Reader.Read(raw)
+	if n > 0 {
+		r.activity()
+	}
+	return n, err
+}
+
+func decodeNextOpencodeRunEvent(decoder *json.Decoder, numberMarkers ...string) (opencodeRunEvent, error) {
+	decoder.UseNumber()
+	marker := ""
+	if len(numberMarkers) > 0 {
+		marker = numberMarkers[0]
+	}
+	projected, err := projectEventValue(&boundedJSONTokens{Decoder: decoder}, runEventProjection, marker)
+	if err != nil {
+		return opencodeRunEvent{}, err
+	}
+	raw, err := json.Marshal(projected)
+	if err != nil {
+		return opencodeRunEvent{}, err
+	}
 	var envelope opencodeRunEventWire
-	if err := decoder.Decode(&envelope); err != nil {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return opencodeRunEvent{}, err
 	}
 	event := opencodeRunEvent{

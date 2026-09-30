@@ -16,6 +16,12 @@ import (
 	"kingdom/internal/testutil/guardianfixture"
 )
 
+const (
+	formerCanonicalOutputBytes = 4 * 1024 * 1024
+	formerEventLineBytes       = 8 * 1024 * 1024
+	formerHelperStreamBytes    = 1024 * 1024
+)
+
 func TestSessionAdapterStreamsLongPromptThroughStdin(t *testing.T) {
 	const promptMarker = "kingdom-stdin-prompt-marker"
 	prompt := strings.Repeat("Long decree context 界\n", 240_000) + promptMarker
@@ -128,7 +134,7 @@ func TestSessionAdapterCanonicalOutputBoundary(t *testing.T) {
 		return ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: "session_output_boundary", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: "output boundary", OccurredAt: "2026-03-02T10:21:15Z"}
 	}
 
-	runner := guardianfixture.NewOutputRunner(successfulProviderEvents(strings.Repeat("x", providerlimits.CanonicalOutputBytes)), nil)
+	runner := guardianfixture.NewOutputRunner(successfulProviderEvents(strings.Repeat("x", formerCanonicalOutputBytes)), nil)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: runner})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -137,24 +143,23 @@ func TestSessionAdapterCanonicalOutputBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatalf("exact canonical output boundary rejected: %v", err)
 	}
-	if len(res.OutputText) != providerlimits.CanonicalOutputBytes {
-		t.Fatalf("exact canonical output bytes=%d, want %d", len(res.OutputText), providerlimits.CanonicalOutputBytes)
+	if res.StreamObservation.CanonicalTerminalTextRef == nil || res.StreamObservation.CanonicalTerminalTextRef.SizeBytes != formerCanonicalOutputBytes || res.OutputText != "" {
+		t.Fatalf("large output was not streamed: bytes=%d ref=%+v", len(res.OutputText), res.StreamObservation.CanonicalTerminalTextRef)
 	}
 
-	overflowRunner := guardianfixture.NewOutputRunner(successfulProviderEvents(strings.Repeat("x", providerlimits.CanonicalOutputBytes+1)), nil)
+	overflowRunner := guardianfixture.NewOutputRunner(successfulProviderEvents(strings.Repeat("x", formerCanonicalOutputBytes+1)), nil)
 	overflowAdapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: overflowRunner})
 	if err != nil {
 		t.Fatalf("new overflow session adapter: %v", err)
 	}
-	_, err = overflowAdapter.Execute(context.Background(), request("attempt_output_overflow"))
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) || limitErr.Resource != "canonical output" || !limitErr.NonRetryable() {
-		t.Fatalf("one-byte canonical output overflow error=%v, want non-retryable canonical output limit error", err)
+	res, err = overflowAdapter.Execute(context.Background(), request("attempt_output_overflow"))
+	if err != nil || res.StreamObservation.CanonicalTerminalTextRef == nil || res.StreamObservation.CanonicalTerminalTextRef.SizeBytes != formerCanonicalOutputBytes+1 {
+		t.Fatalf("output beyond former boundary: bytes=%d err=%v", len(res.OutputText), err)
 	}
 }
 
 func TestSessionAdapterRejectsLargeMalformedEventWithoutLeakingContent(t *testing.T) {
-	runner := guardianfixture.NewOutputRunner(append([]byte(`{"type":"step_start"}`+"\n"), []byte(strings.Repeat("x", providerlimits.OpenCodeEventLineBytes+1))...), nil)
+	runner := guardianfixture.NewOutputRunner(append([]byte(`{"type":"step_start"}`+"\n"), []byte(strings.Repeat("x", formerEventLineBytes+1))...), nil)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], Runner: runner})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -163,7 +168,7 @@ func TestSessionAdapterRejectsLargeMalformedEventWithoutLeakingContent(t *testin
 	if err == nil {
 		t.Fatal("expected oversized malformed event to fail")
 	}
-	if res.Outcome.ReasonCode != "resource_limit_exceeded" {
+	if res.Outcome.ReasonCode != "provider_unknown_failure" {
 		t.Fatalf("oversized malformed event outcome=%#v", res.Outcome)
 	}
 	if strings.Contains(err.Error(), strings.Repeat("x", 32)) {
@@ -195,22 +200,21 @@ func TestSessionAdapterCapturesTailOfUnterminatedOversizedStderr(t *testing.T) {
 }
 
 func TestRunGuardedCommandReadBoundary(t *testing.T) {
-	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes))), []byte(strings.Repeat("y", int(providerlimits.GuardedCommandStreamBytes))))
+	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", formerHelperStreamBytes)), []byte(strings.Repeat("y", formerHelperStreamBytes)))
 	stdout, stderr, _, err := runGuardedCommand(context.Background(), runner, processguardian.Command{Path: "fixture"})
 	if err != nil {
 		t.Fatalf("exact guarded command boundary rejected: %v", err)
 	}
-	if len(stdout) != int(providerlimits.GuardedCommandStreamBytes) || len(stderr) != int(providerlimits.GuardedCommandStreamBytes) {
-		t.Fatalf("exact guarded command output sizes=(%d,%d)", len(stdout), len(stderr))
+	if stdout.Size != formerHelperStreamBytes || stderr.Size != formerHelperStreamBytes {
+		t.Fatalf("guarded command output sizes=(%d,%d)", stdout.Size, stderr.Size)
 	}
-	overflowRunner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes+1))), nil)
-	_, _, _, err = runGuardedCommand(context.Background(), overflowRunner, processguardian.Command{Path: "fixture"})
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) || !limitErr.NonRetryable() {
-		t.Fatalf("one-byte guarded command overflow error=%v, want non-retryable limit error", err)
+	overflowRunner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", formerHelperStreamBytes+1)), nil)
+	stdout, _, _, err = runGuardedCommand(context.Background(), overflowRunner, processguardian.Command{Path: "fixture"})
+	if err != nil || stdout.Size != formerHelperStreamBytes+1 {
+		t.Fatalf("helper output beyond former cap: size=%d err=%v", stdout.Size, err)
 	}
-	if overflowRunner.Cancels() != 1 {
-		t.Fatalf("guarded command overflow cancellations=%d, want 1", overflowRunner.Cancels())
+	if overflowRunner.Cancels() != 0 {
+		t.Fatalf("guarded command cancellations=%d, want 0", overflowRunner.Cancels())
 	}
 }
 
@@ -344,17 +348,21 @@ func (w *blockedPromptInput) Close() error {
 	return nil
 }
 
-func TestRunGuardedCommandCancelsOverflowAndClosesStreamBeforeQuiescence(t *testing.T) {
+func TestRunGuardedCommandCancelsContextAndClosesStreamBeforeQuiescence(t *testing.T) {
 	cancelled := make(chan struct{})
-	reader := &continuedOutputReader{remaining: providerlimits.GuardedCommandStreamBytes + 1, cancelled: cancelled}
+	reader := &continuedOutputReader{remaining: formerHelperStreamBytes + 1, cancelled: cancelled}
 	stdout := &continuedOutputStream{Reader: reader, closed: make(chan struct{})}
 	handle := &continuedOutputHandle{stdout: stdout, stderr: io.NopCloser(strings.NewReader("")), cancelled: cancelled, stdoutClosed: stdout.closed}
 	runner := continuedOutputRunner{handle: handle}
 
-	_, _, result, err := runGuardedCommand(context.Background(), runner, processguardian.Command{Path: "continued-output"})
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) {
-		t.Fatalf("continued output error=%v, want limit error", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	stdoutResult, _, result, err := runGuardedCommand(ctx, runner, processguardian.Command{Path: "continued-output"})
+	if err != nil {
+		t.Fatalf("drain after cancellation: %v", err)
+	}
+	if stdoutResult.Size != formerHelperStreamBytes+2 {
+		t.Fatalf("incomplete diagnostic: %d", stdoutResult.Size)
 	}
 	if !handle.cancelObserved {
 		t.Fatal("overflow did not request cancellation")
@@ -364,8 +372,8 @@ func TestRunGuardedCommandCancelsOverflowAndClosesStreamBeforeQuiescence(t *test
 	default:
 		t.Fatal("guarded command returned without closing its stdout stream")
 	}
-	if reader.continued {
-		t.Fatal("guarded command continued reading stdout after the first overflow byte")
+	if !reader.continued {
+		t.Fatal("guarded command did not finish draining stdout")
 	}
 	if !result.Quiescent {
 		t.Fatalf("overflow returned without guardian quiescence: %#v", result)
@@ -535,54 +543,4 @@ func (r *continuedOutputReader) Read(buffer []byte) (int, error) {
 		return 1, nil
 	}
 	return 0, io.EOF
-}
-
-func TestProviderStreamBudgetAggregateBoundaries(t *testing.T) {
-	budget := providerStreamBudget{}
-	if err := budget.consumeEvent(providerlimits.OpenCodeEventBytes); err != nil {
-		t.Fatalf("exact aggregate event-byte boundary rejected: %v", err)
-	}
-	var byteLimitErr *providerlimits.LimitExceededError
-	if err := budget.consumeEvent(1); !errors.As(err, &byteLimitErr) {
-		t.Fatalf("one-byte aggregate event overflow error=%v, want limit error", err)
-	}
-
-	budget = providerStreamBudget{}
-	for range providerlimits.OpenCodeEventCount {
-		if err := budget.consumeEvent(1); err != nil {
-			t.Fatalf("exact aggregate event-count boundary rejected: %v", err)
-		}
-	}
-	var countLimitErr *providerlimits.CountExceededError
-	if err := budget.consumeEvent(1); !errors.As(err, &countLimitErr) {
-		t.Fatalf("one-event aggregate overflow error=%v, want count limit error", err)
-	}
-
-	budget = providerStreamBudget{}
-	if err := budget.consumeOutput(strings.Repeat("x", providerlimits.CanonicalOutputBytes-2)); err != nil {
-		t.Fatalf("aggregate output prefix rejected: %v", err)
-	}
-	if err := budget.consumeOutput("x"); err != nil {
-		t.Fatalf("exact aggregate output boundary rejected: %v", err)
-	}
-	var outputLimitErr *providerlimits.LimitExceededError
-	if err := budget.consumeOutput("x"); !errors.As(err, &outputLimitErr) || outputLimitErr.Resource != "canonical output" {
-		t.Fatalf("one-byte aggregate output overflow error=%v, want canonical output limit error", err)
-	}
-}
-
-func TestResourceLimitFailuresUseCanonicalOutcome(t *testing.T) {
-	t.Parallel()
-
-	for _, err := range []error{
-		&providerlimits.LimitExceededError{Resource: "canonical output", Limit: providerlimits.CanonicalOutputBytes},
-		&providerlimits.LimitExceededError{Resource: "event line", Limit: providerlimits.OpenCodeEventLineBytes},
-		&providerlimits.LimitExceededError{Resource: "event stream", Limit: providerlimits.OpenCodeEventBytes},
-		&providerlimits.CountExceededError{Resource: "event stream", Limit: providerlimits.OpenCodeEventCount},
-	} {
-		result := executionResultForResourceLimit(err, "session_resource_limit")
-		if result.State != attemptCompletionStateFailed || result.ReasonCode != "resource_limit_exceeded" || result.FailureText != err.Error() {
-			t.Fatalf("resource limit result=%+v for %v", result, err)
-		}
-	}
 }

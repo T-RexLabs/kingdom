@@ -6,13 +6,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/schemas"
-	"kingdom/internal/providerlimits"
 )
 
 func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
@@ -54,6 +55,61 @@ func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
 	}
 }
 
+type artifactFailureReader struct{}
+
+func (artifactFailureReader) Read([]byte) (int, error) {
+	return 0, errors.New("injected artifact read failure")
+}
+
+type artifactCloseFailure struct{ io.Reader }
+
+func (artifactCloseFailure) Close() error { return errors.New("injected artifact close failure") }
+
+func TestWorkerOutputValidatorRollsBackCompleteBatchOnStreamFailure(t *testing.T) {
+	for _, failure := range []string{"read", "close", "checksum", "size"} {
+		t.Run(failure, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			seedMinimumGraph(t, db)
+			validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
+			constraint := ""
+			if failure == "checksum" {
+				constraint = `,"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"`
+			}
+			if failure == "size" {
+				constraint = `,"size_bytes":3`
+			}
+			closed := 0
+			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_failure", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"first","mime":"text/plain","path":"first"},{"name":"second","mime":"text/plain","path":"second"` + constraint + `}],"error_reason":null}`), OpenArtifact: func(_ context.Context, path string) (io.ReadCloser, error) {
+				closed++
+				if path == "first" {
+					return io.NopCloser(strings.NewReader("first")), nil
+				}
+				source := strings.NewReader(strings.Repeat("x", (2<<20)+1))
+				if failure == "read" {
+					return io.NopCloser(io.MultiReader(source, artifactFailureReader{})), nil
+				}
+				if failure == "close" {
+					return artifactCloseFailure{source}, nil
+				}
+				return io.NopCloser(source), nil
+			}}
+			if _, err := validator.ValidateAndPersist(context.Background(), req); err == nil {
+				t.Fatal("failed content was published")
+			}
+			if closed != 2 {
+				t.Fatalf("opened %d artifacts", closed)
+			}
+			for _, table := range []string{"artifacts", "artifact_contents", "artifact_content_chunks"} {
+				var n int
+				if err := db.QueryRow(`SELECT count(*) FROM ` + table).Scan(&n); err != nil || n != 0 {
+					t.Fatalf("partial %s publication: %d %v", table, n, err)
+				}
+			}
+		})
+	}
+}
+
 func TestWorkerOutputValidatorRejectsUnsafeDeletionArtifactPaths(t *testing.T) {
 	t.Parallel()
 
@@ -62,7 +118,7 @@ func TestWorkerOutputValidatorRejectsUnsafeDeletionArtifactPaths(t *testing.T) {
 	for _, artifactPath := range []string{"/tmp/file", "//tmp/file", `..\secret`, `C:\temp\file`, "../secret"} {
 		t.Run(artifactPath, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := validator.buildArtifactRecord(request, workerOutputArtifact{Action: "delete", Path: artifactPath, Name: "file"}, 0)
+			_, _, err := validator.buildArtifactRecord(context.Background(), request, WorkerArtifact{Action: "delete", Path: artifactPath, Name: "file"}, 0)
 			var validationErr *WorkerOutputValidationError
 			if !errors.As(err, &validationErr) || validationErr.Code != string(errorcatalog.CodeInvalidOutputSchema) {
 				t.Fatalf("unsafe deletion path %q error=%v", artifactPath, err)
@@ -131,15 +187,13 @@ func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T
 		t.Fatalf("expected 1 artifact persisted, got %d", result.ArtifactCount)
 	}
 
-	artifacts, err := validator.ListArtifactsByAttempt(context.Background(), req.AttemptID)
+	stored, err := NewArtifactService(db).GetArtifact(context.Background(), req.AttemptID+"_artifact_1")
 	if err != nil {
-		t.Fatalf("list artifacts by attempt: %v", err)
+		t.Fatalf("get persisted artifact: %v", err)
 	}
-	if len(artifacts) != 1 {
-		t.Fatalf("expected exactly one artifact row, got %d", len(artifacts))
+	if n := countArtifactsForAttempt(t, db, req.AttemptID); n != 1 {
+		t.Fatalf("expected exactly one artifact row, got %d", n)
 	}
-
-	stored := artifacts[0]
 	if stored.AttemptID != req.AttemptID {
 		t.Fatalf("attempt provenance mismatch, got %q", stored.AttemptID)
 	}
@@ -159,7 +213,7 @@ func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T
 	var blob []byte
 	var blobChecksum string
 	var blobSize int64
-	if err := db.QueryRow(`SELECT content, sha256, size_bytes FROM artifact_contents WHERE artifact_id = ?`, stored.ArtifactID).Scan(&blob, &blobChecksum, &blobSize); err != nil {
+	if err := db.QueryRow(`SELECT c.content, a.sha256, a.size_bytes FROM artifact_contents a JOIN artifact_content_chunks c USING (artifact_id) WHERE artifact_id = ?`, stored.ArtifactID).Scan(&blob, &blobChecksum, &blobSize); err != nil {
 		t.Fatalf("query artifact content row: %v", err)
 	}
 	if string(blob) != string(artifactBody) {
@@ -236,7 +290,7 @@ func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 	}
 }
 
-func TestWorkerOutputValidatorRejectsOneByteArtifactOverflowWithoutPersistence(t *testing.T) {
+func TestWorkerOutputValidatorStreamsArtifactBeyondFormerFileAndAggregateLimits(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
@@ -246,7 +300,7 @@ func TestWorkerOutputValidatorRejectsOneByteArtifactOverflowWithoutPersistence(t
 	if err := os.WriteFile(artifactPath, nil, 0o600); err != nil {
 		t.Fatalf("create oversized artifact: %v", err)
 	}
-	if err := os.Truncate(artifactPath, providerlimits.TrackedWorkspaceFileBytes+1); err != nil {
+	if err := os.Truncate(artifactPath, (256<<20)+1); err != nil {
 		t.Fatalf("truncate oversized artifact: %v", err)
 	}
 	req := WorkerOutputValidationRequest{
@@ -255,19 +309,18 @@ func TestWorkerOutputValidatorRejectsOneByteArtifactOverflowWithoutPersistence(t
 		CreatedAt:  "2026-03-01T13:10:00Z",
 	}
 	_, err := validator.ValidateAndPersist(context.Background(), req)
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) {
-		t.Fatalf("one-byte artifact overflow error=%v, want LimitExceededError", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-	var validationErr *WorkerOutputValidationError
-	if !errors.As(err, &validationErr) {
-		t.Fatalf("one-byte artifact overflow error=%v, want WorkerOutputValidationError", err)
+	if got := countArtifactsForAttempt(t, db, req.AttemptID); got != 1 {
+		t.Fatalf("large artifact count=%d", got)
 	}
-	if validationErr.Code != string(errorcatalog.CodeResourceLimitExceeded) {
-		t.Fatalf("one-byte artifact overflow code=%q, want %q", validationErr.Code, errorcatalog.CodeResourceLimitExceeded)
+	var chunks, largest int
+	if err := db.QueryRow(`SELECT count(*), max(length(content)) FROM artifact_content_chunks`).Scan(&chunks, &largest); err != nil {
+		t.Fatal(err)
 	}
-	if got := countArtifactsForAttempt(t, db, req.AttemptID); got != 0 {
-		t.Fatalf("limit failure persisted %d artifacts", got)
+	if chunks != 257 || largest != 1<<20 {
+		t.Fatalf("chunks=%d largest=%d", chunks, largest)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -12,10 +13,36 @@ func (s *PlanningStore) AppendMessage(ctx context.Context, req AppendPlanningMes
 	if err := validatePlanningMessageAppend(req); err != nil {
 		return PlanningMessage{}, err
 	}
-	return insertPlanningMessage(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningMessage{}, err
+	}
+	defer tx.Rollback()
+	message, err := insertPlanningMessage(ctx, tx, req)
+	if err != nil {
+		return PlanningMessage{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningMessage{}, err
+	}
+	return message, nil
 }
 
 func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlanningMessageRequest) (PlanningMessage, error) {
+	if err := validatePlanningTextContent(ctx, req.ContentSource, !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON)); err != nil {
+		return PlanningMessage{}, err
+	}
+	if req.ContentSource != nil && req.ContentMarkdown != "" {
+		return PlanningMessage{}, fmt.Errorf("multiple planning message content sources")
+	}
+	content, err := persistPlanningText(ctx, exec, PlanningMessageContentID(req.PlanningMessageID), req.ContentSource, req.CreatedAt)
+	if err != nil {
+		return PlanningMessage{}, err
+	}
+	answer, err := persistPlanningText(ctx, exec, PlanningAnswerTextContentID(req.PlanningMessageID), req.AnswerTextSource, req.CreatedAt)
+	if err != nil {
+		return PlanningMessage{}, err
+	}
 	trimmedParent := strings.TrimSpace(req.ParentMessageID)
 	var parentPtr *string
 	if trimmedParent != "" {
@@ -31,9 +58,9 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 		AnswerPayloadJSON:   strings.TrimSpace(req.AnswerPayloadJSON),
 		CreatedAt:           strings.TrimSpace(req.CreatedAt),
 	}
-	_, err := exec.ExecContext(ctx,
-		`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+	_, err = exec.ExecContext(ctx,
+		`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at,content_content_id,answer_text_content_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?)`,
 		row.PlanningMessageID,
 		row.PlanningSessionID,
 		nullableMessageID(trimmedParent),
@@ -42,6 +69,7 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 		row.QuestionPayloadJSON,
 		row.AnswerPayloadJSON,
 		row.CreatedAt,
+		planningContentID(content), planningContentID(answer),
 	)
 	if err != nil {
 		return PlanningMessage{}, fmt.Errorf("insert planning message: %w", err)
@@ -55,6 +83,15 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 // would otherwise be able to read or act on it through endpoints that derive
 // the active session from the URL path.
 func (s *PlanningStore) GetMessageInSession(ctx context.Context, planningSessionID, planningMessageID string) (PlanningMessage, error) {
+	message, err := s.GetMessageMetadataInSession(ctx, planningSessionID, planningMessageID)
+	if err != nil {
+		return message, err
+	}
+	err = hydratePlanningMessage(ctx, &message)
+	return message, err
+}
+
+func (s *PlanningStore) GetMessageMetadataInSession(ctx context.Context, planningSessionID, planningMessageID string) (PlanningMessage, error) {
 	trimmedSession := strings.TrimSpace(planningSessionID)
 	trimmedID := strings.TrimSpace(planningMessageID)
 	if trimmedSession == "" {
@@ -74,6 +111,9 @@ func (s *PlanningStore) GetMessageInSession(ctx context.Context, planningSession
 		}
 		return PlanningMessage{}, fmt.Errorf("get planning message: %w", err)
 	}
+	if err := s.loadMessageTextSources(ctx, &row); err != nil {
+		return PlanningMessage{}, err
+	}
 	return row, nil
 }
 
@@ -85,6 +125,29 @@ func (s *PlanningStore) ListMessages(ctx context.Context, planningSessionID stri
 	return activePathMessages(ctx, s.db, strings.TrimSpace(planningSessionID))
 }
 
+type PlanningMessageSource func(context.Context, func(PlanningMessage) error) error
+
+// ActiveMessageSource freezes the selected immutable ancestry identities now,
+// then loads only one message body at a time on each replay.
+func (s *PlanningStore) ActiveMessageSource(ctx context.Context, sessionID string) (PlanningMessageSource, error) {
+	ids, err := activePathMessageIDs(ctx, s.db, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	return func(ctx context.Context, visit func(PlanningMessage) error) error {
+		for _, id := range ids {
+			message, err := s.GetMessageMetadataInSession(ctx, sessionID, id)
+			if err != nil {
+				return err
+			}
+			if err := visit(message); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, nil
+}
+
 func (s *PlanningStore) CountMessagesByRole(ctx context.Context, planningSessionID string, role PlanningMessageRole) (int, error) {
 	trimmedSessionID := strings.TrimSpace(planningSessionID)
 	if trimmedSessionID == "" {
@@ -93,13 +156,17 @@ func (s *PlanningStore) CountMessagesByRole(ctx context.Context, planningSession
 	if !isValidPlanningMessageRole(role) {
 		return 0, fmt.Errorf("invalid planning message role: %q", role)
 	}
-	path, err := activePathMessages(ctx, s.db, trimmedSessionID)
+	path, err := activePathMessageIDs(ctx, s.db, trimmedSessionID)
 	if err != nil {
 		return 0, err
 	}
 	count := 0
-	for _, message := range path {
-		if message.Role == role {
+	for _, messageID := range path {
+		var messageRole PlanningMessageRole
+		if err := s.db.QueryRowContext(ctx, `SELECT role FROM planning_messages WHERE planning_message_id=? AND planning_session_id=?`, messageID, trimmedSessionID).Scan(&messageRole); err != nil {
+			return 0, err
+		}
+		if messageRole == role {
 			count++
 		}
 	}
@@ -118,7 +185,7 @@ func (s *PlanningStore) ListMessagesPage(ctx context.Context, planningSessionID 
 		limit = 50
 	}
 
-	path, err := activePathMessages(ctx, s.db, trimmedSessionID)
+	path, err := activePathMessageIDs(ctx, s.db, trimmedSessionID)
 	if err != nil {
 		return PlanningMessagePage{}, err
 	}
@@ -146,8 +213,8 @@ func (s *PlanningStore) ListMessagesPage(ctx context.Context, planningSessionID 
 	if endIndex <= startIndex {
 		return page, nil
 	}
-	page.Items = append([]PlanningMessage{}, path[startIndex:endIndex]...)
-	return page, nil
+	page.Items, err = planningMessagesByIDs(ctx, s.db, trimmedSessionID, path[startIndex:endIndex])
+	return page, err
 }
 
 // SetActiveBranch moves the session's active leaf onto the branch that runs
@@ -163,6 +230,11 @@ func (s *PlanningStore) SetActiveBranch(ctx context.Context, planningSessionID, 
 	}
 	if trimmedID == "" {
 		return PlanningMessage{}, fmt.Errorf("planning message id is required")
+	}
+	// Resolve immutable response content before mutating the branch pointer.
+	selected, err := s.GetMessageInSession(ctx, trimmedSession, trimmedID)
+	if err != nil {
+		return PlanningMessage{}, err
 	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -196,7 +268,7 @@ func (s *PlanningStore) SetActiveBranch(ctx context.Context, planningSessionID, 
 	if err := tx.Commit(); err != nil {
 		return PlanningMessage{}, fmt.Errorf("commit set active branch: %w", err)
 	}
-	return target, nil
+	return selected, nil
 }
 
 // SiblingsOf returns the branch alternatives at planningMessageID — every
@@ -226,7 +298,19 @@ func (s *PlanningStore) SiblingsOf(ctx context.Context, planningSessionID, plann
 		}
 		items = append(items, row)
 	}
-	return items, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for i := range items {
+		if err := s.loadMessageTextSources(ctx, &items[i]); err != nil {
+			return nil, err
+		}
+		if err := hydratePlanningMessage(ctx, &items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
 }
 
 // BranchInfoBySession returns, for every message in the session, its position
@@ -261,7 +345,17 @@ func (s *PlanningStore) BranchInfoBySession(ctx context.Context, planningSession
 // activePathMessages walks from the session's active leaf up to the root via
 // parent_message_id and returns the path root-first. A nil/missing leaf yields
 // an empty path (a fresh session before its first message).
-func activePathMessages(ctx context.Context, exec sqlQuerier, planningSessionID string) ([]PlanningMessage, error) {
+func activePathMessages(ctx context.Context, exec *sql.DB, planningSessionID string) ([]PlanningMessage, error) {
+	ids, err := activePathMessageIDs(ctx, exec, planningSessionID)
+	if err != nil {
+		return nil, err
+	}
+	return planningMessagesByIDs(ctx, exec, planningSessionID, ids)
+}
+
+// Walk only immutable parent identities before loading content. Paging and
+// role counts must not load every message body or any inactive sibling branch.
+func activePathMessageIDs(ctx context.Context, exec sqlQuerier, planningSessionID string) ([]string, error) {
 	if planningSessionID == "" {
 		return nil, fmt.Errorf("planning session id is required")
 	}
@@ -271,68 +365,59 @@ func activePathMessages(ctx context.Context, exec sqlQuerier, planningSessionID 
 		planningSessionID,
 	).Scan(&leaf); err != nil {
 		if err == sql.ErrNoRows {
-			return []PlanningMessage{}, nil
+			return []string{}, nil
 		}
 		return nil, fmt.Errorf("read active leaf: %w", err)
 	}
 	if !leaf.Valid || strings.TrimSpace(leaf.String) == "" {
-		return []PlanningMessage{}, nil
+		return []string{}, nil
 	}
-
-	byID, err := allMessagesByID(ctx, exec, planningSessionID)
-	if err != nil {
-		return nil, err
-	}
-	reversed := make([]PlanningMessage, 0, len(byID))
-	seen := make(map[string]struct{}, len(byID))
+	reversed := make([]string, 0)
+	seen := make(map[string]struct{})
 	for id := leaf.String; id != ""; {
-		message, ok := byID[id]
-		if !ok {
-			break
-		}
 		if _, looped := seen[id]; looped {
-			break // defensive: never spin on a cycle
+			return nil, fmt.Errorf("planning message ancestry contains a cycle")
 		}
 		seen[id] = struct{}{}
-		reversed = append(reversed, message)
-		if message.ParentMessageID == nil {
-			break
+		var parent sql.NullString
+		if err := exec.QueryRowContext(ctx, `SELECT parent_message_id FROM planning_messages WHERE planning_session_id=? AND planning_message_id=?`, planningSessionID, id).Scan(&parent); err != nil {
+			return nil, fmt.Errorf("read planning message ancestry: %w", err)
 		}
-		id = *message.ParentMessageID
+		reversed = append(reversed, id)
+		id = parent.String
 	}
-	path := make([]PlanningMessage, len(reversed))
-	for i, message := range reversed {
-		path[len(reversed)-1-i] = message
-	}
-	return path, nil
+	slices.Reverse(reversed)
+	return reversed, nil
 }
 
-func allMessagesByID(ctx context.Context, exec sqlQuerier, planningSessionID string) (map[string]PlanningMessage, error) {
-	rows, err := exec.QueryContext(ctx,
-		`SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at
-		 FROM planning_messages WHERE planning_session_id = ?`,
-		planningSessionID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("load planning messages: %w", err)
-	}
-	defer rows.Close()
-	byID := make(map[string]PlanningMessage)
-	for rows.Next() {
+func planningMessagesByIDs(ctx context.Context, exec *sql.DB, planningSessionID string, ids []string) ([]PlanningMessage, error) {
+	items := make([]PlanningMessage, 0, len(ids))
+	for _, id := range ids {
 		var row PlanningMessage
-		if err := scanPlanningMessage(rows, &row); err != nil {
+		if err := scanPlanningMessage(exec.QueryRowContext(ctx, `SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at FROM planning_messages WHERE planning_session_id=? AND planning_message_id=?`, planningSessionID, id), &row); err != nil {
 			return nil, fmt.Errorf("scan planning message: %w", err)
 		}
-		byID[row.PlanningMessageID] = row
+		if err := NewPlanningStore(exec).loadMessageTextSources(ctx, &row); err != nil {
+			return nil, err
+		}
+		if err := hydratePlanningMessage(ctx, &row); err != nil {
+			return nil, err
+		}
+		items = append(items, row)
 	}
-	return byID, rows.Err()
+	return items, nil
 }
 
 // descendToLeaf follows the most-recently-created child at each step until it
 // reaches a leaf, so switching to a branch lands on that branch's latest tip.
 func descendToLeaf(ctx context.Context, exec sqlQuerier, planningSessionID, messageID string) (string, error) {
 	current := messageID
-	for i := 0; i < maxPlanningTreeDepth; i++ {
+	seen := make(map[string]struct{})
+	for {
+		if _, duplicate := seen[current]; duplicate {
+			return "", fmt.Errorf("planning message descendants contain a cycle")
+		}
+		seen[current] = struct{}{}
 		var childID sql.NullString
 		err := exec.QueryRowContext(ctx,
 			`SELECT planning_message_id FROM planning_messages
@@ -352,12 +437,7 @@ func descendToLeaf(ctx context.Context, exec sqlQuerier, planningSessionID, mess
 		}
 		current = childID.String
 	}
-	return current, nil
 }
-
-// maxPlanningTreeDepth bounds the descent walk defensively; planner
-// conversations never approach this, but it guarantees termination.
-const maxPlanningTreeDepth = 100000
 
 type scannable interface {
 	Scan(dest ...any) error

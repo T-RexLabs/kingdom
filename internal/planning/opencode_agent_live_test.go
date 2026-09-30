@@ -72,7 +72,8 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 	}, func(text string) {
 		streamedResponse.WriteString(text)
 	})
-	if !assertLivePlannerContainment(t, turn.ContentMarkdown+streamedResponse.String(), secretMarker, secretPath, &toolActivities, &egressCalls) {
+	defer turn.Close()
+	if !assertLivePlannerContainment(t, plannerTextForTest(t, turn.ContentMarkdown, turn.ContentSource)+streamedResponse.String(), secretMarker, secretPath, &toolActivities, &egressCalls) {
 		t.FailNow()
 	}
 	if err != nil {
@@ -143,8 +144,10 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 	if !toolActivities.ObservedRootListOrGlob() {
 		t.Errorf("a linked-issue turn did not observe a list or glob tool call on .: activities=%#v", toolActivities.All())
 	}
-	if !strings.Contains(turn.ContentMarkdown, filename) || !strings.Contains(turn.ContentMarkdown, marker) {
-		t.Errorf("planner response was not derived from the opaque workspace file: %s", turn.ContentMarkdown)
+	defer turn.Close()
+	body := plannerTextForTest(t, turn.ContentMarkdown, turn.ContentSource)
+	if !strings.Contains(body, filename) || !strings.Contains(body, marker) {
+		t.Errorf("planner response was not derived from the opaque workspace file: %s", body)
 	}
 }
 
@@ -163,7 +166,7 @@ func newLiveGuardedPlannerAgent(t *testing.T, binary, projectRoot, operationID s
 	}
 	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
 		BinaryPath: binary, WorkDir: projectRoot, ConfigDir: bootstrapassets.ManagedOpenCodeRoot(projectRoot), DatabasePath: bootstrapassets.ManagedOpenCodeDatabasePath(projectRoot),
-		InlineConfigContent: plannerInlineConfig, Agent: "planner", SkipPermissions: true, MaxContinuationTurns: 1, FirstEventTimeout: 90 * time.Second, StreamInactivityTimeout: 90 * time.Second, Runner: runner,
+		InlineConfigContent: plannerInlineConfig, Agent: "planner", SkipPermissions: true, FirstEventTimeout: 90 * time.Second, StreamInactivityTimeout: 90 * time.Second, Runner: runner,
 	})
 	if err != nil {
 		t.Fatalf("create planner adapter: %v", err)

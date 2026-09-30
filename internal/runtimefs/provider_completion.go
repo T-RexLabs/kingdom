@@ -1,21 +1,185 @@
 package runtimefs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"os"
 	"strings"
 	"time"
 
-	"kingdom/internal/providerlimits"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/securefs"
 )
 
-const ProviderTerminalHandoffWireLimit = providerlimits.TerminalHandoffWireBytes
+// Only compact control metadata belongs in the envelope. Content has no byte
+// ceiling and is staged separately in fixed-size immutable chunks.
+const ProviderTerminalHandoffWireLimit = 1024 * 1024
 
 const providerTerminalHandoffRoot = "provider-completion/handoffs"
+
+func providerContentPath(ref providerexecution.ContentReference, ordinal int64) string {
+	invocation := sha256.Sum256([]byte(ref.InvocationID))
+	return fmt.Sprintf("provider-completion/content/%x/%s/%016x", invocation, ref.SHA256, ordinal)
+}
+
+// PersistProviderContent stages complete content before the handoff envelope is
+// published. Each chunk crosses securefs's exact-publication/fsync boundary.
+func (s *Store) PersistProviderContent(invocationID, text string) (providerexecution.ContentReference, error) {
+	ref := providerexecution.ReferenceText(invocationID, text)
+	return ref, s.PersistProviderContentReader(ref, strings.NewReader(text))
+}
+
+func (s *Store) PersistProviderContentReader(ref providerexecution.ContentReference, reader io.Reader) error {
+	if err := ref.Validate(ref.InvocationID); err != nil {
+		return err
+	}
+	// Verify before publishing under the immutable digest namespace. A corrupt
+	// or interrupted source must not poison a later exact replay of this ref.
+	staging, err := os.CreateTemp("", "kingdom-provider-content-*")
+	if err != nil {
+		return err
+	}
+	defer func() { staging.Close(); os.Remove(staging.Name()) }()
+	h := sha256.New()
+	if _, err := io.CopyN(io.MultiWriter(staging, h), reader, ref.SizeBytes); err != nil {
+		return err
+	}
+	var extra [1]byte
+	if n, err := reader.Read(extra[:]); n != 0 || err != io.EOF {
+		return fmt.Errorf("provider content exceeds declared size or failed to reach EOF")
+	}
+	if hex.EncodeToString(h.Sum(nil)) != ref.SHA256 {
+		return fmt.Errorf("provider content hash mismatch")
+	}
+	if _, err := staging.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	reader = staging
+	root, err := s.openSecureRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	buffer := make([]byte, providerexecution.ContentChunkBytes)
+	remaining := ref.SizeBytes
+	for ordinal := int64(0); remaining > 0; ordinal++ {
+		chunk := buffer[:min(remaining, int64(len(buffer)))]
+		if _, err := io.ReadFull(reader, chunk); err != nil {
+			return err
+		}
+		if _, err := root.CreateRegularExact(providerContentPath(ref, ordinal), chunk, 0o600, 0o700); err != nil {
+			return err
+		}
+		remaining -= int64(len(chunk))
+	}
+	return nil
+}
+
+// CopyProviderContent verifies the complete digest and exact size. Callers must
+// not publish bytes copied to their staging transaction until this returns nil.
+func (s *Store) CopyProviderContent(ref providerexecution.ContentReference, dst io.Writer) error {
+	if err := ref.Validate(ref.InvocationID); err != nil {
+		return err
+	}
+	root, err := s.openSecureRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	h := sha256.New()
+	remaining := ref.SizeBytes
+	for ordinal := int64(0); remaining > 0; ordinal++ {
+		want := min(remaining, int64(providerexecution.ContentChunkBytes))
+		raw, err := root.ReadRegular(providerContentPath(ref, ordinal), want)
+		if err != nil {
+			return fmt.Errorf("read provider content: %w", err)
+		}
+		if int64(len(raw)) != want {
+			return fmt.Errorf("provider content size mismatch")
+		}
+		if _, err := io.MultiWriter(dst, h).Write(raw); err != nil {
+			return err
+		}
+		remaining -= want
+	}
+	if hex.EncodeToString(h.Sum(nil)) != ref.SHA256 {
+		return fmt.Errorf("provider content hash mismatch")
+	}
+	return nil
+}
+
+func (s *Store) OpenProviderContent(ctx context.Context, ref providerexecution.ContentReference) (io.ReadCloser, error) {
+	if err := ref.Validate(ref.InvocationID); err != nil {
+		return nil, err
+	}
+	return providerexecution.OpenContentCopy(ctx, func(dst io.Writer) error { return s.CopyProviderContent(ref, dst) }), nil
+}
+
+// RemoveProviderContent retires only invocation-derived staging chunks after
+// SQLite ingestion. Repeated cleanup converges; symlinks are never followed.
+func (s *Store) RemoveProviderContent(ref providerexecution.ContentReference) error {
+	if err := ref.Validate(ref.InvocationID); err != nil {
+		return err
+	}
+	root, err := s.openSecureRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	remaining := ref.SizeBytes
+	for ordinal := int64(0); remaining > 0; ordinal++ {
+		path := providerContentPath(ref, ordinal)
+		_, identity, err := root.ReadRegularIdentified(path, providerexecution.ContentChunkBytes)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return err
+		}
+		if err == nil {
+			if err := root.RemoveRegularIfIdentity(path, identity); err != nil && !errors.Is(err, fs.ErrNotExist) {
+				return err
+			}
+		}
+		remaining -= min(remaining, int64(providerexecution.ContentChunkBytes))
+	}
+	return nil
+}
+
+// RemoveProviderInvocationContent also retires orphaned staging left by a
+// crash before envelope publication. Call only after canonical DB handoff or
+// terminal invocation authority; each no-follow batch has bounded memory.
+func (s *Store) RemoveProviderInvocationContent(ctx context.Context, invocationID string) error {
+	if invocationID == "" || invocationID != strings.TrimSpace(invocationID) {
+		return fmt.Errorf("canonical provider invocation id is required")
+	}
+	root, err := s.openSecureRoot()
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	digest := sha256.Sum256([]byte(invocationID))
+	path := fmt.Sprintf("provider-completion/content/%x", digest)
+	cursor := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		progress, err := root.RemoveTreeBatch(path, cursor, 128)
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if progress.Complete {
+			return nil
+		}
+		cursor = progress.Cursor
+	}
+}
 
 // ProviderTerminalHandoffFile is one bounded runtime-owned terminal handoff
 // plus the identity required for post-database cleanup.

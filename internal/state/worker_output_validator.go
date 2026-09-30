@@ -1,6 +1,7 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -8,13 +9,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/schemas"
-	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
 )
 
@@ -25,8 +26,24 @@ type WorkerOutputValidationRequest struct {
 	ProducerRole          string
 	WorkspacePath         string
 	ArtifactContentByPath map[string][]byte
-	OutputJSON            []byte
-	CreatedAt             string
+	// OpenArtifact opens immutable, trusted snapshot content. The validator owns
+	// and closes each returned reader; it never retains aggregate artifact bytes.
+	OpenArtifact func(context.Context, string) (io.ReadCloser, error)
+	OutputJSON   []byte
+	CreatedAt    string
+	// Artifacts opens a replayable metadata cursor before the write transaction
+	// starts. Its Next/Close must not query this validator's SQLite pool. Each
+	// returned artifact owns its content opener, so no path-to-content map is
+	// needed. OutputJSON remains the small, schema-validated envelope and must
+	// contain an empty artifacts array when this source is supplied.
+	Artifacts WorkerArtifactSource
+}
+
+type WorkerArtifactSource func(context.Context) (WorkerArtifactIterator, error)
+
+type WorkerArtifactIterator interface {
+	Next(context.Context) (WorkerArtifact, error)
+	Close() error
 }
 
 type WorkerOutputValidationResult struct {
@@ -68,20 +85,21 @@ type ArtifactRecord struct {
 }
 
 type workerOutputEnvelope struct {
-	Status    string                 `json:"status"`
-	Summary   string                 `json:"summary"`
-	Payload   map[string]any         `json:"payload_json"`
-	Artifacts []workerOutputArtifact `json:"artifacts"`
+	Status    string           `json:"status"`
+	Summary   string           `json:"summary"`
+	Payload   map[string]any   `json:"payload_json"`
+	Artifacts []WorkerArtifact `json:"artifacts"`
 }
 
-type workerOutputArtifact struct {
-	Kind      string `json:"kind,omitempty"`
-	Action    string `json:"action,omitempty"`
-	Name      string `json:"name"`
-	MIME      string `json:"mime"`
-	Path      string `json:"path"`
-	SHA256    string `json:"sha256,omitempty"`
-	SizeBytes *int64 `json:"size_bytes,omitempty"`
+type WorkerArtifact struct {
+	Kind        string                                       `json:"kind,omitempty"`
+	Action      string                                       `json:"action,omitempty"`
+	Name        string                                       `json:"name"`
+	MIME        string                                       `json:"mime"`
+	Path        string                                       `json:"path"`
+	SHA256      string                                       `json:"sha256,omitempty"`
+	SizeBytes   *int64                                       `json:"size_bytes,omitempty"`
+	OpenContent func(context.Context) (io.ReadCloser, error) `json:"-"`
 }
 
 type WorkerOutputValidator struct {
@@ -114,6 +132,30 @@ func (v *WorkerOutputValidator) ValidateAndPersist(ctx context.Context, req Work
 			err:    err,
 		}
 	}
+	var cursor WorkerArtifactIterator = &workerArtifactSlice{items: output.Artifacts}
+	var artifactEnvelope map[string]json.RawMessage
+	if req.Artifacts != nil {
+		if len(output.Artifacts) != 0 {
+			return WorkerOutputValidationResult{}, fmt.Errorf("worker output has competing artifact metadata sources")
+		}
+		if err := json.Unmarshal(req.OutputJSON, &artifactEnvelope); err != nil {
+			return WorkerOutputValidationResult{}, err
+		}
+		var err error
+		cursor, err = req.Artifacts(ctx)
+		if err != nil {
+			return WorkerOutputValidationResult{}, fmt.Errorf("open artifact metadata: %w", err)
+		}
+		if cursor == nil {
+			return WorkerOutputValidationResult{}, fmt.Errorf("artifact metadata source returned no cursor")
+		}
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = cursor.Close()
+		}
+	}()
 
 	tx, err := v.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -127,28 +169,60 @@ func (v *WorkerOutputValidator) ValidateAndPersist(ctx context.Context, req Work
 		}
 	}()
 
-	if err := ensureArtifactContentTable(ctx, tx); err != nil {
-		return WorkerOutputValidationResult{}, fmt.Errorf("ensure artifact content table: %w", err)
-	}
-
-	var artifactBudget providerlimits.WorkspaceBudget
-	for i, artifact := range output.Artifacts {
-		record, content, recErr := v.buildArtifactRecord(req, artifact, i)
+	count := 0
+	contentBuffer := make([]byte, artifactChunkBytes)
+	for {
+		if err := ctx.Err(); err != nil {
+			return WorkerOutputValidationResult{}, err
+		}
+		artifact, err := cursor.Next(ctx)
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return WorkerOutputValidationResult{}, fmt.Errorf("read artifact metadata: %w", err)
+		}
+		if req.Artifacts != nil {
+			// Validate each typed descriptor against the same canonical item
+			// schema as JSON worker output without retaining the inventory.
+			artifactEnvelope["artifacts"], err = json.Marshal([]WorkerArtifact{artifact})
+			if err != nil {
+				return WorkerOutputValidationResult{}, err
+			}
+			raw, err := json.Marshal(artifactEnvelope)
+			if err != nil {
+				return WorkerOutputValidationResult{}, err
+			}
+			if err := v.schemas.ValidateJSONBytes("worker_output", raw); err != nil {
+				return WorkerOutputValidationResult{}, &WorkerOutputValidationError{Code: string(errorcatalog.CodeInvalidOutputSchema), Reason: "artifact metadata contract validation failed", err: err}
+			}
+		}
+		record, content, recErr := v.buildArtifactRecord(ctx, req, artifact, count)
 		if recErr != nil {
 			return WorkerOutputValidationResult{}, recErr
 		}
-		if err := artifactBudget.AddFile(record.SizeBytes); err != nil {
-			return WorkerOutputValidationResult{}, workerOutputLimitError(err)
-		}
-
 		if err := insertArtifactRecord(ctx, tx, record); err != nil {
+			if content != nil {
+				_ = content.Close()
+			}
 			return WorkerOutputValidationResult{}, fmt.Errorf("persist artifact %q: %w", record.ArtifactID, err)
 		}
 		if record.ArtifactAction != "delete" {
-			if err := insertArtifactContentRecord(ctx, tx, record, content); err != nil {
+			err := insertArtifactContentRecord(ctx, tx, record, content, artifact, contentBuffer)
+			closeErr := content.Close()
+			if err != nil {
 				return WorkerOutputValidationResult{}, fmt.Errorf("persist artifact content %q: %w", record.ArtifactID, err)
 			}
+			if closeErr != nil {
+				return WorkerOutputValidationResult{}, closeErr
+			}
 		}
+		count++
+	}
+	err = cursor.Close()
+	closed = true
+	if err != nil {
+		return WorkerOutputValidationResult{}, fmt.Errorf("close artifact metadata: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -156,58 +230,28 @@ func (v *WorkerOutputValidator) ValidateAndPersist(ctx context.Context, req Work
 	}
 	committed = true
 
-	return WorkerOutputValidationResult{Status: output.Status, ArtifactCount: len(output.Artifacts)}, nil
+	return WorkerOutputValidationResult{Status: output.Status, ArtifactCount: count}, nil
 }
 
-func (v *WorkerOutputValidator) ListArtifactsByAttempt(ctx context.Context, attemptID string) ([]ArtifactRecord, error) {
-	if strings.TrimSpace(attemptID) == "" {
-		return nil, fmt.Errorf("attempt id is required")
-	}
-
-	rows, err := v.db.QueryContext(
-		ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
-		 FROM artifacts
-		 WHERE attempt_id = ?
-		 ORDER BY artifact_id ASC`,
-		attemptID,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query artifacts by attempt %q: %w", attemptID, err)
-	}
-	defer rows.Close()
-
-	artifacts := make([]ArtifactRecord, 0)
-	for rows.Next() {
-		var record ArtifactRecord
-		if err := rows.Scan(
-			&record.ArtifactID,
-			&record.RunID,
-			&record.NodeRunID,
-			&record.AttemptID,
-			&record.ArtifactKind,
-			&record.ArtifactAction,
-			&record.Name,
-			&record.MIME,
-			&record.Path,
-			&record.SHA256,
-			&record.SizeBytes,
-			&record.ProducerRole,
-			&record.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan artifact row: %w", err)
-		}
-		artifacts = append(artifacts, record)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate artifact rows: %w", err)
-	}
-
-	return artifacts, nil
+type workerArtifactSlice struct {
+	items  []WorkerArtifact
+	offset int
 }
 
-func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRequest, artifact workerOutputArtifact, index int) (ArtifactRecord, []byte, error) {
+func (s *workerArtifactSlice) Next(ctx context.Context) (WorkerArtifact, error) {
+	if err := ctx.Err(); err != nil {
+		return WorkerArtifact{}, err
+	}
+	if s.offset == len(s.items) {
+		return WorkerArtifact{}, io.EOF
+	}
+	item := s.items[s.offset]
+	s.offset++
+	return item, nil
+}
+func (*workerArtifactSlice) Close() error { return nil }
+
+func (v *WorkerOutputValidator) buildArtifactRecord(ctx context.Context, req WorkerOutputValidationRequest, artifact WorkerArtifact, index int) (ArtifactRecord, io.ReadCloser, error) {
 	action := firstNonEmptyArtifactAction(artifact.Action)
 	artifactPath := strings.TrimSpace(artifact.Path)
 	if err := validateArtifactPathReference(artifactPath); err != nil {
@@ -235,18 +279,36 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 			CreatedAt:      req.CreatedAt,
 		}, nil, nil
 	}
-	if !hasInlineContent {
+	var content io.ReadCloser
+	if artifact.OpenContent != nil {
+		var err error
+		content, err = artifact.OpenContent(ctx)
+		if err != nil {
+			return ArtifactRecord{}, nil, err
+		}
+		if content == nil {
+			return ArtifactRecord{}, nil, fmt.Errorf("artifact content opener returned no reader")
+		}
+	} else if req.OpenArtifact != nil {
+		var err error
+		content, err = req.OpenArtifact(ctx, artifactPath)
+		if err != nil {
+			return ArtifactRecord{}, nil, err
+		}
+		if content == nil {
+			return ArtifactRecord{}, nil, fmt.Errorf("artifact opener returned no reader for %q", artifactPath)
+		}
+	} else if hasInlineContent {
+		content = io.NopCloser(bytes.NewReader(raw))
+	} else {
 		if strings.TrimSpace(req.WorkspacePath) == "" {
 			return ArtifactRecord{}, nil, &WorkerOutputValidationError{
 				Code:   string(errorcatalog.CodeInvalidOutputSchema),
 				Reason: fmt.Sprintf("artifact content is unavailable for %q without a workspace path or inline content", artifactPath),
 			}
 		}
-		loaded, readErr := readWorkspaceArtifact(req.WorkspacePath, artifactPath)
+		loaded, readErr := openWorkspaceArtifact(ctx, req.WorkspacePath, artifactPath)
 		if readErr != nil {
-			if errors.Is(readErr, securefs.ErrLimitExceeded) {
-				return ArtifactRecord{}, nil, workerOutputLimitError(&providerlimits.LimitExceededError{Resource: "worker output artifact", Limit: providerlimits.TrackedWorkspaceFileBytes})
-			}
 			if errors.Is(readErr, os.ErrNotExist) {
 				return ArtifactRecord{}, nil, &WorkerOutputValidationError{
 					Code:   string(errorcatalog.CodeInvalidOutputSchema),
@@ -260,19 +322,7 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 				err:    readErr,
 			}
 		}
-		raw = loaded
-	}
-	if int64(len(raw)) > providerlimits.TrackedWorkspaceFileBytes {
-		return ArtifactRecord{}, nil, workerOutputLimitError(&providerlimits.LimitExceededError{Resource: "worker output artifact", Limit: providerlimits.TrackedWorkspaceFileBytes})
-	}
-
-	sum := sha256.Sum256(raw)
-	calculatedSHA := hex.EncodeToString(sum[:])
-	if artifact.SHA256 != "" && artifact.SHA256 != calculatedSHA {
-		return ArtifactRecord{}, nil, &WorkerOutputValidationError{
-			Code:   string(errorcatalog.CodeInvalidOutputSchema),
-			Reason: fmt.Sprintf("artifact checksum mismatch for %q", artifact.Path),
-		}
+		content = loaded
 	}
 
 	artifactID := fmt.Sprintf("%s_artifact_%d", req.AttemptID, index+1)
@@ -287,11 +337,11 @@ func (v *WorkerOutputValidator) buildArtifactRecord(req WorkerOutputValidationRe
 		Name:           artifact.Name,
 		MIME:           artifact.MIME,
 		Path:           artifactPath,
-		SHA256:         calculatedSHA,
-		SizeBytes:      int64(len(raw)),
+		SHA256:         "",
+		SizeBytes:      0,
 		ProducerRole:   req.ProducerRole,
 		CreatedAt:      req.CreatedAt,
-	}, raw, nil
+	}, content, nil
 }
 
 func validateWorkerOutputValidationRequest(req WorkerOutputValidationRequest) error {
@@ -307,9 +357,6 @@ func validateWorkerOutputValidationRequest(req WorkerOutputValidationRequest) er
 	if strings.TrimSpace(req.ProducerRole) == "" {
 		return fmt.Errorf("producer role is required")
 	}
-	if strings.TrimSpace(req.WorkspacePath) == "" && len(req.ArtifactContentByPath) == 0 {
-		return fmt.Errorf("workspace path is required when artifact contents are not provided")
-	}
 	if len(req.OutputJSON) == 0 {
 		return fmt.Errorf("worker output is required")
 	}
@@ -324,6 +371,14 @@ func validateArtifactPathReference(artifactPath string) error {
 	normalized := strings.TrimSpace(artifactPath)
 	if normalized == "" {
 		return fmt.Errorf("artifact path is required")
+	}
+	if strings.ContainsRune(normalized, '\x00') {
+		return fmt.Errorf("artifact path contains a null byte")
+	}
+	for _, segment := range strings.Split(normalized, "/") {
+		if segment == ".." {
+			return fmt.Errorf("artifact path contains traversal")
+		}
 	}
 	if filepath.IsAbs(normalized) {
 		return fmt.Errorf("artifact path must be relative to workspace")
@@ -345,48 +400,21 @@ func hasWindowsDrivePrefix(value string) bool {
 	return len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':'
 }
 
-func readWorkspaceArtifact(workspacePath, artifactPath string) ([]byte, error) {
+func openWorkspaceArtifact(ctx context.Context, workspacePath, artifactPath string) (io.ReadCloser, error) {
 	root, err := securefs.OpenRoot(workspacePath)
 	if err != nil {
 		return nil, fmt.Errorf("open artifact workspace: %w", err)
 	}
-	defer root.Close()
-	raw, err := root.ReadRegular(artifactPath, providerlimits.TrackedWorkspaceFileBytes)
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-func resolveArtifactPath(workspacePath, artifactPath string) (string, error) {
-	normalized := strings.TrimSpace(artifactPath)
-	if normalized == "" {
-		return "", fmt.Errorf("artifact path is required")
-	}
-	if filepath.IsAbs(normalized) {
-		return "", fmt.Errorf("artifact path must be relative to workspace")
-	}
-
-	workspaceAbs, err := filepath.Abs(workspacePath)
-	if err != nil {
-		return "", fmt.Errorf("resolve workspace path: %w", err)
-	}
-	resolved := filepath.Clean(filepath.Join(workspaceAbs, normalized))
-	if resolved != workspaceAbs {
-		prefix := workspaceAbs + string(filepath.Separator)
-		if !strings.HasPrefix(resolved, prefix) {
-			return "", fmt.Errorf("artifact path escapes workspace: %q", artifactPath)
+	reader, writer := io.Pipe()
+	go func() {
+		defer root.Close()
+		_, _, err := root.CopyRegular(ctx, artifactPath, writer)
+		if err != nil {
+			err = &WorkerOutputValidationError{Code: string(errorcatalog.CodeInvalidOutputSchema), Reason: "artifact path could not be read safely", err: err}
 		}
-	}
-	return resolved, nil
-}
-
-func workerOutputLimitError(err error) *WorkerOutputValidationError {
-	return &WorkerOutputValidationError{
-		Code:   string(errorcatalog.CodeResourceLimitExceeded),
-		Reason: "worker output exceeds a configured resource limit",
-		err:    err,
-	}
+		_ = writer.CloseWithError(err)
+	}()
+	return reader, nil
 }
 
 func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord) error {
@@ -415,30 +443,44 @@ func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactReco
 	return nil
 }
 
-func ensureArtifactContentTable(ctx context.Context, tx *sql.Tx) error {
-	_, err := tx.ExecContext(
-		ctx,
-		`CREATE TABLE IF NOT EXISTS artifact_contents (
-			artifact_id TEXT PRIMARY KEY,
-			content BLOB NOT NULL,
-			sha256 TEXT NOT NULL,
-			size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
-			created_at TEXT NOT NULL,
-			FOREIGN KEY (artifact_id) REFERENCES artifacts(artifact_id)
-		)`,
-	)
-	return err
-}
+const artifactChunkBytes = 1 << 20
 
-func insertArtifactContentRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord, content []byte) error {
+func insertArtifactContentRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord, content io.Reader, expected WorkerArtifact, buffer []byte) error {
+	hash := sha256.New()
+	var size int64
+	for index := 0; ; index++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		n, err := io.ReadFull(content, buffer)
+		if err != nil && err != io.EOF && err != io.ErrUnexpectedEOF {
+			return err
+		}
+		if n > 0 {
+			if _, writeErr := tx.ExecContext(ctx, `INSERT INTO artifact_content_chunks (artifact_id, chunk_index, content) VALUES (?, ?, ?)`, artifact.ArtifactID, index, buffer[:n]); writeErr != nil {
+				return writeErr
+			}
+			_, _ = hash.Write(buffer[:n])
+			size += int64(n)
+		}
+		if err != nil {
+			break
+		}
+	}
+	checksum := hex.EncodeToString(hash.Sum(nil))
+	if (expected.SHA256 != "" && expected.SHA256 != checksum) || (expected.SizeBytes != nil && *expected.SizeBytes != size) {
+		return &WorkerOutputValidationError{Code: string(errorcatalog.CodeInvalidOutputSchema), Reason: fmt.Sprintf("artifact checksum or size mismatch for %q", artifact.Path)}
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE artifacts SET sha256 = ?, size_bytes = ? WHERE artifact_id = ?`, checksum, size, artifact.ArtifactID); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at)
+		 VALUES (?, ?, ?, ?)`,
 		artifact.ArtifactID,
-		content,
-		artifact.SHA256,
-		artifact.SizeBytes,
+		checksum,
+		size,
 		artifact.CreatedAt,
 	)
 	return err

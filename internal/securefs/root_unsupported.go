@@ -3,7 +3,9 @@
 package securefs
 
 import (
+	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"time"
@@ -42,6 +44,12 @@ func removeRootEntry(*Root, string) error { return unsupportedRoot() }
 func removeRootEntryIfIdentity(*Root, string, EntryType, FileIdentity) error {
 	return unsupportedRoot()
 }
-func removeRootEmptyDir(*Root, string) error { return unsupportedRoot() }
-func syncRootDir(*Root, string) error        { return unsupportedRoot() }
-func syncOSRootDirectory(*os.Root) error     { return unsupportedRoot() }
+func removeRootEmptyDir(*Root, string) error            { return unsupportedRoot() }
+func syncRootDir(*Root, string) error                   { return unsupportedRoot() }
+func syncOSRootDirectory(*os.Root) error                { return unsupportedRoot() }
+func openedFileIdentity(*os.File) (FileIdentity, error) { return FileIdentity{}, unsupportedRoot() }
+func openDirectoryFile(*Root, string) (*os.File, error) { return nil, unsupportedRoot() }
+func directoryEntry(*os.File, string) (Entry, error)    { return Entry{}, unsupportedRoot() }
+func replaceRootRegularFrom(context.Context, *Root, string, func(io.Writer) error, fs.FileMode, fs.FileMode, time.Time) error {
+	return unsupportedRoot()
+}

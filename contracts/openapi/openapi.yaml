@@ -3,10 +3,8 @@ info:
   title: Kingdom API
   version: 0.2.0
   description: >-
-    Request bodies are limited to 1 MiB unless an operation documents a different
-    limit. POST /decrees allows up to 16 MiB to carry complete, storage-bounded
-    external issue text. Requests exceeding the applicable limit receive HTTP
-    413 with the canonical error envelope.
+    Authenticated runtime API. Collection page sizes bound individual reads,
+    not the amount of durable history available through continuation cursors.
   license:
     name: Proprietary
     url: https://kingdom.local/license
@@ -590,7 +588,7 @@ paths:
     get:
       tags: [external-sources]
       operationId: listExternalSourceSnapshotComments
-      summary: Read bounded immutable snapshot comments with opaque pagination.
+      summary: Read a page of complete immutable snapshot comments with opaque pagination.
       parameters:
         - $ref: "#/components/parameters/SnapshotId"
         - $ref: "#/components/parameters/Cursor"
@@ -669,13 +667,11 @@ paths:
       tags: [decrees]
       operationId: createDecree
       summary: Create a decree entry.
-      description: The request body is limited to 16 MiB. Requests above this limit receive HTTP 413 with the canonical error envelope.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
-        description: Maximum request body size is 16 MiB, including any attached external issue text.
         content:
           application/json:
             schema:
@@ -695,8 +691,6 @@ paths:
           $ref: "#/components/responses/NotFoundError"
         "409":
           $ref: "#/components/responses/ConflictError"
-        "413":
-          $ref: "#/components/responses/DecreeRequestBodyTooLargeError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -730,6 +724,7 @@ paths:
       summary: List planning sessions ordered by recent activity.
       parameters:
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Planning sessions ordered by updated time.
@@ -769,6 +764,37 @@ paths:
           $ref: "#/components/responses/UnauthorizedError"
         "409":
           $ref: "#/components/responses/ConflictError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /planning-sessions/{id}/context/{snapshotId}/entries:
+    get:
+      tags: [planning]
+      operationId: listPlanningContextEntries
+      summary: List immutable context entries in capture order.
+      parameters:
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - name: snapshotId
+          in: path
+          required: true
+          schema: { type: string, minLength: 1 }
+        - name: kind
+          in: query
+          schema: { type: string, enum: [included, excluded], default: included }
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200":
+          description: Context entry page scoped to the session, snapshot, and entry kind.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/PlanningContextEntriesResponse" }
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1477,6 +1503,8 @@ paths:
       summary: List durable allfather plan review history for a run.
       parameters:
         - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
       responses:
         "200":
           description: Run plan review history.
@@ -1740,6 +1768,7 @@ paths:
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Limit"
+        - $ref: "#/components/parameters/Cursor"
         - name: thread_id
           in: query
           required: false
@@ -2377,22 +2406,6 @@ components:
               category: core
               details: {}
               correlation_id: api.internal
-              occurred_at: "2026-04-30T12:00:00Z"
-    DecreeRequestBodyTooLargeError:
-      description: Canonical non-retryable policy error response for a decree request body exceeding the 16 MiB limit.
-      content:
-        application/json:
-          schema:
-            $ref: "#/components/schemas/ErrorEnvelope"
-          example:
-            error:
-              code: policy_violation
-              message: decree request body exceeds the 16 MiB limit
-              retryable: false
-              category: core
-              details:
-                limit_bytes: 16777216
-              correlation_id: api.request_body_limit
               occurred_at: "2026-04-30T12:00:00Z"
     BadRequestError:
       description: Canonical validation or request-shape error response envelope.
@@ -3347,7 +3360,7 @@ components:
       additionalProperties: false
       required: [include_comments]
       properties:
-        include_comments: { type: boolean, default: false, description: "The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained." }
+        include_comments: { type: boolean, default: false, description: "The comment count is always captured. When enabled, comment bodies are retained in full." }
     ExternalComment:
       type: object
       additionalProperties: false
@@ -3360,12 +3373,12 @@ components:
         created_at: { type: string, format: date-time }
         updated_at: { type: string, format: date-time }
         original_bytes: { type: integer, minimum: 0 }
-        retained_bytes: { type: integer, minimum: 0, maximum: 32768 }
-        truncation_reason: { type: string, enum: [comment_byte_limit, aggregate_byte_limit] }
+        retained_bytes: { type: integer, minimum: 0 }
+        truncation_reason: { type: string, enum: [comment_byte_limit, aggregate_byte_limit], description: "Present only on historical snapshots captured with comment truncation. New captures retain complete comment bodies." }
     IssuePreview:
       type: object
       additionalProperties: false
-      description: Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors.
+      description: Transient normalized preview with complete selected comment bodies and fetch metadata. Responses never include credentials, tokens, or provider errors.
       required: [native_id, repository_id, issue, profile, comment_count, comments, fetched_comment_count, fetched_comment_pages, omitted_comment_count, omitted_comment_pages, etag_present]
       properties:
         native_id: { type: string, minLength: 1 }
@@ -3420,8 +3433,8 @@ components:
         fetched_comment_pages: { type: integer, minimum: 0 }
         omitted_comment_count: { type: integer, minimum: 0 }
         omitted_comment_pages: { type: integer, minimum: 0 }
-        retained_comment_count: { type: integer, minimum: 0, maximum: 100 }
-        retained_comment_bytes: { type: integer, minimum: 0, maximum: 131072 }
+        retained_comment_count: { type: integer, minimum: 0 }
+        retained_comment_bytes: { type: integer, minimum: 0 }
         comments_truncated: { type: boolean }
     ExternalLink:
       type: object
@@ -3910,6 +3923,7 @@ components:
       additionalProperties: false
       required: [items]
       properties:
+        next_cursor: { type: string, minLength: 1 }
         items:
           type: array
           items:
@@ -4098,10 +4112,21 @@ components:
           type: integer
           minimum: 0
 
+    PlanningContextEntriesResponse:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items: { $ref: "#/components/schemas/PlanningContextFileEntry" }
+        next_cursor: { type: string, minLength: 1 }
+
     PlanningContextSnapshot:
       type: object
       additionalProperties: false
-      required: [planning_context_snapshot_id, planning_session_id, summary_markdown, included_files, excluded_files, created_at]
+      description: Snapshot summary. Read file entries through the paginated context entries route.
+      required: [planning_context_snapshot_id, planning_session_id, summary_markdown, created_at]
       properties:
         planning_context_snapshot_id:
           type: string
@@ -4112,14 +4137,6 @@ components:
         summary_markdown:
           type: string
           minLength: 1
-        included_files:
-          type: array
-          items:
-            $ref: "#/components/schemas/PlanningContextFileEntry"
-        excluded_files:
-          type: array
-          items:
-            $ref: "#/components/schemas/PlanningContextFileEntry"
         created_at:
           type: string
           format: date-time
@@ -4666,6 +4683,7 @@ components:
       additionalProperties: false
       required: [run_id, items]
       properties:
+        next_cursor: { type: string, minLength: 1 }
         run_id:
           type: string
           minLength: 1
@@ -4780,6 +4798,7 @@ components:
       additionalProperties: false
       required: [run_id, items]
       properties:
+        next_cursor: { type: string, minLength: 1 }
         run_id:
           type: string
           minLength: 1

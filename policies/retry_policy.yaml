@@ -72,7 +72,6 @@ error_code_map:
   provider_unknown_failure: non_retryable
   provider_cancelled: non_retryable
 
-  budget_exceeded: non_retryable
   resource_limit_exceeded: non_retryable
   event_sequence_gap: non_retryable
   llm_context_overflow: non_retryable

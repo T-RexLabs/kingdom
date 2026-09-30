@@ -13,16 +13,14 @@ type DelegationOutcome string
 
 const (
 	DelegationOutcomeSuccess  DelegationOutcome = "success"
-	DelegationOutcomeSoftFail DelegationOutcome = "soft_fail"
 	DelegationOutcomeHardFail DelegationOutcome = "hard_fail"
 )
 
 const (
-	delegationReasonPolicyViolation       = "policy_violation"
-	delegationReasonDependencyBlocked     = "dependency_blocked"
-	delegationReasonConcurrencyCapReached = "concurrency_cap_reached"
-	delegationReasonSpawnDepthExceeded    = "spawn_depth_exceeded"
-	delegationReasonLineageCycle          = "lineage_cycle"
+	delegationReasonPolicyViolation    = "policy_violation"
+	delegationReasonDependencyBlocked  = "dependency_blocked"
+	delegationReasonSpawnDepthExceeded = "spawn_depth_exceeded"
+	delegationReasonLineageCycle       = "lineage_cycle"
 )
 
 var protectedGovernanceNodeClasses = map[string]struct{}{
@@ -69,7 +67,6 @@ type DelegationRequest struct {
 	DelegateAgentID  string
 	DelegateRoleID   string
 	MaxSpawnDepth    int
-	MaxActiveAgents  int
 	OccurredAt       string
 }
 
@@ -97,14 +94,8 @@ func (e *DelegationPolicyEngine) Delegate(ctx context.Context, req DelegationReq
 	if req.MaxSpawnDepth < 0 {
 		return DelegationDecision{}, fmt.Errorf("max spawn depth must be non-negative")
 	}
-	if req.MaxActiveAgents < 0 {
-		return DelegationDecision{}, fmt.Errorf("max active agents must be non-negative")
-	}
 	if req.MaxSpawnDepth == 0 {
 		req.MaxSpawnDepth = DefaultMaxSpawnDepth
-	}
-	if req.MaxActiveAgents == 0 {
-		req.MaxActiveAgents = DefaultMaxActiveAgentsPerRun
 	}
 
 	decision, delegateRole, delegateExists, err := e.evaluate(ctx, req)
@@ -202,38 +193,6 @@ func (e *DelegationPolicyEngine) evaluate(ctx context.Context, req DelegationReq
 		}
 		if hasCycle {
 			return DelegationDecision{Outcome: DelegationOutcomeHardFail, ReasonCode: delegationReasonLineageCycle, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
-		}
-	}
-
-	if req.MaxActiveAgents > 0 {
-		countedAsActive, err := e.agentIsActiveInRun(ctx, req.RunID, req.DelegateAgentID)
-		if err != nil {
-			return DelegationDecision{}, "", false, err
-		}
-		if !countedAsActive {
-			activeCount, err := e.activeAgentCountForRun(ctx, req.RunID)
-			if err != nil {
-				return DelegationDecision{}, "", false, err
-			}
-			if activeCount >= req.MaxActiveAgents {
-				return DelegationDecision{Outcome: DelegationOutcomeSoftFail, ReasonCode: delegationReasonConcurrencyCapReached, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
-			}
-		}
-	}
-
-	if delegateRole == "intelligence-nightraven" {
-		countedAsActive, err := e.agentIsActiveInRun(ctx, req.RunID, req.DelegateAgentID)
-		if err != nil {
-			return DelegationDecision{}, "", false, err
-		}
-		if !countedAsActive {
-			roleActiveCount, err := e.activeAgentCountForRoleInRun(ctx, req.RunID, delegateRole)
-			if err != nil {
-				return DelegationDecision{}, "", false, err
-			}
-			if roleActiveCount >= DefaultNightravenConcurrencyCap {
-				return DelegationDecision{Outcome: DelegationOutcomeSoftFail, ReasonCode: delegationReasonConcurrencyCapReached, EscalationTarget: "chancellor"}, delegateRole, delegateExists, nil
-			}
 		}
 	}
 
@@ -498,58 +457,4 @@ func (e *DelegationPolicyEngine) wouldCreateCycle(ctx context.Context, agentID, 
 		return false, fmt.Errorf("check lineage cycle for %q -> %q: %w", agentID, newParentAgentID, err)
 	}
 	return true, nil
-}
-
-func (e *DelegationPolicyEngine) activeAgentCountForRun(ctx context.Context, runID string) (int, error) {
-	var count int
-	err := e.db.QueryRowContext(ctx,
-		`SELECT COUNT(DISTINCT agent_id)
-		 FROM node_runs
-		 WHERE run_id = ?
-		   AND node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')`,
-		runID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count active agents for run=%q: %w", runID, err)
-	}
-	return count, nil
-}
-
-func (e *DelegationPolicyEngine) agentIsActiveInRun(ctx context.Context, runID, agentID string) (bool, error) {
-	var found int
-	err := e.db.QueryRowContext(ctx,
-		`SELECT 1
-		 FROM node_runs
-		 WHERE run_id = ?
-		   AND agent_id = ?
-		   AND node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')
-		 LIMIT 1`,
-		runID,
-		agentID,
-	).Scan(&found)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
-	}
-	if err != nil {
-		return false, fmt.Errorf("check active agent for run=%q agent=%q: %w", runID, agentID, err)
-	}
-	return true, nil
-}
-
-func (e *DelegationPolicyEngine) activeAgentCountForRoleInRun(ctx context.Context, runID, roleID string) (int, error) {
-	var count int
-	err := e.db.QueryRowContext(ctx,
-		`SELECT COUNT(DISTINCT nr.agent_id)
-		 FROM node_runs nr
-		 JOIN agents a ON a.agent_id = nr.agent_id
-		 WHERE nr.run_id = ?
-		   AND a.role_id = ?
-		   AND nr.node_status IN ('pending', 'ready', 'starting', 'running', 'blocked')`,
-		runID,
-		roleID,
-	).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count active agents for run=%q role=%q: %w", runID, roleID, err)
-	}
-	return count, nil
 }

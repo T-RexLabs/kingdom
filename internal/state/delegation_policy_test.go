@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 )
 
@@ -21,7 +22,6 @@ func TestDelegationPolicyEngineAllowsLockedSpawnMatrixWithRoleMatch(t *testing.T
 		DelegateAgentID:  "agent_chancellor_2",
 		DelegateRoleID:   "chancellor",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:00:00Z",
 	})
 	if err != nil {
@@ -56,7 +56,6 @@ func TestDelegationPolicyEngineAllowsAdvisorSpawnOnMatchingRequiredRole(t *testi
 		DelegateAgentID:  "agent_noble_delegate",
 		DelegateRoleID:   "noble-delegate",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:05:00Z",
 	})
 	if err != nil {
@@ -83,7 +82,6 @@ func TestDelegationPolicyEngineRejectsNonSpawnerAndEscalatesToChancellor(t *test
 		DelegateAgentID:  "agent_council_2",
 		DelegateRoleID:   "council-member",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:10:00Z",
 	})
 	if err != nil {
@@ -113,7 +111,6 @@ func TestDelegationPolicyEngineRejectsSpawnableRoleViolations(t *testing.T) {
 		DelegateAgentID:  "agent_builder_new",
 		DelegateRoleID:   "builder-berserker",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:15:00Z",
 	})
 	if err != nil {
@@ -142,7 +139,6 @@ func TestDelegationPolicyEngineRejectsNoSkipGovernanceUntilApproved(t *testing.T
 		DelegateAgentID:  "agent_builder_new",
 		DelegateRoleID:   "builder-berserker",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:20:00Z",
 	})
 	if err != nil {
@@ -157,12 +153,17 @@ func TestDelegationPolicyEngineRejectsNoSkipGovernanceUntilApproved(t *testing.T
 	}
 }
 
-func TestDelegationPolicyEngineReturnsSoftFailOnMaxActiveAgentsCap(t *testing.T) {
+func TestDelegationPolicyEngineAllowsMoreThanTwelveActiveAgents(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedDelegationPolicyFixture(t, db)
+
+	for i := 0; i < 13; i++ {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('active_%d', 'chancellor', 'busy', 'agent_king', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, i))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version) VALUES ('active_%d', 'run_1', 'active_%d', 1, 1, 'running', 'chancellor', 'active_%d', 1)`, i, i, i))
+	}
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
 	decision, err := engine.Delegate(context.Background(), DelegationRequest{
@@ -172,22 +173,21 @@ func TestDelegationPolicyEngineReturnsSoftFailOnMaxActiveAgentsCap(t *testing.T)
 		DelegateAgentID:  "agent_chancellor_2",
 		DelegateRoleID:   "chancellor",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  1,
 		OccurredAt:       "2026-03-01T15:25:00Z",
 	})
 	if err != nil {
-		t.Fatalf("delegate under active-agent cap: %v", err)
+		t.Fatalf("delegate beyond twelve active agents: %v", err)
 	}
 
-	if decision.Outcome != DelegationOutcomeSoftFail || decision.ReasonCode != delegationReasonConcurrencyCapReached {
-		t.Fatalf("expected soft fail concurrency cap, got %+v", decision)
+	if decision.Outcome != DelegationOutcomeSuccess {
+		t.Fatalf("expected successful delegation beyond twelve active agents, got %+v", decision)
 	}
-	if got := queryAgentCount(t, db, "agent_chancellor_2"); got != 0 {
-		t.Fatalf("expected no spawned agent on soft fail, got %d", got)
+	if got := queryAgentCount(t, db, "agent_chancellor_2"); got != 1 {
+		t.Fatalf("expected spawned agent, got %d", got)
 	}
 }
 
-func TestDelegationPolicyEngineReturnsSoftFailOnNightravenRoleCap(t *testing.T) {
+func TestDelegationPolicyEngineAllowsMultipleActiveNightravens(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -205,19 +205,18 @@ func TestDelegationPolicyEngineReturnsSoftFailOnNightravenRoleCap(t *testing.T) 
 		DelegatorAgentID: "agent_council",
 		DelegateAgentID:  "agent_nightraven_2",
 		DelegateRoleID:   "intelligence-nightraven",
-		MaxSpawnDepth:    5,
-		MaxActiveAgents:  12,
+		MaxSpawnDepth:    3,
 		OccurredAt:       "2026-03-01T15:26:00Z",
 	})
 	if err != nil {
-		t.Fatalf("delegate under nightraven role cap: %v", err)
+		t.Fatalf("delegate second nightraven: %v", err)
 	}
 
-	if decision.Outcome != DelegationOutcomeSoftFail || decision.ReasonCode != delegationReasonConcurrencyCapReached {
-		t.Fatalf("expected soft fail concurrency cap for nightraven, got %+v", decision)
+	if decision.Outcome != DelegationOutcomeSuccess {
+		t.Fatalf("expected successful second nightraven delegation, got %+v", decision)
 	}
-	if got := queryAgentCount(t, db, "agent_nightraven_2"); got != 0 {
-		t.Fatalf("expected no spawned nightraven agent on cap, got %d", got)
+	if got := queryAgentCount(t, db, "agent_nightraven_2"); got != 1 {
+		t.Fatalf("expected spawned nightraven agent, got %d", got)
 	}
 }
 
@@ -238,7 +237,6 @@ func TestDelegationPolicyEnginePreventsLineageCyclesDeterministically(t *testing
 		DelegateAgentID:  "agent_council",
 		DelegateRoleID:   "council-member",
 		MaxSpawnDepth:    5,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:30:00Z",
 	}
 
@@ -274,7 +272,6 @@ func TestDelegationPolicyEngineRejectsSpawnDepthCap(t *testing.T) {
 		DelegateAgentID:  "agent_builder_new",
 		DelegateRoleID:   "builder-berserker",
 		MaxSpawnDepth:    1,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T15:35:00Z",
 	})
 	if err != nil {
@@ -286,7 +283,7 @@ func TestDelegationPolicyEngineRejectsSpawnDepthCap(t *testing.T) {
 	}
 }
 
-func TestDelegationPolicyEngineAppliesDefaultSpawnAndActiveCaps(t *testing.T) {
+func TestDelegationPolicyEngineAppliesDefaultSpawnDepth(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -301,7 +298,6 @@ func TestDelegationPolicyEngineAppliesDefaultSpawnAndActiveCaps(t *testing.T) {
 		DelegateAgentID:  "agent_chancellor_defaulted",
 		DelegateRoleID:   "chancellor",
 		MaxSpawnDepth:    0,
-		MaxActiveAgents:  0,
 		OccurredAt:       "2026-03-01T15:40:00Z",
 	})
 	if err != nil {

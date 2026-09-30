@@ -1,14 +1,11 @@
 package opencode
 
 import (
-	"errors"
 	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
-
-	"kingdom/internal/providerlimits"
 )
 
 func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
@@ -42,7 +39,7 @@ func TestParseOpencodeRunEventReadsNestedPartFields(t *testing.T) {
 func TestDecodeOpencodeRunEventStreamEventLineBoundary(t *testing.T) {
 	prefix := `{"type":"text","part":{"text":"`
 	suffix := `"}}`
-	line := prefix + strings.Repeat("x", providerlimits.OpenCodeEventLineBytes-len(prefix)-len(suffix)) + suffix
+	line := prefix + strings.Repeat("x", 9*1024*1024) + suffix
 	events := 0
 	err := decodeOpencodeRunEventStream(strings.NewReader(line+"\n"), nil, func(opencodeRunEvent) error {
 		events++
@@ -55,10 +52,10 @@ func TestDecodeOpencodeRunEventStreamEventLineBoundary(t *testing.T) {
 		t.Fatalf("exact event-line boundary events=%d, want 1", events)
 	}
 
-	var limitErr *providerlimits.LimitExceededError
-	err = decodeOpencodeRunEventStream(strings.NewReader(line+"x\n"), nil, func(opencodeRunEvent) error { return nil }, nil)
-	if !errors.As(err, &limitErr) || limitErr.Resource != "event line" {
-		t.Fatalf("one-byte event-line overflow error=%v, want event line limit", err)
+	malformed := 0
+	err = decodeOpencodeRunEventStream(strings.NewReader(line+"x\n"), nil, func(opencodeRunEvent) error { t.Fatal("malformed large event accepted"); return nil }, func(string, error) { malformed++ })
+	if err != nil || malformed != 1 {
+		t.Fatalf("malformed large event: count=%d err=%v", malformed, err)
 	}
 }
 

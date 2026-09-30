@@ -135,5 +135,6 @@ func TestLiveGitHubAppSmoke(t *testing.T) {
 	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureAuthentication {
 		t.Fatalf("uninstalled App validation error=%v, want revoked/authentication", err)
 	}
-	t.Logf("live GitHub smoke passed: repositories=%d issues_page=%d comments_retained=%d transfer=%s#%d revocation=confirmed", len(repositories.Items), len(issues.Items), len(result.Comments), result.Issue.Repository, result.Issue.IssueNumber)
+	defer result.Close()
+	t.Logf("live GitHub smoke passed: repositories=%d issues_page=%d comments_retained=%d transfer=%s#%d revocation=confirmed", len(repositories.Items), len(issues.Items), result.FetchedCommentCount, result.Issue.Repository, result.Issue.IssueNumber)
 }

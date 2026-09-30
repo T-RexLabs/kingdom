@@ -2,9 +2,12 @@ package planning
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"sync"
@@ -519,7 +522,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -551,6 +554,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	defer turn.Close()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
@@ -562,7 +566,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	// expected to be cancelled would lie. Same pattern repeats after
 	// every long planner call below.
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(turn.Metadata, err))
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -586,6 +590,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	}
 
 	assistantMessage := state.AppendPlanningMessageRequest{
+		ContentSource:       turn.ContentSource,
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
 		ParentMessageID:     request.UserMessageID,
@@ -614,6 +619,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, turn.ContentSource, state.PlanningMessageContentID(assistantMessage.PlanningMessageID))
 	runCompletedPayload := plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
@@ -660,7 +666,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -684,11 +690,12 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	defer turn.Close()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(turn.Metadata, err))
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -707,6 +714,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 
 	regenParentID := nilIfEmpty(request.ParentMessageID)
 	assistantMessage := state.AppendPlanningMessageRequest{
+		ContentSource:       turn.ContentSource,
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
 		ParentMessageID:     request.ParentMessageID,
@@ -732,6 +740,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, turn.ContentSource, state.PlanningMessageContentID(assistantMessage.PlanningMessageID))
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
@@ -771,7 +780,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -799,11 +808,12 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	defer plan.Close()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
 		err = flushErr
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(plan.Metadata, err))
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -820,6 +830,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	// object to satisfy the NOT NULL constraint without lying to the client.
 	summaryJSON := []byte(`{}`)
 	draft := state.CreatePlanningDraftRequest{
+		TextSource:        plan.TextSource,
 		PlanningDraftID:   request.DraftID,
 		PlanningSessionID: session.PlanningSessionID,
 		DecreeTitle:       firstNonEmpty(plan.DecreeTitle, session.Title),
@@ -837,6 +848,7 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, plan.TextSource, state.PlanningDraftContentID(draft.PlanningDraftID))
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":        draft.PlanningDraftID,
 		"planning_draft_id": draft.PlanningDraftID,
@@ -876,11 +888,11 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	agentContext, err := r.deps.titleAgentContext(ctx, operation, session, messages, true)
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, true)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
@@ -899,7 +911,7 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 		err = flushErr
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(generatedTitle.Metadata, err))
 	}
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
@@ -1074,6 +1086,17 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 // stuck-finalise path. Operators see the failure on the wire instead of
 // having to scrape logs.
 func (r *operationRunner) cancelOperation(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, reason string) error {
+	return r.cancelOperationWithMetadata(ctx, operation, cursor, reason, ProviderExecutionMetadata{})
+}
+
+func resultProviderMetadata(metadata ProviderExecutionMetadata, err error) ProviderExecutionMetadata {
+	if err != nil {
+		return providerMetadataFromError(err)
+	}
+	return metadata
+}
+
+func (r *operationRunner) cancelOperationWithMetadata(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, reason string, metadata ProviderExecutionMetadata) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "operation cancelled"
 	}
@@ -1085,7 +1108,7 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 		return eventErr
 	}
 	now := r.deps.nowString()
-	providerSettlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, now, reason, nil, true)
+	providerSettlement := providerSettlementForFailure(operation, metadata, now, reason, nil, true)
 	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, false); err != nil {
 		return err
 	}
@@ -1344,7 +1367,8 @@ func inferToolActivityFields(item sessionActivityItem) (string, string, string) 
 }
 
 func plannerActivitySignature(activity ProviderActivity) string {
-	return strings.Join([]string{
+	hash := sha256.New()
+	for _, field := range []string{
 		strings.TrimSpace(activity.Kind),
 		strings.TrimSpace(activity.ToolName),
 		strings.TrimSpace(activity.ToolStatus),
@@ -1353,7 +1377,13 @@ func plannerActivitySignature(activity ProviderActivity) string {
 		strings.TrimSpace(activity.Label),
 		strings.TrimSpace(activity.Summary),
 		strings.TrimSpace(activity.OccurredAt),
-	}, "\x00")
+	} {
+		// Length framing avoids both large concatenations and separator
+		// collisions in provider-emitted fields.
+		_, _ = fmt.Fprintf(hash, "%d:", len(field))
+		_, _ = io.WriteString(hash, field)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func plannerActivityIDFromStoredEvent(event state.PlanningOperationEvent) (string, bool) {
@@ -1554,8 +1584,23 @@ func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, ou
 	}
 	switch operationType {
 	case state.PlanningOperationTypeReply, state.PlanningOperationTypeRegenerate:
-		cleaned, _ := parseStructuredQuestion(trimmed)
-		return cleaned
+		// Inline diagnostic observations retain their complete value on a local
+		// staging failure. Referenced provider output bypasses this scalar path.
+		parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: trimmed}, false)
+		if err != nil {
+			return trimmed
+		}
+		defer parsed.Close()
+		reader, err := parsed.body.Open(context.Background())
+		if err != nil {
+			return trimmed
+		}
+		defer reader.Close()
+		var cleaned strings.Builder
+		if _, err := io.Copy(&cleaned, reader); err != nil {
+			return trimmed
+		}
+		return cleaned.String()
 	default:
 		return trimmed
 	}

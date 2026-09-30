@@ -37,13 +37,6 @@
       "escalation_target": "chancellor"
     },
     {
-      "code": "budget_exceeded",
-      "category": "core",
-      "retry_class": "non_retryable",
-      "retryable": false,
-      "escalation_target": "chancellor"
-    },
-    {
       "code": "resource_limit_exceeded",
       "category": "core",
       "retry_class": "non_retryable",

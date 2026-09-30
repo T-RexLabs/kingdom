@@ -344,9 +344,9 @@ while :; do sleep 1; done
 func (f *sessionActivityTestExporter) Export(_ context.Context, req sessionDiagnosticExportRequest) (sessionDiagnosticExportResult, error) {
 	f.modes = append(f.modes, req.Mode)
 	if req.Mode == sessionDiagnosticExportModeSanitized && len(f.sanitized) > 0 {
-		return sessionDiagnosticExportResult{Stdout: f.sanitized}, nil
+		return sessionDiagnosticExportResult{Stdout: strings.NewReader(string(f.sanitized))}, nil
 	}
-	return sessionDiagnosticExportResult{Stdout: f.raw}, nil
+	return sessionDiagnosticExportResult{Stdout: strings.NewReader(string(f.raw))}, nil
 }
 
 func assertHasActivityItem(t *testing.T, items []SessionActivityItem, kind string, label string) {

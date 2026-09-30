@@ -10,6 +10,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -24,6 +25,68 @@ import (
 	"kingdom/internal/external"
 	"kingdom/internal/state"
 )
+
+func readTestComments(t *testing.T, source state.ExternalCommentSource) []state.ExternalComment {
+	t.Helper()
+	t.Cleanup(func() { _ = state.CloseExternalComments(source) })
+	var comments []state.ExternalComment
+	if err := state.ReplayExternalComments(context.Background(), source, func(c state.ExternalComment) error { comments = append(comments, c); return nil }); err != nil {
+		t.Fatal(err)
+	}
+	return comments
+}
+
+func TestCommentFetchDoesNotFollowUncheckedRepositoryRedirect(t *testing.T) {
+	keys, _ := provisionTestKey(t)
+	var followed atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/repos/owner/repo/") {
+			w.Header().Set("Location", "/repos/outside/repo/issues/7/comments")
+			w.WriteHeader(http.StatusMovedPermanently)
+			return
+		}
+		followed.Add(1)
+		w.Write([]byte(`[]`))
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.fetchCommentPage(context.Background(), "conn-1", 1, "token", "owner/repo", 7, 1, ""); err == nil {
+		t.Fatal("unchecked comment redirect was treated as complete content")
+	}
+	if followed.Load() != 0 {
+		t.Fatal("comment credential followed an unchecked repository redirect")
+	}
+}
+
+func TestCommentPageStreamingRejectsPartialContentAndReleasesSpool(t *testing.T) {
+	spoolRoot := t.TempDir()
+	t.Setenv("TMPDIR", spoolRoot)
+	keys, _ := provisionTestKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `[{"id":1,"body":"complete first comment","html_url":"https://github.com/owner/repo/issues/7#issuecomment-1","created_at":"2026-08-12T09:00:00Z","updated_at":"2026-08-12T09:00:00Z","user":{"login":"octo"}}, {`)
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := client.fetchCommentPage(context.Background(), "conn", 1, "token", "owner/repo", 7, 1, "")
+	if err == nil || page.comments != nil {
+		t.Fatal("malformed later comment exposed an accepted prefix")
+	}
+	entries, err := os.ReadDir(spoolRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "kingdom-external-comments-") {
+			t.Fatal("failed comment page left a staging file")
+		}
+	}
+}
 
 func TestAppJWTUsesRS256AndBoundedLifetime(t *testing.T) {
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -48,6 +111,49 @@ func TestAppJWTUsesRS256AndBoundedLifetime(t *testing.T) {
 	exp := int64(claims["exp"].(float64))
 	if iat > now.Unix() || exp-now.Unix() > 600 || exp-iat > 600 {
 		t.Fatalf("unsafe jwt window iat=%d exp=%d", iat, exp)
+	}
+}
+
+func TestIssueContentTransportPreservesLargeContentWithoutRelaxingSetup(t *testing.T) {
+	keys, _ := provisionTestKey(t)
+	body := strings.Repeat("界", 3<<20) + "issue-tail"
+	title := strings.Repeat("Title ", 400)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": 123, "number": 7, "title": title, "body": body, "state": "open", "comments": 0, "repository_url": "https://api.github.com/repos/owner/repo", "html_url": "https://github.com/owner/repo/issues/7", "created_at": "2026-08-12T10:00:00Z", "updated_at": "2026-08-12T10:00:00Z"})
+	}))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issue githubIssue
+	if _, err := client.doIssueJSONResponse(context.Background(), "conn-1", 1, "/repos/owner/repo/issues/7", "token", &issue, ""); err != nil {
+		t.Fatal(err)
+	}
+	normalized, err := normalizeIssue(issue, "owner/repo", 7)
+	if err != nil || normalized.Issue.Body != body || normalized.Issue.Title != title {
+		t.Fatalf("issue content lost: %v", err)
+	}
+	_, err = client.doJSON(context.Background(), "conn-1", 1, http.MethodGet, "/app", "token", nil, &map[string]any{}, "")
+	var providerErr *external.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureOversizedResponse {
+		t.Fatalf("setup ceiling changed: %v", err)
+	}
+}
+
+func TestIssueContentTransportRejectsTrailingJSON(t *testing.T) {
+	keys, _ := provisionTestKey(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{} {}`)) }))
+	defer server.Close()
+	client, err := NewClient(ClientConfig{Keys: keys, HTTPClient: server.Client(), BaseURL: server.URL, AllowTestEndpoint: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issue githubIssue
+	_, err = client.doIssueJSONResponse(context.Background(), "conn-1", 1, "/repos/owner/repo/issues/7", "token", &issue, "")
+	var providerErr *external.ProviderError
+	if !errors.As(err, &providerErr) || providerErr.Class != external.FailureMalformedResponse {
+		t.Fatalf("trailing JSON accepted: %v", err)
 	}
 }
 
@@ -225,7 +331,8 @@ func TestFetchIssueRechecksCommentsAfterIssueNotModified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.NotModified || len(result.Comments) != 1 || result.Comments[0].Body != "new" || result.CommentsETag != `"comments-v2"` {
+	comments := readTestComments(t, result.Comments)
+	if result.NotModified || len(comments) != 1 || comments[0].Body != "new" || result.CommentsETag != `"comments-v2"` {
 		t.Fatalf("comment-only refresh was lost: %#v", result)
 	}
 }
@@ -264,7 +371,7 @@ func TestFetchIssueAlwaysCapturesCommentCountWithoutFetchingBodies(t *testing.T)
 	if result.ProviderCommentCount != 12 {
 		t.Fatalf("comment count was not captured for a bodies-off profile: %#v", result)
 	}
-	if len(result.Comments) != 0 || result.FetchedCommentCount != 0 {
+	if len(readTestComments(t, result.Comments)) != 0 || result.FetchedCommentCount != 0 {
 		t.Fatalf("comment bodies leaked into a bodies-off profile: %#v", result)
 	}
 }
@@ -625,7 +732,7 @@ func TestFetchIssuePreservesCommentValidatorSignalWhenIssueChanged(t *testing.T)
 		t.Fatal(err)
 	}
 	seedTestToken(client, state.ExternalConnection{ConnectionID: "conn-1", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2"}}}, fingerprint, "token", now.Add(time.Hour))
-	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", Profile: state.ExternalImportProfile{IncludeComments: true}, CommentsETag: `"comments-v1"`})
+	result, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: state.ExternalConnection{ConnectionID: "conn-1", CredentialGeneration: 1, Installations: []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10"}}}, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: "100", CurrentCommentCount: 1, Profile: state.ExternalImportProfile{IncludeComments: true}, CommentsETag: `"comments-v1"`})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -634,7 +741,7 @@ func TestFetchIssuePreservesCommentValidatorSignalWhenIssueChanged(t *testing.T)
 	}
 }
 
-func TestFetchIssueRecordsBoundedCommentOmissions(t *testing.T) {
+func TestFetchIssueRetainsEveryCommentPage(t *testing.T) {
 	for _, total := range []int{99, 100, 101, 150, 200, 201, 300} {
 		t.Run(strconv.Itoa(total), func(t *testing.T) {
 			keys, fingerprint := provisionTestKey(t)
@@ -671,7 +778,11 @@ func TestFetchIssueRecordsBoundedCommentOmissions(t *testing.T) {
 					}
 					comments := make([]map[string]any, 0, max(0, end-start+1))
 					for id := start; id <= end; id++ {
-						comments = append(comments, map[string]any{"id": id, "body": fmt.Sprintf("comment-%d", id), "html_url": fmt.Sprintf("https://github.com/owner/repo/issues/7#issuecomment-%d", id), "created_at": "2026-08-12T09:00:00Z", "updated_at": "2026-08-12T09:00:00Z", "user": map[string]string{"login": "octo"}})
+						body := fmt.Sprintf("comment-%d", id)
+						if total == 300 && id == 300 {
+							body = strings.Repeat("界", 3<<20) + "comment-tail"
+						}
+						comments = append(comments, map[string]any{"id": id, "body": body, "html_url": fmt.Sprintf("https://github.com/owner/repo/issues/7#issuecomment-%d", id), "created_at": "2026-08-12T09:00:00Z", "updated_at": "2026-08-12T09:00:00Z", "user": map[string]string{"login": "octo"}})
 					}
 					_ = json.NewEncoder(w).Encode(comments)
 				default:
@@ -687,25 +798,23 @@ func TestFetchIssueRecordsBoundedCommentOmissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			expectedFetched := total
-			if expectedFetched > 100 {
-				expectedFetched = 100
-			}
 			expectedOmitted := total - expectedFetched
 			if result.FetchedCommentCount != expectedFetched || result.OmittedCommentCount != expectedOmitted || result.OmittedCommentPages != (expectedOmitted+99)/100 {
 				t.Fatalf("incorrect comment boundaries: %#v", result)
 			}
-			expectedPages := 1
-			if total > 100 && total%100 != 0 {
-				expectedPages = 2
-			}
+			expectedPages := (total + 99) / 100
 			if total > 0 && result.FetchedCommentPages != expectedPages {
 				t.Fatalf("fetched pages=%d", result.FetchedCommentPages)
 			}
-			if len(result.Comments) > 0 && result.Comments[0].ProviderCommentID != strconv.Itoa(total-expectedFetched+1) {
-				t.Fatalf("comments not restored chronologically: first=%s", result.Comments[0].ProviderCommentID)
+			comments := readTestComments(t, result.Comments)
+			if total == 300 && comments[299].Body != strings.Repeat("界", 3<<20)+"comment-tail" {
+				t.Fatal("large comment body was shortened")
 			}
-			if len(result.Comments) > 0 && result.Comments[len(result.Comments)-1].ProviderCommentID != strconv.Itoa(total) {
-				t.Fatalf("newest comment omitted: last=%s", result.Comments[len(result.Comments)-1].ProviderCommentID)
+			if len(comments) > 0 && comments[0].ProviderCommentID != "1" {
+				t.Fatalf("comments not restored chronologically: first=%s", comments[0].ProviderCommentID)
+			}
+			if len(comments) > 0 && comments[len(comments)-1].ProviderCommentID != strconv.Itoa(total) {
+				t.Fatalf("newest comment omitted: last=%s", comments[len(comments)-1].ProviderCommentID)
 			}
 			if total > 100 && !strings.HasPrefix(result.CommentsETag, "v1.") {
 				t.Fatalf("multi-page validators not retained: %q", result.CommentsETag)
@@ -782,11 +891,11 @@ func TestFetchIssueRebuildsCommentsWhenRetainedPageWindowChanges(t *testing.T) {
 		deletedComment       string
 		newlyRetainedComment string
 	}{
-		{name: "grow across first page", before: 100, after: 101, wantFirst: "2", wantLast: "101", wantRefreshRequests: 2},
+		{name: "grow across first page", before: 100, after: 101, wantFirst: "1", wantLast: "101", wantRefreshRequests: 2},
 		{name: "shrink across first page", before: 101, after: 100, wantFirst: "1", wantLast: "100", wantRefreshRequests: 1},
-		{name: "grow onto full second page", before: 199, after: 200, wantFirst: "101", wantLast: "200", wantRefreshRequests: 1},
-		{name: "grow across second page", before: 200, after: 201, wantFirst: "102", wantLast: "201", wantRefreshRequests: 2},
-		{name: "shrink across second page", before: 201, after: 200, wantFirst: "101", wantLast: "200", wantRefreshRequests: 1, deletedComment: "201", newlyRetainedComment: "101"},
+		{name: "grow onto full second page", before: 199, after: 200, wantFirst: "1", wantLast: "200", wantRefreshRequests: 2},
+		{name: "grow across second page", before: 200, after: 201, wantFirst: "1", wantLast: "201", wantRefreshRequests: 3},
+		{name: "shrink across second page", before: 201, after: 200, wantFirst: "1", wantLast: "200", wantRefreshRequests: 2, deletedComment: "201"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			keys, fingerprint := provisionTestKey(t)
@@ -854,8 +963,9 @@ func TestFetchIssueRebuildsCommentsWhenRetainedPageWindowChanges(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if test.deletedComment != "" && (first.Comments[0].ProviderCommentID == test.newlyRetainedComment || first.Comments[99].ProviderCommentID != test.deletedComment) {
-				t.Fatalf("initial retained window did not contain %s and omit %s: first=%s last=%s", test.deletedComment, test.newlyRetainedComment, first.Comments[0].ProviderCommentID, first.Comments[99].ProviderCommentID)
+			initialComments := readTestComments(t, first.Comments)
+			if len(initialComments) != test.before || initialComments[0].ProviderCommentID != "1" {
+				t.Fatal("initial capture omitted comments")
 			}
 			second, err := client.FetchIssue(context.Background(), external.IssueRequest{Connection: connection, RepositoryID: "200", IssueNumber: 7, ProviderNativeID: first.NativeID, CurrentIssue: first.Issue, CurrentCommentCount: first.ProviderCommentCount, Profile: state.ExternalImportProfile{IncludeComments: true}, ETag: first.ETag, CommentsETag: first.CommentsETag})
 			if err != nil {
@@ -867,16 +977,14 @@ func TestFetchIssueRebuildsCommentsWhenRetainedPageWindowChanges(t *testing.T) {
 			if refreshCommentRequests != test.wantRefreshRequests {
 				t.Fatalf("refresh comment requests=%d, want %d", refreshCommentRequests, test.wantRefreshRequests)
 			}
-			if second.CommentsNotModified || len(second.Comments) != 100 || second.Comments[0].ProviderCommentID != test.wantFirst || second.Comments[99].ProviderCommentID != test.wantLast {
+			comments := readTestComments(t, second.Comments)
+			if second.CommentsNotModified || len(comments) != test.after || comments[0].ProviderCommentID != test.wantFirst || comments[len(comments)-1].ProviderCommentID != test.wantLast {
 				t.Fatalf("rebuilt comments=%#v", second)
 			}
-			for _, comment := range second.Comments {
+			for _, comment := range comments {
 				if comment.ProviderCommentID == test.deletedComment && test.deletedComment != "" {
 					t.Fatalf("deleted comment %s survived refresh", test.deletedComment)
 				}
-			}
-			if test.newlyRetainedComment != "" && second.Comments[0].ProviderCommentID != test.newlyRetainedComment {
-				t.Fatalf("newly retained comment %s missing", test.newlyRetainedComment)
 			}
 		})
 	}
@@ -1408,7 +1516,7 @@ func TestTransferredIssueUsesDestinationInstallationCredentialAndClearsValidator
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !result.Transferred || result.RepositoryID != "300" || result.NativeID != "100" || result.ETag != `"destination-issue"` || result.CommentsETag != `"destination-comments"` || len(result.Comments) != 1 {
+	if !result.Transferred || result.RepositoryID != "300" || result.NativeID != "100" || result.ETag != `"destination-issue"` || result.CommentsETag != `"destination-comments"` || len(readTestComments(t, result.Comments)) != 1 {
 		t.Fatalf("cross-installation transfer result=%#v", result)
 	}
 	if sourceIssues != 1 || destinationIssues != 1 || destinationComments != 1 {

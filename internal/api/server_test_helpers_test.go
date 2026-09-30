@@ -1037,7 +1037,8 @@ func seedArtifact(t *testing.T, db *sql.DB, runID string) {
 	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
 		t.Fatalf("seed artifact: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES ('artifact-1', ?, ?, 13, ?)`, body, checksum, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, ?)`, body); err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact-1', ?, 13, ?)`, checksum, now); err != nil {
 		t.Fatalf("seed artifact content: %v", err)
 	}
 }
@@ -1262,7 +1263,8 @@ func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact %s: %v", artifactID, err)
 		}
-		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)`, artifactID, []byte(body), checksum, len(body), createdAt); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?, 0, ?)`, artifactID, []byte(body)); err != nil { t.Fatal(err) }
+		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?)`, artifactID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact content %s: %v", artifactID, err)
 		}
 	}

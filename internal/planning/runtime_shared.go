@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -54,47 +55,32 @@ func (d runtimeDeps) nextID(prefix string) string {
 	return d.ids(prefix)
 }
 
-func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage, forceNewSession bool) (AgentContext, error) {
+func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages state.PlanningMessageSource, forceNewSession bool) (AgentContext, error) {
 	snapshot, err := d.store.LoadPlanningOperationContextSnapshot(ctx, operation)
 	if err != nil {
 		return AgentContext{}, err
 	}
-	externalContext, snapshotIDs, err := d.store.LoadPlanningOperationExternalContext(ctx, operation.OperationID)
+	snapshotIDs, err := d.store.PlanningOperationExternalSnapshotIDs(ctx, operation.OperationID)
 	if err != nil {
 		return AgentContext{}, err
+	}
+	var writeExternal func(context.Context, io.Writer) error
+	if len(snapshotIDs) > 0 {
+		writeExternal = func(ctx context.Context, out io.Writer) error {
+			_, err := d.store.WritePlanningOperationExternalContext(ctx, operation.OperationID, out)
+			return err
+		}
 	}
 	return AgentContext{
-		SessionID:           session.PlanningSessionID,
-		Title:               effectiveSessionTitle(session),
-		ProjectRoot:         session.ProjectRoot,
-		ContextSummary:      snapshot.SummaryMarkdown,
-		ExternalContext:     externalContext,
-		ExternalSnapshotIDs: snapshotIDs,
-		Messages:            messages,
-		ModelSelection:      decodeModelSelection(session.ModelSelectionJSON),
-		ForceNewSession:     forceNewSession,
-	}, nil
-}
-
-func (d runtimeDeps) titleAgentContext(ctx context.Context, operation state.PlanningOperation, session state.PlanningSession, messages []state.PlanningMessage, forceNewSession bool) (AgentContext, error) {
-	snapshot, err := d.store.LoadPlanningOperationContextSnapshot(ctx, operation)
-	if err != nil {
-		return AgentContext{}, err
-	}
-	externalContext, snapshotIDs, err := d.store.LoadPlanningOperationExternalContext(ctx, operation.OperationID)
-	if err != nil {
-		return AgentContext{}, err
-	}
-	return AgentContext{
-		SessionID:           session.PlanningSessionID,
-		Title:               effectiveSessionTitle(session),
-		ProjectRoot:         session.ProjectRoot,
-		ContextSummary:      snapshot.SummaryMarkdown,
-		Messages:            messages,
-		ExternalContext:     externalContext,
-		ExternalSnapshotIDs: snapshotIDs,
-		ModelSelection:      decodeModelSelection(session.ModelSelectionJSON),
-		ForceNewSession:     forceNewSession,
+		SessionID:            session.PlanningSessionID,
+		Title:                effectiveSessionTitle(session),
+		ProjectRoot:          session.ProjectRoot,
+		ContextSummary:       snapshot.SummaryMarkdown,
+		WriteExternalContext: writeExternal,
+		ExternalSnapshotIDs:  snapshotIDs,
+		VisitMessages:        messages,
+		ModelSelection:       decodeModelSelection(session.ModelSelectionJSON),
+		ForceNewSession:      forceNewSession,
 	}, nil
 }
 
@@ -102,153 +88,120 @@ func (d runtimeDeps) refreshContextSnapshot(ctx context.Context, planningSession
 	if strings.TrimSpace(d.projectRoot) == "" {
 		return state.PlanningContextSnapshot{}, fmt.Errorf("planning project root is required")
 	}
-	summary, err := scanProjectRoot(ctx, d.projectRoot)
+	summary, err := captureProjectRoot(ctx, d.projectRoot)
 	if err != nil {
 		return state.PlanningContextSnapshot{}, err
 	}
-	req, err := contextSnapshotRequest(d, planningSessionID, summary, d.nowString())
-	if err != nil {
-		return state.PlanningContextSnapshot{}, err
-	}
+	defer summary.Close()
+	req := contextSnapshotRequest(d, planningSessionID, summary, d.nowString())
 	return d.store.CreateContextSnapshot(ctx, req)
 }
 
 // contextSnapshotRequest renders a scan into a storable snapshot row. Session
 // creation needs the request without writing it, so it can go into the same
 // transaction as the session.
-func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary SnapshotSummary, createdAt string) (state.CreatePlanningContextSnapshotRequest, error) {
-	if len(summary.SummaryMarkdown) > state.MaxPlanningContextSnapshotSummaryBytes {
-		return state.CreatePlanningContextSnapshotRequest{}, fmt.Errorf("planning context summary exceeds %d bytes", state.MaxPlanningContextSnapshotSummaryBytes)
-	}
-	includedJSON, err := marshalSnapshotFiles(summary.IncludedFiles, "included")
-	if err != nil {
-		return state.CreatePlanningContextSnapshotRequest{}, err
-	}
-	excludedJSON, err := marshalSnapshotFiles(summary.ExcludedFiles, "excluded")
-	if err != nil {
-		return state.CreatePlanningContextSnapshotRequest{}, err
-	}
+func contextSnapshotRequest(d runtimeDeps, planningSessionID string, summary SnapshotSummary, createdAt string) state.CreatePlanningContextSnapshotRequest {
 	return state.CreatePlanningContextSnapshotRequest{
+		Entries:                   summary.Entries,
 		PlanningContextSnapshotID: d.nextID("planning_context"),
 		PlanningSessionID:         planningSessionID,
 		SummaryMarkdown:           summary.SummaryMarkdown,
-		IncludedFilesJSON:         string(includedJSON),
-		ExcludedFilesJSON:         string(excludedJSON),
+		IncludedFilesJSON:         "[]",
+		ExcludedFilesJSON:         "[]",
 		CreatedAt:                 createdAt,
-	}, nil
+	}
 }
 
-func marshalSnapshotFiles(entries []SnapshotFileEntry, kind string) ([]byte, error) {
-	if len(entries) > state.MaxPlanningContextSnapshotEntries {
-		return nil, fmt.Errorf("%s planning context files exceed %d entries", kind, state.MaxPlanningContextSnapshotEntries)
+func (s SnapshotSummary) Close() error {
+	if s.entries == nil {
+		return nil
 	}
-	for _, entry := range entries {
-		if len(entry.Path) == 0 || len(entry.Path) > state.MaxPlanningContextSnapshotPathBytes {
-			return nil, fmt.Errorf("%s planning context file path exceeds %d bytes", kind, state.MaxPlanningContextSnapshotPathBytes)
+	name := s.entries.Name()
+	return errors.Join(s.entries.Close(), os.Remove(name))
+}
+
+type snapshotSpoolEntry struct {
+	Kind  string
+	Entry SnapshotFileEntry
+}
+
+func (s SnapshotSummary) Entries(ctx context.Context, visit func(string, state.PlanningContextFileEntry) error) error {
+	if _, err := s.entries.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	decoder := json.NewDecoder(s.entries)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if len(entry.Reason) > state.MaxPlanningContextSnapshotReasonBytes {
-			return nil, fmt.Errorf("%s planning context file reason exceeds %d bytes", kind, state.MaxPlanningContextSnapshotReasonBytes)
+		var entry snapshotSpoolEntry
+		if err := decoder.Decode(&entry); err == io.EOF {
+			return nil
+		} else if err != nil {
+			return err
 		}
-		if entry.Size < 0 {
-			return nil, fmt.Errorf("%s planning context file size must not be negative", kind)
+		if err := visit(entry.Kind, entry.Entry); err != nil {
+			return err
 		}
 	}
-	raw, err := json.Marshal(entries)
+}
+
+// captureProjectRoot streams metadata to a private disk spool before acquiring a
+// database transaction. It never reads source bytes and never retains a prefix.
+func captureProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) {
+	file, err := os.CreateTemp("", "kingdom-planning-context-*")
 	if err != nil {
-		return nil, fmt.Errorf("marshal %s planning context files: %w", kind, err)
+		return SnapshotSummary{}, err
 	}
-	if len(raw) > state.MaxPlanningContextSnapshotJSONBytes {
-		return nil, fmt.Errorf("%s planning context file json exceeds %d bytes", kind, state.MaxPlanningContextSnapshotJSONBytes)
-	}
-	return raw, nil
-}
-
-// scanProjectRoot collects a deterministic snapshot of the project's source
-// files. It respects the supplied context — long scans on big repositories or
-// network mounts can otherwise block the recovery or API request that triggered
-// them.
-//
-// Two budgets, because they buy different things. Every enumerated path is
-// counted towards the project's shape, which is what actually reaches a planner
-// prompt and costs nothing but a string. Only the first `defaultMaxSnapshotFiles`
-// are stat'd and captured with their sizes. So the summary describes the
-// bounded enumerated project shape even when the captured list is a prefix of
-// it.
-//
-// The scan never reads file contents. What a snapshot contributes to a prompt
-// is a shape, and reading bytes to classify them changed nothing about that
-// while costing real I/O on every session creation.
-func scanProjectRoot(ctx context.Context, root string) (SnapshotSummary, error) {
-	return scanProjectRootWithLimits(ctx, root, snapshotScanLimits{MaxEnumerated: maxEnumeratedFiles, MaxIncluded: defaultMaxSnapshotFiles, MaxExcluded: defaultMaxExcludedFiles})
-}
-
-type snapshotScanLimits struct {
-	MaxEnumerated int
-	MaxIncluded   int
-	MaxExcluded   int
-}
-
-func scanProjectRootWithLimits(ctx context.Context, root string, limits snapshotScanLimits) (SnapshotSummary, error) {
-	included := make([]SnapshotFileEntry, 0, limits.MaxIncluded)
-	excluded := make([]SnapshotFileEntry, 0, limits.MaxExcluded)
+	summary := SnapshotSummary{entries: file}
+	writer := bufio.NewWriter(file)
+	encoder := json.NewEncoder(writer)
+	included := 0
 	layout := make(map[string]int)
 	enumerated := 0
 	excludedCount := 0
 	excludedReasons := make(map[string]int)
-	recordExcluded := func(entry SnapshotFileEntry) {
+	var writeErr error
+	record := func(kind string, entry SnapshotFileEntry) bool {
+		writeErr = encoder.Encode(snapshotSpoolEntry{Kind: kind, Entry: entry})
+		return writeErr == nil
+	}
+	recordExcluded := func(entry SnapshotFileEntry) bool {
 		excludedCount++
 		reason := strings.TrimSpace(entry.Reason)
 		if reason == "" {
 			reason = "unknown"
 		}
 		excludedReasons[reason]++
-		if len(excluded) < limits.MaxExcluded {
-			excluded = append(excluded, entry)
-		}
+		return record("excluded", entry)
 	}
 
-	err := enumerateProjectFiles(ctx, root, func(candidate projectFileCandidate) bool {
-		// Exclusions consume the budget too, preventing excluded-only trees
-		// from keeping enumeration and persisted rows unbounded.
+	err = enumerateProjectFiles(ctx, root, func(candidate projectFileCandidate) bool {
 		enumerated++
 		if candidate.Reason != "" {
-			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: candidate.Reason})
-			return enumerated < limits.MaxEnumerated
+			return recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: candidate.Reason})
 		}
 		layout[topLevelSegment(candidate.Path)]++
-		if len(included) >= limits.MaxIncluded {
-			// Past the capture budget the path still counts towards the shape,
-			// but stat'ing it would buy a row no prompt reads.
-			return enumerated < limits.MaxEnumerated
-		}
-		info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(candidate.Path)))
+		info, statErr := os.Lstat(filepath.Join(root, filepath.FromSlash(candidate.Path)))
 		if statErr != nil {
-			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "stat_failed"})
-			return enumerated < limits.MaxEnumerated
+			return recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "stat_failed"})
 		}
 		if !info.Mode().IsRegular() {
-			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "non_regular"})
-			return enumerated < limits.MaxEnumerated
+			return recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: "non_regular"})
 		}
-		if reason := excludedFileReason(candidate.Path, info.Size()); reason != "" {
-			recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: reason, Size: info.Size()})
-			return enumerated < limits.MaxEnumerated
+		if reason := excludedFileReason(candidate.Path); reason != "" {
+			return recordExcluded(SnapshotFileEntry{Path: candidate.Path, Reason: reason, Size: info.Size()})
 		}
-		included = append(included, SnapshotFileEntry{Path: candidate.Path, Size: info.Size()})
-		return enumerated < limits.MaxEnumerated
+		included++
+		return record("included", SnapshotFileEntry{Path: candidate.Path, Size: info.Size()})
 	})
+	err = errors.Join(err, writeErr, writer.Flush())
 	if err != nil {
+		_ = summary.Close()
 		return SnapshotSummary{}, fmt.Errorf("scan project root: %w", err)
 	}
-
-	sort.Slice(included, func(i, j int) bool { return included[i].Path < included[j].Path })
-	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Path < excluded[j].Path })
-
-	return SnapshotSummary{
-		SummaryMarkdown: renderSnapshotSummary(included, excludedCount, excludedReasons, layout, enumerated),
-		IncludedFiles:   included,
-		ExcludedFiles:   excluded,
-	}, nil
+	summary.SummaryMarkdown = renderSnapshotSummary(included, excludedCount, excludedReasons, layout, enumerated)
+	return summary, nil
 }
 
 // renderSnapshotSummary writes the only part of a context snapshot that ever
@@ -259,8 +212,8 @@ func scanProjectRootWithLimits(ctx context.Context, root string, limits snapshot
 // what it was planning against. Naming the top-level directories and how much
 // of the project sits in each costs the same handful of lines and describes the
 // shape of the thing.
-func renderSnapshotSummary(included []SnapshotFileEntry, excludedCount int, excludedReasons, layout map[string]int, enumerated int) string {
-	lines := []string{fmt.Sprintf("- Captured files: %d of %d", len(included), enumerated)}
+func renderSnapshotSummary(included int, excludedCount int, excludedReasons, layout map[string]int, enumerated int) string {
+	lines := []string{fmt.Sprintf("- Captured files: %d of %d", included, enumerated)}
 	if len(layout) > 0 {
 		lines = append(lines, fmt.Sprintf("- Project layout: %s", strings.Join(renderLayout(layout), ", ")))
 	}
@@ -292,20 +245,9 @@ func renderLayout(counts map[string]int) []string {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	limit := len(names)
-	if limit > maxSnapshotLayoutEntries {
-		limit = maxSnapshotLayoutEntries
-	}
-	layout := make([]string, 0, limit+1)
-	for _, name := range names[:limit] {
-		displayName := name
-		if len(displayName) > maxSnapshotLayoutNameBytes {
-			displayName = displayName[:maxSnapshotLayoutNameBytes-3] + "..."
-		}
-		layout = append(layout, fmt.Sprintf("%s (%d)", displayName, counts[name]))
-	}
-	if omitted := len(names) - limit; omitted > 0 {
-		layout = append(layout, fmt.Sprintf("... %d more top-level entries", omitted))
+	layout := make([]string, 0, len(names))
+	for _, name := range names {
+		layout = append(layout, fmt.Sprintf("%s (%d)", name, counts[name]))
 	}
 	return layout
 }
@@ -362,7 +304,7 @@ func enumerateTrackedProjectFiles(ctx context.Context, root string, visit func(p
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
+	cmd := exec.CommandContext(ctx, "git", "-C", root, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--deduplicate")
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -373,22 +315,22 @@ func enumerateTrackedProjectFiles(ctx context.Context, root string, visit func(p
 		return fmt.Errorf("start git ls-files: %w", err)
 	}
 
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 0, bufio.MaxScanTokenSize), maxProjectPathLength)
-	scanner.Split(scanNulSeparated)
-	seen := make(map[string]struct{})
+	reader := bufio.NewReader(stdout)
 	stopped := false
-	for scanner.Scan() {
-		path := scanner.Text()
+	for {
+		path, readErr := reader.ReadString(0)
+		if readErr != nil {
+			if readErr == io.EOF && path == "" {
+				break
+			}
+			cancel()
+			_ = cmd.Wait()
+			return fmt.Errorf("read git ls-files output: %w", readErr)
+		}
+		path = strings.TrimSuffix(path, "\x00")
 		if path == "" {
 			continue
 		}
-		// `--cached` and `--others` can both name a path in an unmerged tree.
-		// A snapshot that listed a file twice would misreport its own size.
-		if _, duplicate := seen[path]; duplicate {
-			continue
-		}
-		seen[path] = struct{}{}
 		if !visit(projectFileCandidate{Path: path}) {
 			stopped = true
 			break
@@ -402,78 +344,66 @@ func enumerateTrackedProjectFiles(ctx context.Context, root string, visit func(p
 		_ = cmd.Wait()
 		return nil
 	}
-	if err := scanner.Err(); err != nil {
-		_ = cmd.Wait()
-		return fmt.Errorf("read git ls-files output: %w", err)
-	}
 	if err := cmd.Wait(); err != nil {
 		return fmt.Errorf("git ls-files: %w (%s)", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
 
-// scanNulSeparated splits on the NUL bytes `git ls-files -z` emits, so paths
-// containing newlines survive intact.
-func scanNulSeparated(data []byte, atEOF bool) (int, []byte, error) {
-	if index := bytes.IndexByte(data, 0); index >= 0 {
-		return index + 1, data[:index], nil
-	}
-	if atEOF && len(data) > 0 {
-		return len(data), data, nil
-	}
-	return 0, nil, nil
-}
-
-// walkProjectFiles is the non-git enumeration: a directory walk that prunes
-// Kingdom's skip list and stops as soon as the visitor has seen enough.
+// walkProjectFiles reads directory entries in continuing batches. ReadDir on a
+// path (and filepath.WalkDir) would allocate an entire wide directory first.
 func walkProjectFiles(ctx context.Context, root string, visit func(projectFileCandidate) bool) error {
 	errStopWalk := errors.New("stop walk")
-	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			// One unreadable directory must not cost the whole snapshot: a
-			// session that cannot be created is far worse than a session whose
-			// context is missing a subtree it could never have read anyway.
-			// `entry` is nil for a failed root read.
-			if rel, relErr := filepath.Rel(root, path); relErr == nil && rel != "." {
-				if !visit(projectFileCandidate{Path: filepath.ToSlash(rel), Reason: "walk_failed"}) {
+	var walk func(string) error
+	walk = func(relative string) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		dir, err := os.Open(filepath.Join(root, filepath.FromSlash(relative)))
+		if err != nil {
+			if relative == "" {
+				return err
+			}
+			if !visit(projectFileCandidate{Path: relative, Reason: "walk_failed"}) {
+				return errStopWalk
+			}
+			return nil
+		}
+		defer dir.Close()
+		for {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			entries, readErr := dir.ReadDir(128)
+			for _, entry := range entries {
+				rel := filepath.ToSlash(filepath.Join(relative, entry.Name()))
+				if shouldSkipDirectory(rel, entry) {
+					if !visit(projectFileCandidate{Path: rel, Reason: "excluded_directory"}) {
+						return errStopWalk
+					}
+				} else if entry.IsDir() {
+					if err := walk(rel); err != nil {
+						return err
+					}
+				} else if !visit(projectFileCandidate{Path: rel}) {
 					return errStopWalk
 				}
 			}
-			if entry != nil && entry.IsDir() {
-				return filepath.SkipDir
+			if readErr == io.EOF {
+				return nil
 			}
-			return nil
-		}
-		if err := ctx.Err(); err != nil {
-			// Cancellation propagates as the WalkDir error so the partial
-			// result is discarded; callers should retry on a non-cancelled
-			// context.
-			return err
-		}
-		if path == root {
-			return nil
-		}
-
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return err
-		}
-		rel = filepath.ToSlash(rel)
-
-		if shouldSkipDirectory(rel, entry) {
-			if !visit(projectFileCandidate{Path: rel, Reason: "excluded_directory"}) {
-				return errStopWalk
+			if readErr != nil {
+				if relative == "" {
+					return readErr
+				}
+				if !visit(projectFileCandidate{Path: relative, Reason: "walk_failed"}) {
+					return errStopWalk
+				}
+				return nil
 			}
-			return filepath.SkipDir
 		}
-		if entry.IsDir() {
-			return nil
-		}
-		if !visit(projectFileCandidate{Path: rel}) {
-			return errStopWalk
-		}
-		return nil
-	})
+	}
+	err := walk("")
 	if errors.Is(err, errStopWalk) {
 		return nil
 	}
@@ -523,7 +453,7 @@ func shouldSkipDirectory(rel string, entry os.DirEntry) bool {
 	return false
 }
 
-func excludedFileReason(rel string, size int64) string {
+func excludedFileReason(rel string) string {
 	name := strings.ToLower(filepath.Base(rel))
 	lowerRel := strings.ToLower(rel)
 	switch {
@@ -537,8 +467,6 @@ func excludedFileReason(rel string, size int64) string {
 		return "secret"
 	case strings.HasPrefix(name, "credentials") && strings.HasSuffix(name, ".json"):
 		return "secret"
-	case size > defaultMaxSnapshotFileSize:
-		return "oversized"
 	case isBinaryAssetName(name):
 		return "binary"
 	default:
@@ -550,9 +478,7 @@ func excludedFileReason(rel string, size int64) string {
 // reason about. They are excluded by name rather than by sniffing content: the
 // snapshot only ever contributes file paths to a prompt, so reading a file to
 // decide whether it is text would be I/O spent on a conclusion nothing reads.
-// The cost of getting one wrong is one path in or out of a listing; the cost of
-// not filtering at all is a checked-in image directory consuming the whole
-// file budget before the scan reaches any code.
+// The filter keeps generated and binary assets out of source-shape metadata.
 var binaryAssetExtensions = map[string]struct{}{
 	".bmp": {}, ".class": {}, ".dll": {}, ".dylib": {}, ".exe": {}, ".gif": {},
 	".gz": {}, ".ico": {}, ".jar": {}, ".jpeg": {}, ".jpg": {}, ".mp3": {},

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/schemas"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
@@ -24,7 +26,242 @@ import (
 	"kingdom/internal/state"
 )
 
+func TestLargeContentFileOnlyHandoffReplaysAfterCrashAndLeaseExpiry(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	invocation := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, 1)
+	text := strings.Repeat("terminal response\n", 2000000)
+	if len(text) <= 32*1024*1024 {
+		t.Fatal("fixture must cross old handoff ceiling")
+	}
+	configureSuccessfulHandoff(&job, text)
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, h.db, `CREATE TRIGGER interrupt_content_handoff BEFORE INSERT ON provider_terminal_handoffs BEGIN SELECT RAISE(ABORT,'simulated crash before DB handoff'); END`)
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil {
+		t.Fatal("expected interrupted DB handoff")
+	}
+	file, found, err := h.fsStore.ReadProviderTerminalHandoff(invocation.ProviderInvocationID)
+	if err != nil || !found || len(file.Wire) > 64*1024 {
+		t.Fatalf("compact durable file: found=%t bytes=%d err=%v", found, len(file.Wire), err)
+	}
+	wire, err := decodeProviderTerminalHandoffWire(file.Wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := wire.StreamObservation.CanonicalTerminalTextRef
+	if ref == nil || wire.StreamObservation.CanonicalTerminalText != "" {
+		t.Fatal("terminal content remained inline")
+	}
+	if err := h.fsStore.CopyProviderContent(*ref, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_contents`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial DB content survived crash: count=%d err=%v", count, err)
+	}
+	mustExec(t, h.db, `DROP TRIGGER interrupt_content_handoff`)
+	mustExec(t, h.db, `UPDATE attempt_executions SET lease_expires_at='2026-03-01T12:01:00Z'`)
+	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 2, 0, 0, time.UTC) }
+	if err := h.loop.recoverProviderTerminalHandoffFile(context.Background(), invocation); err != nil {
+		t.Fatalf("file-only replay: %v", err)
+	}
+	handoff, found, err := h.store.GetProviderTerminalHandoff(context.Background(), executionstore.ProviderTerminalHandoffID(invocation.ProviderInvocationID))
+	if err != nil || !found || len(handoff.PayloadJSON) > 64*1024 || len(handoff.StreamObservationJSON) > 64*1024 {
+		t.Fatalf("DB handoff not compact: found=%t err=%v", found, err)
+	}
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_contents`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("terminal/output content duplicated: count=%d err=%v", count, err)
+	}
+	if err := h.fsStore.CopyProviderContent(*ref, io.Discard); err == nil {
+		t.Fatal("staging content retained after canonical ingestion")
+	}
+	if err := h.loop.convergeProviderTerminalHandoff(context.Background(), handoff); err != nil {
+		t.Fatalf("settlement replay: %v", err)
+	}
+	var outcome string
+	var size int
+	if err := h.db.QueryRow(`SELECT outcome,length(final_text) FROM provider_completion_settlements WHERE provider_invocation_id=?`, invocation.ProviderInvocationID).Scan(&outcome, &size); err != nil || outcome != "success" || size != 0 {
+		t.Fatalf("settlement outcome=%s size=%d err=%v", outcome, size, err)
+	}
+	var payload string
+	if err := h.db.QueryRow(`SELECT payload_json FROM attempt_outbox WHERE attempt_id=?`, invocation.AttemptID).Scan(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) > 64*1024 {
+		t.Fatalf("outbox repeated large content: %d bytes", len(payload))
+	}
+	result, err := decodeExecutionPayloadJSON(payload, "large outbox")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := h.loop.hydrateProviderPayloadContent(context.Background(), payload, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.outputText) > 32*1024 || result.providerStreamObservation.CanonicalTerminalTextRef == nil {
+		t.Fatal("outbox replay materialized canonical output")
+	}
+	if err := h.store.CopyProviderContent(context.Background(), *result.providerStreamObservation.CanonicalTerminalTextRef, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.db.QueryRow(`SELECT sum(length(content)) FROM provider_content_chunks`).Scan(&count); err != nil || count != len(strings.TrimSpace(text)) {
+		t.Fatalf("settlement did not retain exactly one content copy: bytes=%d err=%v", count, err)
+	}
+}
+
 const terminalHandoffFixtureNow = "2026-03-01T12:00:00Z"
+
+type countedRuntimeAdapter struct {
+	*opencode.MemoryAdapter
+	closes int
+	fail   bool
+}
+
+func (a *countedRuntimeAdapter) Close() error {
+	a.closes++
+	if a.fail {
+		a.fail = false
+		return errors.New("cleanup failed")
+	}
+	return nil
+}
+
+func TestRuntimeOwnsAdapterCloseBeforeStartAndRetriesCleanupFailure(t *testing.T) {
+	adapter := &countedRuntimeAdapter{MemoryAdapter: opencode.NewMemoryAdapter(), fail: true}
+	runtime := &Runtime{adapter: adapter}
+	if err := runtime.Close(); err == nil {
+		t.Fatal("adapter cleanup failure was lost")
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.closes != 2 {
+		t.Fatalf("adapter closed %d times; want failed attempt and one success", adapter.closes)
+	}
+}
+
+func TestRuntimeCloseTimeoutPreservesProviderContentUntilHandoffReadersDrain(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	tracker := newExecutionDrainTracker()
+	tracker.Start()
+	h.loop.asyncDrain = tracker
+	done := make(chan error)
+	close(done)
+	adapter := &countedRuntimeAdapter{MemoryAdapter: opencode.NewMemoryAdapter()}
+	runtime := &Runtime{adapter: adapter, orchestrator: h.loop, started: true, periodicDone: done, dispatchDone: done, completionDone: done}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := runtime.GracefulClose(ctx); err == nil {
+		t.Fatal("expected incomplete drain")
+	}
+	if adapter.closes != 0 {
+		t.Fatal("shutdown deleted adapter content while a handoff consumer was active")
+	}
+	tracker.Done()
+	if err := runtime.GracefulClose(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.closes != 1 {
+		t.Fatalf("adapter close calls=%d", adapter.closes)
+	}
+}
+
+func TestReferencedResponseProjectionIsCompleteAndIdempotentWithOneConnection(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	h.db.SetMaxOpenConns(1)
+	mustExec(t, h.db, `INSERT INTO roles(role_id,display_name,can_spawn,created_at) VALUES('chancellor','Chancellor',1,'2026-03-01T12:00:00Z')`)
+	mustExec(t, h.db, `UPDATE agents SET role_id='chancellor'`)
+	mustExec(t, h.db, `UPDATE workflow_nodes SET required_role='chancellor',node_class='advisory_synthesis'`)
+	invocation := h.addInvocation(t, 1)
+	mustExec(t, h.db, `UPDATE node_runs SET required_role='chancellor'`)
+	job := h.runningHandoffJob(t, invocation, 1)
+	job.node.RequiredRole = "chancellor"
+	job.node.NodeClass = "advisory_synthesis"
+	job.attempt.RequiredRole = "chancellor"
+	body := strings.Repeat("full canonical response\n", 450000)
+	configureSuccessfulHandoff(&job, body)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := h.loop.commitProviderExecutionCompletion(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.FinalTextRef == nil || settlement.FinalText != "" {
+		t.Fatalf("stream settlement=%+v err=%v", settlement, err)
+	}
+	job.providerStreamObservation.CanonicalTerminalText = ""
+	job.providerStreamObservation.CanonicalTerminalTextRef = settlement.FinalTextRef
+	job.outputText = settlement.FinalTextPreview
+	h.loop.bindCanonicalTerminalReader(&job)
+	for replay := range 2 {
+		// Publication attempts currently use clock-derived batch identities;
+		// this regression exercises content/reader replay across attempts.
+		h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, replay, 0, time.UTC) }
+		if err := h.loop.persistReferencedResponseSnapshot(ctx, job, terminalHandoffFixtureNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var size int64
+	if err := h.db.QueryRow(`SELECT sum(length(content)) FROM artifact_content_chunks`).Scan(&size); err != nil {
+		t.Fatal(err)
+	}
+	want := int64(len("# Node Response Snapshot\n\n") + len(strings.TrimSpace(body)) + 1)
+	if size != want {
+		t.Fatalf("response artifact size=%d want=%d; preview must not become canonical artifact", size, want)
+	}
+	var count int
+	if err := h.db.QueryRow(`SELECT count(*) FROM artifacts`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("replayed artifact count=%d err=%v", count, err)
+	}
+}
+
+func TestReferencedHandoffAndSettlementReplayAfterSourceFilesAreRetired(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	invocation := h.addInvocation(t, 1)
+	job := h.runningHandoffJob(t, invocation, 1)
+	body := strings.Repeat("canonical response\n", 250000)
+	body = strings.TrimSpace(body)
+	configureSuccessfulHandoff(&job, body)
+	path := filepath.Join(t.TempDir(), "terminal")
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ref := providerexecution.ReferenceText(invocation.ProviderInvocationID, body)
+	job.providerStreamObservation.CanonicalTerminalText = ""
+	job.providerStreamObservation.CanonicalTerminalTextRef = &ref
+	job.providerStreamObservation.StagedTerminalContent = &providerexecution.StagedContent{Reference: ref, Path: path}
+	job.outputText = body[:4096]
+	original := job
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("source was not retired: %v", err)
+	}
+	mustExec(t, h.db, `UPDATE attempt_executions SET lease_expires_at='2026-03-01T12:01:00Z'`)
+	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 2, 0, 0, time.UTC) }
+	replay := original
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &replay); err != nil {
+		t.Fatalf("durable handoff replay required retired files: %v", err)
+	}
+	if err := h.loop.commitProviderExecutionCompletion(context.Background(), replay); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.loop.commitProviderExecutionCompletion(context.Background(), original); err != nil {
+		t.Fatalf("canonical settlement replay required retired files: %v", err)
+	}
+	var count int
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_completion_settlements`).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("settlements=%d err=%v", count, err)
+	}
+}
 
 type terminalHandoffHarness struct {
 	db                 *sql.DB
@@ -295,7 +532,7 @@ func TestRejectedPendingMarkerWithoutGuardianPersistsLeaseFencedRecovery(t *test
 	if err != nil {
 		t.Fatalf("resolve lost-handoff execution target: %v", err)
 	}
-	if err := h.loop.prepareExecutionWorkspace(workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
+	if err := h.loop.prepareExecutionWorkspaceContext(context.Background(), workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
 		t.Fatalf("prepare lost-handoff execution target: %v", err)
 	}
 	if err := h.fsStore.UpdateExecutionTargetState(context.Background(), invocation.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", "2026-03-01T12:00:01Z"); err != nil {

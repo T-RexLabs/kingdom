@@ -3,6 +3,8 @@
 package securefs
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,7 +132,7 @@ func TestReplaceRegularUsesPinnedParentWhenPathIsReplaced(t *testing.T) {
 		t.Fatalf("replace parent path with symlink: %v", err)
 	}
 
-	if err := replaceRegularAt(parentFD, leaf, "nested/file.txt", []byte("restored"), 0o640, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := replaceRegularFromAt(context.Background(), parentFD, leaf, "nested/file.txt", func(w io.Writer) error { _, err := io.WriteString(w, "restored"); return err }, 0o640, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatalf("replace through pinned parent: %v", err)
 	}
 	assertFileContents(t, filepath.Join(movedPath, "file.txt"), "restored")

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -12,7 +13,6 @@ import (
 	"time"
 
 	"kingdom/internal/bootstrapassets"
-	"kingdom/internal/providerlimits"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
@@ -322,7 +322,10 @@ LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeRunID)).Scan(&queuedAt
 	return quarantineErr == nil && replayErr == nil && queuedErr == nil && !replayedTime.Before(quarantinedTime) && !queuedTime.Before(quarantinedTime)
 }
 
-func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, workspaceCtx executionWorkspaceContext) error {
+func (o *orchestrationLoop) prepareExecutionWorkspaceContext(ctx context.Context, workspacePath string, workspaceCtx executionWorkspaceContext) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	resolvedWorkspace := strings.TrimSpace(workspacePath)
 	if resolvedWorkspace == "" {
 		return fmt.Errorf("workspace path is required")
@@ -332,43 +335,39 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 		if o == nil || o.fsStore == nil {
 			return fmt.Errorf("runtime filesystem store is required")
 		}
-		if err := o.fsStore.RecoverMissingSnapshotBlobs(context.Background(), trustedSnapshotID, workspaceCtx.PublishRoot, workspaceCtx.SeedRoot); err != nil {
+		if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, trustedSnapshotID, workspaceCtx.PublishRoot, workspaceCtx.SeedRoot); err != nil {
 			return fmt.Errorf("recover execution workspace snapshot blobs: %w", err)
 		}
-		if err := o.fsStore.RestoreSnapshot(context.Background(), trustedSnapshotID, resolvedWorkspace); err != nil {
+		if err := o.fsStore.RestoreSnapshot(ctx, trustedSnapshotID, resolvedWorkspace); err != nil {
 			return fmt.Errorf("restore execution workspace from trusted snapshot: %w", err)
 		}
 	} else if strings.TrimSpace(workspaceCtx.SeedRoot) != "" {
-		trackedFiles, err := trackedfs.WalkTrackedFiles(workspaceCtx.SeedRoot)
-		if err != nil {
-			return fmt.Errorf("walk execution seed root: %w", err)
-		}
 		seedRoot, err := securefs.OpenRoot(workspaceCtx.SeedRoot)
 		if err != nil {
 			return fmt.Errorf("open execution seed root: %w", err)
 		}
 		defer seedRoot.Close()
-		for _, file := range trackedFiles {
-			resolvedPath, err := resolvePathWithinRoot(resolvedWorkspace, file.RelativePath)
-			if err != nil {
-				return err
-			}
-			raw, err := seedRoot.ReadRegular(file.RelativePath, providerlimits.TrackedWorkspaceFileBytes)
-			if err != nil {
-				if errors.Is(err, securefs.ErrLimitExceeded) {
-					return &providerlimits.LimitExceededError{Resource: "execution seed file", Limit: providerlimits.TrackedWorkspaceFileBytes}
+		destination, err := securefs.OpenRoot(resolvedWorkspace)
+		if err != nil {
+			return fmt.Errorf("open execution destination: %w", err)
+		}
+		defer destination.Close()
+		if err := trackedfs.VisitTrackedFilesRoot(ctx, seedRoot, func(file trackedfs.TrackedFile) error {
+			return destination.ReplaceRegularFrom(ctx, file.RelativePath, func(w io.Writer) error {
+				_, info, err := seedRoot.CopyRegular(ctx, file.RelativePath, w)
+				if err != nil {
+					return err
 				}
-				return fmt.Errorf("read execution seed file %q: %w", file.RelativePath, err)
-			}
-			if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
-				return fmt.Errorf("create execution seed directory: %w", err)
-			}
-			if err := os.WriteFile(resolvedPath, raw, os.FileMode(file.Metadata.ModeBits)); err != nil {
-				return fmt.Errorf("write execution seed file %q: %w", file.RelativePath, err)
-			}
+				if trackedfs.MetadataFromInfo(info) != file.Metadata {
+					return securefs.ErrIdentityMismatch
+				}
+				return nil
+			}, os.FileMode(file.Metadata.ModeBits), 0o755, time.Unix(0, file.Metadata.ModifiedNS))
+		}); err != nil {
+			return fmt.Errorf("copy execution seed: %w", err)
 		}
 	}
-	if err := o.ensureOpenCodeProjectBoundary(resolvedWorkspace, workspaceCtx.UseGitWorktree); err != nil {
+	if err := o.ensureOpenCodeProjectBoundary(ctx, resolvedWorkspace, workspaceCtx.UseGitWorktree); err != nil {
 		return fmt.Errorf("prepare OpenCode project boundary: %w", err)
 	}
 	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(resolvedWorkspace), true); err != nil {
@@ -381,7 +380,10 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 // OpenCode's project discovery walks upward before invoking Git. Nested scopes
 // in a managed worktree point at that worktree's Git metadata so ordinary Git
 // commands continue to track paths from the worktree root.
-func (o *orchestrationLoop) ensureOpenCodeProjectBoundary(root string, useGitWorktree bool) error {
+func (o *orchestrationLoop) ensureOpenCodeProjectBoundary(ctx context.Context, root string, useGitWorktree bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	root = strings.TrimSpace(root)
 	if root == "" {
 		return fmt.Errorf("OpenCode project root is required")
@@ -392,7 +394,7 @@ func (o *orchestrationLoop) ensureOpenCodeProjectBoundary(root string, useGitWor
 		return fmt.Errorf("inspect OpenCode project marker %q: %w", marker, err)
 	}
 	if useGitWorktree {
-		return o.ensureManagedWorktreeProjectBoundary(root, marker, info, err)
+		return o.ensureManagedWorktreeProjectBoundary(ctx, root, marker, info, err)
 	}
 	if err == nil {
 		if info.Mode()&os.ModeSymlink != 0 || info.Mode().IsRegular() {
@@ -419,7 +421,7 @@ func (o *orchestrationLoop) ensureOpenCodeProjectBoundary(root string, useGitWor
 	return nil
 }
 
-func (o *orchestrationLoop) ensureManagedWorktreeProjectBoundary(root, marker string, markerInfo os.FileInfo, markerErr error) error {
+func (o *orchestrationLoop) ensureManagedWorktreeProjectBoundary(ctx context.Context, root, marker string, markerInfo os.FileInfo, markerErr error) error {
 	gitRunner := o.git()
 	if err := gitRunner.LookPath(); err != nil {
 		return fmt.Errorf("resolve Git for managed-worktree project boundary: %w", err)
@@ -433,7 +435,7 @@ func (o *orchestrationLoop) ensureManagedWorktreeProjectBoundary(root, marker st
 		}
 		// Replace the standalone nested repository created by older boundary
 		// setup with a pointer to the containing managed worktree metadata.
-		if err := removeNestedOpenCodeGitMetadata(root); err != nil {
+		if err := removeNestedOpenCodeGitMetadata(ctx, root); err != nil {
 			return err
 		}
 		markerErr = os.ErrNotExist
@@ -513,18 +515,14 @@ func writeManagedWorktreeGitFile(marker, gitDir string) error {
 	return nil
 }
 
-func removeNestedOpenCodeGitMetadata(root string) error {
+func removeNestedOpenCodeGitMetadata(ctx context.Context, root string) error {
 	secureRoot, err := securefs.OpenRoot(root)
 	if err != nil {
 		return fmt.Errorf("open nested project root for Git metadata replacement: %w", err)
 	}
 	defer secureRoot.Close()
-	progress, err := secureRoot.RemoveTreeBatch(".git", "", providerlimits.TrackedWorkspaceEntries+128)
-	if err != nil {
+	if err := secureRoot.RemoveTree(ctx, ".git", 128); err != nil {
 		return fmt.Errorf("remove obsolete nested Git metadata: %w", err)
-	}
-	if !progress.Complete {
-		return fmt.Errorf("obsolete nested Git metadata exceeds the bounded replacement limit")
 	}
 	return nil
 }
@@ -600,7 +598,7 @@ func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context
 		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
 			return "", "", fmt.Errorf("prepare response-only workspace root: %w", err)
 		}
-		if err := o.ensureOpenCodeProjectBoundary(workspacePath, true); err != nil {
+		if err := o.ensureOpenCodeProjectBoundary(ctx, workspacePath, true); err != nil {
 			return "", "", fmt.Errorf("prepare response-only OpenCode project boundary: %w", err)
 		}
 		if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(workspacePath), false); err != nil {
@@ -629,7 +627,7 @@ func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context
 		IsGitRepo:           projectRoot != "" && o.isGitWorkingTree(projectRoot),
 		WorkspaceEmpty:      projectRoot == "",
 	}
-	if err := o.prepareExecutionWorkspace(workspacePath, workspaceCtx); err != nil {
+	if err := o.prepareExecutionWorkspaceContext(ctx, workspacePath, workspaceCtx); err != nil {
 		cleanupCtx, cancelCleanup := detachedTimeoutContext(ctx, 5*time.Second)
 		cleanupErr := o.removeResponseOnlyWorkspaceAndClear(cleanupCtx, runID, attemptID, markedAt)
 		cancelCleanup()
@@ -664,7 +662,7 @@ func (o *orchestrationLoop) removeResponseOnlyWorkspaceAndClear(ctx context.Cont
 	if o == nil || o.fsStore == nil || strings.TrimSpace(markedAt) == "" {
 		return fmt.Errorf("response-only workspace cleanup identity is required")
 	}
-	if err := o.fsStore.RemoveResponseOnlyWorkspace(runID, attemptID); err != nil {
+	if err := o.fsStore.RemoveResponseOnlyWorkspaceContext(ctx, runID, attemptID); err != nil {
 		return err
 	}
 	nowFn := time.Now
@@ -733,7 +731,15 @@ func (o *orchestrationLoop) recoverResponseOnlyWorkspaceCleanupsWithLimit(ctx co
 }
 
 func directoryIsEmpty(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
+	root, err := securefs.OpenRoot(path)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	entries, err := root.ReadDirBounded(".", 1)
+	if errors.Is(err, securefs.ErrLimitExceeded) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}

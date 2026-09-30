@@ -226,7 +226,7 @@ export function DecreeForm({
   const selectedPlanSessionId = origin.kind === "planning" ? origin.sessionId : undefined;
   const planningSessionId = selectedPlanSessionId;
   const currentPlanningDraft = usePlanningSessionDraft(planningSessionId);
-  const { data: planningSessionsData } = usePlanningSessions();
+  const { data: planningSessionsData, hasNextPage: hasMoreSessions, fetchNextPage: loadMoreSessions, isFetchingNextPage: loadingMoreSessions, isError: sessionsError } = usePlanningSessions();
   const sessionsWithPlans = useMemo(
     () => (planningSessionsData?.items ?? []).filter((s) => Boolean(s.current_draft_id)),
     [planningSessionsData?.items]
@@ -781,6 +781,11 @@ export function DecreeForm({
                       }
                     }}
                   />
+                  {hasMoreSessions ? (
+                    <Button type="button" size="sm" variant="ghost" className="mt-1" disabled={loadingMoreSessions || decreeLocked} onClick={() => void loadMoreSessions()}>
+                      {loadingMoreSessions ? "Loading sessions..." : sessionsError ? "Retry Loading Sessions" : "Load Older Sessions"}
+                    </Button>
+                  ) : null}
               </div>
                 {hasDecreeContent ? (
                   <div className="flex items-center justify-end md:flex-col md:gap-0.5">

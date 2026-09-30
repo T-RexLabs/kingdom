@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -16,10 +17,160 @@ import (
 	"kingdom/internal/sqlitex"
 )
 
-const maxProviderTerminalHandoffPayloadBytes = 32 * 1024 * 1024
+const maxProviderTerminalHandoffPayloadBytes = 1024 * 1024 // compact metadata only
 const providerInvocationActivationReadbackTimeout = time.Second
 const providerTerminalHandoffPendingReadbackTimeout = time.Second
 const providerTerminalRecoveryMarkerReadbackTimeout = time.Second
+
+type providerContentQuerier interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+// CopyProviderContent verifies canonical SQLite chunks without materializing a
+// response. The same immutable chunks back handoff, settlement and projections.
+func (s *Store) CopyProviderContent(ctx context.Context, ref providerexecution.ContentReference, dst io.Writer) error {
+	return copyProviderContent(ctx, s.db, ref, dst)
+}
+
+func copyProviderContent(ctx context.Context, db providerContentQuerier, ref providerexecution.ContentReference, dst io.Writer) error {
+	reader, err := openProviderContent(ctx, db, ref)
+	if err != nil {
+		return err
+	}
+	_, err = io.CopyBuffer(dst, struct{ io.Reader }{reader}, make([]byte, providerexecution.ContentChunkBytes))
+	return errors.Join(err, reader.Close())
+}
+
+func (s *Store) OpenProviderContent(ctx context.Context, ref providerexecution.ContentReference) (io.ReadCloser, error) {
+	return openProviderContent(ctx, s.db, ref)
+}
+
+func openProviderContent(ctx context.Context, db providerContentQuerier, ref providerexecution.ContentReference) (io.ReadCloser, error) {
+	if err := ref.Validate(ref.InvocationID); err != nil {
+		return nil, err
+	}
+	rows, err := db.QueryContext(ctx, `SELECT c.ordinal, c.content, p.size_bytes FROM provider_contents p
+		LEFT JOIN provider_content_chunks c ON c.provider_invocation_id = p.provider_invocation_id AND c.sha256 = p.sha256
+		WHERE p.provider_invocation_id = ? AND p.sha256 = ? ORDER BY c.ordinal`, ref.InvocationID, ref.SHA256)
+	if err != nil {
+		return nil, err
+	}
+	return providerexecution.VerifyReader(ctx, ref, &providerContentReader{rows: rows, ref: ref}), nil
+}
+
+type providerContentReader struct {
+	rows          *sql.Rows
+	ref           providerexecution.ContentReference
+	buffer        []byte
+	size, ordinal int64
+	found         bool
+}
+
+func (r *providerContentReader) Close() error { return r.rows.Close() }
+func (r *providerContentReader) Read(dst []byte) (int, error) {
+	if len(dst) == 0 {
+		return 0, nil
+	}
+	for len(r.buffer) == 0 {
+		if !r.rows.Next() {
+			if err := r.rows.Err(); err != nil {
+				return 0, err
+			}
+			if !r.found || r.size != r.ref.SizeBytes {
+				return 0, fmt.Errorf("provider content missing or incomplete")
+			}
+			return 0, io.EOF
+		}
+		var index sql.NullInt64
+		var expectedSize int64
+		if err := r.rows.Scan(&index, &r.buffer, &expectedSize); err != nil {
+			return 0, err
+		}
+		r.found = true
+		if expectedSize != r.ref.SizeBytes {
+			return 0, fmt.Errorf("provider content size mismatch")
+		}
+		if !index.Valid && r.ref.SizeBytes == 0 {
+			continue
+		}
+		if !index.Valid || index.Int64 != r.ordinal || int64(len(r.buffer)) != min(r.ref.SizeBytes-r.size, int64(providerexecution.ContentChunkBytes)) || len(r.buffer) == 0 {
+			return 0, fmt.Errorf("provider content chunk sequence or size mismatch")
+		}
+		r.size += int64(len(r.buffer))
+		r.ordinal++
+	}
+	n := copy(dst, r.buffer)
+	r.buffer = r.buffer[n:]
+	return n, nil
+}
+
+type providerContentChunkWriter struct {
+	ctx     context.Context
+	tx      *sql.Tx
+	ref     providerexecution.ContentReference
+	buffer  []byte
+	ordinal int64
+	size    int64
+}
+
+func (w *providerContentChunkWriter) flush() error {
+	if len(w.buffer) == 0 {
+		return nil
+	}
+	_, err := w.tx.ExecContext(w.ctx, `INSERT INTO provider_content_chunks(provider_invocation_id, sha256, ordinal, content) VALUES (?, ?, ?, ?)`, w.ref.InvocationID, w.ref.SHA256, w.ordinal, w.buffer)
+	if err != nil {
+		return err
+	}
+	w.ordinal++
+	w.buffer = w.buffer[:0]
+	return nil
+}
+
+func (w *providerContentChunkWriter) Write(raw []byte) (int, error) {
+	written := 0
+	for len(raw) > 0 {
+		n := min(len(raw), providerexecution.ContentChunkBytes-len(w.buffer))
+		if int64(n) > w.ref.SizeBytes-w.size {
+			return written, fmt.Errorf("provider content exceeds declared size")
+		}
+		w.buffer = append(w.buffer, raw[:n]...)
+		raw = raw[n:]
+		written += n
+		w.size += int64(n)
+		if len(w.buffer) == providerexecution.ContentChunkBytes {
+			if err := w.flush(); err != nil {
+				return written, err
+			}
+		}
+	}
+	return written, nil
+}
+
+func importProviderContentTx(ctx context.Context, tx *sql.Tx, ref providerexecution.ContentReference, source func(providerexecution.ContentReference, io.Writer) error) error {
+	var size int64
+	err := tx.QueryRowContext(ctx, `SELECT size_bytes FROM provider_contents WHERE provider_invocation_id = ? AND sha256 = ?`, ref.InvocationID, ref.SHA256).Scan(&size)
+	if err == nil {
+		return copyProviderContent(ctx, tx, ref, io.Discard)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if source == nil {
+		return fmt.Errorf("provider content source is required")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_contents(provider_invocation_id, sha256, size_bytes) VALUES (?, ?, ?)`, ref.InvocationID, ref.SHA256, ref.SizeBytes); err != nil {
+		return err
+	}
+	w := &providerContentChunkWriter{ctx: ctx, tx: tx, ref: ref, buffer: make([]byte, 0, providerexecution.ContentChunkBytes)}
+	h := sha256.New()
+	if err := source(ref, io.MultiWriter(w, h)); err != nil {
+		return err
+	}
+	if w.size != ref.SizeBytes || hex.EncodeToString(h.Sum(nil)) != ref.SHA256 {
+		return fmt.Errorf("provider content source hash or size mismatch")
+	}
+	return w.flush()
+}
 
 type ProviderInvocationState string
 
@@ -88,6 +239,8 @@ type ProviderCompletionSettlement struct {
 	Outcome                 ProviderCompletionOutcome
 	PrimaryEvidenceID       string
 	FinalText               string
+	FinalTextRef            *providerexecution.ContentReference
+	FinalTextPreview        string
 	StructuredPayloadJSON   string
 	ProviderDiagnosticsJSON string
 	FailureReasonCode       string
@@ -179,6 +332,8 @@ type PersistProviderTerminalHandoffRequest struct {
 	StreamObservation    providerexecution.InvocationStreamObservation
 	PayloadJSON          string
 	CreatedAt            string
+	ContentReferences    []providerexecution.ContentReference
+	CopyContent          func(providerexecution.ContentReference, io.Writer) error
 }
 
 type MarkProviderTerminalHandoffPendingRequest struct {
@@ -222,6 +377,8 @@ type FinalizeProviderCompletionSettlementRequest struct {
 	Outcome                 ProviderCompletionOutcome
 	PrimaryEvidenceID       string
 	FinalText               string
+	FinalTextRef            *providerexecution.ContentReference
+	FinalTextPreview        string
 	StructuredPayloadJSON   string
 	ProviderDiagnosticsJSON string
 	FailureReasonCode       string
@@ -933,6 +1090,23 @@ func (s *Store) persistProviderTerminalHandoffOnce(ctx context.Context, req Pers
 		return PersistProviderTerminalHandoffResult{Handoff: existing, Idempotent: true}, nil
 	}
 
+	for _, ref := range normalized.ContentReferences {
+		if err := ref.Validate(invocation.ProviderInvocationID); err != nil {
+			return result, err
+		}
+		if err := importProviderContentTx(ctx, tx, ref, normalized.CopyContent); err != nil {
+			return result, err
+		}
+	}
+	if ref := observation.CanonicalTerminalTextRef; ref != nil {
+		if err := ref.Validate(invocation.ProviderInvocationID); err != nil {
+			return result, err
+		}
+		if err := copyProviderContent(ctx, tx, *ref, io.Discard); err != nil {
+			return result, err
+		}
+	}
+
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_terminal_handoffs (
 		handoff_id, provider_invocation_id, attempt_id, run_id, node_run_id,
 		expected_lease_owner, expected_lease_version, stream_observation_json, payload_json, created_at
@@ -1599,9 +1773,36 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		if err := validateProviderProcessGuardsForSettlementTx(ctx, tx, invocation, settlementReq.Outcome, authority.State, req.RecoveredGuardQuiescence, terminalHandoffProcessQuiescent, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion); err != nil {
 			return ProviderCompletionSettlement{}, err
 		}
+		var wrongLineage, unclean, count, maxOrdinal int64
+		if err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(max(command_ordinal),0),
+			COALESCE(sum(CASE WHEN owner_kind<>'decree_attempt' OR attempt_id<>? OR run_id<>? OR node_run_id<>? OR lease_owner<>? OR lease_version<>? THEN 1 ELSE 0 END),0),
+			COALESCE(sum(CASE WHEN exit_code IS NULL OR exit_code<>0 OR COALESCE(exit_signal,0)<>0 OR failure_code<>'' THEN 1 ELSE 0 END),0)
+			FROM provider_process_guards WHERE provider_invocation_id=?`, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, invocation.ProviderInvocationID).Scan(&count, &maxOrdinal, &wrongLineage, &unclean); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		if wrongLineage > 0 {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_lease_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
+		if settlementReq.Outcome == ProviderCompletionOutcomeSuccess && (unclean > 0 || count != maxOrdinal) {
+			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_incomplete", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
+		}
 	}
 
 	observation := *req.StreamObservation
+	if ref := observation.CanonicalTerminalTextRef; ref != nil {
+		if err := ref.Validate(invocation.ProviderInvocationID); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		if observation.CanonicalTerminalText != "" && providerexecution.ReferenceText(invocation.ProviderInvocationID, observation.CanonicalTerminalText) != *ref {
+			return ProviderCompletionSettlement{}, fmt.Errorf("provider terminal text does not match content reference")
+		}
+		observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) { return openProviderContent(ctx, tx, *ref) }
+		if settlementReq.Outcome != ProviderCompletionOutcomeSuccess {
+			if err := copyProviderContent(ctx, tx, *ref, io.Discard); err != nil {
+				return ProviderCompletionSettlement{}, err
+			}
+		}
+	}
 	observation.ProviderSessionID = strings.TrimSpace(observation.ProviderSessionID)
 	if observation.ProviderSessionID != "" {
 		if err := ensureProviderSessionLineage(invocation.ProviderInvocationID, invocation.AttemptID, invocation.ProviderSessionID, observation.ProviderSessionID, string(invocation.InvocationState), "settle_provider_completion_and_terminal"); err != nil {
@@ -1651,12 +1852,32 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		if err := providerexecution.ValidateServerResponseSuccess(observation); err != nil {
 			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invalid_stream_success", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
-		validated, err = executionoutput.Validate(authority.NodeID, authority.NodeClass, observation.CanonicalTerminalText, settlementReq.StructuredPayloadJSON)
+		reader, openErr := providerexecution.OpenTerminalText(ctx, observation)
+		if openErr != nil {
+			return ProviderCompletionSettlement{}, openErr
+		}
+		validated, err = executionoutput.ValidateReader(authority.NodeID, authority.NodeClass, reader, settlementReq.StructuredPayloadJSON)
+		err = errors.Join(err, reader.Close())
 		settlementReq.PrimaryEvidenceID = streamEvidence.EvidenceID
 		if err != nil {
 			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "output_validation_failed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
-		settlementReq.FinalText = validated.CanonicalText
+		settlementReq.FinalTextRef = observation.CanonicalTerminalTextRef
+		if settlementReq.FinalTextRef != nil {
+			reader, err := providerexecution.OpenTerminalText(ctx, observation)
+			if err != nil {
+				return ProviderCompletionSettlement{}, err
+			}
+			summary, readErr := providerexecution.InspectText(ctx, reader)
+			closeErr := reader.Close()
+			if err := errors.Join(readErr, closeErr); err != nil {
+				return ProviderCompletionSettlement{}, err
+			}
+			settlementReq.FinalText = ""
+			settlementReq.FinalTextPreview = summary.Preview
+		} else {
+			settlementReq.FinalText = strings.TrimSpace(observation.CanonicalTerminalText)
+		}
 		settlementReq.StructuredPayloadJSON = validated.StructuredPayloadJSON
 	} else {
 		settlementReq.PrimaryEvidenceID = streamEvidence.EvidenceID
@@ -1779,7 +2000,7 @@ func marshalProviderStreamObservationEvidence(invocation ProviderInvocation, exp
 		CompletionMode:       invocation.CompletionMode,
 		LeaseOwner:           strings.TrimSpace(expectedLeaseOwner),
 		LeaseVersion:         expectedLeaseVersion,
-		Observation:          observation,
+		Observation:          providerexecution.CompactObservation(observation),
 	})
 	if err != nil {
 		return "", fmt.Errorf("marshal provider stream observation evidence: %w", err)
@@ -1872,6 +2093,8 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 		Outcome:                 normalized.Outcome,
 		PrimaryEvidenceID:       primaryEvidence.EvidenceID,
 		FinalText:               normalized.FinalText,
+		FinalTextRef:            normalized.FinalTextRef,
+		FinalTextPreview:        normalized.FinalTextPreview,
 		StructuredPayloadJSON:   normalized.StructuredPayloadJSON,
 		ProviderDiagnosticsJSON: normalized.ProviderDiagnosticsJSON,
 		FailureReasonCode:       normalized.FailureReasonCode,
@@ -1906,6 +2129,11 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 	} else if err := ensureInvocationStateForNonSuccessSettlement(invocation, normalized.Outcome); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
+	refJSON := ""
+	if settlement.FinalTextRef != nil {
+		raw, _ := json.Marshal(settlement.FinalTextRef)
+		refJSON = string(raw)
+	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_completion_settlements (
 		settlement_id,
 		provider_invocation_id,
@@ -1920,8 +2148,8 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 		failure_reason_code,
 		failure_reason_text,
 		settled_at,
-		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		created_at, final_text_ref_json, final_text_preview
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		settlement.SettlementID,
 		settlement.ProviderInvocationID,
 		settlement.AttemptID,
@@ -1936,6 +2164,7 @@ func finalizeProviderCompletionSettlementTx(ctx context.Context, tx *sql.Tx, nor
 		settlement.FailureReasonText,
 		settlement.SettledAt,
 		settlement.CreatedAt,
+		refJSON, settlement.FinalTextPreview,
 	); err != nil {
 		return ProviderCompletionSettlement{}, fmt.Errorf("insert provider completion settlement %q: %w", settlement.SettlementID, err)
 	}
@@ -2462,7 +2691,7 @@ const providerCompletionSettlementSelect = `SELECT settlement_id,
 	COALESCE(failure_reason_code, ''),
 	COALESCE(failure_reason_text, ''),
 	settled_at,
-	created_at
+	created_at, final_text_ref_json, final_text_preview
 FROM provider_completion_settlements`
 
 type providerInvocationScanner interface {
@@ -2555,6 +2784,7 @@ type providerCompletionSettlementScanner interface {
 func scanProviderCompletionSettlement(scanner providerCompletionSettlementScanner) (ProviderCompletionSettlement, bool, error) {
 	var settlement ProviderCompletionSettlement
 	var rawOutcome string
+	var refJSON string
 	err := scanner.Scan(
 		&settlement.SettlementID,
 		&settlement.ProviderInvocationID,
@@ -2570,6 +2800,7 @@ func scanProviderCompletionSettlement(scanner providerCompletionSettlementScanne
 		&settlement.FailureReasonText,
 		&settlement.SettledAt,
 		&settlement.CreatedAt,
+		&refJSON, &settlement.FinalTextPreview,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -2578,6 +2809,16 @@ func scanProviderCompletionSettlement(scanner providerCompletionSettlementScanne
 		return ProviderCompletionSettlement{}, false, err
 	}
 	settlement.Outcome = ProviderCompletionOutcome(strings.TrimSpace(rawOutcome))
+	if refJSON != "" {
+		var ref providerexecution.ContentReference
+		if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {
+			return ProviderCompletionSettlement{}, false, err
+		}
+		if err := ref.Validate(settlement.ProviderInvocationID); err != nil {
+			return ProviderCompletionSettlement{}, false, err
+		}
+		settlement.FinalTextRef = &ref
+	}
 	return settlement, true, nil
 }
 
@@ -2920,6 +3161,17 @@ func normalizePersistProviderTerminalHandoffRequest(req PersistProviderTerminalH
 }
 
 func normalizeFinalizeProviderCompletionSettlementRequest(req FinalizeProviderCompletionSettlementRequest) (FinalizeProviderCompletionSettlementRequest, error) {
+	if req.FinalTextRef != nil {
+		if err := req.FinalTextRef.Validate(req.ProviderInvocationID); err != nil {
+			return req, err
+		}
+		if req.FinalText != "" {
+			return req, fmt.Errorf("referenced final text must not be repeated inline")
+		}
+		if len(req.FinalTextPreview) > 32*1024+4 {
+			return req, fmt.Errorf("final text preview is not bounded")
+		}
+	}
 	req.SettlementID = strings.TrimSpace(req.SettlementID)
 	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
 	req.AttemptID = strings.TrimSpace(req.AttemptID)
@@ -3128,11 +3380,45 @@ func sameProviderCompletionSettlement(existing, candidate ProviderCompletionSett
 		existing.Outcome == candidate.Outcome &&
 		existing.PrimaryEvidenceID == candidate.PrimaryEvidenceID &&
 		existing.FinalText == candidate.FinalText &&
+		sameProviderContentRef(existing.FinalTextRef, candidate.FinalTextRef) &&
 		existing.StructuredPayloadJSON == candidate.StructuredPayloadJSON &&
 		existing.ProviderDiagnosticsJSON == candidate.ProviderDiagnosticsJSON &&
 		existing.FailureReasonCode == candidate.FailureReasonCode &&
 		existing.FailureReasonText == candidate.FailureReasonText &&
 		existing.SettledAt == candidate.SettledAt
+}
+
+func sameProviderContentRef(a, b *providerexecution.ContentReference) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func hydrateCanonicalContentReference(snapshot *runExecutionPayloadSnapshot, attemptState, invocationID, rawRef, preview, structured string) error {
+	if rawRef == "" || !isCommittedAttemptExecutionState(attemptState) {
+		return nil
+	}
+	var ref providerexecution.ContentReference
+	if err := json.Unmarshal([]byte(rawRef), &ref); err != nil {
+		return err
+	}
+	if err := ref.Validate(invocationID); err != nil {
+		return err
+	}
+	snapshot.OutputTextRef = &ref
+	snapshot.ObservedOutputText = sql.NullString{String: preview, Valid: preview != ""}
+	snapshot.ObservedControlVerdict = sql.NullString{}
+	var payload struct {
+		Verdict string `json:"verdict"`
+	}
+	if err := json.Unmarshal([]byte(structured), &payload); err != nil {
+		return err
+	}
+	if payload.Verdict == "PASS" || payload.Verdict == "REWORK" {
+		snapshot.ObservedControlVerdict = sql.NullString{String: payload.Verdict, Valid: true}
+	}
+	return nil
 }
 
 func providerInvocationStateForOutcome(outcome ProviderCompletionOutcome) ProviderInvocationState {

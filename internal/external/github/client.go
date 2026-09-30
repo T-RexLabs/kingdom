@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -922,6 +923,9 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	}
 	out := external.IssueResult{RepositoryID: destination.ID, RepositoryInstallationID: destination.InstallationID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
 	if out.Profile.IncludeComments {
+		if req.ProviderNativeID != "" && req.CurrentCommentCount != issue.Comments {
+			commentETag = ""
+		}
 		comments, fetched, fetchedPages, omitted, omittedPages, fetchedCommentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, destination.Locator, issue.Number, commentETag, issue.Comments)
 		if e != nil {
 			return out, e
@@ -1105,112 +1109,126 @@ func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnec
 	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 }
 
-func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) ([]state.ExternalComment, int, int, int, int, string, bool, error) {
-	firstPage, lastPage := retainedCommentPageWindow(providerCount)
+func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) (state.ExternalCommentSource, int, int, int, int, string, bool, error) {
+	firstPage, lastPage := completeCommentPageWindow(providerCount)
 	priorValidators := decodeCommentValidators(etag)
 	reuseValidators := commentValidatorWindowMatches(priorValidators, firstPage, lastPage)
-	lastValidator := ""
+	var firstResponse *commentPage
+	defer func() {
+		if firstResponse != nil {
+			_ = firstResponse.Close()
+		}
+	}()
 	if reuseValidators {
-		lastValidator = priorValidators[lastPage]
+		allUnchanged := true
+		for page := firstPage; page <= lastPage; page++ {
+			item, err := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, page, priorValidators[page])
+			if err != nil {
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			linkedLast, hasLast, err := commentLinkPage(item.headers, "last")
+			if err != nil {
+				_ = item.Close()
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			next, hasNext, err := commentLinkPage(item.headers, "next")
+			if err != nil {
+				_ = item.Close()
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			if !item.notModified || (hasLast && linkedLast != lastPage) || (hasNext && next != page+1) || (page == lastPage && hasNext) {
+				if page == 1 && !item.notModified {
+					firstResponse = &item
+				} else {
+					_ = item.Close()
+				}
+				allUnchanged = false
+				break
+			}
+		}
+		if allUnchanged {
+			return nil, 0, 0, 0, 0, encodeCommentValidators(priorValidators), true, nil
+		}
 	}
-	pages := map[int]commentPage{}
-	last, err := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, lastValidator)
+	spool, err := state.NewExternalCommentSpool()
 	if err != nil {
 		return nil, 0, 0, 0, 0, "", false, err
 	}
-	if !last.notModified {
-		if linkedLast, ok, parseErr := commentLinkPage(last.headers, "last"); parseErr != nil {
-			return nil, 0, 0, 0, 0, "", false, parseErr
-		} else if ok && linkedLast != lastPage {
-			lastPage = linkedLast
-			reuseValidators = false
-			last, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, "")
-			if err != nil {
-				return nil, 0, 0, 0, 0, "", false, err
-			}
+	success := false
+	defer func() {
+		if !success {
+			_ = spool.Close()
 		}
-	}
-	pages[lastPage] = last
-	tailCount := providerCount - (lastPage-1)*100
-	if !last.notModified {
-		tailCount = len(last.raw)
-	}
-	firstPage = lastPage
-	if lastPage > 1 && tailCount < 100 {
-		firstPage = lastPage - 1
-	}
-	if !commentValidatorWindowMatches(priorValidators, firstPage, lastPage) {
-		reuseValidators = false
-	}
-	if firstPage != lastPage {
-		previousValidator := ""
-		if reuseValidators {
-			previousValidator = priorValidators[firstPage]
-		}
-		previous, fetchErr := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, firstPage, previousValidator)
-		if fetchErr != nil {
-			return nil, 0, 0, 0, 0, "", false, fetchErr
-		}
-		pages[firstPage] = previous
-	}
-
-	allUnchanged := true
-	for _, page := range pages {
-		allUnchanged = allUnchanged && page.notModified
-	}
-	validators := make(map[int]string, len(pages))
-	if allUnchanged && reuseValidators {
-		for page := firstPage; page <= lastPage; page++ {
-			validators[page] = priorValidators[page]
-		}
-		return nil, 0, 0, 0, 0, encodeCommentValidators(validators), true, nil
-	}
-
-	combined := make([]state.ExternalComment, 0, 200)
-	for page := firstPage; page <= lastPage; page++ {
-		item := pages[page]
-		if item.notModified {
+	}()
+	validators := make(map[int]string)
+	fetched, fetchedPages := 0, 0
+	var previousID int64
+	for page := 1; ; page++ {
+		var item commentPage
+		var err error
+		if page == 1 && firstResponse != nil {
+			item = *firstResponse
+			firstResponse = nil
+		} else {
 			item, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, page, "")
-			if err != nil {
-				return nil, 0, 0, 0, 0, "", false, err
-			}
+		}
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if item.notModified {
+			_ = item.Close()
+			return nil, 0, 0, 0, 0, "", false, malformedResponse()
 		}
 		validators[page] = item.etag
-		combined = append(combined, item.comments...)
-	}
-	for i := 1; i < len(combined); i++ {
-		previous, previousErr := strconv.ParseInt(combined[i-1].ProviderCommentID, 10, 64)
-		current, currentErr := strconv.ParseInt(combined[i].ProviderCommentID, 10, 64)
-		if previousErr != nil || currentErr != nil || current <= previous {
-			return nil, 0, 0, 0, 0, "", false, &external.ProviderError{Class: external.FailureMalformedResponse}
+		replayErr := state.ReplayExternalComments(ctx, item.comments, func(comment state.ExternalComment) error {
+			id, err := strconv.ParseInt(comment.ProviderCommentID, 10, 64)
+			if err != nil || id <= previousID {
+				return malformedResponse()
+			}
+			previousID = id
+			if err := spool.Append(comment); err != nil {
+				return err
+			}
+			fetched++
+			return nil
+		})
+		if err := errors.Join(replayErr, item.Close()); err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if item.count > 0 {
+			fetchedPages++
+		}
+		next, hasNext, err := commentLinkPage(item.headers, "next")
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if hasNext && next != page+1 {
+			return nil, 0, 0, 0, 0, "", false, malformedResponse()
+		}
+		linkedLast, hasLast, err := commentLinkPage(item.headers, "last")
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if hasLast {
+			lastPage = linkedLast
+		}
+		if !hasNext && !(item.count == 100 && page < lastPage) {
+			break
 		}
 	}
-	if len(combined) > 100 {
-		combined = combined[len(combined)-100:]
+	if err := spool.Seal(); err != nil {
+		return nil, 0, 0, 0, 0, "", false, err
 	}
-	fetched := len(combined)
-	omitted := providerCount - fetched
-	if omitted < 0 {
-		omitted = 0
-	}
-	fetchedPages := len(pages)
-	if providerCount == 0 && fetched == 0 {
-		fetchedPages = 0
-	}
-	omittedPages := (omitted + 99) / 100
-	return combined, fetched, fetchedPages, omitted, omittedPages, encodeCommentValidators(validators), false, nil
+	success = true
+	return spool, fetched, fetchedPages, 0, 0, encodeCommentValidators(validators), false, nil
 }
 
-func retainedCommentPageWindow(providerCount int) (int, int) {
-	lastPage := (providerCount + 99) / 100
-	if lastPage < 1 {
-		lastPage = 1
+func completeCommentPageWindow(providerCount int) (int, int) {
+	lastPage := 1
+	if providerCount > 0 {
+		lastPage = 1 + (providerCount-1)/100
 	}
-	firstPage := lastPage
-	if lastPage > 1 && providerCount-(lastPage-1)*100 < 100 {
-		firstPage--
-	}
-	return firstPage, lastPage
+	return 1, lastPage
 }
 
 func commentValidatorWindowMatches(validators map[int]string, firstPage, lastPage int) bool {
@@ -1226,30 +1244,86 @@ func commentValidatorWindowMatches(validators map[int]string, firstPage, lastPag
 }
 
 type commentPage struct {
-	raw         []githubComment
-	comments    []state.ExternalComment
+	comments    state.ExternalCommentSource
+	count       int
 	headers     http.Header
 	etag        string
 	notModified bool
 }
 
+func (p commentPage) Close() error { return state.CloseExternalComments(p.comments) }
+
+type commentResponseStream struct {
+	repo          string
+	number, count int
+	spool         *state.ExternalCommentSpool
+}
+
+func (s *commentResponseStream) DecodeJSON(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('[') {
+		return malformedResponse()
+	}
+	s.spool, err = state.NewExternalCommentSpool()
+	if err != nil {
+		return err
+	}
+	var previous int64
+	for decoder.More() {
+		if s.count >= 100 {
+			return malformedResponse()
+		} // Upstream per_page contract, not an import ceiling.
+		var raw githubComment
+		if err := decoder.Decode(&raw); err != nil {
+			return err
+		}
+		comments, err := normalizeComments([]githubComment{raw}, s.repo, s.number)
+		if err != nil {
+			return err
+		}
+		if raw.ID <= previous {
+			return malformedResponse()
+		}
+		previous = raw.ID
+		if err := s.spool.Append(comments[0]); err != nil {
+			return err
+		}
+		s.count++
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	return s.spool.Seal()
+}
+
 func (c *Client) fetchCommentPage(ctx context.Context, connectionID string, generation int, token, repo string, number, page int, etag string) (commentPage, error) {
-	var raw []githubComment
-	response, err := c.doJSONResponse(ctx, connectionID, generation, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, nil, &raw, etag)
+	stream := &commentResponseStream{repo: repo, number: number}
+	keep := false
+	defer func() {
+		if !keep && stream.spool != nil {
+			_ = stream.spool.Close()
+		}
+	}()
+	// A transfer between issue and comment requests must be revalidated through
+	// issue intake, not followed with a credential into an unchecked repository.
+	response, err := c.doIssueJSONResponse(ctx, connectionID, generation, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, stream, etag)
 	if err != nil {
 		if pe, ok := err.(*external.ProviderError); ok && pe.Status == http.StatusNotModified {
 			return commentPage{headers: response.Header, etag: etag, notModified: true}, nil
 		}
 		return commentPage{}, err
 	}
+	if response.Status != http.StatusOK {
+		return commentPage{}, malformedResponse()
+	}
 	if err := validateResponseValidators(response.Header.Get("ETag"), response.Header.Get("Last-Modified")); err != nil {
 		return commentPage{}, err
 	}
-	comments, err := normalizeComments(raw, repo, number)
-	if err != nil {
-		return commentPage{}, err
-	}
-	return commentPage{raw: raw, comments: comments, headers: response.Header, etag: response.Header.Get("ETag")}, nil
+	keep = true
+	return commentPage{comments: stream.spool, count: stream.count, headers: response.Header, etag: response.Header.Get("ETag")}, nil
 }
 
 type commentValidatorEnvelope struct {
@@ -1390,6 +1464,41 @@ func (c *Client) doJSONResponseMode(ctx context.Context, connectionID string, ge
 			}
 			return responseMetadata{}, &external.ProviderError{Class: external.FailureUnavailable}
 		}
+		// Issue and comment content has its own transport path. Decode directly
+		// from the body instead of copying it through the credential/setup byte
+		// ceiling. All other responses retain that ceiling, including failures.
+		if method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 && isIssueContentPath(path) {
+			decoder := json.NewDecoder(resp.Body)
+			var decodeErr error
+			if streamed, ok := out.(interface{ DecodeJSON(*json.Decoder) error }); ok {
+				decodeErr = streamed.DecodeJSON(decoder)
+			} else {
+				decodeErr = decoder.Decode(out)
+			}
+			if decodeErr == nil {
+				remaining := bufio.NewReader(io.MultiReader(decoder.Buffered(), resp.Body))
+				for {
+					b, err := remaining.ReadByte()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						decodeErr = err
+						break
+					}
+					if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+						decodeErr = errors.New("trailing issue JSON")
+						break
+					}
+				}
+			}
+			_ = resp.Body.Close()
+			release()
+			if decodeErr != nil {
+				return responseMetadata{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			return responseMetadata{Header: resp.Header, FinalURL: resp.Request.URL, Status: resp.StatusCode}, nil
+		}
 		limited := io.LimitReader(resp.Body, maxResponseBytes+1)
 		raw, readErr := io.ReadAll(limited)
 		_ = resp.Body.Close()
@@ -1450,6 +1559,15 @@ func (c *Client) doJSONResponseMode(ctx context.Context, connectionID string, ge
 		}
 		return metadata, nil
 	}
+}
+
+func isIssueContentPath(path string) bool {
+	path, _, _ = strings.Cut(path, "?")
+	if path == "/search/issues" {
+		return true
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return len(parts) >= 4 && len(parts) <= 6 && parts[0] == "repos" && parts[3] == "issues" && (len(parts) < 6 || parts[5] == "comments")
 }
 
 func (c *Client) isUserStrategy(connectionID string) bool {

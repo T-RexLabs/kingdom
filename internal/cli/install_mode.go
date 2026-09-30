@@ -738,7 +738,15 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		}
 		return fmt.Errorf("bootstrap runtime: %w", err)
 	}
-	defer func() { _ = runtimeInstance.Close() }()
+	runtimeLifecycleTransferred := false
+	defer func() {
+		if runtimeLifecycleTransferred {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), summonGracefulShutdownTimeout)
+		defer cancel()
+		_ = runtimeInstance.GracefulClose(closeCtx)
+	}()
 	if startupCtx.Err() != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -829,6 +837,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			err = fmt.Errorf("shutdown drain failed: %w", drainErr)
 		}
 	}()
+	runtimeLifecycleTransferred = true
 
 	errCh := make(chan error, 1)
 	go func() {

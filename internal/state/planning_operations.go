@@ -572,10 +572,15 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		finalText := strings.TrimSpace(req.ObservedOutputText)
 		if req.ProviderSettlement != nil {
 			finalText = strings.TrimSpace(req.ProviderSettlement.FinalText)
+			opUpdate.Set("observed_output_ref_json", planningProviderReferenceJSON(req.ProviderSettlement.FinalTextRef))
 		}
 		opUpdate.Set("observed_output_text", finalText)
 	} else if strings.TrimSpace(req.ObservedOutputText) != "" {
 		opUpdate.Set("observed_output_text", strings.TrimSpace(req.ObservedOutputText))
+	}
+	if req.ProviderSettlement != nil && req.ProviderSettlement.FinalTextRef != nil {
+		opUpdate.Set("observed_output_text", "")
+		opUpdate.Set("observed_output_ref_json", planningProviderReferenceJSON(req.ProviderSettlement.FinalTextRef))
 	}
 	switch req.Kind {
 	case FinalizeFail, FinalizeCancel:

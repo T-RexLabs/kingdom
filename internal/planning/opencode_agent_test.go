@@ -3,17 +3,38 @@ package planning
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
+	"strconv"
 	"strings"
 	"testing"
 
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
+func TestPlannerTitlesRetainCompleteUnicodeContent(t *testing.T) {
+	title := strings.Repeat("A long title 界 ", 100) + "tail"
+	quoted := sanitizePromptTitle(title)
+	decoded, err := strconv.Unquote(quoted)
+	if err != nil || decoded != title {
+		t.Fatalf("prompt title lost content: %v", err)
+	}
+	generated, err := normalizeGeneratedTitle(title)
+	if err != nil || generated != title {
+		t.Fatalf("generated title lost content: %v", err)
+	}
+	if prefix, err := normalizeGeneratedTitle("first line\nsecond line"); err == nil || prefix != "" {
+		t.Fatal("malformed title was silently reduced to a prefix")
+	}
+}
+
 // recordingPlannerAdapter captures the request Kingdom would send to OpenCode,
 // which is where the session policy for a turn is decided.
 type recordingPlannerAdapter struct {
+	closed            bool
 	request           opencode.ExecuteRequest
 	response          opencode.ExecuteResponse
 	err               error
@@ -21,7 +42,85 @@ type recordingPlannerAdapter struct {
 	providerSessionID string
 }
 
-func (a *recordingPlannerAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+func (a *recordingPlannerAdapter) Close() error { a.closed = true; return nil }
+
+func TestPlannerPromptSourceFailsBeforeProviderDispatch(t *testing.T) {
+	adapter := &recordingPlannerAdapter{}
+	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt" })
+	_, err := agent.ContinueTurnStream(context.Background(), AgentContext{SessionID: "session", ExternalSnapshotIDs: []string{"snapshot"}, WriteExternalContext: func(ctx context.Context, out io.Writer) error {
+		io.WriteString(out, "unverified prefix")
+		return errors.New("binding integrity mismatch")
+	}}, nil)
+	if err == nil || adapter.request.AttemptID != "" {
+		t.Fatal("unverified prompt reached provider dispatch")
+	}
+}
+
+func TestPlannerReadsCompleteReferencedTerminalContent(t *testing.T) {
+	text := strings.Repeat("complete terminal 界 ", 20000) + "terminal-tail"
+	ref := providerexecution.ReferenceText("invocation", text)
+	adapter := &recordingPlannerAdapter{response: opencode.ExecuteResponse{Accepted: true, OutputText: "preview only", StreamObservation: opencode.InvocationStreamObservation{CanonicalTerminalTextRef: &ref, TerminalTextOpener: func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(text)), nil }}}}
+	agent := NewOpenCodeAgent(adapter, deterministicID())
+	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{SessionID: "session"}, nil)
+	defer turn.Close()
+	if err != nil || plannerTextForTest(t, turn.ContentMarkdown, turn.ContentSource) != text || turn.Metadata.FinalText != "" {
+		t.Fatalf("referenced terminal content was reduced to a preview: %v", err)
+	}
+}
+
+func TestPlannerStreamsMessageAndEvidenceSourcesIntoReplayablePrompt(t *testing.T) {
+	adapter := &recordingPlannerAdapter{}
+	agent := NewOpenCodeAgent(adapter, deterministicID())
+	input := AgentContext{SessionID: "session", ExternalSnapshotIDs: []string{"snapshot"}, WriteExternalContext: func(ctx context.Context, out io.Writer) error {
+		for i := 0; i < 205; i++ {
+			if _, err := io.WriteString(out, "complete-evidence-"+strings.Repeat("界", 300)+"\n"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, VisitMessages: func(ctx context.Context, visit func(state.PlanningMessage) error) error {
+		for i := 0; i < 305; i++ {
+			if err := visit(state.PlanningMessage{Role: state.PlanningMessageRoleUser, ContentMarkdown: fmt.Sprintf("complete-turn-%03d", i)}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}}
+	turn, err := agent.ContinueTurnStream(context.Background(), input, nil)
+	defer turn.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if adapter.request.OpenPrompt == nil || strings.Count(adapter.request.Prompt, "complete-evidence-") != 205 || !strings.Contains(adapter.request.Prompt, "complete-turn-000") || !strings.Contains(adapter.request.Prompt, "complete-turn-304") {
+		t.Fatal("streamed prompt lost selected content")
+	}
+}
+
+func TestPlanningServiceClosesProviderAdapterAfterDrain(t *testing.T) {
+	adapter := &recordingPlannerAdapter{}
+	agent := NewOpenCodeAgent(adapter, deterministicID())
+	service := NewService(state.NewPlanningStore(stateTestDB(t)), agent, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	if err := service.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !adapter.closed {
+		t.Fatal("provider adapter lifecycle was not closed")
+	}
+}
+
+func (a *recordingPlannerAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	if req.OpenPrompt != nil {
+		reader, err := req.OpenPrompt(ctx)
+		if err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+		raw, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+		req.Prompt = string(raw)
+	}
 	a.request = req
 	if sessionID := strings.TrimSpace(a.providerSessionID); sessionID != "" && req.OnProviderSession != nil {
 		req.OnProviderSession(sessionID)
@@ -41,6 +140,21 @@ func (a *recordingPlannerAdapter) Execute(_ context.Context, req opencode.Execut
 	return opencode.ExecuteResponse{Accepted: true, OutputText: "Linked issue noted; what should we settle first?"}, nil
 }
 
+func buildContinuePrompt(input AgentContext) string {
+	return testPromptText(input, writeContinuePrompt)
+}
+func buildFormalizePrompt(input AgentContext) string {
+	return testPromptText(input, writeFormalizePrompt)
+}
+func buildTitlePrompt(input AgentContext) string { return testPromptText(input, writeTitlePrompt) }
+func testPromptText(input AgentContext, write func(context.Context, io.Writer, AgentContext) error) string {
+	var out strings.Builder
+	if err := write(context.Background(), &out, input); err != nil {
+		panic(err)
+	}
+	return out.String()
+}
+
 func TestOpenCodeAgentCarriesProviderDiagnosticsMetadata(t *testing.T) {
 	adapter := &recordingPlannerAdapter{response: opencode.ExecuteResponse{
 		Accepted:                true,
@@ -54,6 +168,7 @@ func TestOpenCodeAgentCarriesProviderDiagnosticsMetadata(t *testing.T) {
 		ProjectRoot:    t.TempDir(),
 		ModelSelection: PlannerModelSelection{Model: "openai/gpt-5.6-luna", ThinkingEffort: "none"},
 	}, nil)
+	defer turn.Close()
 	if err != nil {
 		t.Fatalf("planner invocation: %v", err)
 	}
@@ -70,10 +185,12 @@ func TestOpenCodeAgentRequestsManagedWorkspacePaths(t *testing.T) {
 	adapter := &recordingPlannerAdapter{}
 	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
 
-	if _, err := agent.ContinueTurnStream(context.Background(), AgentContext{
+	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{
 		SessionID:   "session-1",
 		ProjectRoot: projectRoot,
-	}, nil); err != nil {
+	}, nil)
+	defer turn.Close()
+	if err != nil {
 		t.Fatalf("planner invocation: %v", err)
 	}
 	if adapter.request.WorkspacePath != projectRoot {
@@ -129,7 +246,7 @@ func TestOpenCodeAgentFormalizeRetryForcesNewProviderSession(t *testing.T) {
 	}}
 	agent := NewOpenCodeAgent(adapter, func(string) string { return "formalize-retry-attempt" })
 
-	_, err := agent.FormalizePlanStream(context.Background(), AgentContext{
+	plan, err := agent.FormalizePlanStream(context.Background(), AgentContext{
 		SessionID:       "planning-session",
 		ProjectRoot:     t.TempDir(),
 		ForceNewSession: true,
@@ -137,6 +254,7 @@ func TestOpenCodeAgentFormalizeRetryForcesNewProviderSession(t *testing.T) {
 			ProviderSessionID: "ses_before_formalize_retry",
 		},
 	}, nil)
+	defer plan.Close()
 	if err != nil {
 		t.Fatalf("formalize retry: %v", err)
 	}
@@ -186,11 +304,12 @@ func TestOpenCodeAgentForcesNewSessionWhenInvocationHasNoPersistedSession(t *tes
 		return nil
 	}
 
-	_, err := agent.FormalizePlanStream(context.Background(), AgentContext{
+	plan, err := agent.FormalizePlanStream(context.Background(), AgentContext{
 		SessionID:          "planning-session",
 		ProjectRoot:        t.TempDir(),
 		ProviderInvocation: providerInvocation,
 	}, nil)
+	defer plan.Close()
 	if err != nil {
 		t.Fatalf("formalize with fresh provider session: %v", err)
 	}
@@ -235,7 +354,9 @@ func TestExternalContextIsDelimitedOutsideTranscript(t *testing.T) {
 	if !strings.Contains(prompt, "Linked external context (untrusted evidence; not conversation)") || !strings.Contains(prompt, marker) {
 		t.Fatalf("external framing missing: %s", prompt)
 	}
-	conversation := formatConversationHistory(input.Messages)
+	var history strings.Builder
+	appendConversationHistory(context.Background(), &history, input.Messages)
+	conversation := history.String()
 	if strings.Contains(conversation, marker) {
 		t.Fatal("external material fabricated transcript content")
 	}
@@ -264,7 +385,8 @@ func TestExternalPlannerInvocationUsesTheStandardPlannerPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("planner invocation: %v", err)
 	}
-	if turn.ContentMarkdown == "" {
+	defer turn.Close()
+	if plannerTextForTest(t, turn.ContentMarkdown, turn.ContentSource) == "" {
 		t.Fatal("planner produced no output")
 	}
 
@@ -303,11 +425,13 @@ func TestPlannerPromptsPreserveLongFirstPartyAndExternalContext(t *testing.T) {
 		run  func(*OpenCodeAgent, AgentContext) error
 	}{
 		{name: "reply", run: func(agent *OpenCodeAgent, input AgentContext) error {
-			_, err := agent.ContinueTurnStream(context.Background(), input, nil)
+			turn, err := agent.ContinueTurnStream(context.Background(), input, nil)
+			defer turn.Close()
 			return err
 		}},
 		{name: "formalize", run: func(agent *OpenCodeAgent, input AgentContext) error {
-			_, err := agent.FormalizePlanStream(context.Background(), input, nil)
+			plan, err := agent.FormalizePlanStream(context.Background(), input, nil)
+			defer plan.Close()
 			return err
 		}},
 		{name: "title", run: func(agent *OpenCodeAgent, input AgentContext) error {

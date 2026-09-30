@@ -2,6 +2,7 @@ package planning
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -19,7 +20,7 @@ func newSessionService(deps runtimeDeps, runner *operationRunner) *sessionServic
 	return &sessionService{deps: deps, runner: runner}
 }
 
-func (s *sessionService) CreateSession(ctx context.Context, title string, modelSelectionJSON string) (state.PlanningSession, error) {
+func (s *sessionService) CreateSession(ctx context.Context, title string, modelSelectionJSON string, titleSource *state.PlanningTextSource) (state.PlanningSession, error) {
 	if s == nil || s.deps.store == nil {
 		return state.PlanningSession{}, fmt.Errorf("planning service store is required")
 	}
@@ -30,6 +31,13 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 	sessionID := s.deps.nextID("planning_session")
 	messageID := s.deps.nextID("planning_message")
 	defaultTitle := "plan_" + strings.TrimPrefix(sessionID, "planning_session_")
+	titleState := defaultPlanningSessionTitleState(title)
+	if titleSource != nil && titleSource.SizeBytes == 0 {
+		titleSource = nil
+	}
+	if titleSource != nil {
+		titleState = planningSessionTitleStateCustom
+	}
 	openingQuestionJSON, err := marshalQuestion(openingQuestion())
 	if err != nil {
 		return state.PlanningSession{}, fmt.Errorf("marshal opening question: %w", err)
@@ -38,19 +46,18 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 	// the session's active context snapshot at enqueue, so a session created
 	// without one could never chat; capturing it here means a failed scan
 	// fails creation loudly instead of persisting an unusable session.
-	summary, err := scanProjectRoot(ctx, s.deps.projectRoot)
+	summary, err := captureProjectRoot(ctx, s.deps.projectRoot)
 	if err != nil {
 		return state.PlanningSession{}, err
 	}
-	contextSnapshot, err := contextSnapshotRequest(s.deps, sessionID, summary, now)
-	if err != nil {
-		return state.PlanningSession{}, err
-	}
+	defer summary.Close()
+	contextSnapshot := contextSnapshotRequest(s.deps, sessionID, summary, now)
 	session, err := s.deps.store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
 		Session: state.CreatePlanningSessionRequest{
+			TitleSource:         titleSource,
 			PlanningSessionID:   sessionID,
 			Title:               firstNonEmpty(strings.TrimSpace(title), defaultTitle),
-			TitleState:          defaultPlanningSessionTitleState(title),
+			TitleState:          titleState,
 			LifecycleState:      state.PlanningSessionLifecycleStateActive,
 			ConversationState:   state.PlanningSessionConversationStateReady,
 			ActiveLeafMessageID: messageID,
@@ -93,6 +100,12 @@ func (s *sessionService) UpdateSession(ctx context.Context, planningSessionID st
 		title = strings.TrimSpace(*input.Title)
 		titleState = planningSessionTitleStateCustom
 	}
+	if input.TitleSource != nil {
+		if input.TitleSource.SizeBytes <= 0 {
+			return state.PlanningSession{}, fmt.Errorf("planning session title is required")
+		}
+		titleState = planningSessionTitleStateCustom
+	}
 	if title == "" {
 		return state.PlanningSession{}, fmt.Errorf("planning session title is required")
 	}
@@ -100,16 +113,39 @@ func (s *sessionService) UpdateSession(ctx context.Context, planningSessionID st
 	if input.ModelSelectionJSON != nil {
 		modelSelectionJSON = strings.TrimSpace(*input.ModelSelectionJSON)
 	}
-	if err := s.deps.store.UpdateSession(ctx, state.UpdatePlanningSessionRequest{
+	update := state.UpdatePlanningSessionRequest{
+		TitleSource:        input.TitleSource,
 		PlanningSessionID:  session.PlanningSessionID,
 		Title:              &title,
 		TitleState:         &titleState,
 		ModelSelectionJSON: stringPtr(firstNonEmpty(modelSelectionJSON, `{"model":""}`)),
 		UpdatedAt:          s.deps.nowString(),
-	}); err != nil {
-		return state.PlanningSession{}, err
 	}
-	updated, _, err := s.deps.store.GetSession(ctx, planningSessionID)
+	if input.Title == nil {
+		update.Title = nil
+	}
+	if input.Title == nil && input.TitleSource == nil {
+		update.TitleState = nil
+	}
+	if input.TitleSource != nil {
+		update.TitleContentID = s.deps.nextID("planning_title_content")
+	}
+	if err := s.deps.store.UpdateSession(ctx, update); err != nil {
+		var unknown *state.CommitOutcomeUnknownError
+		if !errors.As(err, &unknown) || input.TitleSource == nil {
+			return state.PlanningSession{}, err
+		}
+		readbackCtx, cancel := planningOperationReadbackContext(ctx)
+		defer cancel()
+		found, readErr := s.deps.store.VerifyPlanningText(readbackCtx, update.TitleContentID, input.TitleSource)
+		if readErr != nil {
+			return state.PlanningSession{}, errors.Join(err, readErr)
+		}
+		if !found {
+			return state.PlanningSession{}, &state.CommitOutcomeAbsentError{Operation: unknown.Operation, ResourceID: unknown.ResourceID, Cause: unknown.Cause}
+		}
+	}
+	updated, err := readBackPlanningSessionAfterOperation(ctx, s.deps, planningSessionID, planningSessionID, "update planning session")
 	if err != nil {
 		return state.PlanningSession{}, err
 	}

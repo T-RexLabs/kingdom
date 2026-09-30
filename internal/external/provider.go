@@ -75,7 +75,7 @@ type IssueResult struct {
 	RepositoryID, RepositoryInstallationID, NativeID string
 	Issue                                            state.NormalizedExternalIssue
 	Profile                                          state.ExternalImportProfile
-	Comments                                         []state.ExternalComment
+	Comments                                         state.ExternalCommentSource
 	ProviderCommentCount, FetchedCommentCount        int
 	FetchedCommentPages, OmittedCommentCount         int
 	OmittedCommentPages                              int
@@ -84,6 +84,8 @@ type IssueResult struct {
 	CommentsNotModified                              bool
 	Transferred                                      bool
 }
+
+func (r IssueResult) Close() error { return state.CloseExternalComments(r.Comments) }
 
 // ConnectionValidation is the verdict for a whole connection. Every installation
 // it covers must validate, and each carries the account identity its own

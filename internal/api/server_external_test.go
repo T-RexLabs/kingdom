@@ -129,30 +129,35 @@ func TestGitHubAuthenticationFailuresAreDependenciesNotLocalUnauthorized(t *test
 	}
 }
 
-func TestPresentIssueResultBoundsTransientCommentBodies(t *testing.T) {
+func TestPresentIssueResultPreservesAllTransientCommentBodies(t *testing.T) {
 	t.Parallel()
-	comments := make([]state.ExternalComment, state.MaxExternalComments+1)
+	comments := make(state.ExternalCommentList, 205)
 	for i := range comments {
-		comments[i] = state.ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", state.MaxExternalCommentBytes+1)}
+		comments[i] = state.ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", 40<<10) + "界-tail"}
 	}
 
-	presented := presentIssueResult(external.IssueResult{Comments: comments})
-	bounded, ok := presented["comments"].([]state.ExternalComment)
-	if !ok {
-		t.Fatalf("expected typed comments, got %T", presented["comments"])
+	var out strings.Builder
+	if err := presentIssueResult(context.Background(), &out, external.IssueResult{Comments: comments, Profile: state.ExternalImportProfile{IncludeComments: true}}); err != nil {
+		t.Fatal(err)
 	}
-	if len(bounded) > state.MaxExternalComments {
-		t.Fatalf("expected at most %d comments, got %d", state.MaxExternalComments, len(bounded))
+	var presented struct {
+		Comments []state.ExternalComment `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &presented); err != nil {
+		t.Fatal(err)
+	}
+	if len(presented.Comments) != len(comments) {
+		t.Fatalf("lost comments: %d", len(presented.Comments))
 	}
 	total := 0
-	for _, comment := range bounded {
+	for i, comment := range presented.Comments {
 		total += comment.RetainedBytes
-		if comment.RetainedBytes > state.MaxExternalCommentBytes {
-			t.Fatalf("comment exceeded byte limit: %d", comment.RetainedBytes)
+		if comment.Body != comments[i].Body || comment.RetainedBytes != len(comment.Body) {
+			t.Fatalf("comment changed: %d", i)
 		}
 	}
-	if total > state.MaxExternalCommentsBytes {
-		t.Fatalf("comments exceeded aggregate byte limit: %d", total)
+	if total <= 128<<10 {
+		t.Fatalf("test did not cross former aggregate limit: %d", total)
 	}
 }
 
@@ -164,8 +169,8 @@ func TestCompareExternalResultReportsTransferredCoordinates(t *testing.T) {
 	result.Issue.CanonicalURL = "https://github.com/owner/new/issues/9"
 	result.Issue.UpdatedAt = "2026-08-12T11:00:00Z"
 
-	changes := compareExternalResult(old, nil, result)
-	if !changes.Repository || !changes.IssueNumber || !changes.CanonicalUrl || !changes.UpdatedAt || sameExternalResult(old, nil, result) {
+	changes, same, err := compareExternalResult(context.Background(), old, nil, result)
+	if err != nil || !changes.Repository || !changes.IssueNumber || !changes.CanonicalUrl || !changes.UpdatedAt || same {
 		t.Fatalf("transfer comparison was not coherent: %#v", changes)
 	}
 }
@@ -1672,7 +1677,7 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
-	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh", SnapshotID: "snapshot-refresh", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`, ProviderCommentCount: 1, FetchedCommentCount: 1, FetchedCommentPages: 1, Comments: []state.ExternalComment{{ProviderCommentID: "comment-1", Author: "octo", Body: "retained body", CanonicalURL: "https://github.com/comment/1", CreatedAt: at, UpdatedAt: at}}})
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh", SnapshotID: "snapshot-refresh", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`, ProviderCommentCount: 1, FetchedCommentCount: 1, FetchedCommentPages: 1, Comments: state.ExternalCommentList{{ProviderCommentID: "comment-1", Author: "octo", Body: "retained body", CanonicalURL: "https://github.com/comment/1", CreatedAt: at, UpdatedAt: at}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1682,7 +1687,9 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	issue.Title, issue.UpdatedAt = "Changed", "2026-08-12T11:00:00Z"
 	adapter.result = external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderCommentCount: 1, ETag: `"issue-v2"`, CommentsETag: `"comments-v1"`, CommentsNotModified: true}
 
-	connector.failQueryAfter("FROM external_source_snapshot_comments WHERE snapshot_id=?", 1)
+	// Fail the post-commit link projection. Comments now replay from immutable
+	// storage during capture rather than being cached in a whole-list basis.
+	connector.failQueryAfter("WITH link_view AS (", 1)
 	response := performJSONRequest(t, server, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh/refreshes", idempotencyKey: "refresh-comments-304"})
 	if response.Code != http.StatusOK {
 		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
@@ -1697,8 +1704,12 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	if !payload.SnapshotCreated || payload.Link.LatestSnapshotID == snapshot.SnapshotID {
 		t.Fatalf("changed issue did not create snapshot: %s", response.Body.String())
 	}
-	latest, comments, err := store.GetSnapshot(ctx, payload.Link.LatestSnapshotID)
+	latest, err := store.GetSnapshotMetadata(ctx, payload.Link.LatestSnapshotID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	var comments []state.ExternalComment
+	if err := store.SnapshotComments(latest.SnapshotID).Replay(ctx, func(c state.ExternalComment) error { comments = append(comments, c); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if latest.Issue.Title != "Changed" || latest.FetchedCommentCount != 1 || len(comments) != 1 || comments[0].Body != "retained body" {

@@ -11,7 +11,19 @@ func (s *PlanningStore) AppendOperationEvent(ctx context.Context, req AppendPlan
 	if err := validatePlanningOperationEventAppend(req); err != nil {
 		return PlanningOperationEvent{}, err
 	}
-	return insertPlanningOperationEvent(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningOperationEvent{}, err
+	}
+	defer tx.Rollback()
+	event, err := insertPlanningOperationEvent(ctx, tx, req)
+	if err != nil {
+		return PlanningOperationEvent{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningOperationEvent{}, err
+	}
+	return event, nil
 }
 
 func insertPlanningOperationEvent(ctx context.Context, exec sqlExecutor, req AppendPlanningOperationEventRequest) (PlanningOperationEvent, error) {
@@ -31,10 +43,28 @@ func insertPlanningOperationEvent(ctx context.Context, exec sqlExecutor, req App
 	if err != nil {
 		return PlanningOperationEvent{}, fmt.Errorf("insert planning operation event: %w", err)
 	}
+	for field, id := range req.TextRefs {
+		if _, err := exec.ExecContext(ctx, `INSERT INTO planning_event_text_refs(event_id,field,content_id) VALUES(?,?,?)`, row.EventID, field, id); err != nil {
+			return PlanningOperationEvent{}, err
+		}
+	}
 	return row, nil
 }
 
 func (s *PlanningStore) ListOperationEventsAfterSeqPage(ctx context.Context, operationID string, afterSeq int, limit int) ([]PlanningOperationEvent, error) {
+	items, err := s.ListOperationEventMetadataAfterSeqPage(ctx, operationID, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	for i := range items {
+		if err := s.hydratePlanningEvent(ctx, &items[i]); err != nil {
+			return nil, err
+		}
+	}
+	return items, nil
+}
+
+func (s *PlanningStore) ListOperationEventMetadataAfterSeqPage(ctx context.Context, operationID string, afterSeq int, limit int) ([]PlanningOperationEvent, error) {
 	if limit <= 0 {
 		limit = DefaultPlanningOperationEventListLimit
 	}
@@ -108,6 +138,9 @@ func (s *PlanningStore) GetLatestOperationEvent(ctx context.Context, operationID
 	}
 	if err != nil {
 		return PlanningOperationEvent{}, false, fmt.Errorf("get latest planning operation event: %w", err)
+	}
+	if err := s.hydratePlanningEvent(ctx, &row); err != nil {
+		return PlanningOperationEvent{}, false, err
 	}
 	return row, true, nil
 }

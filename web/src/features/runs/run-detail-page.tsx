@@ -1029,6 +1029,10 @@ export function RunDetailPage() {
                 <MailboxPanel
                   key={mailboxPresentation.visibleMessageCount === 0 ? "empty" : "populated"}
                   presentation={mailboxPresentation}
+                  hasMore={mailboxQuery.hasNextPage}
+                  isLoadingMore={mailboxQuery.isFetchingNextPage}
+                  loadMoreError={mailboxQuery.isFetchNextPageError}
+                  onLoadMore={() => void mailboxQuery.fetchNextPage()}
                   isLoading={mailboxQuery.isPending && !mailboxQuery.data}
                   errorMessage={mailboxErrorMessage}
                   onRetry={() => {

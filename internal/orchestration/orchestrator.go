@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
@@ -269,6 +270,7 @@ type asyncExecutionResult struct {
 	projectRootBoundary                  string
 	delegator                            string
 	prompt                               string
+	openPrompt                           opencodePromptOpener
 	model                                string
 	variant                              string
 	agent                                string
@@ -296,7 +298,9 @@ type communicationMessageRequest struct {
 	OccurredAt        string
 	DelegatorScoped   string
 	InstructionFull   string
+	InstructionRef    *state.RequestContentReference
 	ResponseFull      string
+	ResponseRef       *providerexecution.ContentReference
 	ResponseRaw       string
 }
 
@@ -962,6 +966,16 @@ func (o *orchestrationLoop) emitCommunicationMessage(ctx context.Context, req co
 		"instruction_full":             req.InstructionFull,
 		"response_full":                req.ResponseFull,
 		"response_raw":                 req.ResponseRaw,
+	}
+	if req.InstructionRef != nil {
+		delete(payload, "instruction_full")
+		payload["instruction_full_ref"] = map[string]any{"content_id": req.InstructionRef.ContentID, "sha256": req.InstructionRef.SHA256, "size_bytes": req.InstructionRef.SizeBytes}
+	}
+	if req.ResponseRef != nil {
+		delete(payload, "response_full")
+		delete(payload, "response_raw")
+		payload["response_full_ref"] = req.ResponseRef
+		payload["response_preview"] = req.ResponseFull
 	}
 	senderRoleID := o.roleIDForAgent(ctx, req.FromAgentID)
 	if strings.TrimSpace(senderRoleID) == "" {

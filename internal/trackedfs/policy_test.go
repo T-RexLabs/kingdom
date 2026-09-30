@@ -1,14 +1,21 @@
 package trackedfs
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
-	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
+)
+
+const (
+	formerWorkspaceEntries   = 10000
+	formerWorkspaceFileBytes = 32 * 1024 * 1024
+	formerWorkspaceBytes     = 256 * 1024 * 1024
+	formerWorkspaceDepth     = 64
 )
 
 func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
@@ -43,7 +50,7 @@ func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	tracked, err := WalkTrackedFiles(root)
+	tracked, err := collectTrackedFiles(root)
 	if err != nil {
 		t.Fatalf("walk tracked files: %v", err)
 	}
@@ -82,7 +89,7 @@ func TestWalkTrackedFilesRootUsesPinnedNoFollowTraversal(t *testing.T) {
 	if err := os.Symlink(outside, rootPath); err != nil {
 		t.Fatalf("replace root with symlink: %v", err)
 	}
-	files, err := WalkTrackedFilesRoot(root)
+	files, err := collectTrackedFilesRoot(root)
 	if err != nil {
 		t.Fatalf("walk pinned root: %v", err)
 	}
@@ -135,25 +142,25 @@ func TestResolveWithinRootRejectsEscapes(t *testing.T) {
 	}
 }
 
-func TestWalkTrackedFilesEnforcesWorkspaceEntryAndByteBounds(t *testing.T) {
+func TestWalkTrackedFilesAcceptsFormerWorkspaceEntryAndByteBounds(t *testing.T) {
 	walkers := []struct {
 		name string
 		walk func(string) ([]TrackedFile, error)
 	}{
-		{name: "path", walk: WalkTrackedFiles},
+		{name: "path", walk: collectTrackedFiles},
 		{name: "root", walk: func(path string) ([]TrackedFile, error) {
 			root, err := securefs.OpenRoot(path)
 			if err != nil {
 				return nil, err
 			}
 			defer root.Close()
-			return WalkTrackedFilesRoot(root)
+			return collectTrackedFilesRoot(root)
 		}},
 	}
 	for _, walker := range walkers {
 		t.Run(walker.name, func(t *testing.T) {
 			entryRoot := t.TempDir()
-			for index := range providerlimits.TrackedWorkspaceEntries {
+			for index := range formerWorkspaceEntries {
 				if err := os.WriteFile(filepath.Join(entryRoot, fmt.Sprintf("entry-%05d", index)), nil, 0o600); err != nil {
 					t.Fatalf("write entry %d: %v", index, err)
 				}
@@ -162,24 +169,23 @@ func TestWalkTrackedFilesEnforcesWorkspaceEntryAndByteBounds(t *testing.T) {
 			if err != nil {
 				t.Fatalf("exact entry boundary rejected: %v", err)
 			}
-			if len(tracked) != providerlimits.TrackedWorkspaceEntries {
+			if len(tracked) != formerWorkspaceEntries {
 				t.Fatalf("exact entry boundary returned %d files", len(tracked))
 			}
 			if err := os.WriteFile(filepath.Join(entryRoot, "one-too-many"), nil, 0o600); err != nil {
 				t.Fatalf("write overflow entry: %v", err)
 			}
-			var countErr *providerlimits.CountExceededError
-			if _, err := walker.walk(entryRoot); !errors.As(err, &countErr) {
-				t.Fatalf("one-entry overflow error=%v, want CountExceededError", err)
+			if files, err := walker.walk(entryRoot); err != nil || len(files) != 10001 {
+				t.Fatalf("former entry limit: count=%d error=%v", len(files), err)
 			}
 
 			byteRoot := t.TempDir()
-			for index := range int(providerlimits.TrackedWorkspaceBytes / providerlimits.TrackedWorkspaceFileBytes) {
+			for index := range int(formerWorkspaceBytes / formerWorkspaceFileBytes) {
 				path := filepath.Join(byteRoot, fmt.Sprintf("file-%d", index))
 				if err := os.WriteFile(path, nil, 0o600); err != nil {
 					t.Fatalf("create exact byte file %d: %v", index, err)
 				}
-				if err := os.Truncate(path, providerlimits.TrackedWorkspaceFileBytes); err != nil {
+				if err := os.Truncate(path, formerWorkspaceFileBytes); err != nil {
 					t.Fatalf("truncate exact byte file %d: %v", index, err)
 				}
 			}
@@ -189,9 +195,8 @@ func TestWalkTrackedFilesEnforcesWorkspaceEntryAndByteBounds(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(byteRoot, "one-byte-over"), []byte{'x'}, 0o600); err != nil {
 				t.Fatalf("write aggregate overflow: %v", err)
 			}
-			var byteErr *providerlimits.LimitExceededError
-			if _, err := walker.walk(byteRoot); !errors.As(err, &byteErr) {
-				t.Fatalf("one-byte aggregate overflow error=%v, want LimitExceededError", err)
+			if _, err := walker.walk(byteRoot); err != nil {
+				t.Fatalf("former aggregate limit: %v", err)
 			}
 
 			fileRoot := t.TempDir()
@@ -199,35 +204,35 @@ func TestWalkTrackedFilesEnforcesWorkspaceEntryAndByteBounds(t *testing.T) {
 			if err := os.WriteFile(path, nil, 0o600); err != nil {
 				t.Fatalf("create exact file: %v", err)
 			}
-			if err := os.Truncate(path, providerlimits.TrackedWorkspaceFileBytes); err != nil {
+			if err := os.Truncate(path, formerWorkspaceFileBytes); err != nil {
 				t.Fatalf("truncate exact file: %v", err)
 			}
 			if _, err := walker.walk(fileRoot); err != nil {
 				t.Fatalf("exact file boundary rejected: %v", err)
 			}
-			if err := os.Truncate(path, providerlimits.TrackedWorkspaceFileBytes+1); err != nil {
+			if err := os.Truncate(path, formerWorkspaceFileBytes+1); err != nil {
 				t.Fatalf("truncate one-byte file overflow: %v", err)
 			}
-			if _, err := walker.walk(fileRoot); !errors.As(err, &byteErr) {
-				t.Fatalf("one-byte file overflow error=%v, want LimitExceededError", err)
+			if _, err := walker.walk(fileRoot); err != nil {
+				t.Fatalf("former file limit: %v", err)
 			}
 		})
 	}
 }
 
-func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
+func TestWalkTrackedFilesAcceptsFormerDirectorySymlinkAndDepthBounds(t *testing.T) {
 	walkers := []struct {
 		name string
 		walk func(string) ([]TrackedFile, error)
 	}{
-		{name: "path", walk: WalkTrackedFiles},
+		{name: "path", walk: collectTrackedFiles},
 		{name: "root", walk: func(path string) ([]TrackedFile, error) {
 			root, err := securefs.OpenRoot(path)
 			if err != nil {
 				return nil, err
 			}
 			defer root.Close()
-			return WalkTrackedFilesRoot(root)
+			return collectTrackedFilesRoot(root)
 		}},
 	}
 
@@ -241,7 +246,7 @@ func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
 				{
 					name: "directories",
 					build: func(root string) error {
-						for index := 0; index <= providerlimits.TrackedWorkspaceEntries; index++ {
+						for index := 0; index <= formerWorkspaceEntries; index++ {
 							if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("dir-%05d", index)), 0o700); err != nil {
 								return err
 							}
@@ -249,14 +254,13 @@ func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
 						return nil
 					},
 					check: func(err error) bool {
-						var limitErr *providerlimits.CountExceededError
-						return errors.As(err, &limitErr) && limitErr.NonRetryable()
+						return err == nil
 					},
 				},
 				{
 					name: "symlinks",
 					build: func(root string) error {
-						for index := 0; index <= providerlimits.TrackedWorkspaceEntries; index++ {
+						for index := 0; index <= formerWorkspaceEntries; index++ {
 							if err := os.Symlink("missing-target", filepath.Join(root, fmt.Sprintf("link-%05d", index))); err != nil {
 								return err
 							}
@@ -264,15 +268,14 @@ func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
 						return nil
 					},
 					check: func(err error) bool {
-						var limitErr *providerlimits.CountExceededError
-						return errors.As(err, &limitErr) && limitErr.NonRetryable()
+						return err == nil
 					},
 				},
 				{
 					name: "depth",
 					build: func(root string) error {
 						current := root
-						for index := 0; index <= providerlimits.TrackedWorkspaceDepth; index++ {
+						for index := 0; index <= formerWorkspaceDepth; index++ {
 							current = filepath.Join(current, fmt.Sprintf("level-%02d", index))
 							if err := os.Mkdir(current, 0o700); err != nil {
 								return err
@@ -281,8 +284,7 @@ func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
 						return nil
 					},
 					check: func(err error) bool {
-						var limitErr *providerlimits.DepthExceededError
-						return errors.As(err, &limitErr) && limitErr.NonRetryable()
+						return err == nil
 					},
 				},
 			} {
@@ -295,10 +297,23 @@ func TestWalkTrackedFilesBoundsDirectoriesSymlinksAndDepth(t *testing.T) {
 						_, err := walker.walk(root)
 						return err
 					}(); !tc.check(err) {
-						t.Fatalf("workspace overflow error=%v, want typed non-retryable limit error", err)
+						t.Fatalf("former workspace limit rejected: %v", err)
 					}
 				})
 			}
 		})
 	}
+}
+
+func collectTrackedFiles(path string) ([]TrackedFile, error) {
+	var files []TrackedFile
+	err := VisitTrackedFiles(context.Background(), path, func(file TrackedFile) error { files = append(files, file); return nil })
+	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
+	return files, err
+}
+func collectTrackedFilesRoot(root *securefs.Root) ([]TrackedFile, error) {
+	var files []TrackedFile
+	err := VisitTrackedFilesRoot(context.Background(), root, func(file TrackedFile) error { files = append(files, file); return nil })
+	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
+	return files, err
 }

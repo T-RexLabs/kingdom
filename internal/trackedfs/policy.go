@@ -1,15 +1,12 @@
 package trackedfs
 
 import (
-	"errors"
+	"context"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 
-	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
 )
 
@@ -35,7 +32,6 @@ type Metadata struct {
 }
 
 type TrackedFile struct {
-	AbsolutePath string
 	RelativePath string
 	Metadata     Metadata
 }
@@ -94,176 +90,64 @@ func MetadataFromInfo(info fs.FileInfo) Metadata {
 	}
 }
 
-func WalkTrackedFiles(root string) ([]TrackedFile, error) {
+func VisitTrackedFiles(ctx context.Context, root string, visit func(TrackedFile) error) error {
 	cleanRoot := strings.TrimSpace(root)
 	if cleanRoot == "" {
-		return nil, fmt.Errorf("tracked root is required")
+		return fmt.Errorf("tracked root is required")
 	}
-	files := make([]TrackedFile, 0)
-	var budget providerlimits.WorkspaceBudget
-	err := filepath.WalkDir(cleanRoot, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if path == cleanRoot {
-			return nil
-		}
-		rel, err := filepath.Rel(cleanRoot, path)
-		if err != nil {
-			return err
-		}
-		normalized := NormalizeRelativePath(rel)
-		if normalized == "" {
-			return nil
-		}
-		if err := budget.CheckDepth(relativePathDepth(normalized)); err != nil {
-			return err
-		}
-		if entry.IsDir() {
-			if err := budget.AddEntry(); err != nil {
-				return err
-			}
-			if ShouldSkipDirectory(normalized) {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if IsProtectedRelativePath(normalized) {
-			return budget.AddEntry()
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			return budget.AddEntry()
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() {
-			return budget.AddEntry()
-		}
-		if err := budget.AddFile(info.Size()); err != nil {
-			return err
-		}
-		files = append(files, TrackedFile{
-			AbsolutePath: path,
-			RelativePath: normalized,
-			Metadata:     MetadataFromInfo(info),
-		})
-		return nil
-	})
+	pinned, err := securefs.OpenRoot(cleanRoot)
 	if err != nil {
-		return nil, fmt.Errorf("walk tracked files: %w", err)
+		return err
 	}
-	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
-	return files, nil
+	defer pinned.Close()
+	return VisitTrackedFilesRoot(ctx, pinned, visit)
 }
 
-// WalkTrackedFilesRoot enumerates tracked files through an already pinned,
-// no-follow root. It is used when subsequent decisions mutate that same tree.
-func WalkTrackedFilesRoot(root *securefs.Root) ([]TrackedFile, error) {
-	entries, err := WalkTrackedEntriesRoot(root)
-	if err != nil {
-		return nil, err
-	}
-	files := make([]TrackedFile, 0, len(entries))
-	for _, entry := range entries {
+// VisitTrackedFilesRoot streams regular entries without collecting the tree.
+func VisitTrackedFilesRoot(ctx context.Context, root *securefs.Root, visit func(TrackedFile) error) error {
+	return VisitTrackedEntriesRoot(ctx, root, func(entry TrackedEntry) error {
 		if entry.Type != securefs.EntryTypeRegular {
-			continue
+			return nil
 		}
 		file, err := root.OpenRegular(entry.RelativePath)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		info, err := file.Stat()
 		_ = file.Close()
 		if err != nil {
-			return nil, err
-		}
-		files = append(files, TrackedFile{RelativePath: entry.RelativePath, Metadata: MetadataFromInfo(info)})
-	}
-	return files, nil
-}
-
-// WalkTrackedEntriesRoot enumerates every non-directory entry through an
-// already pinned, no-follow root while skipping protected runtime paths.
-func WalkTrackedEntriesRoot(root *securefs.Root) ([]TrackedEntry, error) {
-	if root == nil {
-		return nil, fmt.Errorf("tracked root is required")
-	}
-	entries := make([]TrackedEntry, 0)
-	var budget providerlimits.WorkspaceBudget
-	var walk func(string) error
-	walk = func(directory string) error {
-		directoryEntries, err := root.ReadDirBounded(directory, budget.RemainingEntries())
-		if err != nil {
-			if errors.Is(err, securefs.ErrLimitExceeded) {
-				return &providerlimits.CountExceededError{Resource: "tracked workspace", Limit: providerlimits.TrackedWorkspaceEntries}
-			}
 			return err
 		}
-		for _, entry := range directoryEntries {
+		return visit(TrackedFile{RelativePath: entry.RelativePath, Metadata: MetadataFromInfo(info)})
+	})
+}
+
+// VisitTrackedEntriesRoot visits non-directory entries in filesystem order,
+// retaining only the active directory stack and fixed-size enumeration pages.
+func VisitTrackedEntriesRoot(ctx context.Context, root *securefs.Root, visit func(TrackedEntry) error) error {
+	if root == nil {
+		return fmt.Errorf("tracked root is required")
+	}
+	var walk func(string) error
+	walk = func(directory string) error {
+		return root.IterateDir(ctx, directory, func(entry securefs.Entry) error {
 			relativePath := entry.Name
 			if directory != "" {
 				relativePath = directory + "/" + entry.Name
 			}
-			normalized := NormalizeRelativePath(relativePath)
-			if normalized == "" {
-				continue
-			}
-			if err := budget.CheckDepth(relativePathDepth(normalized)); err != nil {
-				return err
-			}
-			if IsProtectedRelativePath(normalized) {
-				if err := budget.AddEntry(); err != nil {
-					return err
-				}
-				continue
+			if IsProtectedRelativePath(relativePath) {
+				return nil
 			}
 			if entry.Type == securefs.EntryTypeDirectory {
-				if err := budget.AddEntry(); err != nil {
-					return err
-				}
-				if err := walk(normalized); err != nil {
-					return err
-				}
-				continue
+				return walk(relativePath)
 			}
-			if entry.Type != securefs.EntryTypeRegular {
-				if err := budget.AddEntry(); err != nil {
-					return err
-				}
-				entries = append(entries, TrackedEntry{RelativePath: normalized, Type: entry.Type, Identity: entry.Identity})
-				continue
-			}
-			file, err := root.OpenRegular(normalized)
-			if err != nil {
-				return err
-			}
-			info, err := file.Stat()
-			_ = file.Close()
-			if err != nil {
-				return err
-			}
-			if err := budget.AddFile(info.Size()); err != nil {
-				return err
-			}
-			entries = append(entries, TrackedEntry{RelativePath: normalized, Type: entry.Type, Identity: entry.Identity})
-		}
-		return nil
+			return visit(TrackedEntry{RelativePath: relativePath, Type: entry.Type, Identity: entry.Identity})
+		})
 	}
 	if err := walk(""); err != nil {
-		return nil, fmt.Errorf("walk tracked files: %w", err)
+		return fmt.Errorf("walk tracked files: %w", err)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].RelativePath < entries[j].RelativePath })
-	return entries, nil
-}
-
-func relativePathDepth(path string) int {
-	normalized := NormalizeRelativePath(path)
-	if normalized == "" {
-		return 0
-	}
-	return strings.Count(normalized, "/") + 1
+	return nil
 }
 
 func ResolveWithinRoot(root, relativePath string) (string, error) {

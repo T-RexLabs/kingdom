@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"time"
 
@@ -45,6 +47,9 @@ type executionOutboxPayload struct {
 	Agent                     string                                `json:"agent"`
 	OccurredAt                string                                `json:"occurred_at"`
 	OutputText                string                                `json:"output_text"`
+	OutputTextRef             *providerexecution.ContentReference   `json:"output_text_ref,omitempty"`
+	OutputPreview             string                                `json:"output_preview,omitempty"`
+	ProviderDiagnosticsRef    *providerexecution.ContentReference   `json:"provider_diagnostics_ref,omitempty"`
 	Tokens                    opencode.TokenUsage                   `json:"tokens"`
 	Outcome                   opencode.ExecutionOutcome             `json:"outcome,omitempty"`
 }
@@ -81,6 +86,9 @@ func (o *orchestrationLoop) drainExecutionOutboxPass(ctx context.Context, limit 
 	processed := 0
 	for _, rec := range pending {
 		result, hasResultPayload, decodeErr := decodeExecutionOutboxPayload(rec)
+		if decodeErr == nil {
+			decodeErr = o.hydrateProviderPayloadContent(ctx, rec.PayloadJSON, &result)
+		}
 		if decodeErr != nil {
 			if err := o.executionStore.MarkOutboxFailed(ctx, rec.OutboxID, decodeErr.Error(), publishedAt); err != nil {
 				return len(pending), processed, err
@@ -127,7 +135,7 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 	if result.ephemeralWorkspace {
 		workspacePath = ""
 	}
-	return executionOutboxPayload{
+	payload := executionOutboxPayload{
 		Run:                       result.run,
 		Node:                      result.node,
 		Attempt:                   result.attempt,
@@ -140,7 +148,7 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ExpectedLeaseOwner:        strings.TrimSpace(result.expectedLeaseOwner),
 		ExpectedLeaseVersion:      result.expectedLeaseVersion,
 		ProviderDiagnosticsJSON:   strings.TrimSpace(result.providerDiagnosticsJSON),
-		ProviderStreamObservation: result.providerStreamObservation,
+		ProviderStreamObservation: providerexecution.CompactObservation(result.providerStreamObservation),
 		BaseSnapshotID:            strings.TrimSpace(result.baseSnapshotID),
 		ResultSnapshotID:          strings.TrimSpace(result.resultSnapshotID),
 		WorkspaceID:               result.workspaceID,
@@ -154,6 +162,70 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		Tokens:                    result.tokens,
 		Outcome:                   result.outcome,
 	}
+	if result.providerInvocationID != "" {
+		if result.providerStreamObservation.CanonicalTerminalTextRef != nil {
+			payload.OutputTextRef = result.providerStreamObservation.CanonicalTerminalTextRef
+			payload.OutputPreview = payload.OutputText
+			payload.OutputText = ""
+		} else if len(payload.OutputText) > providerContentInlineBytes {
+			ref := providerexecution.ReferenceText(result.providerInvocationID, payload.OutputText)
+			payload.OutputTextRef = &ref
+			payload.OutputText = ""
+		}
+		if len(payload.ProviderDiagnosticsJSON) > providerContentInlineBytes {
+			ref := providerexecution.ReferenceText(result.providerInvocationID, payload.ProviderDiagnosticsJSON)
+			payload.ProviderDiagnosticsRef = &ref
+			payload.ProviderDiagnosticsJSON = ""
+		}
+	}
+	return payload
+}
+
+const providerContentInlineBytes = 32 * 1024
+
+func (o *orchestrationLoop) hydrateProviderPayloadContent(ctx context.Context, raw string, result *asyncExecutionResult) error {
+	var payload executionOutboxPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return err
+	}
+	o.bindCanonicalTerminalReader(result)
+	if payload.OutputTextRef != nil {
+		if err := payload.OutputTextRef.Validate(result.providerInvocationID); err != nil {
+			return err
+		}
+		reader, err := o.executionStore.OpenProviderContent(ctx, *payload.OutputTextRef)
+		if err != nil {
+			return err
+		}
+		summary, readErr := providerexecution.InspectText(ctx, reader)
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		result.outputText = summary.Preview
+	}
+	for _, item := range []struct {
+		ref *providerexecution.ContentReference
+		dst *string
+	}{
+		{payload.ProviderDiagnosticsRef, &result.providerDiagnosticsJSON},
+	} {
+		if item.ref == nil {
+			continue
+		}
+		if err := item.ref.Validate(result.providerInvocationID); err != nil {
+			return err
+		}
+		var b strings.Builder
+		if item.ref.SizeBytes > 1024*1024 {
+			return fmt.Errorf("provider diagnostics metadata is not compact")
+		}
+		if err := o.executionStore.CopyProviderContent(ctx, *item.ref, &b); err != nil {
+			return err
+		}
+		*item.dst = b.String()
+	}
+	return nil
 }
 
 func marshalExecutionOutboxPayload(result asyncExecutionResult) (string, error) {
@@ -374,7 +446,7 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 	if result == nil {
 		return
 	}
-	result.outputText = strings.TrimSpace(response.OutputText)
+	result.outputText = strings.TrimSpace(firstNonEmptyString(response.OutputPreview, response.OutputText))
 	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
 	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
 	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
@@ -945,7 +1017,9 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	if canonicalArtifactProjectionAllowed {
 		if execErr == nil || isImplementationRole(result.node.RequiredRole) {
 			artifactErr := error(nil)
-			if workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), responseReasonCode) && strings.TrimSpace(result.workspacePath) == "" {
+			if result.providerStreamObservation.CanonicalTerminalTextRef != nil && !isImplementationRole(result.node.RequiredRole) {
+				artifactErr = o.persistReferencedResponseSnapshot(ctx, result, now)
+			} else if workflow.IsLoopCapAutoSuccessReasonCode(resolvedNodeClass(result.node.NodeID, result.node.NodeClass), responseReasonCode) && strings.TrimSpace(result.workspacePath) == "" {
 				artifactErr = o.persistResponseSnapshotArtifact(ctx, result.run, result.node, result.attempt, result.attemptID, now, result.outputText)
 			} else {
 				artifactErr = o.persistExecutionArtifact(ctx, result.run, result.node, result.attempt, result.attemptID, result.workspacePath, now, result.outputText, execErr == nil)
@@ -972,6 +1046,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 			AuthoritySource:   "runtime.orchestrator",
 			OccurredAt:        now,
 			ResponseFull:      responseText,
+			ResponseRef:       result.providerStreamObservation.CanonicalTerminalTextRef,
 			ResponseRaw:       rawResponseText,
 		}); mailboxErr != nil {
 			projectionErr = errors.Join(projectionErr, mailboxErr)
@@ -1019,6 +1094,52 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 
 	o.emitCompletionLifecycleObservation(ctx, result, "complete_execution_exited", now, map[string]any{"terminal_state": terminalState, "reason_code": terminalReasonCode})
 	return nil
+}
+
+// The complete response artifact is a replay stream over canonical content.
+// Worker envelope/mailbox summaries stay bounded; artifact bytes do not.
+func (o *orchestrationLoop) persistReferencedResponseSnapshot(ctx context.Context, result asyncExecutionResult, now string) error {
+	if o.validator == nil || o.db == nil {
+		return nil
+	}
+	var existing int
+	if err := o.db.QueryRowContext(ctx, `SELECT count(*) FROM artifacts WHERE run_id=? AND attempt_id=?`, result.run.RunID, result.attemptID).Scan(&existing); err != nil {
+		return err
+	}
+	if existing > 0 {
+		if !executionSpecForNode(result.node.NodeID, result.node.NodeClass).ProjectArtifacts {
+			return nil
+		}
+		return o.republishPersistedArtifacts(ctx, result.run, result.node, result.attempt, result.attemptID)
+	}
+	artifact, _ := buildNonBuilderResponseSnapshot(result.node.NodeID, "")
+	// Finish the canonical read before the artifact writer opens its SQLite
+	// transaction. This also works with a one-connection database pool.
+	staged, err := os.CreateTemp("", "kingdom-response-artifact-*")
+	if err != nil {
+		return err
+	}
+	defer func() { staged.Close(); os.Remove(staged.Name()) }()
+	if _, err := io.WriteString(staged, "# Node Response Snapshot\n\n"); err != nil {
+		return err
+	}
+	if err := providerexecution.CopyTerminalText(ctx, result.providerStreamObservation, staged); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(staged, "\n"); err != nil {
+		return err
+	}
+	info, err := staged.Stat()
+	if err != nil {
+		return err
+	}
+	open := func(ctx context.Context, path string) (io.ReadCloser, error) {
+		if path != artifact.Path {
+			return nil, fmt.Errorf("response artifact path does not match canonical content")
+		}
+		return io.NopCloser(io.NewSectionReader(staged, 0, info.Size())), nil
+	}
+	return o.persistDiscoveredArtifacts(ctx, result.run, result.node, result.attempt, result.attemptID, "", now, result.outputText, []executionArtifact{artifact}, nil, open, true)
 }
 
 // A provider process can finish after launch ownership is durable but before
@@ -1129,7 +1250,7 @@ func buildRunPlanningOutputRequest(result asyncExecutionResult, occurredAt, resp
 		return state.CreateRunPlanningOutputRequest{}, false
 	}
 	trimmedContent := strings.TrimSpace(responseText)
-	if trimmedContent == "" {
+	if trimmedContent == "" && result.providerStreamObservation.CanonicalTerminalTextRef == nil {
 		return state.CreateRunPlanningOutputRequest{}, false
 	}
 	var kind state.RunPlanningOutputKind
@@ -1141,7 +1262,7 @@ func buildRunPlanningOutputRequest(result asyncExecutionResult, occurredAt, resp
 	default:
 		return state.CreateRunPlanningOutputRequest{}, false
 	}
-	return state.CreateRunPlanningOutputRequest{
+	req := state.CreateRunPlanningOutputRequest{
 		PlanningOutputID: fmt.Sprintf("planout_%s_%s_%d", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt),
 		RunID:            result.run.RunID,
 		NodeID:           result.node.NodeID,
@@ -1151,7 +1272,12 @@ func buildRunPlanningOutputRequest(result asyncExecutionResult, occurredAt, resp
 		Kind:             kind,
 		ContentMarkdown:  trimmedContent,
 		CreatedAt:        occurredAt,
-	}, true
+	}
+	if ref := result.providerStreamObservation.CanonicalTerminalTextRef; ref != nil {
+		req.ContentRef = ref
+		req.ContentMarkdown = ""
+	}
+	return req, true
 }
 
 func (o *orchestrationLoop) emitCompletionLifecycleObservation(ctx context.Context, result asyncExecutionResult, phase, occurredAt string, extra map[string]any) {

@@ -49,6 +49,10 @@ func NewRunPlanReviewStore(db *sql.DB) *RunPlanReviewStore {
 }
 
 func (s *RunPlanReviewStore) ListRunPlanReviews(ctx context.Context, runID string, limit int) ([]RunPlanReview, error) {
+	return s.ListRunPlanReviewsPage(ctx, runID, limit, "", "")
+}
+
+func (s *RunPlanReviewStore) ListRunPlanReviewsPage(ctx context.Context, runID string, limit int, beforeCreatedAt, beforeID string) ([]RunPlanReview, error) {
 	trimmedRunID := strings.TrimSpace(runID)
 	if trimmedRunID == "" {
 		return nil, fmt.Errorf("run id is required")
@@ -57,15 +61,17 @@ func (s *RunPlanReviewStore) ListRunPlanReviews(ctx context.Context, runID strin
 		limit = 50
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at
+	query := `SELECT plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at
 		 FROM run_plan_reviews
-		 WHERE run_id = ?
-		 ORDER BY created_at DESC, plan_review_id DESC
-		 LIMIT ?`,
-		trimmedRunID,
-		limit,
-	)
+		 WHERE run_id = ?`
+	args := []any{trimmedRunID}
+	if beforeID != "" {
+		query += ` AND (created_at, plan_review_id) < (?, ?)`
+		args = append(args, beforeCreatedAt, beforeID)
+	}
+	query += ` ORDER BY created_at DESC, plan_review_id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list run plan reviews: %w", err)
 	}

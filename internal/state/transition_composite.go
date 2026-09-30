@@ -14,6 +14,7 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/nodeattempt"
 	"kingdom/internal/sqlitex"
+	"kingdom/internal/timestamporder"
 	"kingdom/internal/workspace"
 )
 
@@ -307,11 +308,6 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 		}
 		decisionReq.NodeID = source.NodeID
 		if decisionReq.Decision == RetryDecisionRetry {
-			if err := failAutomaticDecreeRetryForRunBudgetTx(ctx, tx, &decisionReq); err != nil {
-				return err
-			}
-		}
-		if decisionReq.Decision == RetryDecisionRetry {
 			queued, err = s.insertPendingNodeAttemptWithAgentTx(ctx, tx, decisionReq.RunID, source.NodeID, source.RequiredRole, source.AgentID, source.Wave, req.Transition.OccurredAt, req.GenerateID)
 			if err != nil {
 				return err
@@ -364,11 +360,6 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 				return err
 			}
 		}
-		if req.Decision.Decision == RetryDecisionRetry && decision.Decision == RetryDecisionFailFast && decision.ErrorCode == "budget_exceeded" {
-			if err := s.terminalizeRunForAutomaticRetryBudgetTx(ctx, tx, decision, req.Transition.OccurredAt, req.GenerateID); err != nil {
-				return err
-			}
-		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit automatic decree retry transaction: %w", err)
 		}
@@ -376,36 +367,6 @@ func (s *TransitionService) RecordAutomaticDecreeRetry(ctx context.Context, req 
 		return nil
 	}, sqlitex.Options{})
 	return queued, scheduled, err
-}
-
-func failAutomaticDecreeRetryForRunBudgetTx(ctx context.Context, tx *sql.Tx, decision *RetryDecisionCreateRequest) error {
-	if decision == nil || decision.Decision != RetryDecisionRetry {
-		return nil
-	}
-	var attemptsUsed int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM node_runs WHERE run_id = ?`, decision.RunID).Scan(&attemptsUsed); err != nil {
-		return fmt.Errorf("count run attempts for automatic retry budget: %w", err)
-	}
-	if attemptsUsed < DefaultMaxAttemptsPerRun {
-		return nil
-	}
-	decision.Decision = RetryDecisionFailFast
-	decision.ErrorCode = "budget_exceeded"
-	decision.RetryClass = "non_retryable"
-	decision.OperatorText = "Automatic retry would exceed the run attempt budget, so the run has failed."
-	decision.RetryIndex = decision.MaxRetries
-	return nil
-}
-
-func (s *TransitionService) terminalizeRunForAutomaticRetryBudgetTx(ctx context.Context, tx *sql.Tx, decision RetryDecision, occurredAt string, generate func(string) string) error {
-	return s.terminalizeRunAndCancelLiveNodesTx(ctx, tx, RunTerminalizationRequest{Transition: TransitionRequest{
-		TransitionID: fmt.Sprintf("tr_retry_budget_%s", decision.DecisionID), EventID: fmt.Sprintf("evt_retry_budget_%s", decision.DecisionID), RunID: decision.RunID,
-		Entity: EntityTypeRun, FromState: "running", ToState: "failed", ActorID: "runtime_orchestrator", RoleID: "chancellor", AuthoritySource: "runtime.retry",
-		ReasonCode: "budget_exceeded", ReasonText: "automatic retry would exceed the run attempt budget", CorrelationID: "corr_retry_" + decision.RunID,
-		CausationID: "caus_retry_budget_" + decision.DecisionID, OccurredAt: occurredAt, AttemptID: "run:" + decision.RunID + ":retry_budget",
-		SchemaVersion: "v1", EventType: "escalation.raised", EventSeq: 1,
-		PayloadJSON: fmt.Sprintf(`{"run_id":%q,"exceeded_cap":"attempts","limit":%d,"observed":%d,"target_role":%q}`, decision.RunID, DefaultMaxAttemptsPerRun, DefaultMaxAttemptsPerRun+1, decision.EscalationTarget),
-	}, GenerateID: generate})
 }
 
 func (s *TransitionService) deliverDecreeRetryExhaustionTx(ctx context.Context, tx *sql.Tx, decision RetryDecision, fromAgentID string) error {
@@ -470,9 +431,64 @@ func (s *TransitionService) CountDecreeRetryDecisions(ctx context.Context, runID
 	return count, nil
 }
 
-// ReleaseDueDecreeRetries makes due retries visible to the normal dispatcher.
+const decreeRetryReleasePageSize = 128
+
+type dueDecreeRetryCandidate struct {
+	DecisionID      string
+	DueAt           time.Time
+	DueAtRaw        string
+	ErrorCode       string
+	SourceAttemptID string
+	SourceNodeRunID string
+	RetryIndex      int
+	RetryMax        int
+	QueuedNodeAttempt
+	HandoffSourceAttemptID string
+}
+
+func listDueDecreeRetryPageTx(ctx context.Context, tx *sql.Tx, runID, dueAt string, after *dueDecreeRetryCandidate) ([]dueDecreeRetryCandidate, error) {
+	query := `SELECT rd.retry_decision_id, rd.due_at, rd.error_code, rd.source_attempt_id, rd.node_run_id, rd.retry_index, rd.max_retries, rd.target_node_run_id, nr.node_id, nr.attempt, nr.wave, nr.required_role, nr.agent_id, COALESCE(nr.handoff_source_attempt_id, '')
+		FROM retry_decisions rd
+		JOIN node_runs nr ON nr.node_run_id = rd.target_node_run_id AND nr.run_id = rd.run_id
+		WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ? AND rd.decision = 'retry' AND rd.dispatch_state = 'pending' AND rd.resolution = 'pending' AND nr.node_status = 'pending'
+		AND ` + timestamporder.ComparisonSQL("rd.due_at", "?", "<=")
+	args := []any{runID, dueAt}
+	if after != nil {
+		query += ` AND (` + timestamporder.ComparisonSQL("rd.due_at", "?", ">") + ` OR (` + timestamporder.ComparisonSQL("rd.due_at", "?", "=") + ` AND (rd.due_at, rd.retry_decision_id) > (?, ?)))`
+		args = append(args, after.DueAtRaw, after.DueAtRaw, after.DueAtRaw, after.DecisionID)
+	}
+	query += ` ORDER BY ` + timestamporder.OrderBySQL("rd.due_at", false) + `, rd.retry_decision_id LIMIT ?`
+	args = append(args, decreeRetryReleasePageSize)
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list due decree retry page: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]dueDecreeRetryCandidate, 0, decreeRetryReleasePageSize)
+	for rows.Next() {
+		var candidate dueDecreeRetryCandidate
+		if err := rows.Scan(&candidate.DecisionID, &candidate.DueAtRaw, &candidate.ErrorCode, &candidate.SourceAttemptID, &candidate.SourceNodeRunID, &candidate.RetryIndex, &candidate.RetryMax, &candidate.NodeRunID, &candidate.NodeID, &candidate.Attempt, &candidate.Wave, &candidate.RequiredRole, &candidate.AgentID, &candidate.HandoffSourceAttemptID); err != nil {
+			return nil, fmt.Errorf("scan due decree retry: %w", err)
+		}
+		candidate.DueAt, err = parseRetryTime(candidate.DueAtRaw)
+		if err != nil {
+			return nil, err
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read due decree retry page: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close due decree retry page: %w", err)
+	}
+	return candidates, nil
+}
+
+// ReleaseDueDecreeRetries makes one page of due retries visible to the normal dispatcher.
 // The decision dispatch marker and node readiness are one transaction so a
-// restart can always retry an unclaimed pending decision.
+// restart can always retry an unclaimed pending decision. Keyset scanning past
+// blocked candidates prevents them from starving later eligible retries.
 func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, occurredAt string) ([]QueuedNodeAttempt, error) {
 	if strings.TrimSpace(runID) == "" || strings.TrimSpace(occurredAt) == "" {
 		return nil, fmt.Errorf("run id and occurred_at are required")
@@ -483,6 +499,7 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 	}
 	var released []QueuedNodeAttempt
 	_, err = sqlitex.Retry(ctx, func() error {
+		released = nil
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin due decree retry release transaction: %w", err)
@@ -493,113 +510,75 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 				_ = tx.Rollback()
 			}
 		}()
-		rows, err := tx.QueryContext(ctx, `SELECT rd.retry_decision_id, rd.due_at, rd.error_code, rd.source_attempt_id, rd.node_run_id, rd.retry_index, rd.max_retries, rd.target_node_run_id, nr.node_id, nr.attempt, nr.wave, nr.required_role, nr.agent_id, COALESCE(nr.handoff_source_attempt_id, '')
-			FROM retry_decisions rd
-			JOIN node_runs nr ON nr.node_run_id = rd.target_node_run_id AND nr.run_id = rd.run_id
-			WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ? AND rd.decision = 'retry' AND rd.dispatch_state = 'pending' AND nr.node_status = 'pending'
-			ORDER BY rd.retry_decision_id`, strings.TrimSpace(runID))
-		if err != nil {
-			return fmt.Errorf("list due decree retries: %w", err)
-		}
-		var candidates []struct {
-			DecisionID      string
-			DueAt           time.Time
-			ErrorCode       string
-			SourceAttemptID string
-			SourceNodeRunID string
-			RetryIndex      int
-			RetryMax        int
-			QueuedNodeAttempt
-			HandoffSourceAttemptID string
-		}
-		for rows.Next() {
-			var candidate struct {
-				DecisionID      string
-				DueAt           time.Time
-				ErrorCode       string
-				SourceAttemptID string
-				SourceNodeRunID string
-				RetryIndex      int
-				RetryMax        int
-				QueuedNodeAttempt
-				HandoffSourceAttemptID string
-			}
-			var dueAt string
-			if err := rows.Scan(&candidate.DecisionID, &dueAt, &candidate.ErrorCode, &candidate.SourceAttemptID, &candidate.SourceNodeRunID, &candidate.RetryIndex, &candidate.RetryMax, &candidate.NodeRunID, &candidate.NodeID, &candidate.Attempt, &candidate.Wave, &candidate.RequiredRole, &candidate.AgentID, &candidate.HandoffSourceAttemptID); err != nil {
-				rows.Close()
-				return fmt.Errorf("scan due decree retry: %w", err)
-			}
-			candidate.DueAt, err = parseRetryTime(dueAt)
+		var after *dueDecreeRetryCandidate
+		for len(released) < decreeRetryReleasePageSize {
+			candidates, err := listDueDecreeRetryPageTx(ctx, tx, strings.TrimSpace(runID), retryTimeString(occurredAtTime), after)
 			if err != nil {
-				rows.Close()
 				return err
 			}
-			candidates = append(candidates, candidate)
-		}
-		if err := rows.Close(); err != nil {
-			return fmt.Errorf("close due decree retry rows: %w", err)
-		}
-		sort.Slice(candidates, func(i, j int) bool {
-			if candidates[i].DueAt.Equal(candidates[j].DueAt) {
-				return candidates[i].DecisionID < candidates[j].DecisionID
+			if len(candidates) == 0 {
+				break
 			}
-			return candidates[i].DueAt.Before(candidates[j].DueAt)
-		})
-		for _, candidate := range candidates {
-			if candidate.DueAt.After(occurredAtTime) {
-				continue
-			}
-			if strings.TrimSpace(candidate.HandoffSourceAttemptID) != "" {
-				var handoffState string
-				err := tx.QueryRowContext(ctx, `SELECT handoff_state FROM attempt_cancel_outbox WHERE attempt_id = ?`, candidate.HandoffSourceAttemptID).Scan(&handoffState)
-				if err != nil && !errors.Is(err, sql.ErrNoRows) {
-					return fmt.Errorf("load stale retry quiescence barrier: %w", err)
-				}
-				if err == nil && strings.TrimSpace(handoffState) != "released" {
+			for _, candidate := range candidates {
+				if candidate.DueAt.After(occurredAtTime) {
 					continue
 				}
+				if strings.TrimSpace(candidate.HandoffSourceAttemptID) != "" {
+					var handoffState string
+					err := tx.QueryRowContext(ctx, `SELECT handoff_state FROM attempt_cancel_outbox WHERE attempt_id = ?`, candidate.HandoffSourceAttemptID).Scan(&handoffState)
+					if err != nil && !errors.Is(err, sql.ErrNoRows) {
+						return fmt.Errorf("load stale retry quiescence barrier: %w", err)
+					}
+					if err == nil && strings.TrimSpace(handoffState) != "released" {
+						continue
+					}
+				}
+				ready, err := decreeRetryDependenciesSatisfiedTx(ctx, tx, runID, candidate.NodeID)
+				if err != nil {
+					return err
+				}
+				if !ready {
+					continue
+				}
+				result, err := tx.ExecContext(ctx, `UPDATE retry_decisions SET dispatch_state = 'dispatched', dispatched_at = ? WHERE retry_decision_id = ? AND dispatch_state = 'pending' AND resolution = 'pending'`, occurredAt, candidate.DecisionID)
+				if err != nil {
+					return fmt.Errorf("mark due decree retry dispatched: %w", err)
+				}
+				changed, err := result.RowsAffected()
+				if err != nil {
+					return fmt.Errorf("read due decree retry dispatch rows: %w", err)
+				}
+				if changed != 1 {
+					continue
+				}
+				payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
+					NodeID:          candidate.NodeID,
+					NodeRunID:       candidate.NodeRunID,
+					RetryDecisionID: candidate.DecisionID,
+					Decision:        string(RetryDecisionRetry),
+					RecoveryTrigger: "automatic_retry",
+					RecoveryPhase:   "scheduled",
+					ErrorCode:       candidate.ErrorCode,
+					SourceAttemptID: candidate.SourceAttemptID,
+					SourceNodeRunID: candidate.SourceNodeRunID,
+					TargetAttemptID: composeAttemptID(runID, candidate.NodeID, candidate.Attempt),
+					TargetNodeRunID: candidate.NodeRunID,
+					RetryIndex:      candidate.RetryIndex,
+					RetryMax:        candidate.RetryMax,
+					ScheduledAt:     retryTimeString(candidate.DueAt),
+				})
+				if err != nil {
+					return err
+				}
+				if err := s.applyTx(ctx, tx, TransitionRequest{TransitionID: fmt.Sprintf("tr_retry_%s_ready", candidate.DecisionID), EventID: fmt.Sprintf("evt_retry_%s_ready", candidate.DecisionID), RunID: runID, NodeRunID: sql.NullString{String: candidate.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "pending", ToState: "ready", ActorID: "runtime_orchestrator", RoleID: candidate.RequiredRole, AuthoritySource: "runtime.retry", ReasonCode: "automatic_retry", ReasonText: "automatic retry due", CorrelationID: "corr_retry_" + runID, CausationID: "caus_retry_" + candidate.DecisionID, OccurredAt: occurredAt, AttemptID: composeAttemptID(runID, candidate.NodeID, candidate.Attempt), SchemaVersion: "v1", EventType: "attempt.retry_queued", EventSeq: 1, PayloadJSON: payload}); err != nil {
+					return err
+				}
+				released = append(released, candidate.QueuedNodeAttempt)
+				if len(released) == decreeRetryReleasePageSize {
+					break
+				}
 			}
-			ready, err := decreeRetryDependenciesSatisfiedTx(ctx, tx, runID, candidate.NodeID)
-			if err != nil {
-				return err
-			}
-			if !ready {
-				continue
-			}
-			result, err := tx.ExecContext(ctx, `UPDATE retry_decisions SET dispatch_state = 'dispatched', dispatched_at = ? WHERE retry_decision_id = ? AND dispatch_state = 'pending'`, occurredAt, candidate.DecisionID)
-			if err != nil {
-				return fmt.Errorf("mark due decree retry dispatched: %w", err)
-			}
-			changed, err := result.RowsAffected()
-			if err != nil {
-				return fmt.Errorf("read due decree retry dispatch rows: %w", err)
-			}
-			if changed != 1 {
-				continue
-			}
-			payload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
-				NodeID:          candidate.NodeID,
-				NodeRunID:       candidate.NodeRunID,
-				RetryDecisionID: candidate.DecisionID,
-				Decision:        string(RetryDecisionRetry),
-				RecoveryTrigger: "automatic_retry",
-				RecoveryPhase:   "scheduled",
-				ErrorCode:       candidate.ErrorCode,
-				SourceAttemptID: candidate.SourceAttemptID,
-				SourceNodeRunID: candidate.SourceNodeRunID,
-				TargetAttemptID: composeAttemptID(runID, candidate.NodeID, candidate.Attempt),
-				TargetNodeRunID: candidate.NodeRunID,
-				RetryIndex:      candidate.RetryIndex,
-				RetryMax:        candidate.RetryMax,
-				ScheduledAt:     retryTimeString(candidate.DueAt),
-			})
-			if err != nil {
-				return err
-			}
-			if err := s.applyTx(ctx, tx, TransitionRequest{TransitionID: fmt.Sprintf("tr_retry_%s_ready", candidate.DecisionID), EventID: fmt.Sprintf("evt_retry_%s_ready", candidate.DecisionID), RunID: runID, NodeRunID: sql.NullString{String: candidate.NodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: "pending", ToState: "ready", ActorID: "runtime_orchestrator", RoleID: candidate.RequiredRole, AuthoritySource: "runtime.retry", ReasonCode: "automatic_retry", ReasonText: "automatic retry due", CorrelationID: "corr_retry_" + runID, CausationID: "caus_retry_" + candidate.DecisionID, OccurredAt: occurredAt, AttemptID: composeAttemptID(runID, candidate.NodeID, candidate.Attempt), SchemaVersion: "v1", EventType: "attempt.retry_queued", EventSeq: 1, PayloadJSON: payload}); err != nil {
-				return err
-			}
-			released = append(released, candidate.QueuedNodeAttempt)
+			after = &candidates[len(candidates)-1]
 		}
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit due decree retry release transaction: %w", err)
@@ -607,7 +586,10 @@ func (s *TransitionService) ReleaseDueDecreeRetries(ctx context.Context, runID, 
 		committed = true
 		return nil
 	}, sqlitex.Options{})
-	return released, err
+	if err != nil {
+		return nil, err
+	}
+	return released, nil
 }
 
 func decreeRetryDependenciesSatisfiedTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (bool, error) {
@@ -3935,26 +3917,6 @@ func (s *TransitionService) scheduleFencedStaleRetryOnce(ctx context.Context, re
 		return QueuedNodeAttempt{}, err
 	}
 	decisionReq := req.RetryDecision
-	if decisionReq != nil {
-		updated := *decisionReq
-		if err := failAutomaticDecreeRetryForRunBudgetTx(ctx, tx, &updated); err != nil {
-			return QueuedNodeAttempt{}, err
-		}
-		decisionReq = &updated
-		if decisionReq.Decision == RetryDecisionFailFast && decisionReq.ErrorCode == "budget_exceeded" {
-			if _, err := insertRetryDecisionTx(ctx, tx, *decisionReq); err != nil {
-				return QueuedNodeAttempt{}, err
-			}
-			if err := s.terminalizeRunForAutomaticRetryBudgetTx(ctx, tx, RetryDecision{DecisionID: decisionReq.DecisionID, RunID: decisionReq.RunID, EscalationTarget: decisionReq.EscalationTarget}, occurredAt, nil); err != nil {
-				return QueuedNodeAttempt{}, err
-			}
-			if err := tx.Commit(); err != nil {
-				return QueuedNodeAttempt{}, fmt.Errorf("commit stale retry budget handoff transaction: %w", err)
-			}
-			committed = true
-			return QueuedNodeAttempt{}, nil
-		}
-	}
 
 	nextAttempt, err := nextAttemptNumberTx(ctx, tx, attempt.RunID, attempt.NodeID)
 	if err != nil {

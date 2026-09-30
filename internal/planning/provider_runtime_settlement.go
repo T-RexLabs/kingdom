@@ -163,20 +163,20 @@ func planningLogicalSessionID(sessionID string, operationType state.PlanningOper
 func providerSettlementForSuccess(invocationID string, metadata ProviderExecutionMetadata, settledAt string) *state.FinalizePlanningProviderSettlementRequest {
 	trimmedInvocationID := strings.TrimSpace(invocationID)
 	finalText := strings.TrimSpace(metadata.FinalText)
-	if trimmedInvocationID == "" || finalText == "" {
+	if trimmedInvocationID == "" || (finalText == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil) {
 		return nil
 	}
 	structuredPayloadJSON := firstNonEmpty(strings.TrimSpace(metadata.CompletionStructuredPayloadJSON), "{}")
 	payload, _ := json.Marshal(map[string]any{
 		"state":                   "success",
-		"final_text":              finalText,
 		"structured_payload_json": structuredPayloadJSON,
-		"output_text":             finalText,
 		"provider_session":        strings.TrimSpace(metadata.ProviderSessionID),
-		"stream_observation":      metadata.StreamObservation,
+		"stream_observation":      providerexecution.CompactObservation(metadata.StreamObservation),
 		"provider_diagnostics":    providerDiagnosticsObject(metadata.ProviderDiagnosticsJSON),
 	})
 	return &state.FinalizePlanningProviderSettlementRequest{
+		FinalTextRef:                 metadata.StreamObservation.CanonicalTerminalTextRef,
+		StagedContent:                planningStagedContent(metadata.StreamObservation),
 		SettlementID:                 fmt.Sprintf("settlement_%s", sanitizePlannerToken(trimmedInvocationID)),
 		PlanningProviderInvocationID: trimmedInvocationID,
 		PrimaryEvidenceID:            fmt.Sprintf("evidence_success_%s", sanitizePlannerToken(trimmedInvocationID)),
@@ -200,6 +200,8 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 		outcome = state.PlanningProviderCompletionOutcomeCancelled
 	}
 	request := &state.FinalizePlanningProviderSettlementRequest{
+		FinalTextRef:                 metadata.StreamObservation.CanonicalTerminalTextRef,
+		StagedContent:                planningStagedContent(metadata.StreamObservation),
 		SettlementID:                 fmt.Sprintf("settlement_%s", sanitizePlannerToken(*operation.ActiveProviderInvocationID)),
 		PlanningProviderInvocationID: strings.TrimSpace(*operation.ActiveProviderInvocationID),
 		Outcome:                      outcome,
@@ -212,9 +214,9 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"state":                strings.TrimSpace(firstNonEmpty(metadata.OutcomeState, plannerOutcomeStateForCancelled(cancelled))),
+		"stream_observation":   providerexecution.CompactObservation(metadata.StreamObservation),
 		"reason_code":          request.FailureReasonCode,
 		"failure_text":         request.FailureReasonText,
-		"output_text":          strings.TrimSpace(metadata.FinalText),
 		"provider_session":     strings.TrimSpace(metadata.ProviderSessionID),
 		"provider_diagnostics": providerDiagnosticsObject(metadata.ProviderDiagnosticsJSON),
 	})
@@ -223,6 +225,14 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 	request.PrimaryEvidencePayloadJSON = string(payload)
 	request.PrimaryEvidenceCreatedAt = settledAt
 	return request
+}
+
+func planningStagedContent(observation providerexecution.InvocationStreamObservation) []providerexecution.StagedContent {
+	content := append([]providerexecution.StagedContent(nil), observation.StagedDiagnosticContent...)
+	if observation.StagedTerminalContent != nil {
+		content = append(content, *observation.StagedTerminalContent)
+	}
+	return content
 }
 
 func providerDiagnosticsObject(raw string) map[string]any {
@@ -249,7 +259,7 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 	if providerlimits.IsResourceLimitError(cause) {
 		return "resource_limit_exceeded"
 	}
-	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" {
+	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil {
 		return "provider_empty_output"
 	}
 	if reasonCode := strings.TrimSpace(metadata.FailureReasonCode); reasonCode != "" {

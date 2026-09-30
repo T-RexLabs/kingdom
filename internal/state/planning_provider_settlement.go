@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"kingdom/internal/core/providerexecution"
@@ -69,6 +70,7 @@ type PlanningProviderCompletionEvidence struct {
 }
 
 type PlanningProviderCompletionSettlement struct {
+	FinalTextRef                 *providerexecution.ContentReference
 	SettlementID                 string
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
@@ -115,6 +117,8 @@ type ActivatePlanningProviderInvocationRequest struct {
 }
 
 type FinalizePlanningProviderSettlementRequest struct {
+	FinalTextRef                 *providerexecution.ContentReference
+	StagedContent                []providerexecution.StagedContent `json:"-"`
 	SettlementID                 string
 	PlanningProviderInvocationID string
 	PrimaryEvidenceID            string
@@ -411,11 +415,32 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if invocation.PlanningOperationID != strings.TrimSpace(operationID) || invocation.PlanningSessionID != strings.TrimSpace(sessionID) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, operationID, string(invocation.InvocationState))
 	}
+	observation, observationErr := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
+	if observationErr != nil && (normalized.Outcome == PlanningProviderCompletionOutcomeSuccess || len(normalized.StagedContent) > 0) {
+		return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	}
+	if observationErr == nil {
+		refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)
+		if observation.CanonicalTerminalTextRef != nil {
+			refs = append(refs, *observation.CanonicalTerminalTextRef)
+		}
+		for _, ref := range refs {
+			if err := importPlanningProviderContent(ctx, tx, invocation.PlanningProviderInvocationID, ref, normalized.StagedContent); err != nil {
+				return "", err
+			}
+		}
+		if observation.CanonicalTerminalTextRef != nil {
+			ref := *observation.CanonicalTerminalTextRef
+			observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
+				return providerexecution.OpenContentCopy(ctx, func(out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
+			}
+		}
+	}
 	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
 		if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		if normalized.FinalText == "" {
+		if normalized.FinalText == "" && normalized.FinalTextRef == nil {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 		var activeInvocationID string
@@ -428,8 +453,15 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		if strings.TrimSpace(activeInvocationID) != invocation.PlanningProviderInvocationID {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		observation, err := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
-		if err != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || strings.TrimSpace(observation.CanonicalTerminalText) != normalized.FinalText {
+		textMatches := strings.TrimSpace(observation.CanonicalTerminalText) == normalized.FinalText
+		if observation.CanonicalTerminalTextRef != nil {
+			if normalized.FinalTextRef != nil {
+				textMatches = *normalized.FinalTextRef == *observation.CanonicalTerminalTextRef
+			} else {
+				textMatches = providerexecution.ReferenceText(invocation.PlanningProviderInvocationID, normalized.FinalText) == *observation.CanonicalTerminalTextRef
+			}
+		}
+		if observationErr != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || !textMatches {
 			return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 	}
@@ -477,6 +509,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		return "", planningProviderError("finalize_planning_provider_settlement", "primary_evidence_invocation_mismatch", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	candidateSettlement := PlanningProviderCompletionSettlement{
+		FinalTextRef:                 normalized.FinalTextRef,
 		SettlementID:                 normalized.SettlementID,
 		PlanningProviderInvocationID: invocation.PlanningProviderInvocationID,
 		PlanningOperationID:          invocation.PlanningOperationID,
@@ -497,7 +530,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		if evidence.EvidenceKind != PlanningProviderCompletionEvidenceKindStreamObservation {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_stream_observation_evidence", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		if candidateSettlement.FinalText == "" {
+		if candidateSettlement.FinalText == "" && candidateSettlement.FinalTextRef == nil {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 		candidateSettlement.FailureReasonCode = ""
@@ -516,7 +549,8 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		failure_reason_text,
 		settled_at,
 		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		,final_text_ref_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
 		candidateSettlement.SettlementID,
 		candidateSettlement.PlanningProviderInvocationID,
 		candidateSettlement.PlanningOperationID,
@@ -529,6 +563,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		candidateSettlement.FailureReasonText,
 		candidateSettlement.SettledAt,
 		candidateSettlement.CreatedAt,
+		planningProviderReferenceJSON(candidateSettlement.FinalTextRef),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert planning provider settlement %q: %w", normalized.SettlementID, err)
@@ -809,6 +844,8 @@ func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, in
 
 func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProviderSettlementRequest) (FinalizePlanningProviderSettlementRequest, error) {
 	normalized := FinalizePlanningProviderSettlementRequest{
+		FinalTextRef:                 req.FinalTextRef,
+		StagedContent:                req.StagedContent,
 		SettlementID:                 strings.TrimSpace(req.SettlementID),
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PrimaryEvidenceID:            strings.TrimSpace(req.PrimaryEvidenceID),
@@ -831,6 +868,15 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 	}
 	if normalized.SettledAt == "" {
 		return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning provider settlement settled_at is required")
+	}
+	if normalized.FinalTextRef != nil {
+		if err := normalized.FinalTextRef.Validate(normalized.PlanningProviderInvocationID); err != nil {
+			return FinalizePlanningProviderSettlementRequest{}, err
+		}
+		if normalized.FinalText != "" && providerexecution.ReferenceText(normalized.PlanningProviderInvocationID, normalized.FinalText) != *normalized.FinalTextRef {
+			return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning terminal text conflicts with its content reference")
+		}
+		normalized.FinalText = ""
 	}
 	structuredPayloadJSON, err := canonicalizePlanningProviderJSONDocument(normalized.StructuredPayloadJSON, "{}")
 	if err != nil {
@@ -976,6 +1022,7 @@ func scanPlanningProviderCompletionEvidence(row scannable) (PlanningProviderComp
 
 func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCompletionSettlement, bool, error) {
 	var item PlanningProviderCompletionSettlement
+	var referenceJSON string
 	err := row.Scan(
 		&item.SettlementID,
 		&item.PlanningProviderInvocationID,
@@ -989,12 +1036,24 @@ func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCo
 		&item.FailureReasonText,
 		&item.SettledAt,
 		&item.CreatedAt,
+		&referenceJSON,
 	)
 	if err == sql.ErrNoRows {
 		return PlanningProviderCompletionSettlement{}, false, nil
 	}
 	if err != nil {
 		return PlanningProviderCompletionSettlement{}, false, err
+	}
+	if referenceJSON != "" {
+		if err := json.Unmarshal([]byte(referenceJSON), &item.FinalTextRef); err != nil {
+			return PlanningProviderCompletionSettlement{}, false, err
+		}
+		if item.FinalTextRef == nil {
+			return PlanningProviderCompletionSettlement{}, false, fmt.Errorf("planning terminal content reference is missing")
+		}
+		if err := item.FinalTextRef.Validate(item.PlanningProviderInvocationID); err != nil {
+			return PlanningProviderCompletionSettlement{}, false, err
+		}
 	}
 	return item, true, nil
 }
@@ -1012,6 +1071,7 @@ func samePlanningProviderSettlement(existing, candidate PlanningProviderCompleti
 		existing.Outcome == candidate.Outcome &&
 		existing.PrimaryEvidenceID == candidate.PrimaryEvidenceID &&
 		existing.FinalText == candidate.FinalText &&
+		planningProviderReferenceJSON(existing.FinalTextRef) == planningProviderReferenceJSON(candidate.FinalTextRef) &&
 		existing.StructuredPayloadJSON == candidate.StructuredPayloadJSON &&
 		existing.FailureReasonCode == candidate.FailureReasonCode &&
 		existing.FailureReasonText == candidate.FailureReasonText
@@ -1094,8 +1154,8 @@ const planningProviderCompletionSettlementSelect = `SELECT
 	failure_reason_code,
 	failure_reason_text,
 	settled_at,
-	created_at
-FROM planning_provider_completion_settlements`
+	created_at,final_text_ref_json
+	FROM planning_provider_completion_settlements`
 
 func firstNonEmptyPlanningProvider(values ...string) string {
 	for _, value := range values {

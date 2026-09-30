@@ -3,6 +3,7 @@ package planning
 import (
 	"context"
 	"fmt"
+	"io"
 	"strings"
 
 	"kingdom/internal/core/providerexecution"
@@ -43,16 +44,18 @@ type ProviderInvocationContext struct {
 }
 
 type AgentContext struct {
-	SessionID           string
-	Title               string
-	ProjectRoot         string
-	ContextSummary      string
-	ExternalContext     string
-	ExternalSnapshotIDs []string
-	Messages            []state.PlanningMessage
-	ModelSelection      PlannerModelSelection
-	ForceNewSession     bool
-	ProviderInvocation  *ProviderInvocationContext
+	VisitMessages        state.PlanningMessageSource
+	WriteExternalContext func(context.Context, io.Writer) error
+	SessionID            string
+	Title                string
+	ProjectRoot          string
+	ContextSummary       string
+	ExternalContext      string
+	ExternalSnapshotIDs  []string
+	Messages             []state.PlanningMessage
+	ModelSelection       PlannerModelSelection
+	ForceNewSession      bool
+	ProviderInvocation   *ProviderInvocationContext
 }
 
 type ProviderExecutionMetadata struct {
@@ -100,28 +103,48 @@ func requirePlannerTurnSettled(metadata ProviderExecutionMetadata) error {
 	if metadata.OutcomeState != "success" {
 		return fmt.Errorf("planner provider execution did not settle success")
 	}
-	if metadata.FinalText == "" {
+	if metadata.FinalText == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil {
 		return fmt.Errorf("planner provider execution missing settled final text")
 	}
 	if err := providerexecution.ValidateServerResponseSuccess(metadata.StreamObservation); err != nil {
 		return fmt.Errorf("planner provider execution has invalid terminal stream observation: %w", err)
 	}
-	if strings.TrimSpace(metadata.StreamObservation.CanonicalTerminalText) != strings.TrimSpace(metadata.FinalText) {
+	if metadata.StreamObservation.CanonicalTerminalTextRef == nil && strings.TrimSpace(metadata.StreamObservation.CanonicalTerminalText) != strings.TrimSpace(metadata.FinalText) {
 		return fmt.Errorf("planner provider execution terminal stream output does not match settled final text")
 	}
 	return nil
 }
 
+// AgentTurn owns any parsed text staging until Close, after the caller has
+// finalized its canonical message and terminal events.
 type AgentTurn struct {
+	ContentSource   *state.PlanningTextSource
+	closeContent    func() error
 	ContentMarkdown string
 	Question        *StructuredQuestion
 	Metadata        ProviderExecutionMetadata
 }
 
+// FormalizedPlan owns its parsed body source until Close after finalization.
 type FormalizedPlan struct {
-	DecreeTitle string
-	DecreeText  string
-	Metadata    ProviderExecutionMetadata
+	TextSource   *state.PlanningTextSource
+	closeContent func() error
+	DecreeTitle  string
+	DecreeText   string
+	Metadata     ProviderExecutionMetadata
+}
+
+func (t AgentTurn) Close() error {
+	if t.closeContent != nil {
+		return t.closeContent()
+	}
+	return nil
+}
+func (p FormalizedPlan) Close() error {
+	if p.closeContent != nil {
+		return p.closeContent()
+	}
+	return nil
 }
 
 type GeneratedTitle struct {

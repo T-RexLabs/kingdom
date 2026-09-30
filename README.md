@@ -113,6 +113,8 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 5. Follow the run under `Runs`.
 6. Inspect the graph, Activity, agents, messages, and published output.
 
+Planning-session lists and run messages load history in pages. Use **Load More Sessions** in the planning rail, **Load Older Sessions** beside **From Plan**, or **Load Older Messages** in the message lanes to continue through older history. Message-lane counts say “loaded” while additional pages remain.
+
 > [!NOTE]
 > Every new run requires an explicit global model selection, even if OpenCode has defaults configured.
 > 

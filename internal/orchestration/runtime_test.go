@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -720,24 +721,27 @@ exit 2
 	}
 }
 
-func TestRunGuardedValidationCommandReadBoundary(t *testing.T) {
-	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes))), []byte(strings.Repeat("y", int(providerlimits.GuardedCommandStreamBytes))))
+func TestRunGuardedValidationCommandAllowsLargeStreams(t *testing.T) {
+	const fixtureBytes = 2 * 1024 * 1024
+	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", fixtureBytes)), []byte(strings.Repeat("y", fixtureBytes)))
 	output, err := runGuardedValidationCommand(context.Background(), runner, processguardian.Command{Path: "fixture"})
 	if err != nil {
-		t.Fatalf("exact guarded validation command boundary rejected: %v", err)
+		t.Fatalf("large guarded validation command rejected: %v", err)
 	}
-	if len(output) != int(2*providerlimits.GuardedCommandStreamBytes) {
-		t.Fatalf("exact guarded validation output bytes=%d, want %d", len(output), 2*providerlimits.GuardedCommandStreamBytes)
+	defer output.Close()
+	for _, open := range []func() (io.ReadCloser, error){output.OpenStdout, output.OpenStderr} {
+		reader, err := open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		size, err := io.Copy(io.Discard, reader)
+		_ = reader.Close()
+		if err != nil || size != fixtureBytes {
+			t.Fatalf("guarded validation stream bytes=%d, want %d, err=%v", size, fixtureBytes, err)
+		}
 	}
-
-	overflowRunner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes+1))), nil)
-	_, err = runGuardedValidationCommand(context.Background(), overflowRunner, processguardian.Command{Path: "fixture"})
-	var limitErr *providerlimits.LimitExceededError
-	if !errors.As(err, &limitErr) || !limitErr.NonRetryable() {
-		t.Fatalf("one-byte guarded validation overflow error=%v, want non-retryable limit error", err)
-	}
-	if overflowRunner.Cancels() != 1 {
-		t.Fatalf("guarded validation overflow cancellations=%d, want 1", overflowRunner.Cancels())
+	if runner.Cancels() != 0 {
+		t.Fatalf("large guarded validation cancellations=%d, want 0", runner.Cancels())
 	}
 }
 
@@ -841,7 +845,6 @@ model_policy:
   fallback_strategy: disabled_for_mvp
 timeouts:
   strict_startup_total_timeout: 60s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -2445,53 +2448,6 @@ func TestRuntimeIngestAttemptStreamAndValidateOutput(t *testing.T) {
 	}
 }
 
-func TestRuntimeEnforceRunBudgetFailsRunOnBreach(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	for i := 2; i <= 61; i++ {
-		value := strconv.Itoa(i)
-		mustExec(t, db, "INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_extra_"+value+"', 'run_1', 'node_extra_"+value+"', 1,1, 'running', 'king', 'agent_king', 1, '2026-03-01T11:58:00Z', NULL)")
-	}
-
-	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
-	if err != nil {
-		t.Fatalf("new runtime: %v", err)
-	}
-
-	result, err := rt.EnforceRunBudget(context.Background(), state.EnforceRunBudgetRequest{
-		RunID:      "run_1",
-		OccurredAt: "2026-03-01T12:00:00Z",
-		ActorID:    "runtime",
-		RoleID:     "king",
-	})
-	if err == nil {
-		t.Fatal("expected budget breach error")
-	}
-
-	var budgetErr *state.BudgetExceededError
-	if !errors.As(err, &budgetErr) {
-		t.Fatalf("expected BudgetExceededError, got %T", err)
-	}
-	if budgetErr.ExceededCap != "attempts" {
-		t.Fatalf("expected attempts budget breach, got %q", budgetErr.ExceededCap)
-	}
-	if !result.Exceeded {
-		t.Fatalf("expected exceeded result, got %+v", result)
-	}
-
-	var runStatus string
-	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = 'run_1'`).Scan(&runStatus); err != nil {
-		t.Fatalf("query run status: %v", err)
-	}
-	if runStatus != "failed" {
-		t.Fatalf("expected run to fail on budget breach, got %q", runStatus)
-	}
-}
-
 func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
@@ -2654,12 +2610,23 @@ func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
 			return fmt.Errorf("expected success/progress events to avoid internal_error reason code, got %d", internalReasonEventCount)
 		}
 
-		var instructionText string
-		if err := db.QueryRow(`SELECT json_extract(payload_json, '$.instruction_full') FROM mailbox_messages WHERE run_id = 'run_dispatch' AND json_extract(payload_json, '$.communication_type') = 'instruction_dispatched' LIMIT 1`).Scan(&instructionText); err != nil {
-			return fmt.Errorf("read instruction_full payload: %w", err)
+		var instructionAttempt string
+		var instructionRef state.RequestContentReference
+		if err := db.QueryRow(`SELECT json_extract(payload_json,'$.attempt_id'),json_extract(payload_json,'$.instruction_full_ref.content_id'),json_extract(payload_json,'$.instruction_full_ref.sha256'),json_extract(payload_json,'$.instruction_full_ref.size_bytes') FROM mailbox_messages WHERE run_id='run_dispatch' AND json_extract(payload_json,'$.communication_type')='instruction_dispatched' LIMIT 1`).Scan(&instructionAttempt, &instructionRef.ContentID, &instructionRef.SHA256, &instructionRef.SizeBytes); err != nil {
+			return fmt.Errorf("read instruction reference: %w", err)
 		}
-		if strings.TrimSpace(instructionText) == "" {
-			return fmt.Errorf("expected full instruction text in mailbox payload")
+		instructionReader, err := state.OpenExecutionPrompt(context.Background(), db, instructionAttempt, instructionRef)
+		if err != nil {
+			return err
+		}
+		var instruction strings.Builder
+		_, readErr := io.Copy(&instruction, instructionReader)
+		closeErr := instructionReader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		if !strings.Contains(instruction.String(), "Current Decree:\ndispatch run") {
+			return fmt.Errorf("instruction reference lost the complete decree")
 		}
 
 		var responseText string
@@ -2916,7 +2883,7 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 	}
 }
 
-func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testing.T) {
+func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTarget(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 
@@ -2947,7 +2914,7 @@ func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testi
 	if _, err := fsStore.EnsureExecutionTarget(context.Background(), runtimefs.EnsureExecutionTargetRequest{RunID: "run_workspace_limit", TargetMode: "direct", SourceRoot: workspaceRoot, ExecutionRoot: workspaceRoot, PublishRoot: workspaceRoot, SourceSnapshotID: baseSnapshot.SnapshotID, TrustedSnapshotID: baseSnapshot.SnapshotID, PublishedSnapshotID: baseSnapshot.SnapshotID, State: "attempt_dirty", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("create dirty execution target: %v", err)
 	}
-	for index := 0; index <= providerlimits.TrackedWorkspaceEntries; index++ {
+	for index := 0; index <= 10000; index++ {
 		if err := os.Mkdir(filepath.Join(workspaceRoot, fmt.Sprintf("generated-%05d", index)), 0o700); err != nil {
 			t.Fatalf("create excessive workspace directory %d: %v", index, err)
 		}
@@ -3024,8 +2991,8 @@ func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testi
 	if err := db.QueryRow(`SELECT state, failure_code, failure_text FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &failureCode, &failureText); err != nil {
 		t.Fatalf("query terminal attempt: %v", err)
 	}
-	if attemptState != "committed_failure" || failureCode != "resource_limit_exceeded" || !strings.Contains(failureText, "resource limit") {
-		t.Fatalf("terminal attempt = state=%q code=%q text=%q, want resource-limit failure", attemptState, failureCode, failureText)
+	if attemptState != "committed_failure" || failureCode != "transient_transport" || failureText != "provider transport failed" {
+		t.Fatalf("terminal attempt = state=%q code=%q text=%q, want original provider failure", attemptState, failureCode, failureText)
 	}
 	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
 		t.Fatalf("query outbox: %v", err)
@@ -3042,32 +3009,32 @@ func TestProviderFailureWorkspaceLimitQuarantinesTargetAndPreventsRetry(t *testi
 	if err := db.QueryRow(`SELECT decision FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&retryDecision); err != nil {
 		t.Fatalf("query retry decision: %v", err)
 	}
-	if retryDecision != string(state.RetryDecisionFailFast) {
-		t.Fatalf("retry decision=%q, want fail_fast", retryDecision)
+	if retryDecision != string(state.RetryDecisionRetry) {
+		t.Fatalf("retry decision=%q, want normal transport retry", retryDecision)
 	}
 	var attempts int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_workspace_limit' AND node_id = 'delegated_execution_berserker'`).Scan(&attempts); err != nil {
 		t.Fatalf("count automatic retry attempts: %v", err)
 	}
-	if attempts != 1 {
-		t.Fatalf("automatic retry created %d attempts for quarantined target, want 1", attempts)
+	if attempts != 2 {
+		t.Fatalf("automatic transport retry created %d attempts, want 2", attempts)
 	}
 	target, err := fsStore.GetExecutionTarget(context.Background(), "run_workspace_limit")
 	if err != nil {
 		t.Fatalf("load quarantined execution target: %v", err)
 	}
-	if target.State != "unknown" {
-		t.Fatalf("execution target state=%q, want unknown quarantine", target.State)
+	if target.State != "trusted" {
+		t.Fatalf("execution target state=%q, want trusted restoration", target.State)
 	}
-	if _, err := loop.resolveExecutionWorkspaceContextForMode(context.Background(), "run_workspace_limit", PublishModeDirect); err == nil || !strings.Contains(err.Error(), "quarantined") {
-		t.Fatalf("quarantined execution target was reusable: %v", err)
+	if _, err := loop.resolveExecutionWorkspaceContextForMode(context.Background(), "run_workspace_limit", PublishModeDirect); err != nil {
+		t.Fatalf("large restored execution target was not reusable: %v", err)
 	}
 	var response string
 	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = 'run_workspace_limit' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&response); err != nil {
 		t.Fatalf("query safe terminal response: %v", err)
 	}
-	if !strings.Contains(response, "resource limit") {
-		t.Fatalf("safe terminal response=%q, want resource limit explanation", response)
+	if strings.Contains(response, "resource limit") {
+		t.Fatalf("large workspace incorrectly replaced provider response: %q", response)
 	}
 }
 
@@ -3730,7 +3697,7 @@ func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntrie
 
 	workspaceRoot := t.TempDir()
 	loop := orchestrationLoop{fsStore: fsStore}
-	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{TrustedSnapshotID: snapshot.SnapshotID}); err != nil {
+	if err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, executionWorkspaceContext{TrustedSnapshotID: snapshot.SnapshotID}); err != nil {
 		t.Fatalf("prepare execution workspace with symlink seed: %v", err)
 	}
 
@@ -3754,7 +3721,7 @@ func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *t
 
 	workspaceRoot := t.TempDir()
 	loop := orchestrationLoop{fsStore: fsStore}
-	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{}); err != nil {
+	if err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, executionWorkspaceContext{}); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 
@@ -4536,7 +4503,7 @@ func TestPrepareExecutionWorkspaceCopiesSourceFiles(t *testing.T) {
 
 	workspaceRoot := t.TempDir()
 	loop := orchestrationLoop{}
-	err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot})
+	err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot})
 	if err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
@@ -4573,7 +4540,7 @@ func TestPrepareExecutionWorkspaceSkipsNestedGitMetadata(t *testing.T) {
 
 	workspaceRoot := t.TempDir()
 	loop := orchestrationLoop{}
-	if err := loop.prepareExecutionWorkspace(workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot}); err != nil {
+	if err := loop.prepareExecutionWorkspaceContext(context.Background(), workspaceRoot, executionWorkspaceContext{SeedRoot: seedRoot}); err != nil {
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 
@@ -4931,7 +4898,8 @@ func TestCompleteExecutionRepublishesPersistedArtifactsOnProjectionRetry(t *test
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_projection_retry', 'wfdef_projection_retry', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_projection_retry_1', 'run_projection_retry', 'advisor_consultation_noble', 1,1, 'succeeded', 'noble-delegate', 'agent_noble_retry', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_projection_retry', 'run_projection_retry', 'nr_projection_retry_1', 'run_projection_retry:advisor_consultation_noble:1', 'orchestration_meta', 'advisor_consultation_noble_response.md', 'text/markdown', 'advisor_consultation_noble_response.md', '%s', %d, 'noble-delegate', '%s')`, checksum, len(responseBody), now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES ('artifact_projection_retry', %s, '%s', %d, '%s')`, bodyLiteral, checksum, len(responseBody), now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifact_content_chunks VALUES ('artifact_projection_retry', 0, %s)`, bodyLiteral))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact_projection_retry', '%s', %d, '%s')`, checksum, len(responseBody), now))
 
 	retryRoot := t.TempDir()
 	loop := orchestrationLoop{
@@ -6118,7 +6086,8 @@ func TestDiscoverWorkspaceArtifactsUsesTrackedFilesystemPolicy(t *testing.T) {
 		}
 	}
 
-	artifacts, err := discoverWorkspaceArtifacts(workspaceRoot)
+	var artifacts []executionArtifact
+	err := visitWorkspaceArtifacts(context.Background(), workspaceRoot, func(a executionArtifact) error { artifacts = append(artifacts, a); return nil })
 	if err != nil {
 		t.Fatalf("discover workspace artifacts: %v", err)
 	}
@@ -6239,7 +6208,8 @@ func TestDiscoverWorkspaceArtifactsExcludesKingdomArtifactsDir(t *testing.T) {
 		t.Fatalf("write excluded artifact: %v", err)
 	}
 
-	artifacts, err := discoverWorkspaceArtifacts(workspaceRoot)
+	var artifacts []executionArtifact
+	err := visitWorkspaceArtifacts(context.Background(), workspaceRoot, func(a executionArtifact) error { artifacts = append(artifacts, a); return nil })
 	if err != nil {
 		t.Fatalf("discover workspace artifacts: %v", err)
 	}
@@ -10289,7 +10259,7 @@ func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocati
 	}
 }
 
-func TestDispatchNodeAttemptInitialWorkspaceLimitFailsWithoutTargetOrRetry(t *testing.T) {
+func TestDispatchNodeAttemptAcceptsFileBeyondFormerWorkspaceLimit(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -10315,10 +10285,10 @@ func TestDispatchNodeAttemptInitialWorkspaceLimitFailsWithoutTargetOrRetry(t *te
 	if err := os.WriteFile(oversizeFile, nil, 0o600); err != nil {
 		t.Fatalf("create oversized source file: %v", err)
 	}
-	if err := os.Truncate(oversizeFile, providerlimits.TrackedWorkspaceFileBytes+1); err != nil {
+	if err := os.Truncate(oversizeFile, 32*1024*1024+1); err != nil {
 		t.Fatalf("grow oversized source file: %v", err)
 	}
-	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
+	adapter := &sequenceExecutionAdapter{outputs: []string{"Inspected the complete workspace"}}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
 		Adapter:        adapter,
@@ -10328,29 +10298,26 @@ func TestDispatchNodeAttemptInitialWorkspaceLimitFailsWithoutTargetOrRetry(t *te
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	now := time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC)
-	rt.orchestrator.now = func() time.Time { return now }
 	const attemptID = "run_dispatch_initial_workspace_limit:delegated_execution_berserker:1"
+	now := time.Now().UTC()
 	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_initial_workspace_limit", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_initial_workspace_limit_1", NodeID: "delegated_execution_berserker", Attempt: 1, Wave: 1, NodeStatus: "ready", RequiredRole: "builder-berserker", AgentID: "agent_dispatch_initial_workspace_limit"}, now.Format(time.RFC3339)); err != nil {
 		t.Fatalf("dispatch oversized source workspace: %v", err)
 	}
-	if adapter.callsCount() != 0 {
-		t.Fatalf("initial workspace limit invoked provider %d times", adapter.callsCount())
-	}
-
-	var attemptState, failureCode string
-	if err := db.QueryRow(`SELECT state, failure_code FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState, &failureCode); err != nil {
-		t.Fatalf("query resource-limited attempt: %v", err)
-	}
-	if attemptState != "committed_failure" || failureCode != "resource_limit_exceeded" {
-		t.Fatalf("initial workspace limit terminal state=%q failure_code=%q", attemptState, failureCode)
-	}
-	var retryDecision, retryCode string
-	if err := db.QueryRow(`SELECT decision, error_code FROM retry_decisions WHERE source_attempt_id = ?`, attemptID).Scan(&retryDecision, &retryCode); err != nil {
-		t.Fatalf("query resource-limit retry disposition: %v", err)
-	}
-	if retryDecision != string(state.RetryDecisionFailFast) || retryCode != "resource_limit_exceeded" {
-		t.Fatalf("resource-limit retry disposition decision=%q code=%q", retryDecision, retryCode)
+	testutil.Eventually(t, 10*time.Second, 10*time.Millisecond, func() error {
+		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+			return err
+		}
+		var attemptState string
+		if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&attemptState); err != nil {
+			return err
+		}
+		if attemptState != "committed_success" {
+			return fmt.Errorf("attempt state=%q", attemptState)
+		}
+		return nil
+	})
+	if adapter.callsCount() != 1 {
+		t.Fatalf("provider calls=%d, want 1", adapter.callsCount())
 	}
 	var targets, snapshots, invocations, attempts int
 	if err := db.QueryRow(`SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch_initial_workspace_limit").Scan(&targets); err != nil {
@@ -10365,8 +10332,8 @@ func TestDispatchNodeAttemptInitialWorkspaceLimitFailsWithoutTargetOrRetry(t *te
 	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = ? AND node_id = ?`, "run_dispatch_initial_workspace_limit", "delegated_execution_berserker").Scan(&attempts); err != nil {
 		t.Fatalf("count node attempts: %v", err)
 	}
-	if targets != 0 || snapshots != 0 || invocations != 0 || attempts != 1 {
-		t.Fatalf("unsafe source capture created target=%d snapshots=%d invocations=%d attempts=%d", targets, snapshots, invocations, attempts)
+	if targets != 1 || snapshots == 0 || invocations != 1 || attempts != 1 {
+		t.Fatalf("large source capture target=%d snapshots=%d invocations=%d attempts=%d", targets, snapshots, invocations, attempts)
 	}
 }
 

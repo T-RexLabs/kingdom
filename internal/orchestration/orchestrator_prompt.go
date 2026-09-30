@@ -5,32 +5,32 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"io"
 	"regexp"
-	"sort"
 	"strings"
 	"text/template"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
-	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
 
 var controlCommandLinePattern = regexp.MustCompile(`(?i)^\s*(ROYAL_VERDICT|VERDICT)\s*:`)
 var controlTokenLiteralPattern = regexp.MustCompile(`(?i)\b(ROYAL_VERDICT|VERDICT)\s*:`)
 
-func (o *orchestrationLoop) decreeTextForRun(ctx context.Context, runID string) (string, error) {
-	var decreeText string
+func (o *orchestrationLoop) decreeTextForRun(ctx context.Context, runID string) (providerexecution.ContentOpener, error) {
+	var decreeID string
 	err := o.db.QueryRowContext(ctx, `
-SELECT d.decree_text
+SELECT d.decree_id
 FROM workflow_runs wr
 JOIN decrees d ON d.decree_id = wr.decree_id
-WHERE wr.run_id = ?`, runID).Scan(&decreeText)
+WHERE wr.run_id = ?`, runID).Scan(&decreeID)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return decreeText, nil
+	return func(ctx context.Context) (io.ReadCloser, error) { return state.OpenDecreeText(ctx, o.db, decreeID) }, nil
 }
 
 func (o *orchestrationLoop) decreeTitleForRun(ctx context.Context, runID string) (string, error) {
@@ -46,11 +46,10 @@ WHERE wr.run_id = ?`, runID).Scan(&decreeTitle)
 	return decreeTitle, nil
 }
 
-func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, decreeText, delegatorRoleID, approvedPlan, delegatorInstruction, priorWithholdContext string) string {
+type nodePromptFrame struct{ System, Rules, Assignment, Checks, Evidence string }
+
+func (o *orchestrationLoop) buildNodePromptFrame(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRoleID string) nodePromptFrame {
 	classID := resolvedNodeClass(nodeID, nodeClass)
-	projectedDecree := projectDecreeForNode(classID, decreeText)
-	approvedPlan = stripControlCommandLines(approvedPlan)
-	delegatorInstruction = stripControlCommandLines(delegatorInstruction)
 	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID)
 	planningConstraints := ""
 	if classID == "plan_drafting" {
@@ -95,34 +94,16 @@ func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, 
 		rulesBlocks = append(rulesBlocks, renderPromptSection("Response Format Requirements", responseContract))
 	}
 
-	runContextBlocks := []string{
-		renderPromptSection("Current Assignment", currentAssignmentForNodeClass(classID, delegatorRoleID)),
-		renderPromptSection("Current Decree", firstNonEmptyString(strings.TrimSpace(projectedDecree), "No decree text was provided.")),
-	}
-	if trimmedPlan := strings.TrimSpace(approvedPlan); trimmedPlan != "" && classID != workflow.NodeClassDelegatedExecution {
-		runContextBlocks = append(runContextBlocks, renderPromptSection("Approved Plan", trimmedPlan))
-	}
-	if trimmedInstruction := strings.TrimSpace(delegatorInstruction); trimmedInstruction != "" {
-		runContextBlocks = append(runContextBlocks, renderPromptSection("Upstream Guidance", trimmedInstruction))
-	}
+	builderEvidence := ""
 	if classID == "execution_review" || classID == "validation_gates" {
-		if builderEvidence := o.builderEvidenceManifestForRun(ctx, runID); strings.TrimSpace(builderEvidence) != "" {
-			runContextBlocks = append(runContextBlocks, renderPromptSection("Builder Evidence Summary", builderEvidence))
-		}
+		builderEvidence = o.builderEvidenceManifestForRun(ctx, runID)
 	}
 	rulesBody := joinPromptBlocks(rulesBlocks...)
 	if strings.TrimSpace(rulesBody) == "" {
 		rulesBody = "- No additional node-specific rules."
 	}
 
-	_ = priorWithholdContext
-	sections := []string{
-		renderPromptSection("System Role", systemPreamble),
-		renderPromptSection("Kingdom Rules", rulesBody),
-		renderPromptSection("Run Context", joinPromptBlocks(runContextBlocks...)),
-		renderPromptSection("Final Checks", finalChecksForNodeClass(classID)),
-	}
-	return joinInstructionBlocks(sections...) + "\n"
+	return nodePromptFrame{System: systemPreamble, Rules: rulesBody, Assignment: currentAssignmentForNodeClass(classID, delegatorRoleID), Checks: finalChecksForNodeClass(classID), Evidence: builderEvidence}
 }
 
 func finalChecksForNodeClass(nodeClass string) string {
@@ -241,11 +222,6 @@ func nodeResponseContractForClass(nodeClass string) string {
 	default:
 		return ""
 	}
-}
-
-func projectDecreeForNode(nodeClass, decreeText string) string {
-	_ = nodeClass
-	return strings.TrimSpace(stripControlCommandLines(decreeText))
 }
 
 func stripControlCommandLines(text string) string {
@@ -439,105 +415,6 @@ func (o *orchestrationLoop) roleIDForAgent(ctx context.Context, agentID string) 
 	return strings.TrimSpace(roleID)
 }
 
-func (o *orchestrationLoop) approvedPlanForRun(ctx context.Context, runID string) string {
-	trimmedRunID := strings.TrimSpace(runID)
-	if o == nil || o.db == nil || trimmedRunID == "" {
-		return ""
-	}
-	revisionStore := state.NewRunPlanRevisionStore(o.db)
-	reviewStore := state.NewRunPlanReviewStore(o.db)
-	approvedReview, ok, err := reviewStore.LatestApprovedRunPlanReview(ctx, trimmedRunID)
-	if err == nil && ok {
-		revision, revisionOK, revisionErr := revisionStore.RunPlanRevision(ctx, approvedReview.ReviewedPlanRevisionID)
-		if revisionErr == nil && revisionOK {
-			return revision.ContentMarkdown
-		}
-		return ""
-	}
-
-	var planState string
-	if err := o.db.QueryRowContext(ctx,
-		`SELECT plan_state
-		 FROM workflow_runs
-		 WHERE run_id = ?
-		 LIMIT 1`,
-		trimmedRunID,
-	).Scan(&planState); err != nil {
-		return ""
-	}
-	if strings.TrimSpace(planState) != "approved" {
-		return ""
-	}
-	revision, ok := state.RunPlanRevision{}, false
-	revision, ok, err = revisionStore.CurrentRunPlanRevision(ctx, trimmedRunID)
-	if err != nil || !ok {
-		return ""
-	}
-	return revision.ContentMarkdown
-}
-
-func (o *orchestrationLoop) delegatorInstructionForDispatch(ctx context.Context, runID, nodeID string, attempt int, delegatorAgentID, delegateAgentID string) string {
-	return o.delegatorInstructionForDispatchForClass(ctx, runID, nodeID, "", attempt, delegatorAgentID, delegateAgentID)
-}
-
-func (o *orchestrationLoop) delegatorInstructionForDispatchForClass(ctx context.Context, runID, nodeID, nodeClass string, attempt int, delegatorAgentID, delegateAgentID string) string {
-	trimmedRunID := strings.TrimSpace(runID)
-	trimmedNodeID := strings.TrimSpace(nodeID)
-	trimmedDelegatorAgentID := strings.TrimSpace(delegatorAgentID)
-	trimmedDelegateAgentID := strings.TrimSpace(delegateAgentID)
-	if o == nil || o.db == nil || trimmedRunID == "" || trimmedNodeID == "" || trimmedDelegatorAgentID == "" {
-		return ""
-	}
-	classID := resolvedNodeClass(trimmedNodeID, nodeClass)
-
-	scopedInstruction := ""
-	var instruction sql.NullString
-	if trimmedDelegateAgentID != "" {
-		query := `
-SELECT COALESCE(json_extract(mm.payload_json, '$.delegator_instruction_scoped'), '')
-FROM mailbox_messages mm
-WHERE mm.run_id = ?
-  AND mm.from_agent_id = ?
-  AND mm.to_agent_id = ?
-  AND json_extract(mm.payload_json, '$.communication_type') = 'instruction_dispatched'
-  AND json_extract(mm.payload_json, '$.node_id') = ?`
-		args := []any{trimmedRunID, trimmedDelegatorAgentID, trimmedDelegateAgentID, trimmedNodeID}
-		query += `
-ORDER BY mm.message_seq DESC
-	LIMIT 1`
-		err := o.db.QueryRowContext(ctx, query, args...).Scan(&instruction)
-		if err == nil {
-			scopedInstruction = strings.TrimSpace(stripControlCommandLines(instruction.String))
-			if scopedInstruction != "" && classID != "advisory_synthesis" && classID != "delegated_execution" {
-				return scopedInstruction
-			}
-		}
-	}
-	if classID == "advisory_synthesis" {
-		return mergeDelegatorInstructionBlocks(scopedInstruction, o.allfatherReworkFeedbackForAdvisoryAttempt(ctx, trimmedRunID, attempt), o.advisorSynthesisInstructionForRun(ctx, trimmedRunID))
-	}
-	if classID == "advisor_consultation" {
-		return ""
-	}
-	if classID == "plan_drafting" {
-		planReworkFeedback := o.allfatherPlanReworkFeedbackForPlanAttempt(ctx, trimmedRunID, attempt)
-		finalReworkFeedback := o.allfatherFinalReworkFeedbackForPlanAttempt(ctx, trimmedRunID, attempt)
-		planningResponse := ""
-		if guidance, ok, err := o.planningOutputStore().LatestRunPlanningOutput(ctx, trimmedRunID, state.RunPlanningOutputKindAdvisoryGuidance); err == nil && ok {
-			planningResponse = stripControlCommandLines(guidance.ContentMarkdown)
-		}
-		if strings.TrimSpace(planningResponse) != "" {
-			return mergeDelegatorInstructionBlocks(planReworkFeedback, finalReworkFeedback, planningResponse)
-		}
-		upstreamInstruction := stripControlCommandLines(o.latestScopedInstructionForNode(ctx, trimmedRunID, "advisory_synthesis", deterministicAgentIDForRole("king"), trimmedDelegatorAgentID))
-		return mergeDelegatorInstructionBlocks(planReworkFeedback, finalReworkFeedback, firstNonEmptyString(strings.TrimSpace(upstreamInstruction), planningSafeInstructionFallback(classID)))
-	}
-	if classID == "delegated_execution" {
-		return o.builderExecutionInstructionForRun(ctx, trimmedRunID, scopedInstruction)
-	}
-	return ""
-}
-
 func (o *orchestrationLoop) allfatherReworkFeedbackForAdvisoryAttempt(ctx context.Context, runID string, attempt int) string {
 	trimmedRunID := strings.TrimSpace(runID)
 	if o == nil || o.db == nil || trimmedRunID == "" || attempt < 1 {
@@ -586,74 +463,6 @@ func (o *orchestrationLoop) allfatherFinalReworkFeedbackForPlanAttempt(ctx conte
 	return fmt.Sprintf("Allfather Final Rework Feedback:\n%s", feedback)
 }
 
-func (o *orchestrationLoop) builderExecutionInstructionForRun(ctx context.Context, runID, scopedInstruction string) string {
-	latestPlan, baselinePlan := o.latestCouncilPlansForRun(ctx, runID)
-	failureContext := o.latestExecutionFailureContextsForRun(ctx, runID)
-
-	primary := firstNonEmptyString(stripControlCommandLines(latestPlan), stripControlCommandLines(o.approvedPlanForRun(ctx, runID)))
-	baseline := firstNonEmptyString(stripControlCommandLines(baselinePlan), stripControlCommandLines(o.approvedPlanForRun(ctx, runID)), stripControlCommandLines(latestPlan))
-	formattedFailureContext := formatExecutionFailureContexts(failureContext)
-
-	planningSections := []string{
-		fmt.Sprintf("Primary Council Rework Plan:\n%s", firstNonEmptyString(strings.TrimSpace(primary), "none")),
-	}
-	if baselineText := strings.TrimSpace(baseline); baselineText != "" && strings.TrimSpace(primary) != baselineText {
-		planningSections = append(planningSections, fmt.Sprintf("Approved Plan Baseline:\n%s", baselineText))
-	}
-	reworkSections := make([]string, 0, 2)
-	if trimmedFailureContext := strings.TrimSpace(formattedFailureContext); trimmedFailureContext != "" {
-		reworkSections = append(reworkSections, fmt.Sprintf("Failure Context:\n%s", trimmedFailureContext))
-	}
-	trimmedScopedInstruction := sanitizeDelegatedExecutionScopedInstruction(scopedInstruction)
-	if trimmedScopedInstruction != "" {
-		reworkSections = append(reworkSections, fmt.Sprintf("Scoped Delegator Instruction:\n%s", trimmedScopedInstruction))
-	}
-	groups := []string{
-		"Execution directive: prioritize the latest council rework plan for implementation updates.",
-		strings.Join(planningSections, "\n\n"),
-	}
-	if len(reworkSections) > 0 {
-		failurePriorityBlock := append([]string{"Address all Failure Context items first."}, reworkSections...)
-		groups = append(groups, strings.Join(failurePriorityBlock, "\n\n"))
-	}
-	return joinInstructionBlocks(groups...)
-}
-
-func sanitizeDelegatedExecutionScopedInstruction(scopedInstruction string) string {
-	trimmed := strings.TrimSpace(stripControlCommandLines(scopedInstruction))
-	if trimmed == "" {
-		return ""
-	}
-	for _, marker := range []string{
-		"Primary Council Rework Plan:",
-		"Approved Plan Baseline:",
-		"Failure Context:",
-		"Scoped Delegator Instruction:",
-	} {
-		if strings.Contains(trimmed, marker) {
-			return ""
-		}
-	}
-	return trimmed
-}
-
-func (o *orchestrationLoop) latestCouncilPlansForRun(ctx context.Context, runID string) (string, string) {
-	trimmedRunID := strings.TrimSpace(runID)
-	if o == nil || o.db == nil || trimmedRunID == "" {
-		return "", ""
-	}
-	revisionStore := state.NewRunPlanRevisionStore(o.db)
-	current, ok, err := revisionStore.CurrentRunPlanRevision(ctx, trimmedRunID)
-	if err != nil || !ok {
-		return "", ""
-	}
-	baseline, baselineOK, err := revisionStore.PreviousRunPlanRevision(ctx, trimmedRunID, current.PlanRevisionID)
-	if err != nil || !baselineOK {
-		return current.ContentMarkdown, ""
-	}
-	return current.ContentMarkdown, baseline.ContentMarkdown
-}
-
 func planningSafeInstructionFallback(nodeClass string) string {
 	if nodeClass == "plan_drafting" {
 		return "Return a planning-only output: scoped execution delta, dependencies, acceptance criteria, and verification checkpoints. Do not claim completed implementation."
@@ -684,86 +493,6 @@ LIMIT 1`, trimmedRunID, trimmedFromAgentID, trimmedToAgentID, trimmedNodeID).Sca
 		return ""
 	}
 	return strings.TrimSpace(instruction.String)
-}
-
-type executionFailureContext struct {
-	NodeID     string
-	NodeClass  string
-	ActorName  string
-	ReasonCode string
-	Response   string
-}
-
-func formatExecutionFailureContexts(contexts []executionFailureContext) string {
-	if len(contexts) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(contexts))
-	for _, item := range contexts {
-		nodeID := strings.TrimSpace(item.NodeID)
-		nodeClass := strings.TrimSpace(item.NodeClass)
-		actorName := strings.TrimSpace(item.ActorName)
-		reasonCode := strings.TrimSpace(item.ReasonCode)
-		response := strings.TrimSpace(item.Response)
-		if response == "" {
-			continue
-		}
-		header := firstNonEmptyString(actorName, humanizedFailureActorName(nodeID), "Unknown Agent")
-		header = fmt.Sprintf("%s - %s", header, failureReasonLabel(nodeID, nodeClass, reasonCode))
-		parts = append(parts, fmt.Sprintf("%s\n%s", header, response))
-	}
-	return joinInstructionBlocks(parts...)
-}
-
-func (o *orchestrationLoop) latestExecutionFailureContextsForRun(ctx context.Context, runID string) []executionFailureContext {
-	trimmedRunID := strings.TrimSpace(runID)
-	store := o.canonicalExecutionStore()
-	if store == nil || trimmedRunID == "" {
-		return nil
-	}
-
-	records, err := store.ListLatestRunExecutionOutputs(ctx, executionstore.ListRunExecutionOutputsRequest{
-		RunID:       trimmedRunID,
-		NodeClasses: []string{"execution_review", "validation_gates"},
-		States:      []string{"committed_success", "committed_failure"},
-	})
-	if err != nil {
-		return nil
-	}
-
-	contexts := make([]executionFailureContext, 0)
-	for _, record := range records {
-		trimmedNodeID := strings.TrimSpace(record.NodeID)
-		trimmedReasonCode := firstNonEmptyString(nullStringValue(record.OutcomeReasonCode), nullStringValue(record.FailureCode))
-		if !isOwnerFailureReasonCode(trimmedReasonCode) {
-			continue
-		}
-		trimmedResponse := formatFailureContextResponse(trimmedNodeID, record.NodeClass, trimmedReasonCode, nullStringValue(record.OutputText))
-		contexts = append(contexts, executionFailureContext{
-			NodeID:     trimmedNodeID,
-			NodeClass:  strings.TrimSpace(record.NodeClass),
-			ActorName:  strings.TrimSpace(nullStringValue(record.AgentDisplayName)),
-			ReasonCode: trimmedReasonCode,
-			Response:   trimmedResponse,
-		})
-	}
-	if len(contexts) == 0 {
-		return nil
-	}
-	sort.SliceStable(contexts, func(i, j int) bool {
-		leftClass := resolvedNodeClass(contexts[i].NodeID, contexts[i].NodeClass)
-		rightClass := resolvedNodeClass(contexts[j].NodeID, contexts[j].NodeClass)
-		if leftClass != rightClass {
-			if leftClass == "execution_review" {
-				return true
-			}
-			if rightClass == "execution_review" {
-				return false
-			}
-		}
-		return contexts[i].NodeID < contexts[j].NodeID
-	})
-	return contexts
 }
 
 func failureReasonLabel(nodeID, nodeClass, reasonCode string) string {
@@ -853,102 +582,11 @@ func isExecutionOwnerNode(nodeID string) bool {
 	}
 }
 
-func mergeDelegatorInstructionBlocks(parts ...string) string {
-	trimmedParts := make([]string, 0, len(parts))
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed == "" {
-			continue
-		}
-		trimmedParts = append(trimmedParts, trimmed)
-	}
-	return joinInstructionBlocks(trimmedParts...)
-}
-
-func (o *orchestrationLoop) advisorSynthesisInstructionForRun(ctx context.Context, runID string) string {
-	trimmedRunID := strings.TrimSpace(runID)
-	store := o.canonicalExecutionStore()
-	if store == nil || trimmedRunID == "" {
-		return ""
-	}
-
-	records, err := store.ListLatestRunExecutionOutputs(ctx, executionstore.ListRunExecutionOutputsRequest{
-		RunID:       trimmedRunID,
-		NodeClasses: []string{"advisor_consultation"},
-		States:      []string{"committed_success"},
-	})
-	if err != nil {
-		return ""
-	}
-
-	type advisorInput struct {
-		nodeID       string
-		responseText string
-		agentName    string
-		agentID      string
-	}
-	inputs := make([]advisorInput, 0)
-	for _, record := range records {
-		input := advisorInput{
-			nodeID:       strings.TrimSpace(record.NodeID),
-			responseText: strings.TrimSpace(stripControlCommandLines(nullStringValue(record.OutputText))),
-			agentName:    strings.TrimSpace(nullStringValue(record.AgentDisplayName)),
-			agentID:      strings.TrimSpace(record.AgentID),
-		}
-		if input.nodeID == "" {
-			continue
-		}
-		if input.responseText == "" {
-			continue
-		}
-		inputs = append(inputs, input)
-	}
-	if len(inputs) == 0 {
-		return ""
-	}
-
-	var builder strings.Builder
-	builder.WriteString("Synthesize all advisor counsel into a single decision-ready brief for council deliberation.\n\n")
-	builder.WriteString("Synthesis requirements:\n")
-	builder.WriteString("- Treat advisor responses as counsel and evidence, not decisions or approval authority.\n")
-	builder.WriteString("- Preserve explicit decree requirements and accepted architecture while using counsel to fill unspecified details and state material assumptions.\n")
-	builder.WriteString("- Merge aligned advice into one coherent direction.\n")
-	builder.WriteString("- Call out major tradeoffs and conflicts among advisors.\n")
-	builder.WriteString("- Separate executable investigation, safeguards, and verification from genuinely unavailable external dependencies; do not invent approval gates.\n")
-	builder.WriteString("- Keep output strategic, concrete, and ready for council planning.\n\n")
-	builder.WriteString("Advisor Responses:\n")
-	for idx, input := range inputs {
-		if idx > 0 {
-			builder.WriteString(instructionSectionSeparator)
-			builder.WriteString("\n\n")
-		}
-		label := firstNonEmptyString(strings.TrimSpace(input.agentName), strings.TrimSpace(input.agentID), input.nodeID)
-		builder.WriteString(fmt.Sprintf("%s:\n", label))
-		builder.WriteString(input.responseText)
-		builder.WriteString("\n\n")
-	}
-
-	return strings.TrimSpace(builder.String())
-}
-
 func nullStringValue(value sql.NullString) string {
 	if !value.Valid {
 		return ""
 	}
 	return strings.TrimSpace(value.String)
-}
-
-func joinInstructionBlocks(parts ...string) string {
-	trimmed := make([]string, 0, len(parts))
-	for _, part := range parts {
-		if section := strings.TrimSpace(part); section != "" {
-			trimmed = append(trimmed, section)
-		}
-	}
-	if len(trimmed) == 0 {
-		return ""
-	}
-	return strings.Join(trimmed, "\n\n"+instructionSectionSeparator+"\n\n")
 }
 
 func defaultDelegatorInstructionForDispatch(nodeID, roleID string) string {

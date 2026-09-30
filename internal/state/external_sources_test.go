@@ -6,10 +6,158 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"kingdom/internal/dbmigrations"
 )
+
+func readExternalSnapshotForTest(ctx context.Context, store *ExternalStore, id string) (ExternalSourceSnapshot, []ExternalComment, error) {
+	snapshot, err := store.GetSnapshotMetadata(ctx, id)
+	if err != nil {
+		return snapshot, nil, err
+	}
+	var comments []ExternalComment
+	err = store.SnapshotComments(id).Replay(ctx, func(c ExternalComment) error { comments = append(comments, c); return nil })
+	return snapshot, comments, err
+}
+
+type changingExternalCommentSource struct {
+	reads  int
+	closed bool
+}
+
+func (s *changingExternalCommentSource) Replay(ctx context.Context, visit func(ExternalComment) error) error {
+	s.reads++
+	return visit(ExternalComment{ProviderCommentID: "1", Body: fmt.Sprintf("version-%d", s.reads)})
+}
+func (s *changingExternalCommentSource) Close() error { s.closed = true; return nil }
+
+func TestExternalCommentCaptureRejectsChangedReplayAtomically(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "changing-comments")
+	source := &changingExternalCommentSource{}
+	req := CaptureExternalIssueRequest{SourceID: "changing-source", SnapshotID: "changing-snapshot", ConnectionID: "conn-changing-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: fixture.at, UpdatedAt: fixture.at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: fixture.at, Comments: source}
+	if _, _, err := fixture.external.CaptureIssue(fixture.ctx, req); err == nil || !strings.Contains(err.Error(), "changed during replay") {
+		t.Fatalf("mutable comment source accepted: %v", err)
+	}
+	if !source.closed {
+		t.Fatal("failed capture retained its comment source")
+	}
+	var count int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM external_source_snapshots WHERE snapshot_id='changing-snapshot'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial snapshot committed: %d %v", count, err)
+	}
+}
+
+func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrations []SQLMigration
+	for _, name := range names {
+		if name >= "0011_complete_external_comments.up.sql" {
+			continue
+		}
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(ctx, db, migrations, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	store := NewExternalStore(db)
+	at := "2026-08-12T10:00:00Z"
+	_, err = store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "migration-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:migration-connection", ActorID: "operator", CreatedAt: at, AuditEventID: "migration-audit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := CaptureExternalIssueRequest{SourceID: "migration-source", SnapshotID: "migration-old", ConnectionID: "migration-connection", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: at, ProviderCommentCount: 205, FetchedCommentCount: 1, FetchedCommentPages: 1, OmittedCommentCount: 204, OmittedCommentPages: 2, Comments: ExternalCommentList{{ProviderCommentID: "1", Body: "historical prefix", OriginalBytes: 40000, TruncationReason: "comment_byte_limit"}}}
+	old, _, err := store.CaptureIssue(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the pre-migration decree shape explicitly; current decree creation
+	// may depend on later migrations owned by another subsystem.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO decrees(decree_id,decree_title,decree_text,metadata_json,created_at) VALUES('migration-decree','Decree','immutable','{}',?)`, at); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "migration-link", "decree", "migration-decree", old.SourceID, old.SnapshotID, "operator", "", at); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := dbmigrations.Read("0011_complete_external_comments.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplySQLMigrations(ctx, db, []SQLMigration{{Name: "0011_complete_external_comments.up.sql", SQL: raw}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	after, comments, err := readExternalSnapshotForTest(ctx, store, old.SnapshotID)
+	if err != nil || after != old || len(comments) != 1 || comments[0].Body != "historical prefix" || comments[0].TruncationReason != "comment_byte_limit" {
+		t.Fatalf("migration rewrote historical source: %v", err)
+	}
+	spool, err := NewExternalCommentSpool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	body := strings.Repeat("界", 14000) + "tail"
+	for i := 0; i < 205; i++ {
+		if err := spool.Append(ExternalComment{ProviderCommentID: fmt.Sprint(i), Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := spool.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	req.SnapshotID = "migration-full"
+	req.PredecessorSnapshotID = old.SnapshotID
+	req.Comments = spool
+	req.FetchedCommentCount = 205
+	req.FetchedCommentPages = 3
+	req.OmittedCommentCount = 0
+	req.OmittedCommentPages = 0
+	full, _, err := store.CaptureIssue(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.RetainedCommentCount != 205 || full.RetainedCommentBytes != 205*len(body) || full.CommentsTruncated {
+		t.Fatalf("full capture metadata: %#v", full)
+	}
+	for _, stmt := range []string{`UPDATE external_source_snapshots SET content_digest='changed' WHERE snapshot_id='migration-old'`, `DELETE FROM external_source_snapshot_comments WHERE snapshot_id='migration-old'`, `INSERT INTO external_source_snapshot_comments VALUES('migration-old','extra',1,'','injected','','','',8,8,'')`} {
+		if _, err := db.Exec(stmt); err == nil {
+			t.Fatalf("immutable source accepted %s", stmt)
+		}
+	}
+	links, err := store.GetLinksForTarget(ctx, "decree", "migration-decree")
+	if err != nil || len(links) != 1 || links[0].UsedSnapshotID != old.SnapshotID {
+		t.Fatalf("historical decree binding changed: %v", err)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("migration broke foreign keys")
+	}
+}
 
 func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(t *testing.T) {
 	db := openTestDB(t)
@@ -21,18 +169,20 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := CaptureExternalIssueRequest{SourceID: "source-1", SnapshotID: "snapshot-1", ConnectionID: "conn-1", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, Comments: []ExternalComment{{ProviderCommentID: "comment-1", Author: "octocat", Body: "immutable comment", CanonicalURL: "https://github.com/owner/repo/issues/7#issuecomment-1", CreatedAt: at, UpdatedAt: at}}}
+	base := CaptureExternalIssueRequest{SourceID: "source-1", SnapshotID: "snapshot-1", ConnectionID: "conn-1", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, Comments: ExternalCommentList{{ProviderCommentID: "comment-1", Author: "octocat", Body: "immutable comment", CanonicalURL: "https://github.com/owner/repo/issues/7#issuecomment-1", CreatedAt: at, UpdatedAt: at}}}
 	first, created, err := store.CaptureIssue(ctx, base)
 	if err != nil || !created {
 		t.Fatalf("first capture: created=%v err=%v", created, err)
 	}
 	base.SourceID = "source-ignored"
 	base.SnapshotID = "snapshot-ignored"
+	base.FetchedAt = "2026-08-12T11:00:00Z"
+	base.ETag = `"new-validator-same-content"`
 	second, created, err := store.CaptureIssue(ctx, base)
 	if err != nil || created {
 		t.Fatalf("duplicate capture: created=%v err=%v", created, err)
 	}
-	if second.SourceID != first.SourceID || second.SnapshotID != first.SnapshotID {
+	if second != first {
 		t.Fatalf("capture did not deduplicate: %#v %#v", first, second)
 	}
 	for i, id := range []string{"decree-1", "decree-2"} {
@@ -272,12 +422,12 @@ func assertDecreeProvenanceWriteCount(t *testing.T, db *sql.DB, decreeID string,
 	}
 }
 
-func TestCaptureValidationEnforcesIndependentIssueStorageBounds(t *testing.T) {
+func TestCaptureValidationAcceptsCompleteIssueContent(t *testing.T) {
 	req := CaptureExternalIssueRequest{
 		SourceID: "source-boundary", SnapshotID: "snapshot-boundary", ConnectionID: "connection-boundary", ProviderNativeID: "100", RepositoryNativeID: "200",
 		Issue: NormalizedExternalIssue{
-			Title:        strings.Repeat("t", MaxExternalIssueTitleBytes),
-			Body:         strings.Repeat("b", MaxExternalIssueBodyBytes),
+			Title:        strings.Repeat("界", 2048),
+			Body:         strings.Repeat("b", 2<<20),
 			State:        "open",
 			Repository:   "owner/repo",
 			IssueNumber:  1,
@@ -288,67 +438,36 @@ func TestCaptureValidationEnforcesIndependentIssueStorageBounds(t *testing.T) {
 		FetchedAt: "2026-08-12T10:00:00Z",
 	}
 	if err := validateCapture(req); err != nil {
-		t.Fatalf("exact external issue storage boundaries rejected: %v", err)
-	}
-	req.Issue.Title += "x"
-	if err := validateCapture(req); err == nil || !strings.Contains(err.Error(), "external issue title exceeds") {
-		t.Fatalf("oversized stored title error=%v, want title storage-bound error", err)
-	}
-	req.Issue.Title = strings.Repeat("t", MaxExternalIssueTitleBytes)
-	req.Issue.Body += "x"
-	if err := validateCapture(req); err == nil || !strings.Contains(err.Error(), "external issue body exceeds") {
-		t.Fatalf("oversized stored body error=%v, want body storage-bound error", err)
+		t.Fatalf("complete external issue rejected: %v", err)
 	}
 }
 
-func TestExternalCommentBounds(t *testing.T) {
-	comments := make([]ExternalComment, MaxExternalComments+5)
-	for i := range comments {
-		comments[i] = ExternalComment{ProviderCommentID: fmt.Sprintf("comment-%03d", i), Body: "x"}
+func TestExternalCommentSpoolPreservesFullUnicodeAndReplay(t *testing.T) {
+	spool, err := NewExternalCommentSpool()
+	if err != nil {
+		t.Fatal(err)
 	}
-	retained, total, truncated := boundExternalComments(comments)
-	if !truncated || len(retained) != MaxExternalComments || total != MaxExternalComments {
-		t.Fatalf("retained=%d total=%d truncated=%v", len(retained), total, truncated)
-	}
-	if retained[0].ProviderCommentID != "comment-005" || retained[len(retained)-1].ProviderCommentID != "comment-104" {
-		t.Fatalf("comment-count bound retained the wrong window: first=%q last=%q", retained[0].ProviderCommentID, retained[len(retained)-1].ProviderCommentID)
-	}
-}
-
-func TestExternalCommentBoundsPreserveUTF8(t *testing.T) {
-	comments := []ExternalComment{{Body: strings.Repeat("x", MaxExternalCommentBytes-1) + "界"}}
-	retained, total, truncated := boundExternalComments(comments)
-	wantPerCommentBytes := MaxExternalCommentBytes - 1
-	if !truncated || len(retained) != 1 || !utf8.ValidString(retained[0].Body) || len(retained[0].Body) != wantPerCommentBytes || retained[0].RetainedBytes != wantPerCommentBytes || total != wantPerCommentBytes {
-		t.Fatalf("invalid per-comment truncation: %#v", retained)
-	}
-
-	comments = make([]ExternalComment, 5)
-	for i := range comments {
-		comments[i] = ExternalComment{Body: strings.Repeat("x", MaxExternalCommentBytes)}
-	}
-	retained, total, truncated = boundExternalComments(comments)
-	if !truncated || len(retained) != MaxExternalCommentsBytes/MaxExternalCommentBytes || total != MaxExternalCommentsBytes {
-		t.Fatalf("aggregate truncation total=%d truncated=%v", total, truncated)
-	}
-	for _, comment := range retained {
-		if !utf8.ValidString(comment.Body) {
-			t.Fatalf("aggregate truncation produced invalid UTF-8: %q", comment.Body)
+	defer spool.Close()
+	body := strings.Repeat("x", 40<<10) + "界-tail"
+	for i := 0; i < 205; i++ {
+		if err := spool.Append(ExternalComment{ProviderCommentID: fmt.Sprint(i), Body: body}); err != nil {
+			t.Fatal(err)
 		}
 	}
-
-	comments = make([]ExternalComment, 0, 5)
-	for range 4 {
-		comments = append(comments, ExternalComment{Body: strings.Repeat("x", MaxExternalCommentBytes-1)})
+	if err := spool.Seal(); err != nil {
+		t.Fatal(err)
 	}
-	comments = append(comments, ExternalComment{Body: "xx界"})
-	retained, total, truncated = boundExternalComments(comments)
-	if !truncated || total > MaxExternalCommentsBytes || len(retained) != 5 || retained[4].Body != "xx" {
-		t.Fatalf("aggregate UTF-8 truncation total=%d retained=%#v truncated=%v", total, retained, truncated)
-	}
-	for _, comment := range retained {
-		if !utf8.ValidString(comment.Body) {
-			t.Fatalf("aggregate truncation produced invalid UTF-8: %q", comment.Body)
+	for pass := 0; pass < 2; pass++ {
+		count := 0
+		err := ReplayExternalComments(context.Background(), spool, func(c ExternalComment) error {
+			if c.ProviderCommentID != fmt.Sprint(count) || c.Body != body || c.RetainedBytes != len(body) || c.TruncationReason != "" {
+				t.Fatal("comment changed across spool replay")
+			}
+			count++
+			return nil
+		})
+		if err != nil || count != 205 {
+			t.Fatalf("replay count=%d err=%v", count, err)
 		}
 	}
 }
@@ -554,9 +673,10 @@ func TestPlanningOperationExternalContextBindsLatestAdoptionPerLink(t *testing.T
 	}
 }
 
-func TestPlanningOperationExternalContextCapsBindingsToRecentActiveSources(t *testing.T) {
+func TestPlanningOperationExternalContextBindsEveryActiveSource(t *testing.T) {
 	fixture := newPlanningExternalBindingFixture(t, "source-cap")
-	for i := 0; i < MaxPlanningOperationExternalSources+2; i++ {
+	const sources = 205
+	for i := 0; i < sources; i++ {
 		snapshot := fixture.capture(t,
 			fmt.Sprintf("source-%02d", i),
 			fmt.Sprintf("snapshot-%02d", i),
@@ -564,9 +684,9 @@ func TestPlanningOperationExternalContextCapsBindingsToRecentActiveSources(t *te
 			fmt.Sprintf("Source %02d", i),
 			fmt.Sprintf("body %02d", i),
 			nil,
-			fmt.Sprintf("2026-08-12T10:%02d:00Z", i),
+			fixture.at,
 		)
-		fixture.link(t, fmt.Sprintf("link-%02d", i), snapshot, fmt.Sprintf("adopt-%02d", i), fmt.Sprintf("2026-08-12T10:%02d:00Z", i))
+		fixture.link(t, fmt.Sprintf("link-%02d", i), snapshot, fmt.Sprintf("adopt-%02d", i), fixture.at)
 	}
 	fixture.createOperation(t, "operation-source-cap")
 
@@ -574,26 +694,20 @@ func TestPlanningOperationExternalContextCapsBindingsToRecentActiveSources(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantIDs := make([]string, 0, MaxPlanningOperationExternalSources)
-	for i := 2; i < MaxPlanningOperationExternalSources+2; i++ {
+	wantIDs := make([]string, 0, sources)
+	for i := 0; i < sources; i++ {
 		wantIDs = append(wantIDs, fmt.Sprintf("snapshot-%02d", i))
 		if !strings.Contains(contextText, fmt.Sprintf("Source %02d", i)) {
 			t.Fatalf("bound context is missing recent source %d: %s", i, contextText)
 		}
 	}
+	sort.Strings(wantIDs)
 	if got, want := strings.Join(snapshotIDs, ","), strings.Join(wantIDs, ","); got != want {
 		t.Fatalf("bound snapshots=%q, want %q", got, want)
 	}
-	for _, i := range []int{0, 1} {
-		if strings.Contains(contextText, fmt.Sprintf("Source %02d", i)) {
-			t.Fatalf("bound context unexpectedly contains older source %d: %s", i, contextText)
-		}
-	}
-
-	// Immutable bindings are never silently truncated on recovery.
-	mustExecArgs(t, fixture.db, `INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES (?,?,?,?,?,?,?)`, "operation-source-cap", "snapshot-00", ExternalAssemblerVersion, digest(nil), 0, 0, fixture.at)
-	if _, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap"); err == nil || !strings.Contains(err.Error(), "bindings exceed") {
-		t.Fatalf("unbounded stored bindings were accepted: %v", err)
+	replayed, replayIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap")
+	if err != nil || replayed != contextText || strings.Join(replayIDs, ",") != strings.Join(snapshotIDs, ",") {
+		t.Fatalf("immutable replay differs: %v", err)
 	}
 }
 
@@ -602,20 +716,20 @@ func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFo
 	if ExternalAssemblerVersion != "external-context-v3" {
 		t.Fatalf("assembler version=%q, want external-context-v3", ExternalAssemblerVersion)
 	}
-	issueBody := strings.Repeat(`Complete issue evidence with UTF-8 界 and "quotes". `, 6000)
-	comments := make([]ExternalComment, MaxExternalComments)
+	issueBody := strings.Repeat(`Complete issue evidence with UTF-8 界 and "quotes". `, 25000)
+	comments := make([]ExternalComment, 205)
 	for i := range comments {
 		body := fmt.Sprintf(`Comment %03d includes UTF-8 界 and "quotes". `, i)
 		comments[i] = ExternalComment{
 			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
 			Author:            fmt.Sprintf("author-%03d-界", i),
-			Body:              strings.Repeat(body, 24),
+			Body:              strings.Repeat(body, 1000),
 			CanonicalURL:      fmt.Sprintf("https://example.test/issues/7#comment-%03d", i),
 			CreatedAt:         fixture.at,
 			UpdatedAt:         fixture.at,
 		}
 	}
-	snapshot := fixture.capture(t, "source-complete", "snapshot-complete", "100", `Complete "issue" 界`, issueBody, comments, fixture.at)
+	snapshot := fixture.capture(t, "source-complete", "snapshot-complete", "100", strings.Repeat(`Complete "issue" 界 `, 200), issueBody, comments, fixture.at)
 	fixture.link(t, "link-complete", snapshot, "adopt-complete", fixture.at)
 	fixture.createOperation(t, "operation-complete-retained")
 
@@ -634,12 +748,12 @@ func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFo
 		t.Fatalf("bound snapshots=%#v, want %q", snapshotIDs, snapshot.SnapshotID)
 	}
 
-	storedSnapshot, retainedComments, err := fixture.external.GetSnapshot(fixture.ctx, snapshot.SnapshotID)
+	storedSnapshot, retainedComments, err := readExternalSnapshotForTest(fixture.ctx, fixture.external, snapshot.SnapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(retainedComments) != MaxExternalComments || storedSnapshot.RetainedCommentCount != MaxExternalComments {
-		t.Fatalf("stored retained comments=%d metadata=%d, want %d", len(retainedComments), storedSnapshot.RetainedCommentCount, MaxExternalComments)
+	if len(retainedComments) != len(comments) || storedSnapshot.RetainedCommentCount != len(comments) {
+		t.Fatalf("stored retained comments=%d metadata=%d, want %d", len(retainedComments), storedSnapshot.RetainedCommentCount, len(comments))
 	}
 	retainedCommentBytes := 0
 	expectedComments := make([]planningExternalComment, 0, len(retainedComments))
@@ -647,7 +761,7 @@ func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFo
 		if comment.ProviderCommentID != comments[i].ProviderCommentID || comment.Body != comments[i].Body {
 			t.Fatalf("stored comment %d differs from retained source: got=%#v want=%#v", i, comment, comments[i])
 		}
-		if comment.RetainedBytes != len(comment.Body) || comment.RetainedBytes > MaxExternalCommentBytes {
+		if comment.RetainedBytes != len(comment.Body) {
 			t.Fatalf("stored comment %d retained bytes=%d body bytes=%d", i, comment.RetainedBytes, len(comment.Body))
 		}
 		retainedCommentBytes += comment.RetainedBytes
@@ -659,8 +773,8 @@ func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFo
 			UpdatedAt:    comment.UpdatedAt,
 		})
 	}
-	if retainedCommentBytes != storedSnapshot.RetainedCommentBytes || retainedCommentBytes > MaxExternalCommentsBytes {
-		t.Fatalf("stored comment body bytes=%d metadata=%d, limit=%d", retainedCommentBytes, storedSnapshot.RetainedCommentBytes, MaxExternalCommentsBytes)
+	if retainedCommentBytes != storedSnapshot.RetainedCommentBytes || retainedCommentBytes <= 128<<10 || storedSnapshot.CommentsTruncated {
+		t.Fatalf("stored comment body bytes=%d metadata=%d", retainedCommentBytes, storedSnapshot.RetainedCommentBytes)
 	}
 
 	issueJSON, err := json.Marshal(storedSnapshot.Issue)
@@ -857,7 +971,7 @@ func newPlanningExternalBindingFixture(t *testing.T, suffix string) planningExte
 
 func (f planningExternalBindingFixture) capture(t *testing.T, sourceID, snapshotID, nativeID, title, body string, comments []ExternalComment, fetchedAt string) ExternalSourceSnapshot {
 	t.Helper()
-	snapshot, _, err := f.external.CaptureIssue(f.ctx, CaptureExternalIssueRequest{SourceID: sourceID, SnapshotID: snapshotID, ConnectionID: "conn-" + strings.TrimPrefix(f.sessionID, "session-"), ProviderNativeID: nativeID, RepositoryNativeID: "repo-" + nativeID, Issue: NormalizedExternalIssue{Title: title, Body: body, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: f.at, UpdatedAt: fetchedAt}, Profile: ExternalImportProfile{IncludeComments: len(comments) > 0}, ProviderUpdatedAt: fetchedAt, FetchedAt: fetchedAt, Comments: comments})
+	snapshot, _, err := f.external.CaptureIssue(f.ctx, CaptureExternalIssueRequest{SourceID: sourceID, SnapshotID: snapshotID, ConnectionID: "conn-" + strings.TrimPrefix(f.sessionID, "session-"), ProviderNativeID: nativeID, RepositoryNativeID: "repo-" + nativeID, Issue: NormalizedExternalIssue{Title: title, Body: body, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: f.at, UpdatedAt: fetchedAt}, Profile: ExternalImportProfile{IncludeComments: len(comments) > 0}, ProviderUpdatedAt: fetchedAt, FetchedAt: fetchedAt, Comments: ExternalCommentList(comments)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -921,12 +1035,12 @@ func TestExternalCommentOmissionMetadataIsPersistedAndAffectsDigest(t *testing.T
 	for i := range comments {
 		comments[i] = ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: "body"}
 	}
-	req := CaptureExternalIssueRequest{SourceID: "source-comments", SnapshotID: "snapshot-comments", ConnectionID: "conn-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ProviderCommentCount: 150, FetchedCommentCount: 100, FetchedCommentPages: 1, OmittedCommentCount: 50, OmittedCommentPages: 1, Comments: comments}
+	req := CaptureExternalIssueRequest{SourceID: "source-comments", SnapshotID: "snapshot-comments", ConnectionID: "conn-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ProviderCommentCount: 150, FetchedCommentCount: 100, FetchedCommentPages: 1, OmittedCommentCount: 50, OmittedCommentPages: 1, Comments: ExternalCommentList(comments)}
 	first, created, err := store.CaptureIssue(ctx, req)
 	if err != nil || !created {
 		t.Fatalf("capture: created=%v err=%v", created, err)
 	}
-	loaded, _, err := store.GetSnapshot(ctx, first.SnapshotID)
+	loaded, _, err := readExternalSnapshotForTest(ctx, store, first.SnapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}

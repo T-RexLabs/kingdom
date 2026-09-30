@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -14,7 +15,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/processguardian"
-	"kingdom/internal/providerlimits"
+	"kingdom/internal/providers/opencode"
 )
 
 type modelCatalogTestHandle struct {
@@ -40,24 +41,35 @@ type modelCatalogDiscardWriter struct{}
 func (modelCatalogDiscardWriter) Write(payload []byte) (int, error) { return len(payload), nil }
 func (modelCatalogDiscardWriter) Close() error                      { return nil }
 
-func TestCollectOpenCodeVerboseModelOutputBoundsProviderStreams(t *testing.T) {
+func TestCollectOpenCodeVerboseModelOutputAllowsLargeProviderStreams(t *testing.T) {
+	const fixtureBytes = 2 * 1024 * 1024
 	handle := &modelCatalogTestHandle{
-		stdout: io.NopCloser(strings.NewReader(strings.Repeat("x", int(providerlimits.GuardedCommandStreamBytes)+1))),
-		stderr: io.NopCloser(strings.NewReader("diagnostics")),
+		stdout: io.NopCloser(strings.NewReader(strings.Repeat(" ", fixtureBytes) + "\n" + `{"id":"last-model","providerID":"openai"}`)),
+		stderr: io.NopCloser(strings.NewReader(strings.Repeat("diagnostics\n", fixtureBytes/8))),
 	}
-	_, err := collectOpenCodeVerboseModelOutput(context.Background(), handle)
-	if !providerlimits.IsResourceLimitError(err) {
-		t.Fatalf("error=%v, want resource limit", err)
+	output, err := collectOpenCodeVerboseModelOutput(context.Background(), handle)
+	if err != nil {
+		t.Fatalf("collect large model catalog: %v", err)
 	}
-	if !handle.cancelled {
-		t.Fatal("oversized model catalog stream did not cancel its process")
+	defer output.Close()
+	reader, err := output.OpenStdout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	items, err := parseOpenCodeVerboseModels(reader)
+	if err != nil || len(items) != 1 || items[0].Id != "openai/last-model" {
+		t.Fatalf("parse complete catalog: items=%#v err=%v", items, err)
+	}
+	if handle.cancelled {
+		t.Fatal("large model catalog stream cancelled its process")
 	}
 }
 
 func TestParseOpenCodeVerboseModels(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte(`opencode/gpt-5.3-codex
+	raw := strings.NewReader(`opencode/gpt-5.3-codex
 {
   "id": "gpt-5.3-codex",
   "providerID": "github-copilot",
@@ -89,7 +101,7 @@ opencode/claude-sonnet-4.6
 func TestParseOpenCodeVerboseModelsHandlesBracesInStringFields(t *testing.T) {
 	t.Parallel()
 
-	items, err := parseOpenCodeVerboseModels([]byte(`provider catalog refreshed
+	items, err := parseOpenCodeVerboseModels(strings.NewReader(`provider catalog refreshed
 {
   "id": "gpt-5.4-mini",
   "providerID": "github-copilot",
@@ -122,7 +134,7 @@ diagnostic noise
 func TestParseOpenCodeVerboseModelsFailsOnMalformedRow(t *testing.T) {
 	t.Parallel()
 
-	_, err := parseOpenCodeVerboseModels([]byte(`
+	_, err := parseOpenCodeVerboseModels(strings.NewReader(`
 opencode/gpt-5.3-codex
 {
   "id": "gpt-5.3-codex",
@@ -138,9 +150,22 @@ opencode/gpt-5.3-codex
 func TestParseOpenCodeVerboseModelsFailsOnNonEmptyUnparsableOutput(t *testing.T) {
 	t.Parallel()
 
-	_, err := parseOpenCodeVerboseModels([]byte("warning: provider model cache refresh failed\n"))
+	_, err := parseOpenCodeVerboseModels(strings.NewReader("warning: provider model cache refresh failed\n"))
 	if err == nil {
 		t.Fatal("expected parse error when output is non-empty but no rows parsed")
+	}
+}
+
+func TestParseOpenCodeVerboseModelsStreamsLargeRowsAndRejectsTrailingGarbage(t *testing.T) {
+	// A large metadata field must not hide a subsequent catalog entry, and
+	// braces/escaped quotes in that field must not break object framing.
+	row := `{"id":"first","providerID":"openai","metadata":"` + strings.Repeat(`\"{ignored}`, 150000) + `"}`
+	items, err := parseOpenCodeVerboseModels(strings.NewReader(row + "\nheading\n" + `{"id":"last","providerID":"openai"}`))
+	if err != nil || len(items) != 2 || items[1].Id != "openai/last" {
+		t.Fatalf("large row parse: items=%#v err=%v", items, err)
+	}
+	if _, err := parseOpenCodeVerboseModels(strings.NewReader(row + " trailing garbage\n")); err == nil {
+		t.Fatal("accepted trailing content after a JSON object")
 	}
 }
 
@@ -153,16 +178,16 @@ func TestOpenCodeProviderModelCatalogListDeduplicatesConcurrentMisses(t *testing
 		now:          time.Now,
 		ttl:          60 * time.Second,
 		fetchTimeout: 2 * time.Second,
-		execVerbose: func(_ context.Context, _ string, _ bool) ([]byte, error) {
+		execVerbose: func(_ context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 			calls.Add(1)
 			time.Sleep(75 * time.Millisecond)
-			return []byte(`
+			return modelCatalogCapture(t, `
 {
   "id": "gpt-5.3-codex",
   "providerID": "github-copilot",
   "name": "GPT-5.3-Codex"
 }
-`), nil
+`)
 		},
 	}
 
@@ -202,7 +227,7 @@ func TestOpenCodeProviderModelCatalogListTimesOutBoundedFetch(t *testing.T) {
 		now:          time.Now,
 		ttl:          60 * time.Second,
 		fetchTimeout: 25 * time.Millisecond,
-		execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+		execVerbose: func(ctx context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -233,15 +258,15 @@ func TestOpenCodeProviderModelCatalogSnapshotServesCacheWhileRevalidating(t *tes
 		cachedAt:     now,
 		cachedRows:   []gen.ProviderModel{cachedProviderModel()},
 		refreshed:    make(chan struct{}, 1),
-		execVerbose: func(_ context.Context, _ string, _ bool) ([]byte, error) {
+		execVerbose: func(_ context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 			<-release
-			return []byte(`
+			return modelCatalogCapture(t, `
 {
   "id": "gpt-5.4-mini",
   "providerID": "github-copilot",
   "name": "GPT-5.4-Mini"
 }
-`), nil
+`)
 		},
 	}
 
@@ -283,7 +308,7 @@ func TestOpenCodeProviderModelCatalogSnapshotReportsFailedRevalidationOnNextRead
 		cachedAt:     now,
 		cachedRows:   []gen.ProviderModel{cachedProviderModel()},
 		refreshed:    make(chan struct{}, 1),
-		execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+		execVerbose: func(ctx context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -327,14 +352,14 @@ func TestOpenCodeProviderModelCatalogSnapshotBlocksOnlyOnAnEmptyCache(t *testing
 		now:          time.Now,
 		ttl:          60 * time.Second,
 		fetchTimeout: 2 * time.Second,
-		execVerbose: func(_ context.Context, _ string, _ bool) ([]byte, error) {
-			return []byte(`
+		execVerbose: func(_ context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
+			return modelCatalogCapture(t, `
 {
   "id": "gpt-5.4-mini",
   "providerID": "github-copilot",
   "name": "GPT-5.4-Mini"
 }
-`), nil
+`)
 		},
 	}
 
@@ -359,7 +384,7 @@ func TestOpenCodeProviderModelCatalogSnapshotKeepsAnEmptySuccessfulCache(t *test
 		cachedAt:     now,
 		cachedRows:   []gen.ProviderModel{},
 		refreshed:    make(chan struct{}, 1),
-		execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+		execVerbose: func(ctx context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
@@ -424,7 +449,7 @@ func TestOpenCodeProviderModelCatalogSnapshotExplainsUnavailableWithoutRawError(
 				now:          time.Now,
 				ttl:          60 * time.Second,
 				fetchTimeout: 25 * time.Millisecond,
-				execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+				execVerbose: func(ctx context.Context, _ string, _ bool) (*opencode.HelperCommandOutput, error) {
 					if errors.Is(testCase.execError, context.DeadlineExceeded) {
 						<-ctx.Done()
 						return nil, ctx.Err()
@@ -454,5 +479,61 @@ func TestOpenCodeProviderModelCatalogSnapshotExplainsUnavailableWithoutRawError(
 				}
 			}
 		})
+	}
+}
+
+func modelCatalogCapture(t *testing.T, stdout string) (*opencode.HelperCommandOutput, error) {
+	t.Helper()
+	output, err := collectOpenCodeVerboseModelOutput(context.Background(), &modelCatalogTestHandle{
+		stdout: io.NopCloser(strings.NewReader(stdout)), stderr: io.NopCloser(strings.NewReader("")),
+	})
+	if output != nil {
+		t.Cleanup(func() { _ = output.Close() })
+	}
+	return output, err
+}
+
+func TestProviderModelCatalogRetiresDiagnosticsAfterSuccessfulRefresh(t *testing.T) {
+	failed, err := modelCatalogCapture(t, strings.Repeat("complete diagnostic\n", 100000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	catalog := &openCodeProviderModelCatalog{
+		now: time.Now, ttl: time.Minute, fetchTimeout: time.Second,
+		execVerbose: func(context.Context, string, bool) (*opencode.HelperCommandOutput, error) {
+			calls++
+			if calls == 1 {
+				return failed, errors.New("fixture command failure")
+			}
+			return modelCatalogCapture(t, `{"id":"ready","providerID":"openai"}`)
+		},
+	}
+	first, err := catalog.Snapshot(context.Background(), true)
+	if err != nil || first.Status != ProviderModelCatalogStatusUnavailable {
+		t.Fatalf("failure snapshot=%#v err=%v", first, err)
+	}
+	var diagnostic *opencode.HelperCommandError
+	if !errors.As(first.UnavailableErr, &diagnostic) {
+		t.Fatalf("full diagnostics missing: %v", first.UnavailableErr)
+	}
+	reader, err := diagnostic.Output.OpenStdout()
+	if err != nil {
+		t.Fatal(err)
+	}
+	size, err := io.Copy(io.Discard, reader)
+	_ = reader.Close()
+	if err != nil || size != int64(len("complete diagnostic\n")*100000) {
+		t.Fatalf("retained diagnostic bytes=%d err=%v", size, err)
+	}
+	second, err := catalog.Snapshot(context.Background(), true)
+	if err != nil || second.Status != ProviderModelCatalogStatusFresh || len(second.Items) != 1 {
+		t.Fatalf("refreshed snapshot=%#v err=%v", second, err)
+	}
+	if reader, err := failed.OpenStdout(); !errors.Is(err, os.ErrNotExist) {
+		if reader != nil {
+			_ = reader.Close()
+		}
+		t.Fatalf("retired diagnostic still available: %v", err)
 	}
 }

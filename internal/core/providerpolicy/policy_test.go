@@ -42,7 +42,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -79,7 +78,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -117,7 +115,6 @@ agent_policy:
 timeouts:
   session_start_timeout: 30s
   strict_startup_total_timeout: 60s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -154,7 +151,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -188,7 +184,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -224,7 +219,6 @@ func TestLoadPolicyFromFileCoversTimeoutAndFallbackContract(t *testing.T) {
 
 	timeoutValues := []string{
 		policy.Timeouts.StrictStartupTotalTimeout,
-		policy.Timeouts.DispatchAckTimeout,
 		policy.Timeouts.FirstEventTimeout,
 		policy.Timeouts.StreamInactivityTimeout,
 		policy.Timeouts.CancelGraceTimeout,
@@ -381,7 +375,6 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 90s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s

@@ -3,15 +3,118 @@
 package runtimefs
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/securefs"
 )
+
+func TestProviderContentBeyondFormerHandoffLimitVerifiedAndImmutable(t *testing.T) {
+	store, err := NewStore(openRuntimeFSTestDB(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Repeat("large provider content\n", 1600000)
+	if len(text) <= 32*1024*1024 {
+		t.Fatal("fixture does not cross removed limit")
+	}
+	ref, err := store.PersistProviderContent("large-invocation", text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyProviderContent(ref, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PersistProviderContent("large-invocation", text); err != nil {
+		t.Fatalf("exact replay: %v", err)
+	}
+	bad := ref
+	bad.SizeBytes--
+	if err := store.CopyProviderContent(bad, io.Discard); err == nil {
+		t.Fatal("accepted incorrect declared size")
+	}
+	path := filepath.Join(store.root, providerContentPath(ref, 0))
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", providerexecution.ContentChunkBytes)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyProviderContent(ref, io.Discard); err == nil {
+		t.Fatal("accepted corrupted content")
+	}
+	if _, err := store.PersistProviderContent("large-invocation", text); !errors.Is(err, securefs.ErrContentConflict) {
+		t.Fatalf("overwrote immutable chunk: %v", err)
+	}
+}
+
+func TestProviderContentReaderRejectsTruncationAndLinks(t *testing.T) {
+	store, err := NewStore(openRuntimeFSTestDB(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := providerexecution.ReferenceText("invocation", "complete")
+	if err := store.PersistProviderContentReader(ref, strings.NewReader("short")); err == nil {
+		t.Fatal("accepted truncated input")
+	}
+	if err := store.PersistProviderContentReader(ref, strings.NewReader("complete trailing")); err == nil {
+		t.Fatal("accepted trailing input")
+	}
+	if err := store.PersistProviderContentReader(ref, strings.NewReader("wrong!!!")); err == nil {
+		t.Fatal("accepted corrupt source")
+	}
+	if err := store.PersistProviderContentReader(ref, strings.NewReader("complete")); err != nil {
+		t.Fatalf("failed source poisoned immutable namespace: %v", err)
+	}
+	path := filepath.Join(store.root, providerContentPath(ref, 0))
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("complete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, path); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CopyProviderContent(ref, io.Discard); err == nil {
+		t.Fatal("followed content symlink")
+	}
+	if err := store.RemoveProviderContent(ref); err == nil {
+		t.Fatal("removed content symlink")
+	}
+}
+
+func TestProviderInvocationContentCleanupRemovesPreEnvelopeOrphans(t *testing.T) {
+	store, err := NewStore(openRuntimeFSTestDB(t), t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref, err := store.PersistProviderContent("orphan-invocation", strings.Repeat("orphan", 40000))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := store.PersistProviderContent("other-invocation", "retain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := store.RemoveProviderInvocationContent(context.Background(), ref.InvocationID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CopyProviderContent(ref, io.Discard); err == nil {
+		t.Fatal("orphan content survived cleanup")
+	}
+	if err := store.CopyProviderContent(other, io.Discard); err != nil {
+		t.Fatalf("cleanup crossed invocation lineage: %v", err)
+	}
+}
 
 func TestProviderTerminalHandoffIsInvocationDerivedExactAndIdentityDeleted(t *testing.T) {
 	t.Parallel()

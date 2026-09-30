@@ -3,6 +3,7 @@
 package securefs
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
@@ -552,18 +553,7 @@ func createWindowsDirectoryAt(parent *os.File, name string, mode fs.FileMode) er
 }
 
 func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.FileMode, modified time.Time) error {
-	if err := ensureRootDirReplacingNonDirectories(root, filepath.Dir(path), dirMode); err != nil && filepath.Dir(path) != "." {
-		return err
-	}
-	temp, err := secureWindowsTemp(root, filepath.Dir(path), data, mode)
-	if err != nil {
-		return err
-	}
-	defer root.platformRoot.Remove(temp)
-	if err := root.platformRoot.Rename(temp, path); err != nil {
-		return err
-	}
-	return root.platformRoot.Chtimes(path, modified, modified)
+	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modified)
 }
 func createRootRegularExact(root *Root, path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
 	components, err := windowsRelativeComponents(path)
@@ -715,11 +705,17 @@ func removeRootEntryIfIdentity(root *Root, path string, expectedType EntryType, 
 		return restoreWindowsClaim(root, claim, path, err)
 	}
 	actualType, err := windowsEntryTypeFromHandle(file, info)
-	if err != nil || actualType != expectedType || !sameWindowsEntryIdentity(actual, identity) {
+	// Claiming renames the object and legitimately advances its change time.
+	// Keep all other observed metadata, and verify content against the original
+	// digest using the claimed generation's change time.
+	claimedIdentity := identity
+	claimedIdentity.ChangeTimeSeconds = actual.ChangeTimeSeconds
+	claimedIdentity.ChangeTimeNanoseconds = actual.ChangeTimeNanoseconds
+	if err != nil || actualType != expectedType || !sameWindowsEntryIdentity(actual, claimedIdentity) {
 		return restoreWindowsClaim(root, claim, path, ErrIdentityMismatch)
 	}
 	if identity.ContentSHA256 != "" {
-		if err := verifyWindowsRegularClaim(root, claim, identity); err != nil {
+		if err := verifyWindowsRegularClaim(root, claim, claimedIdentity); err != nil {
 			return restoreWindowsClaim(root, claim, path, err)
 		}
 	}
@@ -745,6 +741,10 @@ func newWindowsClaimPath(path string) (string, error) {
 // CreateRegularExact's no-replace behavior without resolving a path from the
 // process working directory or following parent reparse points.
 func renameWindowsEntryNoReplaceWriteThrough(source, parent *os.File, name string) error {
+	return renameWindowsEntryWriteThrough(source, parent, name, false)
+}
+
+func renameWindowsEntryWriteThrough(source, parent *os.File, name string, replace bool) error {
 	utf16Name, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -765,6 +765,9 @@ func renameWindowsEntryNoReplaceWriteThrough(source, parent *os.File, name strin
 		FileName        [1]uint16
 	})(unsafe.Pointer(&buffer[0]))
 	info.RootDirectory = windows.Handle(parent.Fd())
+	if replace {
+		info.ReplaceIfExists = 1
+	}
 	info.FileNameLength = uint32(nameLength)
 	copy(unsafe.Slice(&info.FileName[0], len(utf16Name)-1), utf16Name[:len(utf16Name)-1])
 	return windows.SetFileInformationByHandle(
@@ -776,7 +779,7 @@ func renameWindowsEntryNoReplaceWriteThrough(source, parent *os.File, name strin
 }
 
 func verifyWindowsRegularClaim(root *Root, path string, expected FileIdentity) error {
-	_, actual, err := readRootRegular(root, path, expected.SizeBytes)
+	actual, _, err := root.CopyRegular(context.Background(), path, io.Discard)
 	if err != nil {
 		return err
 	}
@@ -947,6 +950,10 @@ func syncOSRootDir(root *os.Root, path string) error {
 }
 
 func secureWindowsTempAt(parent windows.Handle, data []byte, mode fs.FileMode) (*os.File, error) {
+	return secureWindowsTempFromAt(parent, func(w io.Writer) error { _, err := w.Write(data); return err }, mode)
+}
+
+func secureWindowsTempFromAt(parent windows.Handle, produce func(io.Writer) error, mode fs.FileMode) (*os.File, error) {
 	options := uint32(windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_FOR_BACKUP_INTENT | windows.FILE_SYNCHRONOUS_IO_NONALERT | windows.FILE_WRITE_THROUGH)
 	access := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.DELETE)
 	for range 32 {
@@ -972,12 +979,8 @@ func secureWindowsTempAt(parent windows.Handle, data []byte, mode fs.FileMode) (
 			closeErr := file.Close()
 			return errors.Join(cause, deleteErr, closeErr)
 		}
-		written, writeErr := file.Write(data)
-		if writeErr != nil {
-			return nil, cleanup(fmt.Errorf("write secure temporary file: %w", writeErr))
-		}
-		if written != len(data) {
-			return nil, cleanup(fmt.Errorf("write secure temporary file: %w", io.ErrShortWrite))
+		if err := produce(file); err != nil {
+			return nil, cleanup(fmt.Errorf("write secure temporary file: %w", err))
 		}
 		if err := file.Chmod(mode.Perm()); err != nil {
 			return nil, cleanup(fmt.Errorf("set secure temporary file mode: %w", err))
@@ -990,29 +993,16 @@ func secureWindowsTempAt(parent windows.Handle, data []byte, mode fs.FileMode) (
 	return nil, fmt.Errorf("could not allocate a unique secure temporary file")
 }
 
-func secureWindowsTemp(root *Root, dir string, data []byte, mode fs.FileMode) (string, error) {
-	var token [16]byte
-	if _, err := rand.Read(token[:]); err != nil {
-		return "", err
-	}
-	name := filepath.Join(dir, fmt.Sprintf(".secure-%x.tmp", token[:]))
-	file, err := root.platformRoot.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
-	if err != nil {
-		return "", err
-	}
-	if _, err := file.Write(data); err != nil {
-		file.Close()
-		return "", err
-	}
-	if err := file.Sync(); err != nil {
-		file.Close()
-		return "", err
-	}
-	return name, file.Close()
-}
 func windowsFileIdentity(file *os.File) (FileIdentity, error) {
 	var info windows.ByHandleFileInformation
 	if err := windows.GetFileInformationByHandle(windows.Handle(file.Fd()), &info); err != nil {
+		return FileIdentity{}, err
+	}
+	var basic struct {
+		CreationTime, LastAccessTime, LastWriteTime, ChangeTime int64
+		FileAttributes                                          uint32
+	}
+	if err := windows.GetFileInformationByHandleEx(windows.Handle(file.Fd()), windows.FileBasicInfo, (*byte)(unsafe.Pointer(&basic)), uint32(unsafe.Sizeof(basic))); err != nil {
 		return FileIdentity{}, err
 	}
 	inode := uint64(info.FileIndexHigh)<<32 | uint64(info.FileIndexLow)
@@ -1023,8 +1013,8 @@ func windowsFileIdentity(file *os.File) (FileIdentity, error) {
 		SizeBytes:             size,
 		ModTimeSeconds:        int64(info.LastWriteTime.HighDateTime),
 		ModTimeNanoseconds:    int64(info.LastWriteTime.LowDateTime),
-		ChangeTimeSeconds:     int64(info.CreationTime.HighDateTime),
-		ChangeTimeNanoseconds: int64(info.CreationTime.LowDateTime),
+		ChangeTimeSeconds:     basic.ChangeTime / 10000000,
+		ChangeTimeNanoseconds: (basic.ChangeTime % 10000000) * 100,
 	}, nil
 }
 func windowsEntryType(mode fs.FileMode) EntryType {

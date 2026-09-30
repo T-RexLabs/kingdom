@@ -11,6 +11,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,9 +53,14 @@ type ExecuteRequest struct {
 	DatabasePath        string         `json:"database_path,omitempty"`
 	InlineConfigContent string         `json:"-"`
 	Prompt              string         `json:"prompt"`
-	OccurredAt          string         `json:"occurred_at"`
-	InvocationID        string         `json:"invocation_id,omitempty"`
-	InvocationIssuedAt  string         `json:"invocation_issued_at,omitempty"`
+	// OpenPrompt and WritePrompt are replayable sources: each Execute opens or
+	// invokes its source once, closes opened readers, and streams to stdin. Set
+	// exactly one of Prompt, OpenPrompt, or WritePrompt. Writers must honor ctx.
+	OpenPrompt         func(context.Context) (io.ReadCloser, error) `json:"-"`
+	WritePrompt        func(context.Context, io.Writer) error       `json:"-"`
+	OccurredAt         string                                       `json:"occurred_at"`
+	InvocationID       string                                       `json:"invocation_id,omitempty"`
+	InvocationIssuedAt string                                       `json:"invocation_issued_at,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
@@ -159,8 +165,11 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted                bool                        `json:"accepted"`
-	OutputText              string                      `json:"output_text,omitempty"`
+	Accepted   bool   `json:"accepted"`
+	OutputText string `json:"output_text,omitempty"`
+	// Referenced answers are opened with providerexecution.OpenTerminalText.
+	// OutputPreview is bounded display data, never terminal authority.
+	OutputPreview           string                      `json:"output_preview,omitempty"`
 	Tokens                  TokenUsage                  `json:"tokens"`
 	ProviderSessionID       string                      `json:"provider_session_id,omitempty"`
 	ProviderInvocationID    string                      `json:"provider_invocation_id,omitempty"`
@@ -210,6 +219,15 @@ func NewMemoryAdapter() *MemoryAdapter {
 func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteResponse, error) {
 	if err := validateExecuteRequest(req); err != nil {
 		return ExecuteResponse{}, err
+	}
+	// This adapter is a string-based fixture, not a production provider. Its
+	// canned output builder may materialize the replay source for assertions.
+	if req.OpenPrompt != nil || req.WritePrompt != nil {
+		var prompt strings.Builder
+		if err := writeRequestPrompt(context.Background(), req, "", &prompt); err != nil {
+			return ExecuteResponse{}, err
+		}
+		req.Prompt = prompt.String()
 	}
 	if strings.TrimSpace(req.WorkspacePath) == "" {
 		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
@@ -416,8 +434,18 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	if req.NodeRunID == "" {
 		return fmt.Errorf("node run id is required")
 	}
-	if req.Prompt == "" {
-		return fmt.Errorf("prompt is required")
+	sources := 0
+	if req.Prompt != "" {
+		sources++
+	}
+	if req.OpenPrompt != nil {
+		sources++
+	}
+	if req.WritePrompt != nil {
+		sources++
+	}
+	if sources != 1 {
+		return fmt.Errorf("exactly one prompt source is required")
 	}
 	if req.OccurredAt == "" {
 		return fmt.Errorf("occurred_at is required")

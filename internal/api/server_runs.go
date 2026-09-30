@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +14,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	coreverdict "kingdom/internal/core/verdict"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/mailboxview"
@@ -361,7 +363,7 @@ func (s *Server) handleGetRunPlan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	snapshot, _, err := s.loadRunPlanSnapshot(r.Context(), runID)
+	snapshot, revision, ready, err := s.loadRunPlanSnapshotContent(r.Context(), runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_run_plan", map[string]any{"run_id": runID})
@@ -370,7 +372,85 @@ func (s *Server) handleGetRunPlan(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "fetch run plan snapshot failed")
 		return
 	}
-	writeJSON(w, http.StatusOK, snapshot)
+	if !ready {
+		writeJSON(w, http.StatusOK, snapshot)
+		return
+	}
+	metadataSnapshot := snapshot
+	metadataSnapshot.Content = ""
+	metadataSnapshot.Components = nil
+	metadata, err := json.Marshal(metadataSnapshot)
+	if err != nil {
+		s.writeInternalError(w, "encode run plan metadata failed")
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		s.writeInternalError(w, "encode run plan metadata failed")
+		return
+	}
+	delete(fields, "content")
+	delete(fields, "components")
+	prefix, err := json.Marshal(fields)
+	if err != nil {
+		s.writeInternalError(w, "encode run plan metadata failed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	err = writeExternalResponse(w, func(out io.Writer) error {
+		if _, err := out.Write(prefix[:len(prefix)-1]); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(out, `,"content":`); err != nil {
+			return err
+		}
+		reader, err := state.NewRunPlanRevisionStore(s.db).OpenContent(r.Context(), revision)
+		if err != nil {
+			return err
+		}
+		err = providerexecution.WriteJSONString(r.Context(), out, reader)
+		closeErr := reader.Close()
+		if err := errors.Join(err, closeErr); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(out, `,"components":[`); err != nil {
+			return err
+		}
+		for index, component := range revision.Components {
+			if index > 0 {
+				if _, err := io.WriteString(out, ","); err != nil {
+					return err
+				}
+			}
+			raw, err := json.Marshal(map[string]any{"node_id": component.NodeID, "planning_output_id": component.PlanningOutputID, "created_at": mustParseRFC3339(component.CreatedAt)})
+			if err != nil {
+				return err
+			}
+			if _, err := out.Write(raw[:len(raw)-1]); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(out, `,"content":`); err != nil {
+				return err
+			}
+			reader, err := state.NewRunPlanningOutputStore(s.db).OpenContent(r.Context(), state.RunPlanningOutput{ContentMarkdown: component.ContentMarkdown, ContentRef: component.ContentRef})
+			if err != nil {
+				return err
+			}
+			err = providerexecution.WriteJSONString(r.Context(), out, reader)
+			closeErr = reader.Close()
+			if err := errors.Join(err, closeErr); err != nil {
+				return err
+			}
+			if _, err := io.WriteString(out, "}"); err != nil {
+				return err
+			}
+		}
+		_, err = io.WriteString(out, "]}")
+		return err
+	})
+	if err != nil {
+		s.writeInternalError(w, "stream run plan failed")
+	}
 }
 
 func (s *Server) handleListRunPlanReviews(w http.ResponseWriter, r *http.Request) {
@@ -384,13 +464,29 @@ func (s *Server) handleListRunPlanReviews(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	reviews, err := state.NewRunPlanReviewStore(s.db).ListRunPlanReviews(r.Context(), runID, 100)
+	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 50)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	cursor, err := s.decodeHistoryCursor("plan-reviews", runID, strings.TrimSpace(r.URL.Query().Get("cursor")))
+	if err != nil {
+		s.writeBadRequest(w, "invalid cursor")
+		return
+	}
+	reviews, err := state.NewRunPlanReviewStore(s.db).ListRunPlanReviewsPage(r.Context(), runID, limit+1, cursor.OrderedAt, cursor.ID)
 	if err != nil {
 		s.writeInternalError(w, "list run plan reviews failed")
 		return
 	}
 
 	response := gen.RunPlanReviewsResponse{RunId: runID, Items: make([]gen.RunPlanReview, 0, len(reviews))}
+	if len(reviews) > limit {
+		last := reviews[limit-1]
+		next := s.encodeHistoryCursor("plan-reviews", runID, last.CreatedAt, last.PlanReviewID)
+		response.NextCursor = &next
+		reviews = reviews[:limit]
+	}
 	for _, review := range reviews {
 		response.Items = append(response.Items, gen.RunPlanReview{
 			PlanReviewId:           review.PlanReviewID,
@@ -409,16 +505,21 @@ func (s *Server) handleListRunPlanReviews(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) loadRunPlanSnapshot(ctx context.Context, runID string) (gen.RunPlanSnapshot, bool, error) {
+	snapshot, _, ready, err := s.loadRunPlanSnapshotContent(ctx, runID)
+	return snapshot, ready, err
+}
+
+func (s *Server) loadRunPlanSnapshotContent(ctx context.Context, runID string) (gen.RunPlanSnapshot, state.RunPlanRevision, bool, error) {
 	trimmedRunID := strings.TrimSpace(runID)
 	var planState string
 	var runUpdatedAt string
 	if err := s.db.QueryRowContext(ctx, `SELECT plan_state, updated_at FROM workflow_runs WHERE run_id = ?`, trimmedRunID).Scan(&planState, &runUpdatedAt); err != nil {
-		return gen.RunPlanSnapshot{}, false, err
+		return gen.RunPlanSnapshot{}, state.RunPlanRevision{}, false, err
 	}
 	revisions := state.NewRunPlanRevisionStore(s.db)
 	revision, ok, err := revisions.CurrentRunPlanRevision(ctx, trimmedRunID)
 	if err != nil {
-		return gen.RunPlanSnapshot{}, false, err
+		return gen.RunPlanSnapshot{}, state.RunPlanRevision{}, false, err
 	}
 	if !ok {
 		return gen.RunPlanSnapshot{
@@ -429,7 +530,7 @@ func (s *Server) loadRunPlanSnapshot(ctx context.Context, runID string) (gen.Run
 			CreatedAt:      mustParseRFC3339(runUpdatedAt),
 			Format:         gen.Markdown,
 			Content:        "",
-		}, false, nil
+		}, state.RunPlanRevision{}, false, nil
 	}
 
 	var snapshot gen.RunPlanSnapshot
@@ -449,7 +550,7 @@ func (s *Server) loadRunPlanSnapshot(ctx context.Context, runID string) (gen.Run
 	}
 	snapshot.PlanRevisionId = &revision.PlanRevisionID
 	snapshot.CreatedAt = mustParseRFC3339(revision.CreatedAt)
-	return snapshot, true, nil
+	return snapshot, revision, true, nil
 }
 
 func (s *Server) handleListRuns(w http.ResponseWriter, r *http.Request) {

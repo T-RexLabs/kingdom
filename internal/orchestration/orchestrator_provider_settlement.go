@@ -6,6 +6,9 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
+	"os"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -115,6 +118,19 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	if o == nil || o.executionStore == nil || strings.TrimSpace(result.providerInvocationID) == "" {
 		return fmt.Errorf("provider invocation identity is required for completion settlement")
 	}
+	ctx = context.WithoutCancel(ctx)
+	canonical, alreadySettled, err := o.executionStore.GetProviderCompletionSettlementByInvocation(ctx, result.providerInvocationID)
+	if err != nil {
+		return err
+	}
+	if alreadySettled {
+		if canonical.AttemptID != result.attemptID || canonical.RunID != result.run.RunID || canonical.NodeRunID != result.attempt.NodeRunID {
+			return fmt.Errorf("canonical provider settlement lineage mismatch")
+		}
+		if err := o.prepareReferencedResultFromStore(ctx, &result); err != nil {
+			return err
+		}
+	}
 	if recoveredGuardQuiescence {
 		unlock := o.lockProviderTerminalHandoffFile(result.providerInvocationID)
 		defer unlock()
@@ -135,13 +151,13 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 			}
 		}
 	}
-	if !recoveredGuardQuiescence && strings.TrimSpace(result.terminalHandoffID) == "" {
+	if !alreadySettled && !recoveredGuardQuiescence && strings.TrimSpace(result.terminalHandoffID) == "" {
 		handoffCtx, cancelHandoff := detachedTimeoutContext(ctx, 5*time.Second)
 		err := o.markProviderTerminalHandoffPending(handoffCtx, result)
-		if err == nil {
-			err = o.persistProviderTerminalHandoff(handoffCtx, &result)
-		}
 		cancelHandoff()
+		if err == nil {
+			err = o.persistProviderTerminalHandoff(context.WithoutCancel(ctx), &result)
+		}
 		if err != nil {
 			return err
 		}
@@ -154,7 +170,9 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	structuredPayloadJSON := "{}"
 
 	if strings.TrimSpace(currentOutcome.State) == "success" {
-		result.outputText = strings.TrimSpace(result.providerStreamObservation.CanonicalTerminalText)
+		if result.providerStreamObservation.CanonicalTerminalTextRef == nil {
+			result.outputText = strings.TrimSpace(result.providerStreamObservation.CanonicalTerminalText)
+		}
 		if strings.TrimSpace(result.providerStreamObservation.ProviderSessionID) == "" {
 			currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_unknown_failure", FailureText: "provider terminal response is missing session lineage", EvidenceSource: "stream"}
 		} else if err := providerexecution.ValidateServerResponseSuccess(result.providerStreamObservation); err != nil {
@@ -168,7 +186,12 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	}
 
 	if strings.TrimSpace(currentOutcome.State) == "success" {
-		validated, err := executionoutput.Validate(result.node.NodeID, result.node.NodeClass, result.outputText, "{}")
+		reader, err := providerexecution.OpenTerminalText(ctx, result.providerStreamObservation)
+		if err != nil {
+			return err
+		}
+		validated, err := executionoutput.ValidateReader(result.node.NodeID, result.node.NodeClass, reader, "{}")
+		err = errors.Join(err, reader.Close())
 		if err != nil {
 			reasonCode := "llm_invalid_response"
 			var validationErr *executionoutput.ValidationError
@@ -178,7 +201,6 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 			currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: reasonCode, FailureText: err.Error(), EvidenceSource: firstNonEmptyString(currentOutcome.EvidenceSource, "stream")}
 		} else {
 			settlementOutcome = executionstore.ProviderCompletionOutcomeSuccess
-			result.outputText = validated.CanonicalText
 			structuredPayloadJSON = validated.StructuredPayloadJSON
 			if validated.WorkflowFailureCode != "" {
 				currentOutcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: validated.WorkflowFailureCode, FailureText: validated.WorkflowFailureText, EvidenceSource: firstNonEmptyString(currentOutcome.EvidenceSource, "stream")}
@@ -210,6 +232,11 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 		FailureReasonCode:       failureCode,
 		FailureReasonText:       strings.TrimSpace(currentOutcome.FailureText),
 	}
+	if ref := result.providerStreamObservation.CanonicalTerminalTextRef; ref != nil {
+		settlement.FinalTextRef = ref
+		settlement.FinalTextPreview = result.outputText
+		settlement.FinalText = ""
+	}
 	terminal := executionstore.CommitTerminalRequest{
 		OutboxID:           fmt.Sprintf("outbox_exec_%s", sanitizeFileToken(result.attemptID)),
 		AttemptID:          result.attemptID,
@@ -222,8 +249,11 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 		FailureText:        strings.TrimSpace(currentOutcome.FailureText),
 		ProviderSessionID:  strings.TrimSpace(result.providerStreamObservation.ProviderSessionID),
 	}
-	settleCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-	defer cancel()
+	// Content verification is proportional to durable bytes. A progressing
+	// local settlement must not acquire an implicit content-size ceiling from
+	// the old five-second whole-transaction deadline. SQLite contention retains
+	// its bounded retry policy, and guardian/lease fences remain transactional.
+	settleCtx := context.WithoutCancel(ctx)
 	committed, err := o.transitionService().SettleProviderExecution(settleCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement:               settlement,
 		StreamObservation:        &result.providerStreamObservation,
@@ -257,16 +287,165 @@ func (o *orchestrationLoop) persistProviderTerminalHandoff(ctx context.Context, 
 	if o == nil || o.executionStore == nil || o.fsStore == nil || result == nil {
 		return fmt.Errorf("execution and runtime filesystem stores are required for provider terminal handoff")
 	}
+	observedAt := o.now().UTC().Format(time.RFC3339Nano)
+	unlock := o.lockProviderTerminalHandoffFile(result.providerInvocationID)
+	defer unlock()
+	ctx = context.WithoutCancel(ctx)
+	if existing, found, err := o.executionStore.GetProviderTerminalHandoff(ctx, executionstore.ProviderTerminalHandoffID(result.providerInvocationID)); err != nil {
+		return err
+	} else if found {
+		candidate := *result
+		if err := o.prepareReferencedResultFromStore(ctx, &candidate); err != nil {
+			return err
+		}
+		if err := validateProviderTerminalHandoffPayload(existing, candidate); err != nil {
+			return err
+		}
+		payload, err := marshalExecutionOutboxPayload(candidate)
+		if err != nil {
+			return err
+		}
+		if payload != existing.PayloadJSON {
+			return fmt.Errorf("provider terminal handoff replay conflicts with the execution payload")
+		}
+		if _, err := o.executionStore.PersistProviderTerminalHandoff(ctx, executionstore.PersistProviderTerminalHandoffRequest{
+			ProviderInvocationID: candidate.providerInvocationID, AttemptID: candidate.attemptID, RunID: candidate.run.RunID, NodeRunID: candidate.attempt.NodeRunID,
+			ExpectedLeaseOwner: candidate.expectedLeaseOwner, ExpectedLeaseVersion: candidate.expectedLeaseVersion, StreamObservation: candidate.providerStreamObservation,
+			PayloadJSON: payload, CreatedAt: existing.CreatedAt,
+		}); err != nil {
+			return err
+		}
+		candidate.terminalHandoffID = existing.HandoffID
+		*result = candidate
+		o.releaseProviderResultContent(result)
+		return nil
+	}
+	if staged := result.providerStreamObservation.StagedTerminalContent; staged != nil {
+		if err := staged.Reference.Validate(result.providerInvocationID); err != nil {
+			return err
+		}
+		reader, err := staged.Open(ctx)
+		if err != nil {
+			return err
+		}
+		err = o.fsStore.PersistProviderContentReader(staged.Reference, reader)
+		if err := errors.Join(err, reader.Close()); err != nil {
+			return err
+		}
+	}
+	for _, staged := range result.providerStreamObservation.StagedDiagnosticContent {
+		if err := staged.Reference.Validate(result.providerInvocationID); err != nil {
+			return err
+		}
+		file, err := staged.Open(ctx)
+		if err != nil {
+			return err
+		}
+		err = o.fsStore.PersistProviderContentReader(staged.Reference, file)
+		closeErr := file.Close()
+		if err != nil || closeErr != nil {
+			return errors.Join(err, closeErr)
+		}
+	}
+	stagedRefs := make(map[providerexecution.ContentReference]struct{})
+	texts := []string{strings.TrimSpace(result.providerDiagnosticsJSON)}
+	if result.providerStreamObservation.CanonicalTerminalTextRef == nil {
+		texts = append(texts, strings.TrimSpace(result.outputText), result.providerStreamObservation.CanonicalTerminalText)
+	}
+	for _, text := range texts {
+		if len(text) <= providerContentInlineBytes {
+			continue
+		}
+		ref := providerexecution.ReferenceText(result.providerInvocationID, text)
+		if _, found := stagedRefs[ref]; !found {
+			if err := o.fsStore.PersistProviderContentReader(ref, strings.NewReader(text)); err != nil {
+				return fmt.Errorf("stage provider content: %w", err)
+			}
+			stagedRefs[ref] = struct{}{}
+		}
+		if text == result.providerStreamObservation.CanonicalTerminalText {
+			result.providerStreamObservation.CanonicalTerminalTextRef = &ref
+		}
+	}
+	if ref := result.providerStreamObservation.CanonicalTerminalTextRef; ref != nil {
+		content := *ref
+		result.providerStreamObservation.TerminalTextOpener = func(ctx context.Context) (io.ReadCloser, error) { return o.fsStore.OpenProviderContent(ctx, content) }
+		reader, err := providerexecution.OpenTerminalText(ctx, result.providerStreamObservation)
+		if err != nil {
+			return err
+		}
+		summary, readErr := providerexecution.InspectText(ctx, reader)
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		result.outputText = summary.Preview
+		result.providerStreamObservation.CanonicalTerminalText = ""
+	}
 	payloadJSON, err := marshalExecutionOutboxPayload(*result)
 	if err != nil {
 		return fmt.Errorf("marshal provider terminal handoff payload for attempt %q: %w", result.attemptID, err)
 	}
-	persisted, err := o.persistProviderTerminalHandoffFile(ctx, result, payloadJSON)
+	persisted, err := o.persistProviderTerminalHandoffFile(ctx, result, payloadJSON, observedAt)
 	if err != nil {
 		return err
 	}
 	result.terminalHandoffID = strings.TrimSpace(persisted.Handoff.HandoffID)
+	o.bindCanonicalTerminalReader(result)
+	o.releaseProviderResultContent(result)
 	return nil
+}
+
+func (o *orchestrationLoop) prepareReferencedResultFromStore(ctx context.Context, result *asyncExecutionResult) error {
+	observation := &result.providerStreamObservation
+	if observation.CanonicalTerminalTextRef == nil && len(observation.CanonicalTerminalText) > providerContentInlineBytes {
+		ref := providerexecution.ReferenceText(result.providerInvocationID, observation.CanonicalTerminalText)
+		observation.CanonicalTerminalTextRef = &ref
+	}
+	if ref := observation.CanonicalTerminalTextRef; ref != nil {
+		if err := ref.Validate(result.providerInvocationID); err != nil {
+			return err
+		}
+		o.bindCanonicalTerminalReader(result)
+		reader, err := providerexecution.OpenTerminalText(ctx, *observation)
+		if err != nil {
+			return err
+		}
+		summary, readErr := providerexecution.InspectText(ctx, reader)
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return err
+		}
+		result.outputText = summary.Preview
+		observation.CanonicalTerminalText = ""
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) releaseProviderResultContent(result *asyncExecutionResult) {
+	for _, staged := range result.providerStreamObservation.StagedDiagnosticContent {
+		_ = os.Remove(staged.Path)
+	}
+	result.providerStreamObservation.StagedDiagnosticContent = nil
+	if staged := result.providerStreamObservation.StagedTerminalContent; staged != nil {
+		_ = os.Remove(staged.Path)
+		result.providerStreamObservation.StagedTerminalContent = nil
+	}
+	if release := result.providerStreamObservation.ReleaseContent; release != nil {
+		if err := release(); err != nil {
+			slog.Warn("provider scratch cleanup deferred", "attempt_id", result.attemptID, "error", err)
+		}
+		result.providerStreamObservation.ReleaseContent = nil
+	}
+}
+
+func (o *orchestrationLoop) bindCanonicalTerminalReader(result *asyncExecutionResult) {
+	if ref := result.providerStreamObservation.CanonicalTerminalTextRef; ref != nil {
+		content := *ref
+		result.providerStreamObservation.TerminalTextOpener = func(ctx context.Context) (io.ReadCloser, error) {
+			return o.executionStore.OpenProviderContent(ctx, content)
+		}
+	}
 }
 
 func (o *orchestrationLoop) hydrateExecutionResultFromCanonicalSettlement(ctx context.Context, attempt executionstore.AttemptExecution, result *asyncExecutionResult) (bool, error) {
@@ -299,6 +478,12 @@ func (o *orchestrationLoop) hydrateExecutionResultFromCanonicalSettlement(ctx co
 	if found {
 		result.providerInvocationID = strings.TrimSpace(settlement.ProviderInvocationID)
 		result.outputText = strings.TrimSpace(settlement.FinalText)
+		if settlement.FinalTextRef != nil {
+			result.outputText = settlement.FinalTextPreview
+			result.providerStreamObservation.CanonicalTerminalTextRef = settlement.FinalTextRef
+			result.providerStreamObservation.CanonicalTerminalText = ""
+			o.bindCanonicalTerminalReader(result)
+		}
 		result.providerDiagnosticsJSON = firstNonEmptyString(strings.TrimSpace(settlement.ProviderDiagnosticsJSON), strings.TrimSpace(result.providerDiagnosticsJSON), "{}")
 	}
 

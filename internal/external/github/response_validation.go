@@ -15,11 +15,6 @@ import (
 	"kingdom/internal/state"
 )
 
-const (
-	maxIssueTitleBytes = state.MaxExternalIssueTitleBytes
-	maxIssueBodyBytes  = state.MaxExternalIssueBodyBytes
-)
-
 type githubRepository struct {
 	ID       int64  `json:"id"`
 	FullName string `json:"full_name"`
@@ -108,14 +103,14 @@ func normalizeIssue(issue githubIssue, expectedRepository string, expectedNumber
 	if issue.State != "open" && issue.State != "closed" || issue.Comments < 0 {
 		return external.IssueSummary{}, malformedResponse()
 	}
-	if strings.TrimSpace(issue.Title) == "" || len(issue.Title) > maxIssueTitleBytes || !validText(issue.Title, false) {
+	if strings.TrimSpace(issue.Title) == "" || !validText(issue.Title, false) {
 		return external.IssueSummary{}, malformedResponse()
 	}
 	body := ""
 	if issue.Body != nil {
 		body = *issue.Body
 	}
-	if len(body) > maxIssueBodyBytes || !validText(body, true) {
+	if !validText(body, true) {
 		return external.IssueSummary{}, malformedResponse()
 	}
 	createdAt, updatedAt, err := validateTimestamps(issue.CreatedAt, issue.UpdatedAt)

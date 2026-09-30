@@ -8,22 +8,41 @@ import (
 )
 
 func (s *PlanningStore) CreateContextSnapshot(ctx context.Context, req CreatePlanningContextSnapshotRequest) (PlanningContextSnapshot, error) {
-	return insertPlanningContextSnapshot(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningContextSnapshot{}, err
+	}
+	defer tx.Rollback()
+	snapshot, err := insertPlanningContextSnapshot(ctx, tx, req)
+	if err != nil {
+		return PlanningContextSnapshot{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningContextSnapshot{}, &CommitOutcomeUnknownError{Operation: "create planning context snapshot", ResourceID: snapshot.PlanningContextSnapshotID, Cause: err}
+	}
+	return snapshot, nil
 }
 
-// insertPlanningContextSnapshot writes one snapshot row through any executor so
-// session creation can capture the session's first snapshot inside the same
-// transaction that creates the session itself.
+// insertPlanningContextSnapshot publishes immutable entries and their parent
+// inside the caller's transaction, including the initial session transaction.
 func insertPlanningContextSnapshot(ctx context.Context, exec sqlExecutor, req CreatePlanningContextSnapshotRequest) (PlanningContextSnapshot, error) {
 	if err := validatePlanningContextSnapshotCreate(req); err != nil {
+		return PlanningContextSnapshot{}, err
+	}
+	req.PlanningContextSnapshotID = strings.TrimSpace(req.PlanningContextSnapshotID)
+	tx, ok := exec.(*sql.Tx)
+	if !ok {
+		return PlanningContextSnapshot{}, fmt.Errorf("planning context capture requires a transaction")
+	}
+	if err := insertPlanningContextEntries(ctx, tx, req); err != nil {
 		return PlanningContextSnapshot{}, err
 	}
 	row := PlanningContextSnapshot{
 		PlanningContextSnapshotID: strings.TrimSpace(req.PlanningContextSnapshotID),
 		PlanningSessionID:         strings.TrimSpace(req.PlanningSessionID),
 		SummaryMarkdown:           req.SummaryMarkdown,
-		IncludedFilesJSON:         strings.TrimSpace(req.IncludedFilesJSON),
-		ExcludedFilesJSON:         strings.TrimSpace(req.ExcludedFilesJSON),
+		IncludedFilesJSON:         "[]",
+		ExcludedFilesJSON:         "[]",
 		CreatedAt:                 strings.TrimSpace(req.CreatedAt),
 	}
 	_, err := exec.ExecContext(ctx,

@@ -498,7 +498,7 @@ func TestReconcilerDoesNotUseNodeAttemptOrdinalAsRetryBudget(t *testing.T) {
 	}
 }
 
-func TestReconcilerStaleRetryDoesNotCreateSixtyFirstRunAttempt(t *testing.T) {
+func TestReconcilerStaleRetryCreatesSixtyFirstRunAttempt(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -509,7 +509,7 @@ func TestReconcilerStaleRetryDoesNotCreateSixtyFirstRunAttempt(t *testing.T) {
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T11:58:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	for i := 0; i < DefaultMaxAttemptsPerRun-1; i++ {
+	for i := 0; i < 59; i++ {
 		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-stale-%d', 'run_1', 'budget-stale-node-%d', 1, 1, 'failed', 'king', 'agent_king', 1, '2026-03-01T11:58:00Z', '2026-03-01T11:59:00Z')`, i, i))
 	}
 
@@ -518,7 +518,7 @@ func TestReconcilerStaleRetryDoesNotCreateSixtyFirstRunAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile stale budget boundary: %v", err)
 	}
-	if result.AttemptsReassigned != 0 || result.AttemptsFailed != 1 {
+	if result.AttemptsReassigned != 1 || result.AttemptsFailed != 0 {
 		t.Fatalf("stale budget recovery result=%+v", result)
 	}
 	var attempts, pendingRetries int
@@ -535,7 +535,7 @@ func TestReconcilerStaleRetryDoesNotCreateSixtyFirstRunAttempt(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE decision = 'retry' AND dispatch_state = 'pending'`).Scan(&pendingRetries); err != nil {
 		t.Fatal(err)
 	}
-	if attempts != DefaultMaxAttemptsPerRun || decision != string(RetryDecisionFailFast) || reason != "budget_exceeded" || runStatus != "failed" || pendingRetries != 0 {
+	if attempts != 61 || decision != string(RetryDecisionRetry) || reason != "agent_unresponsive" || runStatus != "running" || pendingRetries != 1 {
 		t.Fatalf("stale budget outcome attempts=%d decision=%q reason=%q run=%q pending=%d", attempts, decision, reason, runStatus, pendingRetries)
 	}
 }

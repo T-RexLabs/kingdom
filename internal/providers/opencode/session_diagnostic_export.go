@@ -3,11 +3,15 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/processguardian"
 )
 
@@ -16,8 +20,9 @@ type sessionDiagnosticExporter interface {
 }
 
 type sessionDiagnosticExportResult struct {
-	Stdout []byte
+	Stdout io.ReadSeeker
 	Stderr string
+	Close  func() error
 }
 
 type sessionDiagnosticExportMode string
@@ -33,6 +38,8 @@ type sessionDiagnosticExportRequest struct {
 	ConfigDir         string
 	DatabasePath      string
 	Mode              sessionDiagnosticExportMode
+	InvocationID      string
+	DiagnosticSink    func(context.Context, providerexecution.StagedContent) error
 }
 
 type sessionActivityScope struct {
@@ -81,16 +88,47 @@ func (e cliSessionDiagnosticExporter) Export(ctx context.Context, req sessionDia
 	}
 	stdout, stderr, _, err := runBoundedGuardedCommand(diagnosticCtx, runner, processguardian.Command{Path: e.binaryPath, Args: args, Dir: strings.TrimSpace(req.WorkDir), Env: opencodeProcessEnvironment(ConfigDirEnvironment(req.ConfigDir), DatabasePathEnvironment(req.DatabasePath))}, sessionDiagnosticExportCancelReserve)
 	result := sessionDiagnosticExportResult{
-		Stdout: append([]byte(nil), stdout...),
-		Stderr: strings.TrimSpace(string(stderr)),
+		Stderr: strings.TrimSpace(string(stderr.Preview)),
+	}
+	var file *os.File
+	result.Close = func() error {
+		var err error
+		if file != nil {
+			err = file.Close()
+			file = nil
+		}
+		for _, path := range []string{stdout.Path, stderr.Path} {
+			if path != "" {
+				if removeErr := os.Remove(path); removeErr != nil && !os.IsNotExist(removeErr) {
+					err = errors.Join(err, removeErr)
+				}
+			}
+		}
+		return err
+	}
+	if req.DiagnosticSink != nil {
+		for _, output := range []capturedOutput{stdout, stderr} {
+			if output.Path == "" {
+				continue
+			}
+			staged := providerexecution.StagedContent{Reference: providerexecution.ContentReference{InvocationID: req.InvocationID, SHA256: output.SHA256, SizeBytes: output.Size}, Path: output.Path}
+			if sinkErr := req.DiagnosticSink(ctx, staged); sinkErr != nil {
+				return result, errors.Join(err, sinkErr)
+			}
+		}
 	}
 	if err != nil {
-		diagnostic := firstNonEmpty(result.Stderr, strings.TrimSpace(string(result.Stdout)))
+		diagnostic := firstNonEmpty(result.Stderr, strings.TrimSpace(string(stdout.Preview)))
 		if diagnostic != "" {
-			return result, fmt.Errorf("opencode export %q: %w: %s", providerSessionID, err, diagnostic)
+			return result, fmt.Errorf("opencode export %q: %w: %s (stdout %s, stderr %s)", providerSessionID, err, diagnostic, stdout.Path, stderr.Path)
 		}
 		return result, fmt.Errorf("opencode export %q: %w", providerSessionID, err)
 	}
+	file, err = os.Open(stdout.Path)
+	if err != nil {
+		return result, err
+	}
+	result.Stdout = file
 	return result, nil
 }
 

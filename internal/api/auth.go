@@ -284,26 +284,26 @@ func (s *Server) handleCreateAuthSession(w http.ResponseWriter, r *http.Request)
 		s.writeBadRequest(w, "browser session request does not accept query parameters")
 		return
 	}
-	if r.Body != nil {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			var maxBytesError *http.MaxBytesError
-			if errors.As(err, &maxBytesError) {
-				writeRequestBodyTooLarge(w)
-				return
-			}
-			s.writeBadRequest(w, "read browser session request body")
-			return
-		}
-		if len(body) != 0 {
-			s.writeBadRequest(w, "browser session request body must be empty")
-			return
-		}
-	}
 	origin, err := requireLocalBrowserBootstrap(r)
 	if err != nil {
 		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "browser sessions require a direct same-origin loopback request", "api.auth.session", nil)
 		return
+	}
+	if r.Body != nil {
+		if r.ContentLength > 0 {
+			s.writeBadRequest(w, "browser session request body must be empty")
+			return
+		}
+		var probe [1]byte
+		n, err := io.ReadFull(r.Body, probe[:])
+		if err != nil && err != io.EOF {
+			s.writeBadRequest(w, "read browser session request body")
+			return
+		}
+		if n != 0 {
+			s.writeBadRequest(w, "browser session request body must be empty")
+			return
+		}
 	}
 
 	cookieName := browserSessionCookieName(origin, s.basePath)

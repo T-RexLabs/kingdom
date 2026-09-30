@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +18,54 @@ import (
 
 	gen "kingdom/internal/apigen"
 )
+
+func TestStreamingJSONValidationPreservesTypedConstraints(t *testing.T) {
+	var schema openapi3.Schema
+	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"required":["text","count"],"properties":{"text":{"type":"string","minLength":1,"maxLength":3},"count":{"type":"integer","minimum":1},"mode":{"type":"string","enum":["safe"]},"pattern":{"type":"string","pattern":"^a+$"},"unique":{"type":"array","uniqueItems":true,"items":{"type":"string"}}}}`), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		body  string
+		valid bool
+	}{
+		{`{"text":"abc","count":1,"mode":"safe","pattern":"aaa","unique":["a","b"]}`, true},
+		{`{"text":"\ud83d\ude00","count":2}`, true},
+		{`{"text":"é中","count":1}`, true},
+		{`{"text":"�","count":1}`, true},
+		{`{"text":"abcd","count":1}`, false},
+		{`{"text":"","count":1}`, false},
+		{`{"text":1,"count":1}`, false},
+		{`{"text":"a","count":1.2}`, false},
+		{`{"text":"a","count":0}`, false},
+		{`{"text":"a","count":1,"mode":"unsafe"}`, false},
+		{`{"text":"a","count":1,"pattern":"b"}`, false},
+		{`{"text":"a","count":1,"unique":["a","a"]}`, false},
+		{`{"text":"a","count":1,"unknown":true}`, false},
+		{`{"text":"a"}`, false},
+		{`{"text":"a","text":"b","count":1}`, false},
+		{`{"text":"\uZZZZ","count":1}`, false},
+		{`{"text":"\q","count":1}`, false},
+		{`{"text":"a","count":1,}`, false},
+		{`{"text":"a","count":1} {}`, false},
+		{`{"text":"a","count":1e}`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			parser := &schemaJSONReader{reader: bufio.NewReader(strings.NewReader(tc.body))}
+			value, err := parser.value(&schema, true)
+			if err == nil {
+				if _, e := parser.nonspace(); e != io.EOF {
+					err = fmt.Errorf("trailing JSON")
+				}
+			}
+			if err == nil {
+				err = schema.VisitJSON(value, openapi3.VisitAsRequest())
+			}
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t error=%v", tc.valid, err)
+			}
+		})
+	}
+}
 
 func TestNewOpenAPIRequestValidator(t *testing.T) {
 	t.Parallel()
@@ -266,64 +317,27 @@ func TestOpenAPISecuredOperationsDeclareCanonicalValidationAndAuthErrors(t *test
 	}
 }
 
-func TestOpenAPISpecDocumentsRequestBodyLimits(t *testing.T) {
+func TestOpenAPISpecKeepsTypedDecreeBody(t *testing.T) {
 	t.Parallel()
 
 	swagger, err := gen.GetSwagger()
 	if err != nil {
 		t.Fatalf("load swagger: %v", err)
 	}
-	if !strings.Contains(swagger.Info.Description, "1 MiB") {
-		t.Fatalf("expected API description to document the default 1 MiB body limit, got %q", swagger.Info.Description)
-	}
-
 	path := swagger.Paths.Find("/decrees")
 	if path == nil || path.Post == nil {
 		t.Fatal("expected POST /decrees operation")
 	}
 	operation := path.Post
-	if !strings.Contains(operation.Description, "16 MiB") {
-		t.Fatalf("expected POST /decrees to document its 16 MiB body limit, got %q", operation.Description)
+	if operation.RequestBody == nil || operation.RequestBody.Value == nil || !operation.RequestBody.Value.Required {
+		t.Fatal("decree request body must remain required")
 	}
-	if operation.RequestBody == nil || operation.RequestBody.Value == nil || !strings.Contains(operation.RequestBody.Value.Description, "16 MiB") {
-		t.Fatalf("expected POST /decrees request body to document its 16 MiB limit, got %#v", operation.RequestBody)
+	content := operation.RequestBody.Value.Content.Get("application/json")
+	if content == nil || content.Schema == nil || content.Schema.Value == nil {
+		t.Fatal("decree JSON schema is missing")
 	}
-	if operation.Responses == nil {
-		t.Fatal("expected POST /decrees to declare its 413 request-body limit response")
-	}
-	tooLargeRef := operation.Responses.Status(http.StatusRequestEntityTooLarge)
-	if tooLargeRef == nil || tooLargeRef.Ref != "#/components/responses/DecreeRequestBodyTooLargeError" {
-		t.Fatalf("POST /decrees 413 response ref=%#v, want DecreeRequestBodyTooLargeError", tooLargeRef)
-	}
-	tooLarge := swagger.Components.Responses["DecreeRequestBodyTooLargeError"]
-	if tooLarge == nil || tooLarge.Value == nil || tooLarge.Value.Description == nil || !strings.Contains(*tooLarge.Value.Description, "non-retryable") {
-		t.Fatalf("expected 413 response to describe its non-retryable policy error, got %#v", tooLarge)
-	}
-	content := tooLarge.Value.Content.Get("application/json")
-	if content == nil || content.Schema == nil || content.Schema.Ref != "#/components/schemas/ErrorEnvelope" {
-		t.Fatalf("expected 413 response to use ErrorEnvelope, got %#v", content)
-	}
-	example, ok := content.Example.(map[string]interface{})
-	if !ok {
-		t.Fatalf("413 response example has type %T, want object", content.Example)
-	}
-	errorExample, ok := example["error"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("413 response error example has type %T, want object", example["error"])
-	}
-	if errorExample["code"] != "policy_violation" || errorExample["retryable"] != false || errorExample["category"] != "core" || errorExample["correlation_id"] != "api.request_body_limit" {
-		t.Fatalf("413 response example does not match the canonical body-limit error: %#v", errorExample)
-	}
-	if !strings.Contains(fmt.Sprint(errorExample["message"]), "16 MiB") {
-		t.Fatalf("413 response example message=%v, want decree limit", errorExample["message"])
-	}
-	details, ok := errorExample["details"].(map[string]interface{})
-	if !ok {
-		t.Fatalf("413 response error details has type %T, want object", errorExample["details"])
-	}
-	limitBytes, validLimitBytes := details["limit_bytes"].(float64)
-	if !validLimitBytes || limitBytes != float64(maxDecreeCreateRequestBodyBytes) {
-		t.Fatalf("413 response example details=%#v, want limit_bytes=%d", errorExample["details"], maxDecreeCreateRequestBodyBytes)
+	if err := content.Schema.Value.VisitJSON(map[string]any{"decree_title": "test", "decree_text": 42}); err == nil {
+		t.Fatal("decree text must remain a typed string")
 	}
 }
 

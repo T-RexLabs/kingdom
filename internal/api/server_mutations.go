@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -22,10 +23,28 @@ import (
 
 func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 	var req gen.CreateDecreeRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/decree_text")
+	if err != nil {
+		var storageErr *os.PathError
+		if errors.As(err, &storageErr) {
+			s.writeInternalError(w, "stage decree text failed")
+			return
+		}
 		s.writeBadRequest(w, err.Error())
 		return
 	}
+	defer texts.Close()
+	text := texts["/decree_text"]
+	if text == nil {
+		s.writeBadRequest(w, "decree_text is required")
+		return
+	}
+	reader, err := text.Open()
+	if err != nil {
+		s.writeInternalError(w, "open decree text failed")
+		return
+	}
+	defer reader.Close()
 
 	createdAt := s.now().UTC().Format(time.RFC3339)
 	decreeID := s.idGenerator("decree")
@@ -48,9 +67,10 @@ func (s *Server) handleCreateDecree(w http.ResponseWriter, r *http.Request) {
 			PlanningDraftID:   req.PlanningLineage.PlanningDraftId,
 		}
 	}
-	err := s.externalStore.CreateDecree(r.Context(), state.CreateDecreeRequest{
-		DecreeID: decreeID, Title: req.DecreeTitle, Text: req.DecreeText,
-		Metadata: metadata, CreatedAt: createdAt, DirectSnapshotID: directSnapshotID,
+	err = s.externalStore.CreateDecree(r.Context(), state.CreateDecreeRequest{
+		DecreeID: decreeID, Title: req.DecreeTitle,
+		TextContent: &state.RequestContentSource{Reader: reader, SHA256: text.SHA256, SizeBytes: text.SizeBytes},
+		Metadata:    metadata, CreatedAt: createdAt, DirectSnapshotID: directSnapshotID,
 		PlanningLineage: planningLineage, NewLinkID: func() string { return s.idGenerator("external_link") },
 		ActorID: authenticatedActorID(r.Context()),
 	})

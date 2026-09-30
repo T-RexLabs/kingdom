@@ -53,7 +53,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	switch operationType {
 	case state.PlanningOperationTypeReply:
 		trimmedReply := strings.TrimSpace(input.ReplyMarkdown)
-		if trimmedReply == "" {
+		if trimmedReply == "" && (input.ReplySource == nil || input.ReplySource.SizeBytes <= 0) {
 			return CreateOperationResult{}, fmt.Errorf("planning reply content is required")
 		}
 		// The new user message attaches under an explicit parent (editing an
@@ -65,7 +65,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			parentMessageID = strings.TrimSpace(*input.ParentMessageID)
 		}
 		if parentMessageID != "" {
-			if _, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, parentMessageID); err != nil {
+			if _, err := s.deps.store.GetMessageMetadataInSession(ctx, planningSessionID, parentMessageID); err != nil {
 				if errors.Is(err, state.ErrPlanningMessageNotFound) {
 					return CreateOperationResult{}, ErrMessageNotFound
 				}
@@ -85,6 +85,13 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			// edit) starts a new branch, so the provider session must restart.
 			ForceNewSession: parentMessageID != activeLeaf,
 		}
+		if input.ReplySource != nil {
+			request.ContentMarkdown = ""
+			request.ContentReferenceID = state.PlanningMessageContentID(request.UserMessageID)
+		}
+		if input.AnswerTextSource != nil {
+			request.AnswerTextReferenceID = state.PlanningAnswerTextContentID(request.UserMessageID)
+		}
 	case state.PlanningOperationTypeFormalize:
 		request = operationRequest{
 			DraftID:        s.deps.nextID("planning_draft"),
@@ -95,7 +102,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		if targetID == "" {
 			return CreateOperationResult{}, ErrMessageNotFound
 		}
-		target, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, targetID)
+		target, err := s.deps.store.GetMessageMetadataInSession(ctx, planningSessionID, targetID)
 		if err != nil {
 			if errors.Is(err, state.ErrPlanningMessageNotFound) {
 				return CreateOperationResult{}, ErrMessageNotFound
@@ -143,6 +150,8 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		conversationState := state.PlanningSessionConversationStateProcessing
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(string(request.AnswerPayload)), `{}`)
 		userMessage := state.AppendPlanningMessageRequest{
+			ContentSource:       input.ReplySource,
+			AnswerTextSource:    input.AnswerTextSource,
 			PlanningMessageID:   request.UserMessageID,
 			PlanningSessionID:   planningSessionID,
 			ParentMessageID:     request.ParentMessageID,
@@ -252,21 +261,27 @@ func reconcilePlanningOperationBundleCommit(
 	}
 
 	if initialEvent != nil {
-		events, eventErr := deps.store.ListOperationEventsAfterSeqPage(readbackCtx, operationID, 0, 1)
+		events, eventErr := deps.store.ListOperationEventMetadataAfterSeqPage(readbackCtx, operationID, 0, 1)
 		if eventErr != nil {
 			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("read back planner operation event: %w", eventErr))
 		}
 		if len(events) != 1 || !planningOperationEventMatchesCreate(events[0], *initialEvent) {
 			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("durable planner operation event does not match the attempted bundle"))
 		}
+		if err := deps.store.VerifyPlanningEventTextRefs(readbackCtx, initialEvent.EventID, initialEvent.TextRefs); err != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, err)
+		}
 	}
 	if userMessage != nil {
-		message, messageErr := deps.store.GetMessageInSession(readbackCtx, userMessage.PlanningSessionID, userMessage.PlanningMessageID)
+		message, messageErr := deps.store.GetMessageMetadataInSession(readbackCtx, userMessage.PlanningSessionID, userMessage.PlanningMessageID)
 		if messageErr != nil {
 			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("read back planner reply message: %w", messageErr))
 		}
 		if !planningMessageMatchesCreate(message, *userMessage) {
 			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("durable planner reply message does not match the attempted bundle"))
+		}
+		if err := deps.store.VerifyMessageText(readbackCtx, message, *userMessage); err != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, err)
 		}
 	}
 	return operation, true, nil
@@ -374,6 +389,9 @@ func (s *operationService) GetOperation(ctx context.Context, operationID string)
 	if err != nil || !ok {
 		return operation, ok, nil, err
 	}
+	if err := s.deps.store.HydrateOperationOutput(ctx, &operation); err != nil {
+		return state.PlanningOperation{}, false, nil, err
+	}
 	request := map[string]any{}
 	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)
 	if strings.TrimSpace(fmt.Sprint(request["type"])) == "" {
@@ -386,6 +404,9 @@ func (s *operationService) GetOperationByAcpRunID(ctx context.Context, acpRunID 
 	operation, ok, err := s.deps.store.GetOperationByAcpRunID(ctx, acpRunID)
 	if err != nil || !ok {
 		return operation, ok, nil, err
+	}
+	if err := s.deps.store.HydrateOperationOutput(ctx, &operation); err != nil {
+		return state.PlanningOperation{}, false, nil, err
 	}
 	request := map[string]any{}
 	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)

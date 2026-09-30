@@ -517,7 +517,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read bounded immutable snapshot comments with opaque pagination. */
+        /** Read a page of complete immutable snapshot comments with opaque pagination. */
         get: operations["listExternalSourceSnapshotComments"];
         put?: never;
         post?: never;
@@ -610,10 +610,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /**
-         * Create a decree entry.
-         * @description The request body is limited to 16 MiB. Requests above this limit receive HTTP 413 with the canonical error envelope.
-         */
+        /** Create a decree entry. */
         post: operations["createDecree"];
         delete?: never;
         options?: never;
@@ -650,6 +647,23 @@ export interface paths {
         put?: never;
         /** Create a planning session with the first question ready immediately. */
         post: operations["createPlanningSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/planning-sessions/{id}/context/{snapshotId}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List immutable context entries in capture order. */
+        get: operations["listPlanningContextEntries"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1924,7 +1938,7 @@ export interface components {
         };
         ExternalImportProfile: {
             /**
-             * @description The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained.
+             * @description The comment count is always captured. When enabled, comment bodies are retained in full.
              * @default false
              */
             include_comments: boolean;
@@ -1941,10 +1955,13 @@ export interface components {
             updated_at: string;
             original_bytes: number;
             retained_bytes: number;
-            /** @enum {string} */
+            /**
+             * @description Present only on historical snapshots captured with comment truncation. New captures retain complete comment bodies.
+             * @enum {string}
+             */
             truncation_reason?: "comment_byte_limit" | "aggregate_byte_limit";
         };
-        /** @description Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors. */
+        /** @description Transient normalized preview with complete selected comment bodies and fetch metadata. Responses never include credentials, tokens, or provider errors. */
         IssuePreview: {
             native_id: string;
             repository_id: string;
@@ -2285,6 +2302,7 @@ export interface components {
             git_worktree_reason?: string;
         };
         PlanningSessionListResponse: {
+            next_cursor?: string;
             items: components["schemas"]["PlanningSessionSummary"][];
         };
         StructuredQuestionOption: {
@@ -2361,12 +2379,15 @@ export interface components {
             reason?: string;
             size_bytes?: number;
         };
+        PlanningContextEntriesResponse: {
+            items: components["schemas"]["PlanningContextFileEntry"][];
+            next_cursor?: string;
+        };
+        /** @description Snapshot summary. Read file entries through the paginated context entries route. */
         PlanningContextSnapshot: {
             planning_context_snapshot_id: string;
             planning_session_id: string;
             summary_markdown: string;
-            included_files: components["schemas"]["PlanningContextFileEntry"][];
-            excluded_files: components["schemas"]["PlanningContextFileEntry"][];
             /** Format: date-time */
             created_at: string;
         };
@@ -2674,6 +2695,7 @@ export interface components {
             created_at: string;
         };
         RunPlanReviewsResponse: {
+            next_cursor?: string;
             run_id: string;
             items: components["schemas"]["RunPlanReview"][];
         };
@@ -2721,6 +2743,7 @@ export interface components {
             format: "markdown" | "plain_text" | "json";
         };
         RunMailboxMessagesResponse: {
+            next_cursor?: string;
             run_id: string;
             items: components["schemas"]["RunMailboxMessageSummary"][];
         };
@@ -3105,30 +3128,6 @@ export interface components {
                  *         "category": "core",
                  *         "details": {},
                  *         "correlation_id": "api.internal",
-                 *         "occurred_at": "2026-04-30T12:00:00Z"
-                 *       }
-                 *     }
-                 */
-                "application/json": components["schemas"]["ErrorEnvelope"];
-            };
-        };
-        /** @description Canonical non-retryable policy error response for a decree request body exceeding the 16 MiB limit. */
-        DecreeRequestBodyTooLargeError: {
-            headers: {
-                [name: string]: unknown;
-            };
-            content: {
-                /**
-                 * @example {
-                 *       "error": {
-                 *         "code": "policy_violation",
-                 *         "message": "decree request body exceeds the 16 MiB limit",
-                 *         "retryable": false,
-                 *         "category": "core",
-                 *         "details": {
-                 *           "limit_bytes": 16777216
-                 *         },
-                 *         "correlation_id": "api.request_body_limit",
                  *         "occurred_at": "2026-04-30T12:00:00Z"
                  *       }
                  *     }
@@ -4506,7 +4505,6 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        /** @description Maximum request body size is 16 MiB, including any attached external issue text. */
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateDecreeRequest"];
@@ -4526,7 +4524,6 @@ export interface operations {
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
             409: components["responses"]["ConflictError"];
-            413: components["responses"]["DecreeRequestBodyTooLargeError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4560,6 +4557,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -4611,6 +4609,37 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listPlanningContextEntries: {
+        parameters: {
+            query?: {
+                kind?: "included" | "excluded";
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["PlanningSessionId"];
+                snapshotId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Context entry page scoped to the session, snapshot, and entry kind. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningContextEntriesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -5418,7 +5447,10 @@ export interface operations {
     };
     listRunPlanReviews: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["RunId"];
@@ -5715,6 +5747,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
                 thread_id?: string;
                 to_agent_id?: string;
                 unread_only?: boolean;

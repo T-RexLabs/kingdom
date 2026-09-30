@@ -1493,7 +1493,9 @@ func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := adapter.Execute(ctx, ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_tool_calls_pre_resolved",
 		AttemptID:      "attempt_tool_calls_pre_resolved",
@@ -1513,8 +1515,8 @@ func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations != 3 {
-		t.Fatalf("expected only bounded live-stream continuations, got %d args=%q", invocations, string(argsLogRaw))
+	if invocations <= 3 {
+		t.Fatalf("expected continuations until cancellation, got %d", invocations)
 	}
 }
 
@@ -1760,13 +1762,12 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 	}
 }
 
-func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
+func TestSessionAdapterContinuationEndsOnCancellation(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		MaxContinuationTurns:    2,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -1775,7 +1776,9 @@ func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, err = adapter.Execute(ctx, ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_tool_calls_boundary_max_turns",
 		AttemptID:      "attempt_tool_calls_boundary_max_turns",
@@ -1785,8 +1788,8 @@ func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
 		Prompt:         "emit tool-calls finish until turns exhausted",
 		OccurredAt:     "2026-03-02T10:20:00Z",
 	})
-	if err == nil || !strings.Contains(err.Error(), "incomplete terminal state") {
-		t.Fatalf("expected incomplete terminal state error, got %v", err)
+	if err == nil {
+		t.Fatal("expected timeout")
 	}
 
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
@@ -1794,8 +1797,8 @@ func TestSessionAdapterEnforcesMaxContinuationTurnsBoundary(t *testing.T) {
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations != 2 {
-		t.Fatalf("expected exactly 2 opencode invocations for max turns boundary, got %d args=%q", invocations, string(argsLogRaw))
+	if invocations <= 3 {
+		t.Fatalf("expected more than 3 continuations, got %d", invocations)
 	}
 }
 
@@ -1813,7 +1816,9 @@ func TestSessionAdapterRejectsToolCallsOnlyFinishAsIncomplete(t *testing.T) {
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_, err = adapter.Execute(ctx, ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_tool_calls_only",
 		AttemptID:      "attempt_tool_calls_only",
@@ -1823,8 +1828,8 @@ func TestSessionAdapterRejectsToolCallsOnlyFinishAsIncomplete(t *testing.T) {
 		Prompt:         "emit tool-calls finish and exit",
 		OccurredAt:     "2026-03-02T10:20:00Z",
 	})
-	if err == nil || !strings.Contains(err.Error(), "incomplete terminal state") {
-		t.Fatalf("expected incomplete terminal state error, got %v", err)
+	if err == nil {
+		t.Fatal("expected timeout without terminal response")
 	}
 
 	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_tool_calls_only"), AttemptEventTypeFailed)
@@ -2196,7 +2201,6 @@ func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport
 		BinaryPath:              binaryPath,
 		FirstEventTimeout:       2 * time.Second,
 		StreamInactivityTimeout: 2 * time.Second,
-		MaxContinuationTurns:    1,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
@@ -2206,7 +2210,9 @@ func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_TOKENS", `{"input":11,"output":7,"total":18}`)
 
-	res, err := adapter.Execute(context.Background(), ExecuteRequest{
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	res, err := adapter.Execute(ctx, ExecuteRequest{
 		CompletionMode: CompletionModeServerResponse,
 		SessionID:      "session_logical_only",
 		AttemptID:      "attempt_incomplete_tool_metadata",
@@ -2219,24 +2225,17 @@ func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport
 	if err == nil {
 		t.Fatal("expected incomplete terminal state error")
 	}
-	var incompleteErr *IncompleteTerminalStateError
-	if !errors.As(err, &incompleteErr) {
-		t.Fatalf("expected IncompleteTerminalStateError, got %v", err)
-	}
-	if incompleteErr.Reason != "tool-calls" {
-		t.Fatalf("expected incomplete reason tool-calls, got %q", incompleteErr.Reason)
-	}
 	if res.ProviderSessionID != "ses_fake_created" {
 		t.Fatalf("expected provider session id ses_fake_created, got %q", res.ProviderSessionID)
 	}
-	if res.OutputText != "starting tool work" {
+	if !strings.HasPrefix(res.OutputText, "starting tool work") {
 		t.Fatalf("expected partial output to be preserved, got %q", res.OutputText)
 	}
-	if res.Tokens.InputTokens != 11 || res.Tokens.OutputTokens != 7 || res.Tokens.TotalTokens != 18 {
+	if res.Tokens.InputTokens < 11 || res.Tokens.OutputTokens < 7 || res.Tokens.TotalTokens < 18 {
 		t.Fatalf("expected observed tokens to be preserved, got %#v", res.Tokens)
 	}
-	if res.Outcome.ReasonCode != "provider_incomplete_turn" {
-		t.Fatalf("expected provider_incomplete_turn outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "timeout" {
+		t.Fatalf("expected timeout outcome, got %#v", res.Outcome)
 	}
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
 	if readErr != nil {

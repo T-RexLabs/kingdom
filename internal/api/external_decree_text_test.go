@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,6 +9,14 @@ import (
 
 	"kingdom/internal/state"
 )
+
+func renderDecreeText(snapshot state.ExternalSourceSnapshot, comments []state.ExternalComment) string {
+	var out strings.Builder
+	if err := writeDecreeText(context.Background(), &out, snapshot, state.ExternalCommentList(comments)); err != nil {
+		panic(err)
+	}
+	return out.String()
+}
 
 func TestRenderDecreeTextFramesIssueBodyWhenCommentsWereNotImported(t *testing.T) {
 	t.Parallel()
@@ -67,12 +76,12 @@ func TestRenderDecreeTextCarriesImportedComments(t *testing.T) {
 	}
 }
 
-func TestMaximumRetainedExternalDecreeFitsRouteRequestAllowance(t *testing.T) {
-	issueBody := strings.Repeat("<\n", state.MaxExternalIssueBodyBytes/2)
+func TestLargeExternalDecreePreservesCompleteJSONContent(t *testing.T) {
+	issueBody := strings.Repeat("<\n", 1<<20)
 	snapshot := state.ExternalSourceSnapshot{
 		SnapshotID: "snapshot_max_external_decree",
 		Issue: state.NormalizedExternalIssue{
-			Title:        strings.Repeat("t", state.MaxExternalIssueTitleBytes),
+			Title:        strings.Repeat("t", 2048),
 			Body:         issueBody,
 			State:        "open",
 			Repository:   "owner/repo",
@@ -83,8 +92,8 @@ func TestMaximumRetainedExternalDecreeFitsRouteRequestAllowance(t *testing.T) {
 		},
 		Profile: state.ExternalImportProfile{IncludeComments: true},
 	}
-	comments := make([]state.ExternalComment, state.MaxExternalComments)
-	commentBody := strings.Repeat("<\n", state.MaxExternalCommentsBytes/(state.MaxExternalComments*2))
+	comments := make([]state.ExternalComment, 205)
+	commentBody := strings.Repeat("<\n", 20<<10)
 	for i := range comments {
 		comments[i] = state.ExternalComment{
 			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
@@ -104,8 +113,9 @@ func TestMaximumRetainedExternalDecreeFitsRouteRequestAllowance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode maximum retained external decree: %v", err)
 	}
-	if int64(len(body)) > maxDecreeCreateRequestBodyBytes {
-		t.Fatalf("maximum retained external decree request bytes=%d, route allowance=%d", len(body), maxDecreeCreateRequestBodyBytes)
+	var decoded map[string]string
+	if err := json.Unmarshal(body, &decoded); err != nil || decoded["decree_text"] != decreeText || decoded["decree_title"] != snapshot.Issue.Title {
+		t.Fatalf("large decree content changed in JSON transport: %v", err)
 	}
 }
 

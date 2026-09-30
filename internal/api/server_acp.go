@@ -51,7 +51,19 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req gen.CreateAcpRunRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/reply/content_markdown", "/reply/answer_payload/text")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	replySource, err := planningRequestText(r.Context(), texts["/reply/content_markdown"], true)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	answerSource, err := planningRequestText(r.Context(), texts["/reply/answer_payload/text"], false)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
@@ -63,13 +75,13 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		operation state.PlanningOperation
-		err       error
 	)
 	switch strings.TrimSpace(string(req.AgentName)) {
 	case acp.PlannerReplyAgentName:
 		result, createErr := s.planningService.CreateOperation(r.Context(), planningSessionID, planning.CreateOperationInput{
+			ReplySource:       replySource,
+			AnswerTextSource:  answerSource,
 			Type:              state.PlanningOperationTypeReply,
-			ReplyMarkdown:     trimmedReplyMarkdown(req.Reply),
 			AnswerPayloadJSON: answerPayloadJSON(req.Reply),
 			ParentMessageID:   replyParentMessageID(req.Reply),
 		})
@@ -465,13 +477,6 @@ func mustParseOpenAPIUUID(value string) uuid.UUID {
 		return uuid.Nil
 	}
 	return parsed
-}
-
-func trimmedReplyMarkdown(reply *gen.PlanningReplyOperationRequest) string {
-	if reply == nil {
-		return ""
-	}
-	return strings.TrimSpace(reply.ContentMarkdown)
 }
 
 func answerPayloadJSON(reply *gen.PlanningReplyOperationRequest) string {

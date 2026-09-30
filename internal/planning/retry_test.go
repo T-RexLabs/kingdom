@@ -28,7 +28,6 @@ func TestCanonicalPlanningRetryCodeRejectsTextOnlyProviderFailures(t *testing.T)
 		{name: "incomplete", raw: "provider_incomplete_turn", want: errorcatalog.CodeProviderIncompleteTurn},
 		{name: "empty", raw: "provider_empty_output", want: errorcatalog.CodeProviderEmptyOutput},
 		{name: "invalid", raw: "llm_invalid_response", want: errorcatalog.CodeLLMInvalidResponse},
-		{name: "budget", raw: "budget_exceeded", want: errorcatalog.CodeBudgetExceeded},
 		{name: "unstructured internal", raw: "internal_error", want: errorcatalog.CodeProviderUnknownFailure},
 		{name: "structured internal", raw: "internal_error", meta: ProviderExecutionMetadata{FailureReasonCode: "internal_error"}, want: errorcatalog.CodeInternalError},
 		{name: "provider prose", raw: "provider upstream failed", want: errorcatalog.CodeProviderUnknownFailure},

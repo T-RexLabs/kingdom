@@ -3,8 +3,13 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+
+	"kingdom/internal/core/providerexecution"
+	executionstore "kingdom/internal/execution/store"
 )
 
 type RunPlanningOutputKind string
@@ -25,6 +30,7 @@ type RunPlanningOutput struct {
 	SourceMessageID   string
 	Kind              RunPlanningOutputKind
 	ContentMarkdown   string
+	ContentRef        *providerexecution.ContentReference
 	CreatedAt         string
 }
 
@@ -38,6 +44,7 @@ type CreateRunPlanningOutputRequest struct {
 	SourceMessageID  string
 	Kind             RunPlanningOutputKind
 	ContentMarkdown  string
+	ContentRef       *providerexecution.ContentReference
 	CreatedAt        string
 }
 
@@ -73,7 +80,7 @@ func (s *RunPlanningOutputStore) ListRunPlanningOutputs(ctx context.Context, run
 		limit = 1
 	}
 
-	query := `SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at
+	query := `SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at, content_ref_json
 		FROM run_planning_outputs
 		WHERE run_id = ?
 		  AND kind = ?`
@@ -122,11 +129,17 @@ func insertRunPlanningOutput(ctx context.Context, exec sqlExecutor, req CreateRu
 		SourceMessageID:  strings.TrimSpace(req.SourceMessageID),
 		Kind:             req.Kind,
 		ContentMarkdown:  strings.TrimSpace(req.ContentMarkdown),
+		ContentRef:       req.ContentRef,
 		CreatedAt:        strings.TrimSpace(req.CreatedAt),
 	}
+	refJSON := ""
+	if row.ContentRef != nil {
+		raw, _ := json.Marshal(row.ContentRef)
+		refJSON = string(raw)
+	}
 	result, err := exec.ExecContext(ctx,
-		`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at,content_ref_json)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		row.PlanningOutputID,
 		row.RunID,
 		row.NodeID,
@@ -137,6 +150,7 @@ func insertRunPlanningOutput(ctx context.Context, exec sqlExecutor, req CreateRu
 		string(row.Kind),
 		row.ContentMarkdown,
 		row.CreatedAt,
+		refJSON,
 	)
 	if err != nil {
 		return RunPlanningOutput{}, fmt.Errorf("insert run planning output: %w", err)
@@ -190,7 +204,7 @@ func loadRunPlanningOutputByIDTx(ctx context.Context, tx *sql.Tx, planningOutput
 	}
 	var item RunPlanningOutput
 	err := scanRunPlanningOutput(tx.QueryRowContext(ctx,
-		`SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at
+		`SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at,content_ref_json
 		 FROM run_planning_outputs
 		 WHERE planning_output_id = ?`,
 		strings.TrimSpace(planningOutputID),
@@ -214,6 +228,7 @@ func runPlanningOutputMatchesRequest(output RunPlanningOutput, req CreateRunPlan
 		strings.TrimSpace(output.SourceMessageID) == strings.TrimSpace(req.SourceMessageID) &&
 		output.Kind == req.Kind &&
 		strings.TrimSpace(output.ContentMarkdown) == strings.TrimSpace(req.ContentMarkdown) &&
+		equalPlanningContentRef(output.ContentRef, req.ContentRef) &&
 		strings.TrimSpace(output.CreatedAt) == strings.TrimSpace(req.CreatedAt)
 }
 
@@ -282,6 +297,21 @@ func validateRunPlanningOutputLineageTx(ctx context.Context, tx *sql.Tx, req Cre
 	if expectedNodeClass != "" && strings.TrimSpace(nodeClass) != expectedNodeClass {
 		return fmt.Errorf("planning output kind %q requires node class %q", req.Kind, expectedNodeClass)
 	}
+	if req.ContentRef != nil {
+		var raw string
+		if err := tx.QueryRowContext(ctx, `SELECT pcs.final_text_ref_json FROM attempt_executions ae
+		 JOIN provider_completion_settlements pcs ON pcs.settlement_id=ae.canonical_settlement_id
+		 WHERE ae.attempt_id=? AND ae.run_id=? AND ae.node_run_id=? AND ae.state='committed_success' AND pcs.outcome='success'`, req.AttemptID, req.RunID, req.NodeRunID).Scan(&raw); err != nil {
+			return fmt.Errorf("load canonical planning content: %w", err)
+		}
+		var ref providerexecution.ContentReference
+		if err := json.Unmarshal([]byte(raw), &ref); err != nil {
+			return err
+		}
+		if ref != *req.ContentRef {
+			return fmt.Errorf("planning content does not match canonical settlement")
+		}
+	}
 
 	trimmedSourceMessageID := strings.TrimSpace(req.SourceMessageID)
 	if trimmedSourceMessageID == "" {
@@ -329,7 +359,14 @@ func validateRunPlanningOutputCreate(req CreateRunPlanningOutputRequest) error {
 	if !isSupportedRunPlanningOutputKind(req.Kind) {
 		return fmt.Errorf("unsupported run planning output kind %q", req.Kind)
 	}
-	if strings.TrimSpace(req.ContentMarkdown) == "" {
+	if req.ContentRef != nil {
+		if err := req.ContentRef.Validate(req.ContentRef.InvocationID); err != nil {
+			return err
+		}
+		if req.ContentMarkdown != "" || req.ContentRef.SizeBytes <= 0 {
+			return fmt.Errorf("referenced planning output must have nonempty canonical content and no inline duplicate")
+		}
+	} else if strings.TrimSpace(req.ContentMarkdown) == "" {
 		return fmt.Errorf("content markdown is required")
 	}
 	if strings.TrimSpace(req.CreatedAt) == "" {
@@ -352,6 +389,7 @@ func scanRunPlanningOutput(scanner interface{ Scan(dest ...any) error }, target 
 		return fmt.Errorf("run planning output target is required")
 	}
 	var kind string
+	var refJSON string
 	if err := scanner.Scan(
 		&target.PlanningOutputSeq,
 		&target.PlanningOutputID,
@@ -364,9 +402,37 @@ func scanRunPlanningOutput(scanner interface{ Scan(dest ...any) error }, target 
 		&kind,
 		&target.ContentMarkdown,
 		&target.CreatedAt,
+		&refJSON,
 	); err != nil {
 		return err
 	}
 	target.Kind = RunPlanningOutputKind(strings.TrimSpace(kind))
+	if refJSON != "" {
+		var ref providerexecution.ContentReference
+		if err := json.Unmarshal([]byte(refJSON), &ref); err != nil {
+			return err
+		}
+		if err := ref.Validate(ref.InvocationID); err != nil {
+			return err
+		}
+		if target.ContentMarkdown != "" {
+			return fmt.Errorf("planning content has conflicting authorities")
+		}
+		target.ContentRef = &ref
+	}
 	return nil
+}
+
+func equalPlanningContentRef(a, b *providerexecution.ContentReference) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
+}
+
+func (s *RunPlanningOutputStore) OpenContent(ctx context.Context, output RunPlanningOutput) (io.ReadCloser, error) {
+	if output.ContentRef == nil {
+		return io.NopCloser(strings.NewReader(strings.TrimSpace(output.ContentMarkdown))), nil
+	}
+	return executionstore.New(s.db).OpenProviderContent(ctx, *output.ContentRef)
 }

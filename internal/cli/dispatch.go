@@ -2,7 +2,6 @@ package cli
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -453,8 +452,6 @@ type bearerTransport struct {
 	base          http.RoundTripper
 }
 
-const maxBufferedMutationResponseBytes = 1 << 20
-
 type ambiguousMutationError struct {
 	Key   string
 	Cause error
@@ -491,7 +488,7 @@ func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		}
 		response, err := t.base.RoundTrip(t.authenticatedClone(req, body))
 		if err == nil && req.Header.Get("Idempotency-Key") != "" {
-			err = bufferHTTPResponseBody(response)
+			err = spoolHTTPResponseBody(response)
 			if err != nil && response != nil && response.Body != nil {
 				_ = response.Body.Close()
 				response = nil
@@ -503,6 +500,9 @@ func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			pending, inspectErr = responseHasCanonicalErrorCode(response, errorcatalog.CodeIdempotencyPending)
 		}
 		if inspectErr != nil {
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
 			return nil, &ambiguousMutationError{Key: req.Header.Get("Idempotency-Key"), Cause: inspectErr}
 		}
 		shouldRetry := req.Header.Get("Idempotency-Key") != "" && canReplayBody && (err != nil || pending)
@@ -532,38 +532,62 @@ func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 }
 
-func bufferHTTPResponseBody(response *http.Response) error {
+func spoolHTTPResponseBody(response *http.Response) error {
 	if response == nil || response.Body == nil {
 		return nil
 	}
 	original := response.Body
-	body, err := io.ReadAll(io.LimitReader(original, maxBufferedMutationResponseBytes+1))
-	_ = original.Close()
+	defer original.Close()
+	body, err := os.CreateTemp("", "kingdom-mutation-response-*")
 	if err != nil {
+		return err
+	}
+	spool := &temporaryResponseBody{File: body}
+	_, err = io.Copy(body, original)
+	if err == nil {
+		_, err = body.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		_ = spool.Close()
 		return fmt.Errorf("read idempotent mutation response: %w", err)
 	}
-	if len(body) > maxBufferedMutationResponseBytes {
-		return fmt.Errorf("idempotent mutation response exceeds %d-byte limit", maxBufferedMutationResponseBytes)
-	}
-	response.Body = io.NopCloser(bytes.NewReader(body))
+	response.Body = spool
 	return nil
+}
+
+type temporaryResponseBody struct{ *os.File }
+
+func (b *temporaryResponseBody) Close() error {
+	err := b.File.Close()
+	removeErr := os.Remove(b.Name())
+	if err != nil {
+		return err
+	}
+	return removeErr
 }
 
 func responseHasCanonicalErrorCode(response *http.Response, code errorcatalog.Code) (bool, error) {
 	if response == nil || response.StatusCode != http.StatusConflict || response.Body == nil {
 		return false, nil
 	}
-	original := response.Body
-	body, err := io.ReadAll(io.LimitReader(original, maxBufferedMutationResponseBytes+1))
-	_ = original.Close()
-	if err != nil {
-		return false, fmt.Errorf("read idempotency response: %w", err)
+	body, ok := response.Body.(*temporaryResponseBody)
+	if !ok {
+		if err := spoolHTTPResponseBody(response); err != nil {
+			return false, err
+		}
+		body = response.Body.(*temporaryResponseBody)
 	}
-	if len(body) > maxBufferedMutationResponseBytes {
-		return false, fmt.Errorf("idempotency response exceeds %d-byte limit", maxBufferedMutationResponseBytes)
+	var envelope struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
 	}
-	response.Body = io.NopCloser(bytes.NewReader(body))
-	return canonicalErrorCode(body) == string(code), nil
+	decodeErr := json.NewDecoder(body).Decode(&envelope)
+	if _, err := body.Seek(0, io.SeekStart); err != nil {
+		return false, err
+	}
+	// A non-canonical response is returned unchanged, as before.
+	return decodeErr == nil && envelope.Error.Code == string(code), nil
 }
 
 func (t bearerTransport) authenticatedClone(req *http.Request, body io.ReadCloser) *http.Request {
@@ -952,22 +976,26 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 		opts.outputPath = fmt.Sprintf("%s-artifacts.zip", opts.runID)
 	}
 
-	client, err := r.newResponsesClient()
+	client, err := r.newRawClient()
 	if err != nil {
 		return err
 	}
 
-	response, err := client.GetRunArtifactsArchiveWithResponse(ctx, opts.runID)
+	response, err := client.GetRunArtifactsArchive(ctx, opts.runID)
 	if err != nil {
 		return err
 	}
 
-	if response.StatusCode() != http.StatusOK {
-		return unwrapAPIError(response.StatusCode(), response.JSON400, response.JSONDefault, response.Body)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		var envelope gen.ErrorResponse
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			return fmt.Errorf("artifact archive HTTP %d: %w", response.StatusCode, err)
+		}
+		return unwrapAPIError(response.StatusCode, &envelope, nil, nil)
 	}
-	body := response.Body
-
-	if err := os.WriteFile(opts.outputPath, body, 0o644); err != nil {
+	size, err := saveArtifactDownload(response.Body, response.ContentLength, opts.outputPath)
+	if err != nil {
 		return fmt.Errorf("write artifact archive: %w", err)
 	}
 
@@ -975,12 +1003,38 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 		return writeJSON(r.stdout, map[string]any{
 			"run_id":      opts.runID,
 			"output_path": opts.outputPath,
-			"size_bytes":  len(body),
+			"size_bytes":  size,
 		})
 	}
 
-	_, err = fmt.Fprintf(r.stdout, "artifacts exported: run=%s file=%s size=%d\n", opts.runID, opts.outputPath, len(body))
+	_, err = fmt.Fprintf(r.stdout, "artifacts exported: run=%s file=%s size=%d\n", opts.runID, opts.outputPath, size)
 	return err
+}
+
+func saveArtifactDownload(body io.Reader, expectedSize int64, destination string) (int64, error) {
+	f, err := os.CreateTemp(filepath.Dir(destination), ".kingdom-download-*")
+	if err != nil {
+		return 0, err
+	}
+	defer os.Remove(f.Name())
+	defer f.Close()
+	size, err := io.Copy(f, body)
+	if err != nil {
+		return 0, err
+	}
+	if expectedSize >= 0 && size != expectedSize {
+		return 0, io.ErrUnexpectedEOF
+	}
+	if err := f.Sync(); err != nil {
+		return 0, err
+	}
+	if err := f.Close(); err != nil {
+		return 0, err
+	}
+	if err := os.Rename(f.Name(), destination); err != nil {
+		return 0, err
+	}
+	return size, nil
 }
 
 func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {

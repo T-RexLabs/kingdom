@@ -1,14 +1,19 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/core/providerexecution"
 )
 
 type SessionActivityRequest struct {
@@ -20,6 +25,9 @@ type SessionActivityRequest struct {
 	AttemptID           string
 	InvocationID        string
 	InvocationStartedAt time.Time
+	// DiagnosticSink persists complete export stdout/stderr before their
+	// temporary captures are retired. InvocationID supplies storage lineage.
+	DiagnosticSink func(context.Context, providerexecution.StagedContent) error
 }
 
 type SessionActivityItem struct {
@@ -55,7 +63,11 @@ func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivi
 		ConfigDir:         strings.TrimSpace(req.ConfigDir),
 		DatabasePath:      strings.TrimSpace(req.DatabasePath),
 		Mode:              sessionDiagnosticExportModeRaw,
+		InvocationID:      req.InvocationID, DiagnosticSink: req.DiagnosticSink,
 	})
+	if result.Close != nil {
+		defer result.Close()
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -64,9 +76,9 @@ func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivi
 		InvocationID:        strings.TrimSpace(req.InvocationID),
 		InvocationStartedAt: req.InvocationStartedAt,
 	}
-	items := parseSessionActivityExport(result.Stdout, parseReq)
+	items := parseSessionActivityReader(result.Stdout, parseReq)
 	if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-		items = parseSessionActivityExport(result.Stdout, sessionActivityScope{
+		items = parseSessionActivityReader(result.Stdout, sessionActivityScope{
 			AttemptID:           strings.TrimSpace(req.AttemptID),
 			InvocationStartedAt: req.InvocationStartedAt,
 		})
@@ -81,11 +93,15 @@ func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivi
 			ConfigDir:         strings.TrimSpace(req.ConfigDir),
 			DatabasePath:      strings.TrimSpace(req.DatabasePath),
 			Mode:              sessionDiagnosticExportModeSanitized,
+			InvocationID:      req.InvocationID, DiagnosticSink: req.DiagnosticSink,
 		})
+		if sanitizedResult.Close != nil {
+			defer sanitizedResult.Close()
+		}
 		if sanitizedErr == nil {
-			items = parseSessionActivityExport(sanitizedResult.Stdout, parseReq)
+			items = parseSessionActivityReader(sanitizedResult.Stdout, parseReq)
 			if len(items) == 0 && strings.TrimSpace(req.InvocationID) != "" {
-				items = parseSessionActivityExport(sanitizedResult.Stdout, sessionActivityScope{
+				items = parseSessionActivityReader(sanitizedResult.Stdout, sessionActivityScope{
 					AttemptID:           strings.TrimSpace(req.AttemptID),
 					InvocationStartedAt: req.InvocationStartedAt,
 				})
@@ -96,10 +112,24 @@ func inspectSessionActivityWithExporterAt(ctx context.Context, req SessionActivi
 }
 
 func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionActivityItem {
-	var payload struct {
-		Messages []map[string]any `json:"messages"`
+	return parseSessionActivityReader(bytes.NewReader(raw), req)
+}
+
+func parseSessionActivityReader(reader io.ReadSeeker, req sessionActivityScope) []SessionActivityItem {
+	if reader == nil {
+		return nil
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return nil
+	}
+	compacted, err := compactEventStrings(reader)
+	if err != nil {
+		return nil
+	}
+	defer compacted.close()
+	decoder := &boundedJSONTokens{Decoder: json.NewDecoder(compacted.projected)}
+	decoder.UseNumber()
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
 		return nil
 	}
 
@@ -108,7 +138,10 @@ func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionA
 	haveBoundary := trimmedInvocationID == ""
 	items := make([]SessionActivityItem, 0)
 
-	for _, node := range payload.Messages {
+	visit := func(node map[string]any) {
+		if err := restoreActivityPreview(compacted, node); err != nil {
+			return
+		}
 		metadata, metadataSeparate := sessionDiagnosticMessageMetadata(node)
 		role := strings.ToLower(strings.TrimSpace(stringValue(metadata["role"])))
 		if role == "user" {
@@ -117,22 +150,76 @@ func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionA
 				currentBoundary = boundary
 				haveBoundary = true
 			}
-			continue
+			return
 		}
 		if role != "assistant" || !haveBoundary {
-			continue
+			return
 		}
 		if trimmedInvocationID != "" {
 			if !sessionActivityBoundaryMatchesScope(currentBoundary, req) {
-				continue
+				return
 			}
 		} else if !req.InvocationStartedAt.IsZero() && assistantCompletedBeforeInvocation(metadata, req.InvocationStartedAt) {
-			continue
+			return
 		}
 		fallbackOccurredAt := sessionDiagnosticNestedStringValue(metadata, "time", "completed")
 		for _, contentNode := range sessionDiagnosticMessageContentNodes(node, metadata, metadataSeparate) {
-			items = append(items, collectSessionActivityItems(contentNode, fallbackOccurredAt)...)
+			visitSessionActivityItems(contentNode, fallbackOccurredAt, func(item SessionActivityItem) {
+				// Activity reconciliation is a preview of the complete disk-backed
+				// export, not another copy of the session transcript in memory.
+				if len(item.ID) > 4096 {
+					item.ID = fmt.Sprintf("provider_part_%x", sha256.Sum256([]byte(item.ID)))
+				}
+				item.Label = activityPreview(item.Label)
+				item.Detail = activityPreview(item.Detail)
+				item.Input = activityPreview(item.Input)
+				item.Output = activityPreview(item.Output)
+				if len(items) == 256 {
+					copy(items, items[1:])
+					items = items[:255]
+				}
+				items = append(items, item)
+			})
 		}
+	}
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return nil
+		}
+		if key != "messages" {
+			token, err := decoder.Token()
+			if err != nil || skipJSONToken(decoder, token) != nil {
+				return nil
+			}
+			continue
+		}
+		if token, err := decoder.Token(); err != nil || token != json.Delim('[') {
+			return nil
+		}
+		for decoder.More() {
+			token, err := decoder.Token()
+			if err != nil {
+				return nil
+			}
+			budget := 256 * 1024
+			value, err := previewJSONToken(decoder, token, &budget)
+			if err != nil {
+				return nil
+			}
+			if node, ok := value.(map[string]any); ok {
+				visit(node)
+			}
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return nil
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return nil
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
@@ -144,6 +231,57 @@ func parseSessionActivityExport(raw []byte, req sessionActivityScope) []SessionA
 	return dedupeSessionActivityItems(items)
 }
 
+func restoreActivityPreview(compacted *eventStrings, node any) error {
+	preview := func(value string) (string, error) {
+		if value == compacted.numberMarker {
+			return "Full numeric value is preserved in the provider stream diagnostic.", nil
+		}
+		content, err := compacted.resolve(value)
+		if err != nil || content == nil {
+			return value, err
+		}
+		prefix, err := io.ReadAll(io.NewSectionReader(content.reader, content.offset, min(content.size, int64(4096))))
+		if err != nil {
+			return "", err
+		}
+		if content.size <= 4096 {
+			return string(prefix), nil
+		}
+		tail, err := io.ReadAll(io.NewSectionReader(content.reader, content.offset+content.size-4096, 4096))
+		if err != nil {
+			return "", err
+		}
+		return string(prefix) + "\n… [diagnostic preview] …\n" + string(tail), nil
+	}
+	switch value := node.(type) {
+	case map[string]any:
+		for key, item := range value {
+			if text, ok := item.(string); ok {
+				replacement, err := preview(text)
+				if err != nil {
+					return err
+				}
+				value[key] = replacement
+			} else if err := restoreActivityPreview(compacted, item); err != nil {
+				return err
+			}
+		}
+	case []any:
+		for index, item := range value {
+			if text, ok := item.(string); ok {
+				replacement, err := preview(text)
+				if err != nil {
+					return err
+				}
+				value[index] = replacement
+			} else if err := restoreActivityPreview(compacted, item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func assistantCompletedBeforeInvocation(metadata map[string]any, startedAt time.Time) bool {
 	completedAt, ok := parseSessionDiagnosticTimestamp(sessionDiagnosticNestedStringValue(metadata, "time", "completed"))
 	if !ok {
@@ -152,25 +290,38 @@ func assistantCompletedBeforeInvocation(metadata map[string]any, startedAt time.
 	return completedAt.Before(startedAt.UTC())
 }
 
-func collectSessionActivityItems(node any, fallbackOccurredAt string) []SessionActivityItem {
-	items := make([]SessionActivityItem, 0)
+func activityPreview(text string) string {
+	return textPreview(text, 4096)
+}
+
+func textPreview(text string, limit int) string {
+	if len(text) <= limit {
+		return text
+	}
+	end := limit
+	for end > 0 && !utf8.RuneStart(text[end]) {
+		end--
+	}
+	return strings.Clone(text[:end]) + "…"
+}
+
+func visitSessionActivityItems(node any, fallbackOccurredAt string, visit func(SessionActivityItem)) {
 	switch typed := node.(type) {
 	case []any:
 		for _, item := range typed {
-			items = append(items, collectSessionActivityItems(item, fallbackOccurredAt)...)
+			visitSessionActivityItems(item, fallbackOccurredAt, visit)
 		}
 	case map[string]any:
 		if item, ok := sessionActivityItemFromPart(typed, fallbackOccurredAt); ok {
-			items = append(items, item)
+			visit(item)
 		}
 		if parts, ok := typed["parts"]; ok {
-			items = append(items, collectSessionActivityItems(parts, fallbackOccurredAt)...)
+			visitSessionActivityItems(parts, fallbackOccurredAt, visit)
 		}
 		if content, ok := typed["content"]; ok {
-			items = append(items, collectSessionActivityItems(content, fallbackOccurredAt)...)
+			visitSessionActivityItems(content, fallbackOccurredAt, visit)
 		}
 	}
-	return items
 }
 
 func sessionActivityItemFromPart(node map[string]any, fallbackOccurredAt string) (SessionActivityItem, bool) {

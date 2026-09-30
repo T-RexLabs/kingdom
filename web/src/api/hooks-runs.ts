@@ -1,5 +1,6 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
+import { historyItems } from "./history-pages";
 import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
 import { manualRefetchQueryOptions, refetchOnMountQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
 import { RUNS_STATE_FILTERS, type RunsStateFilter } from "@/lib/run-filters";
@@ -34,6 +35,7 @@ import type {
 	RunDetailSummary,
 	RunListResponse,
   RunPlanSnapshot,
+  RunPlanReviewsResponse,
   RunSummary,
   RunTimelineResponse,
   AcpRunActivityResponse,
@@ -493,17 +495,35 @@ export function useRunAgents(runId: string, options?: RunDetailQueryOptions) {
 
 export function useMailbox(runId: string, filters?: MailboxFilters, options?: RunDetailQueryOptions) {
   const communicationType = filters?.communicationType ?? "";
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: runQueryKeys.mailboxList(runId, communicationType),
-    queryFn: () =>
+    queryFn: ({ pageParam, signal }) =>
       apiFetch<MailboxMessagesResponse>(`/runs/${runId}/mailbox/messages`, {
+        signal,
         params: {
-          limit: 200,
-          message_source: "communication",
+          limit: 100,
+          cursor: pageParam,
           communication_type: filters?.communicationType,
         },
       }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor,
+    select: (data) => ({ run_id: runId, items: historyItems(data.pages, (item) => item.message_id) }),
     enabled: !!runId && (options?.enabled ?? true),
+    retry: retryRunDetailQuery,
+    ...manualRefetchQueryOptions,
+  });
+}
+
+export function useRunPlanReviews(runId: string, options?: RunDetailQueryOptions) {
+  return useInfiniteQuery({
+    queryKey: ["runs", runId, "plan-reviews"],
+    queryFn: ({ pageParam, signal }) => apiFetch<RunPlanReviewsResponse>(`/runs/${runId}/plan-reviews`, {
+      params: { limit: 50, cursor: pageParam }, signal,
+    }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor,
+    enabled: Boolean(runId) && (options?.enabled ?? true),
     retry: retryRunDetailQuery,
     ...manualRefetchQueryOptions,
   });

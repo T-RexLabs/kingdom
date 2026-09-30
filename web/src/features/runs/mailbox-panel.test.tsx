@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MailboxFilters, MailboxMessage, MailboxMessageDetail } from "@/api/hooks";
@@ -75,6 +75,22 @@ function MailboxHarness({
 }
 
 describe("mailbox panel", () => {
+  it("labels partial counts and retries older pages without hiding loaded messages", async () => {
+    const onLoadMore = vi.fn();
+    const props = {
+      presentation: buildMailboxPresentation([makeMessage({ message_id: "loaded" })]),
+      filters: {}, onChangeFilters: vi.fn(), onSelectMessage: vi.fn(), onLoadMore, hasMore: true,
+    };
+    const { rerender } = render(<MailboxPanel {...props} loadMoreError />);
+    expect(screen.getByText("1 messages loaded")).toBeInTheDocument();
+    expect(screen.getByText("Older messages could not be loaded.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry Older Messages" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    rerender(<MailboxPanel {...props} isLoadingMore />);
+    expect(screen.getByRole("button", { name: "Loading messages..." })).toBeDisabled();
+    rerender(<MailboxPanel {...props} hasMore={false} />);
+    expect(screen.queryByRole("button", { name: "Load Older Messages" })).not.toBeInTheDocument();
+  });
   it("uses earliest message direction for lane labels", () => {
     const { lanes } = buildMailboxPresentation([
       makeMessage({

@@ -253,7 +253,8 @@ func (s *Service) beginClose() <-chan struct{} {
 // Close shuts down the service in three phases: stop new admissions, stop
 // recovery, then drain in-flight runner operations. The supplied ctx bounds
 // total shutdown time, but Close still attempts later phases and returns any
-// joined timeout or drain errors.
+// joined timeout or drain errors. After successful drain it releases the
+// planner adapter's replay resources.
 //
 // Tests and shutdown paths must call Close so runner goroutines and recovery
 // do not outlive the service and keep mutating the DB after the process is
@@ -312,7 +313,15 @@ func (s *Service) Close(ctx context.Context) error {
 		runnerDrainErr = s.runner.WaitWithAbort(ctx, forced)
 	}
 
-	return errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr)
+	if err := errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr); err != nil {
+		return err
+	}
+	if s.runner != nil {
+		if closer, ok := s.runner.deps.planner.(interface{ Close() error }); ok {
+			return closer.Close()
+		}
+	}
+	return nil
 }
 
 // ForceClose is the hard-stop counterpart to Close. It flips the
@@ -351,6 +360,14 @@ func (s *Service) ObserveOperationEventReplay(afterEventID string) {
 }
 
 func (s *Service) CreateSession(ctx context.Context, title string, modelSelectionJSON string) (state.PlanningSession, error) {
+	return s.createSession(ctx, title, nil, modelSelectionJSON)
+}
+
+func (s *Service) CreateSessionWithText(ctx context.Context, title *state.PlanningTextSource, modelSelectionJSON string) (state.PlanningSession, error) {
+	return s.createSession(ctx, "", title, modelSelectionJSON)
+}
+
+func (s *Service) createSession(ctx context.Context, title string, source *state.PlanningTextSource, modelSelectionJSON string) (state.PlanningSession, error) {
 	if s == nil || s.sessions == nil {
 		return state.PlanningSession{}, fmt.Errorf("planning service session runtime is required")
 	}
@@ -358,7 +375,7 @@ func (s *Service) CreateSession(ctx context.Context, title string, modelSelectio
 		return state.PlanningSession{}, err
 	}
 	defer s.releaseWrite()
-	return s.sessions.CreateSession(ctx, title, modelSelectionJSON)
+	return s.sessions.CreateSession(ctx, title, modelSelectionJSON, source)
 }
 
 func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {

@@ -1,13 +1,16 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -16,7 +19,6 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
-	"kingdom/internal/providerlimits"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 	"kingdom/internal/state"
@@ -89,7 +91,6 @@ func (o *orchestrationLoop) persistExecutionArtifact(ctx context.Context, run ru
 	var (
 		discoveredArtifacts   []executionArtifact
 		artifactContentByPath map[string][]byte
-		err                   error
 	)
 	switch {
 	case executionSpec.ArtifactPersistence == nodeArtifactPersistenceDirect:
@@ -106,34 +107,17 @@ func (o *orchestrationLoop) persistExecutionArtifact(ctx context.Context, run ru
 				return snapshotErr
 			}
 		}
-		if strings.TrimSpace(baseSnapshotID) != "" && strings.TrimSpace(resultSnapshotID) != "" && o != nil && o.fsStore != nil {
-			discoveredArtifacts, artifactContentByPath, err = o.implementationArtifactsFromSnapshots(ctx, baseSnapshotID, resultSnapshotID)
-			if err != nil {
-				return err
-			}
-		} else {
-			discoveredArtifacts, err = discoverWorkspaceArtifacts(workspacePath)
-			if err != nil {
-				return err
-			}
-		}
+		return o.persistArtifactSource(ctx, run, node, attempt, attemptID, workspacePath, now, o.builderArtifactSource(node, workspacePath, baseSnapshotID, resultSnapshotID), nil, nil, projectArtifacts)
 	default:
 		snapshotArtifact, snapshotBody := buildNonBuilderResponseSnapshot(node.NodeID, outputText)
 		discoveredArtifacts = []executionArtifact{snapshotArtifact}
 		artifactContentByPath = map[string][]byte{snapshotArtifact.Path: snapshotBody}
 	}
-	return o.persistDiscoveredArtifacts(ctx, run, node, attempt, attemptID, workspacePath, now, outputText, discoveredArtifacts, artifactContentByPath, projectArtifacts)
+	return o.persistDiscoveredArtifacts(ctx, run, node, attempt, attemptID, workspacePath, now, outputText, discoveredArtifacts, artifactContentByPath, nil, projectArtifacts)
 }
 
 func (o *orchestrationLoop) republishPersistedArtifacts(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID string) error {
-	persistedArtifacts, artifactContentByPath, err := o.loadPersistedArtifactsForProjection(ctx, node, attempt, attemptID)
-	if err != nil {
-		return err
-	}
-	if len(persistedArtifacts) == 0 {
-		return nil
-	}
-	return o.publishArtifactsToProjectRootWithModeAndContent(ctx, "", artifactContentByPath, run.RunID, run.PublishMode, persistedArtifacts)
+	return o.publishArtifactProjection(ctx, "", nil, run.RunID, run.PublishMode, attemptID, o.persistedArtifactProjection(node, attempt, attemptID))
 }
 
 func (o *orchestrationLoop) persistResponseSnapshotArtifact(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, now, outputText string) error {
@@ -141,170 +125,17 @@ func (o *orchestrationLoop) persistResponseSnapshotArtifact(ctx context.Context,
 		return nil
 	}
 	snapshotArtifact, snapshotBody := buildNonBuilderResponseSnapshot(node.NodeID, outputText)
-	return o.persistDiscoveredArtifacts(ctx, run, node, attempt, attemptID, "", now, outputText, []executionArtifact{snapshotArtifact}, map[string][]byte{snapshotArtifact.Path: snapshotBody}, true)
+	return o.persistDiscoveredArtifacts(ctx, run, node, attempt, attemptID, "", now, outputText, []executionArtifact{snapshotArtifact}, map[string][]byte{snapshotArtifact.Path: snapshotBody}, nil, true)
 }
 
-func (o *orchestrationLoop) implementationArtifactsFromSnapshots(ctx context.Context, baseSnapshotID, resultSnapshotID string) ([]executionArtifact, map[string][]byte, error) {
-	if o == nil || o.fsStore == nil {
-		return nil, nil, fmt.Errorf("runtime filesystem store is required")
-	}
-	diffs, err := o.fsStore.DiffSnapshots(ctx, strings.TrimSpace(baseSnapshotID), strings.TrimSpace(resultSnapshotID))
-	if err != nil {
-		return nil, nil, err
-	}
-	artifacts := make([]executionArtifact, 0, len(diffs))
-	artifactContentByPath := make(map[string][]byte, len(diffs))
-	for _, diff := range diffs {
-		action := firstNonEmptyString(strings.TrimSpace(diff.EntryType), "file")
-		switch action {
-		case "delete":
-			artifacts = append(artifacts, executionArtifact{Path: diff.Path, Name: filepath.Base(diff.Path), MIME: inferMIMEType(diff.Path), Action: "delete"})
-		default:
-			raw, err := o.fsStore.ReadBlob(diff.BlobID)
-			if err != nil {
-				return nil, nil, err
-			}
-			artifacts = append(artifacts, executionArtifact{Path: diff.Path, Name: filepath.Base(diff.Path), MIME: inferMIMEType(diff.Path), Action: "write"})
-			artifactContentByPath[diff.Path] = raw
-		}
-	}
-	return artifacts, artifactContentByPath, nil
-}
-
-func (o *orchestrationLoop) persistDiscoveredArtifacts(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, workspacePath, now, outputText string, discoveredArtifacts []executionArtifact, artifactContentByPath map[string][]byte, projectArtifacts bool) error {
+func (o *orchestrationLoop) persistDiscoveredArtifacts(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, workspacePath, now, outputText string, discoveredArtifacts []executionArtifact, artifactContentByPath map[string][]byte, openArtifact func(context.Context, string) (io.ReadCloser, error), projectArtifacts bool) error {
 	if len(discoveredArtifacts) == 0 {
 		return nil
 	}
-	executionSpec := executionSpecForNode(node.NodeID, node.NodeClass)
-
-	validatedArtifacts := make([]map[string]any, 0, len(discoveredArtifacts))
-	persistedArtifacts := make([]artifactOutputRecord, 0, len(discoveredArtifacts))
-	seenCanonicalPaths := make(map[string]struct{})
-	for idx, artifact := range discoveredArtifacts {
-		artifactPath := strings.TrimSpace(artifact.Path)
-		if strings.TrimSpace(artifactPath) == "" {
-			continue
-		}
-		if _, seen := seenCanonicalPaths[artifactPath]; seen {
-			continue
-		}
-		seenCanonicalPaths[artifactPath] = struct{}{}
-
-		artifactID := fmt.Sprintf("%s_artifact_%d", attemptID, idx+1)
-		artifactKind := determineArtifactKind(node.NodeID, node.NodeClass, node.RequiredRole, artifactPath)
-		persistedArtifacts = append(persistedArtifacts, artifactOutputRecord{
-			ArtifactID:     artifactID,
-			ArtifactKind:   artifactKind,
-			ArtifactAction: firstNonEmptyString(strings.TrimSpace(artifact.Action), "write"),
-			RelativePath:   artifactPath,
-			ProducerRole:   node.RequiredRole,
-			NodeID:         node.NodeID,
-			Attempt:        attempt.Attempt,
-		})
-
-		validatedArtifacts = append(validatedArtifacts, map[string]any{
-			"kind":   artifactKind,
-			"action": firstNonEmptyString(strings.TrimSpace(artifact.Action), "write"),
-			"name":   artifact.Name,
-			"mime":   artifact.MIME,
-			"path":   artifactPath,
-		})
+	source := func(context.Context) (state.WorkerArtifactIterator, error) {
+		return &discoveredArtifactCursor{node: node, items: discoveredArtifacts}, nil
 	}
-
-	summary := strings.TrimSpace(outputText)
-	if summary == "" {
-		summary = fmt.Sprintf("node %s completed with %d artifact file(s)", attempt.NodeID, len(discoveredArtifacts))
-	}
-
-	outputEnvelope := map[string]any{
-		"schema_version": "v1",
-		"status":         "succeeded",
-		"summary":        summary,
-		"payload_json": map[string]any{
-			"node_id":     attempt.NodeID,
-			"output_text": outputText,
-		},
-		"artifacts":    validatedArtifacts,
-		"error_reason": nil,
-	}
-
-	rawOutput, err := json.Marshal(outputEnvelope)
-	if err != nil {
-		return fmt.Errorf("marshal worker output envelope: %w", err)
-	}
-
-	_, err = o.validator.ValidateAndPersist(ctx, state.WorkerOutputValidationRequest{
-		RunID:                 run.RunID,
-		NodeRunID:             attempt.NodeRunID,
-		AttemptID:             attemptID,
-		ProducerRole:          node.RequiredRole,
-		WorkspacePath:         workspacePath,
-		ArtifactContentByPath: artifactContentByPath,
-		OutputJSON:            rawOutput,
-		CreatedAt:             now,
-	})
-	if err != nil {
-		return err
-	}
-
-	if !executionSpec.ProjectArtifacts || !projectArtifacts {
-		return nil
-	}
-	if err := o.publishArtifactsToProjectRootWithModeAndContent(ctx, workspacePath, artifactContentByPath, run.RunID, run.PublishMode, persistedArtifacts); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-func (o *orchestrationLoop) loadPersistedArtifactsForProjection(ctx context.Context, node nodeDefinition, attempt nodeAttempt, attemptID string) ([]artifactOutputRecord, map[string][]byte, error) {
-	if o == nil || o.db == nil {
-		return nil, nil, nil
-	}
-	rows, err := o.db.QueryContext(ctx,
-		`SELECT a.artifact_id, a.artifact_kind, a.artifact_action, a.path, a.producer_role, ac.content
-		 FROM artifacts a
-		 LEFT JOIN artifact_contents ac ON ac.artifact_id = a.artifact_id
-		 WHERE a.attempt_id = ?
-		 ORDER BY a.artifact_id ASC`,
-		attemptID,
-	)
-	if err != nil {
-		return nil, nil, fmt.Errorf("query persisted artifacts for attempt %q: %w", attemptID, err)
-	}
-	defer rows.Close()
-
-	persistedArtifacts := make([]artifactOutputRecord, 0)
-	artifactContentByPath := make(map[string][]byte)
-	for rows.Next() {
-		var (
-			artifactID     string
-			artifactKind   string
-			artifactAction string
-			artifactPath   string
-			producerRole   string
-			rawContent     []byte
-		)
-		if err := rows.Scan(&artifactID, &artifactKind, &artifactAction, &artifactPath, &producerRole, &rawContent); err != nil {
-			return nil, nil, fmt.Errorf("scan persisted artifact for attempt %q: %w", attemptID, err)
-		}
-		persistedArtifacts = append(persistedArtifacts, artifactOutputRecord{
-			ArtifactID:     artifactID,
-			ArtifactKind:   artifactKind,
-			ArtifactAction: artifactAction,
-			RelativePath:   artifactPath,
-			ProducerRole:   producerRole,
-			NodeID:         node.NodeID,
-			Attempt:        attempt.Attempt,
-		})
-		if len(rawContent) > 0 {
-			artifactContentByPath[artifactPath] = append([]byte(nil), rawContent...)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate persisted artifacts for attempt %q: %w", attemptID, err)
-	}
-	return persistedArtifacts, artifactContentByPath, nil
+	return o.persistArtifactSource(ctx, run, node, attempt, attemptID, workspacePath, now, source, artifactContentByPath, openArtifact, projectArtifacts)
 }
 
 func buildNonBuilderResponseSnapshot(nodeID, outputText string) (executionArtifact, []byte) {
@@ -332,18 +163,11 @@ type artifactOutputRecord struct {
 	ProducerRole   string
 	NodeID         string
 	Attempt        int
+	SHA256         string
 }
 
-func (o *orchestrationLoop) publishArtifactsToProjectRoot(ctx context.Context, workspacePath, runID string, artifacts []artifactOutputRecord) error {
-	return o.publishArtifactsToProjectRootWithModeAndContent(ctx, workspacePath, nil, runID, o.publishMode, artifacts)
-}
-
-func (o *orchestrationLoop) publishArtifactsToProjectRootWithMode(ctx context.Context, workspacePath, runID, publishMode string, artifacts []artifactOutputRecord) error {
-	return o.publishArtifactsToProjectRootWithModeAndContent(ctx, workspacePath, nil, runID, publishMode, artifacts)
-}
-
-func (o *orchestrationLoop) publishArtifactsToProjectRootWithModeAndContent(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, publishMode string, artifacts []artifactOutputRecord) error {
-	if strings.TrimSpace(o.yoloRoot) == "" || len(artifacts) == 0 {
+func (o *orchestrationLoop) publishArtifactProjection(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, publishMode, attemptID string, artifacts artifactProjectionSource) error {
+	if strings.TrimSpace(o.yoloRoot) == "" {
 		return nil
 	}
 	publishMode = firstNonEmptyString(strings.TrimSpace(publishMode), o.publishMode)
@@ -365,78 +189,92 @@ func (o *orchestrationLoop) publishArtifactsToProjectRootWithModeAndContent(ctx 
 		return err
 	}
 	if normalizePublishMode(publishMode) == PublishModeDirect {
-		if err := o.publishArtifactsDirectWithTracking(ctx, workspacePath, artifactContentByPath, runID, targetRoot, runArtifactRoot, artifacts); err != nil {
+		if err := o.publishArtifactSourceDirect(ctx, workspacePath, artifactContentByPath, runID, attemptID, targetRoot, runArtifactRoot, artifacts); err != nil {
 			return err
 		}
 		return nil
 	}
-	return o.writeArtifactsToRoot(workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+	return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
 }
 
-func (o *orchestrationLoop) writeArtifactsToRoot(workspacePath string, artifactContentByPath map[string][]byte, targetRoot, runArtifactRoot string, artifacts []artifactOutputRecord) error {
-	for _, artifact := range artifacts {
+func (o *orchestrationLoop) writeArtifactsToRoot(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, targetRoot, runArtifactRoot string, artifacts artifactProjectionSource) error {
+	return artifacts(ctx, func(artifact artifactOutputRecord) error {
 		if isProtectedPublishPath(artifact.RelativePath) {
 			return fmt.Errorf("artifact path targets protected root segment: %q", artifact.RelativePath)
 		}
 		destinationRelativePath := publishDestinationRelativePath(runArtifactRoot, artifact)
-		destinationPath, err := resolvePathWithinRoot(targetRoot, destinationRelativePath)
+		_, err := resolvePathWithinRoot(targetRoot, destinationRelativePath)
 		if err != nil {
 			return fmt.Errorf("resolve publish destination path: %w", err)
 		}
 		if strings.TrimSpace(artifact.ArtifactAction) == "delete" {
-			if err := os.Remove(destinationPath); err != nil && !os.IsNotExist(err) {
+			if err := removeProjectedArtifact(targetRoot, destinationRelativePath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("delete published artifact: %w", err)
 			}
-			continue
+			return nil
 		}
-		raw, err := artifactBytesForProjection(workspacePath, artifactContentByPath, artifact.RelativePath)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
-			return fmt.Errorf("create publish destination directory: %w", err)
-		}
-		artifactKind := strings.TrimSpace(artifact.ArtifactKind)
-		if shouldPublishToProjectRoot(artifact) && artifactKind != "" && artifactKind != "deliverable" {
-			if _, err := os.Stat(destinationPath); err == nil {
-				continue
-			} else if !os.IsNotExist(err) {
-				return fmt.Errorf("check publish destination path: %w", err)
-			}
-		}
-		if err := os.WriteFile(destinationPath, raw, 0o644); err != nil {
+		if _, err := o.writeProjectedArtifact(ctx, workspacePath, artifactContentByPath, targetRoot, destinationRelativePath, artifact); err != nil {
 			return fmt.Errorf("write published artifact: %w", err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
-func (o *orchestrationLoop) publishArtifactsDirectWithTracking(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, targetRoot, runArtifactRoot string, artifacts []artifactOutputRecord) error {
+func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, attemptID, targetRoot, runArtifactRoot string, artifacts artifactProjectionSource) error {
 	if o == nil || o.db == nil || o.fsStore == nil {
-		return o.writeArtifactsToRoot(workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+		return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
 	}
 	target, err := o.fsStore.GetExecutionTarget(ctx, runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return o.writeArtifactsToRoot(workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+			return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
 		}
 		return err
 	}
-	baselineManifest, err := o.fsStore.ResolveSnapshotManifest(ctx, target.SourceSnapshotID)
+	baselineManifest, err := o.fsStore.OpenSnapshotManifest(ctx, target.SourceSnapshotID)
 	if err != nil {
 		return err
 	}
-	batchID := fmt.Sprintf("pub_%s_%d", sanitizeFileToken(runID), o.now().UTC().UnixNano())
+	defer baselineManifest.Close()
+	// Identity describes the immutable projection intent, not its observation
+	// time. Fully validate/replay metadata before any filesystem side effect.
+	hash := sha256.New()
+	encoder := json.NewEncoder(hash)
+	if err := encoder.Encode([]string{"artifact-projection-v1", runID, attemptID, filepath.Clean(targetRoot), filepath.Clean(runArtifactRoot)}); err != nil {
+		return err
+	}
+	count := 0
+	lastID := ""
+	if err := artifacts(ctx, func(artifact artifactOutputRecord) error {
+		if artifact.ArtifactID == "" || artifact.ArtifactID <= lastID {
+			return fmt.Errorf("artifact projection metadata must have unique, ordered identities")
+		}
+		if isProtectedPublishPath(artifact.RelativePath) {
+			return fmt.Errorf("artifact path targets protected root segment: %q", artifact.RelativePath)
+		}
+		if _, err := resolvePathWithinRoot(targetRoot, publishDestinationRelativePath(runArtifactRoot, artifact)); err != nil {
+			return err
+		}
+		lastID = artifact.ArtifactID
+		count++
+		return encoder.Encode(artifact)
+	}); err != nil {
+		return err
+	}
+	if count == 0 {
+		return nil
+	}
+	batchID := fmt.Sprintf("pub_%x", hash.Sum(nil))
 	createdAt := o.now().UTC().Format(time.RFC3339)
-	if _, err := o.db.ExecContext(ctx, `INSERT INTO run_publication_batches (publication_batch_id, run_id, attempt_id, target_mode, status, published_count, conflicted_count, failed_count, created_at) VALUES (?, ?, ?, 'direct', 'succeeded', 0, 0, 0, ?)`, batchID, runID, publicationAttemptID(artifacts), createdAt); err != nil {
+	if _, err := o.db.ExecContext(ctx, `INSERT INTO run_publication_batches (publication_batch_id, run_id, attempt_id, target_mode, status, published_count, conflicted_count, failed_count, created_at) VALUES (?, ?, ?, 'direct', 'failed', 0, 0, 0, ?) ON CONFLICT(publication_batch_id) DO NOTHING`, batchID, runID, attemptID, createdAt); err != nil {
 		return fmt.Errorf("insert publication batch: %w", err)
 	}
-	publishedCount := 0
-	conflictedCount := 0
-	failedCount := 0
-	for idx, artifact := range artifacts {
+	err = artifacts(ctx, func(artifact artifactOutputRecord) error {
+		if isProtectedPublishPath(artifact.RelativePath) {
+			return fmt.Errorf("artifact path targets protected root segment: %q", artifact.RelativePath)
+		}
 		destinationRelativePath := publishDestinationRelativePath(runArtifactRoot, artifact)
-		destinationPath, err := resolvePathWithinRoot(targetRoot, destinationRelativePath)
+		_, err := resolvePathWithinRoot(targetRoot, destinationRelativePath)
 		if err != nil {
 			return err
 		}
@@ -444,7 +282,19 @@ func (o *orchestrationLoop) publishArtifactsDirectWithTracking(ctx context.Conte
 		if err != nil {
 			return err
 		}
-		observedSHA, err := fileSHA256(destinationPath)
+		entryID := publicationEntryID(batchID, artifact.ArtifactID)
+		var previousStatus, previousExpected string
+		err = o.db.QueryRowContext(ctx, `SELECT status,expected_sha256 FROM run_publication_entries WHERE publication_entry_id=?`, entryID).Scan(&previousStatus, &previousExpected)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if previousStatus == "published" || previousStatus == "conflicted" {
+			return nil
+		}
+		if previousStatus != "" {
+			expectedSHA = previousExpected
+		}
+		observedSHA, err := fileSHA256(ctx, targetRoot, destinationRelativePath)
 		if err != nil {
 			return err
 		}
@@ -452,49 +302,60 @@ func (o *orchestrationLoop) publishArtifactsDirectWithTracking(ctx context.Conte
 		reasonCode := ""
 		reasonText := ""
 		blobID := ""
-		if observedSHA != expectedSHA {
+		desiredSHA := artifact.SHA256
+		if artifact.ArtifactAction != "delete" && desiredSHA == "" {
+			record, lookupErr := state.NewArtifactService(o.db).GetArtifact(ctx, artifact.ArtifactID)
+			if lookupErr == nil {
+				desiredSHA = record.SHA256
+			} else {
+				var missing *state.ArtifactNotFoundError
+				if !errors.As(lookupErr, &missing) {
+					return lookupErr
+				}
+			}
+		}
+		alreadyApplied := artifact.ArtifactAction == "delete" && observedSHA == "" || desiredSHA != "" && observedSHA == desiredSHA
+		if alreadyApplied {
+			blobID = desiredSHA
+			if artifact.ArtifactAction != "delete" {
+				record, err := state.NewArtifactService(o.db).CopyArtifactContent(ctx, artifact.ArtifactID, io.Discard)
+				if err != nil {
+					return err
+				}
+				if record.SHA256 != desiredSHA {
+					return fmt.Errorf("artifact content changed during projection")
+				}
+			}
+		} else if observedSHA != expectedSHA {
 			status = "conflicted"
 			reasonCode = conflictReasonCodeForAction(artifact.ArtifactAction)
 			reasonText = simpleConflictReason(destinationRelativePath, artifact.ArtifactAction)
-			conflictedCount++
 		} else if strings.TrimSpace(artifact.ArtifactAction) == "delete" {
-			if err := os.Remove(destinationPath); err != nil && !os.IsNotExist(err) {
+			if err := removeProjectedArtifact(targetRoot, destinationRelativePath); err != nil && !os.IsNotExist(err) {
 				status = "failed"
 				reasonCode = "delete_failed"
 				reasonText = fmt.Sprintf("Could not delete %s because the filesystem rejected the change.", destinationRelativePath)
-				failedCount++
-			} else {
-				publishedCount++
-				if err := o.upsertPublishedPath(ctx, target.RunID, destinationRelativePath, "delete", "", createdAt); err != nil {
-					return err
-				}
 			}
 		} else {
-			raw, err := artifactBytesForProjection(workspacePath, artifactContentByPath, artifact.RelativePath)
+			blobID, err = o.writeProjectedArtifact(ctx, workspacePath, artifactContentByPath, targetRoot, destinationRelativePath, artifact)
 			if err != nil {
-				return err
-			}
-			blobID = sha256Hex(raw)
-			if err := os.MkdirAll(filepath.Dir(destinationPath), 0o755); err != nil {
 				status = "failed"
-				reasonCode = "mkdir_failed"
-				reasonText = fmt.Sprintf("Could not publish %s because the destination directory could not be created.", destinationRelativePath)
-				failedCount++
-			} else if err := os.WriteFile(destinationPath, raw, 0o644); err != nil {
-				status = "failed"
+				blobID = ""
 				reasonCode = "write_failed"
 				reasonText = fmt.Sprintf("Could not publish %s because the filesystem rejected the change.", destinationRelativePath)
-				failedCount++
-			} else {
-				publishedCount++
-				if err := o.upsertPublishedPath(ctx, target.RunID, destinationRelativePath, "write", blobID, createdAt); err != nil {
-					return err
-				}
 			}
 		}
-		if err := o.insertPublicationEntry(ctx, batchID, target.RunID, publicationAttemptID(artifacts), artifact, idx, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt); err != nil {
-			return err
-		}
+		return o.recordPublicationEntry(ctx, batchID, target.RunID, attemptID, destinationRelativePath, artifact, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt)
+	})
+	if err != nil {
+		return err
+	}
+	var publishedCount, conflictedCount, failedCount, total int
+	if err := o.db.QueryRowContext(ctx, `SELECT count(*),COALESCE(sum(status='published'),0),COALESCE(sum(status='conflicted'),0),COALESCE(sum(status='failed'),0) FROM run_publication_entries WHERE publication_batch_id=?`, batchID).Scan(&total, &publishedCount, &conflictedCount, &failedCount); err != nil {
+		return err
+	}
+	if total != count {
+		return fmt.Errorf("artifact publication inventory changed during replay")
 	}
 	status := "succeeded"
 	if failedCount > 0 {
@@ -516,29 +377,41 @@ func publishDestinationRelativePath(runArtifactRoot string, artifact artifactOut
 	return filepath.Join(runArtifactRoot, sanitizeFileToken(artifact.NodeID), fmt.Sprintf("attempt-%d", max(artifact.Attempt, 1)), artifact.RelativePath)
 }
 
-func artifactBytesForProjection(workspacePath string, artifactContentByPath map[string][]byte, relativePath string) ([]byte, error) {
-	if raw, ok := artifactContentByPath[relativePath]; ok {
-		if int64(len(raw)) > providerlimits.TrackedWorkspaceFileBytes {
-			return nil, &providerlimits.LimitExceededError{Resource: "artifact projection", Limit: providerlimits.TrackedWorkspaceFileBytes}
-		}
-		return raw, nil
-	}
-	root, err := securefs.OpenRoot(workspacePath)
+func (o *orchestrationLoop) writeProjectedArtifact(ctx context.Context, workspacePath string, inline map[string][]byte, targetRoot, destination string, artifact artifactOutputRecord) (string, error) {
+	root, err := securefs.OpenRoot(targetRoot)
 	if err != nil {
-		return nil, fmt.Errorf("open publish source root: %w", err)
+		return "", err
 	}
 	defer root.Close()
-	raw, err := root.ReadRegular(relativePath, providerlimits.TrackedWorkspaceFileBytes)
-	if err != nil {
-		if errors.Is(err, securefs.ErrLimitExceeded) {
-			return nil, &providerlimits.LimitExceededError{Resource: "artifact projection", Limit: providerlimits.TrackedWorkspaceFileBytes}
+	hash := sha256.New()
+	err = root.ReplaceRegularFrom(ctx, destination, func(dst io.Writer) error {
+		dst = io.MultiWriter(dst, hash)
+		if o.db != nil && artifact.ArtifactID != "" {
+			record, err := state.NewArtifactService(o.db).CopyArtifactContent(ctx, artifact.ArtifactID, dst)
+			if err != nil {
+				return err
+			}
+			if artifact.SHA256 != "" && artifact.SHA256 != record.SHA256 {
+				return fmt.Errorf("canonical artifact changed during projection")
+			}
+			return nil
 		}
-		return nil, fmt.Errorf("read publish source artifact: %w", err)
-	}
-	return raw, nil
+		if raw, ok := inline[artifact.RelativePath]; ok {
+			_, err := securefs.Copy(ctx, dst, bytes.NewReader(raw))
+			return err
+		}
+		source, err := securefs.OpenRoot(workspacePath)
+		if err != nil {
+			return err
+		}
+		defer source.Close()
+		_, _, err = source.CopyRegular(ctx, artifact.RelativePath, dst)
+		return err
+	}, 0o644, 0o755, time.Time{})
+	return fmt.Sprintf("%x", hash.Sum(nil)), err
 }
 
-func (o *orchestrationLoop) expectedPublishedPathSHA(ctx context.Context, runID string, baselineManifest map[string]runtimefs.SnapshotEntry, path string) (string, error) {
+func (o *orchestrationLoop) expectedPublishedPathSHA(ctx context.Context, runID string, baselineManifest *runtimefs.SnapshotManifest, path string) (string, error) {
 	var sha string
 	err := o.db.QueryRowContext(ctx, `SELECT sha256 FROM run_publication_paths WHERE run_id = ? AND path = ?`, runID, path).Scan(&sha)
 	if err == nil {
@@ -547,38 +420,50 @@ func (o *orchestrationLoop) expectedPublishedPathSHA(ctx context.Context, runID 
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return "", fmt.Errorf("load publication path state: %w", err)
 	}
-	if entry, ok := baselineManifest[path]; ok {
+	entry, ok, err := baselineManifest.Lookup(ctx, path)
+	if err != nil {
+		return "", err
+	}
+	if ok {
 		return strings.TrimSpace(entry.BlobID), nil
 	}
 	return "", nil
 }
 
-func (o *orchestrationLoop) upsertPublishedPath(ctx context.Context, runID, path, action, blobID, updatedAt string) error {
-	_, err := o.db.ExecContext(ctx, `INSERT INTO run_publication_paths (run_id, path, artifact_action, blob_id, sha256, updated_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(run_id, path) DO UPDATE SET artifact_action = excluded.artifact_action, blob_id = excluded.blob_id, sha256 = excluded.sha256, updated_at = excluded.updated_at`, runID, path, action, blobID, blobID, updatedAt)
-	if err != nil {
-		return fmt.Errorf("upsert publication path state: %w", err)
-	}
-	return nil
+func publicationEntryID(batchID, artifactID string) string {
+	raw, _ := json.Marshal([]string{batchID, artifactID})
+	return "pubentry_" + sha256Hex(raw)
 }
 
-func (o *orchestrationLoop) insertPublicationEntry(ctx context.Context, batchID, runID, attemptID string, artifact artifactOutputRecord, idx int, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt string) error {
-	_, err := o.db.ExecContext(ctx, `INSERT INTO run_publication_entries (publication_entry_id, publication_batch_id, run_id, attempt_id, path, action, status, reason_code, reason_text, blob_id, expected_sha256, observed_sha256, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, fmt.Sprintf("%s_%d", batchID, idx+1), batchID, runID, attemptID, artifact.RelativePath, firstNonEmptyString(strings.TrimSpace(artifact.ArtifactAction), "write"), status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt)
+// Path authority and its audit result advance together. If that commit is
+// ambiguous, replay observes the completed entry or recognizes the canonical
+// checksum already on disk without duplicating audit.
+func (o *orchestrationLoop) recordPublicationEntry(ctx context.Context, batchID, runID, attemptID, destination string, artifact artifactOutputRecord, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt string) error {
+	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("insert publication entry: %w", err)
+		return err
 	}
-	return nil
-}
-
-func publicationAttemptID(artifacts []artifactOutputRecord) string {
-	if len(artifacts) == 0 {
-		return ""
+	defer tx.Rollback()
+	entryID := publicationEntryID(batchID, artifact.ArtifactID)
+	var previous string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM run_publication_entries WHERE publication_entry_id=?`, entryID).Scan(&previous)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
 	}
-	prefix := strings.TrimSpace(artifacts[0].ArtifactID)
-	idx := strings.LastIndex(prefix, "_artifact_")
-	if idx <= 0 {
-		return ""
+	if previous == "published" || previous == "conflicted" {
+		return nil
 	}
-	return prefix[:idx]
+	if status == "published" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_paths (run_id,path,artifact_action,blob_id,sha256,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(run_id,path) DO UPDATE SET artifact_action=excluded.artifact_action,blob_id=excluded.blob_id,sha256=excluded.sha256,updated_at=excluded.updated_at`, runID, destination, firstNonEmptyString(artifact.ArtifactAction, "write"), blobID, blobID, createdAt)
+		if err != nil {
+			return err
+		}
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_entries (publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,status,reason_code,reason_text,blob_id,expected_sha256,observed_sha256,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(publication_entry_id) DO UPDATE SET status=excluded.status,reason_code=excluded.reason_code,reason_text=excluded.reason_text,blob_id=excluded.blob_id,observed_sha256=excluded.observed_sha256`, entryID, batchID, runID, attemptID, artifact.RelativePath, firstNonEmptyString(artifact.ArtifactAction, "write"), status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func conflictReasonCodeForAction(action string) string {
@@ -595,15 +480,29 @@ func simpleConflictReason(path, action string) string {
 	return fmt.Sprintf("Could not publish %s because it changed outside Kingdom during this run.", path)
 }
 
-func fileSHA256(path string) (string, error) {
-	raw, err := os.ReadFile(path)
+func removeProjectedArtifact(targetRoot, path string) error {
+	root, err := securefs.OpenRoot(targetRoot)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.RemoveEntry(path)
+}
+
+func fileSHA256(ctx context.Context, targetRoot, path string) (string, error) {
+	root, err := securefs.OpenRoot(targetRoot)
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+	identity, _, err := root.CopyRegular(ctx, path, io.Discard)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", nil
 	}
 	if err != nil {
 		return "", fmt.Errorf("read checksum source: %w", err)
 	}
-	return sha256Hex(raw), nil
+	return identity.ContentSHA256, nil
 }
 
 func sha256Hex(raw []byte) string {
@@ -645,36 +544,12 @@ func (o *orchestrationLoop) resolveRunArtifactOutputRoot(ctx context.Context, ru
 }
 
 func (o *orchestrationLoop) builderEvidenceManifestForRun(ctx context.Context, runID string) string {
-	records, latestRecord, found, err := o.canonicalBuilderArtifactsForRun(ctx, runID, false)
+	previewPaths, uniqueDeliverableCount, latestRecord, found, err := o.canonicalBuilderArtifactPreview(ctx, runID)
 	if err != nil {
 		return ""
 	}
 	if !found {
 		return ""
-	}
-
-	uniqueDeliverableCount := 0
-	previewPaths := make([]string, 0, 10)
-	previewTruncated := false
-	uniqueSet := make(map[string]struct{}, 64)
-	for _, record := range records {
-		if strings.TrimSpace(record.ArtifactKind) != "deliverable" {
-			continue
-		}
-		artifactPath := strings.TrimSpace(record.Path)
-		if artifactPath == "" || isNoisyManifestPath(artifactPath) {
-			continue
-		}
-		if _, seen := uniqueSet[artifactPath]; seen {
-			continue
-		}
-		uniqueSet[artifactPath] = struct{}{}
-		uniqueDeliverableCount++
-		if len(previewPaths) < 10 {
-			previewPaths = append(previewPaths, artifactPath)
-		} else {
-			previewTruncated = true
-		}
 	}
 
 	if uniqueDeliverableCount == 0 {
@@ -694,7 +569,7 @@ func (o *orchestrationLoop) builderEvidenceManifestForRun(ctx context.Context, r
 		for _, artifactPath := range previewPaths {
 			b.WriteString(fmt.Sprintf("  - %s\n", artifactPath))
 		}
-		if previewTruncated {
+		if uniqueDeliverableCount > len(previewPaths) {
 			b.WriteString("  - ...\n")
 		}
 	} else {
@@ -705,21 +580,11 @@ func (o *orchestrationLoop) builderEvidenceManifestForRun(ctx context.Context, r
 	return strings.TrimSpace(b.String())
 }
 
-type canonicalBuilderArtifactRecord struct {
-	AttemptID    string
-	ArtifactID   string
-	ArtifactKind string
-	ProducerRole string
-	Path         string
-	CreatedAt    string
-	Content      []byte
-}
-
-func (o *orchestrationLoop) canonicalBuilderArtifactsForRun(ctx context.Context, runID string, withContent bool) ([]canonicalBuilderArtifactRecord, executionstore.RunExecutionOutputRecord, bool, error) {
+func (o *orchestrationLoop) canonicalBuilderArtifactPreview(ctx context.Context, runID string) ([]string, int, executionstore.RunExecutionOutputRecord, bool, error) {
 	trimmedRunID := strings.TrimSpace(runID)
 	store := o.canonicalExecutionStore()
 	if store == nil || trimmedRunID == "" {
-		return nil, executionstore.RunExecutionOutputRecord{}, false, nil
+		return nil, 0, executionstore.RunExecutionOutputRecord{}, false, nil
 	}
 
 	outputs, err := store.ListLatestRunExecutionOutputs(ctx, executionstore.ListRunExecutionOutputsRequest{
@@ -728,92 +593,84 @@ func (o *orchestrationLoop) canonicalBuilderArtifactsForRun(ctx context.Context,
 		States:      []string{"committed_success"},
 	})
 	if err != nil {
-		return nil, executionstore.RunExecutionOutputRecord{}, false, err
+		return nil, 0, executionstore.RunExecutionOutputRecord{}, false, err
 	}
 	latestRecord, ok := latestExecutionOutputRecord(outputs)
 	if !ok {
-		return nil, executionstore.RunExecutionOutputRecord{}, false, nil
+		return nil, 0, executionstore.RunExecutionOutputRecord{}, false, nil
 	}
 
 	sort.SliceStable(outputs, func(i, j int) bool {
 		return executionOutputSortKey(outputs[i]) > executionOutputSortKey(outputs[j])
 	})
-	attemptOrder := make(map[string]int, len(outputs))
-	attemptIDs := make([]string, 0, len(outputs))
-	for idx, output := range outputs {
-		attemptID := strings.TrimSpace(output.AttemptID)
-		if attemptID == "" {
-			continue
-		}
-		if _, exists := attemptOrder[attemptID]; exists {
-			continue
-		}
-		attemptOrder[attemptID] = idx
-		attemptIDs = append(attemptIDs, attemptID)
-	}
-	if len(attemptIDs) == 0 {
-		return nil, latestRecord, false, nil
-	}
-
-	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(attemptIDs)), ",")
-	query := strings.Builder{}
-	query.WriteString(`SELECT a.attempt_id, a.artifact_id, a.artifact_kind, a.producer_role, a.path, a.created_at`)
-	if withContent {
-		query.WriteString(`, ac.content`)
-	}
-	query.WriteString(`
-FROM artifacts a`)
-	if withContent {
-		query.WriteString(`
-JOIN artifact_contents ac ON ac.artifact_id = a.artifact_id`)
-	}
-	query.WriteString(fmt.Sprintf(`
-WHERE a.run_id = ?
-  AND a.attempt_id IN (%s)`, placeholders))
-
-	args := make([]any, 0, len(attemptIDs)+1)
-	args = append(args, trimmedRunID)
-	for _, attemptID := range attemptIDs {
-		args = append(args, attemptID)
-	}
-
-	rows, err := o.db.QueryContext(ctx, query.String(), args...)
+	file, err := os.CreateTemp("", "kingdom-artifact-paths-*.sqlite")
 	if err != nil {
-		return nil, latestRecord, false, err
+		return nil, 0, latestRecord, false, err
 	}
-	defer rows.Close()
-
-	records := make([]canonicalBuilderArtifactRecord, 0)
-	for rows.Next() {
-		var record canonicalBuilderArtifactRecord
-		if withContent {
-			if scanErr := rows.Scan(&record.AttemptID, &record.ArtifactID, &record.ArtifactKind, &record.ProducerRole, &record.Path, &record.CreatedAt, &record.Content); scanErr != nil {
-				return nil, latestRecord, false, scanErr
+	defer os.Remove(file.Name())
+	if err := file.Close(); err != nil {
+		return nil, 0, latestRecord, false, err
+	}
+	seen, err := sql.Open("sqlite", (&url.URL{Scheme: "file", Path: file.Name()}).String())
+	if err != nil {
+		return nil, 0, latestRecord, false, err
+	}
+	defer seen.Close()
+	seen.SetMaxOpenConns(1)
+	if _, err := seen.ExecContext(ctx, `PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA mmap_size=0; PRAGMA cache_size=-1024; CREATE TABLE paths(path TEXT PRIMARY KEY) WITHOUT ROWID`); err != nil {
+		return nil, 0, latestRecord, false, err
+	}
+	tx, err := seen.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, 0, latestRecord, false, err
+	}
+	defer tx.Rollback()
+	insert, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO paths VALUES (?)`)
+	if err != nil {
+		return nil, 0, latestRecord, false, err
+	}
+	defer insert.Close()
+	preview := make([]string, 0, 10)
+	count := 0
+	visit := func(attemptID string) error {
+		rows, err := o.db.QueryContext(ctx, `SELECT path FROM artifacts WHERE run_id=? AND attempt_id=? AND artifact_kind='deliverable' ORDER BY created_at DESC,artifact_id`, trimmedRunID, attemptID)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var path string
+			if err := rows.Scan(&path); err != nil {
+				return err
 			}
-		} else {
-			if scanErr := rows.Scan(&record.AttemptID, &record.ArtifactID, &record.ArtifactKind, &record.ProducerRole, &record.Path, &record.CreatedAt); scanErr != nil {
-				return nil, latestRecord, false, scanErr
+			path = strings.TrimSpace(path)
+			if path == "" || isNoisyManifestPath(path) {
+				continue
+			}
+			result, err := insert.ExecContext(ctx, path)
+			if err != nil {
+				return err
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n == 0 {
+				continue
+			}
+			count++
+			if len(preview) < 10 {
+				preview = append(preview, path)
 			}
 		}
-		records = append(records, record)
+		return rows.Err()
 	}
-	if err := rows.Err(); err != nil {
-		return nil, latestRecord, false, err
+	for _, output := range outputs {
+		if err := visit(strings.TrimSpace(output.AttemptID)); err != nil {
+			return nil, 0, latestRecord, false, err
+		}
 	}
-
-	sort.SliceStable(records, func(i, j int) bool {
-		leftRank := attemptOrder[strings.TrimSpace(records[i].AttemptID)]
-		rightRank := attemptOrder[strings.TrimSpace(records[j].AttemptID)]
-		if leftRank != rightRank {
-			return leftRank < rightRank
-		}
-		if records[i].CreatedAt != records[j].CreatedAt {
-			return records[i].CreatedAt > records[j].CreatedAt
-		}
-		return records[i].ArtifactID < records[j].ArtifactID
-	})
-
-	return records, latestRecord, true, nil
+	return preview, count, latestRecord, true, nil
 }
 
 func latestExecutionOutputRecord(records []executionstore.RunExecutionOutputRecord) (executionstore.RunExecutionOutputRecord, bool) {
@@ -859,16 +716,10 @@ func isNoisyManifestPath(path string) bool {
 	return false
 }
 
-func discoverWorkspaceArtifacts(workspacePath string) ([]executionArtifact, error) {
-	trackedFiles, err := trackedfs.WalkTrackedFiles(workspacePath)
-	if err != nil {
-		return nil, fmt.Errorf("discover workspace artifacts: %w", err)
-	}
-	artifacts := make([]executionArtifact, 0, len(trackedFiles))
-	for _, file := range trackedFiles {
-		artifacts = append(artifacts, executionArtifact{Path: file.RelativePath, Name: filepath.Base(file.RelativePath), MIME: inferMIMEType(file.RelativePath), Action: "write"})
-	}
-	return artifacts, nil
+func visitWorkspaceArtifacts(ctx context.Context, workspacePath string, visit func(executionArtifact) error) error {
+	return trackedfs.VisitTrackedFiles(ctx, workspacePath, func(file trackedfs.TrackedFile) error {
+		return visit(executionArtifact{Path: file.RelativePath, Name: filepath.Base(file.RelativePath), MIME: inferMIMEType(file.RelativePath), Action: "write"})
+	})
 }
 
 func inferMIMEType(path string) string {

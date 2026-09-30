@@ -3,6 +3,7 @@ package executionoutput
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
 
 	"kingdom/internal/core/errorcatalog"
@@ -30,8 +31,20 @@ func (e *ValidationError) Error() string {
 }
 
 func Validate(nodeID, nodeClass, finalText, structuredPayloadJSON string) (Result, error) {
-	canonicalText := strings.TrimSpace(finalText)
-	if canonicalText == "" {
+	result, err := ValidateReader(nodeID, nodeClass, strings.NewReader(finalText), structuredPayloadJSON)
+	if err != nil {
+		return Result{}, err
+	}
+	result.CanonicalText = strings.TrimSpace(finalText)
+	return result, nil
+}
+
+func ValidateReader(nodeID, nodeClass string, reader io.Reader, structuredPayloadJSON string) (Result, error) {
+	scan, err := verdict.ScanReader(reader)
+	if err != nil {
+		return Result{}, &ValidationError{ReasonCode: string(errorcatalog.CodeLLMInvalidResponse), message: fmt.Sprintf("read provider response: %v", err)}
+	}
+	if !scan.NonEmpty {
 		return Result{}, &ValidationError{ReasonCode: "provider_empty_output", message: "provider returned an empty terminal response"}
 	}
 
@@ -39,15 +52,15 @@ func Validate(nodeID, nodeClass, finalText, structuredPayloadJSON string) (Resul
 	if err != nil {
 		return Result{}, err
 	}
-	result := Result{CanonicalText: canonicalText}
+	result := Result{}
 
 	switch workflow.ResolveNodeClass(nodeID, nodeClass) {
 	case workflow.NodeClassExecutionReview:
-		if err := applyVerdict(&result, structured, canonicalText, "execution review", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeExecutionReview, "review requested rework"); err != nil {
+		if err := applyVerdict(&result, structured, scan, "execution review", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeExecutionReview, "review requested rework"); err != nil {
 			return Result{}, err
 		}
 	case workflow.NodeClassValidationGates:
-		if err := applyVerdict(&result, structured, canonicalText, "validation", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeValidationGate, "validation requested rework"); err != nil {
+		if err := applyVerdict(&result, structured, scan, "validation", string(errorcatalog.CodeLLMInvalidResponse), verdict.ReworkReasonCodeValidationGate, "validation requested rework"); err != nil {
 			return Result{}, err
 		}
 	}
@@ -75,11 +88,14 @@ func decodeStructuredPayload(raw string) (map[string]any, error) {
 	return structured, nil
 }
 
-func applyVerdict(result *Result, structured map[string]any, finalText, ownerLabel, invalidReasonCode, reworkReasonCode, reworkReasonText string) error {
-	resolved, err := verdict.ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
-	if err != nil {
-		return &ValidationError{ReasonCode: invalidReasonCode, message: err.Error()}
+func applyVerdict(result *Result, structured map[string]any, scan verdict.StreamResult, ownerLabel, invalidReasonCode, reworkReasonCode, reworkReasonText string) error {
+	if scan.Invalid != nil {
+		return &ValidationError{ReasonCode: invalidReasonCode, message: fmt.Sprintf("%s response contains invalid verdict lines", ownerLabel)}
 	}
+	if !scan.Found {
+		return &ValidationError{ReasonCode: invalidReasonCode, message: fmt.Sprintf("%s response missing required verdict line near top: VERDICT: PASS|REWORK", ownerLabel)}
+	}
+	resolved := scan.Verdict
 	if claimed, exists := structured["verdict"]; exists {
 		claim, ok := claimed.(string)
 		if !ok || !strings.EqualFold(strings.TrimSpace(claim), resolved) {

@@ -142,10 +142,11 @@ type Runtime struct {
 
 	sessionManager  *state.SessionManager
 	reconciler      *state.Reconciler
-	budgetGuard     *state.BudgetGuard
 	eventIngestor   *state.AttemptEventIngestor
 	outputValidator *state.WorkerOutputValidator
 	adapter         opencode.Adapter
+	adapterCloseMu  sync.Mutex
+	adapterClosed   bool
 	providerEngine  string
 	orchestrator    *orchestrationLoop
 	dispatchEvery   time.Duration
@@ -337,7 +338,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		policyGuard:     guard,
 		sessionManager:  sessionManager,
 		reconciler:      state.NewReconcilerWithRoleCommunicationPolicy(cfg.DB, sessionManager, retryPlanEngine, roleCommPolicy, schemaSet),
-		budgetGuard:     state.NewBudgetGuardWithRoleCommunicationPolicy(cfg.DB, roleCommPolicy, schemaSet),
 		eventIngestor:   state.NewAttemptEventIngestor(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		outputValidator: outputValidator,
 		adapter:         adapter,
@@ -455,6 +455,10 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, runner opencode.Gua
 					case errCh <- err:
 						cancel()
 					default:
+						var diagnostic *opencode.HelperCommandError
+						if errors.As(err, &diagnostic) {
+							_ = diagnostic.Close()
+						}
 					}
 					return
 				}
@@ -507,78 +511,18 @@ func validateOpenCodeAgent(ctx context.Context, runner opencode.GuardianRunner, 
 	output, err := runGuardedValidationCommand(ctx, runner, processguardian.Command{Path: binaryPath, Args: []string{"debug", "agent", agent}, Dir: workDir, Env: append(os.Environ(), append(opencode.ConfigDirEnvironment(configDir), opencode.DatabasePathEnvironment(isolatedDBPath)...)...)})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, ctxErr)
+			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, output.DiagnosticError(errors.Join(ctxErr, err)))
 		}
-		detail := strings.TrimSpace(string(output))
-		if detail != "" {
-			return fmt.Errorf("provider agent %q is not resolvable: %s", agent, detail)
-		}
-		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, err)
+		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, output.DiagnosticError(err))
 	}
-	return nil
+	return output.Close()
 }
 
-func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRunner, command processguardian.Command) ([]byte, error) {
+func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRunner, command processguardian.Command) (*opencode.HelperCommandOutput, error) {
 	if runner == nil {
 		return nil, fmt.Errorf("process guardian runner is required")
 	}
-	handle, err := runner.Start(ctx, command, nil)
-	if err != nil {
-		return nil, err
-	}
-	type commandReadResult struct {
-		raw []byte
-		err error
-	}
-	stdoutDone := make(chan commandReadResult, 1)
-	stderrDone := make(chan commandReadResult, 1)
-	stdoutStream, stderrStream := handle.Stdout(), handle.Stderr()
-	var cancelOnce sync.Once
-	cancel := func() {
-		cancelOnce.Do(func() { _ = handle.Cancel(context.Background()) })
-	}
-	stdinErr := handle.Stdin().Close()
-	if stdinErr != nil {
-		cancel()
-	}
-	go func() {
-		defer stdoutStream.Close()
-		raw, readErr := providerlimits.ReadBoundedOnLimit(stdoutStream, providerlimits.GuardedCommandStreamBytes, "command stdout", cancel)
-		stdoutDone <- commandReadResult{raw: raw, err: readErr}
-	}()
-	go func() {
-		defer stderrStream.Close()
-		raw, readErr := providerlimits.ReadBoundedOnLimit(stderrStream, providerlimits.GuardedCommandStreamBytes, "command stderr", cancel)
-		stderrDone <- commandReadResult{raw: raw, err: readErr}
-	}()
-	cancelDone := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			cancel()
-		case <-cancelDone:
-		}
-	}()
-	result, waitErr := handle.Wait(context.Background())
-	close(cancelDone)
-	stdout, stderr := <-stdoutDone, <-stderrDone
-	output := append(stdout.raw, stderr.raw...)
-	if stdout.err != nil {
-		return output, stdout.err
-	}
-	if stderr.err != nil {
-		return output, stderr.err
-	}
-	if stdinErr != nil {
-		return output, fmt.Errorf("close guarded validation stdin: %w", stdinErr)
-	}
-	if waitErr != nil {
-		return output, waitErr
-	}
-	if !result.Quiescent || result.ExitCode != 0 || result.ExitSignal != 0 || result.FailureCode != "" {
-		return output, fmt.Errorf("guarded command failed: %s", result.FailureText)
-	}
-	return output, nil
+	return opencode.RunHelperCommand(ctx, runner, command)
 }
 
 func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
@@ -1096,12 +1040,31 @@ func (r *Runtime) Close() error {
 // GracefulClose stops runtime loops and waits for runtime-owned durable
 // handoff goroutines to finish within the supplied context.
 func (r *Runtime) GracefulClose(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	// A forced stop must not restart an unbounded graceful wait or retire
+	// staging still owned by an interrupted handoff consumer.
+	if r.closeMode != nil && r.closeMode.IsForced() {
+		return nil
+	}
+	r.adapterCloseMu.Lock()
+	alreadyClosed := r.adapterClosed
+	r.adapterCloseMu.Unlock()
+	if alreadyClosed {
+		return nil
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, ok := r.stopHandles(false)
-	if !ok {
-		return nil
+	if !ok && done == nil && dispatchDone == nil && completionDone == nil {
+		if r.orchestrator != nil {
+			if err := r.orchestrator.waitForAsyncDrain(ctx); err != nil {
+				return err
+			}
+		}
+		return r.closeProviderAdapter(ctx)
 	}
 
 	if cancel != nil {
@@ -1111,22 +1074,31 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		cancelDispatch()
 	}
 	var closeErr error
-	if err := waitForRuntimeLoopDrain(ctx, done, "periodic runtime loop"); err != nil {
+	consumersDrained := true
+	if drained, err := waitForRuntimeLoopDrain(ctx, done, "periodic runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
-	if err := waitForRuntimeLoopDrain(ctx, dispatchDone, "dispatch runtime loop"); err != nil {
+	if drained, err := waitForRuntimeLoopDrain(ctx, dispatchDone, "dispatch runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
 	if r.orchestrator != nil {
 		if err := r.orchestrator.waitForAsyncDrain(ctx); err != nil {
 			closeErr = errors.Join(closeErr, err)
 		}
+		if tracker := r.orchestrator.asyncDrain; tracker != nil {
+			tracker.mu.Lock()
+			consumersDrained = consumersDrained && tracker.active == 0
+			tracker.mu.Unlock()
+		}
 	}
 	if cancelCompletion != nil {
 		cancelCompletion()
 	}
-	if err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
+	if drained, err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
 	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
 		closeErr = errors.Join(closeErr, err)
@@ -1135,7 +1107,32 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		closeErr = errors.Join(closeErr, err)
 	}
 
+	if consumersDrained {
+		closeErr = errors.Join(closeErr, r.closeProviderAdapter(ctx))
+	}
 	return closeErr
+}
+
+func (r *Runtime) closeProviderAdapter(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.adapterCloseMu.Lock()
+	defer r.adapterCloseMu.Unlock()
+	if r.adapterClosed {
+		return nil
+	}
+	if closer, ok := r.adapter.(interface{ CloseContext(context.Context) error }); ok {
+		if err := closer.CloseContext(ctx); err != nil {
+			return err
+		}
+	} else if closer, ok := r.adapter.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			return err
+		}
+	}
+	r.adapterClosed = true
+	return nil
 }
 
 // ForceClose is the hard-stop runtime path used when summon receives
@@ -1144,7 +1141,7 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 // and best-effort cancels tracked provider attempts without waiting for
 // the runtime loops to drain.
 func (r *Runtime) ForceClose() error {
-	cancel, cancelDispatch, cancelCompletion, _, _, _, ok := r.stopHandles(true)
+	cancel, cancelDispatch, cancelCompletion, _, _, _, _ := r.stopHandles(true)
 	if cancel != nil {
 		cancel()
 	}
@@ -1154,9 +1151,7 @@ func (r *Runtime) ForceClose() error {
 	if cancelCompletion != nil {
 		cancelCompletion()
 	}
-	if ok {
-		r.cancelInflightAttempts()
-	}
+	r.cancelInflightAttempts()
 	return nil
 }
 
@@ -1334,21 +1329,21 @@ func (r *Runtime) recoverExecutionOutboxStartup(ctx context.Context) error {
 	return nil
 }
 
-func waitForRuntimeLoopDrain(ctx context.Context, done <-chan error, label string) error {
+func waitForRuntimeLoopDrain(ctx context.Context, done <-chan error, label string) (bool, error) {
 	if done == nil {
-		return nil
+		return true, nil
 	}
 	select {
 	case err, ok := <-done:
 		if !ok {
-			return nil
+			return true, nil
 		}
 		if err != nil {
-			return err
+			return true, err
 		}
-		return nil
+		return true, nil
 	case <-ctx.Done():
-		return fmt.Errorf("wait for %s: %w", strings.TrimSpace(label), ctx.Err())
+		return false, fmt.Errorf("wait for %s: %w", strings.TrimSpace(label), ctx.Err())
 	}
 }
 
@@ -1359,7 +1354,7 @@ func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFun
 		r.closeMode.MarkForced()
 	}
 	if !r.started {
-		return nil, nil, nil, nil, nil, nil, false
+		return r.cancelPeriodic, r.cancelDispatch, r.cancelCompletion, r.periodicDone, r.dispatchDone, r.completionDone, false
 	}
 	cancel := r.cancelPeriodic
 	cancelDispatch := r.cancelDispatch
@@ -1368,12 +1363,6 @@ func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFun
 	dispatchDone := r.dispatchDone
 	completionDone := r.completionDone
 	r.started = false
-	r.cancelPeriodic = nil
-	r.cancelDispatch = nil
-	r.cancelCompletion = nil
-	r.periodicDone = nil
-	r.dispatchDone = nil
-	r.completionDone = nil
 	return cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, true
 }
 
@@ -1538,10 +1527,6 @@ func (r *Runtime) IngestAttemptStream(ctx context.Context, req StreamIngestionRe
 
 func (r *Runtime) ValidateAndPersistWorkerOutput(ctx context.Context, req state.WorkerOutputValidationRequest) (state.WorkerOutputValidationResult, error) {
 	return r.outputValidator.ValidateAndPersist(ctx, req)
-}
-
-func (r *Runtime) EnforceRunBudget(ctx context.Context, req state.EnforceRunBudgetRequest) (state.EnforceRunBudgetResult, error) {
-	return r.budgetGuard.EnforceRunBudget(ctx, req)
 }
 
 func (r *Runtime) RetryEngine() *retryengine.Engine {

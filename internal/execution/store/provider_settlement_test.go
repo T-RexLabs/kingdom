@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"strings"
 	"sync"
@@ -12,8 +13,238 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/dbmigrations"
 	"kingdom/internal/testutil"
 )
+
+func TestProviderContentHandoffImportIsAtomicVerifiedAndLeaseFenced(t *testing.T) {
+	for _, failure := range []string{"hash", "lease", "lineage", "none"} {
+		t.Run(failure, func(t *testing.T) {
+			s, db, settlement := phase2ProviderSettlementFixture(t)
+			req := terminalHandoffRequest(settlement)
+			text := strings.Repeat("canonical provider bytes\n", 10000)
+			ref := providerexecution.ReferenceText(req.ProviderInvocationID, text)
+			req.ContentReferences = []providerexecution.ContentReference{ref, ref}
+			req.StreamObservation.CanonicalTerminalTextRef = &ref
+			req.StreamObservation.CanonicalTerminalText = ""
+			calls := 0
+			req.CopyContent = func(_ providerexecution.ContentReference, w io.Writer) error {
+				calls++
+				if failure == "hash" {
+					_, err := io.WriteString(w, strings.Repeat("x", len(text)))
+					return err
+				}
+				_, err := io.WriteString(w, text)
+				return err
+			}
+			if failure == "lease" {
+				req.ExpectedLeaseVersion++
+			}
+			if failure == "lineage" {
+				req.ContentReferences[0].InvocationID = "foreign"
+			}
+			result, err := s.PersistProviderTerminalHandoff(context.Background(), req)
+			if failure != "none" {
+				if err == nil {
+					t.Fatal("accepted invalid content handoff")
+				}
+				for _, table := range []string{"provider_contents", "provider_content_chunks", "provider_terminal_handoffs"} {
+					if countPhase2Table(t, db, table) != 0 {
+						t.Fatalf("partial %s survived rollback", table)
+					}
+				}
+				if failure == "lease" && calls != 0 {
+					t.Fatal("read content before checking lease fence")
+				}
+				return
+			}
+			if err != nil || result.Idempotent {
+				t.Fatalf("handoff: %v", err)
+			}
+			if calls != 1 || countPhase2Table(t, db, "provider_contents") != 1 {
+				t.Fatal("duplicated shared content")
+			}
+			var b strings.Builder
+			if err := s.CopyProviderContent(context.Background(), ref, &b); err != nil || b.String() != text {
+				t.Fatalf("canonical content: %v", err)
+			}
+			if replay, err := s.PersistProviderTerminalHandoff(context.Background(), req); err != nil || !replay.Idempotent {
+				t.Fatalf("replay: %v", err)
+			}
+			if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
+				t.Fatal("handoff authorized success without settlement")
+			}
+			if _, err := db.Exec(`UPDATE provider_content_chunks SET content = X'00'`); err == nil {
+				t.Fatal("canonical content allowed mutation")
+			}
+		})
+	}
+}
+
+func TestSettlementChecksEveryDurableContinuationGuardBeyondThree(t *testing.T) {
+	s, db, req := providerProcessGuardFixture(t)
+	var first AcknowledgeProviderProcessGuardRequest
+	for ordinal := int64(1); ordinal <= 7; ordinal++ {
+		ack := providerProcessGuardAcknowledgement(req, fmt.Sprintf("continuation-guard-%d", ordinal), ordinal)
+		if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+			t.Fatal(err)
+		}
+		if ordinal == 1 {
+			first = ack
+			continue
+		}
+		if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(ack)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	req.StreamObservation.ProcessGuards = []providerexecution.ProcessGuardObservation{{CommandOrdinal: 7, GuardID: "continuation-guard-7", Quiescent: true}}
+	handoff, err := s.PersistProviderTerminalHandoff(context.Background(), terminalHandoffRequest(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.TerminalHandoffID = handoff.Handoff.HandoffID
+	if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err == nil {
+		t.Fatal("last guard preview hid an earlier live command")
+	} else {
+		requireProviderSettlementError(t, err, "settle_provider_completion_and_terminal", "provider_process_guard_not_quiescent")
+	}
+	if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
+		t.Fatal("unquiescent lineage partially settled")
+	}
+	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(first)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err != nil {
+		t.Fatalf("complete seven-command lineage did not settle: %v", err)
+	}
+}
+
+func TestSettlementRejectsEarlierGuardLeaseExitAndOrdinalConflicts(t *testing.T) {
+	for _, mutation := range []string{"lease_version=lease_version+1", "exit_code=2", "command_ordinal=8"} {
+		t.Run(mutation, func(t *testing.T) {
+			s, db, req := providerProcessGuardFixture(t)
+			for ordinal := int64(1); ordinal <= 7; ordinal++ {
+				ack := providerProcessGuardAcknowledgement(req, fmt.Sprintf("guard-%d", ordinal), ordinal)
+				if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(ack)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			handoff, err := s.PersistProviderTerminalHandoff(context.Background(), terminalHandoffRequest(req))
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.TerminalHandoffID = handoff.Handoff.HandoffID
+			mustExec(t, db, `UPDATE provider_process_guards SET `+mutation+` WHERE guard_id='guard-1'`)
+			if _, err := s.SettleProviderCompletionAndTerminal(context.Background(), req); err == nil {
+				t.Fatal("settled using only the last clean guard")
+			}
+			if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
+				t.Fatal("invalid guard lineage partially settled")
+			}
+		})
+	}
+}
+
+func TestReferencedSettlementProjectionUsesVerifiedVerdictBeyondPreview(t *testing.T) {
+	s, db, req := phase2ProviderSettlementFixture(t)
+	mustExec(t, db, `UPDATE workflow_nodes SET node_class='execution_review'`)
+	body := strings.TrimSpace("VERDICT:" + strings.Repeat(" ", 64*1024) + "PASS\n" + strings.Repeat("full response\n", 400000))
+	ref := providerexecution.ReferenceText(req.Settlement.ProviderInvocationID, body)
+	req.StreamObservation.CanonicalTerminalText = ""
+	req.StreamObservation.CanonicalTerminalTextRef = &ref
+	handoffReq := terminalHandoffRequest(req)
+	handoffReq.ContentReferences = []providerexecution.ContentReference{ref}
+	handoffReq.CopyContent = func(_ providerexecution.ContentReference, w io.Writer) error {
+		_, err := io.WriteString(w, body)
+		return err
+	}
+	handoff, err := s.PersistProviderTerminalHandoff(context.Background(), handoffReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.TerminalHandoffID = handoff.Handoff.HandoffID
+	settled, err := s.SettleProviderCompletionAndTerminal(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settled.FinalText != "" || settled.FinalTextRef == nil || len(settled.FinalTextPreview) > 32*1024+4 {
+		t.Fatal("canonical settlement materialized the answer")
+	}
+	detail, found, err := s.GetRunExecutionDetail(context.Background(), req.Settlement.RunID, req.Settlement.AttemptID)
+	if err != nil || !found || detail.ObservedOutputTextRef == nil || detail.ObservedControlVerdict.String != "PASS" {
+		t.Fatalf("detail lost canonical content/verdict: %+v err=%v", detail, err)
+	}
+	if strings.Contains(detail.ObservedOutputText.String, "PASS") {
+		t.Fatal("fixture did not put verdict beyond display preview")
+	}
+	outputs, err := s.ListLatestRunExecutionOutputs(context.Background(), ListRunExecutionOutputsRequest{RunID: req.Settlement.RunID, States: []string{"committed_success"}})
+	if err != nil || len(outputs) != 1 || outputs[0].OutputTextRef == nil {
+		t.Fatalf("outputs=%+v err=%v", outputs, err)
+	}
+	if err := s.CopyProviderContent(context.Background(), *outputs[0].OutputTextRef, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProviderStreamContentMigrationPreservesPromotedBytes(t *testing.T) {
+	db := openTestDB(t)
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	apply := func(name string) {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(raw)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	for _, name := range names {
+		if name <= "0008_provider_content.up.sql" {
+			apply(name)
+		}
+	}
+	seedMinimumGraph(t, db)
+	s := New(db)
+	const at = "2026-03-01T12:00:00Z"
+	if err := s.EnqueueAttempt(context.Background(), EnqueueAttemptRequest{AttemptID: "legacy-attempt", RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES('legacy-invocation','legacy-attempt','run_1','nr_1','settled_success','server_response',?,?)`, at, at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_completion_evidence(evidence_id,provider_invocation_id,attempt_id,run_id,node_run_id,evidence_kind,payload_json,created_at) VALUES('legacy-evidence','legacy-invocation','legacy-attempt','run_1','nr_1','stream_observation','{}',?)`, at); err != nil {
+		t.Fatal(err)
+	}
+	body := strings.Repeat("legacy response 界", 100000)
+	if _, err := db.Exec(`INSERT INTO provider_completion_settlements(settlement_id,provider_invocation_id,attempt_id,run_id,node_run_id,outcome,primary_evidence_id,final_text,settled_at,created_at) VALUES('legacy-settlement','legacy-invocation','legacy-attempt','run_1','nr_1','success','legacy-evidence',?,?,?)`, body, at, at); err != nil {
+		t.Fatal(err)
+	}
+	ref := providerexecution.ReferenceText("legacy-invocation", body)
+	if _, err := db.Exec(`INSERT INTO provider_contents(provider_invocation_id,sha256,size_bytes) VALUES(?,?,?)`, ref.InvocationID, ref.SHA256, ref.SizeBytes); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO provider_content_settlements(provider_invocation_id,sha256,settlement_id,field) VALUES(?,?,'legacy-settlement','final_text')`, ref.InvocationID, ref.SHA256); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name > "0008_provider_content.up.sql" {
+			apply(name)
+		}
+	}
+	settled, found, err := s.GetProviderCompletionSettlement(context.Background(), "legacy-settlement")
+	if err != nil || !found || settled.FinalTextRef == nil || *settled.FinalTextRef != ref || settled.FinalText != "" {
+		t.Fatalf("migrated settlement=%+v found=%t err=%v", settled, found, err)
+	}
+	if err := s.CopyProviderContent(context.Background(), ref, io.Discard); err != nil {
+		t.Fatalf("migrated bytes failed verification: %v", err)
+	}
+}
 
 func TestStoreCreateProviderInvocationAndMarkOpen(t *testing.T) {
 	t.Parallel()

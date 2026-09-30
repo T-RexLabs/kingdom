@@ -1265,7 +1265,7 @@ func TestServiceReplyResourceLimitFailsDurablyWithoutRetry(t *testing.T) {
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	const untrustedPrompt = "operator-secret-prompt-content"
-	service := NewServiceWithRetryEngine(store, &erroringAgent{err: &providerlimits.LimitExceededError{Resource: "canonical output", Limit: providerlimits.CanonicalOutputBytes}}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	service := NewServiceWithRetryEngine(store, &erroringAgent{err: &providerlimits.DepthExceededError{Resource: "snapshot lineage", Limit: providerlimits.SnapshotLineageDepth}}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 
 	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
@@ -2167,7 +2167,7 @@ func TestServiceActivityReconciliationMarksCompletedWhenDiagnosticExportFails(t 
 	}
 }
 
-func TestServiceActivityReconciliationBoundsRecoveredEventsAndBytes(t *testing.T) {
+func TestServiceActivityReconciliationContinuesBeyondFormerEventAndByteCaps(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeTestFile(t, projectRoot, "README.md", "# Project\n")
 	db := stateTestDB(t)
@@ -2188,6 +2188,7 @@ func TestServiceActivityReconciliationBoundsRecoveredEventsAndBytes(t *testing.T
 				Input: strings.Repeat("x", 4096),
 			}
 		}
+		items[0].Input = strings.Repeat("x", 300<<10) + "activity-tail"
 		return items, nil
 	}
 
@@ -2208,6 +2209,7 @@ func TestServiceActivityReconciliationBoundsRecoveredEventsAndBytes(t *testing.T
 	}
 	activityCount := 0
 	activityBytes := 0
+	foundLargeTail := false
 	for _, event := range events {
 		var payload map[string]any
 		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
@@ -2216,16 +2218,27 @@ func TestServiceActivityReconciliationBoundsRecoveredEventsAndBytes(t *testing.T
 		if _, ok := payload["activity_id"]; ok {
 			activityCount++
 			activityBytes += len(event.PayloadJSON)
+			foundLargeTail = foundLargeTail || strings.Contains(event.PayloadJSON, "activity-tail")
 		}
 	}
-	if activityCount > state.MaxPlanningActivityReconciliationEvents {
-		t.Fatalf("recovered activity count=%d, limit=%d", activityCount, state.MaxPlanningActivityReconciliationEvents)
+	if activityCount != state.MaxPlanningActivityReconciliationEvents*2 {
+		t.Fatalf("recovered activity count=%d, want every event", activityCount)
 	}
-	if activityBytes > state.MaxPlanningActivityReconciliationEventBytes {
-		t.Fatalf("recovered activity bytes=%d, limit=%d", activityBytes, state.MaxPlanningActivityReconciliationEventBytes)
+	if activityBytes <= state.MaxPlanningActivityReconciliationEventBytes {
+		t.Fatalf("test did not exercise continuing byte batches: %d", activityBytes)
+	}
+	if !foundLargeTail {
+		t.Fatal("a single activity larger than a batch lost its tail")
 	}
 	if len(events) == 0 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType {
 		t.Fatalf("expected marker after bounded recovered activity, got %+v", events)
+	}
+	if err := service.activity.ReconcileOperation(context.Background(), created.Operation.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := listAllPlanningOperationEvents(context.Background(), store, created.Operation.OperationID)
+	if err != nil || len(replayed) != len(events) {
+		t.Fatalf("diagnostic replay duplicated content: %v", err)
 	}
 }
 

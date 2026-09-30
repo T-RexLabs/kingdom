@@ -17,8 +17,9 @@ import (
 )
 
 type runMailboxMessagesResponse struct {
-	RunID string                     `json:"run_id"`
-	Items []runMailboxMessageSummary `json:"items"`
+	NextCursor *string                    `json:"next_cursor,omitempty"`
+	RunID      string                     `json:"run_id"`
+	Items      []runMailboxMessageSummary `json:"items"`
 }
 
 type runMailboxMessageSummary struct {
@@ -95,12 +96,31 @@ func (s *Server) handleListRunMailboxMessages(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	messages, err := s.listUserFacingRunMailboxMessages(r.Context(), runID, threadID, toAgentID, communicationType, unreadOnly, limit)
+	scopeJSON, _ := json.Marshal([]any{runID, threadID, toAgentID, communicationType, unreadOnly})
+	scope := string(scopeJSON)
+	before := int64(0)
+	if raw := strings.TrimSpace(r.URL.Query().Get("cursor")); raw != "" {
+		payload, decodeErr := s.cursors.Decode("mailbox", scope, raw)
+		if decodeErr == nil {
+			before, decodeErr = strconv.ParseInt(payload, 10, 64)
+		}
+		if decodeErr != nil || before <= 0 {
+			s.writeBadRequest(w, "invalid cursor")
+			return
+		}
+	}
+	messages, sequences, err := s.listUserFacingRunMailboxMessages(r.Context(), runID, threadID, toAgentID, communicationType, unreadOnly, limit+1, before)
 	if err != nil {
 		s.writeInternalError(w, "list mailbox messages failed")
 		return
 	}
 
+	var nextCursor *string
+	if len(messages) > limit {
+		next := s.cursors.Encode("mailbox", scope, strconv.FormatInt(sequences[limit-1], 10))
+		nextCursor = &next
+		messages = messages[:limit]
+	}
 	items := make([]runMailboxMessageSummary, 0, len(messages))
 	agentNames, err := s.lookupAgentDisplayNames(r.Context(), messages)
 	if err != nil {
@@ -120,45 +140,47 @@ func (s *Server) handleListRunMailboxMessages(w http.ResponseWriter, r *http.Req
 		items = append(items, summary)
 	}
 
-	writeJSON(w, http.StatusOK, runMailboxMessagesResponse{RunID: runID, Items: items})
+	writeJSON(w, http.StatusOK, runMailboxMessagesResponse{RunID: runID, Items: items, NextCursor: nextCursor})
 }
 
-func (s *Server) listUserFacingRunMailboxMessages(ctx context.Context, runID, threadID, toAgentID, communicationType string, unreadOnly bool, limit int) ([]state.MailboxMessage, error) {
+func (s *Server) listUserFacingRunMailboxMessages(ctx context.Context, runID, threadID, toAgentID, communicationType string, unreadOnly bool, limit int, before int64) ([]state.MailboxMessage, []int64, error) {
 	unreadMarker := 0
 	if unreadOnly {
 		unreadMarker = 1
 	}
 
+	boundary := ""
+	args := []any{runID}
+	if before > 0 {
+		boundary = " AND message_seq < ?"
+		args = append(args, before)
+	}
+	args = append(args, threadID, threadID, toAgentID, toAgentID, unreadMarker, communicationType, communicationType, limit)
 	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(`
-SELECT message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at
+SELECT message_seq, message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at
 FROM mailbox_messages
-WHERE run_id = ?
+WHERE run_id = ? %s
 	  AND (? = '' OR thread_id = ?)
 	  AND (? = '' OR to_agent_id = ?)
 	  AND (? = 0 OR read_at IS NULL)
 	  AND %s
 	  AND (? = '' OR lower(COALESCE(json_extract(payload_json, '$.communication_type'), '')) = ?)
 ORDER BY message_seq DESC
-LIMIT ?`, mailboxview.UserFacingMailboxPredicate("")),
-		runID,
-		threadID,
-		threadID,
-		toAgentID,
-		toAgentID,
-		unreadMarker,
-		communicationType,
-		communicationType,
-		limit,
+LIMIT ?`, boundary, mailboxview.UserFacingMailboxPredicate("")),
+		args...,
 	)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
 	messages := make([]state.MailboxMessage, 0, limit)
+	sequences := make([]int64, 0, limit)
 	for rows.Next() {
 		var message state.MailboxMessage
+		var sequence int64
 		if scanErr := rows.Scan(
+			&sequence,
 			&message.MessageID,
 			&message.RunID,
 			&message.FromAgentID,
@@ -170,15 +192,16 @@ LIMIT ?`, mailboxview.UserFacingMailboxPredicate("")),
 			&message.CreatedAt,
 			&message.ReadAt,
 		); scanErr != nil {
-			return nil, scanErr
+			return nil, nil, scanErr
 		}
 		messages = append(messages, message)
+		sequences = append(sequences, sequence)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return messages, nil
+	return messages, sequences, nil
 }
 
 func (s *Server) handleGetRunMailboxMessage(w http.ResponseWriter, r *http.Request) {
@@ -462,6 +485,11 @@ func mailboxHandoffPreview(payload any, communicationType string, fallback strin
 	}
 	if preferredKey != "" {
 		if candidate, ok := object[preferredKey].(string); ok && strings.TrimSpace(candidate) != "" {
+			return trimPreview(candidate, 220)
+		}
+	}
+	if _, referenced := object["response_full_ref"]; referenced {
+		if candidate, ok := object["response_preview"].(string); ok && strings.TrimSpace(candidate) != "" {
 			return trimPreview(candidate, 220)
 		}
 	}

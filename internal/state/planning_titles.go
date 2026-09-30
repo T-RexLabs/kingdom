@@ -57,6 +57,7 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	finalText := strings.TrimSpace(req.ObservedOutputText)
 	if req.ProviderSettlement != nil {
 		finalText = strings.TrimSpace(req.ProviderSettlement.FinalText)
+		opUpdate.Set("observed_output_ref_json", planningProviderReferenceJSON(req.ProviderSettlement.FinalTextRef))
 	}
 	opUpdate.Set("observed_output_text", finalText)
 	opUpdate.
@@ -80,6 +81,7 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 		Set("updated_at", strings.TrimSpace(req.UpdatedAt)).
 		Set("current_title_operation_id", nil).
 		SetExpr("title", "CASE WHEN title_state = ? THEN ? ELSE title END", "placeholder", generatedTitle).
+		SetExpr("title_content_id", "CASE WHEN title_state = ? THEN NULL ELSE title_content_id END", "placeholder").
 		SetExpr("title_state", "CASE WHEN title_state = ? THEN ? ELSE title_state END", "placeholder", "generated").
 		Where("planning_session_id = ?", strings.TrimSpace(req.SessionID)).
 		Where("current_title_operation_id = ?", strings.TrimSpace(req.OperationID)).
@@ -157,6 +159,10 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 		Set("error", strings.TrimSpace(req.ErrorMessage))
 	if strings.TrimSpace(req.ObservedOutputText) != "" {
 		opUpdate.Set("observed_output_text", strings.TrimSpace(req.ObservedOutputText))
+	}
+	if req.ProviderSettlement != nil && req.ProviderSettlement.FinalTextRef != nil {
+		opUpdate.Set("observed_output_text", "")
+		opUpdate.Set("observed_output_ref_json", planningProviderReferenceJSON(req.ProviderSettlement.FinalTextRef))
 	}
 	opUpdate.
 		Where("operation_id = ?", strings.TrimSpace(req.OperationID)).

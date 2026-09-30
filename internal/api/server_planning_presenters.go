@@ -204,34 +204,7 @@ func planningContextSnapshotFromState(item state.PlanningContextSnapshot) gen.Pl
 		PlanningContextSnapshotId: item.PlanningContextSnapshotID,
 		PlanningSessionId:         item.PlanningSessionID,
 		SummaryMarkdown:           item.SummaryMarkdown,
-		IncludedFiles:             []gen.PlanningContextFileEntry{},
-		ExcludedFiles:             []gen.PlanningContextFileEntry{},
 		CreatedAt:                 mustParseRFC3339(item.CreatedAt),
-	}
-	var included []struct {
-		Path string `json:"path"`
-		Size int64  `json:"size_bytes,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(item.IncludedFilesJSON), &included); err == nil {
-		for _, entry := range included {
-			size := int(entry.Size)
-			result.IncludedFiles = append(result.IncludedFiles, gen.PlanningContextFileEntry{Path: entry.Path, SizeBytes: &size})
-		}
-	}
-	var excluded []struct {
-		Path   string `json:"path"`
-		Reason string `json:"reason,omitempty"`
-		Size   int64  `json:"size_bytes,omitempty"`
-	}
-	if err := json.Unmarshal([]byte(item.ExcludedFilesJSON), &excluded); err == nil {
-		for _, entry := range excluded {
-			size := int(entry.Size)
-			mapped := gen.PlanningContextFileEntry{Path: entry.Path, SizeBytes: &size}
-			if strings.TrimSpace(entry.Reason) != "" {
-				mapped.Reason = &entry.Reason
-			}
-			result.ExcludedFiles = append(result.ExcludedFiles, mapped)
-		}
 	}
 	return result
 }

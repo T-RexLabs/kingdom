@@ -4,6 +4,7 @@ package securefs
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -303,12 +304,16 @@ func syncRootDir(root *Root, path string) error {
 }
 
 func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
+	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modifiedAt)
+}
+
+func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
 	parentFD, leaf, err := openParent(root, path, true, dirMode)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(parentFD)
-	return replaceRegularAt(parentFD, leaf, path, data, mode, modifiedAt)
+	return replaceRegularFromAt(ctx, parentFD, leaf, path, produce, mode, modifiedAt)
 }
 
 func createRootRegularExact(root *Root, path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
@@ -395,7 +400,7 @@ func readExactRegularAt(parentFD int, leaf, path string, expected []byte, mode f
 	return identity, nil
 }
 
-func replaceRegularAt(parentFD int, leaf, path string, data []byte, mode fs.FileMode, modifiedAt time.Time) error {
+func replaceRegularFromAt(ctx context.Context, parentFD int, leaf, path string, produce func(io.Writer) error, mode fs.FileMode, modifiedAt time.Time) error {
 	tempName, tempFile, err := createTempAt(parentFD)
 	if err != nil {
 		return fmt.Errorf("create secure temporary file for %q: %w", path, err)
@@ -407,7 +412,7 @@ func replaceRegularAt(parentFD int, leaf, path string, data []byte, mode fs.File
 			_ = unix.Unlinkat(parentFD, tempName, 0)
 		}
 	}()
-	if _, err := tempFile.Write(data); err != nil {
+	if err := produce(tempFile); err != nil {
 		return fmt.Errorf("write secure temporary file for %q: %w", path, err)
 	}
 	if err := tempFile.Chmod(mode.Perm()); err != nil {
@@ -422,6 +427,9 @@ func replaceRegularAt(parentFD int, leaf, path string, data []byte, mode fs.File
 	}
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("close restored file %q: %w", path, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	var destination unix.Stat_t
@@ -538,7 +546,8 @@ func verifyClaimedRegularContent(parentFD int, claimName string, expected FileId
 	if err := unix.Fstat(fd, &before); err != nil {
 		return err
 	}
-	raw, err := io.ReadAll(io.LimitReader(file, expected.SizeBytes+1))
+	hash := sha256.New()
+	n, err := io.Copy(hash, file)
 	if err != nil {
 		return err
 	}
@@ -546,11 +555,10 @@ func verifyClaimedRegularContent(parentFD int, claimName string, expected FileId
 	if err := unix.Fstat(fd, &after); err != nil {
 		return err
 	}
-	if fileIdentity(before) != fileIdentity(after) || int64(len(raw)) != expected.SizeBytes {
+	if fileIdentity(before) != fileIdentity(after) || n != expected.SizeBytes {
 		return ErrIdentityMismatch
 	}
-	digest := sha256.Sum256(raw)
-	if hex.EncodeToString(digest[:]) != expected.ContentSHA256 {
+	if hex.EncodeToString(hash.Sum(nil)) != expected.ContentSHA256 {
 		return ErrIdentityMismatch
 	}
 	return nil

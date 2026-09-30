@@ -47,18 +47,23 @@ func generatedTitleEligibleUserCount(userMessages int) bool {
 // plus the reply being appended. For a normal reply the parent is the active
 // leaf, so this counts the whole conversation; for an edit it stops at the
 // branch point so messages on the superseded branch are not counted.
-func projectedUserMessageCountAfterReply(messages []state.PlanningMessage, request operationRequest) int {
+func projectedUserMessageCountAfterReply(ctx context.Context, messages state.PlanningMessageSource, request operationRequest) (int, error) {
 	parentID := strings.TrimSpace(request.ParentMessageID)
 	userMessages := 1 // the reply being appended
-	for _, message := range messages {
+	stop := errors.New("branch parent reached")
+	err := messages(ctx, func(message state.PlanningMessage) error {
 		if message.Role == state.PlanningMessageRoleUser {
 			userMessages++
 		}
 		if parentID != "" && message.PlanningMessageID == parentID {
-			break
+			return stop
 		}
+		return nil
+	})
+	if errors.Is(err, stop) {
+		err = nil
 	}
-	return userMessages
+	return userMessages, err
 }
 
 func autoTitleEligibilityForSession(ctx context.Context, deps runtimeDeps, session state.PlanningSession) (bool, error) {
@@ -172,7 +177,7 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	deps runtimeDeps,
 	runner *operationRunner,
 	session state.PlanningSession,
-	messages []state.PlanningMessage,
+	messages state.PlanningMessageSource,
 	request operationRequest,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
@@ -182,7 +187,11 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	if !generatedTitleEligibleSession(session) {
 		return nil, nil
 	}
-	if !generatedTitleEligibleUserCount(projectedUserMessageCountAfterReply(messages, request)) {
+	count, err := projectedUserMessageCountAfterReply(ctx, messages, request)
+	if err != nil {
+		return nil, err
+	}
+	if !generatedTitleEligibleUserCount(count) {
 		return nil, nil
 	}
 	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)

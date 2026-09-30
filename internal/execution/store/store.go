@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/verdict"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
@@ -206,6 +207,7 @@ type RunExecutionDetailRecord struct {
 	ProviderInvocationID           sql.NullString
 	ProviderInvocationAt           sql.NullString
 	ObservedOutputText             sql.NullString
+	ObservedOutputTextRef          *providerexecution.ContentReference
 	ObservedControlVerdict         sql.NullString
 	CanonicalSettlementID          sql.NullString
 	CanonicalSettlementOutcome     sql.NullString
@@ -214,19 +216,22 @@ type RunExecutionDetailRecord struct {
 }
 
 type RunExecutionOutputRecord struct {
-	AttemptID          string
-	RunID              string
-	NodeRunID          string
-	NodeID             string
-	NodeClass          string
-	Attempt            int
-	RequiredRole       string
-	AgentID            string
-	AgentDisplayName   sql.NullString
-	State              string
-	FailureCode        sql.NullString
-	FailureText        sql.NullString
-	OutputText         sql.NullString
+	AttemptID        string
+	RunID            string
+	NodeRunID        string
+	NodeID           string
+	NodeClass        string
+	Attempt          int
+	RequiredRole     string
+	AgentID          string
+	AgentDisplayName sql.NullString
+	State            string
+	FailureCode      sql.NullString
+	FailureText      sql.NullString
+	OutputText       sql.NullString
+	// OutputText is a display preview when OutputTextRef is non-nil. Consumers
+	// assembling canonical context must open/copy the referenced content.
+	OutputTextRef      *providerexecution.ContentReference
 	OutcomeReasonCode  sql.NullString
 	LogicalSessionID   sql.NullString
 	ProviderSessionID  sql.NullString
@@ -244,6 +249,7 @@ type runExecutionPayloadSnapshot struct {
 	ProviderInvocationID   sql.NullString
 	ProviderInvocationAt   sql.NullString
 	ObservedOutputText     sql.NullString
+	OutputTextRef          *providerexecution.ContentReference
 	ObservedControlVerdict sql.NullString
 	OutcomeReasonCode      sql.NullString
 }
@@ -536,18 +542,19 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	}
 
 	var (
-		rec                            RunExecutionDetailRecord
-		executionMode                  string
-		payloadJSON                    string
-		activeProviderInvocationID     sql.NullString
-		activeProviderInvocationAt     sql.NullString
-		canonicalSettlementID          sql.NullString
-		canonicalSettlementOutcome     sql.NullString
-		canonicalSettlementAt          sql.NullString
-		canonicalStructuredPayloadJSON sql.NullString
-		canonicalProviderInvocationID  sql.NullString
-		canonicalProviderInvocationAt  sql.NullString
-		canonicalFinalText             sql.NullString
+		rec                                RunExecutionDetailRecord
+		executionMode                      string
+		payloadJSON                        string
+		activeProviderInvocationID         sql.NullString
+		activeProviderInvocationAt         sql.NullString
+		canonicalSettlementID              sql.NullString
+		canonicalSettlementOutcome         sql.NullString
+		canonicalSettlementAt              sql.NullString
+		canonicalStructuredPayloadJSON     sql.NullString
+		canonicalProviderInvocationID      sql.NullString
+		canonicalProviderInvocationAt      sql.NullString
+		canonicalFinalText                 sql.NullString
+		canonicalRefJSON, canonicalPreview string
 	)
 	err := s.db.QueryRowContext(ctx, `WITH latest_attempt_outbox AS (
 		SELECT ao.attempt_id,
@@ -602,7 +609,8 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       NULLIF(TRIM(pcs.structured_payload_json), '') AS canonical_structured_payload_json,
 	       NULLIF(TRIM(pcs.provider_invocation_id), '') AS canonical_provider_invocation_id,
 	       NULLIF(TRIM(cpi.created_at), '') AS canonical_provider_invocation_at,
-	       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text
+	       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text,
+	       COALESCE(pcs.final_text_ref_json,''), COALESCE(pcs.final_text_preview,'')
 	FROM attempt_executions ae
 	JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 	LEFT JOIN latest_attempt_outbox lao ON lao.attempt_id = ae.attempt_id AND lao.outbox_rank = 1
@@ -649,6 +657,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		&canonicalProviderInvocationID,
 		&canonicalProviderInvocationAt,
 		&canonicalFinalText,
+		&canonicalRefJSON, &canonicalPreview,
 	)
 	if err != nil {
 		if err == sql.ErrNoRows {
@@ -662,9 +671,17 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 		return RunExecutionDetailRecord{}, false, fmt.Errorf("decode run execution payload for run=%q attempt=%q: %w", runID, attemptID, err)
 	}
 	payloadSnapshot = hydrateRunExecutionProjectionSnapshot(rec.ExecutionMode, rec.State, rec.FailureCode, payloadSnapshot, activeProviderInvocationID, activeProviderInvocationAt, canonicalSettlementID, canonicalProviderInvocationID, canonicalProviderInvocationAt, canonicalFinalText)
+	verifiedStructured := canonicalStructuredPayloadJSON.String
+	if canonicalSettlementOutcome.String != "success" {
+		verifiedStructured = "{}"
+	}
+	if err := hydrateCanonicalContentReference(&payloadSnapshot, rec.State, canonicalProviderInvocationID.String, canonicalRefJSON, canonicalPreview, verifiedStructured); err != nil {
+		return rec, false, err
+	}
 	rec.ProviderInvocationID = payloadSnapshot.ProviderInvocationID
 	rec.ProviderInvocationAt = payloadSnapshot.ProviderInvocationAt
 	rec.ObservedOutputText = payloadSnapshot.ObservedOutputText
+	rec.ObservedOutputTextRef = payloadSnapshot.OutputTextRef
 	rec.ObservedControlVerdict = payloadSnapshot.ObservedControlVerdict
 	rec.CanonicalSettlementID = canonicalSettlementID
 	rec.CanonicalSettlementOutcome = canonicalSettlementOutcome
@@ -723,6 +740,9 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 		       NULLIF(TRIM(pcs.provider_invocation_id), '') AS canonical_provider_invocation_id,
 		       NULLIF(TRIM(cpi.created_at), '') AS canonical_provider_invocation_at,
 		       NULLIF(TRIM(pcs.final_text), '') AS canonical_final_text,
+		       COALESCE(pcs.final_text_ref_json,'') AS canonical_ref_json,
+		       COALESCE(pcs.final_text_preview,'') AS canonical_preview,
+		       CASE WHEN pcs.outcome='success' THEN COALESCE(pcs.structured_payload_json,'{}') ELSE '{}' END AS canonical_structured,
 		       ROW_NUMBER() OVER (
 		         PARTITION BY nr.node_id
 		         ORDER BY CASE
@@ -771,7 +791,7 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 	       canonical_settlement_id,
 	       canonical_provider_invocation_id,
 	       canonical_provider_invocation_at,
-	       canonical_final_text
+	       canonical_final_text,canonical_ref_json,canonical_preview,canonical_structured
 	FROM ranked_execution_outputs
 	WHERE node_rank = 1
 	ORDER BY node_id ASC`)
@@ -793,6 +813,7 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 		var canonicalProviderInvocationID sql.NullString
 		var canonicalProviderInvocationAt sql.NullString
 		var canonicalFinalText sql.NullString
+		var canonicalRefJSON, canonicalPreview, canonicalStructured string
 		if err := rows.Scan(
 			&rec.AttemptID,
 			&rec.RunID,
@@ -818,6 +839,7 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 			&canonicalProviderInvocationID,
 			&canonicalProviderInvocationAt,
 			&canonicalFinalText,
+			&canonicalRefJSON, &canonicalPreview, &canonicalStructured,
 		); err != nil {
 			return nil, fmt.Errorf("scan latest run execution output for %q: %w", runID, err)
 		}
@@ -826,7 +848,11 @@ func (s *Store) ListLatestRunExecutionOutputs(ctx context.Context, req ListRunEx
 			return nil, fmt.Errorf("decode latest run execution payload for run=%q attempt=%q: %w", runID, rec.AttemptID, err)
 		}
 		payloadSnapshot = hydrateRunExecutionProjectionSnapshot(NormalizeExecutionMode(executionMode), rec.State, rec.FailureCode, payloadSnapshot, activeProviderInvocationID, activeProviderInvocationAt, canonicalSettlementID, canonicalProviderInvocationID, canonicalProviderInvocationAt, canonicalFinalText)
+		if err := hydrateCanonicalContentReference(&payloadSnapshot, rec.State, canonicalProviderInvocationID.String, canonicalRefJSON, canonicalPreview, canonicalStructured); err != nil {
+			return nil, err
+		}
 		rec.OutputText = payloadSnapshot.ObservedOutputText
+		rec.OutputTextRef = payloadSnapshot.OutputTextRef
 		rec.OutcomeReasonCode = payloadSnapshot.OutcomeReasonCode
 		records = append(records, rec)
 	}

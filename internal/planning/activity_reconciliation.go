@@ -109,16 +109,16 @@ func (r *planningActivityReconciler) ReconcileOperation(ctx context.Context, ope
 	handoffCtx, cancelHandoff := context.WithTimeout(ctx, r.handoffBudget())
 	defer cancelHandoff()
 
-	activityEvents := make([]state.AppendPlanningOperationEventRequest, 0)
 	// The export implementation performs raw collection and sanitization. One
 	// parent deadline covers that complete inspection, independent of durable
 	// completion so timeout/error still produces the required marker.
-	inspectionCtx, cancel := context.WithTimeout(handoffCtx, planningActivityReconciliationBudget)
-	activityEvents = r.recoveredActivityEvents(inspectionCtx, claimed)
-	cancel()
+	_, err = r.recoverActivityBatches(handoffCtx, claimed)
+	if err != nil {
+		return err
+	}
 
 	completedAt := r.deps.nowString()
-	marker, err := r.reconciliationMarkerEvent(handoffCtx, claimed, completedAt, activityEvents)
+	marker, err := r.reconciliationMarkerEvent(handoffCtx, claimed, completedAt)
 	if err != nil {
 		return fmt.Errorf("activity reconciliation handoff marker: %w", err)
 	}
@@ -127,7 +127,6 @@ func (r *planningActivityReconciler) ReconcileOperation(ctx context.Context, ope
 		LeaseOwner:          claimed.LeaseOwner,
 		LeaseVersion:        claimed.LeaseVersion,
 		CompletedAt:         completedAt,
-		ActivityEvents:      activityEvents,
 		MarkerEvent:         marker,
 	}); err != nil {
 		return fmt.Errorf("activity reconciliation handoff completion: %w", err)
@@ -145,39 +144,59 @@ func (r *planningActivityReconciler) handoffBudget() time.Duration {
 	return r.handoffTimeout
 }
 
-func (r *planningActivityReconciler) recoveredActivityEvents(ctx context.Context, claimed state.PlanningActivityReconciliation) []state.AppendPlanningOperationEventRequest {
+func (r *planningActivityReconciler) recoverActivityBatches(ctx context.Context, claimed state.PlanningActivityReconciliation) (int, error) {
 	operation, found, err := r.deps.store.GetOperation(ctx, claimed.PlanningOperationID)
 	if err != nil || !found || operation.Status != state.PlanningOperationStatusSucceeded {
-		return nil
+		return 0, err
 	}
 	invocation, found, err := r.deps.store.GetPlanningProviderInvocation(ctx, claimed.PlanningProviderInvocationID)
 	if err != nil || !found || strings.TrimSpace(invocation.ProviderSessionID) == "" || strings.TrimSpace(r.deps.projectRoot) == "" {
-		return nil
+		return 0, err
 	}
-	items, err := r.deps.inspectPlannerProviderSessionActivity(ctx, r.deps.projectRoot, operation.OperationID, invocation.ProviderSessionID, invocation.PlanningProviderInvocationID, operation.StartedAt, operation.CreatedAt)
+	inspectionCtx, cancel := context.WithTimeout(ctx, planningActivityReconciliationBudget)
+	items, err := r.deps.inspectPlannerProviderSessionActivity(inspectionCtx, r.deps.projectRoot, operation.OperationID, invocation.ProviderSessionID, invocation.PlanningProviderInvocationID, operation.StartedAt, operation.CreatedAt)
+	cancel()
 	if err != nil {
-		return nil
+		return 0, nil // Diagnostic export failure still completes with a marker.
 	}
-	storedEvents, err := listAllPlanningOperationEvents(ctx, r.deps.store, operation.OperationID)
-	if err != nil {
-		return nil
-	}
-	seenIDs := make(map[string]struct{}, len(storedEvents))
-	seen := make(map[string]struct{}, len(storedEvents))
-	for _, event := range storedEvents {
-		if activityID, ok := plannerActivityIDFromStoredEvent(event); ok {
-			seenIDs[activityID] = struct{}{}
+	seenIDs := make(map[string]struct{})
+	seen := make(map[string]struct{})
+	for after := 0; ; {
+		storedEvents, err := r.deps.store.ListOperationEventMetadataAfterSeqPage(ctx, operation.OperationID, after, state.DefaultPlanningOperationEventListLimit)
+		if err != nil {
+			return 0, err
 		}
-		if signature, ok := plannerActivitySignatureFromStoredEvent(event); ok {
-			seen[signature] = struct{}{}
+		for _, event := range storedEvents {
+			if activityID, ok := plannerActivityIDFromStoredEvent(event); ok {
+				seenIDs[activityID] = struct{}{}
+			}
+			if signature, ok := plannerActivitySignatureFromStoredEvent(event); ok {
+				seen[signature] = struct{}{}
+			}
+			after = event.Seq
+		}
+		if len(storedEvents) < state.DefaultPlanningOperationEventListLimit {
+			break
 		}
 	}
 	events := make([]state.AppendPlanningOperationEventRequest, 0, min(len(items), state.MaxPlanningActivityReconciliationEvents))
 	activityBytes := 0
-	for _, item := range items {
-		if len(events) >= state.MaxPlanningActivityReconciliationEvents {
-			break
+	count := 0
+	flush := func() error {
+		if len(events) == 0 {
+			return nil
 		}
+		now := nowTime(r.deps.nowString())
+		if err := r.deps.store.AppendPlanningActivityReconciliationBatch(ctx, claimed, events, now.Format(time.RFC3339Nano), now.Add(planningActivityReconciliationLeaseTTL).Format(time.RFC3339Nano)); err != nil {
+			return err
+		}
+		count += len(events)
+		clear(events)
+		events = events[:0]
+		activityBytes = 0
+		return nil
+	}
+	for _, item := range items {
 		activity := providerActivityFromSessionActivityItem(item)
 		if activity.Kind == "" {
 			continue
@@ -202,8 +221,10 @@ func (r *planningActivityReconciler) recoveredActivityEvents(ctx context.Context
 		if err != nil {
 			continue
 		}
-		if activityBytes+len(raw) > state.MaxPlanningActivityReconciliationEventBytes {
-			continue
+		if len(events) > 0 && (len(events) >= state.MaxPlanningActivityReconciliationEvents || activityBytes+len(raw) > state.MaxPlanningActivityReconciliationEventBytes) {
+			if err := flush(); err != nil {
+				return count, err
+			}
 		}
 		events = append(events, state.AppendPlanningOperationEventRequest{
 			EventID:     fmt.Sprintf("%s:recovered:%d", operation.OperationID, len(events)+1),
@@ -219,10 +240,13 @@ func (r *planningActivityReconciler) recoveredActivityEvents(ctx context.Context
 		}
 		seen[signature] = struct{}{}
 	}
-	return events
+	if err := flush(); err != nil {
+		return count, err
+	}
+	return count, nil
 }
 
-func (r *planningActivityReconciler) reconciliationMarkerEvent(ctx context.Context, claimed state.PlanningActivityReconciliation, createdAt string, activityEvents []state.AppendPlanningOperationEventRequest) (state.AppendPlanningOperationEventRequest, error) {
+func (r *planningActivityReconciler) reconciliationMarkerEvent(ctx context.Context, claimed state.PlanningActivityReconciliation, createdAt string) (state.AppendPlanningOperationEventRequest, error) {
 	operation, found, err := r.deps.store.GetOperation(ctx, claimed.PlanningOperationID)
 	if err != nil {
 		return state.AppendPlanningOperationEventRequest{}, fmt.Errorf("load planning operation for activity reconciliation marker: %w", err)
@@ -230,8 +254,12 @@ func (r *planningActivityReconciler) reconciliationMarkerEvent(ctx context.Conte
 	if !found {
 		return state.AppendPlanningOperationEventRequest{}, fmt.Errorf("planning operation %q not found for activity reconciliation marker", claimed.PlanningOperationID)
 	}
+	recoveredCount, err := r.deps.store.PlanningActivityDeliveredCount(ctx, claimed.PlanningOperationID)
+	if err != nil {
+		return state.AppendPlanningOperationEventRequest{}, err
+	}
 	payload := plannerRunPayload(operation.OperationID, operation.PlanningSessionID, operation.Type)
-	payload["recovered_activity_count"] = len(activityEvents)
+	payload["recovered_activity_count"] = recoveredCount
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		return state.AppendPlanningOperationEventRequest{}, err
@@ -239,7 +267,7 @@ func (r *planningActivityReconciler) reconciliationMarkerEvent(ctx context.Conte
 	return state.AppendPlanningOperationEventRequest{
 		EventID:     fmt.Sprintf("%s:reconciled", claimed.PlanningOperationID),
 		OperationID: claimed.PlanningOperationID,
-		Seq:         len(activityEvents) + 1,
+		Seq:         recoveredCount + 1,
 		EventType:   acp.RunActivityReconciledEventType,
 		PayloadJSON: string(raw),
 		CreatedAt:   createdAt,

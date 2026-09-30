@@ -20,29 +20,20 @@ const (
 )
 
 const (
-	defaultMaxSnapshotFiles    = state.MaxPlanningContextSnapshotEntries
-	defaultMaxExcludedFiles    = state.MaxPlanningContextSnapshotEntries
-	defaultMaxSnapshotFileSize = 64 * 1024
-	// maxEnumeratedFiles bounds how many paths a scan looks at at all. It is
-	// far above the capture budget because counting a path costs nothing but a
-	// string, and the project shape is only honest if it saw the whole project.
-	maxEnumeratedFiles = 20000
-	// maxProjectPathLength bounds one entry read from the enumerator, so a
-	// hostile or corrupt listing cannot make the scan allocate without limit.
-	maxProjectPathLength       = state.MaxPlanningContextSnapshotPathBytes
-	maxSnapshotLayoutEntries   = 100
-	maxSnapshotLayoutNameBytes = 128
-	planningOperationLeaseTTL  = 30 * time.Second
+	planningOperationLeaseTTL = 30 * time.Second
 )
 
 const openingQuestionPrompt = "How would you like to start?"
 
 type UpdateSessionInput struct {
+	TitleSource        *state.PlanningTextSource
 	Title              *string
 	ModelSelectionJSON *string
 }
 
 type CreateOperationInput struct {
+	ReplySource       *state.PlanningTextSource
+	AnswerTextSource  *state.PlanningTextSource
 	Type              state.PlanningOperationType
 	ReplyMarkdown     string
 	AnswerPayloadJSON string
@@ -61,16 +52,11 @@ type CreateOperationResult struct {
 }
 
 type SnapshotSummary struct {
-	SummaryMarkdown string              `json:"summary_markdown"`
-	IncludedFiles   []SnapshotFileEntry `json:"included_files"`
-	ExcludedFiles   []SnapshotFileEntry `json:"excluded_files"`
+	SummaryMarkdown string
+	entries         *os.File
 }
 
-type SnapshotFileEntry struct {
-	Path   string `json:"path"`
-	Reason string `json:"reason,omitempty"`
-	Size   int64  `json:"size_bytes,omitempty"`
-}
+type SnapshotFileEntry = state.PlanningContextFileEntry
 
 type StructuredQuestionOption struct {
 	Label string `json:"label"`
@@ -93,15 +79,17 @@ type PlannerModelSelection struct {
 }
 
 type operationRequest struct {
-	ContentMarkdown    string          `json:"content_markdown,omitempty"`
-	AnswerPayload      json.RawMessage `json:"answer_payload,omitempty"`
-	TriggerSource      string          `json:"trigger_source,omitempty"`
-	UserMessageID      string          `json:"user_message_id,omitempty"`
-	UserCreatedAt      string          `json:"user_created_at,omitempty"`
-	AssistantMessageID string          `json:"assistant_message_id,omitempty"`
-	AssistantCreatedAt string          `json:"assistant_created_at,omitempty"`
-	DraftID            string          `json:"draft_id,omitempty"`
-	DraftCreatedAt     string          `json:"draft_created_at,omitempty"`
+	ContentReferenceID    string          `json:"content_reference_id,omitempty"`
+	AnswerTextReferenceID string          `json:"answer_text_reference_id,omitempty"`
+	ContentMarkdown       string          `json:"content_markdown,omitempty"`
+	AnswerPayload         json.RawMessage `json:"answer_payload,omitempty"`
+	TriggerSource         string          `json:"trigger_source,omitempty"`
+	UserMessageID         string          `json:"user_message_id,omitempty"`
+	UserCreatedAt         string          `json:"user_created_at,omitempty"`
+	AssistantMessageID    string          `json:"assistant_message_id,omitempty"`
+	AssistantCreatedAt    string          `json:"assistant_created_at,omitempty"`
+	DraftID               string          `json:"draft_id,omitempty"`
+	DraftCreatedAt        string          `json:"draft_created_at,omitempty"`
 	// ParentMessageID is where the produced branch attaches: the user message's
 	// parent for reply/edit, or the regenerated assistant's parent for
 	// regenerate. Empty means the conversation root.

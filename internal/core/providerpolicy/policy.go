@@ -33,7 +33,6 @@ type AgentPolicy struct {
 
 type Timeouts struct {
 	StrictStartupTotalTimeout string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
-	DispatchAckTimeout        string            `yaml:"dispatch_ack_timeout" json:"dispatch_ack_timeout"`
 	FirstEventTimeout         string            `yaml:"first_event_timeout" json:"first_event_timeout"`
 	StreamInactivityTimeout   string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
 	CancelGraceTimeout        string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
@@ -109,9 +108,6 @@ func normalizeAndValidate(policy *Policy) error {
 	}
 
 	if err := validateTimeout(policy.Timeouts.StrictStartupTotalTimeout, "strict_startup_total_timeout"); err != nil {
-		return err
-	}
-	if err := validateTimeout(policy.Timeouts.DispatchAckTimeout, "dispatch_ack_timeout"); err != nil {
 		return err
 	}
 	if err := validateTimeout(policy.Timeouts.FirstEventTimeout, "first_event_timeout"); err != nil {
