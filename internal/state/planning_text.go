@@ -115,7 +115,10 @@ func (s *PlanningStore) planningTextSource(ctx context.Context, id string) (*Pla
 		return nil, err
 	}
 	return &PlanningTextSource{SHA256: ref.SHA256, SizeBytes: ref.SizeBytes, Open: func(ctx context.Context) (io.ReadCloser, error) {
-		return providerexecution.OpenContentCopy(ctx, func(out io.Writer) error { _, err := CopyRequestContent(ctx, s.db, id, out); return err }), nil
+		return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, out io.Writer) error {
+			_, err := CopyRequestContent(ctx, s.db, id, out)
+			return err
+		}), nil
 	}}, nil
 }
 

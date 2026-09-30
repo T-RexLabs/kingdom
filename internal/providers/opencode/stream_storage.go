@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash"
 	"io"
@@ -274,17 +275,17 @@ func (a *SessionAdapter) retainContentPath(attemptID, path string) {
 	}
 }
 
-// ReleaseAttempt is called only after canonical ingestion. Existing snapshot
-// readers finish on their pinned files; new readers cannot reopen retired data.
-func (a *SessionAdapter) ReleaseAttempt(attemptID string) error {
+// releaseAttempt acknowledges ingestion of one exact execution generation.
+// A repeated callback cannot retire a later invocation reusing the attempt ID.
+// Existing snapshot readers finish before the record's storage is removed.
+func (a *SessionAdapter) releaseAttempt(attemptID string, record *sessionAttemptRecord) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.attempts[attemptID] != record {
+		return nil
+	}
 	if a.attemptDone[attemptID] != nil {
 		return fmt.Errorf("provider attempt is still running")
-	}
-	record := a.attempts[attemptID]
-	if record == nil {
-		return nil
 	}
 	record.releaseRequested = true
 	if record.readers > 0 {
@@ -390,12 +391,14 @@ func newInvocationCapture() (*invocationCapture, error) {
 
 func (c *invocationCapture) finish(invocationID string) ([]providerexecution.StagedContent, error) {
 	var refs []providerexecution.StagedContent
+	var finishErr error
 	for _, capture := range []*outputCapture{c.stdout, c.stderr} {
 		out, err := capture.finish()
-		if err != nil {
-			return nil, err
-		}
+		finishErr = errors.Join(finishErr, err)
 		refs = append(refs, providerexecution.StagedContent{Reference: providerexecution.ContentReference{InvocationID: invocationID, SHA256: out.SHA256, SizeBytes: out.Size}, Path: out.Path})
+	}
+	if finishErr != nil {
+		return nil, finishErr
 	}
 	return refs, nil
 }

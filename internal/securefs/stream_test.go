@@ -59,6 +59,164 @@ func TestStreamingReplaceRejectsCancellationAndProducerFailureAtomically(t *test
 	}
 }
 
+func TestStreamingReplacePreservesAncestorsUntilProducerSucceeds(t *testing.T) {
+	for _, failure := range []string{"integrity", "write", "cancel"} {
+		for _, ancestor := range []string{"regular", "symlink", "missing"} {
+			t.Run(failure+"/"+ancestor, func(t *testing.T) {
+				path := t.TempDir()
+				outside := t.TempDir()
+				parent := filepath.Join(path, "parent")
+				if err := os.WriteFile(filepath.Join(outside, "sentinel"), []byte("outside"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				switch ancestor {
+				case "regular":
+					if err := os.WriteFile(parent, []byte("sentinel"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				case "symlink":
+					if err := os.Symlink(outside, parent); err != nil {
+						t.Skipf("symlink unavailable: %v", err)
+					}
+				}
+				root, err := OpenRoot(path)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer root.Close()
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				want := errors.New("canonical digest mismatch")
+				if failure == "write" {
+					want = io.ErrShortWrite
+				}
+				if failure == "cancel" {
+					want = context.Canceled
+				}
+				err = root.ReplaceRegularFrom(ctx, "parent/child", func(w io.Writer) error {
+					if _, err := io.WriteString(w, "unverified partial content"); err != nil {
+						return err
+					}
+					if failure == "cancel" {
+						cancel()
+						return nil
+					}
+					if failure == "write" {
+						_, err := io.Copy(streamTestWriter(func(p []byte) (int, error) { n, err := w.Write(p[:1]); return n, err }), strings.NewReader("more bytes"))
+						return err
+					}
+					return want
+				}, 0600, 0700, time.Now())
+				if !errors.Is(err, want) {
+					t.Fatalf("replace=%v want=%v", err, want)
+				}
+				switch ancestor {
+				case "regular":
+					if raw, err := os.ReadFile(parent); err != nil || string(raw) != "sentinel" {
+						t.Fatalf("failed stream destroyed ancestor: %q %v", raw, err)
+					}
+				case "symlink":
+					if target, err := os.Readlink(parent); err != nil || target != outside {
+						t.Fatalf("failed stream replaced ancestor link: %q %v", target, err)
+					}
+				case "missing":
+					if _, err := os.Lstat(parent); !os.IsNotExist(err) {
+						t.Fatalf("failed stream created ancestors: %v", err)
+					}
+				}
+				entries, err := os.ReadDir(path)
+				wantEntries := 1
+				if ancestor == "missing" {
+					wantEntries = 0
+				}
+				if err != nil || len(entries) != wantEntries {
+					t.Fatalf("staging leaked: %v %v", entries, err)
+				}
+				if entries, err := os.ReadDir(outside); err != nil || len(entries) != 1 || entries[0].Name() != "sentinel" {
+					t.Fatalf("outside modified: %v %v", entries, err)
+				}
+			})
+		}
+	}
+}
+
+func TestStreamingReplaceRepairsAncestorsOnlyAfterVerifiedStaging(t *testing.T) {
+	path := t.TempDir()
+	parent := filepath.Join(path, "parent")
+	if err := os.WriteFile(parent, []byte("sentinel"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	root, err := OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	err = root.ReplaceRegularFrom(context.Background(), "parent/child", func(w io.Writer) error {
+		// The input can itself depend on the conflicting ancestor. Its bytes
+		// must remain available throughout the producer's validation phase.
+		raw, err := os.ReadFile(parent)
+		if err != nil {
+			return err
+		}
+		if string(raw) != "sentinel" {
+			return errors.New("ancestor changed before verification")
+		}
+		_, err = w.Write(raw)
+		return err
+	}, 0600, 0700, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(parent, "child")); err != nil || string(raw) != "sentinel" {
+		t.Fatalf("publication=%q error=%v", raw, err)
+	}
+	if entries, err := os.ReadDir(path); err != nil || len(entries) != 1 {
+		t.Fatalf("successful staging leaked: %v %v", entries, err)
+	}
+}
+
+func TestStreamingReplaceKeepsStagingParentPinnedDuringProduction(t *testing.T) {
+	path, outside := t.TempDir(), t.TempDir()
+	probe := filepath.Join(path, "symlink-probe")
+	if err := os.Symlink(outside, probe); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := os.Remove(probe); err != nil {
+		t.Fatal(err)
+	}
+	parent, moved := filepath.Join(path, "parent"), filepath.Join(path, "moved")
+	if err := os.Mkdir(parent, 0700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+	err = root.ReplaceRegularFrom(context.Background(), "parent/child", func(w io.Writer) error {
+		if err := os.Rename(parent, moved); err != nil {
+			return err
+		}
+		if err := os.Symlink(outside, parent); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, "verified")
+		return err
+	}, 0600, 0700, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(moved, "child")); err != nil || string(raw) != "verified" {
+		t.Fatalf("pinned publication=%q error=%v", raw, err)
+	}
+	if entries, err := os.ReadDir(outside); err != nil || len(entries) != 0 {
+		t.Fatalf("followed redirected parent: %v %v", entries, err)
+	}
+	if entries, err := os.ReadDir(moved); err != nil || len(entries) != 1 {
+		t.Fatalf("pinned staging leaked: %v %v", entries, err)
+	}
+}
+
 func TestCopyRegularStreamsLargeFileAndDetectsConcurrentMutation(t *testing.T) {
 	path := t.TempDir()
 	filePath := filepath.Join(path, "large")

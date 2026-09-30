@@ -24,7 +24,7 @@ Browser flow:
 
 Actor and authority headers do not exist in the public contract. Identity and fixed allfather authority come only from the verified local principal.
 
-Most API request bodies have a 1 MiB transport limit; `POST /decrees` allows up to 16 MiB so complete, storage-bounded external issue text can be issued without clipping. Requests beyond their route's limit return the canonical error envelope with HTTP `413`. Request reads and idle connections are time-bounded; SSE response writes are not.
+API request bodies are privately spooled for schema validation, exact-byte idempotency hashing, and handler replay without a fixed route-level aggregate byte limit. Designated decree and planning text fields stream into canonical SQLite content storage. Authentication and schema constraints still apply; request reads and idle connections remain time-bounded, while SSE response writes are not. Individual scalar fields and some read responses still materialize data in memory.
 
 ## Web UI Surfaces
 
@@ -47,7 +47,7 @@ What it does not do:
 
 This area has two working modes.
 
-Both creation modes can open the reusable, paginated GitHub issue picker. The picker performs a profile-aware preview, renders selected bounded comment bodies through restricted Markdown, and cancels stale searches. Planning intake can attach the first source at creation and additional unique issues from the active planning page. Each attach fetches before a short atomic capture/link/adoption transaction, affects future operations only, and fabricates no transcript message or context-snapshot movement. Direct issuance first captures an immutable snapshot, prefills editable title/body fields, and links that exact selected snapshot atomically when issued. Pre-issuance refresh exposes a candidate with explicit apply-title, apply-body, and use-snapshot actions; issued decrees provide refresh/field comparison without mutable text.
+Both creation modes can open the reusable, paginated GitHub issue picker. The picker performs a profile-aware preview, renders opted-in comment bodies through paginated restricted Markdown, and cancels stale searches. Comment import captures every page and complete bodies; preview pagination is not a retention cap. Planning intake can attach the first source at creation and additional unique issues from the active planning page. Each attach fetches before a short atomic capture/link/adoption transaction, affects future operations only, and fabricates no transcript message or context-snapshot movement. Direct issuance first captures an immutable snapshot, prefills editable title/body fields, and links that exact selected snapshot atomically when issued. Pre-issuance refresh exposes a candidate with explicit apply-title, apply-body, and use-snapshot actions; issued decrees provide refresh/field comparison without mutable text.
 
 ### `Connections` (`/connections`)
 
@@ -87,6 +87,8 @@ Capabilities:
 - generate and view a plan draft
 
 Planning context refresh is available through the API, but the web planner does not currently expose a dedicated refresh control.
+
+Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
 #### Issue mode
 
@@ -184,6 +186,7 @@ Use this section as a guide to the major API areas, not as a complete route inve
 - plan and final approval decisions
 - logical-node execution projections at `GET /runs/{id}/executions`
 - paged physical attempt history at `GET /runs/{id}/nodes/{nodeId}/attempts`
+- paged plan-review history at `GET /runs/{id}/plan-reviews`
 
 ### Mailbox
 
@@ -194,12 +197,17 @@ Mailbox semantics:
 
 - mailbox is a communication and audit surface, not settlement authority
 - response text in mailbox can help operators inspect context, but it does not determine canonical success or settled review/validation outcomes
+- mailbox history uses signed continuation cursors bound to the run and filters; **Load Older Messages** continues through the history, and lane counts say “loaded” while more pages remain
+- referenced instructions and responses expose **Load Full Content** and **Download Full Content** in message details. The list remains a preview; full content is fetched only on demand through the authenticated, run/message-scoped content endpoint. Content identity and integrity are verified before serving it as a download.
+
+Planning-session, plan-review, mailbox, and context-entry page sizes are read boundaries rather than retention ceilings. Continue with the returned `next_cursor` and the same filter scope.
 
 ### Artifacts
 
 - artifact listing and download
 - archive export
 - artifact content is always delivered as an attachment and cannot execute under the authenticated Kingdom origin
+- downloads and archive exports stream canonical SQLite content chunks without fixed file-size, aggregate-byte, or archive-entry workload ceilings
 
 ### Metrics
 

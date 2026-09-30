@@ -43,6 +43,12 @@ type recordingPlannerAdapter struct {
 }
 
 func (a *recordingPlannerAdapter) Close() error { a.closed = true; return nil }
+func (a *recordingPlannerAdapter) CloseContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.Close()
+}
 
 func TestPlannerPromptSourceFailsBeforeProviderDispatch(t *testing.T) {
 	adapter := &recordingPlannerAdapter{}

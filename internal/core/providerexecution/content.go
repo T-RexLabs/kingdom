@@ -191,13 +191,14 @@ func CopyTerminalText(ctx context.Context, o InvocationStreamObservation, dst io
 
 // OpenContentCopy adapts a streaming store writer to a replay reader. Close
 // cancels and joins its producer, including early-abandoned reads.
-func OpenContentCopy(ctx context.Context, copyContent func(io.Writer) error) io.ReadCloser {
+func OpenContentCopy(ctx context.Context, copyContent func(context.Context, io.Writer) error) io.ReadCloser {
 	ctx, cancel := context.WithCancel(ctx)
 	reader, writer := io.Pipe()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		err := copyContent(contentContextWriter{ctx, writer})
+		defer cancel()
+		err := copyContent(ctx, contentContextWriter{ctx, writer})
 		_ = writer.CloseWithError(err)
 	}()
 	return &copiedContentReader{PipeReader: reader, cancel: cancel, done: done}

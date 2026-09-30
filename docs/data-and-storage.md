@@ -34,16 +34,30 @@ The current control plane uses SQLite with explicit startup pragmas.
 - `node_runs`: durable per-node retry lineage (`attempt`) plus explicit cross-node review/validation wave lineage (`wave`).
 - `workspaces`: execution workspace ownership and lifecycle (`active` and `released`) for each node run.
 - `attempt_cancel_outbox`: one durable provider-stop handoff per attempt, including requested reason, dispatch/awaiting-quiescence/workspace-restoration state, retry count, and completion publication.
-- `retry_decisions`: canonical automatic retry or fail-fast decision for a decree attempt or planning invocation, with policy identity, failure code, operator-safe text, meaningful-progress result, budget, provider hint, due time, source/target lineage, dispatch state, escalation target, and final resolution.
+- `retry_decisions`: canonical automatic retry or fail-fast decision for a decree attempt or planning invocation, with policy identity, failure code, operator-safe text, meaningful-progress result, per-error retry allowance, provider hint, due time, source/target lineage, dispatch state, escalation target, and final resolution. There is no run-wide attempt-count budget.
 
 For provider-backed decree execution, the atomic settlement boundary writes stream evidence, canonical settlement, terminal attempt state, token usage, and the completion outbox record. The outbox is a projection handoff, not independent settlement authority.
+
+## Canonical Content and Referenced Handoffs
+
+- `provider_contents` and `provider_content_chunks` store decree invocation content by invocation ID, SHA-256, and size, with ordered chunks of at most 64 KiB. Settlements reference canonical terminal text through `final_text_ref_json`; `final_text_preview` is display data. Full invocation stdout/stderr diagnostics have content references separate from their previews.
+- `planning_provider_contents` and `planning_provider_content_chunks` provide separate invocation-scoped content storage for planning. Planner settlements and observed output can reference this content without embedding the full text in lifecycle metadata.
+- `request_contents` and `request_content_chunks` store immutable text manifests and ordered chunks of at most 64 KiB. `decree_text_refs` binds decree text; planning messages, answer text, session titles, drafts, and `planning_event_text_refs` bind their canonical text to this store. `execution_prompt_refs` records the exact persisted prompt for an attempt, and `run_planning_outputs.content_ref_json` can reference provider-owned planning output.
+- Private request/provider spools support validation, hashing, replay, and prompt assembly. They are staging, not the system of record. Complete prompts reach OpenCode over stdin.
+
+Decree handoff files use a compact `v2` envelope with invocation-scoped content references rather than embedding full output. Runtime-owned content chunks under `.kingdom/runtime/provider-completion/content/` are published before the envelope under `provider-completion/handoffs/`. SQLite ingestion verifies invocation lineage, exact size, and digest under the execution lease fence before file cleanup. Canonical bytes remain in SQLite after settlement. The envelope retains a 1 MiB metadata boundary; referenced content has no aggregate byte ceiling. Guardian evidence and startup/recovery batching keep their existing bounds. Planning uses its own settlement transaction rather than decree handoff files.
+
+Chunking and paged traversal avoid whole-content buffers on these write/transport paths. They do not make every read projection bounded-memory: individual strings, issue/comment scalars, metadata collections, and some API responses are still materialized.
 
 ## Artifact Tables
 
 - `artifacts`: artifact metadata (`artifact_kind`, producer role, path, checksum, size, provenance).
-- `artifact_contents`: immutable artifact bytes keyed by `artifact_id`.
+- `artifact_contents`: content manifest keyed by `artifact_id`.
+- `artifact_content_chunks`: canonical artifact bytes in ordered chunks of at most 1 MiB, published with metadata in the same transaction.
 
 Artifact content persistence is the system of record. Publishing files into the project root or a git worktree is a separate projection step.
+
+Artifact download, archive export, and publication stream content from SQLite. Filesystem snapshot manifests remain in `filesystem_snapshots` and `filesystem_snapshot_entries`, with digest-addressed runtime filesystem blobs. Capture, diff, and restoration use incremental no-follow traversal and a disposable disk-backed SQLite index rather than collecting a whole tree. File size, aggregate workspace bytes, entry count, and directory depth have no fixed Kingdom workload ceiling. Snapshot lineage depth and resumable cleanup batch sizes remain control bounds.
 
 ## Planning Tables
 
@@ -52,6 +66,8 @@ Artifact content persistence is the system of record. Publishing files into the 
 - `planning_operations` links each provider-backed planner operation to its active invocation, provider session, and canonical settlement.
 - planner canonical state still persists through planning sessions, messages, drafts, and session fields; the planner settlement tables authorize those writes but do not replace the planning tables as transcript or draft truth.
 - planner replay and recovery depend on these tables rather than on request-local or browser-local state.
+- `planning_context_entries` stores the complete captured included/excluded file metadata in immutable ordinal order. Snapshot summaries omit file arrays; the paginated entries endpoint reads details without hydrating the whole snapshot. Context capture never stores source-file contents.
+- Planning-session, run-mailbox, and plan-review history pages use signed continuation cursors. Page sizes limit each read, not retained history; mailbox cursors bind filters, and context-entry cursors bind session, snapshot, and entry kind.
 
 ## Local Authentication and Idempotency
 
@@ -65,11 +81,11 @@ Artifact content persistence is the system of record. Publishing files into the 
 - `external_connection_installations`: the installations a connection currently covers, keyed by installation ID so at most one live connection holds each; rows are released on tombstone while the installation identity remains.
 - `external_connections`: immutable non-secret provider/App identity, `app_private_key|user_access_token` strategy, App slug, editable display/lifecycle metadata, opaque credential handle, and credential/validated generation health projection. No token value or expiry is stored here.
 - `external_sources` and `external_source_aliases`: canonical immutable provider identity plus the mutable current repository locator used for provider fetches. Public historical coordinates are never read from this projection.
-- `external_source_snapshots` and `external_source_snapshot_comments`: immutable normalized versions and bounded retained comments.
+- `external_source_snapshots` and `external_source_snapshot_comments`: immutable normalized versions and complete captured comment bodies when the operator enables comment import. Intake uses replayable disk spools and row-wise persistence; public comment reads remain paginated. Issue titles/bodies and comments have no Kingdom content-byte cap, and comment count has no retention ceiling.
 - `external_source_links`: immutable target and exact used snapshot; `external_source_link_heads` is the latest-observed projection. Decree summaries decode the used snapshot, while planning summaries decode the latest explicit adoption.
 - `external_source_observations`: body-free refresh attempt history.
 - `planning_external_source_adoptions`: append-only active-version movement for future planning operations.
-- `planning_operation_external_snapshots`: exact operation bindings, assembler version, digest, and byte counts.
+- `planning_operation_external_snapshots`: exact bindings for every active source at operation enqueue, with assembler version, digest, and byte counts. Later adoption or removal never changes already-bound operations.
 - `external_integration_audit_events`: hash-chained, append-only, safe lifecycle audit.
 
 Setup state is never a table. Manifest and shared finalization first stage and fsync generation-addressed credential files, then publish the generation through the connection/audit transaction. Private keys are `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared tokens are `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. Credential directories are current-user-owned `0700`; credential files are current-user-owned, one-link, non-symlink regular files at `0600`, accessed descriptor-relatively under a lifecycle lock. `external_connections.credential_generation` is the only active pointer, startup removes stale and unowned generations, and connection removal deletes every generation. Ordinary token refresh atomically replaces only the selected token generation. Token files contain access/refresh tokens and both expiries. Ordinary SQLite backups retain provenance but exclude all local credentials.

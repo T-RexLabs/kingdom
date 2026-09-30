@@ -263,6 +263,26 @@ func (s *Service) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// An escalation cancels an in-progress adapter drain as well as planner
+	// waits. A later Close gets a fresh budget to finish cleanup after a force.
+	forcedAtEntry := planningChannelClosed(s.forced)
+	closeCtx, cancelClose := context.WithCancel(ctx)
+	forceWatchDone := make(chan struct{})
+	go func() {
+		defer close(forceWatchDone)
+		if forcedAtEntry {
+			return
+		}
+		select {
+		case <-s.forced:
+			cancelClose()
+		case <-closeCtx.Done():
+		}
+	}()
+	defer func() { cancelClose(); <-forceWatchDone }()
 	drained := s.beginClose()
 	forced := s.forced
 	// Stop every service-owned worker before waiting for foreground writes.
@@ -278,16 +298,25 @@ func (s *Service) Close(ctx context.Context) error {
 	// after Close returns.
 	var stopHandoffAbort func() bool
 	if s.runner != nil {
-		stopHandoffAbort = context.AfterFunc(ctx, s.runner.abortHandoffs)
-		defer stopHandoffAbort()
+		stopHandoffAbort = context.AfterFunc(closeCtx, s.runner.abortHandoffs)
+		defer func() {
+			stopHandoffAbort()
+			// Do not leave revocation dependent on AfterFunc scheduling once
+			// the caller may tear SQLite down immediately after Close returns.
+			if closeCtx.Err() != nil {
+				s.runner.abortHandoffs()
+			}
+		}()
 	}
 
 	var writeDrainErr error
 	select {
 	case <-drained:
 	case <-forced:
-	case <-ctx.Done():
-		writeDrainErr = fmt.Errorf("write drain: %w", ctx.Err())
+	case <-closeCtx.Done():
+		if ctx.Err() != nil {
+			writeDrainErr = fmt.Errorf("write drain: %w", ctx.Err())
+		}
 	}
 
 	// A service can be closed before runtime startup reaches planning recovery.
@@ -299,29 +328,70 @@ func (s *Service) Close(ctx context.Context) error {
 		select {
 		case <-s.recoveryDone:
 		case <-forced:
-		case <-ctx.Done():
-			recoveryDrainErr = fmt.Errorf("recovery drain: %w", ctx.Err())
+		case <-closeCtx.Done():
+			if ctx.Err() != nil {
+				recoveryDrainErr = fmt.Errorf("recovery drain: %w", ctx.Err())
+			}
 		}
 	}
 	recoveryDrainErr = errors.Join(recoveryDrainErr, s.activityDrainFailure())
-	if err := s.waitPlanningRetryWake(ctx); err != nil {
-		recoveryDrainErr = errors.Join(recoveryDrainErr, fmt.Errorf("retry wake drain: %w", err))
+	retryDrained := false
+	if err := s.waitPlanningRetryWake(closeCtx); err != nil {
+		if ctx.Err() != nil || !planningChannelClosed(forced) {
+			recoveryDrainErr = errors.Join(recoveryDrainErr, fmt.Errorf("retry wake drain: %w", err))
+		}
+	} else {
+		retryDrained = true
 	}
 
 	var runnerDrainErr error
 	if s.runner != nil {
-		runnerDrainErr = s.runner.WaitWithAbort(ctx, forced)
+		runnerDrainErr = s.runner.WaitWithAbort(closeCtx, forced)
+		if ctx.Err() == nil && planningChannelClosed(forced) && errors.Is(runnerDrainErr, context.Canceled) {
+			runnerDrainErr = nil
+		}
 	}
 
 	if err := errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr); err != nil {
 		return err
 	}
+	// A forced wait returning nil is not evidence of quiescence. In particular
+	// Execute may already have returned while its parser or finalizer still
+	// holds staged terminal content.
+	if !planningChannelClosed(drained) || !planningChannelClosed(s.recoveryDone) || !retryDrained {
+		return nil
+	}
 	if s.runner != nil {
-		if closer, ok := s.runner.deps.planner.(interface{ Close() error }); ok {
-			return closer.Close()
+		s.runner.mu.Lock()
+		idle := s.runner.idle
+		s.runner.mu.Unlock()
+		if !planningChannelClosed(idle) {
+			return nil
+		}
+		if closer, ok := s.runner.deps.planner.(ContextCloser); ok {
+			err := closer.CloseContext(closeCtx)
+			if ctx.Err() == nil && planningChannelClosed(forced) && errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if _, ok := s.runner.deps.planner.(interface{ Close() error }); ok {
+			return fmt.Errorf("planner cleanup requires CloseContext")
 		}
 	}
 	return nil
+}
+
+func planningChannelClosed(ch <-chan struct{}) bool {
+	if ch == nil {
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // ForceClose is the hard-stop counterpart to Close. It flips the

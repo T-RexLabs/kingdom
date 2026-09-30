@@ -27,11 +27,18 @@ type OpenCodeAgent struct {
 func (*OpenCodeAgent) RequiresProcessGuard() bool { return true }
 
 func (a *OpenCodeAgent) Close() error {
+	return a.CloseContext(context.Background())
+}
+
+func (a *OpenCodeAgent) CloseContext(ctx context.Context) error {
 	if a == nil {
 		return nil
 	}
-	if closer, ok := a.adapter.(io.Closer); ok {
-		return closer.Close()
+	if closer, ok := a.adapter.(ContextCloser); ok {
+		return closer.CloseContext(ctx)
+	}
+	if _, ok := a.adapter.(io.Closer); ok {
+		return fmt.Errorf("planner adapter cleanup requires CloseContext")
 	}
 	return nil
 }

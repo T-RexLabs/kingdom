@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"kingdom/internal/testutil"
@@ -1286,63 +1287,74 @@ func TestSessionAdapterStreamInactivityTimeout(t *testing.T) {
 }
 
 func TestSessionAdapterLongRunWithHeartbeatEventsDoesNotTimeout(t *testing.T) {
-	binaryPath, _ := writeFakeOpenCodeBinary(t)
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 250 * time.Millisecond,
+	synctest.Test(t, func(t *testing.T) {
+		const heartbeatCount = 30
+		const heartbeatInterval = 50 * time.Millisecond
+		const inactivity = 250 * time.Millisecond
+		runner := heartbeatTestRunner(heartbeatCount, heartbeatInterval, heartbeatInterval)
+		adapter, err := NewSessionAdapter(SessionAdapterConfig{
+			BinaryPath:              os.Args[0],
+			Runner:                  runner,
+			FirstEventTimeout:       2 * time.Second,
+			StreamInactivityTimeout: inactivity,
+		})
+		if err != nil {
+			t.Fatalf("new session adapter: %v", err)
+		}
+
+		defer adapter.Close()
+		started := time.Now()
+		response, err := adapter.Execute(context.Background(), ExecuteRequest{
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_heartbeat",
+			AttemptID:      "attempt_heartbeat",
+			RunID:          "run_1",
+			NodeRunID:      "nr_heartbeat",
+			WorkspacePath:  t.TempDir(),
+			Prompt:         "long compute with periodic heartbeat",
+			OccurredAt:     "2026-03-03T10:02:00Z",
+		})
+		if err != nil {
+			t.Fatalf("expected successful execute under heartbeat, got %v", err)
+		}
+		if !response.Accepted || response.StreamObservation.TimedOut || runner.cancels.Load() != 0 {
+			t.Fatalf("active stream was cancelled: outcome=%+v cancels=%d", response.Outcome, runner.cancels.Load())
+		}
+		if elapsed := time.Since(started); elapsed != heartbeatCount*heartbeatInterval || elapsed <= inactivity {
+			t.Fatalf("virtual run duration=%s, want %s beyond inactivity budget", elapsed, heartbeatCount*heartbeatInterval)
+		}
+
+		payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_heartbeat"), AttemptEventTypeSucceeded)
+		diag, ok := payload["stream_diagnostics"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected stream_diagnostics map, got %#v", payload["stream_diagnostics"])
+		}
+		if diag["event_count"] != float64(heartbeatCount+2) || diag["max_inter_event_gap_ms"] != float64(heartbeatInterval.Milliseconds()) {
+			t.Fatalf("expected every heartbeat and bounded virtual event gaps, got %#v", diag)
+		}
+		execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
+		}
+		if execPath["wait_returned"] != true {
+			t.Fatalf("expected wait_returned=true on successful run, got %#v", execPath["wait_returned"])
+		}
+		if execPath["step_finish_seen"] != true {
+			t.Fatalf("expected step_finish_seen=true on successful run, got %#v", execPath["step_finish_seen"])
+		}
+		if strings.TrimSpace(fmt.Sprint(diag["process_started_at"])) == "" {
+			t.Fatalf("expected process_started_at in diagnostics, got %#v", diag)
+		}
+
+		progressPayload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_heartbeat"), AttemptEventTypeProgress)
+		snapshot, ok := progressPayload["execution_path_diagnostics_snapshot"].(map[string]any)
+		if !ok {
+			t.Fatalf("expected execution_path_diagnostics_snapshot in progress payload, got %#v", progressPayload["execution_path_diagnostics_snapshot"])
+		}
+		if snapshot["stdout_event_count"] == nil {
+			t.Fatalf("expected stdout_event_count in progress snapshot, got %#v", snapshot)
+		}
 	})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-
-	t.Setenv("FAKE_OPENCODE_HEARTBEAT_COUNT", "30")
-	t.Setenv("FAKE_OPENCODE_HEARTBEAT_SLEEP", "0.05")
-
-	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_heartbeat",
-		AttemptID:      "attempt_heartbeat",
-		RunID:          "run_1",
-		NodeRunID:      "nr_heartbeat",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "long compute with periodic heartbeat",
-		OccurredAt:     "2026-03-03T10:02:00Z",
-	})
-	if err != nil {
-		t.Fatalf("expected successful execute under heartbeat, got %v", err)
-	}
-
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_heartbeat"), AttemptEventTypeSucceeded)
-	diag, ok := payload["stream_diagnostics"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected stream_diagnostics map, got %#v", payload["stream_diagnostics"])
-	}
-	if diag["event_count"] == nil {
-		t.Fatalf("expected event_count in diagnostics, got %#v", diag)
-	}
-	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
-	}
-	if execPath["wait_returned"] != true {
-		t.Fatalf("expected wait_returned=true on successful run, got %#v", execPath["wait_returned"])
-	}
-	if execPath["step_finish_seen"] != true {
-		t.Fatalf("expected step_finish_seen=true on successful run, got %#v", execPath["step_finish_seen"])
-	}
-	if strings.TrimSpace(fmt.Sprint(diag["process_started_at"])) == "" {
-		t.Fatalf("expected process_started_at in diagnostics, got %#v", diag)
-	}
-
-	progressPayload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_heartbeat"), AttemptEventTypeProgress)
-	snapshot, ok := progressPayload["execution_path_diagnostics_snapshot"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected execution_path_diagnostics_snapshot in progress payload, got %#v", progressPayload["execution_path_diagnostics_snapshot"])
-	}
-	if snapshot["stdout_event_count"] == nil {
-		t.Fatalf("expected stdout_event_count in progress snapshot, got %#v", snapshot)
-	}
 }
 
 func TestSessionAdapterWaitsForFinalStopAfterToolCallsBoundary(t *testing.T) {
@@ -1482,31 +1494,32 @@ func TestSessionAdapterSettlesAcrossToolCallsProcessBoundary(t *testing.T) {
 func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       5 * time.Second,
-		StreamInactivityTimeout: 5 * time.Second,
+		BinaryPath: binaryPath,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
+	defer adapter.Close()
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
+	t.Setenv("FAKE_OPENCODE_EXPORT_JSON", `{"messages":[{"info":{"role":"assistant","finish":"stop","sessionID":"ses_fake_created"},"parts":[{"type":"text","text":"Export claims success, but the live stream never stopped."}]}]}`)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	res, err := adapter.Execute(ctx, ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_tool_calls_pre_resolved",
-		AttemptID:      "attempt_tool_calls_pre_resolved",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "tool calls but export already settled",
-		OccurredAt:     "2026-03-02T10:19:10Z",
-		InvocationID:   "invocation_tool_calls_settled",
+		CompletionMode:           CompletionModeServerResponse,
+		SessionID:                "session_tool_calls_pre_resolved",
+		AttemptID:                "attempt_tool_calls_pre_resolved",
+		RunID:                    "run_1",
+		NodeRunID:                "nr_1",
+		WorkspacePath:            t.TempDir(),
+		Prompt:                   "tool calls but export already settled",
+		OccurredAt:               "2026-03-02T10:19:10Z",
+		InvocationID:             "invocation_tool_calls_settled",
+		OnProcessGuardQuiescence: cancelAfterQuiescentCommands(cancel, 4),
 	})
-	if err == nil {
+	if !errors.Is(err, context.Canceled) || res.Accepted || res.Outcome.ReasonCode != "provider_cancelled" {
 		t.Fatalf("export must not settle an incomplete live stream, got %#v", res)
 	}
 
@@ -1515,8 +1528,11 @@ func TestSessionAdapterExportCannotSettleToolCalls(t *testing.T) {
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations <= 3 {
-		t.Fatalf("expected continuations until cancellation, got %d", invocations)
+	if invocations != 4 {
+		t.Fatalf("expected cancellation after four quiescent commands, got %d", invocations)
+	}
+	if strings.Contains(string(argsLogRaw), "export ") {
+		t.Fatalf("export must not participate in completion: %s", argsLogRaw)
 	}
 }
 
@@ -1765,31 +1781,31 @@ func TestSessionAdapterContinuationInactivityTimeout(t *testing.T) {
 func TestSessionAdapterContinuationEndsOnCancellation(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
+		BinaryPath: binaryPath,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
+	defer adapter.Close()
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err = adapter.Execute(ctx, ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_tool_calls_boundary_max_turns",
-		AttemptID:      "attempt_tool_calls_boundary_max_turns",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "emit tool-calls finish until turns exhausted",
-		OccurredAt:     "2026-03-02T10:20:00Z",
+	response, err := adapter.Execute(ctx, ExecuteRequest{
+		CompletionMode:           CompletionModeServerResponse,
+		SessionID:                "session_tool_calls_boundary_max_turns",
+		AttemptID:                "attempt_tool_calls_boundary_max_turns",
+		RunID:                    "run_1",
+		NodeRunID:                "nr_1",
+		WorkspacePath:            t.TempDir(),
+		Prompt:                   "emit tool-calls until explicit cancellation",
+		OccurredAt:               "2026-03-02T10:20:00Z",
+		OnProcessGuardQuiescence: cancelAfterQuiescentCommands(cancel, 4),
 	})
-	if err == nil {
-		t.Fatal("expected timeout")
+	if !errors.Is(err, context.Canceled) || response.Accepted || response.Outcome.ReasonCode != "provider_cancelled" || response.StreamObservation.TimedOut {
+		t.Fatalf("expected explicit cancellation, response=%+v err=%v", response, err)
 	}
 
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
@@ -1797,42 +1813,45 @@ func TestSessionAdapterContinuationEndsOnCancellation(t *testing.T) {
 		t.Fatalf("read args log: %v", readErr)
 	}
 	invocations := strings.Count(strings.TrimSpace(string(argsLogRaw)), "run --format json")
-	if invocations <= 3 {
-		t.Fatalf("expected more than 3 continuations, got %d", invocations)
+	if invocations != 4 {
+		t.Fatalf("expected exactly four commands before cancellation, got %d", invocations)
 	}
 }
 
 func TestSessionAdapterRejectsToolCallsOnlyFinishAsIncomplete(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
+		BinaryPath: binaryPath,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
+	defer adapter.Close()
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	_, err = adapter.Execute(ctx, ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_tool_calls_only",
-		AttemptID:      "attempt_tool_calls_only",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "emit tool-calls finish and exit",
-		OccurredAt:     "2026-03-02T10:20:00Z",
+	response, err := adapter.Execute(ctx, ExecuteRequest{
+		CompletionMode:           CompletionModeServerResponse,
+		SessionID:                "session_tool_calls_only",
+		AttemptID:                "attempt_tool_calls_only",
+		RunID:                    "run_1",
+		NodeRunID:                "nr_1",
+		WorkspacePath:            t.TempDir(),
+		Prompt:                   "emit tool-calls finish and exit",
+		OccurredAt:               "2026-03-02T10:20:00Z",
+		OnProcessGuardQuiescence: cancelAfterQuiescentCommands(cancel, 4),
 	})
-	if err == nil {
-		t.Fatal("expected timeout without terminal response")
+	if !errors.Is(err, context.Canceled) || response.Accepted || response.Outcome.ReasonCode != "provider_cancelled" {
+		t.Fatalf("tool-call boundaries authorized success before cancellation: response=%+v err=%v", response, err)
 	}
 
-	payload := decodeEventPayload(t, eventsFromAttempt(t, adapter, "attempt_tool_calls_only"), AttemptEventTypeFailed)
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(response.ProviderDiagnosticsJSON), &payload); err != nil {
+		t.Fatal(err)
+	}
 	execPath, ok := payload["execution_path_diagnostics"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected execution_path_diagnostics map, got %#v", payload["execution_path_diagnostics"])
@@ -2198,32 +2217,32 @@ func TestSessionAdapterOnlyStopIsTerminalSuccessWithoutProviderSession(t *testin
 func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport(t *testing.T) {
 	binaryPath, argsLogPath := writeFakeOpenCodeBinary(t)
 	adapter, err := NewSessionAdapter(SessionAdapterConfig{
-		BinaryPath:              binaryPath,
-		FirstEventTimeout:       2 * time.Second,
-		StreamInactivityTimeout: 2 * time.Second,
+		BinaryPath: binaryPath,
 	})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
+	defer adapter.Close()
 
 	t.Setenv("FAKE_OPENCODE_ARGS_LOG", argsLogPath)
 	t.Setenv("FAKE_OPENCODE_TOOL_CALLS_ONLY", "1")
 	t.Setenv("FAKE_OPENCODE_STEP_FINISH_TOKENS", `{"input":11,"output":7,"total":18}`)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	res, err := adapter.Execute(ctx, ExecuteRequest{
-		CompletionMode: CompletionModeServerResponse,
-		SessionID:      "session_logical_only",
-		AttemptID:      "attempt_incomplete_tool_metadata",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "tool calls must remain incomplete without terminal stream evidence",
-		OccurredAt:     "2026-03-02T10:22:00Z",
+		CompletionMode:           CompletionModeServerResponse,
+		SessionID:                "session_logical_only",
+		AttemptID:                "attempt_incomplete_tool_metadata",
+		RunID:                    "run_1",
+		NodeRunID:                "nr_1",
+		WorkspacePath:            t.TempDir(),
+		Prompt:                   "tool calls must remain incomplete without terminal stream evidence",
+		OccurredAt:               "2026-03-02T10:22:00Z",
+		OnProcessGuardQuiescence: cancelAfterQuiescentCommands(cancel, 4),
 	})
-	if err == nil {
-		t.Fatal("expected incomplete terminal state error")
+	if !errors.Is(err, context.Canceled) || res.Accepted {
+		t.Fatalf("expected cancellation of incomplete stream, response=%+v err=%v", res, err)
 	}
 	if res.ProviderSessionID != "ses_fake_created" {
 		t.Fatalf("expected provider session id ses_fake_created, got %q", res.ProviderSessionID)
@@ -2231,11 +2250,11 @@ func TestSessionAdapterIncompleteToolCallsPreservesObservedMetadataWithoutExport
 	if !strings.HasPrefix(res.OutputText, "starting tool work") {
 		t.Fatalf("expected partial output to be preserved, got %q", res.OutputText)
 	}
-	if res.Tokens.InputTokens < 11 || res.Tokens.OutputTokens < 7 || res.Tokens.TotalTokens < 18 {
+	if res.Tokens.InputTokens != 44 || res.Tokens.OutputTokens != 28 || res.Tokens.TotalTokens != 72 {
 		t.Fatalf("expected observed tokens to be preserved, got %#v", res.Tokens)
 	}
-	if res.Outcome.ReasonCode != "timeout" {
-		t.Fatalf("expected timeout outcome, got %#v", res.Outcome)
+	if res.Outcome.ReasonCode != "provider_cancelled" || res.StreamObservation.TimedOut {
+		t.Fatalf("expected explicit cancellation outcome, got %#v", res.Outcome)
 	}
 	argsLogRaw, readErr := os.ReadFile(argsLogPath)
 	if readErr != nil {
@@ -2729,17 +2748,6 @@ fi
 if [ "$FAKE_OPENCODE_STRUCTURED_RETRY_ERROR_EXIT" = "1" ]; then
   echo "{\"type\":\"error\"$SESSION_FIELD,\"error\":{\"name\":\"APIError\",\"data\":{\"message\":\"rate limited\",\"statusCode\":429,\"retry_after_ms\":10000}}}"
   exit 17
-fi
-
-if [ -n "$FAKE_OPENCODE_HEARTBEAT_COUNT" ]; then
-  COUNT="$FAKE_OPENCODE_HEARTBEAT_COUNT"
-  SLEEP_SECS="${FAKE_OPENCODE_HEARTBEAT_SLEEP:-0.05}"
-  i=0
-  while [ "$i" -lt "$COUNT" ]; do
-    echo "{\"type\":\"heartbeat\"$SESSION_FIELD}"
-    sleep "$SLEEP_SECS"
-    i=$((i+1))
-  done
 fi
 
 if [ "$FAKE_OPENCODE_SPAWN_CHILD" = "1" ] && [ -n "$FAKE_OPENCODE_CHILD_PID_PATH" ]; then

@@ -134,12 +134,19 @@ func TestE2EExternalPlanningDecreeRefreshAdoptionAndRetention(t *testing.T) {
 	if count := env.queryInt(t, `SELECT COUNT(*) FROM planning_external_source_adoptions WHERE planning_session_id=?`, planningPayload.Session.PlanningSessionID); count != 2 {
 		t.Fatalf("planning adoption count after refresh=%d", count)
 	}
-	var decreeTitle, decreeText string
-	if err := env.db.QueryRow(`SELECT decree_title,decree_text FROM decrees WHERE decree_id=?`, decree.DecreeID).Scan(&decreeTitle, &decreeText); err != nil {
+	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/decrees/" + decree.DecreeID})
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("read refreshed decree: %d %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail struct {
+		Title string `json:"decree_title"`
+		Text  string `json:"decree_text"`
+	}
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
 	}
-	if decreeTitle != "Operator-edited title" || decreeText != "Operator-edited immutable text" {
-		t.Fatalf("refresh rewrote decree: title=%q text=%q", decreeTitle, decreeText)
+	if detail.Title != "Operator-edited title" || detail.Text != "Operator-edited immutable text" {
+		t.Fatalf("refresh rewrote decree: title=%q text=%q", detail.Title, detail.Text)
 	}
 
 	removeResponse := env.request(t, requestSpec{method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID, idempotencyKey: "external-remove"})

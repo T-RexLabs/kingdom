@@ -18,6 +18,10 @@ type Agent interface {
 	GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error)
 }
 
+// ContextCloser is the optional planner resource lifecycle. Close must honor
+// the caller's deadline; consumers are drained before Service invokes it.
+type ContextCloser interface{ CloseContext(context.Context) error }
+
 type ProviderActivity struct {
 	Kind           string
 	ProviderPartID string

@@ -1315,8 +1315,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fetch full mailbox message details. */
+        /** Fetch mailbox message details and a lazy full-content pointer. */
         get: operations["getRunMailboxMessage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/mailbox/messages/{messageId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the complete primary mailbox instruction or response.
+         * @description Resolves only the content bound to this visible run/message, validates execution and invocation lineage, and verifies the complete digest and size before streaming. Inline messages retain their complete original text. Responses are attachments with MIME sniffing disabled.
+         */
+        get: operations["getRunMailboxMessageContent"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1751,7 +1771,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_usage_limit_reached" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_usage_limit_reached" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */
@@ -2715,6 +2735,12 @@ export interface components {
             next_cursor?: string;
         };
         RunMailboxMessageSummary: {
+            /** @description Whether the message carries a complete inline body or a durable full-content reference. */
+            has_full_content?: boolean;
+            /** @description Authenticated run/message-scoped download URL. */
+            full_content_url?: string;
+            /** @description Whether the primary body is stored separately and must be loaded explicitly. */
+            content_is_preview?: boolean;
             message_id: string;
             run_id: string;
             node_id: string;
@@ -2748,6 +2774,12 @@ export interface components {
             items: components["schemas"]["RunMailboxMessageSummary"][];
         };
         RunMailboxMessageDetail: {
+            /** @description Whether the message carries a complete inline body or a durable full-content reference. */
+            has_full_content?: boolean;
+            /** @description Authenticated run/message-scoped download URL. */
+            full_content_url?: string;
+            /** @description When true, content is only a preview and may be empty; full_content_url serves the complete body. */
+            content_is_preview?: boolean;
             message_id: string;
             run_id: string;
             node_id: string;
@@ -5799,6 +5831,35 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getRunMailboxMessageContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                messageId: components["parameters"]["MessageId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified complete message content, suitable for explicit restricted-Markdown viewing or native browser download. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

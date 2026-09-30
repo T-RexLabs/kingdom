@@ -55,6 +55,14 @@ Important behavior:
 - planner operations persist canonical state through planning message variants, drafts, and session fields; planner settlement records authorize those writes but do not replace the planning tables as transcript/draft/session truth.
 - stale recovery consults durable ACP operation progress before retrying; observed progress can suppress an automatic retry but cannot create a canonical message or draft without settlement.
 
+### Planning Context and History
+
+Each session starts with a durable context snapshot. Capture records all included/excluded file metadata under the project enumeration rules, without a fixed prefix; it never captures source-file contents. Only the project-shape summary enters the planner prompt. Snapshot responses omit file arrays, and the API exposes included/excluded entries through signed ordinal pagination.
+
+Every provider-backed operation binds the active context snapshot and every active linked-source snapshot when it is enqueued. GitHub comment bodies default off; when enabled, intake captures every page and complete bodies. Source adoption or removal changes future operations only. Prompt assembly reads the immutable bindings and complete canonical transcript text; external evidence stays separately framed as untrusted material.
+
+Canonical planner text is stored through SQLite content manifests and chunks. Session-list pagination continues through retained history rather than imposing a retention ceiling; the web UI exposes **Load More Sessions** and **Load Older Sessions**. Individual text/read responses may still materialize in memory.
+
 ### Planner Streaming and Recovery
 
 Planning operation events stream from:
@@ -212,6 +220,8 @@ Kingdom captures runtime-owned filesystem snapshots for tracked files in the exe
 
 Those snapshots record the trusted builder baseline and later attempt deltas so the runtime can restore, diff, and publish without per-attempt seeded copies.
 
+Capture, diff, and restoration stream file bytes and traverse metadata incrementally, using digest-addressed blobs and a disposable disk-backed manifest index. There are no fixed file-size, aggregate workspace-byte, entry-count, or directory-depth workload ceilings. Snapshot lineage depth, no-follow path validation, trusted restoration, and resumable cleanup batches remain enforced.
+
 Tracked snapshot capture ignores:
 
 - `.git`
@@ -240,6 +250,7 @@ Important runtime behavior:
 - runtime validates active attempt, invocation, lease, guardian, and node-contract lineage for every settlement.
 - canonical settled response text is invocation-owned and single-turn; runtime must not concatenate multiple final answers into one settled response body.
 - every provider terminal observation first commits a lease-fenced SQLite handoff-pending marker, then enters the orchestration-written handoff under `<runtime workspace root>/provider-completion/handoffs/`, then crosses the durable lease-fenced handoff before settlement. If pending or file publication fails, a recovery-required marker records the exact lease generation and is written only after guardian quiescence, provider-reported quiescence, or an unlaunched starting state proves there is no live process to preserve. Startup replays file-only and SQLite handoffs after guardian evidence and before lost-handoff recovery.
+- handoff envelopes reference complete terminal text and invocation diagnostics by invocation ID, digest, and size. Content is durably staged before envelope publication, verified into SQLite chunks during ingestion, and retained there after settlement. Compact envelope limits do not cap the referenced content.
 - workspace-backed execution sessions place an OpenCode `.git` discovery marker at the exact execution root; nested scopes in managed Git worktrees use a `.git` file pointing at the linked worktree's existing metadata, preserving the parent worktree's status and diff behavior. A worktree-root scope retains its linked-worktree marker. `GIT_CEILING_DIRECTORIES` above the root is defense in depth because OpenCode performs its own upward `.git` walk. Its built-in file-tool boundary uses lexical checks and does not confine symlink targets or arbitrary shell commands; it is not OS-level confinement.
 - each provider command has a durable guardian. Its acknowledged ownership and file-backed quiescence evidence are ingested before terminal settlement; cleanup after ingestion is replayable evidence debt, not proof loss.
 - server-response success requires all of: normalized terminal reason `stop`; final turn and step IDs; a positive final stream sequence; non-empty canonical terminal text; no pending or non-terminal tool calls; no events after the terminal response; clean process exit with both output streams drained; and no timeout, cancellation, provider error, malformed stream data, or conflicting terminal evidence.
@@ -247,6 +258,7 @@ Important runtime behavior:
 - `opencode export` is diagnostic only for provider-backed decree execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
+- provider output and complete invocation stdout/stderr diagnostics have no fixed byte ceiling; bounded activity/output previews and stderr tails are display projections, not substitutes for canonical content. Provider context-window limits and active timeouts still apply.
 
 ## Artifact Lifecycle
 
@@ -256,7 +268,7 @@ Artifact persistence and publication are separate steps.
 
 Artifact metadata is written to `artifacts`.
 
-Artifact bytes are written to `artifact_contents`.
+Content manifests are written to `artifact_contents`, and canonical bytes to ordered `artifact_content_chunks` in the same transaction as artifact metadata. Downloads, archive exports, and publication stream those chunks.
 
 ### Builder Output
 

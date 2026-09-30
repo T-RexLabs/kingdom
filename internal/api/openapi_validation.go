@@ -73,7 +73,7 @@ func NewOpenAPIRequestValidator() (func(http.Handler) http.Handler, error) {
 	}
 	validateHeaders := middleware.OapiRequestValidatorWithOptions(swagger, validatorOpts)
 	return func(next http.Handler) http.Handler {
-		return validateHeaders(spoolRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		validateBody := spoolRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			route, _, err := router.FindRoute(r)
 			if err == nil && route.Operation.RequestBody != nil {
 				err = validateSpooledJSON(r, route.Operation.RequestBody.Value)
@@ -87,7 +87,22 @@ func NewOpenAPIRequestValidator() (func(http.Handler) http.Handler, error) {
 				return
 			}
 			next.ServeHTTP(w, r)
-		})))
+		}))
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// kin-openapi also ReadAlls bodies while checking security, even
+			// with ExcludeRequestBody. Our authentication callback consults only
+			// the already-verified principal, so validate request metadata with
+			// a bodyless clone. Only after those checks may the real body reach
+			// the private spool. Preserve any parameter defaults on the clone.
+			headersOnly := r.Clone(r.Context())
+			headersOnly.Body = http.NoBody
+			headersOnly.GetBody = nil
+			validateHeaders(http.HandlerFunc(func(w http.ResponseWriter, validated *http.Request) {
+				validated.Body = r.Body
+				validated.GetBody = r.GetBody
+				validateBody.ServeHTTP(w, validated)
+			})).ServeHTTP(w, headersOnly)
+		})
 	}, nil
 }
 
@@ -199,6 +214,7 @@ func (p *schemaJSONReader) value(schema *openapi3.Schema, compress bool) (any, e
 		}
 		return text, nil
 	case '{':
+		keys := requestObjectKeys(schema, make(map[*openapi3.Schema]bool))
 		object := make(map[string]any)
 		c, err = p.nonspace()
 		if err != nil {
@@ -213,7 +229,7 @@ func (p *schemaJSONReader) value(schema *openapi3.Schema, compress bool) (any, e
 			if err != nil || c != '"' {
 				return nil, fmt.Errorf("expected JSON object key")
 			}
-			key, _, err := p.stringValue(false)
+			key, err := p.propertyName(keys)
 			if err != nil {
 				return nil, err
 			}
@@ -224,14 +240,7 @@ func (p *schemaJSONReader) value(schema *openapi3.Schema, compress bool) (any, e
 			if err != nil || c != ':' {
 				return nil, fmt.Errorf("expected JSON colon")
 			}
-			var child *openapi3.Schema
-			if schema != nil {
-				if ref := schema.Properties[key]; ref != nil {
-					child = ref.Value
-				} else if schema.AdditionalProperties.Schema != nil {
-					child = schema.AdditionalProperties.Schema.Value
-				}
-			}
+			child := requestPropertySchema(schema, key, make(map[*openapi3.Schema]bool))
 			parent := p.path
 			p.path += "/" + strings.ReplaceAll(strings.ReplaceAll(key, "~", "~0"), "/", "~1")
 			value, err := p.value(child, compress)
@@ -317,6 +326,153 @@ func (p *schemaJSONReader) value(schema *openapi3.Schema, compress bool) (any, e
 		}
 		return value, nil
 	}
+}
+
+// A finite key set is a necessary condition, not a replacement for VisitJSON.
+// Local/allOf restrictions intersect; alternatives union only when every branch
+// is closed. nil means unrestricted (including cycles we cannot prove closed).
+// In particular, properties from sibling allOf branches do not extend a closed
+// object's own allowed set, and negated schemas do not contribute allowed keys.
+func requestObjectKeys(schema *openapi3.Schema, visiting map[*openapi3.Schema]bool) map[string]struct{} {
+	if schema == nil || visiting[schema] {
+		return nil
+	}
+	visiting[schema] = true
+	defer delete(visiting, schema)
+	var keys map[string]struct{}
+	if schema.AdditionalProperties.Has != nil && !*schema.AdditionalProperties.Has {
+		keys = make(map[string]struct{}, len(schema.Properties))
+		for key := range schema.Properties {
+			keys[key] = struct{}{}
+		}
+	}
+	intersect := func(other map[string]struct{}) {
+		if keys == nil {
+			keys = other
+			return
+		}
+		if other != nil {
+			for key := range keys {
+				if _, ok := other[key]; !ok {
+					delete(keys, key)
+				}
+			}
+		}
+	}
+	for _, ref := range schema.AllOf {
+		intersect(requestObjectKeys(ref.Value, visiting))
+	}
+	for _, alternatives := range []openapi3.SchemaRefs{schema.AnyOf, schema.OneOf} {
+		if len(alternatives) == 0 {
+			continue
+		}
+		union := make(map[string]struct{})
+		for _, ref := range alternatives {
+			branch := requestObjectKeys(ref.Value, visiting)
+			if branch == nil {
+				union = nil
+				break
+			}
+			for key := range branch {
+				union[key] = struct{}{}
+			}
+		}
+		intersect(union)
+	}
+	return keys
+}
+
+type requestPropertyMatcher struct {
+	candidates []string
+	offset     int
+}
+
+func (m *requestPropertyMatcher) Write(raw []byte) (int, error) {
+	remaining := m.candidates[:0]
+	for _, name := range m.candidates {
+		if len(name)-m.offset >= len(raw) && name[m.offset:m.offset+len(raw)] == string(raw) {
+			remaining = append(remaining, name)
+		}
+	}
+	m.candidates = remaining
+	if len(remaining) == 0 {
+		return 0, fmt.Errorf("JSON property is not allowed by the request schema")
+	}
+	m.offset += len(raw)
+	return len(raw), nil
+}
+
+func (p *schemaJSONReader) propertyName(keys map[string]struct{}) (string, error) {
+	if keys == nil {
+		key, _, err := p.stringValue(false)
+		return key, err
+	}
+	matcher := &requestPropertyMatcher{candidates: make([]string, 0, len(keys))}
+	for key := range keys {
+		matcher.candidates = append(matcher.candidates, key)
+	}
+	// Reuse full escape/UTF-8 validation. Even a schema-declared name longer
+	// than the diagnostic prefix is returned exactly from the schema, not from
+	// a truncated input prefix. Impossible names fail before their value is read.
+	if _, _, err := p.readString(true, matcher); err != nil {
+		return "", err
+	}
+	for _, key := range matcher.candidates {
+		if len(key) == matcher.offset {
+			return key, nil
+		}
+	}
+	return "", fmt.Errorf("JSON property is not allowed by the request schema")
+}
+
+// Carry necessary child constraints through compositions so a permitted parent
+// property cannot hide a closed nested object behind a nil child schema. Child
+// alternatives use anyOf, even for parent oneOf: two branches can constrain the
+// same child identically while differing elsewhere. The original parent still
+// performs full oneOf, pattern, enum, and other value validation in VisitJSON.
+func requestPropertySchema(schema *openapi3.Schema, key string, visiting map[*openapi3.Schema]bool) *openapi3.Schema {
+	if schema == nil || visiting[schema] {
+		return nil
+	}
+	visiting[schema] = true
+	defer delete(visiting, schema)
+	var constraints openapi3.SchemaRefs
+	if ref := schema.Properties[key]; ref != nil {
+		constraints = append(constraints, ref)
+	} else if ref := schema.AdditionalProperties.Schema; ref != nil {
+		constraints = append(constraints, ref)
+	}
+	for _, ref := range schema.AllOf {
+		if child := requestPropertySchema(ref.Value, key, visiting); child != nil {
+			constraints = append(constraints, &openapi3.SchemaRef{Value: child})
+		}
+	}
+	for _, alternatives := range []openapi3.SchemaRefs{schema.AnyOf, schema.OneOf} {
+		var choices openapi3.SchemaRefs
+		for _, ref := range alternatives {
+			if keys := requestObjectKeys(ref.Value, make(map[*openapi3.Schema]bool)); keys != nil {
+				if _, allowed := keys[key]; !allowed {
+					continue
+				}
+			}
+			child := requestPropertySchema(ref.Value, key, visiting)
+			if child == nil {
+				choices = nil
+				break
+			}
+			choices = append(choices, &openapi3.SchemaRef{Value: child})
+		}
+		if len(choices) > 0 {
+			constraints = append(constraints, &openapi3.SchemaRef{Value: &openapi3.Schema{AnyOf: choices}})
+		}
+	}
+	if len(constraints) == 0 {
+		return nil
+	}
+	if len(constraints) == 1 {
+		return constraints[0].Value
+	}
+	return &openapi3.Schema{AllOf: constraints}
 }
 
 // A negated required-set (the decree provenance exclusivity rule) observes only

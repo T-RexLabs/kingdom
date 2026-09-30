@@ -171,3 +171,40 @@ func TestRestoreCorruptStreamDoesNotReplaceDestination(t *testing.T) {
 		t.Fatalf("destination=%q error=%v", raw, err)
 	}
 }
+
+func TestRestoreCorruptStreamPreservesAncestorWithoutRepair(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	seedRuntimeFSRun(t, db, "run_ancestor")
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, destination := t.TempDir(), t.TempDir()
+	writeTestFile(t, source, "parent/child", "canonical")
+	ctx := context.Background()
+	if _, err := store.CaptureSnapshot(ctx, CaptureSnapshotRequest{SnapshotID: "snap_ancestor", RunID: "run_ancestor", SnapshotKind: "baseline", RootPath: source, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := readTestManifest(store, "snap_ancestor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobPath, err := store.blobPath(manifest["parent/child"].BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(blobPath, []byte("corrupted"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, destination, "parent", "ancestor sentinel")
+	if err := store.RestoreSnapshot(ctx, "snap_ancestor", destination); err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("restore error=%v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(destination, "parent")); err != nil || string(raw) != "ancestor sentinel" {
+		t.Fatalf("failed restoration destroyed ancestor: %q %v", raw, err)
+	}
+	if entries, err := os.ReadDir(destination); err != nil || len(entries) != 1 || entries[0].Name() != "parent" {
+		t.Fatalf("restoration staging leaked: %v %v", entries, err)
+	}
+}

@@ -15,6 +15,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -308,12 +309,39 @@ func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.F
 }
 
 func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
-	parentFD, leaf, err := openParent(root, path, true, dirMode)
+	stagingFD, relativePath, err := openStagingParent(root, path)
 	if err != nil {
 		return err
 	}
-	defer unix.Close(parentFD)
-	return replaceRegularFromAt(ctx, parentFD, leaf, path, produce, mode, modifiedAt)
+	defer unix.Close(stagingFD)
+	return replaceRegularFromAt(ctx, stagingFD, relativePath, path, produce, mode, dirMode, modifiedAt)
+}
+
+// Pin the longest existing directory prefix without creating or repairing any
+// component. Stage on that filesystem, before a producer can authorize repairs.
+// Keeping this descriptor also prevents a renamed ancestor redirecting publish.
+func openStagingParent(root *Root, path string) (int, string, error) {
+	components, err := splitRelativePath(path)
+	if err != nil {
+		return -1, "", err
+	}
+	fd, err := openRootDir(root, ".")
+	if err != nil {
+		return -1, "", err
+	}
+	for index, component := range components[:len(components)-1] {
+		childFD, err := openDirectoryAt(fd, component, false, 0)
+		if err != nil {
+			if rootTreeCursorUnavailable(err) {
+				return fd, strings.Join(components[index:], "/"), nil
+			}
+			_ = unix.Close(fd)
+			return -1, "", fmt.Errorf("pin secure staging parent %q: %w", path, err)
+		}
+		_ = unix.Close(fd)
+		fd = childFD
+	}
+	return fd, components[len(components)-1], nil
 }
 
 func createRootRegularExact(root *Root, path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
@@ -400,8 +428,8 @@ func readExactRegularAt(parentFD int, leaf, path string, expected []byte, mode f
 	return identity, nil
 }
 
-func replaceRegularFromAt(ctx context.Context, parentFD int, leaf, path string, produce func(io.Writer) error, mode fs.FileMode, modifiedAt time.Time) error {
-	tempName, tempFile, err := createTempAt(parentFD)
+func replaceRegularFromAt(ctx context.Context, stagingFD int, relativePath, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
+	tempName, tempFile, err := createTempAt(stagingFD)
 	if err != nil {
 		return fmt.Errorf("create secure temporary file for %q: %w", path, err)
 	}
@@ -409,7 +437,7 @@ func replaceRegularFromAt(ctx context.Context, parentFD int, leaf, path string, 
 	defer func() {
 		_ = tempFile.Close()
 		if !committed {
-			_ = unix.Unlinkat(parentFD, tempName, 0)
+			_ = unix.Unlinkat(stagingFD, tempName, 0)
 		}
 	}()
 	if err := produce(tempFile); err != nil {
@@ -431,6 +459,13 @@ func replaceRegularFromAt(ctx context.Context, parentFD int, leaf, path string, 
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// All stream verification and staging I/O must succeed before this call:
+	// openParent(create=true) may unlink conflicting ancestor files or links.
+	parentFD, leaf, err := openParent(&Root{fd: stagingFD}, relativePath, true, dirMode)
+	if err != nil {
+		return err
+	}
+	defer unix.Close(parentFD)
 
 	var destination unix.Stat_t
 	statErr := unix.Fstatat(parentFD, leaf, &destination, unix.AT_SYMLINK_NOFOLLOW)
@@ -447,12 +482,17 @@ func replaceRegularFromAt(ctx context.Context, parentFD int, leaf, path string, 
 	} else if !errors.Is(statErr, unix.ENOENT) {
 		return fmt.Errorf("inspect secure destination %q: %w", path, statErr)
 	}
-	if err := unix.Renameat(parentFD, tempName, parentFD, leaf); err != nil {
+	if err := unix.Renameat(stagingFD, tempName, parentFD, leaf); err != nil {
 		return fmt.Errorf("commit restored file %q: %w", path, err)
 	}
 	committed = true
 	if err := unix.Fsync(parentFD); err != nil {
 		return fmt.Errorf("sync secure parent after publishing %q: %w", path, err)
+	}
+	if relativePath != leaf {
+		if err := unix.Fsync(stagingFD); err != nil {
+			return fmt.Errorf("sync secure staging parent after publishing %q: %w", path, err)
+		}
 	}
 	return nil
 }

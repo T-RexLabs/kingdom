@@ -65,6 +65,7 @@ func compactEventStrings(reader io.Reader) (*eventStrings, error) {
 	s.numberMarker = "kingdom-number:" + hex.EncodeToString(nonce[:])
 	r := bufio.NewReaderSize(reader, 64*1024)
 	w := bufio.NewWriterSize(projected, 64*1024)
+	afterNumber := false
 	for {
 		b, err := r.ReadByte()
 		if err == io.EOF {
@@ -73,6 +74,17 @@ func compactEventStrings(reader io.Reader) (*eventStrings, error) {
 		if err != nil {
 			s.close()
 			return nil, err
+		}
+		// A colon can only follow a quoted object key, never a number.
+		// Preserve this lexical distinction before replacing long numbers
+		// with strings, which would otherwise repair an unquoted key. Keep
+		// the check across whitespace without buffering that whitespace.
+		if b == ':' && afterNumber {
+			s.close()
+			return nil, fmt.Errorf("%w: unquoted object key", errInvalidEventNumber)
+		}
+		if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+			afterNumber = b == '-' || (b >= '0' && b <= '9')
 		}
 		if b == '"' {
 			if err := s.stringLiteral(r, w); err != nil {
@@ -290,8 +302,11 @@ func (s *eventStrings) stringLiteral(r *bufio.Reader, w *bufio.Writer) error {
 					// Never split a potential UTF-16 surrogate pair across the
 					// standard decoder's independently decoded fragments.
 					if pair, _ := r.Peek(6); len(pair) == 6 && pair[0] == '\\' && pair[1] == 'u' {
-						fragment = append(fragment, pair...)
-						_, _ = r.Discard(6)
+						low, err := strconv.ParseUint(string(pair[2:]), 16, 16)
+						if err == nil && low >= 0xdc00 && low <= 0xdfff {
+							fragment = append(fragment, pair...)
+							_, _ = r.Discard(6)
+						}
 					}
 				}
 			}

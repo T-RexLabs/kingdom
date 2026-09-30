@@ -282,9 +282,17 @@ func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T)
 	if refresh.Code != http.StatusOK || !strings.Contains(refresh.Body.String(), `"outcome":"changed"`) {
 		t.Fatalf("refresh: %d %s", refresh.Code, refresh.Body.String())
 	}
-	var decreeText string
-	if err := env.db.QueryRow(`SELECT decree_text FROM decrees WHERE decree_title='Operator edit'`).Scan(&decreeText); err != nil || decreeText != "Immutable operator text" {
-		t.Fatalf("decree text=%q err=%v", decreeText, err)
+	var decreeID string
+	if err := env.db.QueryRow(`SELECT decree_id FROM decrees WHERE decree_title='Operator edit'`).Scan(&decreeID); err != nil {
+		t.Fatal(err)
+	}
+	detailResponse := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/decrees/" + decreeID})
+	if detailResponse.Code != http.StatusOK {
+		t.Fatalf("read refreshed decree: %d %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	var detail gen.DecreeDetail
+	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detail); err != nil || detail.DecreeText != "Immutable operator text" {
+		t.Fatalf("decree text=%q err=%v", detail.DecreeText, err)
 	}
 }
 

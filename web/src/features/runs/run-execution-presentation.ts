@@ -105,16 +105,6 @@ function presentRecovery(
 			timeline: { label: "Usage Limit Reached", status: "failed", iconKey: "alert" },
 		};
 	}
-	if (recovery.reason_code === "budget_exceeded") {
-		return {
-			...base,
-			tone: "failed", iconKey: "alert", heading: "Budget Exceeded",
-			description: "This run reached its configured Kingdom budget.",
-			announcement: { role: "alert", ariaLive: "assertive" },
-			requiredAction: "Required Action: Increase the Kingdom budget before retrying this step.",
-			timeline: { label: "Budget Exceeded", status: "failed", iconKey: "alert" },
-		};
-	}
 	if (recovery.phase === "exhausted") {
 		return {
 			...base,

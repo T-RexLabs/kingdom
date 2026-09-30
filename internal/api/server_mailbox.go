@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -23,6 +25,9 @@ type runMailboxMessagesResponse struct {
 }
 
 type runMailboxMessageSummary struct {
+	HasFullContent    bool    `json:"has_full_content"`
+	FullContentURL    *string `json:"full_content_url,omitempty"`
+	ContentIsPreview  bool    `json:"content_is_preview"`
 	MessageID         string  `json:"message_id"`
 	RunID             string  `json:"run_id"`
 	NodeID            string  `json:"node_id"`
@@ -45,6 +50,9 @@ type runMailboxMessageSummary struct {
 }
 
 type runMailboxMessageDetail struct {
+	HasFullContent    bool    `json:"has_full_content"`
+	FullContentURL    *string `json:"full_content_url,omitempty"`
+	ContentIsPreview  bool    `json:"content_is_preview"`
 	MessageID         string  `json:"message_id"`
 	RunID             string  `json:"run_id"`
 	NodeID            string  `json:"node_id"`
@@ -134,6 +142,10 @@ func (s *Server) handleListRunMailboxMessages(w http.ResponseWriter, r *http.Req
 			continue
 		}
 		summary := summarizeMailboxMessage(message, agentNames)
+		if summary.HasFullContent {
+			contentURL := s.mailboxContentURL(runID, message.MessageID)
+			summary.FullContentURL = &contentURL
+		}
 		if communicationType != "" && strings.ToLower(strings.TrimSpace(summary.CommunicationType)) != communicationType {
 			continue
 		}
@@ -237,6 +249,10 @@ func (s *Server) handleGetRunMailboxMessage(w http.ResponseWriter, r *http.Reque
 	}
 
 	detail := detailMailboxMessage(message, agentNames)
+	if detail.HasFullContent {
+		contentURL := s.mailboxContentURL(runID, messageID)
+		detail.FullContentURL = &contentURL
+	}
 	payload, _, _, _ := parseMailboxPayload(message.PayloadJSON)
 	resolvedType := mailboxCommunicationType(payload, message)
 	if !isUserFacingMailboxMessage(message, payload, resolvedType) {
@@ -322,13 +338,22 @@ func (s *Server) loadMailboxMessageByID(ctx context.Context, runID, messageID st
 }
 
 func summarizeMailboxMessage(message state.MailboxMessage, agentNames map[string]string) runMailboxMessageSummary {
+	description := state.DescribeMailboxContent(message.PayloadJSON)
 	payload, format, _, fallbackPreview := parseMailboxPayload(message.PayloadJSON)
 	communicationType := mailboxCommunicationType(payload, message)
 	preview := mailboxHandoffPreview(payload, communicationType, fallbackPreview)
+	if description.IsPreview {
+		preview = trimPreview(description.Preview, 220)
+		if preview == "" {
+			preview = "Full content is stored separately. Open the message to load it."
+		}
+	}
 	nodeID := mailboxNodeID(payload)
 	reasonCode := mailboxReasonCode(payload)
 	verdictType, verdictStatus := mailboxVerdictSummary(payload, nodeID, reasonCode)
 	return runMailboxMessageSummary{
+		HasFullContent:    description.HasContent,
+		ContentIsPreview:  description.IsPreview,
 		MessageID:         message.MessageID,
 		RunID:             message.RunID,
 		NodeID:            nodeID,
@@ -352,11 +377,18 @@ func summarizeMailboxMessage(message state.MailboxMessage, agentNames map[string
 }
 
 func detailMailboxMessage(message state.MailboxMessage, agentNames map[string]string) runMailboxMessageDetail {
+	description := state.DescribeMailboxContent(message.PayloadJSON)
 	payload, format, content, _ := parseMailboxPayload(message.PayloadJSON)
+	if description.IsPreview {
+		content = description.Preview
+		format = "markdown"
+	}
 	nodeID := mailboxNodeID(payload)
 	reasonCode := mailboxReasonCode(payload)
 	verdictType, verdictStatus := mailboxVerdictSummary(payload, nodeID, reasonCode)
 	return runMailboxMessageDetail{
+		HasFullContent:    description.HasContent,
+		ContentIsPreview:  description.IsPreview,
 		MessageID:         message.MessageID,
 		RunID:             message.RunID,
 		NodeID:            nodeID,
@@ -377,6 +409,36 @@ func detailMailboxMessage(message state.MailboxMessage, agentNames map[string]st
 		Format:            format,
 		Content:           content,
 		PayloadJSON:       payload,
+	}
+}
+
+func (s *Server) mailboxContentURL(runID, messageID string) string {
+	return s.basePath + "/runs/" + url.PathEscape(runID) + "/mailbox/messages/" + url.PathEscape(messageID) + "/content"
+}
+
+func (s *Server) handleGetRunMailboxMessageContent(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_mailbox_message_content"); !ok {
+		return
+	}
+	runID, messageID := strings.TrimSpace(r.PathValue("id")), strings.TrimSpace(r.PathValue("messageId"))
+	content, size, err := state.NewMailboxStore(s.db, nil).OpenMessageContent(r.Context(), runID, messageID)
+	if err != nil {
+		if errors.Is(err, state.ErrMailboxContentNotFound) {
+			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "mailbox content not found", "api.get_run_mailbox_message_content", nil)
+		} else {
+			s.writeInternalError(w, "verify mailbox content failed")
+		}
+		return
+	}
+	defer content.Close()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `attachment; filename="message-content.md"`)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.FormatInt(size, 10))
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, content); err != nil {
+		panic(http.ErrAbortHandler)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 type repeatedContent struct {
@@ -68,7 +69,7 @@ func TestReferencedTerminalSuccessRequiresCompleteVerifiedReader(t *testing.T) {
 
 func TestCopiedContentReaderEarlyCloseJoinsProducer(t *testing.T) {
 	done := make(chan struct{})
-	reader := OpenContentCopy(context.Background(), func(w io.Writer) error {
+	reader := OpenContentCopy(context.Background(), func(_ context.Context, w io.Writer) error {
 		defer close(done)
 		_, err := io.Copy(w, &repeatedContent{remaining: 16 * 1024 * 1024, value: 'x'})
 		return err
@@ -84,5 +85,38 @@ func TestCopiedContentReaderEarlyCloseJoinsProducer(t *testing.T) {
 	case <-done:
 	default:
 		t.Fatal("Close left a blocked content producer")
+	}
+}
+
+func TestCopiedContentReaderCloseCancelsBlockedSource(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started, producerDone := make(chan struct{}), make(chan struct{})
+	reader := OpenContentCopy(ctx, func(ctx context.Context, w io.Writer) error {
+		defer close(producerDone)
+		close(started)
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	<-started
+	closed := make(chan error, 1)
+	go func() { closed <- reader.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		cancel()
+		<-closed
+		t.Fatal("Close did not cancel blocked source I/O")
+	}
+	select {
+	case <-producerDone:
+	default:
+		t.Fatal("Close returned before the producer exited")
+	}
+	if ctx.Err() != nil {
+		t.Fatal("Close cancelled the caller's context")
 	}
 }

@@ -1,6 +1,8 @@
 import { useEffect, useId, useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
+import { useMailboxMessageContent } from "@/api/use-mailbox-message-content";
 import { SelectField } from "@/components/ui/select-field";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
@@ -135,11 +137,12 @@ function laneOutcomeFromMessages(messages: MailboxMessage[]): LaneOutcome | null
 }
 
 function MessageDetailView({ detail }: { detail: MailboxMessageDetail }) {
+  const full = useMailboxMessageContent(detail.run_id, detail.message_id);
   const payload = (detail.payload_json ?? {}) as Record<string, unknown>;
   const instruction = typeof payload.instruction_full === "string" ? payload.instruction_full : "";
   const response = typeof payload.response_full === "string" ? payload.response_full : "";
   const detailOutcome = laneOutcomeFromMessage(detail);
-  const body = preferredMessageBody(detail.communication_type, instruction, response, detail.content);
+  const body = full.content ?? (detail.content_is_preview ? detail.content : preferredMessageBody(detail.communication_type, instruction, response, detail.content));
 
   return (
     <div className="space-y-3">
@@ -162,11 +165,30 @@ function MessageDetailView({ detail }: { detail: MailboxMessageDetail }) {
 	        </div>
 	      </div>
 
-	      <ModalContentCard data-testid="message-detail-card">
+          {detail.content_is_preview && full.content === null ? (
+            <p className={MODAL_SUPPORTING_TEXT_CLASS} data-testid="message-content-preview-notice">
+              {body ? "Preview only. Load the full content to read the complete message." : "Full content is stored separately and has not been loaded."}
+            </p>
+          ) : null}
+          {detail.has_full_content ? (
+            <div className="flex flex-wrap items-center gap-2">
+              {detail.content_is_preview && full.content === null ? (
+                <Button size="sm" variant="outline" disabled={full.loading} onClick={() => void full.load()}>
+                  {full.loading ? "Loading full content..." : full.error ? "Retry Full Content" : "Load Full Content"}
+                </Button>
+              ) : null}
+              {detail.full_content_url ? (
+                <a href={detail.full_content_url} download="message-content.md" className={buttonVariants({ variant: "ghost", size: "sm" })}>Download Full Content</a>
+              ) : null}
+              {full.content !== null ? <span role="status" className={MODAL_SUPPORTING_TEXT_CLASS}>Full content loaded.</span> : null}
+            </div>
+          ) : null}
+          {full.error ? <p role="alert" className="text-sm text-status-failed">{full.error}</p> : null}
+	      <ModalContentCard data-testid="message-detail-card" aria-busy={full.loading}>
 	        {body ? (
 	          <MarkdownBlock content={body} className={MODAL_BODY_TEXT_CLASS} />
 	        ) : (
-	          <p className={MODAL_SUPPORTING_TEXT_CLASS}>No message content recorded.</p>
+	          <p className={MODAL_SUPPORTING_TEXT_CLASS}>{detail.content_is_preview ? "No preview is available. The complete message can be loaded above." : "No message content recorded."}</p>
 	        )}
 	      </ModalContentCard>
 	    </div>
@@ -217,7 +239,7 @@ function MessageDetailModal({ detail, onClose }: { detail: MailboxMessageDetail 
       caption="Mailbox"
       description={description}
     >
-	        <MessageDetailView detail={detail} />
+	        <MessageDetailView key={`${detail.run_id}:${detail.message_id}:${detail.created_at}`} detail={detail} />
     </Modal>
   );
 }

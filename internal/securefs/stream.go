@@ -88,8 +88,10 @@ func copyRegularFile(ctx context.Context, file *os.File, dst io.Writer) (FileIde
 }
 
 // ReplaceRegularFrom stages streamed output and publishes it atomically only
-// after produce succeeds. Digest/identity validation belongs inside produce,
-// so corrupt or cancelled input never replaces the destination.
+// after produce succeeds. Digest/identity validation belongs inside produce.
+// Staging uses a pinned existing directory: failed/cancelled production or
+// staging I/O leaves destination ancestors untouched too. Ancestor repair begins
+// only after successful staging and the final pre-publication cancellation check.
 func (r *Root) ReplaceRegularFrom(ctx context.Context, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time) error {
 	if err := ctx.Err(); err != nil {
 		return err

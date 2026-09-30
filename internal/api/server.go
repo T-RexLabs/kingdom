@@ -163,7 +163,10 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.planningService != nil {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
-	if closeErr == nil && s.plannerAdapterCloser != nil {
+	// The planning service owns its agent/adapter lifecycle, including force
+	// escalation and consumer drain. Do not close that adapter a second time
+	// after a forced service wait has intentionally left consumers running.
+	if s.planningService == nil && closeErr == nil && s.plannerAdapterCloser != nil {
 		closeErr = errors.Join(closeErr, s.closePlannerAdapter(ctx))
 	}
 	return closeErr
@@ -560,10 +563,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		lifecycleCancel()
 		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(startupCtx), 10*time.Second)
 		defer cancel()
-		drainErr := s.planningService.Close(closeCtx)
-		if drainErr == nil && s.plannerAdapterCloser != nil {
-			_ = s.closePlannerAdapter(closeCtx)
-		}
+		_ = s.planningService.Close(closeCtx)
 	}()
 	if s.providerModelCatalog == nil {
 		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
@@ -698,6 +698,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/timeline", s.handleGetRunTimeline)
 	mux.HandleFunc("GET /runs/{id}/mailbox/messages", s.handleListRunMailboxMessages)
 	mux.HandleFunc("GET /runs/{id}/mailbox/messages/{messageId}", s.handleGetRunMailboxMessage)
+	mux.HandleFunc("GET /runs/{id}/mailbox/messages/{messageId}/content", s.handleGetRunMailboxMessageContent)
 	mux.HandleFunc("POST /runs/{id}/mailbox/messages/{messageId}/read", s.handleMarkRunMailboxMessageRead)
 	mux.HandleFunc("POST /runs/{id}/nodes/{nodeKey}/retry", s.handleRetryNode)
 	mux.HandleFunc("POST /runs/{id}/rerun-from/{nodeKey}", s.handleRerunFromNode)

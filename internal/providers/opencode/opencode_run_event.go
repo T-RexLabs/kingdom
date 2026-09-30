@@ -161,10 +161,9 @@ func decodeOpencodeRunEventStream(stream io.Reader, onLine func(int) error, onEv
 		}
 		event, err := decodeNextOpencodeRunEvent(decoder, numberMarker)
 		if err == io.EOF {
-			if largeStrings != nil {
-				largeStrings.close()
-			}
-			continue
+			// Empty frames were filtered above. EOF here means the token
+			// projection stopped inside a nonempty, incomplete JSON value.
+			err = io.ErrUnexpectedEOF
 		}
 		if err == nil {
 			if _, trailingErr := decoder.Token(); trailingErr != io.EOF {

@@ -53,12 +53,21 @@ func (a *stagedPlannerAdapter) Close() error {
 	a.paths = nil
 	return err
 }
+func (a *stagedPlannerAdapter) CloseContext(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return a.Close()
+}
 
 // This test adapter has no process. The real agent and its content lifecycle
 // execute unchanged while the fixture omits guardian ownership requirements.
 type unguardedContentAgent struct{ Agent }
 
 func (a unguardedContentAgent) Close() error { return a.Agent.(*OpenCodeAgent).Close() }
+func (a unguardedContentAgent) CloseContext(ctx context.Context) error {
+	return a.Agent.(*OpenCodeAgent).CloseContext(ctx)
+}
 
 func TestPlannerStreamedFinalizationPublishesChunksAndReplaysAfterRelease(t *testing.T) {
 	for _, kind := range []state.PlanningOperationType{state.PlanningOperationTypeReply, state.PlanningOperationTypeFormalize} {

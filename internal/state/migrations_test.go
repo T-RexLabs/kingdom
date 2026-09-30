@@ -869,7 +869,22 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql", "0004_resumable_workspace_tree_cleanup.up.sql", "0005_unbounded_planning_external_context.up.sql", "0006_execution_recovery_and_response_workspace_cleanup.up.sql"}
+	expectedNames := []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+		"0005_unbounded_planning_external_context.up.sql",
+		"0006_execution_recovery_and_response_workspace_cleanup.up.sql",
+		"0008_provider_content.up.sql",
+		"0009_planning_content.up.sql",
+		"0010_artifact_content.up.sql",
+		"0011_complete_external_comments.up.sql",
+		"0012_provider_stream_content.up.sql",
+		"0013_request_content.up.sql",
+		"0014_planning_text.up.sql",
+		"0015_execution_input_content.up.sql",
+	}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)
 	}

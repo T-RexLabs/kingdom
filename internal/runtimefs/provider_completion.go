@@ -117,7 +117,7 @@ func (s *Store) OpenProviderContent(ctx context.Context, ref providerexecution.C
 	if err := ref.Validate(ref.InvocationID); err != nil {
 		return nil, err
 	}
-	return providerexecution.OpenContentCopy(ctx, func(dst io.Writer) error { return s.CopyProviderContent(ref, dst) }), nil
+	return providerexecution.OpenContentCopy(ctx, func(_ context.Context, dst io.Writer) error { return s.CopyProviderContent(ref, dst) }), nil
 }
 
 // RemoveProviderContent retires only invocation-derived staging chunks after

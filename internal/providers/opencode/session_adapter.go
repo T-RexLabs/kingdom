@@ -1053,14 +1053,15 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 	invocationID := resolveProviderInvocationID(req)
 	attemptCtx, cancelAttempt := context.WithCancel(ctx)
 	defer cancelAttempt()
-	attemptDone, err := a.beginAttemptOperation(req.AttemptID)
+	attemptDone, attemptRecord, err := a.beginAttemptOperation(req.AttemptID)
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
 	defer a.endAttemptOperation(req.AttemptID, attemptDone)
+	releaseContent := func() error { return a.releaseAttempt(req.AttemptID, attemptRecord) }
 	defer func() {
 		if response.StreamObservation.ReleaseContent == nil {
-			response.StreamObservation.ReleaseContent = func() error { return a.ReleaseAttempt(req.AttemptID) }
+			response.StreamObservation.ReleaseContent = releaseContent
 		}
 	}()
 	a.setAttemptCancel(req.AttemptID, cancelAttempt)
@@ -1199,7 +1200,7 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			timedOut = true
 		}
 		observation := InvocationStreamObservation{
-			ReleaseContent:              func() error { return a.ReleaseAttempt(req.AttemptID) },
+			ReleaseContent:              releaseContent,
 			StagedDiagnosticContent:     staged,
 			ProviderSessionID:           strings.TrimSpace(actualSessionID),
 			FinalTurnID:                 strings.TrimSpace(finalTurnID),
@@ -2469,21 +2470,23 @@ func (a *SessionAdapter) clearAttemptCancel(attemptID string) {
 	delete(a.attemptCancels, attemptID)
 }
 
-func (a *SessionAdapter) beginAttemptOperation(attemptID string) (chan struct{}, error) {
+func (a *SessionAdapter) beginAttemptOperation(attemptID string) (chan struct{}, *sessionAttemptRecord, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.closed {
-		return nil, fmt.Errorf("provider adapter is closed")
+		return nil, nil, fmt.Errorf("provider adapter is closed")
 	}
 	if a.attemptDone[attemptID] != nil {
-		return nil, fmt.Errorf("provider attempt is already running")
+		return nil, nil, fmt.Errorf("provider attempt is already running")
 	}
-	if a.attempts[attemptID] == nil {
-		a.attempts[attemptID] = &sessionAttemptRecord{}
+	if a.attempts[attemptID] != nil {
+		return nil, nil, fmt.Errorf("previous provider attempt storage has not been released")
 	}
+	record := &sessionAttemptRecord{}
+	a.attempts[attemptID] = record
 	done := make(chan struct{})
 	a.attemptDone[attemptID] = done
-	return done, nil
+	return done, record, nil
 }
 
 func (a *SessionAdapter) endAttemptOperation(attemptID string, done chan struct{}) {

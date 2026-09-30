@@ -627,7 +627,7 @@ func (s *RunPlanRevisionStore) CopyContent(ctx context.Context, revision RunPlan
 }
 
 func (s *RunPlanRevisionStore) OpenContent(ctx context.Context, revision RunPlanRevision) (io.ReadCloser, error) {
-	return providerexecution.OpenContentCopy(ctx, func(dst io.Writer) error { return s.CopyContent(ctx, revision, dst) }), nil
+	return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, dst io.Writer) error { return s.CopyContent(ctx, revision, dst) }), nil
 }
 
 func runPlanRevisionID(runID string, componentIDs []string) string {

@@ -115,6 +115,10 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 
 Planning-session lists and run messages load history in pages. Use **Load More Sessions** in the planning rail, **Load Older Sessions** beside **From Plan**, or **Load Older Messages** in the message lanes to continue through older history. Message-lane counts say “loaded” while additional pages remain.
 
+Message details identify previews and offer **Load Full Content** and **Download Full Content** for complete stored instructions and responses.
+
+Plan-review history and planning-context entries are also paginated through the API; page sizes are read boundaries, not retention ceilings. Context snapshots retain complete included/excluded file metadata under the project enumeration rules, while the planner receives a project-shape summary rather than source-file contents.
+
 > [!NOTE]
 > Every new run requires an explicit global model selection, even if OpenCode has defaults configured.
 > 
@@ -138,7 +142,9 @@ For manual setup, save display name, App ID, client ID, and installation ID, the
 
 Run the connection health check after manual provisioning or any key rotation. The check requires the App and installation to grant exactly **Metadata: read-only** and **Issues: read-only**, with zero subscribed events and no additional App permissions. Healthy connections become available in the shared issue picker on planning and direct-decree screens.
 
-Private keys remain in generation files at `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared user tokens remain in `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. SQLite stores only the active generation pointer, never credential bytes. Tokens never enter logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect Connection**. The picker paginates repositories/issues and renders selected bounded comment bodies through restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
+Private keys remain in generation files at `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared user tokens remain in `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. SQLite stores only the active generation pointer, never credential bytes. Tokens never enter logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect Connection**. The picker paginates repositories/issues and renders opted-in comments through paginated restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
+
+Comment bodies default off. **Include Comments** captures every comment page and complete bodies without a Kingdom count or byte cap; issue titles/bodies likewise have no Kingdom byte cap. Planner operations bind every active source snapshot when enqueued. Installation-selection and discovery/search limits, provider deadlines, and model context windows still apply.
 
 ## How Work Moves Through Kingdom
 
@@ -172,6 +178,9 @@ Important boundaries:
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
 - Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
+- Decree/planning text, persisted execution prompts, provider terminal content, and artifacts use SQLite content manifests and chunks. Decree terminal handoffs reference verified content rather than embedding full output. Complete invocation diagnostics are retained separately from bounded activity/output previews.
+- Runtime content processing uses streaming and disk staging without fixed provider-output, tracked-file-size, aggregate-workspace-size, entry-count, or directory-depth ceilings. Some individual scalar values and read responses still materialize in memory; host resources and provider context windows remain practical constraints.
+- There is no run-wide attempt-count budget. Per-error automatic retries, review/validation cycle caps and ready-node auto-success, `run_until_all_approve`, recovery batching, active timeouts, and guardian metadata boundaries retain their existing roles.
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 

@@ -432,7 +432,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		if observation.CanonicalTerminalTextRef != nil {
 			ref := *observation.CanonicalTerminalTextRef
 			observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
-				return providerexecution.OpenContentCopy(ctx, func(out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
+				return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
 			}
 		}
 	}

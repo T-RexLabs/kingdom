@@ -4,12 +4,15 @@ package securefs
 
 import (
 	"context"
-	"golang.org/x/sys/windows"
+	"errors"
 	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func openedFileIdentity(file *os.File) (FileIdentity, error) { return windowsFileIdentity(file) }
@@ -21,22 +24,12 @@ func directoryEntry(directory *os.File, name string) (Entry, error) {
 }
 
 func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time) error {
-	parts, err := windowsRelativeComponents(path)
+	staging, relativePath, err := openWindowsStagingParent(root, path)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if dir != "." {
-		if err := ensureRootDirReplacingNonDirectories(root, dir, dirMode); err != nil {
-			return err
-		}
-	}
-	parent, err := openRootDirectory(root, dir)
-	if err != nil {
-		return err
-	}
-	defer parent.Close()
-	temp, err := secureWindowsTempFromAt(windows.Handle(parent.Fd()), produce, mode)
+	defer staging.Close()
+	temp, err := secureWindowsTempFromAt(windows.Handle(staging.Fd()), produce, mode)
 	if err != nil {
 		return err
 	}
@@ -57,11 +50,54 @@ func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produc
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// The producer, metadata writes and flush have all succeeded. Only now may
+	// conflicting ancestors be claimed and repaired under the pinned directory.
+	stagingRoot := &Root{rootFile: staging}
+	dir := filepath.Dir(relativePath)
+	if dir != "." {
+		if err := ensureRootDirReplacingNonDirectories(stagingRoot, dir, dirMode); err != nil {
+			return err
+		}
+	}
+	parent, err := openRootDirectory(stagingRoot, dir)
+	if err != nil {
+		return err
+	}
+	defer parent.Close()
 	// Handle-relative rename replaces the link itself, never its target, and
 	// refuses to replace a real directory with a file.
-	if err := renameWindowsEntryWriteThrough(temp, parent, parts[len(parts)-1], true); err != nil {
+	if err := renameWindowsEntryWriteThrough(temp, parent, filepath.Base(relativePath), true); err != nil {
 		return err
 	}
 	published = true
 	return nil
+}
+
+func openWindowsStagingParent(root *Root, path string) (*os.File, string, error) {
+	parts, err := windowsRelativeComponents(path)
+	if err != nil {
+		return nil, "", err
+	}
+	directory, err := openRootDirectory(root, ".")
+	if err != nil {
+		return nil, "", err
+	}
+	for index, part := range parts[:len(parts)-1] {
+		pinned := &Root{rootFile: directory}
+		entry, err := readRootEntry(pinned, part)
+		if errors.Is(err, os.ErrNotExist) || (err == nil && entry.Type != EntryTypeDirectory) {
+			return directory, strings.Join(parts[index:], string(filepath.Separator)), nil
+		}
+		if err != nil {
+			_ = directory.Close()
+			return nil, "", err
+		}
+		child, err := openRootDirectory(pinned, part)
+		_ = directory.Close()
+		if err != nil {
+			return nil, "", err
+		}
+		directory = child
+	}
+	return directory, parts[len(parts)-1], nil
 }

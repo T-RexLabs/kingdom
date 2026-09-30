@@ -1736,55 +1736,86 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 	rt.orchestrator.yoloRoot = retryRoot
 	rt.orchestrator.publishMode = PublishModeDirect
 	rt.completionEvery = 10 * time.Millisecond
-
-	repairErr := make(chan error, 1)
-	go func() {
-		time.Sleep(50 * time.Millisecond)
-		if err := os.Remove(retryRoot); err != nil {
-			repairErr <- err
-			return
-		}
-		// The retrying projector owns creation of the workspace root after the
-		// blocker is removed, avoiding a race between two creators.
-		repairErr <- nil
-	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	startErr := make(chan error, 1)
-	go func() {
-		startErr <- rt.Start(ctx)
-	}()
-	select {
-	case err := <-startErr:
-		if err != nil {
-			t.Fatalf("start runtime: %v", err)
-		}
-	case <-time.After(250 * time.Millisecond):
-		cancel()
-		t.Fatal("runtime start blocked on retryable pending execution outbox")
-	}
-	defer func() {
-		cancel()
-		if err := rt.Close(); err != nil {
-			t.Fatalf("close runtime: %v", err)
-		}
-	}()
-
-	if err := <-repairErr; err != nil {
-		t.Fatalf("repair startup retry root: %v", err)
-	}
-
-	testutil.Eventually(t, time.Second, 10*time.Millisecond, func() error {
-		var outboxStatus string
-		if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+	assertRetryablePending := func(ctx context.Context) error {
+		var status, lastError string
+		var attempts int
+		var publishedAt sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT status,publish_attempts,last_error,published_at FROM attempt_outbox WHERE attempt_id=?`, attemptID).Scan(&status, &attempts, &lastError, &publishedAt); err != nil {
 			return err
 		}
-		if outboxStatus != "published" {
-			return fmt.Errorf("outbox status=%q", outboxStatus)
+		if status != "pending" || attempts == 0 || lastError == "" || publishedAt.Valid {
+			return fmt.Errorf("projection must have failed and remained retryable: status=%q attempts=%d error=%q published=%v", status, attempts, lastError, publishedAt)
 		}
 		return nil
+	}
+	observedStartupProjection := make(chan struct{})
+	var observedOnce sync.Once
+	rt.SetPreDispatchRecovery(func(ctx context.Context) error {
+		// This hook runs before the background loops start. It proves startup
+		// itself attempted projection, rather than racing a background retry.
+		if err := assertRetryablePending(ctx); err != nil {
+			return err
+		}
+		observedOnce.Do(func() { close(observedStartupProjection) })
+		return nil
 	})
+
+	// This deadline is only a deadlock guard, not a startup performance budget.
+	// The unrepaired blocker below makes it impossible to publish the outbox
+	// before Start returns, independent of filesystem or scheduler speed.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer func() {
+		cancel()
+		// If an assertion fails, unblock projection before the runtime's owned
+		// cleanup drains the outbox. Never remove the repaired directory.
+		if info, err := os.Stat(retryRoot); err == nil && info.Mode().IsRegular() {
+			if err := os.Remove(retryRoot); err != nil {
+				t.Errorf("remove startup retry blocker during cleanup: %v", err)
+			}
+		}
+		if err := rt.Close(); err != nil {
+			t.Errorf("close runtime: %v", err)
+		}
+	}()
+
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime with an unrepaired projection failure: %v", err)
+	}
+	if !rt.startupRecoveryIsOpen() {
+		t.Fatal("startup did not open readiness while projection was pending")
+	}
+	select {
+	case <-observedStartupProjection:
+	default:
+		t.Fatal("startup did not reach pre-dispatch recovery with a retryable outbox")
+	}
+	if err := assertRetryablePending(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(retryRoot); err != nil || !info.Mode().IsRegular() {
+		t.Fatalf("startup changed the unrepaired blocker: info=%v err=%v", info, err)
+	}
+	// The projector owns directory creation after this deliberate repair.
+	if err := os.Remove(retryRoot); err != nil {
+		t.Fatalf("repair startup retry root: %v", err)
+	}
+	rt.signalCompletionReady()
+	poll := time.NewTicker(10 * time.Millisecond)
+	defer poll.Stop()
+	for {
+		var outboxStatus string
+		if err := db.QueryRowContext(ctx, `SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
+			t.Fatal(err)
+		}
+		if outboxStatus == "published" {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("repaired outbox did not converge: status=%q err=%v", outboxStatus, ctx.Err())
+		case <-poll.C:
+		}
+	}
 }
 
 func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T) {

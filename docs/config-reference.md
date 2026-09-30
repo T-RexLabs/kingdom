@@ -145,6 +145,12 @@ github:
 - Treat `provider.model` and `provider.agent` as summon-time defaults only, not as substitutes for per-run choices.
 - Change `server.base_path` only if you are intentionally serving the API from a different path prefix.
 
+## Content Handling and Policy Boundaries
+
+There are no config fields for a run-wide attempt budget, provider output-byte ceiling, tracked workspace file-size/aggregate-size/entry-count/directory-depth ceiling, or external-source/comment retention cap. The runtime uses disk staging, chunked canonical content, and paginated reads for those workloads; individual scalar and read-response allocations can still grow with content.
+
+Per-error automatic retry allowances remain in `policies/retry_policy.yaml`. Review and validation cycle caps, ready-node auto-success, and `run_until_all_approve` remain workflow/per-run controls. Active provider timeouts remain in `policies/opencode_provider_policy.yaml`: strict startup, first event, stream inactivity, cancellation grace/force, and activity-gated node wall-clock budgets. Guardian metadata, snapshot lineage, recovery batches, and GitHub setup/discovery boundaries are still enforced. Removing content ceilings does not disable those controls or enlarge a model's context window.
+
 ## Related Sources
 
 - `internal/cli/install_mode.go`: local config parsing, defaults, and validation

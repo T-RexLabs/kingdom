@@ -1809,7 +1809,7 @@ paths:
     get:
       tags: [runs]
       operationId: getRunMailboxMessage
-      summary: Fetch full mailbox message details.
+      summary: Fetch mailbox message details and a lazy full-content pointer.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/MessageId"
@@ -1824,6 +1824,35 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/mailbox/messages/{messageId}/content:
+    get:
+      tags: [runs]
+      operationId: getRunMailboxMessageContent
+      summary: Download the complete primary mailbox instruction or response.
+      description: Resolves only the content bound to this visible run/message, validates execution and invocation lineage, and verifies the complete digest and size before streaming. Inline messages retain their complete original text. Responses are attachments with MIME sniffing disabled.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/MessageId"
+      responses:
+        "200":
+          description: Verified complete message content, suitable for explicit restricted-Markdown viewing or native browser download.
+          headers:
+            Content-Disposition:
+              schema: { type: string }
+            X-Content-Type-Options:
+              schema: { type: string, enum: [nosniff] }
+          content:
+            text/plain:
+              schema: { type: string }
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -3099,7 +3128,6 @@ components:
                   invalid_output_schema,
                   policy_violation,
                   dependency_blocked,
-                  budget_exceeded,
                   resource_limit_exceeded,
                   internal_error,
                   llm_rate_limited,
@@ -4734,6 +4762,9 @@ components:
       required:
         [message_id, run_id, node_id, from_agent_id, from_agent_name, to_agent_id, to_agent_name, thread_id, message_type, communication_type, message_source, priority, created_at, preview, format]
       properties:
+        has_full_content: { type: boolean, description: Whether the message carries a complete inline body or a durable full-content reference. }
+        full_content_url: { type: string, description: Authenticated run/message-scoped download URL. }
+        content_is_preview: { type: boolean, description: Whether the primary body is stored separately and must be loaded explicitly. }
         message_id:
           type: string
           minLength: 1
@@ -4813,6 +4844,9 @@ components:
       required:
         [message_id, run_id, node_id, from_agent_id, from_agent_name, to_agent_id, to_agent_name, thread_id, message_type, communication_type, message_source, priority, created_at, format, content, payload_json]
       properties:
+        has_full_content: { type: boolean, description: Whether the message carries a complete inline body or a durable full-content reference. }
+        full_content_url: { type: string, description: Authenticated run/message-scoped download URL. }
+        content_is_preview: { type: boolean, description: "When true, content is only a preview and may be empty; full_content_url serves the complete body." }
         message_id:
           type: string
           minLength: 1
