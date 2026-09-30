@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import { ApiError } from "@/api/client";
 import userEvent from "@testing-library/user-event";
 import { GovernanceActions } from "./governance-actions";
 import type { RunGraphNode, RunSummary } from "@/api/hooks";
@@ -84,78 +85,90 @@ describe("governance actions visibility", () => {
     expect(screen.queryByRole("button", { name: "Rerun" })).not.toBeInTheDocument();
   });
 
-  it("shows retry and rerun controls when run is failed", () => {
-    render(
-      <GovernanceActions
-        run={failedRun}
-        failedNodes={[failedNode]}
-      />,
-    );
-
-    expect(screen.getByText(/Nodes to Recover/i)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
-    expect(screen.getByText("Agent-Executed")).toBeInTheDocument();
-    expect(screen.getByText("Reviewer")).toBeInTheDocument();
-    expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
-    expect(screen.getByText("Reviewer rejected missing evidence.")).toHaveClass("text-wrap-anywhere");
-  });
-
-  it("shows every supplied workflow node when a run is cancelled", async () => {
-    render(
-      <GovernanceActions
-        run={cancelledRun}
-        cancelledNodes={[{ ...failedNode, state: "cancelled", failure_reason: undefined }]}
-      />,
-    );
-
-    expect(screen.getByText("Cancelled Run Nodes (1)")).toBeInTheDocument();
-    await userEvent.click(screen.getByText("Cancelled Run Nodes (1)"));
-    expect(screen.getByText("execution_review")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
-    expect(screen.queryByText("Failure reason unavailable.")).not.toBeInTheDocument();
-  });
-
-  it("starts fourteen cancelled nodes collapsed and exposes every recovery action on demand", async () => {
-    const nodes = Array.from({ length: 14 }, (_, index) => ({ ...failedNode, node_id: `node-${index}`, state: "cancelled" as const, failure_reason: undefined }));
+  it("shows just one recovery pair for fourteen cancelled nodes", async () => {
+    const nodes = Array.from({ length: 14 }, (_, index) => ({ ...failedNode, node_id: `node_${index}`, state: "cancelled" as const }));
     render(<GovernanceActions run={cancelledRun} cancelledNodes={nodes} />);
-    const summary = screen.getByText("Cancelled Run Nodes (14)");
-    expect(summary.closest("details")).not.toHaveAttribute("open");
-    // Native details retains its content in the DOM while hiding it.
-    for (const action of screen.getAllByRole("button", { name: /^(Retry|Rerun)$/ })) {
-      expect(action).not.toBeVisible();
-    }
-    await userEvent.click(summary);
-    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(14);
-    expect(screen.getAllByRole("button", { name: "Rerun" })).toHaveLength(14);
-    for (const node of nodes) expect(screen.getByText(node.node_id)).toBeVisible();
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Rerun" })).toHaveLength(1);
+    expect(screen.queryByText(/Cancelled Run Nodes/)).not.toBeInTheDocument();
+    expect(screen.queryByText("node_0")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Retry Step" }));
+    expect(dialog.getByRole("button", { name: "Retry Step" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("button", { name: "Step" }));
+    expect(screen.getAllByRole("option")).toHaveLength(14);
+    await userEvent.click(screen.getByRole("option", { name: "Node 7 · Cancelled" }));
+    await userEvent.click(dialog.getByRole("button", { name: "Retry Step" }));
+    expect(retryState.mutateAsync).toHaveBeenCalledWith({ value: "node_7", key: expect.stringMatching(/^kd1\./) });
   });
 
-  it.each(["retry", "rerun"] as const)("preserves an uncertain %s request and its visible error while the recovery list is collapsed", async (action) => {
+  it("explains completion rerun promotion before submission", async () => {
+    render(<GovernanceActions run={cancelledRun} cancelledNodes={[{ ...failedNode, node_id: "completion", state: "cancelled" }]} />);
+    await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
+    expect(screen.getByText(/Completion restarts at plan drafting/)).toBeVisible();
+    expect(rerunState.mutateAsync).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Rerun from Step" }));
+    expect(rerunState.mutateAsync).toHaveBeenCalledWith({ value: "completion", key: expect.stringMatching(/^kd1\./) });
+  });
+
+  it.each(["retry", "rerun"] as const)("keeps an uncertain %s locked to the same target and key after closing the dialog", async (action) => {
     const state = action === "retry" ? retryState : rerunState;
     state.mutateAsync.mockImplementationOnce(async () => {
       const error = new TypeError("Response lost; original outcome remains unresolved.");
       state.error = error;
       throw error;
     }).mockImplementationOnce(async () => { state.error = null; });
-    const nodes = [failedNode, { ...failedNode, node_id: "second-node" }];
     const user = userEvent.setup();
-    render(<GovernanceActions run={failedRun} failedNodes={nodes} />);
-    const summary = screen.getByText("Nodes to Recover (2)");
-    await user.click(summary);
-    await user.click(screen.getAllByRole("button", { name: action === "retry" ? "Retry" : "Rerun" })[0]);
+    render(<GovernanceActions run={failedRun} failedNodes={[failedNode, { ...failedNode, node_id: "second_node" }]} />);
+    const label = action === "retry" ? "Retry" : "Rerun";
+    await user.click(screen.getByRole("button", { name: label }));
+    await user.click(screen.getByRole("button", { name: "Step" }));
+    await user.click(screen.getByRole("option", { name: "Execution Review · Failed" }));
+    await user.click(screen.getByRole("button", { name: action === "retry" ? "Retry Step" : "Rerun from Step" }));
     await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledOnce());
     const original = state.mutateAsync.mock.calls[0][0];
-    await user.click(summary);
-    expect(screen.getByText("Response lost; original outcome remains unresolved.")).toBeVisible();
-    expect(summary.closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" })).not.toBeVisible();
-    await user.click(summary);
-    expect(screen.getByRole("button", { name: action === "retry" ? "Retry" : "Rerun" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Response lost");
+    expect(screen.getByRole("button", { name: action === "retry" ? "Rerun" : "Retry" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" }));
+    expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" }));
     await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledTimes(2));
     expect(state.mutateAsync.mock.calls[1][0]).toEqual(original);
+  });
+
+  it("does not duplicate pending submissions and closes after success", async () => {
+    let resolve!: () => void;
+    retryState.mutateAsync.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    const user = userEvent.setup();
+    render(<GovernanceActions run={failedRun} failedNodes={[failedNode]} />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await user.dblClick(screen.getByRole("button", { name: "Retry Step" }));
+    expect(retryState.mutateAsync).toHaveBeenCalledOnce();
+    expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    resolve();
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("leaves definitive cleanup conflicts available for a new explicit request", async () => {
+    retryState.mutateAsync.mockRejectedValueOnce(new ApiError(409, {
+      message: "Worktree cleanup is still running.", code: "dependency_blocked",
+      retryable: false, category: "core", details: {}, correlationId: "api.retry_node",
+    })).mockResolvedValueOnce({});
+    const user = userEvent.setup();
+    render(<GovernanceActions run={cancelledRun} cancelledNodes={[{ ...failedNode, node_id: "custom_step" }]} />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(screen.getByRole("button", { name: "Retry Step" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("Worktree cleanup is still running.");
+    expect(screen.getByRole("button", { name: "Step" })).toBeEnabled();
+    expect(retryState.mutateAsync).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Retry Step" }));
+    expect(retryState.mutateAsync).toHaveBeenCalledTimes(2);
+    const [first, second] = retryState.mutateAsync.mock.calls;
+    expect(second[0].value).toBe("custom_step");
+    expect(second[0].key).not.toBe(first[0].key);
   });
 
   it("does not leave final approval stuck in success state when the run is actionable again", () => {
@@ -223,35 +236,10 @@ describe("governance actions visibility", () => {
     expect(finalApprovalState.mutateAsync).not.toHaveBeenCalled();
   });
 
-  it("shows a stable fallback when a failed node has no failure reason", () => {
-    render(
-      <GovernanceActions
-        run={failedRun}
-        failedNodes={[
-          {
-            ...failedNode,
-            failure_reason: undefined,
-          },
-        ]}
-      />,
-    );
-
-    expect(screen.getByText("Failure reason unavailable.")).toBeInTheDocument();
+  it("shows failure context only when choosing recovery", async () => {
+    render(<GovernanceActions run={failedRun} failedNodes={[failedNode]} />);
+    expect(screen.queryByText(failedNode.failure_reason!)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(screen.getByText(failedNode.failure_reason!)).toHaveClass("text-wrap-anywhere");
   });
-
-	it("wraps long failed node identifiers safely", () => {
-		render(
-			<GovernanceActions
-				run={failedRun}
-				failedNodes={[
-					{
-						...failedNode,
-						node_id: "implementation_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly",
-					},
-				]}
-			/>,
-		);
-
-		expect(screen.getByText(/implementation_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly/i)).toHaveClass("text-wrap-anywhere");
-	});
 });

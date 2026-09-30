@@ -106,7 +106,7 @@ Run detail starts in **Workflow**, which displays the stored workflow DAG. The t
 
 Review and validation rework counts and limits appear in the main run header, including skipped stages and uncapped runs.
 
-The run surface is also where operators handle manual approvals when approvals are not autonomous.
+The run surface is also where operators handle manual approvals when approvals are not autonomous. Failed and cancelled runs show one **Retry** and one **Rerun** control. Each opens a compact step picker: Retry repeats the selected step; Rerun repeats its downstream workflow, with completion reruns restarting at plan drafting. Recovery waits for server eligibility checks. An uncertain response retains its exact action, step, and idempotency key even when the picker is dismissed.
 
 Activity semantics:
 
