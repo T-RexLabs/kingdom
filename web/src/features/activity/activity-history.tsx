@@ -38,6 +38,7 @@ type Expansion = {
   row?: boolean;
   input?: boolean;
   output?: boolean;
+  metadata?: boolean;
 };
 
 export function ActivityHistory(props: HistoryProps) {
@@ -81,6 +82,7 @@ function VirtualActivityHistory({
     [items, gaps, hasConclusion],
   );
   const list = useRef<VirtuosoHandle>(null);
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
   const [atBottom, setAtBottom] = useState(true);
   const [expanded, setExpanded] = useState<Record<string, Expansion>>({});
   const [savedPosition, setSavedPosition] = useState(() =>
@@ -123,7 +125,7 @@ function VirtualActivityHistory({
           Activity could not be loaded. Try again.
         </p>
       ) : null}
-      <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 text-xs text-foreground-muted">
+      {(!atBottom || headerActions) && <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 text-xs text-foreground-muted">
         <div className="ml-auto flex items-start gap-3">
           {!atBottom && (
             <button
@@ -142,11 +144,15 @@ function VirtualActivityHistory({
           )}
           {headerActions}
         </div>
-      </div>
+      </div>}
       {rows.length > 0 ? (
         <Virtuoso
           ref={list}
-          style={{ height: 520, maxHeight: "65vh" }}
+          style={{
+            height: Math.min(520, Math.max(52, contentHeight ?? rows.length * 52)),
+            maxHeight: "65vh",
+          }}
+          totalListHeightChanged={setContentHeight}
           aria-label="Scrollable provider activity"
           data={rows}
           firstItemIndex={position.firstItemIndex}
@@ -330,7 +336,18 @@ function ActivityHistoryRow({
               {item.detail}
             </p>
           ) : null}
-          <ActivityMetadata item={item} />
+          <details
+            open={expanded.metadata ?? false}
+            onToggle={(event) => {
+              if (event.target === event.currentTarget)
+                setExpanded("metadata", event.currentTarget.open);
+            }}
+          >
+            <summary className="w-fit cursor-pointer py-1 text-[11px] text-foreground-subtle">
+              Event Details
+            </summary>
+            {expanded.metadata && <ActivityMetadata item={item} />}
+          </details>
         </div>
       )}
     </details>

@@ -45,6 +45,25 @@ describe("virtual provider activity", () => {
     restoreGeometry = mockActivityScrollGeometry();
   });
   afterEach(() => restoreGeometry());
+  it("fits a short activity trail instead of reserving an empty transcript viewport", async () => {
+    render(
+      <ActivityHistory
+        scopeKey="short-trail"
+        items={[item(1)]}
+        gaps={[]}
+        isLoadingMore={false}
+        loadError={null}
+        loadMore={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+    await waitFor(() => expect(screen.getByText("Event 1")).toBeVisible());
+    await waitFor(() => {
+      const height = Number.parseFloat(screen.getByTestId("virtuoso-scroller").style.height);
+      expect(height).toBeGreaterThan(0);
+      expect(height).toBeLessThan(150);
+    });
+  });
   it("keeps rendered history bounded after the operator loads 50,000 events", async () => {
     const items = Array.from({ length: 50_000 }, (_, index) => item(index + 1));
     render(

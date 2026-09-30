@@ -270,7 +270,10 @@ describe("full provider content", () => {
     await waitFor(() =>
       expect(document.querySelector("pre")?.textContent).toBe(content.preview),
     );
+    expect(screen.queryByText("Event ID")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText("Event Details"));
     await waitFor(() => expect(screen.getByText("completed")).toBeVisible());
+    expect(screen.getByText("Event ID")).toBeVisible();
   });
 
   it("shows provider reasoning as a readable excerpt and expands complete text in one step", async () => {
