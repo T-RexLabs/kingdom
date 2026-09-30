@@ -26,9 +26,8 @@ vi.mock("@/theme", async () => {
 vi.mock("@/components/ui/relative-time", () => ({
   RelativeTime: ({ iso }: { iso: string }) => <span>{iso}</span>,
 }));
-vi.mock("./run-conversation", () => ({ RunBrief: () => <div>Run Brief</div> }));
-vi.mock("./run-executions-panel", () => ({
-  RunExecutionsPanel: () => <div data-testid="run-executions-panel" />,
+vi.mock("./run-conversation", () => ({
+  RunInstructions: () => <div>Actual issued work brief</div>,
 }));
 vi.mock("./timeline-panel", () => ({
   TimelinePanel: () => <div data-testid="timeline-panel" />,
@@ -169,6 +168,26 @@ function renderSurface(
 }
 
 describe("focused execution inspector", () => {
+  it("keeps instructions behind a tab and preserves the read-only conversation when switching views", async () => {
+    renderSurface();
+    expect(
+      screen.queryByText("Actual issued work brief"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Attempt Details" }),
+    ).not.toBeInTheDocument();
+    const conversation = screen.getByTestId("run-execution-activity");
+    expect(conversation).toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(
+      screen.getByRole("tabpanel", { name: "Instructions" }),
+    ).toBeVisible();
+    expect(screen.getByText("Actual issued work brief")).toBeVisible();
+    expect(conversation).not.toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    expect(screen.getByTestId("run-execution-activity")).toBe(conversation);
+    expect(conversation).toBeVisible();
+  });
   it("exposes a single previous attempt when the new generation has not started and returns to current", async () => {
     const props = renderSurface({
       nodes: [
@@ -307,8 +326,7 @@ describe("focused execution inspector", () => {
     );
     expect(props.onLoadMoreAttempts).toHaveBeenCalledOnce();
   });
-  it("opens details for the exact selected historical settled attempt", async () => {
-    const onViewDetails = vi.fn();
+  it("keeps the exact historical settled attempt selected without another details action", () => {
     renderSurface({
       selectedAttemptId: "attempt-old",
       detail: {
@@ -321,12 +339,10 @@ describe("focused execution inspector", () => {
         output_status: "settled",
         output_text: "Historical answer",
       },
-      onViewDetails,
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: "Attempt Details" }),
-    );
-    expect(onViewDetails).toHaveBeenCalledOnce();
+    expect(
+      screen.queryByRole("button", { name: "Attempt Details" }),
+    ).not.toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "Select attempt" }),
     ).toHaveTextContent(/Attempt 1|Selected Attempt/);

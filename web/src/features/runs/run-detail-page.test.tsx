@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render as rtlRender, screen, within } from "@testing-library/react";
+import { act, render as rtlRender, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RunDetailPage } from "./run-detail-page";
 import type { ReactNode, Ref } from "react";
@@ -943,18 +943,62 @@ describe("run detail page", () => {
 	});
 
 
- it("pins the response link to its displayed attempt when a new current attempt arrives", async () => {
-  mockSearch.tab="execution";
-  const original=runExecution({attempt_id:"attempt-answer",node_run_id:"nr-answer",node_id:"implementation",attempt:1,agent_id:"agent-1",required_role:"builder",execution_mode:"provider_backed",status:"succeeded",queued_at:"2026-03-06T10:00:00.000Z",activity_at:"2026-03-06T10:01:00.000Z",updated_at:"2026-03-06T10:01:00.000Z",stop_retry_available:false});
-  mockExecutions=[runNode(original,{status:"succeeded",attempt_count:1})];
-  const {rerender}=render(<RunDetailPage />);
-  const props=executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {onViewDetails:()=>void};
-  await act(async()=>props.onViewDetails());
-  mockSearch.panel="details"; mockSearch.section="execution";
-  mockExecutions=[runNode({...original,attempt_id:"attempt-next",node_run_id:"nr-next",attempt:2,status:"running"},{status:"running",attempt_count:2})];
-  await act(async()=>rerender(<RunDetailPage />));
-  expect(executionSurfacePropsMock.mock.calls.at(-1)?.[0].selectedAttemptId).toBe("attempt-answer");
- });
+  it("opens quiet exact diagnostics without another response panel and pins that attempt across retries", async () => {
+    mockSearch.tab = "workflow";
+    const original = runExecution({
+      attempt_id: "attempt-answer",
+      node_run_id: "nr-answer",
+    });
+    mockExecutions = [runNode(original)];
+    const { rerender } = render(<RunDetailPage />);
+    expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
+      enabled: false,
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Run Details" }));
+    rerender(<RunDetailPage />);
+    const modal = screen.getByRole("dialog", { name: "Run Details" });
+    expect(
+      within(modal).queryByRole("button", { name: "Selected Attempt" }),
+    ).not.toBeInTheDocument();
+    expect(within(modal).queryByText("Attempt Picker")).not.toBeInTheDocument();
+    expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
+      enabled: false,
+    });
+    await userEvent.click(within(modal).getByText("Diagnostics"));
+    await waitFor(() =>
+      expect(within(modal).getByText("attempt-answer")).toBeVisible(),
+    );
+    expect(within(modal).getByText("inv-1")).toBeVisible();
+    expect(
+      within(modal).queryByText(/Captured output/),
+    ).not.toBeInTheDocument();
+    expect(
+      within(modal).queryByText("Settled Response"),
+    ).not.toBeInTheDocument();
+    mockExecutions = [
+      runNode(
+        {
+          ...original,
+          attempt_id: "attempt-next",
+          node_run_id: "nr-next",
+          attempt: 2,
+          status: "running",
+        },
+        { attempt_count: 2 },
+      ),
+    ];
+    rerender(<RunDetailPage />);
+    expect(useRunExecutionMock.mock.calls.at(-1)?.[1]).toBe("attempt-answer");
+    expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
+      enabled: true,
+    });
+    await userEvent.click(within(modal).getByText("Diagnostics"));
+    await waitFor(() =>
+      expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
+        enabled: false,
+      }),
+    );
+  });
 
 	it("keeps a selected historical attempt through canonical and SSE refreshes", async () => {
 		mockSearch.tab = "execution";

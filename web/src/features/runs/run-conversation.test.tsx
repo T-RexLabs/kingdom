@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { RunExecutionDetail } from "@/api/hooks";
 import {
-  RunBrief,
+  RunInstructions,
   RunFinalResponse as CanonicalFinalResponse,
   type RunResponseDisclosure,
 } from "./run-conversation";
@@ -57,16 +57,18 @@ const item: ActivityItem = {
   },
 };
 describe("run conversation final response", () => {
-  it("shows the actual brief excerpt outside a closed disclosure and opens its full Markdown", async () => {
-    render(<RunBrief workOrderId="work" />);
-    expect(screen.getByText(/Keep the full original brief/)).toBeVisible();
-    const toggle = screen.getByRole("button", { name: "Run Brief Context" });
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await userEvent.click(toggle);
+  it("shows the issued instructions as complete Markdown context without inventing a prompt", () => {
+    render(<RunInstructions workOrderId="work" />);
+    expect(
+      screen.getByRole("region", { name: "Issued instructions" }),
+    ).toBeVisible();
+    expect(
+      screen.getByText("The issued work brief for this run."),
+    ).toBeVisible();
     expect(
       screen.getByRole("heading", { name: "Requested Change" }),
     ).toBeVisible();
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("Keep the full original brief.")).toBeVisible();
   });
   it("keeps exact settled source accessible without a second default copy", async () => {
     render(<RunFinalResponse detail={detail} />);

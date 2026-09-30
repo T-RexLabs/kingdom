@@ -7,9 +7,9 @@ import type {
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunExecutionActivity } from "./run-execution-activity";
 import { RoleIdentity } from "@/theme";
-import { RunBrief } from "./run-conversation";
+import { RunInstructions } from "./run-conversation";
 import { presentRunNodeExecution } from "./run-execution-presentation";
-import type { ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 
 export function RunExecutionSurface({
   run,
@@ -20,7 +20,6 @@ export function RunExecutionSurface({
   onSelectStep,
   onSelectAttempt,
   onSelectCurrentAttempt,
-  onViewDetails,
   hasMoreAttempts,
   onLoadMoreAttempts,
   isLoadingMoreAttempts,
@@ -44,7 +43,6 @@ export function RunExecutionSurface({
   onSelectStep: (nodeId: string) => void;
   onSelectAttempt: (attemptId: string) => void;
   onSelectCurrentAttempt: () => void;
-  onViewDetails?: () => void;
   hasMoreAttempts: boolean;
   onLoadMoreAttempts: () => void;
   isLoadingMoreAttempts: boolean;
@@ -64,6 +62,10 @@ export function RunExecutionSurface({
   stopRetryErrorMessage: string | null;
   children?: ReactNode;
 }) {
+  const [view, setView] = useState<"conversation" | "instructions">(
+    "conversation",
+  );
+  const viewsId = useId();
   const node = nodes.find((item) => item.node_id === selectedNodeId);
   const current = node?.current_execution;
   const selectedID = selectedAttemptId ?? current?.attempt_id;
@@ -93,7 +95,7 @@ export function RunExecutionSurface({
 
   return (
     <section
-      className="mx-auto max-w-[800px] space-y-3"
+      className="mx-auto max-w-3xl space-y-3"
       aria-label="Agent activity"
     >
       <RunExecutionPicker
@@ -122,15 +124,6 @@ export function RunExecutionSurface({
           >
             {presentation.heading}
           </span>
-        )}
-        {selectedID && onViewDetails && (
-          <button
-            type="button"
-            onClick={onViewDetails}
-            className="min-h-10 text-xs text-foreground-muted hover:text-foreground"
-          >
-            Attempt Details
-          </button>
         )}
       </RunExecutionPicker>
       {historical && (
@@ -195,28 +188,83 @@ export function RunExecutionSurface({
           </button>
         </p>
       )}
-      <RunBrief workOrderId={run.work_order_id} />
-      {node?.execution_ownership === "provider_backed" && (
-        <div className="pt-4 text-sm font-medium">
-          <RoleIdentity role={node.required_role} showResponsibility={false} />
-        </div>
-      )}
-      {node?.execution_ownership === "provider_backed" && (
-        <RunExecutionActivity
-          key={selectedID}
-          runId={run.run_id}
-          attemptId={selectedID ?? null}
-          status={execution?.status}
-          detail={selectedDetail}
-        />
-      )}
-      {node?.execution_ownership === "runtime_owned" && (
-        <p className="py-5 text-sm text-foreground-muted">
-          Kingdom owns this step. Its transitions appear in Run Details under
-          Audit; it does not produce provider thoughts or tool calls.
-        </p>
-      )}
-      {children}
+      <div
+        role="tablist"
+        aria-label="Agent conversation views"
+        className="flex gap-5 text-xs text-foreground-muted"
+        onKeyDown={(event) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
+            return;
+          event.preventDefault();
+          const next =
+            event.key === "Home"
+              ? "conversation"
+              : event.key === "End"
+                ? "instructions"
+                : view === "conversation"
+                  ? "instructions"
+                  : "conversation";
+          setView(next);
+          document.getElementById(`${viewsId}-${next}`)?.focus();
+        }}
+      >
+        {(["conversation", "instructions"] as const).map((item) => (
+          <button
+            key={item}
+            id={`${viewsId}-${item}`}
+            type="button"
+            role="tab"
+            aria-selected={view === item}
+            aria-controls={`${viewsId}-${item}-panel`}
+            tabIndex={view === item ? 0 : -1}
+            className={`min-h-10 border-b-2 ${view === item ? "border-accent text-foreground" : "border-transparent hover:text-foreground"}`}
+            onClick={() => setView(item)}
+          >
+            {item === "conversation" ? "Conversation" : "Instructions"}
+          </button>
+        ))}
+      </div>
+      <div
+        id={`${viewsId}-instructions-panel`}
+        role="tabpanel"
+        aria-labelledby={`${viewsId}-instructions`}
+        hidden={view !== "instructions"}
+      >
+        {view === "instructions" && (
+          <RunInstructions workOrderId={run.work_order_id} />
+        )}
+      </div>
+      <div
+        id={`${viewsId}-conversation-panel`}
+        role="tabpanel"
+        aria-labelledby={`${viewsId}-conversation`}
+        hidden={view !== "conversation"}
+      >
+        {node?.execution_ownership === "provider_backed" && (
+          <div className="pt-4 text-sm font-medium">
+            <RoleIdentity
+              role={node.required_role}
+              showResponsibility={false}
+            />
+          </div>
+        )}
+        {node?.execution_ownership === "provider_backed" && (
+          <RunExecutionActivity
+            key={selectedID}
+            runId={run.run_id}
+            attemptId={selectedID ?? null}
+            status={execution?.status}
+            detail={selectedDetail}
+          />
+        )}
+        {node?.execution_ownership === "runtime_owned" && (
+          <p className="py-5 text-sm text-foreground-muted">
+            Kingdom owns this step. Its transitions appear in Run Details under
+            Audit; it does not produce provider thoughts or tool calls.
+          </p>
+        )}
+        {children}
+      </div>
     </section>
   );
 }

@@ -14,7 +14,7 @@ export function RunAttemptProvenance({
   history?: RunNodeAttemptHistoryItem;
   currentAttemptId?: string;
 }) {
-  const attempt = history ?? detail;
+  const attempt = detail ?? history;
   if (!attempt) return null;
   return (
     <dl className="my-5 grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 text-xs text-foreground-muted">

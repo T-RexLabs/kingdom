@@ -49,8 +49,7 @@ import { MailboxPanel } from "./mailbox-panel";
 import { RunExecutionSurface } from "./run-execution-surface";
 import { selectRunExecutionNode } from "./run-execution-selection";
 import { RunExecutionPicker } from "./run-execution-picker";
-import { RunAttemptProvenance } from "./run-attempt-provenance";
-import { RunExecutionsPanel } from "./run-executions-panel";
+import { RunDiagnostics } from "./run-diagnostics";
 import { RunOutput } from "./run-output";
 import { RunLiveStatus } from "./run-live-status";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
@@ -113,13 +112,13 @@ export function RunDetailPage() {
   const activeTab: RunDetailTab = search.tab ?? "workflow";
   const panel = search.panel;
   const detailSection = search.section ?? "context";
+  const [diagnosticsRunId, setDiagnosticsRunId] = useState<string | null>(null);
+  const diagnosticsOpen = panel === "details" && diagnosticsRunId === runId;
   const runQuery = useRun(runId);
   const run = runQuery.data;
   const runReady = runQuery.isSuccess;
   const executionVisible =
-    activeTab === "execution" ||
-    panel === "files" ||
-    (panel === "details" && detailSection === "execution");
+    activeTab === "execution" || panel === "files" || diagnosticsOpen;
   const graphVisible = true;
   const timelineVisible = panel === "details" && detailSection === "audit";
   const executionsQueryActive = graphVisible;
@@ -317,11 +316,7 @@ export function RunDetailPage() {
 
   const openPanel = useCallback(
     (next: RunDetailPanel, section?: RunDetailSection) => {
-      if (
-        (next === "files" || (next === "details" && section === "execution")) &&
-        selectedExecutionNodeId &&
-        selectedExecutionId
-      )
+      if (next === "files" && selectedExecutionNodeId && selectedExecutionId)
         setSelectedExecution({
           runId,
           nodeId: selectedExecutionNodeId,
@@ -340,6 +335,7 @@ export function RunDetailPage() {
     [activeTab, navigate, runId, selectedExecutionId, selectedExecutionNodeId],
   );
   const closePanel = useCallback(() => {
+    setDiagnosticsRunId(null);
     void navigate({
       to: "/runs/$runId",
       params: { runId },
@@ -966,6 +962,32 @@ export function RunDetailPage() {
       ? "Observation Not Recorded"
       : "Not Started";
 
+  const attemptPicker = (
+    <RunExecutionPicker
+      nodes={presentedNodes}
+      attempts={nodeAttempts}
+      selectedNodeId={selectedExecutionNodeId}
+      selectedAttemptId={selectedExecutionId}
+      detail={presentedExecutionDetail}
+      onSelectStep={handleSelectExecutionStep}
+      onSelectAttempt={handleSelectExecutionAttempt}
+      onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
+      hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
+      onLoadMoreAttempts={() => void nodeAttemptsQuery.fetchNextPage()}
+      isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
+      isHistoryLoading={nodeAttemptsQuery.isFetching && !nodeAttemptsQuery.data}
+      historyErrorMessage={
+        nodeAttemptsQuery.isError
+          ? queryErrorMessage(
+              nodeAttemptsQuery.error,
+              "Attempt history could not be loaded.",
+            )
+          : null
+      }
+      onRetryHistory={() => void nodeAttemptsQuery.refetch()}
+    />
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
@@ -1237,7 +1259,6 @@ export function RunDetailPage() {
                     onSelectStep={handleSelectExecutionStep}
                     onSelectAttempt={handleSelectExecutionAttempt}
                     onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
-                    onViewDetails={() => openPanel("details", "execution")}
                     hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
                     onLoadMoreAttempts={() =>
                       void nodeAttemptsQuery.fetchNextPage()
@@ -1312,7 +1333,6 @@ export function RunDetailPage() {
               {(
                 [
                   ["context", "Brief and Settings"],
-                  ["execution", "Selected Attempt"],
                   ["mailbox", "Messages"],
                   ["audit", "Audit"],
                 ] as const
@@ -1329,36 +1349,9 @@ export function RunDetailPage() {
               ))}
             </nav>
           )}
-          {(panel === "files" ||
-            (panel === "details" && detailSection === "execution")) && (
+          {panel === "files" && (
             <div className="mb-5 space-y-4">
-              <RunExecutionPicker
-                nodes={presentedNodes}
-                attempts={nodeAttempts}
-                selectedNodeId={selectedExecutionNodeId}
-                selectedAttemptId={selectedExecutionId}
-                detail={presentedExecutionDetail}
-                onSelectStep={handleSelectExecutionStep}
-                onSelectAttempt={handleSelectExecutionAttempt}
-                onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
-                hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
-                onLoadMoreAttempts={() =>
-                  void nodeAttemptsQuery.fetchNextPage()
-                }
-                isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
-                isHistoryLoading={
-                  nodeAttemptsQuery.isFetching && !nodeAttemptsQuery.data
-                }
-                historyErrorMessage={
-                  nodeAttemptsQuery.isError
-                    ? queryErrorMessage(
-                        nodeAttemptsQuery.error,
-                        "Attempt history could not be loaded.",
-                      )
-                    : null
-                }
-                onRetryHistory={() => void nodeAttemptsQuery.refetch()}
-              />
+              {attemptPicker}
               {panel === "files" && (
                 <p className="text-xs text-foreground-muted">
                   Publication belongs to the selected attempt. Artifacts below
@@ -1382,40 +1375,6 @@ export function RunDetailPage() {
                 />
               )}
             </div>
-          )}
-          {panel === "details" && detailSection === "execution" && (
-            <>
-              <RunAttemptProvenance
-                detail={presentedExecutionDetail}
-                history={nodeAttempts.find(
-                  (item) => item.attempt_id === selectedExecutionId,
-                )}
-                currentAttemptId={selectedNode?.current_execution?.attempt_id}
-              />
-              <RunExecutionsPanel
-                detail={presentedExecutionDetail}
-                isDetailLoading={
-                  executionDetailIsFetching && !presentedExecutionDetail
-                }
-                detailErrorMessage={
-                  selectedExecutionDetailQuery.isError
-                    ? queryErrorMessage(
-                        selectedExecutionDetailQuery.error,
-                        "The execution detail could not be loaded.",
-                      )
-                    : null
-                }
-                onRetryDetail={() => void executionDetailQuery.refetch()}
-                failure={
-                  selectedExecutionId ===
-                  selectedNode?.current_execution?.attempt_id
-                    ? selectedNode?.failure
-                    : nodeAttempts.find(
-                        (item) => item.attempt_id === selectedExecutionId,
-                      )?.failure
-                }
-              />
-            </>
           )}
 
           {panel === "files" && (
@@ -1545,6 +1504,62 @@ export function RunDetailPage() {
                 />
               </div>
             </div>
+          )}
+          {panel === "details" && (
+            <details
+              open={diagnosticsOpen}
+              className="mt-6 border-t border-border pt-3"
+              onToggle={(event) => {
+                if (event.target !== event.currentTarget) return;
+                const isOpen = event.currentTarget.open;
+                setDiagnosticsRunId(isOpen ? runId : null);
+                if (isOpen && selectedExecutionNodeId && selectedExecutionId) {
+                  setSelectedExecution({
+                    runId,
+                    nodeId: selectedExecutionNodeId,
+                    attemptId: selectedExecutionId,
+                  });
+                }
+              }}
+            >
+              <summary className="min-h-10 cursor-pointer py-2 text-sm text-foreground-muted hover:text-foreground">
+                Diagnostics
+              </summary>
+              {diagnosticsOpen && (
+                <div className="pt-3">
+                  {attemptPicker}
+                  <RunDiagnostics
+                    detail={presentedExecutionDetail}
+                    history={nodeAttempts.find(
+                      (item) => item.attempt_id === selectedExecutionId,
+                    )}
+                    currentAttemptId={
+                      selectedNode?.current_execution?.attempt_id
+                    }
+                    isLoading={
+                      executionDetailIsFetching && !presentedExecutionDetail
+                    }
+                    errorMessage={
+                      selectedExecutionDetailQuery.isError
+                        ? queryErrorMessage(
+                            selectedExecutionDetailQuery.error,
+                            "The execution detail could not be loaded.",
+                          )
+                        : null
+                    }
+                    onRetry={() => void executionDetailQuery.refetch()}
+                    failure={
+                      selectedExecutionId ===
+                      selectedNode?.current_execution?.attempt_id
+                        ? selectedNode?.failure
+                        : nodeAttempts.find(
+                            (item) => item.attempt_id === selectedExecutionId,
+                          )?.failure
+                    }
+                  />
+                </div>
+              )}
+            </details>
           )}
         </Modal>
       )}

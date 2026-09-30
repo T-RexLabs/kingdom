@@ -1,4 +1,3 @@
-import { useState } from "react";
 import { useWorkOrder, type RunExecutionDetail } from "@/api/hooks";
 import { hasSettledResponse } from "./run-conversation-state";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
@@ -91,51 +90,35 @@ export function RunFinalResponse({
   );
 }
 
-export function RunBrief({ workOrderId }: { workOrderId: string }) {
+export function RunInstructions({ workOrderId }: { workOrderId: string }) {
   const query = useWorkOrder(workOrderId);
-  const [open, setOpen] = useState(false);
   return (
-    <section aria-label="Run brief context" className="my-5 text-sm">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-        className="py-2 font-medium text-foreground-muted"
-      >
-        Run Brief{" "}
-        <span className="ml-2 font-normal text-foreground-subtle">Context</span>
-      </button>
-      {!open && query.data?.work_order_text && (
-        <p className="mt-2 line-clamp-3 whitespace-pre-wrap border-l-2 border-accent/30 pl-4 text-sm leading-6 text-foreground-muted">
-          {query.data.work_order_text.slice(0, 600)}
+    <section aria-label="Issued instructions" className="space-y-4 py-5">
+      <p className="text-xs text-foreground-muted">
+        The issued work brief for this run.
+      </p>
+      {query.isLoading ? (
+        <p className="text-sm text-foreground-muted">Loading instructions…</p>
+      ) : query.error ? (
+        <p role="alert" className="text-sm text-status-failed">
+          Instructions could not be loaded.{" "}
+          <button
+            type="button"
+            className="underline"
+            onClick={() => void query.refetch()}
+          >
+            Retry Instructions
+          </button>
         </p>
-      )}
-      {open && (
-        <div className="py-3">
-          {query.isLoading ? (
-            <p className="text-foreground-muted">
-              Loading the issued work brief…
-            </p>
-          ) : query.error ? (
-            <p role="alert" className="text-status-failed">
-              The work brief could not be loaded.{" "}
-              <button
-                type="button"
-                className="underline"
-                onClick={() => void query.refetch()}
-              >
-                Retry
-              </button>
-            </p>
-          ) : query.data?.work_order_text ? (
-            <MarkdownBlock
-              content={query.data.work_order_text}
-              className="text-[15px] leading-7 text-foreground-muted"
-            />
-          ) : (
-            <p className="text-foreground-muted">No work brief is available.</p>
-          )}
-        </div>
+      ) : query.data?.work_order_text ? (
+        <MarkdownBlock
+          content={query.data.work_order_text}
+          className="text-[15px] leading-7 text-foreground"
+        />
+      ) : (
+        <p className="text-sm text-foreground-muted">
+          No issued instructions are available.
+        </p>
       )}
     </section>
   );
