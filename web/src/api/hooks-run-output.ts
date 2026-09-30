@@ -1,19 +1,27 @@
-import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { apiFetch, ApiError } from "./client";
 import type { components } from "./schema";
 
 type ArtifactsPage = components["schemas"]["RunArtifactsResponse"];
 type PublicationPage = components["schemas"]["RunPublicationEntriesResponse"];
 
-export function useRunArtifacts(runId: string) {
+export function useRunArtifacts(runId: string, agentId = "") {
   const client = useQueryClient();
-  const queryKey = ["runs", runId, "artifacts"] as const;
+  const queryKey = ["runs", runId, "artifacts", agentId] as const;
   const query = useInfiniteQuery({
     queryKey,
     queryFn: ({ pageParam, signal }) =>
       apiFetch<ArtifactsPage>(`/runs/${runId}/artifacts`, {
         signal,
-        params: { limit: 50, cursor: pageParam },
+        params: {
+          limit: 50,
+          cursor: pageParam,
+          ...(agentId ? { agent_id: agentId } : {}),
+        },
       }),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor,
@@ -24,6 +32,17 @@ export function useRunArtifacts(runId: string) {
     ...query,
     refresh: () => client.resetQueries({ queryKey, exact: true }),
   };
+}
+
+export function useRunArtifactAgents(runId: string) {
+  return useQuery({
+    queryKey: ["runs", runId, "artifact-agents"],
+    queryFn: ({ signal }) =>
+      apiFetch<components["schemas"]["RunAgentsResponse"]>(
+        `/runs/${runId}/agents`,
+        { signal },
+      ),
+  });
 }
 
 export function useRunPublicationEntries(

@@ -169,7 +169,10 @@ vi.mock("./dag-visualization", () => ({
 }));
 
 vi.mock("./run-execution-picker", () => ({ RunExecutionPicker: () => <div>Attempt Picker</div> }));
-vi.mock("./run-output", () => ({ RunOutput: () => <div>artifacts</div> }));
+vi.mock("./run-output", () => ({
+  RunOutput: () => <div>artifacts</div>,
+  RunPublicationPanel: ({ picker }: { picker: ReactNode }) => <details><summary>Publication Results</summary>{picker}</details>,
+}));
 
 vi.mock("./run-live-status", () => ({ RunLiveStatus: ({ onSelect }: { onSelect: (nodeId: string) => void }) => <button onClick={() => onSelect("implementation")}>Open Live Builder Activity</button> }));
 
@@ -1844,6 +1847,8 @@ describe("run detail page", () => {
     rerender(<RunDetailPage />);
     const dialog = screen.getByRole("dialog", { name: "Run Files" });
     expect(within(dialog).getByText("artifacts")).toBeVisible();
+    expect(within(dialog).getByText("Attempt Picker")).not.toBeVisible();
+    await userEvent.click(within(dialog).getByText("Publication Results"));
     expect(within(dialog).getByText("Attempt Picker")).toBeVisible();
     expect(screen.queryByRole("tab", { name: "Output" })).not.toBeInTheDocument();
     expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "execution", panel: "files" } }));

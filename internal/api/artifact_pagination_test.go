@@ -168,3 +168,50 @@ func TestArtifactPaginationInsertionWindowSurvivesVacuum(t *testing.T) {
 		t.Fatalf("vacuum lost initial artifacts: got %d", seen)
 	}
 }
+
+func TestArtifactPaginationFiltersExactAgentAcrossPages(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedRunProvenanceAttempt(t, db, runID, "agent-first", "provider_backed", "committed_failure", "", 1)
+	seedRunProvenanceAttempt(t, db, runID, "agent-second", "provider_backed", "committed_failure", "", 2)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES ('other-agent','plan-author','idle',0,'2026-04-30T12:00:00Z','2026-04-30T12:00:00Z')`)
+	mustExecSQL(t, db, `UPDATE node_runs SET agent_id='other-agent' WHERE node_run_id='agent-second'`)
+	seedArtifactPageRecords(t, db, runID, "agent-first", 71)
+	seedArtifactPageRecords(t, db, runID, "agent-second", 83)
+	base := "/api/v1/runs/" + runID + "/artifacts?limit=17&agent_id=other-agent"
+	page := getArtifactPage(t, handler, base)
+	firstCursor, snapshot := page.NextCursor, page.SnapshotID
+	seen := map[string]bool{}
+	for {
+		if page.SnapshotID != snapshot {
+			t.Fatal("filtered snapshot changed")
+		}
+		for _, item := range page.Items {
+			if item.ProducerAgentID != "other-agent" || seen[item.ArtifactID] {
+				t.Fatalf("wrong producer or duplicate: %+v", item)
+			}
+			seen[item.ArtifactID] = true
+		}
+		if page.NextCursor == "" {
+			break
+		}
+		page = getArtifactPage(t, handler, base+"&cursor="+url.QueryEscape(page.NextCursor))
+	}
+	if len(seen) != 83 {
+		t.Fatalf("got %d files, want all 83 from the selected agent", len(seen))
+	}
+	for _, filter := range []string{"", "&agent_id=provenance-agent"} {
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts?cursor=" + url.QueryEscape(firstCursor) + filter})
+		if res.Code != http.StatusBadRequest {
+			t.Fatalf("cross-filter cursor accepted: %d %s", res.Code, res.Body.String())
+		}
+	}
+	combined := getArtifactPage(t, handler, base+"&attempt_id=agent-first")
+	if len(combined.Items) != 0 {
+		t.Fatal("agent and attempt filters must intersect")
+	}
+	all := getArtifactPage(t, handler, "/api/v1/runs/"+runID+"/artifacts?limit=200")
+	if len(all.Items) != 154 || all.SnapshotID == snapshot {
+		t.Fatal("All must retain both agents in an independent snapshot")
+	}
+}

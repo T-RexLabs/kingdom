@@ -77,7 +77,8 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	attemptID := strings.TrimSpace(r.URL.Query().Get("attempt_id"))
-	scopeBytes, _ := json.Marshal([]string{runID, attemptID})
+	agentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	scopeBytes, _ := json.Marshal([]string{runID, attemptID, agentID})
 	scope := string(scopeBytes)
 	var cursor *state.ArtifactPageCursor
 	if raw := r.URL.Query().Get("cursor"); raw != "" {
@@ -101,7 +102,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 	}
-	page, err := s.artifactService.PageRunArtifactProvenance(r.Context(), runID, attemptID, limit, cursor)
+	page, err := s.artifactService.PageRunArtifactProvenance(r.Context(), runID, attemptID, agentID, limit, cursor)
 	if errors.Is(err, state.ErrArtifactSnapshotChanged) {
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, err.Error(), "api.list_run_artifacts", map[string]any{"refresh_required": true})
 		return

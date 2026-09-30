@@ -43,7 +43,7 @@ import { RunExecutionSurface } from "./run-execution-surface";
 import { selectRunExecutionNode } from "./run-execution-selection";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunDiagnostics } from "./run-diagnostics";
-import { RunOutput } from "./run-output";
+import { RunOutput, RunPublicationPanel } from "./run-output";
 import { RunLiveStatus } from "./run-live-status";
 import { RunReworkSummary } from "./run-rework-summary";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
@@ -1213,40 +1213,29 @@ export function RunDetailPage() {
             </nav>
           )}
           {panel === "files" && (
-            <div className="mb-5 space-y-4">
-              {attemptPicker}
-              {panel === "files" && (
-                <p className="text-xs text-foreground-muted">
-                  Publication belongs to the selected attempt. Artifacts below
-                  include the whole run, with each file's lineage retained.
-                </p>
-              )}
-              {panel === "files" &&
-                executionDetailIsFetching &&
-                !presentedExecutionDetail && (
-                  <p className="text-xs text-foreground-muted">
-                    Loading publication…
-                  </p>
-                )}
-              {panel === "files" && selectedExecutionDetailQuery.isError && (
-                <TabError
-                  message={queryErrorMessage(
-                    selectedExecutionDetailQuery.error,
-                    "Publication could not be loaded.",
-                  )}
-                  onRetry={() => void executionDetailQuery.refetch()}
-                />
-              )}
-            </div>
-          )}
-
-          {panel === "files" && (
-            <RunOutput
-              runId={runId}
-              attemptId={presentedExecutionDetail?.attempt_id}
-              publication={presentedExecutionDetail?.publication}
-              onRefreshPublication={() => executionDetailQuery.refetch()}
-            />
+            <>
+              <RunOutput key={runId} runId={runId} />
+              <RunPublicationPanel
+                runId={runId}
+                attemptId={presentedExecutionDetail?.attempt_id}
+                publication={presentedExecutionDetail?.publication}
+                picker={attemptPicker}
+                isLoading={
+                  executionDetailIsFetching && !presentedExecutionDetail
+                }
+                error={
+                  selectedExecutionDetailQuery.isError
+                    ? new Error(
+                        queryErrorMessage(
+                          selectedExecutionDetailQuery.error,
+                          "Publication could not be loaded.",
+                        ),
+                      )
+                    : null
+                }
+                onRefresh={() => executionDetailQuery.refetch()}
+              />
+            </>
           )}
           {panel === "plan" && (
             <div className="space-y-5">

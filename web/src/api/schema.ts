@@ -6307,6 +6307,8 @@ export interface operations {
                 cursor?: components["parameters"]["Cursor"];
                 limit?: components["parameters"]["Limit"];
                 attempt_id?: string;
+                /** @description Filter by the exact producing run participant across all of its attempts. Combined with attempt_id when supplied; cursors are scoped to both filters. */
+                agent_id?: string;
             };
             header?: never;
             path: {

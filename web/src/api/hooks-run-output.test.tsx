@@ -66,4 +66,49 @@ describe("run output snapshots", () => {
     );
     client.clear();
   });
+  it("starts an independent bounded snapshot when the agent filter changes", async () => {
+    vi.mocked(apiFetch).mockImplementation(async (_path, options) => ({
+      run_id: "r",
+      snapshot_id: options?.params?.agent_id ?? "all",
+      items: [],
+      next_cursor: "scoped-next",
+    }));
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+    );
+    const { result, rerender } = renderHook(
+      ({ agent }) => useRunArtifacts("r", agent),
+      { initialProps: { agent: "" }, wrapper },
+    );
+    await waitFor(() =>
+      expect(result.current.data?.pages[0].snapshot_id).toBe("all"),
+    );
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+    rerender({ agent: "builder-2" });
+    await waitFor(() =>
+      expect(result.current.data?.pages[0].snapshot_id).toBe("builder-2"),
+    );
+    expect(result.current.data?.pages).toHaveLength(1);
+    expect(apiFetch).toHaveBeenLastCalledWith(
+      "/runs/r/artifacts",
+      expect.objectContaining({
+        params: { limit: 50, cursor: undefined, agent_id: "builder-2" },
+      }),
+    );
+    await act(async () => {
+      await result.current.fetchNextPage();
+    });
+    expect(apiFetch).toHaveBeenLastCalledWith(
+      "/runs/r/artifacts",
+      expect.objectContaining({
+        params: { limit: 50, cursor: "scoped-next", agent_id: "builder-2" },
+      }),
+    );
+    client.clear();
+  });
 });

@@ -1623,6 +1623,12 @@ paths:
           schema:
             type: string
             minLength: 1
+        - name: agent_id
+          in: query
+          description: Filter by the exact producing run participant across all of its attempts. Combined with attempt_id when supplied; cursors are scoped to both filters.
+          schema:
+            type: string
+            minLength: 1
       responses:
         "200":
           description: Run artifact list.

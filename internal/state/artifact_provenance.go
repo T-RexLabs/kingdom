@@ -58,7 +58,7 @@ const artifactKindRankSQL = `CASE a.artifact_kind WHEN 'deliverable' THEN 0 WHEN
 // PageRunArtifactProvenance reads a bounded page and its classification from one
 // SQLite snapshot. Only successful canonical builder settlements establish
 // deliverable lineage. Publication and run approval remain independent.
-func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, attemptID string, limit int, cursor *ArtifactPageCursor) (RunArtifactPage, error) {
+func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, attemptID, agentID string, limit int, cursor *ArtifactPageCursor) (RunArtifactPage, error) {
 	if limit < 1 || limit > 200 {
 		return RunArtifactPage{}, fmt.Errorf("artifact page limit must be between 1 and 200")
 	}
@@ -78,11 +78,11 @@ func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, 
 			return RunArtifactPage{}, ErrArtifactSnapshotChanged
 		}
 	} else {
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(artifact_seq),0) FROM artifacts WHERE run_id=? AND (?='' OR attempt_id=?)`, runID, attemptID, attemptID).Scan(&pinned.HighWater); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(a.artifact_seq),0) FROM artifacts a JOIN node_runs nr ON nr.node_run_id=a.node_run_id AND nr.run_id=a.run_id WHERE a.run_id=? AND (?='' OR a.attempt_id=?) AND (?='' OR nr.agent_id=?)`, runID, attemptID, attemptID, agentID, agentID).Scan(&pinned.HighWater); err != nil {
 			return RunArtifactPage{}, err
 		}
 	}
-	snapshotBytes, _ := json.Marshal([]any{runID, attemptID, pinned.HighWater, lineage})
+	snapshotBytes, _ := json.Marshal([]any{runID, attemptID, agentID, pinned.HighWater, lineage})
 	snapshotDigest := sha256.Sum256(snapshotBytes)
 	page := RunArtifactPage{Items: make([]RunArtifactProvenance, 0, limit), SnapshotID: hex.EncodeToString(snapshotDigest[:])}
 	query := successfulBuildersCTE + `
@@ -99,6 +99,10 @@ func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, 
 	if attemptID != "" {
 		query += ` AND a.attempt_id=?`
 		args = append(args, attemptID)
+	}
+	if agentID != "" {
+		query += ` AND nr.agent_id=?`
+		args = append(args, agentID)
 	}
 	if cursor != nil {
 		query += ` AND (` + artifactKindRankSQL + `>? OR (` + artifactKindRankSQL + `=? AND (a.created_at<? OR (a.created_at=? AND a.artifact_id>?))))`

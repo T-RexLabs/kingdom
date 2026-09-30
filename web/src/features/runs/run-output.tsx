@@ -1,196 +1,236 @@
+import { useState, type ReactNode } from "react";
 import { Download, File, FileX, RefreshCw } from "lucide-react";
 import type { components } from "@/api/schema";
 import { API_BASE } from "@/api/client";
 import {
   useRunArtifacts,
+  useRunArtifactAgents,
   useRunPublicationEntries,
   outputSnapshotChanged,
 } from "@/api/hooks-run-output";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { RelativeTime } from "@/components/ui/relative-time";
-import { RoleIdentity } from "@/theme";
+import { SelectField } from "@/components/ui/select-field";
+import { roleIdentity, useTheme } from "@/theme";
 import { Virtuoso } from "react-virtuoso";
 import { statusLabel } from "@/lib/status-system";
 
 type Publication = components["schemas"]["RunExecutionPublication"];
 
-export function RunOutput({
-  runId,
-  attemptId,
-  publication,
-  onRefreshPublication,
-}: {
-  runId: string;
-  attemptId?: string;
-  publication?: Publication;
-  onRefreshPublication: () => Promise<unknown>;
-}) {
-  const artifacts = useRunArtifacts(runId);
+export function RunOutput({ runId }: { runId: string }) {
+  const [agentId, setAgentId] = useState("");
+  const { theme } = useTheme();
+  const agents = useRunArtifactAgents(runId);
+  const artifacts = useRunArtifacts(runId, agentId);
+  const participants = agents.data?.items ?? [];
+  const agentOptions = participants.map((agent) => {
+    const name = roleIdentity(theme, agent.role_id).name;
+    const sameRole =
+      participants.filter((other) => other.role_id === agent.role_id).length >
+      1;
+    return {
+      value: agent.agent_id,
+      label: sameRole
+        ? `${name} · ${agent.display_name !== name ? agent.display_name : agent.agent_id}`
+        : name,
+    };
+  });
   const pages = artifacts.data?.pages ?? [];
   const snapshot = pages[0]?.snapshot_id;
   const consistent = pages.every((page) => page.snapshot_id === snapshot);
   const items = consistent ? pages.flatMap((page) => page.items) : [];
   const changed = !consistent || outputSnapshotChanged(artifacts.error);
   return (
-    <div className="space-y-5">
-      {publication && attemptId && (
-        <PublicationResults
-          key={`${attemptId}:${publication.batch_id}:${publication.entries_revision}`}
-          runId={runId}
-          attemptId={attemptId}
-          publication={publication}
-          onRefreshSummary={onRefreshPublication}
+    <section className="space-y-5" aria-label="Run files">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <SelectField
+          id="run-files-agent"
+          label="Agent"
+          ariaLabel="Filter files by agent"
+          value={agentId}
+          options={[{ label: "All", value: "" }, ...agentOptions]}
+          onChange={setAgentId}
+          className="w-64 max-w-full"
+        />
+        <div className="flex items-center gap-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              void artifacts.refresh();
+              void agents.refetch();
+            }}
+            disabled={artifacts.isFetching}
+          >
+            <RefreshCw size={14} /> Refresh
+          </Button>
+          <a
+            className="inline-flex min-h-9 items-center gap-2 rounded-lg px-2 text-sm text-accent hover:bg-surface-raised"
+            href={`${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/archive`}
+            download
+            title="Download all files from this run"
+          >
+            <Download size={14} />{" "}
+            {agentId ? "Download All Run Files" : "Download All"}
+          </a>
+        </div>
+      </div>
+      {agents.isError && (
+        <ReadError error={agents.error} onRetry={() => void agents.refetch()} />
+      )}
+      {changed && <SnapshotNotice onRefresh={() => void artifacts.refresh()} />}
+      {artifacts.isError && !changed && (
+        <ReadError
+          error={artifacts.error}
+          onRetry={() =>
+            void (artifacts.isFetchNextPageError
+              ? artifacts.fetchNextPage()
+              : artifacts.refetch())
+          }
         />
       )}
-      <section
-        className="overflow-hidden rounded-xl border border-border bg-surface/40"
-        aria-label="Run artifacts"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border p-4">
-          <div>
-            <h3 className="text-sm font-medium">Run Artifacts</h3>
-            <p className="mt-1 text-xs text-foreground-muted">
-              {items.length} loaded · Canonical deliverables and retained audit
-              evidence.
-            </p>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => void artifacts.refresh()}
-              disabled={artifacts.isFetching}
-            >
-              <RefreshCw size={14} />
-              Refresh
-            </Button>
-            <a
-              className="inline-flex min-h-9 items-center gap-2 rounded-lg border border-border px-3 text-xs hover:bg-surface-raised"
-              href={`${API_BASE}/runs/${encodeURIComponent(runId)}/artifacts/archive`}
-              download
-            >
-              <Download size={14} />
-              Download All
-            </a>
-          </div>
-        </div>
-        {changed && (
-          <SnapshotNotice onRefresh={() => void artifacts.refresh()} />
-        )}
-        {artifacts.isError && !changed && (
-          <ReadError
-            error={artifacts.error}
-            onRetry={() =>
-              void (artifacts.isFetchNextPageError
-                ? artifacts.fetchNextPage()
-                : artifacts.refetch())
-            }
-          />
-        )}
-        {artifacts.isPending ? (
-          <p className="p-5 text-sm text-foreground-muted">
-            Loading artifacts…
-          </p>
-        ) : !items.length && !artifacts.isError && consistent ? (
-          <p className="p-5 text-sm text-foreground-muted">
-            No artifacts have been recorded.
-          </p>
-        ) : items.length > 0 ? (
-          <Virtuoso
-            style={{ height: Math.min(520, Math.max(130, items.length * 120)) }}
-            data={items}
-            increaseViewportBy={200}
-            itemContent={(_index, artifact) => (
-              <article className="border-b border-border/70 p-4">
-                <div className="flex items-start justify-between gap-4">
-                  <div className="flex min-w-0 items-start gap-3">
+      {artifacts.isPending ? (
+        <p className="py-5 text-sm text-foreground-muted">Loading files…</p>
+      ) : !items.length && !artifacts.isError && consistent ? (
+        <p className="py-5 text-sm text-foreground-muted">
+          {agentId
+            ? "No files have been recorded by this agent."
+            : "No files have been recorded."}
+        </p>
+      ) : items.length > 0 ? (
+        <Virtuoso
+          key={`${runId}:${agentId}`}
+          style={{ height: Math.min(520, Math.max(88, items.length * 88)) }}
+          data={items}
+          computeItemKey={(_index, artifact) => artifact.artifact_id}
+          increaseViewportBy={200}
+          itemContent={(_index, artifact) => (
+            <article className="flex items-center justify-between gap-3 border-b border-border/50 py-4 pr-2">
+              <div className="flex min-w-0 items-center gap-3">
+                {artifact.artifact_action === "delete" ? (
+                  <FileX size={18} className="shrink-0 text-status-blocked" />
+                ) : (
+                  <File size={18} className="shrink-0 text-foreground-subtle" />
+                )}
+                <div className="min-w-0">
+                  <p
+                    className="truncate text-sm font-medium"
+                    title={artifact.path || artifact.name}
+                  >
+                    {artifact.path || artifact.name}
+                  </p>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-2 text-xs text-foreground-muted">
                     {artifact.artifact_action === "delete" ? (
-                      <FileX
-                        size={17}
-                        className="mt-0.5 shrink-0 text-status-blocked"
-                      />
+                      <span className="text-status-blocked">Delete Action</span>
                     ) : (
-                      <File size={17} className="mt-0.5 shrink-0 text-accent" />
+                      <span>{artifact.size_bytes.toLocaleString()} Bytes</span>
                     )}
-                    <div className="min-w-0">
-                      <p className="break-all font-mono text-xs">
-                        {artifact.path || artifact.name}
-                      </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-2 text-[10px] text-foreground-muted">
-                        <span
-                          className={
-                            artifact.lineage === "canonical_deliverable"
-                              ? "text-accent"
-                              : ""
-                          }
-                        >
-                          {artifact.lineage === "canonical_deliverable"
-                            ? "Canonical Deliverable"
-                            : "Audit Evidence"}
-                        </span>
-                        <span>
-                          ·{" "}
-                          {artifact.artifact_action === "delete"
-                            ? "Delete Action"
-                            : `${artifact.size_bytes.toLocaleString()} Bytes`}
-                        </span>
-                        <span>· Attempt {artifact.attempt}</span>
-                        <RelativeTime iso={artifact.created_at} />
-                      </div>
-                    </div>
+                    {!agentId && (
+                      <span>
+                        · {roleIdentity(theme, artifact.producer_role).name}
+                      </span>
+                    )}
+                    <span>
+                      ·{" "}
+                      <span>
+                        {artifact.lineage === "canonical_deliverable"
+                          ? "Canonical Deliverable"
+                          : "Audit Evidence"}
+                      </span>
+                    </span>
                   </div>
-                  {artifact.artifact_action === "write" &&
-                    artifact.download_url && (
-                      <a
-                        href={artifact.download_url}
-                        download={artifact.name}
-                        className="inline-flex min-h-9 shrink-0 items-center gap-1.5 text-xs text-accent"
-                      >
-                        <Download size={13} />
-                        Download File
-                      </a>
-                    )}
                 </div>
-                <details className="mt-2 text-xs text-foreground-muted">
-                  <summary className="min-h-8 cursor-pointer py-1">
-                    Provenance
-                  </summary>
-                  <div className="space-y-2 pb-2">
-                    <RoleIdentity role={artifact.producer_role} />
-                    <p>
-                      Attempt ID:{" "}
-                      <code className="break-all">{artifact.attempt_id}</code>
-                    </p>
-                    <p>
-                      Artifact ID:{" "}
-                      <code className="break-all">{artifact.artifact_id}</code>
-                    </p>
-                    {artifact.sha256 && (
-                      <p>
-                        SHA-256:{" "}
-                        <code className="break-all">{artifact.sha256}</code>
-                      </p>
-                    )}
-                  </div>
-                </details>
-              </article>
-            )}
-          />
-        ) : null}
-        {artifacts.hasNextPage && !changed && (
-          <PageButton
-            loading={artifacts.isFetchingNextPage}
-            label="Load More Artifacts"
-            onClick={() => void artifacts.fetchNextPage()}
-          />
-        )}
-      </section>
-    </div>
+              </div>
+              {artifact.artifact_action === "write" &&
+                artifact.download_url && (
+                  <a
+                    href={artifact.download_url}
+                    download={artifact.name}
+                    className="inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-accent hover:bg-surface-raised"
+                    aria-label={`Download ${artifact.path || artifact.name}`}
+                  >
+                    <Download size={14} />
+                    <span className="hidden sm:inline">Download</span>
+                  </a>
+                )}
+            </article>
+          )}
+        />
+      ) : null}
+      {artifacts.hasNextPage && !changed && (
+        <PageButton
+          loading={artifacts.isFetchingNextPage}
+          label="Load More Files"
+          onClick={() => void artifacts.fetchNextPage()}
+        />
+      )}
+    </section>
   );
 }
 
-function PublicationResults({
+export function RunPublicationPanel({
+  runId,
+  attemptId,
+  publication,
+  picker,
+  isLoading,
+  error,
+  onRefresh,
+}: {
+  runId: string;
+  attemptId?: string;
+  publication?: Publication;
+  picker: ReactNode;
+  isLoading: boolean;
+  error: Error | null;
+  onRefresh: () => Promise<unknown>;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <section className="mt-6 border-t border-border/60 pt-3">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls="run-publication-results"
+        onClick={() => setOpen(!open)}
+        className="min-h-10 text-sm text-foreground-muted hover:text-foreground"
+      >
+        {open ? "Hide Publication Results" : "Publication Results"}
+      </button>
+      <div id="run-publication-results" hidden={!open}>
+        {open && (
+          <div className="space-y-4 pt-3">
+            <p className="text-sm text-foreground-muted">
+              Inspect file publication for a specific execution attempt.
+            </p>
+            {picker}
+            {error ? (
+              <ReadError error={error} onRetry={() => void onRefresh()} />
+            ) : isLoading ? (
+              <p className="text-sm text-foreground-muted">
+                Loading publication…
+              </p>
+            ) : publication && attemptId ? (
+              <PublicationResults
+                key={`${attemptId}:${publication.batch_id}:${publication.entries_revision}`}
+                runId={runId}
+                attemptId={attemptId}
+                publication={publication}
+                onRefreshSummary={onRefresh}
+              />
+            ) : (
+              <p className="text-sm text-foreground-muted">
+                No publication results are recorded for this attempt.
+              </p>
+            )}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+export function PublicationResults({
   runId,
   attemptId,
   publication,
@@ -212,11 +252,8 @@ function PublicationResults({
   const changed = !consistent || outputSnapshotChanged(query.error);
   const items = consistent ? pages.flatMap((page) => page.items) : [];
   return (
-    <section
-      className="overflow-hidden rounded-xl border border-border bg-surface/40"
-      aria-label="Publication results"
-    >
-      <div className="border-b border-border p-4">
+    <section className="space-y-3" aria-label="Publication results">
+      <div className="py-3">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h3 className="text-sm font-medium">Publication</h3>
           <Badge
@@ -271,7 +308,7 @@ function PublicationResults({
           data={items}
           increaseViewportBy={160}
           itemContent={(_index, entry) => (
-            <div className="border-b border-border/70 px-4 py-3">
+            <div className="border-b border-border/50 py-3 pr-2">
               <div className="flex flex-wrap justify-between gap-2">
                 <span className="break-all font-mono text-xs">
                   {entry.path}

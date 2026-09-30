@@ -174,7 +174,7 @@ describe("current plan panel", () => {
     vi.useRealTimers();
   });
 
-  it("uses fixed scroll panel without expand toggle", () => {
+  it("renders one always-open plan document without a nested scroll region", () => {
     render(
       <CurrentPlanPanel
         run={{
@@ -195,6 +195,10 @@ describe("current plan panel", () => {
     );
 
     expect(screen.getByText("Current Plan")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Current Plan/ })).not.toBeInTheDocument();
+    const document = screen.getByRole("region", { name: "Current plan document" });
+    expect(document.querySelector('[class*="overflow-auto"], [class*="max-h-"]')).toBeNull();
+    expect(document).not.toHaveClass("overflow-auto");
     expect(screen.queryByRole("button", { name: /Expand full plan/i })).not.toBeInTheDocument();
   });
 
@@ -502,7 +506,7 @@ describe("current plan panel", () => {
 		expect(screen.getByText("Operator Guidance")).toBeInTheDocument();
 		expect(screen.getByText("Tighten the rollout scope before approval.")).toBeInTheDocument();
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 
 		expect(screen.getByRole("dialog", { name: "Operator Decision History" })).toBeInTheDocument();
 		expect(screen.getAllByText("Requested Plan Rework").length).toBeGreaterThan(0);
@@ -531,7 +535,7 @@ describe("current plan panel", () => {
 
 		expect(useRunGovernanceDecisionsMock).toHaveBeenCalledWith("run-1", { enabled: false });
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 
 		expect(
 			useRunGovernanceDecisionsMock.mock.calls.some(
@@ -561,7 +565,7 @@ describe("current plan panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
+		await user.click(screen.getByRole("button", { name: /View History/i }));
 		await user.click(screen.getByRole("button", { name: /Load Older Decisions/i }));
 
 		expect(fetchNextGovernancePage).toHaveBeenCalledTimes(1);
@@ -613,6 +617,6 @@ describe("current plan panel", () => {
 
 		expect(screen.getByText("Operator Guidance")).toBeInTheDocument();
 		expect(screen.queryByText("Tighten the rollout scope before approval.")).not.toBeInTheDocument();
-		expect(screen.getByRole("button", { name: /View the complete Operator decision history for this run\./i })).toBeInTheDocument();
+		expect(screen.getByRole("button", { name: /View History/i })).toBeInTheDocument();
 	});
 });
