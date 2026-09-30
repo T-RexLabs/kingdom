@@ -29,18 +29,6 @@ export type ActivityItem = {
   occurredAt?: string;
 };
 
-export type ActivityCurrentEvent = {
-  id: string;
-  label: string;
-};
-
-export type ActivityThoughtEntry = {
-  id: string;
-  label: string;
-  detail: string;
-  occurredAt?: string;
-};
-
 export type ActivitySourceEntry = {
   id: string;
   label: string;
@@ -48,18 +36,12 @@ export type ActivitySourceEntry = {
 };
 
 export type ActivityState = {
-  currentEvent: ActivityCurrentEvent | null;
-  liveThoughtText: string;
-  thoughts: ActivityThoughtEntry[];
   sources: ActivitySourceEntry[];
   items: ActivityItem[];
 };
 
 export function emptyActivityState(): ActivityState {
   return {
-    currentEvent: null,
-    liveThoughtText: "",
-    thoughts: [],
     sources: [],
     items: [],
   };
@@ -134,12 +116,7 @@ export function buildActivityState({
   liveItems?: ActivityItem[];
 }): ActivityState {
   const mergedItems = mergeActivityTimeline(durableItems ?? [], liveItems ?? []);
-  const thoughts = buildThoughtEntries(mergedItems);
-  const liveThoughtText = thoughts.map((thought) => thought.detail).join("\n\n");
   return {
-    currentEvent: buildCurrentEvent(mergedItems, liveThoughtText),
-    liveThoughtText,
-    thoughts,
     sources: buildSourceEntries(mergedItems),
     items: mergedItems,
   };
@@ -158,81 +135,6 @@ export function mergeActivityTimeline(
     if (!existing || item.sequence > existing.sequence) merged.set(key,item);
   }
   return [...merged.values()].sort((left,right) => left.sequence-right.sequence);
-}
-
-export function buildCurrentEvent(items: ActivityItem[], liveThoughtText: string) {
-  let currentEvent: ActivityCurrentEvent | null = null;
-  let latestProcessingEvent: ActivityCurrentEvent | null = null;
-  let webfetchBurst = new Set<string>();
-  let webfetchBurstState: "fetching" | "fetched" = "fetched";
-
-  for (const item of items) {
-    if (!item.label.trim()) {
-      continue;
-    }
-    if (item.kind === "thinking") {
-      webfetchBurst = new Set();
-      webfetchBurstState = "fetched";
-      currentEvent = { id: item.id, label: item.label.trim() || "Thinking" };
-      continue;
-    }
-    if (item.kind === "progress") {
-      if (item.label === "Processing") {
-        latestProcessingEvent = { id: item.id, label: item.label.trim() };
-        continue;
-      }
-      webfetchBurst = new Set();
-      webfetchBurstState = "fetched";
-      currentEvent = { id: item.id, label: item.label.trim() };
-      continue;
-    }
-
-    const webfetchURL = extractWebfetchURL(item);
-    if (webfetchURL && item.toolName === "webfetch" && (item.toolStatus === "running" || item.toolStatus === "completed")) {
-      webfetchBurst.add(webfetchURL.toLowerCase());
-      webfetchBurstState = item.toolStatus === "running" ? "fetching" : "fetched";
-      currentEvent = {
-        id: item.id,
-        label: webfetchBurst.size > 1
-          ? webfetchBurstState === "fetching"
-            ? `Web fetching ${webfetchBurst.size} sources`
-            : `Fetched ${webfetchBurst.size} web sources`
-          : item.label.trim(),
-      };
-      continue;
-    }
-
-    webfetchBurst = new Set();
-    webfetchBurstState = "fetched";
-    currentEvent = { id: item.id, label: item.label.trim() };
-  }
-
-  if (!currentEvent && latestProcessingEvent) {
-    return latestProcessingEvent;
-  }
-  if (!currentEvent && liveThoughtText.trim()) {
-    return { id: "live-thinking", label: "Thinking" };
-  }
-  return currentEvent;
-}
-
-export function buildThoughtEntries(items: ActivityItem[]): ActivityThoughtEntry[] {
-  return items.reduce<ActivityThoughtEntry[]>((result, item) => {
-    if (item.kind !== "thinking") {
-      return result;
-    }
-    const detail = item.detail?.trim() ?? "";
-    if (!detail) {
-      return result;
-    }
-    result.push({
-      id: item.id,
-      label: item.label,
-      detail,
-      occurredAt: item.occurredAt,
-    });
-    return result;
-  }, []);
 }
 
 export function buildSourceEntries(items: ActivityItem[]): ActivitySourceEntry[] {
@@ -286,97 +188,4 @@ function readString(value: unknown): string | undefined {
   }
   const trimmed = value.trim();
   return trimmed === "" ? undefined : trimmed;
-}
-
-// --- Agent todo checklists -------------------------------------------------
-// Agents call the `todowrite` tool with the full updated checklist each time, so the
-// latest tool item carrying a `todos` array is the current state.
-
-export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
-
-export type TodoItem = {
-  content: string;
-  status: TodoStatus;
-  priority?: string;
-};
-
-export type TodoList = {
-  items: TodoItem[];
-  done: number;
-  total: number;
-};
-
-// parseTodoList decodes a todowrite tool_input into a checklist. It is defensive: the
-// schema is not pinned in-repo, so anything that isn't a {todos:[{content,status}]}
-// object yields null.
-export function parseTodoList(input?: string): TodoList | null {
-  if (!input) {
-    return null;
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(input);
-  } catch {
-    return null;
-  }
-  if (typeof parsed !== "object" || parsed === null) {
-    return null;
-  }
-  const rawTodos = (parsed as { todos?: unknown }).todos;
-  if (!Array.isArray(rawTodos)) {
-    return null;
-  }
-  const items: TodoItem[] = [];
-  for (const entry of rawTodos) {
-    if (typeof entry !== "object" || entry === null) {
-      continue;
-    }
-    const record = entry as Record<string, unknown>;
-    const content = typeof record.content === "string" ? record.content.trim() : "";
-    if (!content) {
-      continue;
-    }
-    items.push({
-      content,
-      status: normalizeTodoStatus(record.status),
-      priority: typeof record.priority === "string" ? record.priority : undefined,
-    });
-  }
-  if (items.length === 0) {
-    return null;
-  }
-  return {
-    items,
-    done: items.filter((item) => item.status === "completed").length,
-    total: items.length,
-  };
-}
-
-// selectLatestTodoList returns the current checklist: the most recent tool activity
-// whose input parses to a todo list, or null if the agent hasn't written one.
-export function selectLatestTodoList(items: ActivityItem[]): TodoList | null {
-  for (let index = items.length - 1; index >= 0; index -= 1) {
-    const item = items[index];
-    if (item.kind !== "tool") {
-      continue;
-    }
-    const todoList = parseTodoList(item.input);
-    if (todoList) {
-      return todoList;
-    }
-  }
-  return null;
-}
-
-function normalizeTodoStatus(value: unknown): TodoStatus {
-  switch (typeof value === "string" ? value.trim() : "") {
-    case "completed":
-      return "completed";
-    case "in_progress":
-      return "in_progress";
-    case "cancelled":
-      return "cancelled";
-    default:
-      return "pending";
-  }
 }

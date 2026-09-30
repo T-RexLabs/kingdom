@@ -1,12 +1,24 @@
-import { render } from "./planning-test-render";
+import { render as renderPlanner } from "./planning-test-render";
+import type { ReactElement } from "react";
+import { VirtuosoMockContext } from "react-virtuoso";
+import { mockActivityScrollGeometry } from "@/features/activity/activity-virtual-test-helpers";
 import {availableActivityContent} from "@/features/activity/activity-test-helpers";
 const apiActivityDefaults={event_id:"fixture-event",sequence:1,recorded_at:"2026-06-12T10:00:00Z",input:{availability:"not_provided"},output:{availability:"not_provided"},reasoning:{availability:"not_provided"},message:{availability:"not_provided"}};
-import { screen } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlannerMessageCard } from "./planner-message";
 
 const mockUseAcpRunActivity = vi.fn();
+function render(ui: ReactElement) {
+  return renderPlanner(
+    <VirtuosoMockContext.Provider
+      value={{ viewportHeight: 260, itemHeight: 52 }}
+    >
+      {ui}
+    </VirtuosoMockContext.Provider>,
+  );
+}
 
 vi.mock("@/api/hooks", async () => {
   const actual = await vi.importActual<typeof import("@/api/hooks")>("@/api/hooks");
@@ -17,19 +29,258 @@ vi.mock("@/api/hooks", async () => {
 });
 
 describe("PlannerMessageCard", () => {
+  let restoreGeometry: () => void;
   beforeEach(() => {
-    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
-      callback(0);
-      return 1;
-    });
-    vi.stubGlobal("cancelAnimationFrame", () => {});
+    restoreGeometry = mockActivityScrollGeometry();
     mockUseAcpRunActivity.mockReset();
     mockUseAcpRunActivity.mockReturnValue({ data: { items: [] } });
   });
 
   afterEach(() => {
+    restoreGeometry();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it("right aligns short user messages inside the full-width transcript row", () => {
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "user-1",
+          planning_session_id: "session-1",
+          role: "user",
+          content_markdown: "Hi",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+      />,
+    );
+    const row = screen.getByText("Hi").closest(".group")?.firstElementChild;
+    expect(row).toHaveClass("justify-end");
+  });
+
+  it("shows meaningful activity before the canonical reply without opening a provider inspector", async () => {
+    mockUseAcpRunActivity.mockReturnValue({
+      data: {
+        items: [
+          {
+            ...apiActivityDefaults,
+            id: "thought",
+            event_id: "thought-event",
+            sequence: 1,
+            kind: "thinking",
+            label: "Thinking",
+            reasoning: availableActivityContent(
+              "Compare the existing layout before editing.",
+            ),
+          },
+          {
+            ...apiActivityDefaults,
+            id: "read",
+            event_id: "read-event",
+            sequence: 2,
+            kind: "tool",
+            tool_name: "read",
+            label: "Read /project/app.tsx",
+            input: availableActivityContent('{"filePath":"/project/app.tsx"}'),
+          },
+        ],
+      },
+    });
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Canonical reply",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+        activityRunId="run-1"
+      />,
+    );
+    const thinking = await screen.findByText(
+      "Compare the existing layout before editing.",
+    );
+    const tool = await screen.findByText("Read app.tsx");
+    const reply = screen.getByText("Canonical reply");
+    expect(
+      thinking.compareDocumentPosition(reply) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      tool.compareDocumentPosition(reply) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps provider lifecycle observations out of the main streaming conversation", () => {
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+        isStreaming
+        liveActivityItems={[
+          {
+            id: "phase",
+            eventId: "phase-event",
+            sequence: 1,
+            kind: "progress",
+            label: "Provider Session Started",
+          },
+        ]}
+      />,
+    );
+    expect(
+      screen.queryByText("Provider Session Started"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("View Options")).toBeInTheDocument();
+  });
+
+  it("keeps routine events and provider message copies behind explicit inspection", async () => {
+    const user = userEvent.setup();
+    mockUseAcpRunActivity.mockReturnValue({
+      data: {
+        items: [
+          {
+            ...apiActivityDefaults,
+            id: "phase",
+            event_id: "phase-event",
+            sequence: 1,
+            kind: "progress",
+            label: "Provider Session Started",
+            detail: "raw provider lifecycle detail",
+          },
+          {
+            ...apiActivityDefaults,
+            id: "observed",
+            event_id: "observed-event",
+            sequence: 2,
+            kind: "message",
+            label: "Observed Provider Reply",
+            message: {
+              ...availableActivityContent("Provider observed reply"),
+              content_url: undefined,
+            },
+          },
+        ],
+      },
+    });
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          role: "assistant",
+          source_run_id: "run-1",
+          content_markdown: "Canonical reply",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+      />,
+    );
+    expect(mockUseAcpRunActivity).toHaveBeenCalledWith(
+      "run-1",
+      expect.objectContaining({ enabled: true }),
+    );
+    expect(
+      screen.queryByText("Provider Session Started"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Observed Provider Reply"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Provider observed reply"),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByText("View Options"));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Routine Progress" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Provider Session Started")).toBeVisible(),
+    );
+    expect(
+      screen.queryByText("raw provider lifecycle detail"),
+    ).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("checkbox", { name: "Provider Messages" }),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Observed Provider Reply")).toBeVisible(),
+    );
+    expect(
+      screen.queryByText("Provider observed reply"),
+    ).not.toBeInTheDocument();
+    await user.click(screen.getByText("Observed Provider Reply"));
+    expect(await screen.findByText("Provider observed reply")).toBeVisible();
+    expect(screen.getAllByText("Canonical reply")).toHaveLength(1);
+  });
+
+  it("keeps unloaded history actionable above the canonical reply", async () => {
+    const loadMore = vi.fn(async () => undefined);
+    mockUseAcpRunActivity.mockReturnValue({
+      data: { items: [] },
+      gaps: [
+        {
+          after: 0,
+          through: 80,
+          count: 80,
+          cursor: "earlier-scoped-history",
+          direction: "earlier",
+        },
+      ],
+      loadMore,
+    });
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Canonical reply",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+        activityRunId="run-1"
+      />,
+    );
+    const activity = screen.getByRole("region", { name: "Planner activity" });
+    await userEvent.click(
+      await within(activity).findByRole("button", { name: "Load Events" }),
+    );
+    expect(loadMore).toHaveBeenCalledWith("earlier-scoped-history");
+    expect(
+      activity.compareDocumentPosition(screen.getByText("Canonical reply")) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("keeps a saved reply visible when activity loading fails and exposes a scoped retry", async () => {
+    const refetch = vi.fn(async () => undefined);
+    mockUseAcpRunActivity.mockReturnValue({
+      data: { items: [] },
+      isError: true,
+      error: new Error("Activity unavailable"),
+      refetch,
+    });
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-1",
+          planning_session_id: "session-1",
+          role: "assistant",
+          content_markdown: "Canonical reply",
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+        activityRunId="run-1"
+      />,
+    );
+    expect(screen.getByText("Canonical reply")).toBeVisible();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Retry Activity" }),
+    );
+    expect(refetch).toHaveBeenCalledOnce();
   });
 
   it("lets a keyboard or assistive-technology user identify and edit their message", async () => {
@@ -42,7 +293,7 @@ describe("PlannerMessageCard", () => {
     expect(onEdit).toHaveBeenCalledTimes(1);
   });
 
-  it("renders durable thought text while streaming after reconnect", () => {
+  it("renders durable thought text while streaming after reconnect", async () => {
     mockUseAcpRunActivity.mockReturnValue({
       data: {
         items: [
@@ -73,13 +324,14 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(screen.getByText("Thinking")).toBeInTheDocument();
-    expect(screen.getByText("Recovered durable reasoning")).toBeInTheDocument();
+    expect(await screen.findByText("Thinking")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Recovered durable reasoning"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("Planner is thinking...")).not.toBeInTheDocument();
   });
 
-  it("keeps thoughts collapsed and renders a few sources inline as host links", async () => {
-    const user = userEvent.setup();
+  it("shows a reasoning preview once and renders a few sources inline as host links", async () => {
     mockUseAcpRunActivity.mockReturnValue({
       data: {
         items: [
@@ -104,11 +356,15 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    // Thoughts stays a collapsible disclosure.
-    expect(screen.getByRole("button", { name: /Thoughts/ })).toBeInTheDocument();
-    expect(screen.queryByText("Determine the best next action")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: /Thoughts/ }));
-    expect(screen.getByText("Determine the best next action")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Determine the best next action"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Determine the best next action")).toHaveLength(
+      1,
+    );
+    expect(
+      screen.queryByRole("button", { name: /Thoughts/ }),
+    ).not.toBeInTheDocument();
 
     // A few sources show inline (no toggle), as clickable host links; only
     // webfetches become sources — read/grep/etc. tools do not.
@@ -154,7 +410,7 @@ describe("PlannerMessageCard", () => {
     expect(screen.getByRole("link", { name: /site0\.example\.com/ })).toHaveAttribute("href", "https://site0.example.com");
   });
 
-  it("renders cumulative streaming thoughts instead of replacing earlier reasoning", () => {
+  it("preserves separate observed thinking records during streaming", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -173,8 +429,12 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(screen.getByText(/First reasoning step/)).toBeInTheDocument();
-    expect(screen.getByText(/The provider emitted a reasoning step here, but only encrypted reasoning metadata is available\./)).toBeInTheDocument();
+    expect(await screen.findByText(/First reasoning step/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        /The provider emitted a reasoning step here, but only encrypted reasoning metadata is available\./,
+      ),
+    ).toBeInTheDocument();
   });
 
   it("places the sources below the question and its selectables", () => {
@@ -215,7 +475,7 @@ describe("PlannerMessageCard", () => {
     expect(question.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("renders specific live activity rows instead of collapsing everything to Processing", () => {
+  it("shows meaningful live tool records and keeps routine progress optional", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -235,12 +495,14 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(screen.getByText("Fetching https://example.com")).toBeInTheDocument();
+    expect(await screen.findByText("Read Page")).toBeInTheDocument();
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
-    expect(screen.queryByText("Searching ACP activity handlers")).not.toBeInTheDocument();
+    expect(
+      await screen.findByText("Searching ACP activity handlers"),
+    ).toBeInTheDocument();
   });
 
-  it("compacts webfetch bursts into one current event line", () => {
+  it("retains each real webfetch record without fabricating an aggregate event", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -261,7 +523,10 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(screen.getByText("Fetched 3 web sources")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getAllByText("Read Page")).toHaveLength(3),
+    );
+    expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
   });
 });

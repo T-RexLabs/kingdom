@@ -1,13 +1,12 @@
-import { useState } from "react";
 import type { PlanningMessage } from "@/api/hooks";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { formatTimestamp } from "@/lib/utils";
 import { RefreshCw, User } from "lucide-react";
-import { ActivityHistory } from "@/features/activity/activity-history";
-import { ActivityLiveStream, ActivitySources, ActivityThoughts } from "@/features/activity/activity-stream";
+import { ActivitySources } from "@/features/activity/activity-sources";
 import type { ActivityItem } from "@/features/activity/activity-view";
 import { PlannerEditAction } from "./planner-message-actions";
-import { usePlannerMessageActivity } from "./planner-message-activity";
+import { PlannerMessageActivity } from "./planner-message-activity";
+import { usePlannerMessageActivity } from "./use-planner-message-activity";
 import { PlannerMessageEditor } from "./planner-message-editor";
 import { PlannerVariantNavigator } from "./planner-variant-navigator";
 import { useTextReveal } from "@/lib/use-text-reveal";
@@ -54,7 +53,6 @@ export function PlannerMessageCard({
   activityRunId?: string;
   liveActivityItems?: ActivityItem[];
 }) {
-  const [historyOpen, setHistoryOpen] = useState(false);
   const isAssistant = message.role === "assistant";
   const renderedContent = contentMarkdown ?? message.content_markdown;
   const isAssistantStreaming = isAssistant && (isStreaming ?? false);
@@ -62,26 +60,44 @@ export function PlannerMessageCard({
   // and ref machinery still cost cycles on every render. Pass an empty string
   // when we know the hook will never animate so the no-op path stays cheap;
   // user messages then render their content_markdown verbatim.
-  const reveal = useTextReveal(isAssistant ? renderedContent : "", isAssistantStreaming);
+  const reveal = useTextReveal(
+    isAssistant ? renderedContent : "",
+    isAssistantStreaming,
+  );
   const displayText = isAssistant ? reveal.displayText : renderedContent;
   const isStreamActive = isAssistant ? reveal.isStreamActive : false;
+  const resolvedActivityRunId = activityRunId ?? message.source_run_id;
   const messageActivity = usePlannerMessageActivity({
-    activityRunId,
+    activityRunId: resolvedActivityRunId,
     isAssistant,
     isStreaming: isAssistantStreaming,
     liveActivityItems,
   });
 
-  const hasVariants = isAssistant && variantCount != null && variantCount > 1 && currentVariantIndex != null && sessionId && onActivateVariant;
-  const showRegenerate = isAssistant && !isFirstAssistant && !(isProcessing ?? false) && onRegenerate;
-  const showThoughts = isAssistant && !isAssistantStreaming;
+  const hasVariants =
+    isAssistant &&
+    variantCount != null &&
+    variantCount > 1 &&
+    currentVariantIndex != null &&
+    sessionId &&
+    onActivateVariant;
+  const showRegenerate =
+    isAssistant &&
+    !isFirstAssistant &&
+    !(isProcessing ?? false) &&
+    onRegenerate;
   const showSources = isAssistant && !isAssistantStreaming;
 
   return (
-    <div className={`group flex min-w-0 ${isAssistant ? "justify-start" : "justify-end"}`}>
-      <div className={`flex w-full max-w-3xl gap-2.5 ${!isAssistant && isEditing ? "w-full" : ""}`}>
-
-        <div className={`min-w-0 space-y-1.5 ${isAssistant ? "" : "text-right"} ${!isAssistant && isEditing ? "flex-1" : ""}`}>
+    <div
+      className={`group flex min-w-0 ${isAssistant ? "justify-start" : "justify-end"}`}
+    >
+      <div
+        className={`flex w-full max-w-3xl gap-2.5 ${isAssistant ? "" : "justify-end"}`}
+      >
+        <div
+          className={`min-w-0 space-y-1.5 ${isAssistant ? "flex-1" : "text-right"} ${!isAssistant && isEditing ? "flex-1" : ""}`}
+        >
           <div
             className={`overflow-hidden rounded-2xl px-4 py-3 text-sm text-left space-y-3 ${
               isAssistant
@@ -99,25 +115,38 @@ export function PlannerMessageCard({
               />
             ) : (
               <>
-                <ActivityLiveStream state={messageActivity} isStreaming={isAssistantStreaming} />
-                {showThoughts ? <ActivityThoughts thoughts={messageActivity.thoughts} /> : null}
+                {isAssistant && (
+                  <PlannerMessageActivity
+                    key={resolvedActivityRunId ?? message.planning_message_id}
+                    scopeKey={
+                      resolvedActivityRunId ?? message.planning_message_id
+                    }
+                    activity={messageActivity}
+                  />
+                )}
                 {displayText.trim() ? (
                   isStreamActive ? (
                     <div data-streaming>
-                      <p className="text-sm leading-relaxed whitespace-pre-wrap text-wrap-anywhere">{displayText}</p>
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap text-wrap-anywhere">
+                        {displayText}
+                      </p>
                     </div>
                   ) : (
-                      <MarkdownBlock content={renderedContent} className="text-sm leading-relaxed" />
-                    )
-                  ) : null}
+                    <MarkdownBlock
+                      content={renderedContent}
+                      className="text-sm leading-relaxed"
+                    />
+                  )
+                ) : null}
                 {children}
-                {showSources ? <ActivitySources sources={messageActivity.sources} /> : null}
-                {isAssistant && (messageActivity.items.length > 0 || messageActivity.gaps.length > 0) ? <details className="border-t border-border/60 pt-2" onToggle={(event) => setHistoryOpen(event.currentTarget.open)}><summary className="cursor-pointer py-2 text-xs text-foreground-muted">Provider Activity</summary>{historyOpen && <ActivityHistory messageDisplay="inspection" scopeKey={activityRunId ?? message.planning_message_id} items={messageActivity.items} gaps={messageActivity.gaps} isLoadingMore={messageActivity.isLoadingMore} loadError={messageActivity.loadError} loadMore={messageActivity.loadMore} />}</details> : null}
+                {showSources ? (
+                  <ActivitySources sources={messageActivity.sources} />
+                ) : null}
               </>
             )}
           </div>
           {isAssistant ? (
-            (hasVariants || showRegenerate) ? (
+            hasVariants || showRegenerate ? (
               <div className="flex items-center gap-1.5 opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100">
                 {hasVariants ? (
                   <PlannerVariantNavigator
@@ -140,9 +169,9 @@ export function PlannerMessageCard({
                 ) : null}
               </div>
             ) : null
-          ) : (
-            !isProcessing && onEdit ? <PlannerEditAction onEdit={onEdit} /> : null
-          )}
+          ) : !isProcessing && onEdit ? (
+            <PlannerEditAction onEdit={onEdit} />
+          ) : null}
           <span className="block text-[10px] text-foreground-subtle/0 transition-colors group-hover:text-foreground-subtle/70">
             {formatTimestamp(message.created_at)}
           </span>
@@ -156,4 +185,3 @@ export function PlannerMessageCard({
     </div>
   );
 }
-

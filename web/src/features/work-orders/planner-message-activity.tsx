@@ -1,39 +1,91 @@
-import type { ActivityHistoryControls } from "@/features/activity/activity-history";
-import { useMemo } from "react";
-import { useAcpRunActivity } from "@/api/hooks";
-import {
-  activityItemFromApi,
-  buildActivityState,
-  emptyActivityState,
-  type ActivityItem,
-  type ActivityState,
-} from "@/features/activity/activity-view";
+import { ActivityHistory } from "@/features/activity/activity-history";
+import { useMemo, useState } from "react";
+import type { PlannerMessageActivityState } from "./use-planner-message-activity";
 
-export type { ActivityState as PlannerMessageActivityState } from "@/features/activity/activity-view";
-
-export function usePlannerMessageActivity({
-  activityRunId,
-  isAssistant,
-  isStreaming,
-  liveActivityItems,
+/** The persisted message tree owns the reply; provider messages are optional inspection. */
+export function PlannerMessageActivity({
+  scopeKey,
+  activity,
 }: {
-  activityRunId?: string;
-  isAssistant: boolean;
-  isStreaming: boolean;
-  liveActivityItems?: ActivityItem[];
-}): ActivityState & ActivityHistoryControls {
-  const activityQuery = useAcpRunActivity(activityRunId, {
-    enabled: isAssistant && Boolean(activityRunId),
-    refetchIntervalMs: isStreaming ? 1_500 : false,
-  });
+  scopeKey: string;
+  activity: PlannerMessageActivityState;
+}) {
+  const [showProgress, setShowProgress] = useState(false);
+  const [showMessages, setShowMessages] = useState(false);
+  const visibleItems = useMemo(
+    () =>
+      activity.items.filter(
+        (item) =>
+          item.kind === "thinking" ||
+          item.kind === "tool" ||
+          (item.kind === "progress" && showProgress) ||
+          (item.kind === "message" && showMessages),
+      ),
+    [activity.items, showProgress, showMessages],
+  );
+  const hasHistory = activity.items.length > 0 || activity.gaps.length > 0;
+  if (!hasHistory && !activity.isLoading && !activity.error) return null;
 
-  return useMemo(() => {
-    if (!isAssistant) {
-      return { ...emptyActivityState(), gaps: [], isLoadingMore: false, loadError: null, loadMore: async () => {} };
-    }
-    return { ...buildActivityState({
-      durableItems: (activityQuery.data?.items ?? []).map(activityItemFromApi),
-      liveItems: liveActivityItems,
-    }), gaps: activityQuery.gaps ?? [], isLoadingMore: activityQuery.isLoadingMore ?? false, loadError: activityQuery.loadError ?? null, loadMore: activityQuery.loadMore ?? (async () => {}) };
-  }, [activityQuery.data?.items, activityQuery.gaps, activityQuery.isLoadingMore, activityQuery.loadError, activityQuery.loadMore, isAssistant, liveActivityItems]);
+  return (
+    <section aria-label="Planner activity" className="space-y-2">
+      {activity.isLoading && (
+        <p className="text-xs text-foreground-muted">Loading activity…</p>
+      )}
+      {activity.error && (
+        <p role="alert" className="text-xs text-status-failed">
+          Activity could not be loaded.{" "}
+          <button
+            type="button"
+            className="min-h-9 underline"
+            onClick={() => void activity.retry()}
+          >
+            Retry Activity
+          </button>
+        </p>
+      )}
+      {hasHistory && (
+        <ActivityHistory
+          scopeKey={scopeKey}
+          messageDisplay="inspection"
+          items={visibleItems}
+          gaps={activity.gaps}
+          isLoadingMore={activity.isLoadingMore}
+          loadError={activity.loadError}
+          loadMore={activity.loadMore}
+          headerActions={
+            <details className="max-w-lg text-xs text-foreground-muted">
+              <summary className="min-h-9 cursor-pointer py-2">
+                View Options
+              </summary>
+              <div className="space-y-2 rounded-lg border border-border bg-surface p-3">
+                <p>
+                  {visibleItems.length} Shown · {activity.items.length} Loaded
+                </p>
+                <label className="flex min-h-9 items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={showProgress}
+                    onChange={(event) => setShowProgress(event.target.checked)}
+                  />
+                  Routine Progress
+                </label>
+                <label className="flex min-h-9 items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={showMessages}
+                    onChange={(event) => setShowMessages(event.target.checked)}
+                  />
+                  Provider Messages
+                </label>
+                <p>
+                  Provider observations are available for inspection. The reply
+                  below comes from the saved conversation.
+                </p>
+              </div>
+            </details>
+          }
+        />
+      )}
+    </section>
+  );
 }
