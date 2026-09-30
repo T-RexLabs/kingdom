@@ -21,7 +21,7 @@ func TestPublicationEntryRevisionTracksAtomicScopedRetries(t *testing.T) {
 		return value
 	}
 	record := func(status string) error {
-		return loop.recordPublicationEntry(context.Background(), "revision-batch", "run_1", "audit-attempt", "output.txt", artifacts[0], status, "reason", "explanation", "blob", "expected", "observed", "2026-03-01T12:00:00Z")
+		return loop.recordPublicationEntry(context.Background(), "revision-batch", "run_1", "audit-attempt", "output.txt", artifacts[0], status, "reason", "explanation", "blob", publicationFileState{SHA256: "expected", ModeBits: artifacts[0].ModeBits}, publicationFileState{SHA256: "observed", ModeBits: artifacts[0].ModeBits}, "2026-03-01T12:00:00Z")
 	}
 	if revision("revision-batch") != 0 {
 		t.Fatal("nonzero initial revision")
