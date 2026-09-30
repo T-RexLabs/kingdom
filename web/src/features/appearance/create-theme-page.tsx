@@ -14,6 +14,7 @@ import { ApiError } from "@/api/client";
 import { WorkspacePage } from "@/components/workspace-page";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/modal";
+import { SelectField } from "@/components/ui/select-field";
 import {
   builtInThemes,
   defaultTheme,
@@ -489,32 +490,22 @@ export function CreateThemePage() {
           <div className="min-w-0">
             {!draft.sourceID && (
               <div className="mb-6">
-                <Field
+                <SelectField
+                  id="theme-starting-theme"
                   label="Start With"
-                  help="Choosing a starting theme creates a fresh draft. Unsaved edits are kept until you confirm replacing them."
-                >
-                  <select
-                    className="appearance-input"
                     disabled={locked}
                     value={stringAt(manifest, "base", "id")}
-                    onChange={(event) => {
-                      if (event.target.value)
+                    onChange={(next) => {
+                      if (next)
                         void navigate({
                           to: "/appearance/create",
-                          search: { base: event.target.value },
+                          search: { base: next },
                         });
                     }}
-                  >
-                    <option value="" disabled>
-                      Choose a Starting Theme
-                    </option>
-                    {builtInThemes.map((theme) => (
-                      <option key={theme.id} value={theme.id}>
-                        {theme.name}
-                      </option>
-                    ))}
-                  </select>
-                </Field>
+                  placeholder="Choose a starting theme"
+                  options={builtInThemes.map((theme) => ({ value: theme.id, label: theme.name }))}
+                />
+                <p className="appearance-help mt-2">Choosing a starting theme creates a fresh draft. Unsaved edits are kept until you confirm replacing them.</p>
               </div>
             )}
             <fieldset disabled={locked} className="grid gap-4 sm:grid-cols-2">

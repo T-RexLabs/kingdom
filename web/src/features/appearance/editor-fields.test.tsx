@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { EditorColors, EditorIdentity } from "./editor-fields";
 import { newDraft, parseDraft } from "./draft-store";
 
@@ -24,10 +25,30 @@ it("lets users clear inherited text before typing a replacement without changing
   expect(name).toHaveValue("");
   fireEvent.change(name, { target: { value: "My Builder" } });
   expect(name).toHaveValue("My Builder");
-  expect(screen.getByLabelText("Responsibility")).toHaveValue("builder");
+  expect(screen.getByRole("button", { name: "Responsibility" })).toHaveAccessibleDescription("Builder");
   expect(
     screen.getByText(/generated replies stay the same/),
   ).toBeInTheDocument();
+});
+
+it("keeps canonical font, numeric, and surface values when choosing through shared controls", async () => {
+  const user = userEvent.setup();
+  function Editor() {
+    const initial = parseDraft(newDraft().source)!;
+    initial.assets = { local: { path: "assets/local.woff2", mediaType: "font/woff2" } };
+    const [manifest, change] = useState(initial);
+    return <><EditorColors manifest={manifest} disabled={false} change={change} /><output data-testid="draft">{JSON.stringify(manifest)}</output></>;
+  }
+  render(<Editor />);
+  await user.click(screen.getByRole("button", { name: "Body Font" }));
+  await user.click(screen.getByRole("option", { name: "local (Local Font)" }));
+  await user.click(screen.getByRole("button", { name: "Heading Weight" }));
+  await user.click(screen.getByRole("option", { name: "600" }));
+  await user.click(screen.getByRole("button", { name: "Border Width" }));
+  await user.click(screen.getByRole("option", { name: "2 Pixels" }));
+  await user.click(screen.getByRole("button", { name: "Native Control Scheme" }));
+  await user.click(screen.getByRole("option", { name: "Light" }));
+  expect(JSON.parse(screen.getByTestId("draft").textContent!)).toMatchObject({ typography: { body: "asset:local", headingWeight: 600 }, surfaces: { borderWidth: 2 }, colorScheme: "light" });
 });
 
 it("edits and resets a semantic color without dropping other customizations", () => {

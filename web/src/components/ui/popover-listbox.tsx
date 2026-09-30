@@ -112,7 +112,10 @@ export function PopoverListbox({
     setActiveIndex(nextActiveIndex);
   }, []);
   const clearActiveIndex = useCallback(() => setActiveItemIndex(null), [setActiveItemIndex]);
-  const { open, handleOpenChange: setOpen } = usePopoverOpenState(onOpenChange, clearActiveIndex);
+  const { open, setOpen: resetOpen, handleOpenChange: setOpen } = usePopoverOpenState(onOpenChange, clearActiveIndex);
+  // Reset during render so a disabled owner cannot commit an interactive
+  // portalled menu or reopen it implicitly when the lock is released.
+  if (triggerDisabled && open) resetOpen(false);
   const handleOpenChange = useCallback((nextOpen: boolean) => {
     if (nextOpen && triggerRole === "button") {
       setActiveItemIndex(resolveInitialActiveIndex(items, selectedId));
@@ -153,11 +156,11 @@ export function PopoverListbox({
 
   const handleSelect = useCallback(
     (item: PopoverListboxItem) => {
-      if (item.disabled) return;
+      if (item.disabled || triggerDisabled) return;
       onSelect(item.value ?? item.id);
 	      handleOpenChange(false);
     },
-	    [handleOpenChange, onSelect],
+	    [handleOpenChange, onSelect, triggerDisabled],
   );
 
   const handleKeyboardSelect = useCallback(() => {

@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { ApiError, setCSRFToken } from "@/api/client";
 import { ThemeContext, type ThemeContextValue } from "@/theme/context";
 import { defaultTheme } from "@/theme";
@@ -92,11 +93,17 @@ it("loads revision authoring intent into an unsaved copy instead of editing the 
   expect(themeAPI.source).toHaveBeenCalledWith("shared-theme", "b".repeat(64), expect.any(AbortSignal));
 });
 
-it("exposes canonical starting themes and preserves font product spellings", () => {
+it("exposes canonical starting themes and preserves font product spellings", async () => {
+  const user = userEvent.setup();
   setup();
-  expect(screen.getByLabelText(/Start With/)).toHaveValue(defaultTheme.id);
-  expect(screen.getAllByRole("option", { name: "DM Sans" })).toHaveLength(3);
-  expect(screen.getAllByRole("option", { name: "JetBrains Mono" })).toHaveLength(3);
-  fireEvent.change(screen.getByLabelText(/Start With/), { target: { value: "nautilus" } });
+  expect(screen.getByRole("button", { name: "Start With" })).toHaveAccessibleDescription(defaultTheme.name);
+  for (const slot of ["Body Font", "Display Font", "Mono Font"]) {
+    await user.click(screen.getByRole("button", { name: slot }));
+    expect(screen.getByRole("option", { name: "DM Sans" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "JetBrains Mono" })).toBeInTheDocument();
+    await user.keyboard("{Escape}");
+  }
+  await user.click(screen.getByRole("button", { name: "Start With" }));
+  await user.click(screen.getByRole("option", { name: "Nautilus" }));
   expect(router.navigate).toHaveBeenCalledWith({ to: "/appearance/create", search: { base: "nautilus" } });
 });

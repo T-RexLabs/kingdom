@@ -13,6 +13,7 @@ import {
 import { WorkspacePage } from "@/components/workspace-page";
 import { Button } from "@/components/ui/button";
 import { ConfirmDialog } from "@/components/ui/modal";
+import { SelectField } from "@/components/ui/select-field";
 import {
   builtInThemes,
   useTheme,
@@ -391,23 +392,16 @@ function InstalledTheme({
           {item.description}
         </p>
         {items.length > 1 && (
-          <label className="mt-3 block text-xs text-foreground-muted">
-            Revision
-            <select
-              className="appearance-input mt-1"
+          <SelectField
+              id={`theme-revision-${item.id}`}
+              label="Revision"
+              ariaLabel={`${item.name} Revision`}
+              className="mt-3"
+              labelClassName="text-xs text-foreground-muted"
               value={item.resolvedDigest}
-              onChange={(event) => setDigest(event.target.value)}
-            >
-              {items.map((revision) => (
-                <option
-                  key={revision.resolvedDigest}
-                  value={revision.resolvedDigest}
-                >
-                  {revision.version} · {revision.resolvedDigest.slice(0, 8)}
-                </option>
-              ))}
-            </select>
-          </label>
+              onChange={setDigest}
+              options={items.map((revision) => ({ value: revision.resolvedDigest, label: `${revision.version} · ${revision.resolvedDigest.slice(0, 8)}` }))}
+          />
         )}
         <div className="mt-5 flex flex-wrap items-center gap-2">
           <Button

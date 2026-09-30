@@ -799,10 +799,8 @@ describe("AnalyticsPage", () => {
 
     await screen.findByText("Windowed work order (24h)");
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Time Window" }),
-      "30",
-    );
+    await user.click(screen.getByRole("button", { name: "Time Window" }));
+    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
 
@@ -874,10 +872,8 @@ describe("AnalyticsPage", () => {
       { window_minutes: 30 },
     );
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Time Window" }),
-      "30",
-    );
+    await user.click(screen.getByRole("button", { name: "Time Window" }));
+    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
 
     expect(screen.getByText("Windowed work order (24h)")).toBeInTheDocument();
     expect(
@@ -922,10 +918,8 @@ describe("AnalyticsPage", () => {
     expect(screen.getByText("17")).toBeInTheDocument();
 
     apiFetchMock.mockClear();
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Time Window" }),
-      "30",
-    );
+    await user.click(screen.getByRole("button", { name: "Time Window" }));
+    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
     expect(screen.getByText("17")).toBeInTheDocument();
@@ -1016,10 +1010,8 @@ describe("AnalyticsPage", () => {
       { window_minutes: 30 },
     );
 
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Time Window" }),
-      "30",
-    );
+    await user.click(screen.getByRole("button", { name: "Time Window" }));
+    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
 
     expect(chartRenderSpies.horizontal).not.toHaveBeenCalled();
     expect(chartRenderSpies.stacked).not.toHaveBeenCalled();
@@ -1253,10 +1245,8 @@ describe("AnalyticsPage", () => {
     });
 
     apiFetchMock.mockClear();
-    await user.selectOptions(
-      screen.getByRole("combobox", { name: "Time Window" }),
-      "30",
-    );
+    await user.click(screen.getByRole("button", { name: "Time Window" }));
+    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
     expect(screen.getAllByText("260").length).toBeGreaterThan(0);

@@ -2,6 +2,7 @@ import { useId, useState } from "react";
 import { Modal } from "./modal-shell";
 import { Button } from "./button";
 import { cn } from "@/lib/utils";
+import { SelectField } from "./select-field";
 
 const PRESETS = [
   [30, "Last 30 Minutes"],
@@ -29,34 +30,27 @@ export function TimeRangePicker({
   const preset = PRESETS.some(([minutes]) => minutes === value);
   return (
     <div className={cn("space-y-2", className)}>
-      <label htmlFor={id} className="block text-xs text-foreground-muted">
-        Time Window
-      </label>
-      <select
+      <SelectField
         id={id}
-        value={preset ? String(value) : "selected-custom"}
-        onChange={(event) =>
-          event.target.value === "custom"
+        label="Time Window"
+        labelClassName="text-xs text-foreground-muted"
+        className="min-w-44"
+        value={String(value)}
+        onChange={(next) =>
+          next === "custom"
             ? setCustom(true)
-            : onChange(Number(event.target.value))
+            : onChange(Number(next))
         }
-        className="min-h-10 w-full min-w-44 rounded-md border border-border bg-surface px-3 text-sm"
-      >
-        {PRESETS.map(([minutes, label]) => (
-          <option key={minutes} value={minutes}>
-            {label}
-          </option>
-        ))}
-        {!preset && (
-          <option value="selected-custom">
-            Last {value.toLocaleString()} Minutes
-          </option>
-        )}
-        <option value="custom">Custom Window…</option>
-      </select>
+        options={[
+          ...PRESETS.map(([minutes, label]) => ({ value: String(minutes), label })),
+          ...(!preset ? [{ value: String(value), label: `Last ${value.toLocaleString()} Minutes` }] : []),
+          { value: "custom", label: "Custom Window…" },
+        ]}
+      />
       <Modal
         open={custom}
         onClose={() => setCustom(false)}
+        getFinalFocus={() => document.getElementById(id)}
         title="Custom Time Window"
         size="sm"
       >

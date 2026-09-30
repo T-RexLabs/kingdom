@@ -9,7 +9,8 @@ import { Modal, ModalFooter } from "@/components/ui/modal-shell";
 import { PopoverListbox } from "@/components/ui/popover-listbox";
 import { SelectField } from "@/components/ui/select-field";
 import { ToggleRow } from "@/components/ui/toggle-row";
-import { fieldClass, fieldLabelClass } from "@/components/ui/field-styles";
+import { fieldClass, fieldLabelClass, selectTriggerClass } from "@/components/ui/field-styles";
+import { SelectTriggerContent } from "@/components/ui/select-trigger";
 import { cn } from "@/lib/utils";
 import { ExternalLink, Github, Link2, Loader2, Search } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -334,8 +335,8 @@ export function IssuePicker({
                     triggerRole="combobox"
                     triggerAriaLabel="GitHub repository"
                     triggerDisabled={!connectionId}
-                    triggerClassName={cn(fieldClass, "truncate text-left", !connectionId && "cursor-not-allowed opacity-50", !repositoryId && "text-foreground-subtle")}
-                    triggerContent={repositories.find((item) => item.id === repositoryId)?.locator ?? "Select repository"}
+                    triggerClassName={cn(selectTriggerClass, !repositoryId && "text-foreground-subtle")}
+                    triggerContent={<SelectTriggerContent>{repositories.find((item) => item.id === repositoryId)?.locator ?? "Select repository"}</SelectTriggerContent>}
                     items={repositories.map((item) => ({ id: item.id, label: item.locator }))}
                     selectedId={repositoryId || null}
                     onSelect={setRepositoryId}

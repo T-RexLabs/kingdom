@@ -597,7 +597,7 @@ describe("IssuePicker", () => {
     // The shell commits to a definite height rather than shrink-wrapping, so
     // mounting the repository field, the issue list, the preview pane and the
     // comment preview cannot resize or re-centre the dialog.
-    const panel = screen.getByTestId("issue-picker-layout").closest("div[class*='rounded-2xl']");
+    const panel = screen.getByTestId("issue-picker-layout").closest(".theme-overlay");
     expect(panel?.className).toContain("h-[min(85vh,44rem)]");
     expect(panel?.className).not.toContain("max-h-[85vh]");
 

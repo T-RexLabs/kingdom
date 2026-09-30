@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { SelectField } from "@/components/ui/select-field";
 import { AdvancedColors } from "./advanced-colors";
 import {
   builtInThemes,
@@ -130,85 +131,60 @@ export function EditorColors({
         <h3>Typography</h3>
         <div className="grid gap-4 sm:grid-cols-2">
           {(["body", "display", "mono"] as const).map((slot) => (
-            <Field
+            <SelectField
               key={slot}
+              id={`theme-${slot}-font`}
               label={`${slot[0].toUpperCase() + slot.slice(1)} Font`}
-            >
-              <select
-                className="appearance-input"
+              disabled={disabled}
                 value={
                   optionalStringAt(manifest, "typography", slot) ??
                   view.typography[slot]
                 }
-                onChange={(event) =>
-                  update(["typography", slot], event.target.value)
+                onChange={(next) =>
+                  update(["typography", slot], next)
                 }
-              >
-                {fontReferences.map((font) => (
-                  <option key={font} value={font}>
-                    {fontLabels[font] ??
+              options={[
+                ...fontReferences.map((font) => ({ value: font, label: fontLabels[font] ??
                       font
                         .slice(8)
                         .replaceAll("-", " ")
-                        .replace(/\b\w/g, (char) => char.toUpperCase())}
-                  </option>
-                ))}
-                {Object.entries(objectValue(manifest.assets))
+                        .replace(/\b\w/g, (char) => char.toUpperCase()) })),
+                ...Object.entries(objectValue(manifest.assets))
                   .filter(
                     ([, asset]) =>
                       objectValue(asset).mediaType === "font/woff2",
                   )
-                  .map(([id]) => (
-                    <option key={id} value={`asset:${id}`}>
-                      {id} (Local Font)
-                    </option>
-                  ))}
-              </select>
-            </Field>
+                  .map(([id]) => ({ value: `asset:${id}`, label: `${id} (Local Font)` })),
+              ]}
+            />
           ))}
-          <Field label="Heading Weight">
-            <select
-              className="appearance-input"
-              value={numberAt(
+          <SelectField id="theme-heading-weight" label="Heading Weight" disabled={disabled}
+              value={String(numberAt(
                 manifest,
                 "typography",
                 "headingWeight",
                 view.typography.headingWeight,
-              )}
-              onChange={(event) =>
+              ))}
+              onChange={(next) =>
                 update(
                   ["typography", "headingWeight"],
-                  Number(event.target.value),
+                  Number(next),
                 )
               }
-            >
-              {[400, 500, 600, 700].map((weight) => (
-                <option key={weight} value={weight}>
-                  {weight}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Body Weight">
-            <select
-              className="appearance-input"
-              value={numberAt(
+              options={[400, 500, 600, 700].map((weight) => ({ value: String(weight), label: String(weight) }))}
+          />
+          <SelectField id="theme-body-weight" label="Body Weight" disabled={disabled}
+              value={String(numberAt(
                 manifest,
                 "typography",
                 "bodyWeight",
                 view.typography.bodyWeight,
-              )}
-              onChange={(event) =>
-                update(["typography", "bodyWeight"], Number(event.target.value))
-              }
-            >
-              {[400, 500].map((weight) => (
-                <option key={weight} value={weight}>
-                  {weight}
-                </option>
               ))}
-            </select>
-          </Field>
+              onChange={(next) =>
+                update(["typography", "bodyWeight"], Number(next))
+              }
+              options={[400, 500].map((weight) => ({ value: String(weight), label: String(weight) }))}
+          />
         </div>
       </section>
       <section className="appearance-form-section">
@@ -231,65 +207,45 @@ export function EditorColors({
               }
             />
           </Field>
-          <Field label="Border Width">
-            <select
-              className="appearance-input"
-              value={numberAt(
+          <SelectField id="theme-border-width" label="Border Width" disabled={disabled}
+              value={String(numberAt(
                 manifest,
                 "surfaces",
                 "borderWidth",
                 view.surfaces.borderWidth,
-              )}
-              onChange={(event) =>
-                update(["surfaces", "borderWidth"], Number(event.target.value))
+              ))}
+              onChange={(next) =>
+                update(["surfaces", "borderWidth"], Number(next))
               }
-            >
-              <option value={1}>1 Pixel</option>
-              <option value={2}>2 Pixels</option>
-            </select>
-          </Field>
-          <Field label="Elevation">
-            <select
-              className="appearance-input"
+              options={[{ value: "1", label: "1 Pixel" }, { value: "2", label: "2 Pixels" }]}
+          />
+          <SelectField id="theme-elevation" label="Elevation" disabled={disabled}
               value={
                 optionalStringAt(manifest, "surfaces", "elevation") ??
                 view.surfaces.elevation
               }
-              onChange={(event) =>
-                update(["surfaces", "elevation"], event.target.value)
+              onChange={(next) =>
+                update(["surfaces", "elevation"], next)
               }
-            >
-              <option value="flat">Flat</option>
-              <option value="soft">Soft</option>
-            </select>
-          </Field>
-          <Field label="Ornamentation">
-            <select
-              className="appearance-input"
+              options={[{ value: "flat", label: "Flat" }, { value: "soft", label: "Soft" }]}
+          />
+          <SelectField id="theme-ornamentation" label="Ornamentation" disabled={disabled}
               value={
                 optionalStringAt(manifest, "surfaces", "ornamentation") ??
                 view.surfaces.ornamentation
               }
-              onChange={(event) =>
-                update(["surfaces", "ornamentation"], event.target.value)
+              onChange={(next) =>
+                update(["surfaces", "ornamentation"], next)
               }
-            >
-              <option value="minimal">Minimal</option>
-              <option value="balanced">Balanced</option>
-            </select>
-          </Field>
-          <Field label="Native Control Scheme">
-            <select
-              className="appearance-input"
+              options={[{ value: "minimal", label: "Minimal" }, { value: "balanced", label: "Balanced" }]}
+          />
+          <SelectField id="theme-color-scheme" label="Native Control Scheme" disabled={disabled}
               value={
                 optionalStringAt(manifest, "colorScheme") ?? view.colorScheme
               }
-              onChange={(event) => update(["colorScheme"], event.target.value)}
-            >
-              <option value="dark">Dark</option>
-              <option value="light">Light</option>
-            </select>
-          </Field>
+              onChange={(next) => update(["colorScheme"], next)}
+              options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]}
+          />
         </div>
       </section>
     </fieldset>
@@ -323,19 +279,11 @@ export function EditorIdentity({
   );
   return (
     <fieldset disabled={disabled} className="space-y-4">
-      <Field label="Responsibility">
-        <select
-          className="appearance-input"
+      <SelectField id="theme-responsibility" label="Responsibility" disabled={disabled}
           value={role}
-          onChange={(event) => setRole(event.target.value as RoleID)}
-        >
-          {roles.map((id) => (
-            <option key={id} value={id}>
-              {canonicalRoleName(id)}
-            </option>
-          ))}
-        </select>
-      </Field>
+          onChange={(next) => setRole(next as RoleID)}
+          options={roles.map((id) => ({ value: id, label: canonicalRoleName(id) }))}
+      />
       <p className="appearance-help">
         The canonical responsibility stays visible. Names and lore change
         presentation; permissions, actions and generated replies stay the same.
@@ -394,25 +342,16 @@ export function EditorIdentity({
           }
         />
       </Field>
-      <Field label="Portrait">
-        <select
-          className="appearance-input"
+      <SelectField id="theme-portrait" label="Portrait" disabled={disabled}
           value={stringAt(manifest, "identities", role, "portrait")}
-          onChange={(event) =>
+          onChange={(next) =>
             update(
               ["identities", role, "portrait"],
-              event.target.value || undefined,
+              next || undefined,
             )
           }
-        >
-          <option value="">None / Inherited</option>
-          {images.map(([id]) => (
-            <option value={`asset:${id}`} key={id}>
-              {id}
-            </option>
-          ))}
-        </select>
-      </Field>
+          options={[{ value: "", label: "None / Inherited" }, ...images.map(([id]) => ({ value: `asset:${id}`, label: id }))]}
+      />
       <datalist id="theme-icon-options">
         {iconReferences.map((name) => (
           <option key={name} value={`lucide:${name}`} />
@@ -477,27 +416,19 @@ export function EditorIdentity({
         <summary className="text-sm">Artwork</summary>
         <div className="mt-4 space-y-4">
           {["overview", "planningEmpty", "agentBackdrop"].map((key) => (
-            <Field
+            <SelectField
               key={key}
+              id={`theme-artwork-${key}`}
               label={key
                 .replace(/([A-Z])/g, " $1")
                 .replace(/\b\w/g, (char) => char.toUpperCase())}
-            >
-              <select
-                className="appearance-input"
+              disabled={disabled}
                 value={stringAt(manifest, "artwork", key)}
-                onChange={(event) =>
-                  update(["artwork", key], event.target.value || undefined)
+                onChange={(next) =>
+                  update(["artwork", key], next || undefined)
                 }
-              >
-                <option value="">None / Inherited</option>
-                {images.map(([id]) => (
-                  <option key={id} value={`asset:${id}`}>
-                    {id}
-                  </option>
-                ))}
-              </select>
-            </Field>
+              options={[{ value: "", label: "None / Inherited" }, ...images.map(([id]) => ({ value: `asset:${id}`, label: id }))]}
+            />
           ))}
         </div>
       </details>

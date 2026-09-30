@@ -12,6 +12,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { Badge } from "@/components/ui/badge";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { TimeRangePicker } from "@/components/ui/time-range-picker";
+import { selectTriggerClass } from "@/components/ui/field-styles";
+import { SelectTriggerContent } from "@/components/ui/select-trigger";
 import { HorizontalBarChart } from "@/components/ui/horizontal-bar-chart";
 import {
   PopoverListbox,
@@ -36,7 +38,7 @@ import {
 } from "@/api/hooks";
 import { ApiError } from "@/api/client";
 import { useRetainedData } from "@/lib/use-retained-data";
-import { formatTimestamp } from "@/lib/utils";
+import { cn, formatTimestamp } from "@/lib/utils";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
 import { describeManualGovernanceState } from "@/features/runs/manual-governance-state";
 import {
@@ -1211,12 +1213,9 @@ function RunScopePicker({
       triggerId="analytics-run-scope"
       triggerRole="combobox"
       triggerAriaLabel="Run scope"
-      triggerClassName="flex max-w-[360px] items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:border-accent/40 focus:border-accent/50 focus:outline-none focus:ring-1 focus:ring-accent/30"
+      triggerClassName={cn(selectTriggerClass, "max-w-[360px]")}
       triggerContent={
-        <>
-          <span className="truncate font-mono">{selectedLabel}</span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
-        </>
+        <SelectTriggerContent>{selectedLabel}</SelectTriggerContent>
       }
       onOpenChange={(nextOpen) => {
         setOpen(nextOpen);
@@ -1247,7 +1246,6 @@ function RunScopePicker({
       }}
       minWidth={420}
       maxHeight={320}
-      panelClassName="flex flex-col overflow-hidden rounded-lg border border-border bg-surface shadow-xl shadow-black/40"
       emptyState={
         <p className="px-3 py-2 text-xs text-foreground-subtle">
           {runsQuery.isLoading ? "Loading runs..." : "No matching runs found."}
