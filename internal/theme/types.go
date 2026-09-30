@@ -42,6 +42,8 @@ type Surfaces struct {
 	BorderWidth   int    `json:"borderWidth,omitempty"`
 	Elevation     string `json:"elevation,omitempty"`
 	Ornamentation string `json:"ornamentation,omitempty"`
+	Chrome        string `json:"chrome,omitempty"`
+	IconRendering string `json:"iconRendering,omitempty"`
 }
 type Identity struct {
 	Name        string `json:"name,omitempty"`

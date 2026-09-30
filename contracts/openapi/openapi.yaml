@@ -6556,7 +6556,8 @@ components:
                   "obsidian-court",
                   "nautilus",
                   "astral-council",
-                  "software-lab"
+                  "software-lab",
+                  "workstation-98"
                 ],
                 "type": "string"
               },
@@ -6836,6 +6837,22 @@ components:
                   "minimal",
                   "balanced"
                 ],
+                "type": "string"
+              },
+              "chrome": {
+                "enum": [
+                  "flat",
+                  "classic"
+                ],
+                "description": "Application-owned structural styling. Omission uses flat chrome.",
+                "type": "string"
+              },
+              "iconRendering": {
+                "enum": [
+                  "mask",
+                  "original"
+                ],
+                "description": "Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask.",
                 "type": "string"
               }
             }

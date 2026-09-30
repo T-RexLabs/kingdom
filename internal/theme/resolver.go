@@ -58,11 +58,26 @@ func NewResolver() (*Resolver, error) {
 		return nil, err
 	}
 	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
 		raw, err = themecontract.Files.ReadFile("builtin/" + entry.Name())
 		if err != nil {
 			return nil, err
 		}
-		p, err := r.Resolve(raw, nil)
+		manifest, err := r.parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("built-in %s: %w", entry.Name(), err)
+		}
+		files := map[string][]byte{}
+		for _, asset := range manifest.Assets {
+			data, err := themecontract.Files.ReadFile("builtin/" + asset.Path)
+			if err != nil {
+				return nil, fmt.Errorf("built-in %s asset %s: %w", entry.Name(), asset.Path, err)
+			}
+			files[asset.Path] = data
+		}
+		p, err := r.Resolve(raw, files)
 		if err != nil {
 			return nil, fmt.Errorf("built-in %s: %w", entry.Name(), err)
 		}
@@ -194,10 +209,25 @@ func (r *Resolver) Resolve(raw []byte, files map[string][]byte) (Package, error)
 		return Package{}, invalid("/id", "path", "Choose a portable package ID that is not a reserved device name.")
 	}
 	m := authored
+	sourceFiles := files
 	if authored.Base != nil {
 		base, ok := r.builtins[authored.Base.ID]
 		if !ok || base.Manifest.Version != authored.Base.Version {
 			return Package{}, invalid("/base", "missing_base", "The exact built-in base version is unavailable.")
+		}
+		// Supplied bytes belong only to the authored source. Inherited assets
+		// come from the exact immutable base, never caller-supplied shadow files.
+		if err := validateAssets(authored, files); err != nil {
+			return Package{}, err
+		}
+		files = cloneFiles(files)
+		for id, asset := range base.Manifest.Assets {
+			if _, overridden := authored.Assets[id]; !overridden {
+				if _, occupied := files[asset.Path]; occupied {
+					return Package{}, invalid("/assets", "duplicate_path", "An authored asset path collides with an inherited asset.")
+				}
+				files[asset.Path] = bytes.Clone(base.Assets[asset.Path])
+			}
 		}
 		m = mergeManifest(cloneManifest(base.Manifest), authored)
 	}
@@ -288,7 +318,7 @@ func (r *Resolver) Resolve(raw []byte, files map[string][]byte) (Package, error)
 		return Package{}, err
 	}
 	p := Package{Manifest: m, Source: bytes.Clone(raw), Assets: cloneFiles(files)}
-	p.SourceDigest = sourceDigest(raw, files)
+	p.SourceDigest = sourceDigest(raw, sourceFiles)
 	p.ResolvedDigest = resolvedDigest(m, files)
 	return p, nil
 }
@@ -350,6 +380,12 @@ func mergeManifest(base, overlay Manifest) Manifest {
 	}
 	if y.Ornamentation != "" {
 		x.Ornamentation = y.Ornamentation
+	}
+	if y.Chrome != "" {
+		x.Chrome = y.Chrome
+	}
+	if y.IconRendering != "" {
+		x.IconRendering = y.IconRendering
 	}
 	return base
 }

@@ -433,7 +433,11 @@ func (s *Store) ImportZIP(raw []byte) (Package, error) {
 	if err != nil {
 		return Package{}, err
 	}
-	return s.Publish(p.Source, p.Assets)
+	source, err := s.revisionSource(p)
+	if err != nil {
+		return Package{}, err
+	}
+	return s.Publish(source.Manifest, source.Assets)
 }
 func (s *Store) ExportZIP(id, digest string) ([]byte, error) {
 	p, err := s.ReadRevision(id, digest)

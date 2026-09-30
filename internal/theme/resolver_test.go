@@ -30,8 +30,8 @@ func rawForTest(t *testing.T, value any) []byte {
 }
 func TestBuiltinsAndInheritedThemeAreComplete(t *testing.T) {
 	r := resolverForTest(t)
-	if len(r.Builtins()) != 4 {
-		t.Fatal("expected all four themes")
+	if len(r.Builtins()) != 5 {
+		t.Fatal("expected all five themes")
 	}
 	for _, p := range r.Builtins() {
 		t.Run(p.Manifest.ID, func(t *testing.T) {
@@ -41,7 +41,7 @@ func TestBuiltinsAndInheritedThemeAreComplete(t *testing.T) {
 			if p.Manifest.Base != nil {
 				t.Fatal("built-in must be independent")
 			}
-			if _, err := r.Resolve(rawForTest(t, p.Manifest), nil); err != nil {
+			if _, err := r.Resolve(rawForTest(t, p.Manifest), p.Assets); err != nil {
 				t.Fatal(err)
 			}
 		})
@@ -172,6 +172,11 @@ func TestBuiltinTokensMatchCanonicalPaletteResolver(t *testing.T) {
 	r := resolverForTest(t)
 	for _, p := range r.Builtins() {
 		for key, expected := range derivePalette(p.Manifest.Palette) {
+			// Classic desktop fields use cream paper within sepia window chrome.
+			// Every other token, including all four existing themes, stays derived.
+			if p.Manifest.ID == "workstation-98" && key == "surface.inset" {
+				expected = "#fffaf0"
+			}
 			if p.Manifest.Tokens[key] != expected {
 				t.Errorf("%s token %s = %s, canonical palette resolves %s", p.Manifest.ID, key, p.Manifest.Tokens[key], expected)
 			}

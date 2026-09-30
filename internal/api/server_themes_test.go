@@ -91,7 +91,7 @@ func TestThemeLifecycleKeepsPreviewPrivateAndRevisionsPinned(t *testing.T) {
 	if err := json.Unmarshal(request("GET", "/themes", "", nil, 200), &catalog); err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Items) != 4 || catalog.WorkspaceID == "" {
+	if len(catalog.Items) != 5 || catalog.WorkspaceID == "" {
 		t.Fatalf("preview persisted or missing workspace: %#v", catalog)
 	}
 	var saved gen.ThemeSource
@@ -149,7 +149,7 @@ func TestThemeArchiveValidationDoesNotPublishOrSaveSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Items) != 4 || len(catalog.Sources) != 0 {
+	if len(catalog.Items) != 5 || len(catalog.Sources) != 0 {
 		t.Fatalf("validation wrote shared state: %#v", catalog)
 	}
 	if _, err := store.ReadSource(pkg.Manifest.ID); !errors.Is(err, theme.ErrNotFound) {

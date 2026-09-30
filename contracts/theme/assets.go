@@ -6,5 +6,5 @@ import "embed"
 
 // Files contains the schema, icon catalog, built-in packages and cross-client fixtures.
 //
-//go:embed theme.schema.json lucide-icons.json builtin/*.json fixtures/*.json
+//go:embed theme.schema.json lucide-icons.json builtin fixtures/*.json
 var Files embed.FS

@@ -10,7 +10,11 @@ A package controls semantic colors, typography, surfaces, fixed plain-text copy 
 
 No executable CSS, JavaScript, remote assets, provider settings, prompt fragments or generated-reply voice settings are accepted. A future generated-voice feature needs a separately versioned execution configuration and run/session snapshot; changing a theme must never implicitly activate it.
 
+`surfaces.chrome` selects one application-owned structural preset: `flat` or `classic`. `surfaces.iconRendering` selects `mask` (foreground-colored SVG icons) or `original` (the validated artwork's original colors). Omission means `flat` and `mask` without inserting those fields into the resolved manifest or changing existing revision identities. These finite choices never accept stylesheets. Workstation 98 uses classic chrome in a sepia palette, matching original pixel artwork, `bundled:classic-sans` system typography, and corporate role names while preserving canonical responsibilities. Its cream inset token is an explicit authored override; operational status colors remain distinct semantic tones.
+
 A manifest either references one exact built-in version or supplies every required resolved slot. Custom inheritance chains are not supported. Resolution merges the base, derives semantic tokens if an authored palette override exists, and then applies explicit semantic token overrides. The browser uses the resolver response for its preview; there is no independent browser palette algorithm. Colors are normalized to lowercase. The resolver validates the supported foreground/background pairs and gives field diagnostics with suggested contrast corrections.
+
+Built-in assets are embedded and validated from their declared paths. An inherited package supplies only its authored asset files; the resolver clones other asset bytes from the exact built-in revision. An authored declaration can override an inherited asset ID, while undeclared shadow files and duplicate paths are rejected. The resolved package owns the complete asset set. Its `sourceDigest` still covers only authored JSON and authored assets, so source restoration does not flatten inheritance or silently turn built-in artwork into source overrides.
 
 ## Storage and Identity
 

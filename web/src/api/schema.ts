@@ -3642,7 +3642,7 @@ export interface components {
             description?: string;
             base?: {
                 /** @enum {string} */
-                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab";
+                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "workstation-98";
                 version: string;
             };
             palette?: {
@@ -3731,6 +3731,16 @@ export interface components {
                 elevation?: "flat" | "soft";
                 /** @enum {string} */
                 ornamentation?: "minimal" | "balanced";
+                /**
+                 * @description Application-owned structural styling. Omission uses flat chrome.
+                 * @enum {string}
+                 */
+                chrome?: "flat" | "classic";
+                /**
+                 * @description Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask.
+                 * @enum {string}
+                 */
+                iconRendering?: "mask" | "original";
             };
             icons?: {
                 brand?: components["schemas"]["ThemeIcon"];

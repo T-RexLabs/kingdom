@@ -195,7 +195,7 @@ func TestStoreRejectsSymlinkReadsAndDoesNotPublishPartialRevision(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog.Items) != 4 || len(catalog.Diagnostics) != 1 {
+	if len(catalog.Items) != len(s.resolver.Builtins()) || len(catalog.Diagnostics) != 1 {
 		t.Fatal("bad custom revision prevented built-in fallback")
 	}
 	// A partial directory without a catalog commit is never discoverable.
@@ -219,7 +219,7 @@ func TestStoreRejectsSymlinkReadsAndDoesNotPublishPartialRevision(t *testing.T) 
 		t.Fatal("corrupt staged bytes overwritten")
 	}
 	catalog, _ = s.List()
-	if len(catalog.Items) != 4 {
+	if len(catalog.Items) != len(s.resolver.Builtins()) {
 		t.Fatal("failed publication changed catalog")
 	}
 }
@@ -282,7 +282,7 @@ func TestInvalidSourceRemainsJSONSerializable(t *testing.T) {
 		t.Fatalf("invalid source diagnostics: %v, %v", source.Diagnostics, err)
 	}
 	catalog, err := s.List()
-	if err != nil || len(catalog.Sources) != 1 || catalog.Sources[0] != "broken" || len(catalog.Items) != 4 {
+	if err != nil || len(catalog.Sources) != 1 || catalog.Sources[0] != "broken" || len(catalog.Items) != len(s.resolver.Builtins()) {
 		t.Fatalf("invalid authored source must be discoverable alongside healthy revisions: %+v, %v", catalog, err)
 	}
 	if source.Content != string(raw) {

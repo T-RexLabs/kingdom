@@ -1,6 +1,6 @@
 # Themes and Appearance
 
-Appearance changes presentation across Kingdom. It does not change workflow authority, execution configuration, approvals, or generated replies. The four bundled themes are Obsidian Court, Nautilus, Astral Council, and Software Lab. Operational status meanings and canonical role responsibilities remain consistent in every theme.
+Appearance changes presentation across Kingdom. It does not change workflow authority, execution configuration, approvals, or generated replies. The five bundled themes are Obsidian Court, Nautilus, Astral Council, Software Lab, and Workstation 98. Operational status meanings and canonical role responsibilities remain consistent in every theme.
 
 ## Choose and Preview
 
@@ -22,10 +22,12 @@ For coordinated automated editing, use the authenticated source API and its `exp
 
 Version 1 supports one exact bundled base, or a complete standalone manifest. It does not support arbitrary inheritance chains. Palette overrides derive semantic tokens deterministically; explicit token overrides win afterward. Exported packages are complete standalone manifests, while editing a published revision retrieves the preserved authored source and inheritance intent.
 
+**Workstation 98** brings classic desktop chrome in a warm sepia palette: parchment surfaces, beige beveled controls, cream inset fields, espresso window title bars, square menus, matching pixel-art Kingdom branding, and 1990s corporate role titles. The underlying actions, status meanings, and canonical responsibilities stay the same. Its original icons ship locally; it does not depend on Windows assets or remote fonts.
+
 A theme can change:
 
-- Semantic colors, typography, surfaces, artwork, and ornamentation.
-- Icons from the supported Lucide catalog or declared static SVG assets. A role icon has one source: `icons["role.<canonical-role-id>"]`.
+- Semantic colors, typography, surfaces, artwork, and ornamentation. `surfaces.chrome` selects application-owned `flat` or `classic` control styling. Missing values use `flat`; copies inherit their base styling.
+- Icons from the supported Lucide catalog or declared static SVG assets. `surfaces.iconRendering` selects `mask` (the default, matching text color) or `original` (the artwork’s full color). A role icon has one source: `icons["role.<canonical-role-id>"]`.
 - Role display names, descriptions, lore, and optional portraits. Keep the canonical role keys unchanged.
 - Fixed plain-text UI copy slots. These do not accept HTML, Markdown, template expressions, operational status overrides, or prompt fragments.
 
@@ -37,6 +39,6 @@ Generated-reply voice is neutral and application-owned. A future voice feature r
 
 Assets are package-relative regular files, never remote URLs or filesystem links. Limits are 256 KiB for JSON, 64 assets, 8 MiB per asset, and 32 MiB total asset bytes. Raster images have a 16 megapixel and 8,192-pixel edge limit. ZIP expansion is bounded; undeclared files, duplicate paths, traversal, and special files are rejected. SVG accepts only static geometry. Custom fonts use WOFF2 with declared license information. Validation is not a general-purpose font sanitizer; the browser still validates decoding and has fallback fonts.
 
-Instrument Serif, DM Sans, and JetBrains Mono are bundled locally with their licenses. No runtime Google Fonts request is required. See the [package engineering contract](../contracts/theme/README.md) for detailed resolver, digest, and asset rules, and the [shared presentation layer](../web/src/theme/README.md) when adding UI components.
+Instrument Serif, DM Sans, and JetBrains Mono are bundled locally with their licenses. The `bundled:classic-sans` stack uses locally available Tahoma, Microsoft Sans Serif, or Arial. No runtime Google Fonts request is required. See the [package engineering contract](../contracts/theme/README.md) for detailed resolver, digest, and asset rules, and the [shared presentation layer](../web/src/theme/README.md) when adding UI components.
 
 The ZIP archive transport budget is 32 MiB plus 256 KiB, including archive overhead. Both archive validation and import accept up to 45,088,768 base64 characters; expanded assets and the manifest retain their separate limits.

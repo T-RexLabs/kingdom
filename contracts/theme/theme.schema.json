@@ -42,7 +42,8 @@
             "obsidian-court",
             "nautilus",
             "astral-council",
-            "software-lab"
+            "software-lab",
+            "workstation-98"
           ]
         },
         "version": {
@@ -317,6 +318,20 @@
             "minimal",
             "balanced"
           ]
+        },
+        "chrome": {
+          "enum": [
+            "flat",
+            "classic"
+          ],
+          "description": "Application-owned structural styling. Omission uses flat chrome."
+        },
+        "iconRendering": {
+          "enum": [
+            "mask",
+            "original"
+          ],
+          "description": "Render validated SVG icon assets as a foreground mask or in their original colors. Omission uses mask."
         }
       }
     },
@@ -1059,6 +1074,7 @@
             "bundled:system-sans",
             "bundled:system-serif",
             "bundled:system-mono",
+            "bundled:classic-sans",
             "bundled:dm-sans",
             "bundled:instrument-serif",
             "bundled:jetbrains-mono"
