@@ -106,7 +106,7 @@ export function AdvancedColors({
                             ),
                           )
                         }
-                        className="h-10 w-11 shrink-0 rounded border border-border bg-background p-1"
+                        className="ui-color-field h-10 w-11 shrink-0 rounded border border-border bg-background p-1"
                       />
                       <input
                         id={`theme-color-${token}`}

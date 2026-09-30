@@ -80,7 +80,7 @@ export function PlanningSessionIndexPage() {
           </div>
 
           <div className="space-y-5 rounded-2xl border border-border bg-surface p-5 sm:p-6">
-            <div><label htmlFor="new-session-title" className="mb-2 block text-sm font-medium">Session Title <span className="font-normal text-foreground-muted">(Optional)</span></label><input id="new-session-title" value={title} disabled={recoveryPending} onChange={(event) => setTitle(event.target.value)} placeholder="What would you like to explore?" className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" /></div>
+            <div><label htmlFor="new-session-title" className="mb-2 block text-sm font-medium">Session Title <span className="font-normal text-foreground-muted">(Optional)</span></label><input data-ui-field="" id="new-session-title" value={title} disabled={recoveryPending} onChange={(event) => setTitle(event.target.value)} placeholder="What would you like to explore?" className="w-full rounded-lg border border-border bg-background px-3 py-2.5 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" /></div>
             <div className="flex flex-wrap items-end gap-3">
               <div className="w-full">
                 <ProviderModelCatalogNotice

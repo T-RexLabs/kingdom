@@ -80,7 +80,7 @@ export function ApprovalDecisionForm({
         >
           {notesLabel}
         </label>
-        <textarea
+        <textarea data-ui-field=""
           id="approval-notes"
           value={notes}
           onChange={(event) => {

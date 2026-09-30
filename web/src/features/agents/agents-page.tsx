@@ -130,7 +130,7 @@ function AgentCard({
     <button
       type="button"
       onClick={onSelect}
-      className="group flex min-h-60 flex-col rounded-xl border border-border bg-surface p-6 text-left transition-colors hover:border-accent/60 hover:bg-surface-raised"
+      className="ui-card group flex min-h-60 flex-col rounded-xl border border-border bg-surface p-6 text-left transition-colors hover:border-accent/60 hover:bg-surface-raised"
       aria-label={`About ${identity.name}`}
     >
       <span className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/10 text-accent">

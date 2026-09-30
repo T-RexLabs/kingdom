@@ -1034,6 +1034,7 @@ export function RunDetailPage() {
           <section className="min-w-0">
             <div className="flex flex-wrap items-center justify-between gap-x-4 border-b border-border">
               <nav
+                data-ui-tabs=""
                 role="tablist"
                 aria-label="Run detail sections"
                 className="flex min-w-0 gap-1 overflow-x-auto"
@@ -1062,6 +1063,7 @@ export function RunDetailPage() {
                   <button
                     key={tab.id}
                     id={`run-tab-${tab.id}`}
+                    data-ui-tab=""
                     role="tab"
                     aria-selected={activeTab === tab.id}
                     aria-controls={`run-tabpanel-${tab.id}`}

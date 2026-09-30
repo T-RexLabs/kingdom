@@ -1,5 +1,5 @@
 import { defaultTheme } from "./contract";
-import { themeFonts } from "./assets";
+import { imageAssetURL, themeFonts } from "./assets";
 import type { ThemeState } from "./controller";
 
 export function tokenVariable(slot: string): string {
@@ -24,12 +24,16 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
     "color-scheme": theme.colorScheme,
   });
   const previous = Object.fromEntries(Object.keys(properties).map((key) => [key, [root.style.getPropertyValue(key), root.style.getPropertyPriority(key)]]));
-  const attributes = { "data-theme": theme.id, "data-color-scheme": theme.colorScheme, "data-ornamentation": theme.surfaces.ornamentation };
+  const attributes = { "data-theme": theme.id, "data-color-scheme": theme.colorScheme, "data-ornamentation": theme.surfaces.ornamentation, "data-chrome": theme.surfaces.chrome ?? "flat" };
   const oldAttributes = Object.fromEntries(Object.keys(attributes).map((key) => [key, root.getAttribute(key)]));
   for (const [key, value] of Object.entries(properties)) root.style.setProperty(key, value);
   for (const [key, value] of Object.entries(attributes)) root.setAttribute(key, value);
   const chromeColor = root === document.documentElement ? document.querySelector<HTMLMetaElement>('meta[name="theme-color"]') : null;
   const previousChromeColor = chromeColor?.content;
+  const favicon = root === document.documentElement ? document.querySelector<HTMLLinkElement>('link[rel="icon"]') : null;
+  const previousIcon = favicon?.getAttribute("href");
+  const brandAsset = imageAssetURL(theme, assetURLs, theme.icons.brand);
+  if (favicon && brandAsset) favicon.setAttribute("href", brandAsset);
   if (chromeColor) chromeColor.content = theme.tokens.canvas;
   const loaded: FontFace[] = [];
   let disposed = false;
@@ -43,6 +47,10 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
   }
   return () => {
     disposed = true;
+    if (favicon && previousIcon !== undefined) {
+      if (previousIcon === null) favicon.removeAttribute("href");
+      else favicon.setAttribute("href", previousIcon);
+    }
     if (chromeColor && previousChromeColor !== undefined) chromeColor.content = previousChromeColor;
     for (const font of loaded) document.fonts.delete(font);
     for (const [key, [value, priority]] of Object.entries(previous)) {

@@ -5,6 +5,7 @@ import obsidianText from "../../../contracts/theme/builtin/obsidian-court.json?r
 import nautilusText from "../../../contracts/theme/builtin/nautilus.json?raw";
 import astralText from "../../../contracts/theme/builtin/astral-council.json?raw";
 import labText from "../../../contracts/theme/builtin/software-lab.json?raw";
+import workstationText from "../../../contracts/theme/builtin/workstation-98.json?raw";
 
 export type ThemeManifest = components["schemas"]["ThemeManifest"];
 export type ThemePackage = Omit<components["schemas"]["ThemePackage"], "manifest"> & { manifest: ResolvedThemeManifest };
@@ -22,7 +23,7 @@ export type ResolvedThemeManifest = Omit<ThemeManifest, "base" | "palette" | "to
   palette: Complete<ThemeManifest["palette"]>;
   tokens: Complete<ThemeManifest["tokens"]>;
   typography: Complete<ThemeManifest["typography"]>;
-  surfaces: Complete<ThemeManifest["surfaces"]>;
+  surfaces: Complete<Omit<NonNullable<ThemeManifest["surfaces"]>, "chrome" | "iconRendering">> & Pick<NonNullable<ThemeManifest["surfaces"]>, "chrome" | "iconRendering">;
   icons: Complete<ThemeManifest["icons"]>;
   identities: { [K in RoleID]: components["schemas"]["ThemeIdentity"] & { name: string; description: string } };
   copy: Complete<ThemeManifest["copy"]>;
@@ -62,7 +63,7 @@ export function validReference(value: unknown): value is ThemeReference {
   const ref = value as Partial<ThemeReference>;
   return typeof ref.id === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(ref.id) && typeof ref.resolvedDigest === "string" && /^[a-f0-9]{64}$/.test(ref.resolvedDigest);
 }
-export const builtInThemes: readonly ResolvedThemeManifest[] = [obsidianText, nautilusText, astralText, labText].map((raw) => resolvedManifest(JSON.parse(raw)));
+export const builtInThemes: readonly ResolvedThemeManifest[] = [obsidianText, nautilusText, astralText, labText, workstationText].map((raw) => resolvedManifest(JSON.parse(raw)));
 export const defaultTheme = builtInThemes[0];
 const neutralTheme = builtInThemes[3];
 export function canonicalRoleName(role: string): string {

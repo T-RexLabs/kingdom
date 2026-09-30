@@ -57,7 +57,7 @@ export function ConnectionList({
   onManage: (id: string) => void;
 }) {
   return (
-    <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
+    <div className="ui-card divide-y divide-border overflow-hidden rounded-xl border border-border bg-surface">
       {items.map((connection) => (
         <article
           key={connection.connection_id}

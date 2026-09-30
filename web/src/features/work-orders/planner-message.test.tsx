@@ -28,6 +28,11 @@ vi.mock("@/api/hooks", async () => {
   };
 });
 
+vi.mock("@/theme", async () => ({
+  ...(await vi.importActual<typeof import("@/theme")>("@/theme")),
+  ThemeIcon: ({ slot }: { slot: string }) => <span data-theme-icon={slot} />,
+}));
+
 describe("PlannerMessageCard", () => {
   it("does not reserve timestamp metadata beneath a live assistant response", () => {
     const { container } = render(<PlannerMessageCard message={{ planning_message_id: "live", planning_session_id: "s", role: "assistant", content_markdown: "", created_at: "2026-06-12T10:00:00Z" }} isStreaming />);
@@ -67,6 +72,7 @@ describe("PlannerMessageCard", () => {
     );
     const row = screen.getByText("Hi").closest(".group")?.firstElementChild;
     expect(row).toHaveClass("justify-end");
+    expect(row?.querySelector('.ui-operator-avatar [data-theme-icon="role.operator"]')).not.toBeNull();
   });
 
   it("keeps one Show Activity disclosure above the canonical reply", async () => {

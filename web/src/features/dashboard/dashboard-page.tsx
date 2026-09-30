@@ -206,7 +206,7 @@ function OverviewQueue({
       {query.isLoading && !query.data ? (
         <Skeleton className="h-28" />
       ) : runs.length > 0 ? (
-        <div className="divide-y divide-border rounded-xl border border-border bg-surface">
+        <div className="ui-card divide-y divide-border rounded-xl border border-border bg-surface">
           {runs.map((run) => (
             <RunRow
               key={run.run_id}
@@ -291,7 +291,7 @@ function PlanningQueue() {
       {query.isLoading && !query.data ? (
         <Skeleton className="h-28" />
       ) : sessions.length > 0 ? (
-        <div className="divide-y divide-border rounded-xl border border-border bg-surface">
+        <div className="ui-card divide-y divide-border rounded-xl border border-border bg-surface">
           {sessions.map((session) => (
             <Link
               key={session.planning_session_id}

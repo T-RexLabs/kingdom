@@ -42,7 +42,7 @@ export function AppShell({ children }: { children: ReactNode }) {
     catch { /* Navigation remains usable when personal storage is unavailable. */ }
   }
   return (
-    <div className="flex h-dvh min-h-0 bg-background text-foreground">
+    <div className="ui-app-shell flex h-dvh min-h-0 bg-background text-foreground">
       <a
         href="#main-content"
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-surface focus:p-3"
@@ -51,20 +51,20 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
       <aside
         id="workspace-navigation"
-        className={cn("hidden shrink-0 flex-col overflow-y-auto border-r border-border bg-background-secondary md:flex motion-safe:transition-[width] motion-safe:duration-200", collapsed ? "w-16" : "w-56")}
+        className={cn("ui-sidebar hidden shrink-0 flex-col overflow-y-auto border-r border-border bg-background-secondary md:flex motion-safe:transition-[width] motion-safe:duration-200", collapsed ? "w-16" : "w-56")}
         aria-label="Workspace navigation"
       >
         <SidebarContent collapsed={collapsed} onToggle={toggleNavigation} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
+        <header className="ui-mobile-header flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
           <button
             ref={menuRef}
             type="button"
             onClick={() => setOpenAt(location)}
             aria-label="Open navigation"
             aria-expanded={mobileOpen}
-            className="rounded-md p-2 hover:bg-surface-raised"
+            className="ui-button ui-button--ghost rounded-md p-2 hover:bg-surface-raised"
           >
             <Menu size={20} />
           </button>
@@ -120,13 +120,13 @@ export function AppShell({ children }: { children: ReactNode }) {
         ariaLabel="Navigation"
         getFinalFocus={() => menuRef.current}
         overlayClassName="justify-start p-0"
-        panelClassName="relative flex h-dvh w-72 max-w-[85vw] flex-col rounded-none bg-background-secondary p-0"
+        panelClassName="ui-sidebar relative flex h-dvh w-72 max-w-[85vw] flex-col rounded-none bg-background-secondary p-0"
       >
         <button
           type="button"
           onClick={() => setOpenAt(null)}
           aria-label="Close navigation"
-          className="absolute right-3 top-5 rounded-md p-2 hover:bg-surface-raised"
+          className="ui-button ui-button--ghost absolute right-3 top-5 rounded-md p-2 hover:bg-surface-raised"
         >
           <X size={18} />
         </button>
@@ -148,7 +148,7 @@ function Brand({ collapsed = false }: { collapsed?: boolean }) {
       to="/"
       aria-label="Kingdom"
       title={collapsed ? "Kingdom" : undefined}
-      className="flex w-fit items-center gap-2.5 rounded-md text-accent"
+      className="ui-brand flex w-fit items-center gap-2.5 rounded-md text-accent"
     >
       <ThemeIcon slot="brand" className="h-5 w-5" />
       <span className={collapsed ? "sr-only" : "font-display text-2xl"}>Kingdom</span>
@@ -177,7 +177,7 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
           title={collapsed ? item.name : undefined}
           aria-current={active ? "page" : undefined}
           className={cn(
-            "flex min-h-10 items-center rounded-lg py-2.5 text-sm transition-colors",
+            "ui-nav-item flex min-h-10 items-center rounded-lg py-2.5 text-sm transition-colors",
             collapsed ? "justify-center px-2" : "gap-3 px-3",
             active
               ? "bg-accent/10 text-accent"
@@ -201,13 +201,13 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
           title={collapsed ? "Expand navigation" : "Collapse navigation"}
           aria-expanded={!collapsed}
           aria-controls="workspace-navigation"
-          className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-foreground-muted transition-colors hover:bg-surface-raised hover:text-foreground"
+          className="ui-button ui-button--ghost flex h-8 w-8 shrink-0 items-center justify-center rounded-md text-foreground-muted transition-colors hover:bg-surface-raised hover:text-foreground"
         >
           {collapsed ? <PanelLeftOpen size={16} aria-hidden="true" /> : <PanelLeftClose size={16} aria-hidden="true" />}
         </button>}
       </div>
       {!collapsed && <div
-        className="mx-4 mb-7 rounded-lg border border-border bg-surface px-3 py-3"
+        className="ui-workspace-info mx-4 mb-7 rounded-lg border border-border bg-surface px-3 py-3"
         title={projectPath}
       >
         <div className="truncate text-sm font-medium">{name}</div>

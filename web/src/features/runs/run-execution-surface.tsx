@@ -188,7 +188,7 @@ export function RunExecutionSurface({
             type="button"
             disabled={isStopRetryPending}
             onClick={() => onRetryStop(execution.attempt_id)}
-            className="min-h-11 rounded-lg border border-status-blocked/40 px-4 text-sm text-status-blocked"
+            className="ui-button ui-button--outline min-h-11 rounded-lg border border-status-blocked/40 px-4 text-sm text-status-blocked"
           >
             {isStopRetryPending ? "Retrying stop…" : "Retry Stop"}
           </button>
@@ -212,6 +212,7 @@ export function RunExecutionSurface({
         </p>
       )}
       <div
+        data-ui-tabs=""
         role="tablist"
         aria-label="Agent conversation views"
         className="flex gap-5 text-xs text-foreground-muted"
@@ -239,6 +240,7 @@ export function RunExecutionSurface({
             key={item}
             id={`${viewsId}-${item}`}
             type="button"
+            data-ui-tab=""
             role="tab"
             aria-selected={view === item}
             aria-controls={`${viewsId}-${item}-panel`}

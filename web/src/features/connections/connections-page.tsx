@@ -211,7 +211,7 @@ function MetadataFields({
   ) => (
     <label className="text-xs font-medium text-foreground-muted">
       {label}
-      <input
+      <input data-ui-field=""
         required
         disabled={disabled}
         maxLength={maxLength}
@@ -1595,7 +1595,7 @@ export function ConnectionsPage() {
                         </div>
                         <label className="block text-xs font-medium text-foreground-muted">
                           Display Name
-                          <input
+                          <input data-ui-field=""
                             required
                             maxLength={120}
                             className={cn(fieldClass, "mt-1")}
@@ -2328,7 +2328,7 @@ export function ConnectionsPage() {
               {ownerType === "organization" && (
                 <label className="block text-xs font-medium text-foreground-muted">
                   Organization Login
-                  <input
+                  <input data-ui-field=""
                     className={cn(fieldClass, "mt-1")}
                     value={organization}
                     onChange={(event) => setOrganization(event.target.value)}

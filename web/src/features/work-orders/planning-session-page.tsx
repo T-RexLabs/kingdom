@@ -443,7 +443,7 @@ export function PlanningSessionPage() {
           <button
             type="button"
             onClick={() => { void sessionQuery.refetch(); }}
-            className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised/60"
+            className="ui-button ui-button--outline rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised/60"
           >
             Try Again
           </button>
@@ -524,7 +524,7 @@ export function PlanningSessionPage() {
               {modelRecoveryPending && <details className="max-w-xs"><summary className="cursor-pointer">Request Details</summary><p className="break-all">{pendingModelVariables?.modelSelection?.model} {pendingModelVariables?.modelSelection?.thinking_effort}</p><code className="break-all">{updateModelSelection.pendingRequestKey}</code></details>}
               <button
                 type="button"
-                className="ml-auto rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
+                className="ui-button ui-button--outline ml-auto rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
                 onClick={modelRecoveryPending ? handleModelRecovery : () => {
 				  submitModelSelection(model, thinkingEffort, currentModelSelection.editGeneration);
                 }}
@@ -545,7 +545,7 @@ export function PlanningSessionPage() {
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
             {isEditingTitle ? (
-              <input
+              <input data-ui-field=""
                 autoFocus
                 type="text"
                 value={titleInput}
@@ -613,7 +613,7 @@ export function PlanningSessionPage() {
                 </span>
                 <button
                   type="button"
-                  className="rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
+                  className="ui-button ui-button--outline rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
                   onClick={() => {
                     void handleCommit();
                   }}
@@ -636,7 +636,7 @@ export function PlanningSessionPage() {
                 {!updateTitle.hasPendingRecovery ? (
                   <button
                     type="button"
-                    className="rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
+                    className="ui-button ui-button--ghost rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
                     onClick={() => {
                       setTitleSaveError(null);
                       abandonEdit(session.title);
@@ -660,7 +660,7 @@ export function PlanningSessionPage() {
                 Boolean(recovery.pendingKind) ||
                 recoveryBlocked
               }
-              className="flex items-center gap-1.5 rounded-md border border-accent/50 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent transition-all hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
+              className="ui-button ui-button--default flex items-center gap-1.5 rounded-md border border-accent/50 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent transition-all hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {formalizePending ? (
                 <div className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
@@ -672,6 +672,7 @@ export function PlanningSessionPage() {
 
         <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
           <div
+            data-ui-tabs=""
             role="tablist"
             aria-label="Planning workspace"
             className="flex gap-6"
@@ -679,6 +680,7 @@ export function PlanningSessionPage() {
             {(["chat", "plan"] as const).map((value, index, tabs) => (
               <button
                 key={value}
+                data-ui-tab=""
                 role="tab"
                 id={`planning-tab-${value}`}
                 aria-controls={`planning-panel-${value}`}

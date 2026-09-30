@@ -576,7 +576,7 @@ export function CreateThemePage() {
               </Field>
             </fieldset>
             <div
-              className="appearance-editor-tabs mt-7"
+              className="ui-tabs appearance-editor-tabs mt-7"
               role="tablist"
               aria-label="Theme editor sections"
             >
@@ -590,6 +590,7 @@ export function CreateThemePage() {
                 <button
                   key={key}
                   type="button"
+                  className="ui-tab"
                   role="tab"
                   id={`theme-tab-${key}`}
                   aria-selected={effectiveTab === key}

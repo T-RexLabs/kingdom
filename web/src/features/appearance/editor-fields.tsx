@@ -16,6 +16,7 @@ const fontReferences: string[] =
   JSON.parse(schemaText).definitions.font.anyOf[0].enum;
 const fontLabels: Record<string, string> = {
   "bundled:dm-sans": "DM Sans",
+  "bundled:classic-sans": "Classic Windows (Tahoma)",
   "bundled:jetbrains-mono": "JetBrains Mono",
 };
 const iconReferences: string[] = JSON.parse(iconCatalogText);
@@ -82,7 +83,7 @@ export function EditorColors({
                   onChange={(event) =>
                     update(["palette", key], event.target.value)
                   }
-                  className="h-10 w-11 shrink-0 rounded border border-border bg-background p-1"
+                  className="ui-color-field h-10 w-11 shrink-0 rounded border border-border bg-background p-1"
                 />
                 <input
                   className="appearance-input font-mono text-xs"
@@ -190,6 +191,14 @@ export function EditorColors({
       <section className="appearance-form-section">
         <h3>Surfaces</h3>
         <div className="grid gap-4 sm:grid-cols-2">
+          <SelectField id="theme-chrome" label="Control Style" disabled={disabled}
+            value={optionalStringAt(manifest, "surfaces", "chrome") ?? view.surfaces.chrome ?? "flat"}
+            onChange={(next) => update(["surfaces", "chrome"], next)}
+            options={[{ value: "flat", label: "Modern" }, { value: "classic", label: "Classic Desktop" }]} />
+          <SelectField id="theme-icon-rendering" label="Icon Colors" disabled={disabled}
+            value={optionalStringAt(manifest, "surfaces", "iconRendering") ?? view.surfaces.iconRendering ?? "mask"}
+            onChange={(next) => update(["surfaces", "iconRendering"], next)}
+            options={[{ value: "mask", label: "Match Text" }, { value: "original", label: "Original Artwork" }]} />
           <Field label="Corner Radius" help="Between 0 and 20 pixels.">
             <input
               type="number"

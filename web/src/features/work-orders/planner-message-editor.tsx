@@ -53,7 +53,7 @@ export function PlannerMessageEditor({
 
   return (
     <div className="space-y-2">
-      <textarea
+      <textarea data-ui-field=""
         ref={textareaRef}
         value={text}
         onChange={(e) => setText(e.target.value)}
@@ -67,7 +67,7 @@ export function PlannerMessageEditor({
         <button
           type="button"
           onClick={onCancel}
-          className="rounded-md px-2.5 py-1 text-xs text-foreground-subtle transition-colors hover:text-foreground"
+          className="ui-button ui-button--ghost rounded-md px-2.5 py-1 text-xs text-foreground-subtle transition-colors hover:text-foreground"
         >
           Cancel
         </button>
@@ -75,7 +75,7 @@ export function PlannerMessageEditor({
           type="button"
           onClick={handleSubmit}
           disabled={!text.trim()}
-          className="rounded-md bg-accent/15 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/25 disabled:opacity-40"
+          className="ui-button ui-button--default rounded-md bg-accent/15 px-2.5 py-1 text-xs text-accent transition-colors hover:bg-accent/25 disabled:opacity-40"
         >
           Save & Send
         </button>

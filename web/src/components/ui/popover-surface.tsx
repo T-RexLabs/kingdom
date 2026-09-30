@@ -53,7 +53,7 @@ export function PopoverSurface({
 					ref={panelRef}
 					style={style}
 					data-popover-placement={context.placement}
-					className={cn("theme-overlay flex flex-col overflow-hidden text-foreground", className)}
+					className={cn("ui-popover theme-overlay flex flex-col overflow-hidden text-foreground", className)}
 					{...floatingProps}
 					onKeyDownCapture={onKeyDownCapture}
 				>

@@ -29,7 +29,7 @@ export function PlannerComposer({
   });
 
   return (
-    <div className="flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 shadow-sm transition-colors focus-within:border-accent/60">
+    <div className="ui-composer flex items-end gap-2 rounded-2xl border border-border bg-surface p-2 shadow-sm transition-colors focus-within:border-accent/60">
       <textarea
         ref={resolvedTextareaRef}
         value={value}
@@ -51,7 +51,7 @@ export function PlannerComposer({
         aria-label="Message the planner"
         placeholder="Type your response..."
         rows={1}
-        className={`min-h-[40px] max-h-[160px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-transparent px-4 py-2.5 text-sm text-foreground placeholder:text-foreground-subtle/50 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
+        className={`ui-composer-input min-h-[40px] max-h-[160px] min-w-0 flex-1 resize-none rounded-xl border-0 bg-transparent px-4 py-2.5 text-sm text-foreground placeholder:text-foreground-subtle/50 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 ${
           isOverflowing ? "overflow-y-auto" : "overflow-hidden"
         }`}
       />
@@ -62,7 +62,7 @@ export function PlannerComposer({
           title={stop.pending ? "Stopping response" : "Stop response"}
           onClick={stop.onStop}
           disabled={stop.pending || stop.disabled}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-foreground-muted transition-colors hover:bg-surface-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-30"
+          className="ui-button ui-button--ghost flex h-10 w-10 shrink-0 items-center justify-center rounded-xl text-foreground-muted transition-colors hover:bg-surface-raised hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 disabled:cursor-not-allowed disabled:opacity-30"
         >
           <Square
             aria-hidden="true"
@@ -76,7 +76,7 @@ export function PlannerComposer({
         aria-label="Send"
         onClick={onSend}
         disabled={disabled || sendDisabled || !value.trim()}
-        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/90 text-background transition-all hover:bg-accent disabled:cursor-not-allowed disabled:opacity-30"
+        className="ui-button ui-button--default flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent/90 text-background transition-all hover:bg-accent disabled:cursor-not-allowed disabled:opacity-30"
       >
         <Send className="h-4 w-4" />
       </button>

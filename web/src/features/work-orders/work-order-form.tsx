@@ -869,7 +869,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                 <label htmlFor="work-order-title" className="mb-1.5 block text-sm font-medium">
                   Title
                 </label>
-                <input
+                <input data-ui-field=""
                   id="work-order-title"
                   type="text"
                   value={title}
@@ -899,7 +899,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
               <label htmlFor="work-order-text" className="mb-1.5 block text-sm font-medium">
                 Work Brief
               </label>
-              <textarea
+              <textarea data-ui-field=""
                 id="work-order-text"
                 value={text}
                 disabled={workOrderLocked}
@@ -1066,7 +1066,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
 	                    <label htmlFor="max-review-cycles" className="mb-1.5 block text-sm font-medium">
 	                      Max Review Cycles
 	                    </label>
-                    <input
+                    <input data-ui-field=""
                       id="max-review-cycles"
                       type="number"
 	                      min={0}
@@ -1081,7 +1081,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
 	                    <label htmlFor="max-validation-cycles" className="mb-1.5 block text-sm font-medium">
 	                      Max Validation Cycles
 	                    </label>
-                    <input
+                    <input data-ui-field=""
                       id="max-validation-cycles"
                       type="number"
 	                      min={0}

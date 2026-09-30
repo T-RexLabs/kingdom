@@ -137,7 +137,7 @@ export function ModalDialog({
       <FloatingOverlay
         lockScroll
         className={cn(
-          "fixed inset-0 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm",
+          "ui-modal-overlay fixed inset-0 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm",
           overlayClassName,
         )}
         style={{ zIndex: OVERLAY_Z_INDEX.modal }}

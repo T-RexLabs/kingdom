@@ -5,7 +5,7 @@ export function PlannerEditAction({ onEdit }: { onEdit: () => void }) {
         type="button"
         onClick={onEdit}
         aria-label="Edit message"
-        className="rounded px-2 py-1 text-xs text-foreground-subtle transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        className="ui-button ui-button--ghost rounded px-2 py-1 text-xs text-foreground-subtle transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
         Edit
       </button>

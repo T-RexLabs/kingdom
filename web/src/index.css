@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./theme/fonts.css";
+@import "./theme/classic-theme.css";
 
 /* Semantic application vocabulary. Values come from the canonical resolved
    theme; layout, interaction, focus and state meaning remain application-owned. */

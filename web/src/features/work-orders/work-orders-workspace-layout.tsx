@@ -24,7 +24,7 @@ export function WorkOrdersWorkspaceLayout() {
       </div>
     </PageHeader>
     {creating ? <PageContent className="py-8 sm:py-10"><Outlet /></PageContent> : <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[248px_minmax(0,1fr)] xl:grid-cols-[272px_minmax(0,1fr)]">
-      <aside className="hidden min-h-0 border-r border-border bg-surface/30 pt-5 lg:block"><PlanningSessionList /></aside>
+      <aside className="ui-session-sidebar hidden min-h-0 border-r border-border bg-surface/30 pt-5 lg:block"><PlanningSessionList /></aside>
       <main className="min-h-0 min-w-0"><Outlet /></main>
     </div>}
     <Modal open={sessionsOpen} onClose={() => setSessionsOpen(false)} title="Planning Sessions" size="sm"><div className="h-[min(65vh,40rem)]"><PlanningSessionList onSelect={() => setSessionsOpen(false)} /></div></Modal>

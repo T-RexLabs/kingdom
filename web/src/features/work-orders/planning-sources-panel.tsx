@@ -385,7 +385,7 @@ function PlanningSourceRow({
               target="_blank"
               rel="noopener noreferrer"
               aria-label={`Open ${label} on GitHub`}
-              className="rounded p-1.5 text-foreground-subtle hover:text-accent"
+              className="ui-button ui-button--ghost rounded p-1.5 text-foreground-subtle hover:text-accent"
             >
               <ExternalLink className="h-3.5 w-3.5" />
             </a>
@@ -394,7 +394,7 @@ function PlanningSourceRow({
             type="button"
             aria-label={`Refresh ${label}`}
             disabled={busy !== "" || recoveryPending}
-            className="rounded p-1.5 text-foreground-subtle hover:text-accent disabled:opacity-50"
+            className="ui-button ui-button--ghost rounded p-1.5 text-foreground-subtle hover:text-accent disabled:opacity-50"
             onClick={() =>
               void run("refresh", "Could not refresh GitHub source")
             }
@@ -409,7 +409,7 @@ function PlanningSourceRow({
             type="button"
             aria-label={`Remove ${label}`}
             disabled={busy !== "" || recoveryPending || confirmingRemoval}
-            className="rounded p-1.5 text-foreground-subtle hover:text-status-failed disabled:opacity-50"
+            className="ui-button ui-button--destructive rounded p-1.5 text-foreground-subtle hover:text-status-failed disabled:opacity-50"
             onClick={() => setConfirmingRemoval(true)}
           >
             <Trash2 className="h-3.5 w-3.5" />

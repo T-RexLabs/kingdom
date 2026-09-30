@@ -35,7 +35,7 @@ export function PlannerVariantNavigator({
         type="button"
         onClick={() => switchTo(currentVariantIndex - 1)}
         disabled={currentVariantIndex <= 0 || !variantsLoaded}
-        className="flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-accent disabled:opacity-30 disabled:hover:text-foreground-subtle"
+        className="ui-button ui-button--ghost flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-accent disabled:opacity-30 disabled:hover:text-foreground-subtle"
       >
         <ChevronLeft className="h-3.5 w-3.5" />
       </button>
@@ -46,7 +46,7 @@ export function PlannerVariantNavigator({
         type="button"
         onClick={() => switchTo(currentVariantIndex + 1)}
         disabled={currentVariantIndex >= variantCount - 1 || !variantsLoaded}
-        className="flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-accent disabled:opacity-30 disabled:hover:text-foreground-subtle"
+        className="ui-button ui-button--ghost flex h-5 w-5 items-center justify-center rounded text-foreground-subtle transition-colors hover:text-accent disabled:opacity-30 disabled:hover:text-foreground-subtle"
       >
         <ChevronRight className="h-3.5 w-3.5" />
       </button>

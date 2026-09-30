@@ -76,7 +76,7 @@ export function RunsPage() {
               size={16}
               className="pointer-events-none absolute left-3 top-3.5 text-foreground-muted"
             />
-            <input
+            <input data-ui-field=""
               name="q"
               defaultValue={search.q ?? ""}
               placeholder="Search run titles or content…"
@@ -129,7 +129,7 @@ export function RunsPage() {
         <section
           aria-label="Runs"
           aria-busy={retained.isRetainingPreviousData}
-          className="overflow-hidden rounded-2xl border border-border bg-surface/40"
+          className="ui-inset-panel overflow-hidden rounded-2xl border border-border bg-surface/40"
         >
           <div className="flex items-center justify-between border-b border-border px-5 py-3 text-xs text-foreground-muted">
             <span>{items.length} Loaded</span>

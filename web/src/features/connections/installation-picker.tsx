@@ -58,7 +58,7 @@ export function InstallationPicker({
               <span
                 aria-hidden
                 className={cn(
-                  "mt-0.5 flex h-4 w-4 flex-none items-center justify-center border text-[10px] font-bold",
+                  "ui-checkbox-indicator mt-0.5 flex h-4 w-4 flex-none items-center justify-center border text-[10px] font-bold",
                   "rounded",
                   isSelected ? "border-accent bg-accent text-background" : "border-border",
                 )}

@@ -91,7 +91,7 @@ export function PlannerQuestionChoices({
                         }
                       : undefined
                   }
-                  className={`rounded-full px-3.5 py-1.5 text-xs font-medium transition-all ${
+                  className={`ui-button ui-button--outline ui-choice rounded-full px-3.5 py-1.5 text-xs font-medium transition-all ${
                     isSelected
                       ? "border border-accent/60 bg-accent/20 text-accent"
                       : answered || multiSelectAnswered
@@ -107,7 +107,7 @@ export function PlannerQuestionChoices({
               <button
                 type="button"
                 onClick={onTypeYourAnswer}
-                className="rounded-full border border-border/60 bg-surface-raised/50 px-3.5 py-1.5 text-xs font-medium text-foreground-subtle transition-all hover:border-accent/40 hover:bg-surface-raised hover:text-foreground"
+                className="ui-button ui-button--outline rounded-full border border-border/60 bg-surface-raised/50 px-3.5 py-1.5 text-xs font-medium text-foreground-subtle transition-all hover:border-accent/40 hover:bg-surface-raised hover:text-foreground"
               >
                 Type Your Answer
               </button>
@@ -119,7 +119,7 @@ export function PlannerQuestionChoices({
                 type="button"
                 onClick={() => onSubmitMultiSelect?.(options.filter((option) => resolvedSelectedValues.includes(option.value)))}
                 disabled={disabled || resolvedSelectedValues.length === 0 || multiSelectAnswered}
-                className="rounded-full border border-accent/40 bg-accent/10 px-3.5 py-1.5 text-xs font-semibold text-accent transition-all hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
+                className="ui-button ui-button--default rounded-full border border-accent/40 bg-accent/10 px-3.5 py-1.5 text-xs font-semibold text-accent transition-all hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Submit selection
               </button>

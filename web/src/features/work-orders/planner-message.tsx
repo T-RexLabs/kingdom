@@ -1,7 +1,8 @@
 import type { PlanningMessage } from "@/api/hooks";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { formatTimestamp } from "@/lib/utils";
-import { RefreshCw, User } from "lucide-react";
+import { RefreshCw } from "lucide-react";
+import { ThemeIcon } from "@/theme";
 import { ActivitySources } from "@/features/activity/activity-sources";
 import type { ActivityItem } from "@/features/activity/activity-view";
 import { PlannerEditAction } from "./planner-message-actions";
@@ -102,7 +103,8 @@ export function PlannerMessageCard({
           className={`min-w-0 space-y-1.5 ${isAssistant ? "flex-1" : "text-right"} ${!isAssistant && isEditing ? "flex-1" : ""}`}
         >
           <div
-            className={`overflow-hidden rounded-2xl px-4 py-3 text-sm text-left space-y-3 ${
+            data-message-kind={isAssistant ? "assistant" : "user"}
+            className={`ui-chat-message overflow-hidden rounded-2xl px-4 py-3 text-sm text-left space-y-3 ${
               isAssistant
                 ? "w-full text-foreground"
                 : `${isEditing ? "w-full" : "w-fit ml-auto"} rounded-tr-md bg-accent/10 border border-accent/20 text-foreground`
@@ -166,7 +168,7 @@ export function PlannerMessageCard({
                   type="button"
                   onClick={onRegenerate}
                   aria-label="Regenerate reply"
-                  className="flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-surface-raised/80 text-foreground-subtle transition-colors hover:border-accent/40 hover:text-accent"
+                  className="ui-button ui-button--ghost flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-surface-raised/80 text-foreground-subtle transition-colors hover:border-accent/40 hover:text-accent"
                 >
                   <RefreshCw className="h-3 w-3" />
                 </button>
@@ -177,8 +179,8 @@ export function PlannerMessageCard({
           )}
         </div>
         {!isAssistant ? (
-          <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent/70">
-            <User className="h-3.5 w-3.5" />
+          <div className="ui-operator-avatar mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent/70">
+            <ThemeIcon slot="role.operator" size="var(--ui-operator-avatar-icon-size, 14px)" />
           </div>
         ) : null}
       </div>

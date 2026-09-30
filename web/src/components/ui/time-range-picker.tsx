@@ -100,7 +100,7 @@ function CustomWindow({
       <label htmlFor={id} className="mb-2 block text-sm">
         Minutes
       </label>
-      <input
+      <input data-ui-field=""
         id={id}
         type="text"
         inputMode="numeric"

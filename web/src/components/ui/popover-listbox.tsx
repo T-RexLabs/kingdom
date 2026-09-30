@@ -291,7 +291,7 @@ export function PopoverListbox({
                   // "Search Model".
                   aria-label={search.placeholder ?? (triggerAriaLabel ? `Search ${triggerAriaLabel}` : "Search")}
                   autoFocus
-                  className="m-2 shrink-0 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle/50 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
+                  className="ui-field m-2 shrink-0 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle/50 focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent"
                 />
               ) : null}
               <div
@@ -370,6 +370,7 @@ function PopoverOption({
       type="button"
       role="option"
       aria-selected={selected}
+      data-active={active || undefined}
       disabled={item.disabled}
       tabIndex={focusable && active ? 0 : -1}
       className={className}
@@ -388,7 +389,7 @@ function PopoverOption({
 }
 
 function optionClassName(active: boolean, selected: boolean, disabled: boolean): string {
-  const base = "flex min-h-9 w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors";
+  const base = "ui-menu-option flex min-h-9 w-full items-center gap-3 rounded-md px-3 py-2 text-left text-sm transition-colors";
   if (disabled) return `${base} cursor-not-allowed text-foreground-subtle opacity-50`;
   if (selected) return `${base} bg-accent-subtle font-medium text-accent`;
   if (active) return `${base} bg-surface-raised/60 text-foreground`;

@@ -29,3 +29,16 @@ it("keeps private validation bytes paired with their corresponding preview", () 
   const view = render(<ThemePreviewCard manifest={pkg.manifest} pkg={pkg} files={{ "assets/mark.svg": encoded }} />);
   expect(view.container.querySelector("img")).toHaveAttribute("src", `data:image/svg+xml;base64,${encoded}`);
 });
+
+it("isolates flat sample text from classic chrome and leaves classic bevels application-owned", () => {
+  const flat = builtInThemes.find((theme) => theme.id === "obsidian-court")!;
+  const classic = builtInThemes.find((theme) => theme.id === "workstation-98")!;
+  const view = render(<ThemePreviewCard manifest={flat} compact />);
+  expect(screen.getByText("Theme Sample").parentElement).toHaveStyle({ color: flat.tokens["text.secondary"] });
+  expect(screen.getByText("Plan").style.borderRadius).toBe("var(--theme-radius)");
+  expect(screen.getByLabelText(`${flat.name} presentation sample`)).toHaveAttribute("data-chrome", "flat");
+  view.rerender(<ThemePreviewCard manifest={classic} compact />);
+  expect(screen.getByText("Theme Sample").parentElement?.style.color).toBe("");
+  expect(screen.getByText("Plan").style.borderColor).toBe("");
+  expect(screen.getByLabelText(`${classic.name} presentation sample`)).toHaveAttribute("data-chrome", "classic");
+});

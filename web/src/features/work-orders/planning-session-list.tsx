@@ -73,7 +73,7 @@ export function PlanningSessionList({ onSelect }: { onSelect?: () => void } = {}
           </Link>
           <div className="relative">
             <Search aria-hidden="true" className="pointer-events-none absolute left-3 top-2.5 h-4 w-4 text-foreground-subtle" />
-            <input aria-label="Search planning sessions" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search sessions..." className="w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" />
+            <input aria-label="Search planning sessions" type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search sessions..." className="ui-field w-full rounded-lg border border-border bg-background py-2 pl-9 pr-3 text-sm outline-none focus:border-accent focus:ring-1 focus:ring-accent" />
           </div>
           <p className="px-1 text-xs font-medium text-foreground-subtle">{query ? "Search Results" : "Recent Sessions"}</p>
         </div>
@@ -91,7 +91,7 @@ export function PlanningSessionList({ onSelect }: { onSelect?: () => void } = {}
           itemContent={(_index, session) => {
           const isActive = pathname === `/work-orders/planning/${session.planning_session_id}`;
           return (
-            <div role="listitem" className={`group flex items-center gap-1 rounded-xl transition-colors ${isActive ? "bg-accent/10" : "hover:bg-surface-raised"}`}>
+            <div role="listitem" className={`ui-session-item group flex items-center gap-1 rounded-xl transition-colors ${isActive ? "bg-accent/10" : "hover:bg-surface-raised"}`}>
               <Link to="/work-orders/planning/$sessionId" params={{ sessionId: session.planning_session_id }} onClick={onSelect} aria-current={isActive ? "page" : undefined} className="min-w-0 flex-1 rounded-xl px-3 py-3 focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
                 <p className={`truncate text-sm font-medium ${hasPlaceholderTitle(session) ? "text-foreground-subtle italic" : "text-foreground"}`}>{displaySessionTitle(session)}</p>
                 <p className="mt-1 text-xs text-foreground-subtle">{session.conversation_state === "processing" ? "In Progress" : session.current_draft_id ? "Plan Available" : "Discussion"}</p>

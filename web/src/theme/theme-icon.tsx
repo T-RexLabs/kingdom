@@ -7,9 +7,10 @@ import type { IconSlot, ResolvedThemeManifest } from "./contract";
 
 const lucideNames = new Set<string>(iconNames);
 function IconFallback() { return <Circle size="100%" aria-hidden="true" />; }
-function AssetIcon({ url, size, title, className }: { url: string; size: number | string; title?: string; className?: string }) {
+function AssetIcon({ url, size, title, className, original }: { url: string; size: number | string; title?: string; className?: string; original: boolean }) {
   const [failed, setFailed] = useState(false);
   if (failed) return <span className={className} style={{ display: "inline-flex", width: size, height: size }} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}><IconFallback /></span>;
+  if (original) return <span className={className} style={{ display: "inline-flex", flexShrink: 0, width: size, height: size }} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}><img className="theme-icon-original" src={url} alt="" style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={() => setFailed(true)} /></span>;
   // A mask uses the same foreground color as Lucide; SVG stays an isolated
   // resource. The hidden image detects decoding failures for a neutral fallback.
   return <span className={className} style={{ display: "inline-block", flexShrink: 0, width: size, height: size, backgroundColor: "currentColor", maskImage: `url("${url}")`, maskRepeat: "no-repeat", maskPosition: "center", maskSize: "contain" } as CSSProperties} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true}><img src={url} alt="" hidden onError={() => setFailed(true)} /></span>;
@@ -23,7 +24,7 @@ export function ManifestIcon({ theme, assetURLs, slot, size = 20, title, classNa
   const reference = theme.icons[slot as IconSlot];
   const assetID = reference?.startsWith("asset:") ? reference.slice(6) : "";
   if (assetID && theme.assets[assetID]?.mediaType === "image/svg+xml" && assetURLs[assetID]) {
-    return <AssetIcon key={assetURLs[assetID]} url={assetURLs[assetID]} size={size} title={title} className={className} />;
+    return <AssetIcon key={assetURLs[assetID]} url={assetURLs[assetID]} original={theme.surfaces.iconRendering === "original"} size={size} title={title} className={className} />;
   }
   const symbol = reference?.startsWith("lucide:") ? reference.slice(7) : "circle";
   if (!lucideNames.has(symbol)) return <Circle size={size} className={className} role={title ? "img" : undefined} aria-label={title} aria-hidden={title ? undefined : true} />;

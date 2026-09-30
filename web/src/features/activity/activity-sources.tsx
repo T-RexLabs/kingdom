@@ -20,7 +20,7 @@ export function ActivitySources({
       target="_blank"
       rel="noreferrer"
       title={source.url}
-      className="inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-border/40 bg-background/10 px-2.5 py-1 text-[11px] text-foreground-subtle/85 transition-colors hover:border-accent/40 hover:text-foreground"
+      className="ui-source-chip inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-border/40 bg-background/10 px-2.5 py-1 text-[11px] text-foreground-subtle/85 transition-colors hover:border-accent/40 hover:text-foreground"
     >
       <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
       <span className="truncate">{sourceHostLabel(source.url)}</span>
@@ -62,7 +62,7 @@ function ActivityDisclosure({
   children: React.ReactNode;
 }) {
   return (
-    <div className="overflow-hidden rounded-xl border border-border/35 bg-background/6">
+    <div className="ui-inset-panel overflow-hidden rounded-xl border border-border/35 bg-background/6">
       <button
         type="button"
         onClick={onToggle}

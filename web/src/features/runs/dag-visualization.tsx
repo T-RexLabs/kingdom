@@ -96,7 +96,7 @@ export function DAGVisualization({
   return (
     <section
       data-testid="dag-visualization-root"
-      className="overflow-hidden rounded-2xl border border-border bg-surface/50"
+      className="ui-dag-canvas overflow-hidden rounded-2xl border border-border bg-surface/50"
       aria-label="Workflow graph"
     >
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/70 px-5 py-3">
@@ -267,7 +267,7 @@ export function DAGVisualization({
                       data-node-id={node.node_id}
                       data-active={active || undefined}
                       className={cn(
-                        "flex h-full w-full items-center gap-2 rounded-lg border px-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
+                        "ui-dag-node flex h-full w-full items-center gap-2 rounded-lg border px-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent",
                         runtime
                           ? "bg-surface text-foreground-muted"
                           : "bg-surface-raised text-foreground",
@@ -282,7 +282,7 @@ export function DAGVisualization({
                         active
                           ? {
                               boxShadow:
-                                "0 0 16px color-mix(in srgb, var(--color-status-running) 16%, transparent)",
+                                "var(--ui-dag-active-shadow, 0 0 16px color-mix(in srgb, var(--color-status-running) 16%, transparent))",
                             }
                           : undefined
                       }

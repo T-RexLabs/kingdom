@@ -48,7 +48,11 @@ it("keeps canonical font, numeric, and surface values when choosing through shar
   await user.click(screen.getByRole("option", { name: "2 Pixels" }));
   await user.click(screen.getByRole("button", { name: "Native Control Scheme" }));
   await user.click(screen.getByRole("option", { name: "Light" }));
-  expect(JSON.parse(screen.getByTestId("draft").textContent!)).toMatchObject({ typography: { body: "asset:local", headingWeight: 600 }, surfaces: { borderWidth: 2 }, colorScheme: "light" });
+  await user.click(screen.getByRole("button", { name: "Control Style" }));
+  await user.click(screen.getByRole("option", { name: "Classic Desktop" }));
+  await user.click(screen.getByRole("button", { name: "Icon Colors" }));
+  await user.click(screen.getByRole("option", { name: "Original Artwork" }));
+  expect(JSON.parse(screen.getByTestId("draft").textContent!)).toMatchObject({ typography: { body: "asset:local", headingWeight: 600 }, surfaces: { borderWidth: 2, chrome: "classic", iconRendering: "original" }, colorScheme: "light" });
 });
 
 it("edits and resets a semantic color without dropping other customizations", () => {

@@ -67,7 +67,7 @@ function NotificationCard({ notification, onRemove }: { notification: Notificati
 
   return (
     <div
-      className={`w-80 rounded-lg border border-border/80 bg-surface-raised shadow-xl ${animClass}`}
+      className={`ui-notification w-80 rounded-lg border border-border/80 bg-surface-raised shadow-xl ${animClass}`}
       role="status"
       aria-live="polite"
     >
