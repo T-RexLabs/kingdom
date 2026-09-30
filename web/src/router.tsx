@@ -5,6 +5,7 @@ import {
   lazyRouteComponent,
   redirect,
 } from "@tanstack/react-router";
+import { validateAnalyticsSearch } from "@/lib/analytics-time-range";
 import { NotFoundPage } from "@/components/error-boundary";
 import { RootLayout } from "@/components/root-layout";
 import { parseRunDetailSearch } from "@/features/runs/run-detail-tabs";
@@ -136,30 +137,7 @@ const connectionsRoute = createRoute({
 const analyticsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/analytics",
-  validateSearch: (search: Record<string, unknown>): { window_minutes?: number; run_id?: string; view?: "runs" | "usage" | "reliability" } => {
-    const next: { window_minutes?: number; run_id?: string; view?: "runs" | "usage" | "reliability" } = {};
-
-    if (search.view === "runs" || search.view === "usage" || search.view === "reliability") next.view = search.view;
-    const rawMinutes = search.window_minutes;
-    if (typeof rawMinutes === "number" && Number.isFinite(rawMinutes)) {
-      const rounded = Math.round(rawMinutes);
-      if (rounded >= 1 && rounded <= 525600) {
-        next.window_minutes = rounded;
-      }
-    } else if (typeof rawMinutes === "string") {
-      const parsed = Number.parseInt(rawMinutes, 10);
-      if (Number.isFinite(parsed) && parsed >= 1 && parsed <= 525600) {
-        next.window_minutes = parsed;
-      }
-    }
-
-    const rawRunID = search.run_id;
-    if (typeof rawRunID === "string" && rawRunID.trim().length > 0) {
-      next.run_id = rawRunID;
-    }
-
-    return next;
-  },
+  validateSearch: validateAnalyticsSearch,
   component: lazyRouteComponent(
     () => import("@/features/analytics/analytics-page"),
     "AnalyticsPage"

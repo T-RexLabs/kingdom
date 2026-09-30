@@ -301,16 +301,20 @@ type analyticsExecutionDetailPayload struct {
 }
 
 type analyticsSnapshotPayload struct {
-	SnapshotAt      string                            `json:"snapshot_at"`
-	WindowMinutes   int                               `json:"window_minutes"`
-	AllTimeRunCount int                               `json:"all_time_run_count"`
-	Overview        analyticsOverviewPayload          `json:"overview"`
+	WindowStart     string                       `json:"window_start"`
+	WindowEnd       string                       `json:"window_end"`
+	SnapshotAt      string                       `json:"snapshot_at"`
+	WindowMinutes   int                          `json:"window_minutes"`
+	AllTimeRunCount int                          `json:"all_time_run_count"`
+	Overview        analyticsOverviewPayload     `json:"overview"`
 	RunAnalytics    analyticsRunAnalyticsPayload `json:"run_analytics"`
 }
 
 type analyticsExecutionDetailSnapshotPayload struct {
-	SnapshotAt      string                               `json:"snapshot_at"`
-	WindowMinutes   int                                  `json:"window_minutes"`
+	WindowStart     string                          `json:"window_start"`
+	WindowEnd       string                          `json:"window_end"`
+	SnapshotAt      string                          `json:"snapshot_at"`
+	WindowMinutes   int                             `json:"window_minutes"`
 	ExecutionDetail analyticsExecutionDetailPayload `json:"execution_detail"`
 }
 
@@ -356,12 +360,12 @@ func (s *Server) handleGetAnalyticsSnapshot(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	snapshotAt := s.now().UTC()
-	windowStart, windowMinutes, ok := s.parseWindowMinutes(w, r, 1440, snapshotAt)
+	window, ok := s.parseAnalyticsWindow(w, r, snapshotAt)
 	if !ok {
 		return
 	}
 
-	snapshot, err := s.buildAnalyticsSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes)
+	snapshot, err := s.buildAnalyticsSnapshot(r.Context(), snapshotAt, window)
 	if err != nil {
 		s.writeInternalError(w, "fetch realm analytics snapshot failed")
 		return
@@ -375,13 +379,13 @@ func (s *Server) handleGetAnalyticsExecutionDetailSnapshot(w http.ResponseWriter
 		return
 	}
 	snapshotAt := s.now().UTC()
-	windowStart, windowMinutes, ok := s.parseWindowMinutes(w, r, 1440, snapshotAt)
+	window, ok := s.parseAnalyticsWindow(w, r, snapshotAt)
 	if !ok {
 		return
 	}
 	selectedRunID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 
-	snapshot, err := s.buildAnalyticsExecutionDetailSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes, selectedRunID)
+	snapshot, err := s.buildAnalyticsExecutionDetailSnapshot(r.Context(), snapshotAt, window, selectedRunID)
 	if err != nil {
 		if errors.Is(err, errAnalyticsSelectedRunNotFound) {
 			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_realm_analytics_execution_detail_snapshot", map[string]any{"run_id": selectedRunID})
@@ -419,11 +423,11 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotP
 	if err != nil {
 		return dashboardSnapshotPayload{}, err
 	}
-	tokenSummary, err := snapshotScopedTokenStore(s.tokenUsageStore, tx).SummaryByTimeWindowExecutionAnalytics(ctx, windowStart)
+	tokenSummary, err := snapshotScopedTokenStore(s.tokenUsageStore, tx).SummaryByTimeWindowExecutionAnalytics(ctx, windowStart, snapshotAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return dashboardSnapshotPayload{}, fmt.Errorf("query dashboard token summary: %w", err)
 	}
-	overview, err := loadAnalyticsOverview(ctx, tx, windowStart)
+	overview, err := loadAnalyticsOverview(ctx, tx, windowStart, snapshotAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return dashboardSnapshotPayload{}, err
 	}
@@ -457,7 +461,7 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotP
 	}, nil
 }
 
-func (s *Server) buildAnalyticsSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int) (analyticsSnapshotPayload, error) {
+func (s *Server) buildAnalyticsSnapshot(ctx context.Context, snapshotAt time.Time, window analyticsWindow) (analyticsSnapshotPayload, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
 		return analyticsSnapshotPayload{}, fmt.Errorf("begin realm analytics snapshot tx: %w", err)
@@ -469,11 +473,11 @@ func (s *Server) buildAnalyticsSnapshot(ctx context.Context, snapshotAt time.Tim
 	if err != nil {
 		return analyticsSnapshotPayload{}, err
 	}
-	overview, err := loadAnalyticsOverview(ctx, tx, windowStart)
+	overview, err := loadAnalyticsOverview(ctx, tx, window.Start, window.End)
 	if err != nil {
 		return analyticsSnapshotPayload{}, err
 	}
-	runAnalytics, err := loadAnalyticsRunAnalytics(ctx, tx, windowStart, windowMinutes)
+	runAnalytics, err := loadAnalyticsRunAnalytics(ctx, tx, window.Start, window.End, window.Minutes)
 	if err != nil {
 		return analyticsSnapshotPayload{}, err
 	}
@@ -483,14 +487,16 @@ func (s *Server) buildAnalyticsSnapshot(ctx context.Context, snapshotAt time.Tim
 
 	return analyticsSnapshotPayload{
 		SnapshotAt:      snapshotAt.Format(time.RFC3339),
-		WindowMinutes:   windowMinutes,
+		WindowMinutes:   window.Minutes,
+		WindowStart:     window.Start,
+		WindowEnd:       window.End,
 		AllTimeRunCount: allTimeRunCount,
 		Overview:        overview,
 		RunAnalytics:    runAnalytics,
 	}, nil
 }
 
-func (s *Server) buildAnalyticsExecutionDetailSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int, selectedRunID string) (analyticsExecutionDetailSnapshotPayload, error) {
+func (s *Server) buildAnalyticsExecutionDetailSnapshot(ctx context.Context, snapshotAt time.Time, window analyticsWindow, selectedRunID string) (analyticsExecutionDetailSnapshotPayload, error) {
 	metadataByModel := s.loadTokenModelMetadata(ctx)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
@@ -501,7 +507,7 @@ func (s *Server) buildAnalyticsExecutionDetailSnapshot(ctx context.Context, snap
 	}()
 	tokenStore := snapshotScopedTokenStore(s.tokenUsageStore, tx)
 
-	executionDetail, err := s.loadAnalyticsExecutionDetail(ctx, tx, tokenStore, metadataByModel, windowStart, selectedRunID)
+	executionDetail, err := s.loadAnalyticsExecutionDetail(ctx, tx, tokenStore, metadataByModel, window.Start, window.End, selectedRunID)
 	if err != nil {
 		return analyticsExecutionDetailSnapshotPayload{}, err
 	}
@@ -511,23 +517,53 @@ func (s *Server) buildAnalyticsExecutionDetailSnapshot(ctx context.Context, snap
 
 	return analyticsExecutionDetailSnapshotPayload{
 		SnapshotAt:      snapshotAt.Format(time.RFC3339),
-		WindowMinutes:   windowMinutes,
+		WindowMinutes:   window.Minutes,
+		WindowStart:     window.Start,
+		WindowEnd:       window.End,
 		ExecutionDetail: executionDetail,
 	}, nil
 }
 
-func (s *Server) parseWindowMinutes(w http.ResponseWriter, r *http.Request, defaultMinutes int, snapshotAt time.Time) (since string, windowMinutes int, ok bool) {
-	rawMinutes := strings.TrimSpace(r.URL.Query().Get("window_minutes"))
-	minutes := defaultMinutes
-	if rawMinutes != "" {
+type analyticsWindow struct {
+	Start   string
+	End     string
+	Minutes int
+}
+
+func (s *Server) parseAnalyticsWindow(w http.ResponseWriter, r *http.Request, snapshotAt time.Time) (analyticsWindow, bool) {
+	query := r.URL.Query()
+	if query.Has("start_at") || query.Has("end_at") {
+		if query.Has("window_minutes") || len(query["start_at"]) != 1 || len(query["end_at"]) != 1 {
+			s.writeBadRequest(w, "start_at and end_at must be supplied together without window_minutes")
+			return analyticsWindow{}, false
+		}
+		start, startErr := time.Parse(time.RFC3339Nano, query.Get("start_at"))
+		end, endErr := time.Parse(time.RFC3339Nano, query.Get("end_at"))
+		if startErr != nil || endErr != nil {
+			s.writeBadRequest(w, "start_at and end_at must be RFC3339 timestamps with a time zone")
+			return analyticsWindow{}, false
+		}
+		if !end.After(start) {
+			s.writeBadRequest(w, "end_at must be after start_at")
+			return analyticsWindow{}, false
+		}
+		// Unix seconds preserve long calendar intervals that overflow time.Duration.
+		seconds := end.Unix() - start.Unix()
+		if end.Nanosecond() > start.Nanosecond() {
+			seconds++
+		}
+		return analyticsWindow{Start: start.UTC().Format(time.RFC3339Nano), End: end.UTC().Format(time.RFC3339Nano), Minutes: int((seconds + 59) / 60)}, true
+	}
+	minutes := 1440
+	if rawMinutes := strings.TrimSpace(query.Get("window_minutes")); rawMinutes != "" {
 		parsed, err := strconv.Atoi(rawMinutes)
-		if err != nil || parsed < 1 || parsed > 525600 {
+		if err != nil || parsed < 1 || parsed > 525600 || len(query["window_minutes"]) != 1 {
 			s.writeBadRequest(w, "window_minutes must be an integer between 1 and 525600")
-			return "", 0, false
+			return analyticsWindow{}, false
 		}
 		minutes = parsed
 	}
-	return snapshotAt.Add(-time.Duration(minutes) * time.Minute).Format(time.RFC3339), minutes, true
+	return analyticsWindow{Start: snapshotAt.Add(-time.Duration(minutes) * time.Minute).Format(time.RFC3339Nano), End: snapshotAt.Format(time.RFC3339Nano), Minutes: minutes}, true
 }
 
 func (s *Server) buildRuntimeMetrics(ctx context.Context, q sqlReadQuerier, snapshotAt time.Time) (runtimeMetricsPayload, error) {
@@ -717,7 +753,7 @@ func loadDashboardTrend(ctx context.Context, q sqlReadQuerier, windowStart time.
 	return trend, nil
 }
 
-func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) (analyticsOverviewPayload, error) {
+func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since, until string) (analyticsOverviewPayload, error) {
 	var overview analyticsOverviewPayload
 	if err := q.QueryRowContext(ctx,
 		`SELECT COUNT(1),
@@ -727,8 +763,8 @@ func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) 
 		        COALESCE(AVG(CASE WHEN run_status IN ('succeeded', 'failed', 'cancelled')
 		            THEN (julianday(updated_at) - julianday(created_at)) * 86400.0 END), 0)
 		 FROM workflow_runs
-		 WHERE created_at >= ?`,
-		since,
+		 WHERE julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?)`,
+		since, until,
 	).Scan(&overview.TotalRuns, &overview.SucceededRuns, &overview.FailedRuns, &overview.CancelledRuns, &overview.AvgDurationSeconds); err != nil {
 		return analyticsOverviewPayload{}, fmt.Errorf("query analytics overview runs: %w", err)
 	}
@@ -742,10 +778,10 @@ func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) 
 		 FROM workflow_runs wr
 		 JOIN node_runs nr ON nr.run_id = wr.run_id
 		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
-		 WHERE wr.created_at >= ?
+		 WHERE julianday(wr.created_at) >= julianday(?) AND julianday(wr.created_at) < julianday(?)
 		   AND wn.node_class = 'execution_review'
 		   AND nr.node_status = 'failed'`,
-		since,
+		since, until,
 	).Scan(&runsWithRework); err != nil {
 		return analyticsOverviewPayload{}, fmt.Errorf("query analytics rework incidence: %w", err)
 	}
@@ -760,8 +796,8 @@ func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) 
 		 JOIN workflow_nodes wn ON wn.node_id = nr.node_id AND wn.workflow_definition_id = wr.workflow_definition_id
 		 WHERE wn.node_class = 'validation_gates'
 		   AND nr.node_status = 'failed'
-		   AND wr.created_at >= ?`,
-		since,
+		   AND julianday(wr.created_at) >= julianday(?) AND julianday(wr.created_at) < julianday(?)`,
+		since, until,
 	).Scan(&runsWithValidationFailures); err != nil {
 		return analyticsOverviewPayload{}, fmt.Errorf("query analytics validation incidence: %w", err)
 	}
@@ -771,7 +807,7 @@ func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) 
 	return overview, nil
 }
 
-func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since string, windowMinutes int) (analyticsRunAnalyticsPayload, error) {
+func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since, until string, windowMinutes int) (analyticsRunAnalyticsPayload, error) {
 	bucketType := "day"
 	bucketExpr := "strftime('%Y-%m-%d', created_at)"
 	if windowMinutes <= 24*60 {
@@ -784,11 +820,11 @@ func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since stri
 		        COALESCE(SUM(CASE WHEN run_status = 'failed' THEN 1 ELSE 0 END), 0),
 		        COALESCE(SUM(CASE WHEN run_status = 'cancelled' THEN 1 ELSE 0 END), 0)
 		 FROM workflow_runs
-		 WHERE created_at >= ? AND run_status IN ('succeeded', 'failed', 'cancelled')
+		 WHERE julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?) AND run_status IN ('succeeded', 'failed', 'cancelled')
 		 GROUP BY bucket
 		 ORDER BY bucket ASC`,
 		bucketExpr,
-	), since)
+	), since, until)
 	if err != nil {
 		return analyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics outcome series: %w", err)
 	}
@@ -806,8 +842,8 @@ func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since stri
 	}
 
 	nodeClassFilter, nodeClassArgs := executionAnalyticsNodeClassFilterSQL("wn")
-	roleArgs := make([]any, 0, 1+len(nodeClassArgs))
-	roleArgs = append(roleArgs, since)
+	roleArgs := make([]any, 0, 2+len(nodeClassArgs))
+	roleArgs = append(roleArgs, since, until)
 	roleArgs = append(roleArgs, nodeClassArgs...)
 	roleRows, err := q.QueryContext(ctx,
 		fmt.Sprintf(`SELECT nr.required_role,
@@ -816,7 +852,7 @@ func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since stri
 		 JOIN workflow_runs wr ON wr.run_id = nr.run_id
 		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE nr.started_at IS NOT NULL AND nr.finished_at IS NOT NULL
-		   AND nr.started_at >= ?
+		   AND julianday(nr.started_at) >= julianday(?) AND julianday(nr.started_at) < julianday(?)
 		   AND %s
 		 GROUP BY nr.required_role
 		 ORDER BY AVG((julianday(nr.finished_at) - julianday(nr.started_at)) * 86400.0) DESC`, nodeClassFilter),
@@ -838,7 +874,7 @@ func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since stri
 		return analyticsRunAnalyticsPayload{}, fmt.Errorf("iterate analytics duration by role rows: %w", err)
 	}
 
-	recentRuns, err := loadAnalyticsRecentRuns(ctx, q, since, 20)
+	recentRuns, err := loadAnalyticsRecentRuns(ctx, q, since, until, 20)
 	if err != nil {
 		return analyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics recent runs: %w", err)
 	}
@@ -851,7 +887,7 @@ func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since stri
 	}, nil
 }
 
-func loadAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since string, limit int) ([]gen.RunSummary, error) {
+func loadAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since, until string, limit int) ([]gen.RunSummary, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT wr.run_id,
 		        wd.workflow_name,
@@ -867,11 +903,11 @@ func loadAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since string
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
 		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
-		 WHERE wr.created_at >= ?
+		 WHERE julianday(wr.created_at) >= julianday(?) AND julianday(wr.created_at) < julianday(?)
 		   AND wr.run_status IN ('succeeded', 'failed', 'cancelled')
 		 ORDER BY wr.updated_at DESC, wr.run_id DESC
 		 LIMIT ?`,
-		since,
+		since, until,
 		limit,
 	)
 	if err != nil {
@@ -887,7 +923,7 @@ func (s *Server) loadAnalyticsExecutionDetail(
 	q sqlReadQuerier,
 	tokenStore *state.TokenUsageStore,
 	metadataByModel map[string]tokenModelMetadata,
-	since string,
+	since, until string,
 	selectedRunID string,
 ) (analyticsExecutionDetailPayload, error) {
 	if selectedRunID != "" {
@@ -920,19 +956,19 @@ func (s *Server) loadAnalyticsExecutionDetail(
 		}, nil
 	}
 
-	tokenSummary, err := tokenStore.SummaryByTimeWindowExecutionAnalytics(ctx, since)
+	tokenSummary, err := tokenStore.SummaryByTimeWindowExecutionAnalytics(ctx, since, until)
 	if err != nil {
 		return analyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token summary: %w", err)
 	}
-	byRole, err := tokenStore.ByRoleExecutionAnalytics(ctx, since)
+	byRole, err := tokenStore.ByRoleExecutionAnalytics(ctx, since, until)
 	if err != nil {
 		return analyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token breakdown: %w", err)
 	}
-	artifacts, err := loadArtifactSummarySince(ctx, q, since)
+	artifacts, err := loadArtifactSummaryWindow(ctx, q, since, until)
 	if err != nil {
 		return analyticsExecutionDetailPayload{}, err
 	}
-	nodes, err := loadExecutionNodeSummarySince(ctx, q, since)
+	nodes, err := loadExecutionNodeSummaryWindow(ctx, q, since, until)
 	if err != nil {
 		return analyticsExecutionDetailPayload{}, err
 	}
@@ -978,21 +1014,21 @@ func loadAnalyticsSelectedRun(ctx context.Context, q sqlReadQuerier, runID strin
 	return &selectedRun, nil
 }
 
-func loadArtifactSummarySince(ctx context.Context, q sqlReadQuerier, since string) (analyticsArtifactSummaryPayload, error) {
-	return loadArtifactSummary(ctx, q, `created_at >= ?`, since)
+func loadArtifactSummaryWindow(ctx context.Context, q sqlReadQuerier, since, until string) (analyticsArtifactSummaryPayload, error) {
+	return loadArtifactSummary(ctx, q, `julianday(created_at) >= julianday(?) AND julianday(created_at) < julianday(?)`, since, until)
 }
 
 func loadArtifactSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (analyticsArtifactSummaryPayload, error) {
 	return loadArtifactSummary(ctx, q, `run_id = ?`, runID)
 }
 
-func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (analyticsArtifactSummaryPayload, error) {
+func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string, args ...any) (analyticsArtifactSummaryPayload, error) {
 	var summary analyticsArtifactSummaryPayload
 	err := q.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT COALESCE(COUNT(1), 0), COALESCE(SUM(size_bytes), 0)
 		 FROM artifacts
 		 WHERE %s`, predicate),
-		arg,
+		args...,
 	).Scan(&summary.TotalCount, &summary.TotalSizeBytes)
 	if err != nil {
 		return analyticsArtifactSummaryPayload{}, fmt.Errorf("query artifact summary: %w", err)
@@ -1000,19 +1036,19 @@ func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string
 	return summary, nil
 }
 
-func loadExecutionNodeSummarySince(ctx context.Context, q sqlReadQuerier, since string) (analyticsNodeSummaryPayload, error) {
-	return loadExecutionNodeSummary(ctx, q, `nr.started_at IS NOT NULL AND nr.started_at >= ?`, since)
+func loadExecutionNodeSummaryWindow(ctx context.Context, q sqlReadQuerier, since, until string) (analyticsNodeSummaryPayload, error) {
+	return loadExecutionNodeSummary(ctx, q, `julianday(nr.started_at) >= julianday(?) AND julianday(nr.started_at) < julianday(?)`, since, until)
 }
 
 func loadExecutionNodeSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (analyticsNodeSummaryPayload, error) {
 	return loadExecutionNodeSummary(ctx, q, `nr.run_id = ? AND nr.started_at IS NOT NULL`, runID)
 }
 
-func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (analyticsNodeSummaryPayload, error) {
+func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate string, filterArgs ...any) (analyticsNodeSummaryPayload, error) {
 	var summary analyticsNodeSummaryPayload
 	nodeClassFilter, nodeClassArgs := executionAnalyticsNodeClassFilterSQL("wn")
-	args := make([]any, 0, 1+len(nodeClassArgs))
-	args = append(args, arg)
+	args := make([]any, 0, len(filterArgs)+len(nodeClassArgs))
+	args = append(args, filterArgs...)
 	args = append(args, nodeClassArgs...)
 	err := q.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT COUNT(1)

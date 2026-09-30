@@ -44,7 +44,6 @@ function OverviewSample({ manifest, urls }: SampleProps) {
 function PlanningSample({ manifest, urls }: SampleProps) {
   return <div className="theme-preview-stack">
     <PreviewArtwork manifest={manifest} urls={urls} slot="planningEmpty" label="Planning artwork" />
-    <ManifestIcon theme={manifest} assetURLs={urls} slot="nav.planning" title="Planning icon" size={24} />
     <SampleHeading>{manifest.copy["planning.emptyTitle"]}</SampleHeading>
     <p>{manifest.copy["planning.emptyDescription"]}</p>
     <div className="theme-surface theme-preview-panel theme-preview-stack">

@@ -1,4 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
+import {
+  analyticsRangeParams,
+  analyticsTimeRangeIdentity,
+  DEFAULT_ANALYTICS_TIME_RANGE,
+  type AnalyticsTimeRange,
+} from "@/lib/analytics-time-range";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { pollingRefetchQueryOptions } from "./query-freshness";
 import type {
@@ -17,12 +23,12 @@ const REALM_ANALYTICS_SNAPSHOT_REFETCH_INTERVAL_MS = 5_000;
 export const dashboardSnapshotQueryKey = ["dashboard", "snapshot"] as const;
 export const analyticsQueryKey = ["analytics"] as const;
 export const runtimeMetricsQueryKey = ["metrics", "runtime"] as const;
-export const analyticsSnapshotQueryKey = (windowMinutes: number) =>
-  ["analytics", "snapshot", windowMinutes] as const;
-export const analyticsExecutionDetailQueryKey = (windowMinutes: number, runId: string | null) =>
+export const analyticsSnapshotQueryKey = (range: AnalyticsTimeRange) =>
+  ["analytics", "snapshot", analyticsTimeRangeIdentity(range)] as const;
+export const analyticsExecutionDetailQueryKey = (range: AnalyticsTimeRange, runId: string | null) =>
   runId
     ? ["analytics", "execution-detail", "run", runId] as const
-    : ["analytics", "execution-detail", "window", windowMinutes] as const;
+    : ["analytics", "execution-detail", "window", analyticsTimeRangeIdentity(range)] as const;
 
 export function useHealth() {
   return useQuery({
@@ -54,13 +60,11 @@ export function useRuntimeMetrics() {
   });
 }
 
-export function useAnalyticsSnapshot(windowMinutes = 1440) {
+export function useAnalyticsSnapshot(range: AnalyticsTimeRange = DEFAULT_ANALYTICS_TIME_RANGE) {
   return useQuery({
-    queryKey: analyticsSnapshotQueryKey(windowMinutes),
+    queryKey: analyticsSnapshotQueryKey(range),
     queryFn: ({ signal }) => apiFetch<AnalyticsSnapshot>("/analytics/snapshot", {
-      params: {
-        window_minutes: windowMinutes,
-      },
+      params: analyticsRangeParams(range),
       signal,
     }),
     ...pollingRefetchQueryOptions,
@@ -69,13 +73,13 @@ export function useAnalyticsSnapshot(windowMinutes = 1440) {
   });
 }
 
-export function useAnalyticsExecutionDetailSnapshot(windowMinutes = 1440, runId: string | null = null) {
+export function useAnalyticsExecutionDetailSnapshot(range: AnalyticsTimeRange = DEFAULT_ANALYTICS_TIME_RANGE, runId: string | null = null) {
   return useQuery({
-    queryKey: analyticsExecutionDetailQueryKey(windowMinutes, runId),
+    queryKey: analyticsExecutionDetailQueryKey(range, runId),
     queryFn: ({ signal }) => apiFetch<AnalyticsExecutionDetailSnapshot>("/analytics/execution-detail", {
 			params: runId
 				? { run_id: runId }
-				: { window_minutes: windowMinutes },
+				: analyticsRangeParams(range),
       signal,
     }),
     ...pollingRefetchQueryOptions,

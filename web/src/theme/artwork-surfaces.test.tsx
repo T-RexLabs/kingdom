@@ -61,6 +61,9 @@ it("shows planning artwork above the new-session welcome without replacing its c
   expect(view.container.querySelectorAll("img")).toHaveLength(1);
   expect(art!.compareDocumentPosition(screen.getByRole("heading", { level: 2 })) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(screen.getByRole("button", { name: "Start Planner Session" })).toBeEnabled();
+  // Welcome artwork is optional content; the navigation icon is not a heading ornament.
+  const welcome = screen.getByRole("heading", { level: 2 }).parentElement;
+  expect(welcome?.querySelector("svg")).toBeNull();
 });
 
 it("keeps an agent card illustration separate from the role portrait in its details", () => {

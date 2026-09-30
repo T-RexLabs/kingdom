@@ -420,6 +420,58 @@ afterEach(() => {
 });
 
 describe("AnalyticsPage", () => {
+  it("restores an exact calendar range from the URL and clears both dates when a preset is selected", async () => {
+    const dateParams = { start_at: "2026-03-01T23:00:00.000Z", end_at: "2026-03-08T23:00:00.000Z" };
+    routerState.search = { ...dateParams, view: "usage" };
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, dateParams);
+    setDefaultResponse("/analytics/execution-detail", aggregateExecutionDetailSnapshot, dateParams);
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot30m, { window_minutes: 30 });
+    setDefaultResponse("/analytics/execution-detail", aggregateExecutionDetailSnapshot, { window_minutes: 30 });
+    installApiFetchMock();
+    const user = userEvent.setup();
+    render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+    await screen.findByText("Windowed work order (24h)");
+    for (const path of ["/analytics/snapshot", "/analytics/execution-detail"]) {
+      expect(apiFetchMock).toHaveBeenCalledWith(path, expect.objectContaining({ params: dateParams }));
+    }
+    expect(screen.getByRole("button", { name: "Usage" })).toHaveAttribute("aria-pressed", "true");
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
+    await screen.findByText("Windowed work order (30m)");
+    expect(routerState.search).toEqual({ view: "usage", window_minutes: 30 });
+  });
+
+  it("uses a date-range empty state and never labels historical dates as the last rolling window", async () => {
+    const dateParams = { start_at: "2025-12-31T23:00:00.000Z", end_at: "2026-01-01T23:00:00.000Z" };
+    routerState.search = dateParams;
+    setDefaultResponse("/analytics/snapshot", { ...aggregateSnapshot24h, run_analytics: { ...aggregateSnapshot24h.run_analytics, recent_runs: [] } }, dateParams);
+    setDefaultResponse("/analytics/execution-detail", aggregateExecutionDetailSnapshot, dateParams);
+    installApiFetchMock();
+    render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+    await screen.findByText("No completed runs in the selected date range.");
+    expect(screen.queryByText("No completed runs in the last 24h.")).not.toBeInTheDocument();
+  });
+
+  it("clears aggregate execution data when a different date range loads", async () => {
+    routerState.search = { view: "usage" };
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, { window_minutes: 1440 });
+    setDefaultResponse("/analytics/execution-detail", aggregateExecutionDetailSnapshot, { window_minutes: 1440 });
+    const dateParams = { start_at: "2026-03-01T23:00:00.000Z", end_at: "2026-03-08T23:00:00.000Z" };
+    queueResponse("/analytics/snapshot", createDeferred().promise, dateParams);
+    queueResponse("/analytics/execution-detail", createDeferred().promise, dateParams);
+    installApiFetchMock();
+    const { container } = render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+    await screen.findByText("Windowed work order (24h)");
+    expect(container.querySelectorAll('[data-testid="horizontal-bar-chart"]').length).toBeGreaterThan(1);
+    await act(async () => {
+      routerState.search = { ...dateParams, view: "usage" };
+      for (const listener of routerState.listeners) listener();
+    });
+    expect(screen.queryByText("Windowed work order (24h)")).not.toBeInTheDocument();
+    // The only chart left is the empty run-duration plot; usage is a loading skeleton.
+    expect(container.querySelectorAll('[data-testid="horizontal-bar-chart"]')).toHaveLength(1);
+    expect(screen.queryByText("Updating execution detail...")).not.toBeInTheDocument();
+  });
+
   it("keeps chart headings and plots inside the shared card inset", async () => {
     setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
       window_minutes: 1440,
@@ -895,7 +947,7 @@ describe("AnalyticsPage", () => {
     expect(screen.queryByText("No runs yet.")).not.toBeInTheDocument();
   });
 
-  it("keeps the previous window snapshot visible while the next window is loading", async () => {
+  it("hides the previous window snapshot while the next window is loading", async () => {
     setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
       window_minutes: 1440,
     });
@@ -925,7 +977,8 @@ describe("AnalyticsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
-    expect(screen.getByText("Windowed work order (24h)")).toBeInTheDocument();
+    expect(screen.queryByText("Windowed work order (24h)")).not.toBeInTheDocument();
+    expect(screen.getByText("Loading analytics for the selected time window…")).toBeInTheDocument();
     expect(
       screen.queryByText("Windowed work order (30m)"),
     ).not.toBeInTheDocument();
@@ -1002,7 +1055,7 @@ describe("AnalyticsPage", () => {
 
     await act(async () => {
       void queryClient.invalidateQueries({
-        queryKey: ["analytics", "snapshot", 1440],
+        queryKey: ["analytics", "snapshot", "last:1440"],
       });
     });
 
@@ -1025,7 +1078,7 @@ describe("AnalyticsPage", () => {
     });
   });
 
-  it("does not rerender the run analytics charts while retained chart data is unchanged", async () => {
+  it("clears both run charts while a different time range loads", async () => {
     setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
       window_minutes: 1440,
     });
@@ -1061,8 +1114,10 @@ describe("AnalyticsPage", () => {
 
     await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
-    expect(chartRenderSpies.horizontal).not.toHaveBeenCalled();
-    expect(chartRenderSpies.stacked).not.toHaveBeenCalled();
+    expect(chartRenderSpies.horizontal).toHaveBeenLastCalledWith(expect.objectContaining({ data: [] }));
+    expect(chartRenderSpies.stacked).toHaveBeenLastCalledWith(expect.objectContaining({ data: [] }));
+    chartRenderSpies.horizontal.mockClear();
+    chartRenderSpies.stacked.mockClear();
 
     await act(async () => {
       nextSnapshot.resolve(aggregateSnapshot30m);

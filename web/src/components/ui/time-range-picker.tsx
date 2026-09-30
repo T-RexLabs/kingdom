@@ -1,6 +1,7 @@
 import { useId, useState } from "react";
 import { useInteractions } from "@floating-ui/react";
-import { ChevronDown, Clock } from "lucide-react";
+import { CalendarDays, ChevronDown, Clock } from "lucide-react";
+import type { AnalyticsTimeRange } from "@/lib/analytics-time-range";
 import { cn } from "@/lib/utils";
 import { usePopoverFloating } from "@/lib/use-popover-floating";
 import { Button } from "./button";
@@ -27,19 +28,20 @@ function durationLabel(minutes: number): string {
   return `${minutes}m`;
 }
 
-/** The API accepts a rolling duration ending now, not an absolute date range. */
 export function TimeRangePicker({
   value,
   onChange,
   className,
 }: {
-  value: number;
-  onChange: (minutes: number) => void;
+  value: AnalyticsTimeRange;
+  onChange: (range: AnalyticsTimeRange) => void;
   className?: string;
 }) {
   const id = useId();
   const [open, setOpen] = useState(false);
-  const preset = PRESETS.some(([minutes]) => minutes === value);
+  const relativeMinutes = value.kind === "relative" ? value.minutes : null;
+  const preset = PRESETS.some(([minutes]) => minutes === relativeMinutes);
+  const selectionKey = value.kind === "relative" ? `relative:${value.minutes}` : `${value.startAt}:${value.endAt}`;
   const {
     context,
     setReference,
@@ -75,14 +77,14 @@ export function TimeRangePicker({
               variant="ghost"
               size="sm"
               aria-label={accessibleLabel}
-              aria-pressed={value === minutes}
+              aria-pressed={relativeMinutes === minutes}
               onClick={() => {
-                onChange(minutes);
+                onChange({ kind: "relative", minutes });
                 setOpen(false);
               }}
               className={cn(
                 "min-w-8 px-2 font-mono",
-                value === minutes && "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent",
+                relativeMinutes === minutes && "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent",
               )}
             >
               {label}
@@ -98,10 +100,10 @@ export function TimeRangePicker({
           })}
           variant="outline"
           size="sm"
-          className={cn("min-h-10", !preset && "border-accent bg-accent/10 text-accent")}
+          className={cn("min-h-10 max-w-full", !preset && "border-accent bg-accent/10 text-accent")}
         >
-          <Clock className="h-3.5 w-3.5" aria-hidden="true" />
-          <span>{preset ? "Custom" : durationLabel(value)}</span>
+          <CalendarDays className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+          <span className="whitespace-normal text-left">{value.kind === "absolute" ? calendarRangeLabel(value) : preset ? "Custom" : durationLabel(value.minutes)}</span>
           <ChevronDown className={cn("h-3 w-3 transition-transform", open && "rotate-180")} aria-hidden="true" />
         </Button>
       </div>
@@ -112,14 +114,15 @@ export function TimeRangePicker({
           style={panelStyle}
           modalOwned={modalOwned}
           floatingProps={getFloatingProps({ "aria-labelledby": `${id}-title` })}
-          className="w-[22rem] max-w-[calc(100vw-1rem)]"
+          initialFocus={2}
+          className="w-[24rem] max-w-[calc(100vw-1rem)]"
         >
           <CustomWindow
-            key={value}
+            key={selectionKey}
             id={id}
             initial={value}
-            onApply={(minutes) => {
-              onChange(minutes);
+            onApply={(range) => {
+              onChange(range);
               setOpen(false);
             }}
           />
@@ -129,77 +132,118 @@ export function TimeRangePicker({
   );
 }
 
-function CustomWindow({
-  id,
-  initial,
-  onApply,
-}: {
+function localDateValue(date: Date): string {
+  return `${date.getFullYear().toString().padStart(4, "0")}-${(date.getMonth() + 1).toString().padStart(2, "0")}-${date.getDate().toString().padStart(2, "0")}`;
+}
+
+function parseLocalDate(value: string): Date | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isFinite(date.getTime()) && localDateValue(date) === value ? date : null;
+}
+
+function calendarRangeLabel(range: Extract<AnalyticsTimeRange, { kind: "absolute" }>): string {
+  const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
+  return formatter.formatRange(new Date(range.startAt), new Date(new Date(range.endAt).getTime() - 1));
+}
+
+function CustomWindow({ id, initial, onApply }: {
   id: string;
-  initial: number;
-  onApply: (minutes: number) => void;
+  initial: AnalyticsTimeRange;
+  onApply: (range: AnalyticsTimeRange) => void;
 }) {
-  const [draft, setDraft] = useState(`now-${durationLabel(initial)}`);
+  const [mode, setMode] = useState(initial.kind);
+  const [draft, setDraft] = useState(`now-${durationLabel(initial.kind === "relative" ? initial.minutes : 1440)}`);
+  const [fromDate, setFromDate] = useState(() => localDateValue(initial.kind === "absolute"
+    ? new Date(initial.startAt) : new Date(Date.now() - initial.minutes * 60_000)));
+  const [toDate, setToDate] = useState(() => localDateValue(initial.kind === "absolute"
+    ? new Date(new Date(initial.endAt).getTime() - 1) : new Date()));
   const [error, setError] = useState("");
+  const descriptionId = `${id}-help${error ? ` ${id}-error` : ""}`;
   return (
     <form
+      noValidate
       className="min-h-0 overflow-y-auto p-5"
       onSubmit={(event) => {
         event.preventDefault();
+        if (mode === "absolute") {
+          const start = parseLocalDate(fromDate);
+          const end = parseLocalDate(toDate);
+          if (!start || !end) {
+            setError("Choose a valid start and end date.");
+            return;
+          }
+          if (end < start) {
+            setError("The end date must be on or after the start date.");
+            return;
+          }
+          // Advance the local calendar day, not 24 hours: selected days may span daylight-saving changes.
+          end.setDate(end.getDate() + 1);
+          end.setHours(0, 0, 0, 0);
+          if (end.getFullYear() > 9999) {
+            setError("Choose an end date before December 31, 9999.");
+            return;
+          }
+          onApply({ kind: "absolute", startAt: start.toISOString(), endAt: end.toISOString() });
+          return;
+        }
         const expression = /^now\s*-\s*(\d+(?:\.\d+)?)\s*(m|h|d)$/i.exec(draft.trim());
-        const minutes = expression
-          ? Number(expression[1]) * (MINUTES_PER_UNIT[expression[2].toLowerCase()] ?? 0)
-          : 0;
+        const minutes = expression ? Number(expression[1]) * (MINUTES_PER_UNIT[expression[2].toLowerCase()] ?? 0) : 0;
         if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 525600) {
           setError("Enter a window such as now-90m, now-36h or now-14d, from 1 minute to 365 days in whole minutes.");
           return;
         }
-        onApply(minutes);
+        onApply({ kind: "relative", minutes });
       }}
     >
       <h2 id={`${id}-title`} className="text-sm font-semibold">Custom Time Window</h2>
-      <p className="mt-2 text-xs leading-relaxed text-foreground-muted">
-        Show a rolling window of activity ending now.
+      <div role="group" aria-label="Window mode" className="mt-4 grid grid-cols-2 gap-1 rounded-md border border-border bg-background p-1">
+        {(["relative", "absolute"] as const).map((option) => (
+          <Button key={option} type="button" variant="ghost" size="sm" aria-pressed={mode === option}
+            onClick={() => { setMode(option); setError(""); }}
+            className={cn(mode === option && "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent")}
+          >
+            {option === "absolute" ? <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" /> : <Clock className="h-3.5 w-3.5" aria-hidden="true" />}
+            {option === "absolute" ? "Date Range" : "Relative"}
+          </Button>
+        ))}
+      </div>
+      <p id={`${id}-help`} className="mt-3 text-xs leading-relaxed text-foreground-muted">
+        {mode === "absolute" ? `Includes both dates in ${Intl.DateTimeFormat().resolvedOptions().timeZone}.` : "Show a rolling window of activity ending now."}
       </p>
       <div className="mt-5 space-y-4">
         <div>
           <label htmlFor={`${id}-from`} className={fieldLabelClass}>From</label>
-          <input
-            id={`${id}-from`}
-            type="text"
-            value={draft}
-            autoComplete="off"
-            spellCheck={false}
-            onChange={(event) => {
-              setDraft(event.target.value);
-              setError("");
-            }}
-            aria-invalid={Boolean(error)}
-            aria-describedby={`${id}-help${error ? ` ${id}-error` : ""}`}
-            className={cn(fieldClass, "font-mono")}
-          />
-          <p id={`${id}-help`} className="mt-2 text-xs leading-relaxed text-foreground-muted">
-            Use now-90m, now-36h or now-14d. Up to 365 days.
-          </p>
+          {mode === "absolute" ? (
+            <input id={`${id}-from`} type="date" value={fromDate}
+              onChange={(event) => { setFromDate(event.target.value); setError(""); }}
+              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "min-w-0")}
+            />
+          ) : (
+            <input id={`${id}-from`} type="text" value={draft} autoComplete="off" spellCheck={false}
+              onChange={(event) => { setDraft(event.target.value); setError(""); }}
+              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "font-mono")}
+            />
+          )}
+          {mode === "relative" && <p className="mt-2 text-xs leading-relaxed text-foreground-muted">Use now-90m, now-36h or now-14d. Up to 365 days.</p>}
         </div>
         <div>
           <label htmlFor={`${id}-to`} className={fieldLabelClass}>To</label>
-          <input
-            id={`${id}-to`}
-            type="text"
-            value="Now"
-            readOnly
-            tabIndex={-1}
-            className={cn(fieldClass, "bg-surface-raised text-foreground-muted")}
-          />
+          {mode === "absolute" ? (
+            <input id={`${id}-to`} type="date" value={toDate}
+              onChange={(event) => { setToDate(event.target.value); setError(""); }}
+              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "min-w-0")}
+            />
+          ) : (
+            <input id={`${id}-to`} type="text" value="Now" readOnly tabIndex={-1}
+              className={cn(fieldClass, "bg-surface-raised text-foreground-muted")}
+            />
+          )}
         </div>
       </div>
-      {error && (
-        <p id={`${id}-error`} role="alert" className="mt-3 text-xs leading-relaxed text-status-failed">
-          {error}
-        </p>
-      )}
+      {error && <p id={`${id}-error`} role="alert" className="mt-3 text-xs leading-relaxed text-status-failed">{error}</p>}
       <div className="mt-5 flex justify-end border-t border-border pt-4">
-        <Button type="submit" size="sm">Apply Window</Button>
+        <Button type="submit" size="sm">{mode === "absolute" ? "Apply Range" : "Apply Window"}</Button>
       </div>
     </form>
   );

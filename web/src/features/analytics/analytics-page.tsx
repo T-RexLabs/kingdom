@@ -37,6 +37,13 @@ import {
   type TokenUsageByRoleModel as TokensByRoleModel,
 } from "@/api/hooks";
 import { ApiError } from "@/api/client";
+import {
+  analyticsRangeParams,
+  analyticsTimeRangeFromSearch,
+  analyticsTimeRangeIdentity,
+  analyticsTimeWindowDescription,
+  type AnalyticsTimeRange,
+} from "@/lib/analytics-time-range";
 import { useRetainedData } from "@/lib/use-retained-data";
 import { cn, formatTimestamp } from "@/lib/utils";
 import { Link, useNavigate, useSearch } from "@tanstack/react-router";
@@ -132,31 +139,26 @@ export function AnalyticsPage() {
     from: "/analytics",
     select: (search) => search.view ?? "runs",
   });
-  const windowTotalMinutes = useSearch({
-    from: "/analytics",
-    select: (search) => search.window_minutes ?? 1440,
-  });
-
-  const setWindowTotalMinutes = (totalMinutes: number) => {
+  const search = useSearch({ from: "/analytics" });
+  const timeRange = useMemo(() => analyticsTimeRangeFromSearch(search), [search]);
+  const rangeIdentity = analyticsTimeRangeIdentity(timeRange);
+  const setTimeRange = (range: AnalyticsTimeRange) => {
     startTransition(() => {
       navigate({
-        search: (previous) => ({
-          ...previous,
-          window_minutes: totalMinutes,
-        }),
+        search: (previous) => {
+          const next = { ...previous };
+          delete next.window_minutes;
+          delete next.start_at;
+          delete next.end_at;
+          return { ...next, ...analyticsRangeParams(range) };
+        },
         replace: true,
       });
     });
   };
 
-  const snapshotQuery = useAnalyticsSnapshot(windowTotalMinutes);
-  const retainedSnapshot = useRetainedData({
-    identity: windowTotalMinutes,
-    data: snapshotQuery.data,
-    isPending: snapshotQuery.isPending,
-    isFetching: snapshotQuery.isFetching,
-  });
-  const snapshot = retainedSnapshot.displayData;
+  const snapshotQuery = useAnalyticsSnapshot(timeRange);
+  const snapshot = snapshotQuery.data;
   const snapshotBlockingError =
     snapshotQuery.error && !snapshot ? snapshotQuery.error : null;
   const snapshotWarningMessage =
@@ -173,8 +175,8 @@ export function AnalyticsPage() {
       description="Understand outcomes, resource use, and where work gets stuck."
       actions={
         <TimeRangePicker
-          value={windowTotalMinutes}
-          onChange={setWindowTotalMinutes}
+          value={timeRange}
+          onChange={setTimeRange}
         />
       }
     >
@@ -200,9 +202,9 @@ export function AnalyticsPage() {
           </button>
         ))}
       </div>
-      {retainedSnapshot.isRetainingPreviousData && (
+      {snapshotQuery.isPending && (
         <p className="mb-4 text-sm text-foreground-muted" role="status">
-          Refreshing analytics…
+          Loading analytics for the selected time window…
         </p>
       )}
       <div hidden={view !== "runs"} className="space-y-8">
@@ -224,17 +226,18 @@ export function AnalyticsPage() {
           />
         ) : (
           <RunAnalyticsSection
+            key={rangeIdentity}
             overview={snapshot?.overview}
             runAnalytics={snapshot?.run_analytics}
             allTimeRunCount={snapshot?.all_time_run_count ?? 0}
-            windowLabel={formatWindowLabel(windowTotalMinutes)}
-            isLoading={retainedSnapshot.isInitialLoading && !snapshot}
+            windowLabel={analyticsTimeWindowDescription(timeRange)}
+            isLoading={snapshotQuery.isPending}
           />
         )}
       </div>
       <div hidden={view !== "usage"} className="space-y-6">
         <Section title="Execution Detail">
-          <ExecutionDetailSection windowTotalMinutes={windowTotalMinutes} />
+          <ExecutionDetailSection timeRange={timeRange} />
         </Section>
       </div>
       <div hidden={view !== "reliability"} className="space-y-8">
@@ -621,7 +624,7 @@ function RunAnalyticsSection({
             <p className="text-sm text-foreground-subtle">No runs yet.</p>
           ) : (
             <p className="text-sm text-foreground-subtle">
-              {`No completed runs in the last ${windowLabel}.`}
+              {`No completed runs in ${windowLabel}.`}
             </p>
           )}
         </CardContent>
@@ -630,23 +633,12 @@ function RunAnalyticsSection({
   );
 }
 
-function formatWindowLabel(windowMinutes: number): string {
-  if (windowMinutes % 1440 === 0) {
-    const days = windowMinutes / 1440;
-    return days === 1 ? "24h" : `${days}d`;
-  }
-  if (windowMinutes % 60 === 0) {
-    return `${windowMinutes / 60}h`;
-  }
-  return `${windowMinutes}m`;
-}
-
 /* ── Section 4: Execution Detail ── */
 
 function ExecutionDetailSection({
-  windowTotalMinutes,
+  timeRange,
 }: {
-  windowTotalMinutes: number;
+  timeRange: AnalyticsTimeRange;
 }) {
   const { theme } = useTheme();
   const selectedRunId = useSearch({
@@ -674,13 +666,14 @@ function ExecutionDetailSection({
   };
 
   const executionDetailQuery = useAnalyticsExecutionDetailSnapshot(
-    windowTotalMinutes,
+    timeRange,
     selectedRunId,
   );
   const retainedExecutionDetail = useRetainedData({
     identity: selectedRunId
       ? `run:${selectedRunId}`
-      : `window:${windowTotalMinutes}`,
+      : `window:${analyticsTimeRangeIdentity(timeRange)}`,
+    retentionScope: analyticsTimeRangeIdentity(timeRange),
     data: executionDetailQuery.data?.execution_detail,
     isPending: executionDetailQuery.isPending,
     isFetching: executionDetailQuery.isFetching,

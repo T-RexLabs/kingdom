@@ -167,7 +167,6 @@ export function RunsPage() {
             </p>
           ) : items.length === 0 && !error ? (
             <div className="flex flex-col items-center gap-3 px-5 py-14 text-center">
-              <ThemeIcon slot="nav.runs" size={28} className="text-accent/60" />
               <p className="text-sm text-foreground-muted">
                 {search.q || activeFilter !== "all"
                   ? "No runs match these filters."

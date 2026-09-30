@@ -109,6 +109,8 @@ it("shows authored copy and artwork in selectable contexts with keyboard navigat
   expect(screen.getByText("An Updated Planning Start")).toBeInTheDocument();
   expect(screen.getByText("A changed planning description.")).toBeInTheDocument();
   expect(screen.getByRole("img", { name: "Planning artwork" })).toBeInTheDocument();
+  expect(screen.queryByRole("img", { name: "Planning icon" })).not.toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Planning navigation icon" })).toBeInTheDocument();
   await user.click(screen.getByRole("tab", { name: "Agent" }));
   expect(screen.getByRole("img", { name: "Agent backdrop artwork" })).toBeInTheDocument();
 });

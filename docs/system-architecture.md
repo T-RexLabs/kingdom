@@ -140,6 +140,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Web UI for overview, planning, work order issuance, run inspection, approvals, agent inspection, and analytics.
 - `kd` CLI for workspace bootstrap, runtime lifecycle, work order/run control, artifact export, timeline streaming, and approvals.
 - REST API under `/api/v1` for all product capabilities.
+- Analytics uses one read transaction per snapshot. Its rolling `window_minutes` selection ends at read time; an explicit RFC3339 `start_at`/`end_at` pair selects a fixed interval with an inclusive start and exclusive end. Run outcomes and review/validation incidence use run creation time, execution durations and counts use node start time, and token/artifact totals use their own record creation time. Every aggregate applies both bounds with normalized timestamp comparisons. Selected-run execution detail remains scoped to that run independently of the time selection; `snapshot_at` always reports the actual read time.
 - Unauthenticated liveness probe at `/healthz`.
 
 ### Presentation and Theme Packages

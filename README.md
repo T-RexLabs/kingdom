@@ -112,6 +112,7 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 4. Review the brief, approval choice, and delivery location before issuing it.
 5. Follow the run under **Runs** through **Workflow** and **Agent Activity**. Muted provider reasoning, the current action, and the latest reported checklist appear within the conversation and remain visible after completion. Planning uses the same live presentation, then collapses it when the saved reply arrives. **Show Activity** opens recorded thinking, tool calls, and checklists on demand. **Instructions** shows the complete stored dispatch body for the selected attempt; **Final Response** appears when a settled response exists, which also remains inline in the conversation.
 6. Review and validation rework counts and limits appear in the run header. Open **Run Files** for deliverables or **Run Details** for the work order, inline settings, and audit history. Exact attempt evidence is available under **Audit**.
+7. Use **Analytics** to compare Runs, Usage, and Reliability. Quick presets show rolling windows; **Custom → Date Range** selects inclusive calendar dates in your local time zone.
 
 Planning-session lists load history in pages. Use **Load More Sessions** in the planning rail or **Load Older Sessions** beside **From Plan** to continue through older history. Provider activity has independent bounded history and exact-content reads.
 

@@ -2296,6 +2296,8 @@ paths:
       summary: Fetch the Analytics page snapshot.
       parameters:
         - $ref: "#/components/parameters/WindowMinutes"
+        - $ref: "#/components/parameters/AnalyticsStartAt"
+        - $ref: "#/components/parameters/AnalyticsEndAt"
       responses:
         "200":
           description: Analytics snapshot payload.
@@ -2317,10 +2319,12 @@ paths:
       summary: Fetch aggregate execution detail or an exact selected-run snapshot for Analytics.
       parameters:
         - $ref: "#/components/parameters/WindowMinutes"
+        - $ref: "#/components/parameters/AnalyticsStartAt"
+        - $ref: "#/components/parameters/AnalyticsEndAt"
         - name: run_id
           in: query
           required: false
-          description: When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted.
+          description: When provided, scope execution detail to that exact run regardless of the selected time range. Time parameters only scope aggregate mode when `run_id` is omitted.
           schema:
             type: string
             minLength: 1
@@ -2788,6 +2792,7 @@ components:
         type: string
         minLength: 1
     WindowMinutes:
+      description: Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at.
       name: window_minutes
       in: query
       required: false
@@ -2795,7 +2800,22 @@ components:
         type: integer
         minimum: 1
         maximum: 525600
-        default: 1440
+    AnalyticsStartAt:
+      name: start_at
+      in: query
+      required: false
+      description: Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed.
+      schema:
+        type: string
+        format: date-time
+    AnalyticsEndAt:
+      name: end_at
+      in: query
+      required: false
+      description: Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes.
+      schema:
+        type: string
+        format: date-time
     Cursor:
       name: cursor
       in: query
@@ -3697,12 +3717,21 @@ components:
     AnalyticsExecutionDetailSnapshot:
       type: object
       additionalProperties: false
-      required: [snapshot_at, window_minutes, execution_detail]
+      required: [snapshot_at, window_start, window_end, window_minutes, execution_detail]
       properties:
         snapshot_at:
           type: string
           format: date-time
+        window_start:
+          type: string
+          format: date-time
+          description: Inclusive start instant of the selected interval, normalized to UTC.
+        window_end:
+          type: string
+          format: date-time
+          description: Exclusive end instant of the selected interval, normalized to UTC.
         window_minutes:
+          description: Selected interval duration in minutes, rounded up.
           type: integer
           minimum: 1
         execution_detail:
@@ -3711,12 +3740,21 @@ components:
     AnalyticsSnapshot:
       type: object
       additionalProperties: false
-      required: [snapshot_at, window_minutes, all_time_run_count, overview, run_analytics]
+      required: [snapshot_at, window_start, window_end, window_minutes, all_time_run_count, overview, run_analytics]
       properties:
         snapshot_at:
           type: string
           format: date-time
+        window_start:
+          type: string
+          format: date-time
+          description: Inclusive start instant of the selected interval, normalized to UTC.
+        window_end:
+          type: string
+          format: date-time
+          description: Exclusive end instant of the selected interval, normalized to UTC.
         window_minutes:
+          description: Selected interval duration in minutes, rounded up.
           type: integer
           minimum: 1
         all_time_run_count:

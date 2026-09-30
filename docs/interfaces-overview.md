@@ -220,8 +220,8 @@ Artifact pages return `snapshot_id` and optional `next_cursor`; publication page
 Notes:
 
 - `/api/v1/dashboard/snapshot` separates current runtime state (`runtime`) from window-scoped dashboard metrics (`overview`, `tokens`).
-- `/api/v1/analytics/snapshot` remains the fully window-scoped analytics surface.
-- `/api/v1/analytics/execution-detail` returns aggregate execution detail for `window_minutes`, or the exact selected-run detail when `run_id` is provided, and returns `404` for an unknown `run_id`.
+- `/api/v1/analytics/snapshot` accepts either rolling `window_minutes` (default 1440, maximum 525600) or a fixed RFC3339 `start_at`/`end_at` pair. Fixed intervals must be positive and use an inclusive start and exclusive end; they may include future dates and have no duration cap. The two filter forms cannot be combined. Responses return normalized UTC `window_start`/`window_end`, the duration rounded up in `window_minutes`, and the actual read time in `snapshot_at`.
+- `/api/v1/analytics/execution-detail` accepts the same time filters and interval metadata. It returns aggregate execution detail for that interval, or exact selected-run detail independent of the interval when `run_id` is provided, and returns `404` for an unknown `run_id`.
 
 ## Streaming Surfaces
 

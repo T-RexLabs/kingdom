@@ -832,7 +832,7 @@ describe("execution query keys", () => {
 			run_analytics: { bucket_type: "hour", outcome_series: [], duration_by_role: [], recent_runs: [] },
 		});
 
-		const { result } = renderHook(() => useAnalyticsSnapshot(1440), {
+		const { result } = renderHook(() => useAnalyticsSnapshot({ kind: "relative", minutes: 1440 }), {
 			wrapper: makeWrapper(qc),
 		});
 
@@ -871,7 +871,7 @@ describe("execution query keys", () => {
 			},
 		});
 
-		const { result } = renderHook(() => useAnalyticsExecutionDetailSnapshot(1440, "run-1"), {
+		const { result } = renderHook(() => useAnalyticsExecutionDetailSnapshot({ kind: "relative", minutes: 1440 }, "run-1"), {
 			wrapper: makeWrapper(qc),
 		});
 

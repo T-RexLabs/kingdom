@@ -2122,12 +2122,34 @@ export interface components {
         AnalyticsExecutionDetailSnapshot: {
             /** Format: date-time */
             snapshot_at: string;
+            /**
+             * Format: date-time
+             * @description Inclusive start instant of the selected interval, normalized to UTC.
+             */
+            window_start: string;
+            /**
+             * Format: date-time
+             * @description Exclusive end instant of the selected interval, normalized to UTC.
+             */
+            window_end: string;
+            /** @description Selected interval duration in minutes, rounded up. */
             window_minutes: number;
             execution_detail: components["schemas"]["AnalyticsExecutionDetail"];
         };
         AnalyticsSnapshot: {
             /** Format: date-time */
             snapshot_at: string;
+            /**
+             * Format: date-time
+             * @description Inclusive start instant of the selected interval, normalized to UTC.
+             */
+            window_start: string;
+            /**
+             * Format: date-time
+             * @description Exclusive end instant of the selected interval, normalized to UTC.
+             */
+            window_end: string;
+            /** @description Selected interval duration in minutes, rounded up. */
             window_minutes: number;
             all_time_run_count: number;
             overview: components["schemas"]["AnalyticsOverview"];
@@ -4037,7 +4059,12 @@ export interface components {
         ArtifactId: string;
         MessageId: string;
         RunIdQuery: string;
+        /** @description Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at. */
         WindowMinutes: number;
+        /** @description Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed. */
+        AnalyticsStartAt: string;
+        /** @description Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes. */
+        AnalyticsEndAt: string;
         Cursor: string;
         ActivityEventId: string;
         ActivityContentField: "input" | "output" | "reasoning" | "message";
@@ -7051,7 +7078,12 @@ export interface operations {
     getAnalyticsSnapshot: {
         parameters: {
             query?: {
+                /** @description Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at. */
                 window_minutes?: components["parameters"]["WindowMinutes"];
+                /** @description Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed. */
+                start_at?: components["parameters"]["AnalyticsStartAt"];
+                /** @description Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes. */
+                end_at?: components["parameters"]["AnalyticsEndAt"];
             };
             header?: never;
             path?: never;
@@ -7076,8 +7108,13 @@ export interface operations {
     getAnalyticsExecutionDetailSnapshot: {
         parameters: {
             query?: {
+                /** @description Rolling duration ending at snapshot time, defaulting to 1440 minutes when no interval is supplied. Omit when supplying start_at and end_at. */
                 window_minutes?: components["parameters"]["WindowMinutes"];
-                /** @description When provided, scope execution detail to that exact run regardless of `window_minutes`. `window_minutes` only scopes the aggregate mode used when `run_id` is omitted. */
+                /** @description Inclusive RFC3339 start instant for a fixed interval. Requires end_at; cannot be combined with window_minutes. The interval must be positive. Future endpoints are allowed. */
+                start_at?: components["parameters"]["AnalyticsStartAt"];
+                /** @description Exclusive RFC3339 end instant for a fixed interval. Requires start_at; cannot be combined with window_minutes. */
+                end_at?: components["parameters"]["AnalyticsEndAt"];
+                /** @description When provided, scope execution detail to that exact run regardless of the selected time range. Time parameters only scope aggregate mode when `run_id` is omitted. */
                 run_id?: string;
             };
             header?: never;

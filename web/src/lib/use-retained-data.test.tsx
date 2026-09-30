@@ -3,6 +3,19 @@ import { describe, expect, it } from "vitest";
 import { useRetainedData } from "./use-retained-data";
 
 describe("useRetainedData", () => {
+  it("never carries data across a retention scope boundary", () => {
+    type Props = { identity: string; retentionScope: string; data: string[] | undefined; isPending: boolean; isFetching: boolean };
+    const hook = renderHook((props: Props) => useRetainedData(props), {
+      initialProps: { identity: "all", retentionScope: "september", data: ["september-run"], isPending: false, isFetching: false } as Props,
+    });
+    hook.rerender({ identity: "run-1", retentionScope: "september", data: undefined, isPending: true, isFetching: true });
+    expect(hook.result.current.displayData).toEqual(["september-run"]);
+    hook.rerender({ identity: "all", retentionScope: "october", data: undefined, isPending: true, isFetching: true });
+    expect(hook.result.current.displayData).toBeUndefined();
+    expect(hook.result.current.isInitialLoading).toBe(true);
+    expect(hook.result.current.isRetainingPreviousData).toBe(false);
+  });
+
   it("keeps the last successful payload visible while a new identity is fetching", () => {
     type HookProps = {
       identity: string;

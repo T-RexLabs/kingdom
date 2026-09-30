@@ -1,4 +1,3 @@
-import { Github } from "lucide-react";
 import { useEffect, useState } from "react";
 
 /**
@@ -24,9 +23,6 @@ export function GitHubSetupReturnPage() {
   return (
     <main className="flex min-h-screen items-center justify-center bg-background p-6 text-center">
       <div className="max-w-sm space-y-4">
-        <div className="mx-auto w-fit rounded-xl border border-accent/30 bg-accent/10 p-3">
-          <Github className="h-6 w-6 text-accent" />
-        </div>
         <h1 className="font-display text-lg font-semibold text-foreground">
           Step Captured
         </h1>
