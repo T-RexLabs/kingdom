@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"kingdom/internal/processguardian"
 )
 
 // TestMain keeps this package's tests out of the operator's real cache
@@ -21,6 +23,11 @@ import (
 // Redirecting the seam once, here, is what makes that impossible: an individual
 // test cannot reintroduce the hazard by forgetting to opt out of it.
 func TestMain(m *testing.M) {
+	// Installed-mode tests re-execute this binary as the process guardian and
+	// launch gate. Dispatch before Go test flags and test-only cache setup.
+	if exitCode, handled := processguardian.DispatchHiddenMode(os.Args); handled {
+		os.Exit(exitCode)
+	}
 	os.Exit(runPackageTests(m))
 }
 
