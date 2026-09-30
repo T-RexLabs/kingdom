@@ -8,11 +8,10 @@ import {
 } from "@/api/hooks";
 import { apiFetch } from "@/api/client";
 import { type IssueSelection } from "@/features/connections/issue-picker";
-import { externalSourceFailureGuidance } from "@/features/connections/external-source-status";
 import { PlanningSourcesPanel } from "./planning-sources-panel";
 import { Link, useNavigate, useParams, useSearch } from "@tanstack/react-router";
 import { usePlanningMutationJournal } from "./use-planning-mutation-journal";
-import { Feather, Sparkles, ChevronDown } from "lucide-react";
+import { ChevronDown } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { getPlanningSessionDisplayTitleValue, hasPlaceholderTitle } from "./planning-session-title";
@@ -52,9 +51,8 @@ export function PlanningSessionPage() {
   const uiScope = { workspace: session?.project_root ?? "__pending__", sessionId };
   const { store: uiStore, state: sessionUI } = usePlannerSessionUI(uiScope);
   const tab = sessionUI.selectedTab ?? "chat";
-  const setTab = (selectedTab: "chat" | "plan" | "context") => uiStore.updateSession(uiScope, (state) => ({ ...state, selectedTab }));
+  const setTab = (selectedTab: "chat" | "plan") => uiStore.updateSession(uiScope, (state) => ({ ...state, selectedTab }));
   const externalSources = session?.external_sources ?? [];
-  const unreadableSources = externalSources.filter((source) => externalSourceFailureGuidance(source.status)).length;
   const updateTitle = useUpdatePlanningSessionTitle(sessionId);
   const updateModelSelection = useUpdatePlanningSessionModelSelection(sessionId);
   const recoverableAttachSource = usePlanningMutationJournal(
@@ -546,7 +544,6 @@ export function PlanningSessionPage() {
       <div className="relative z-20 shrink-0 space-y-4 border-b border-border px-4 pt-5 sm:px-8">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <Sparkles className="h-4 w-4 shrink-0 text-accent/70" />
             {isEditingTitle ? (
               <input
                 autoFocus
@@ -557,7 +554,13 @@ export function PlanningSessionPage() {
                 // Don't blur-commit while a save error is showing — the
                 // user is mid-recovery and a re-blur would re-fire the
                 // commit before they got to retry/discard.
-                onBlur={titleSaveError ? undefined : () => { void handleCommit(); }}
+                onBlur={
+                  titleSaveError
+                    ? undefined
+                    : () => {
+                        void handleCommit();
+                      }
+                }
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void handleCommit();
                 }}
@@ -565,36 +568,37 @@ export function PlanningSessionPage() {
                 className={`flex-1 border-b ${titleSaveError ? "border-status-failed" : "border-accent"} bg-transparent text-sm font-semibold text-foreground placeholder:text-foreground-subtle/50 focus:outline-none`}
               />
             ) : (
-					<button
-						type="button"
-						className="group/title flex items-center gap-1.5 truncate text-left"
-						onClick={startEditing}
-						aria-label="Edit session title"
-					>
+              <button
+                type="button"
+                className="min-w-0 truncate text-left"
+                onClick={startEditing}
+                aria-label="Edit session title"
+              >
                 {isRevealingTitle ? (
                   <span className="flex items-center gap-[0.25em] text-sm font-semibold text-foreground">
-                    {displayTitle.split(/\s+/).filter(Boolean).map((word, i) => (
-                      <span
-                        key={i}
-                        className="inline-block opacity-0"
-                        style={{
-                          animation: "title-word-reveal 250ms ease-out forwards",
-                          animationDelay: `${i * 100}ms`,
-                        }}
-                      >
-                        {word}
-                      </span>
-                    ))}
+                    {displayTitle
+                      .split(/\s+/)
+                      .filter(Boolean)
+                      .map((word, i) => (
+                        <span
+                          key={i}
+                          className="inline-block opacity-0"
+                          style={{
+                            animation:
+                              "title-word-reveal 250ms ease-out forwards",
+                            animationDelay: `${i * 100}ms`,
+                          }}
+                        >
+                          {word}
+                        </span>
+                      ))}
                   </span>
-						) : (
-							<>
-								<span
-									className={`truncate text-sm font-semibold ${isPlaceholderHeaderTitle ? "italic text-foreground-subtle" : "text-foreground"}`}
-								>
-									{visibleDisplayTitle}
-								</span>
-								<Feather className="h-3 w-3 shrink-0 text-foreground-subtle/0 transition-colors group-hover/title:text-foreground-subtle" />
-							</>
+                ) : (
+                  <span
+                    className={`truncate text-sm font-semibold ${isPlaceholderHeaderTitle ? "italic text-foreground-subtle" : "text-foreground"}`}
+                  >
+                    {visibleDisplayTitle}
+                  </span>
                 )}
               </button>
             )}
@@ -604,16 +608,31 @@ export function PlanningSessionPage() {
                 className="ml-2 flex shrink-0 items-center gap-2 rounded-md border border-status-failed/30 bg-status-failed/10 px-2 py-1 text-xs text-status-failed"
               >
                 <span className="truncate" title={titleSaveError?.message}>
-                  {titleSaveError?.message ?? "A previous title save is unconfirmed."}
+                  {titleSaveError?.message ??
+                    "A previous title save is unconfirmed."}
                 </span>
                 <button
                   type="button"
                   className="rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
-                  onClick={() => { void handleCommit(); }}
+                  onClick={() => {
+                    void handleCommit();
+                  }}
                 >
                   Retry
                 </button>
-                {updateTitle.hasPendingRecovery && <details className="max-w-xs"><summary className="cursor-pointer">Request Details</summary><p className="break-all">{updateTitle.pendingVariables?.title}</p><code className="break-all">{updateTitle.pendingRequestKey}</code></details>}
+                {updateTitle.hasPendingRecovery && (
+                  <details className="max-w-xs">
+                    <summary className="cursor-pointer">
+                      Request Details
+                    </summary>
+                    <p className="break-all">
+                      {updateTitle.pendingVariables?.title}
+                    </p>
+                    <code className="break-all">
+                      {updateTitle.pendingRequestKey}
+                    </code>
+                  </details>
+                )}
                 {!updateTitle.hasPendingRecovery ? (
                   <button
                     type="button"
@@ -631,27 +650,91 @@ export function PlanningSessionPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-2">
-
             <button
               type="button"
               onClick={() => void handleFormalizePlan().catch(() => {})}
-              disabled={formalizePending || !hasUserMessages || session.conversation_state !== "ready" || Boolean(recovery.pendingKind) || recoveryBlocked}
+              disabled={
+                formalizePending ||
+                !hasUserMessages ||
+                session.conversation_state !== "ready" ||
+                Boolean(recovery.pendingKind) ||
+                recoveryBlocked
+              }
               className="flex items-center gap-1.5 rounded-md border border-accent/50 bg-accent/10 px-3 py-1.5 text-xs font-semibold text-accent transition-all hover:bg-accent/20 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {formalizePending ? (
                 <div className="h-3 w-3 animate-spin rounded-full border-2 border-accent border-t-transparent" />
-              ) : (
-                <Sparkles className="h-3 w-3" />
-              )}
+              ) : null}
               {formalizePending ? "Generating Plan..." : "Generate Plan"}
             </button>
           </div>
         </div>
 
-
-        <div role="tablist" aria-label="Planning workspace" className="flex gap-6">{(["chat", "plan", "context"] as const).map((value, index, tabs) => <button key={value} role="tab" id={`planning-tab-${value}`} aria-controls={`planning-panel-${value}`} aria-selected={tab === value} tabIndex={tab === value ? 0 : -1} onClick={() => setTab(value)} onKeyDown={(event) => { const offset = event.key === "ArrowRight" ? 1 : event.key === "ArrowLeft" ? -1 : 0; if (!offset && event.key !== "Home" && event.key !== "End") return; event.preventDefault(); const next = event.key === "Home" ? tabs[0] : event.key === "End" ? tabs[tabs.length - 1] : tabs[(index + offset + tabs.length) % tabs.length]; setTab(next); document.getElementById(`planning-tab-${next}`)?.focus(); }} className={`relative border-b-2 px-1 pb-3 text-sm font-medium transition-colors ${tab === value ? "border-accent text-foreground" : "border-transparent text-foreground-muted hover:text-foreground"}`}>
-          {value === "chat" ? "Chat" : value === "plan" ? "Plan" : "Context"}{value === "context" && unreadableSources > 0 ? <span className="ml-2 rounded bg-status-failed/10 px-1.5 py-0.5 text-xs text-status-failed">{unreadableSources} Unreadable</span> : null}{value === "plan" && (hasPlan || formalizePending) ? <span className="ml-2 inline-block h-1.5 w-1.5 rounded-full bg-accent" aria-label={formalizePending ? "Generating" : "Plan available"} /> : null}
-        </button>)}</div>
+        <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+          <div
+            role="tablist"
+            aria-label="Planning workspace"
+            className="flex gap-6"
+          >
+            {(["chat", "plan"] as const).map((value, index, tabs) => (
+              <button
+                key={value}
+                role="tab"
+                id={`planning-tab-${value}`}
+                aria-controls={`planning-panel-${value}`}
+                aria-selected={tab === value}
+                tabIndex={tab === value ? 0 : -1}
+                onClick={() => setTab(value)}
+                onKeyDown={(event) => {
+                  const offset =
+                    event.key === "ArrowRight"
+                      ? 1
+                      : event.key === "ArrowLeft"
+                        ? -1
+                        : 0;
+                  if (!offset && event.key !== "Home" && event.key !== "End")
+                    return;
+                  event.preventDefault();
+                  const next =
+                    event.key === "Home"
+                      ? tabs[0]
+                      : event.key === "End"
+                        ? tabs[tabs.length - 1]
+                        : tabs[(index + offset + tabs.length) % tabs.length];
+                  setTab(next);
+                  document.getElementById(`planning-tab-${next}`)?.focus();
+                }}
+                className={`relative border-b-2 px-1 pb-3 text-sm font-medium transition-colors ${tab === value ? "border-accent text-foreground" : "border-transparent text-foreground-muted hover:text-foreground"}`}
+              >
+                {value === "chat" ? "Chat" : "Plan"}
+                {value === "plan" && (hasPlan || formalizePending) ? (
+                  <span
+                    className="ml-2 inline-block h-1.5 w-1.5 rounded-full bg-accent"
+                    aria-label={
+                      formalizePending ? "Generating" : "Plan available"
+                    }
+                  />
+                ) : null}
+              </button>
+            ))}
+          </div>
+          <div className="flex min-w-0 flex-wrap items-start gap-2 pb-3">
+            <PlanningSourcesPanel
+              key={`sources:${sessionId}`}
+              attachmentPending={recoverableAttachSource.hasPendingRecovery}
+              workspace={session.project_root}
+              sessionId={sessionId}
+              sources={externalSources}
+              onAttach={attachSource}
+              onChanged={() => sessionQuery.refetch()}
+            />
+            <PlanningContextPanel
+              key={`context:${sessionId}`}
+              session={session}
+              onChanged={() => sessionQuery.refetch()}
+            />
+          </div>
+        </div>
       </div>
 
       {/* Session-load errors are handled by the early-return shell above. */}
@@ -661,61 +744,190 @@ export function PlanningSessionPage() {
         </div>
       ) : null}
 
-      <div role="tabpanel" id="planning-panel-chat" aria-labelledby="planning-tab-chat" hidden={tab !== "chat"} className={tab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}>
-      <PlannerThread
-        composerControls={modelControls}
-        session={session}
-        operation={activeOperation}
-        connection={connection}
-        operationQueryState={operationQueryState}
-        replyRecoveryPending={recoveryKind === "reply"}
-        recoveryBlocked={recoveryBlocked}
-        recovery={recovery}
-        stop={stop}
-        onRetryReplyRecovery={retryReplyRecovery}
-        onSubmitReply={submitReply}
-        onRegenerate={({ messageId, parentMessageId }) => regenerate({ messageId, parentMessageId })}
-        onActivateVariant={({ messageId }) => activateVariant({ messageId })}
-      />
-
+      <div
+        role="tabpanel"
+        id="planning-panel-chat"
+        aria-labelledby="planning-tab-chat"
+        hidden={tab !== "chat"}
+        className={tab === "chat" ? "flex min-h-0 flex-1 flex-col" : "hidden"}
+      >
+        <PlannerThread
+          composerControls={modelControls}
+          session={session}
+          operation={activeOperation}
+          connection={connection}
+          operationQueryState={operationQueryState}
+          replyRecoveryPending={recoveryKind === "reply"}
+          recoveryBlocked={recoveryBlocked}
+          recovery={recovery}
+          stop={stop}
+          onRetryReplyRecovery={retryReplyRecovery}
+          onSubmitReply={submitReply}
+          onRegenerate={({ messageId, parentMessageId }) =>
+            regenerate({ messageId, parentMessageId })
+          }
+          onActivateVariant={({ messageId }) => activateVariant({ messageId })}
+        />
       </div>
-      {tab === "plan" && <section role="tabpanel" id="planning-panel-plan" aria-labelledby="planning-tab-plan" className="min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8"><div className="mx-auto max-w-3xl space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="font-display text-3xl">{formalizePending ? "New Plan in Progress" : draftQuery.data?.work_order_title || "Your Plan"}</h2><p className="mt-2 text-sm text-foreground-muted">{formalizePending ? "The plan is taking shape. You can switch sessions while it runs." : "Review the settled plan before moving into execution."}</p></div>{draftQuery.data && !formalizePending && <Link className={buttonVariants()} to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}>Review &amp; Issue {workName}</Link>}</div>
-        {activeOperation?.kind === "formalize" && activeOperation.error ? <p role="alert" className="text-sm text-status-failed">{activeOperation.error}</p> : null}
-        {formalizePending && activeOperation?.formalizeText ? <MarkdownBlock content={activeOperation.formalizeText} /> : !formalizePending && draftQuery.data ? <MarkdownBlock content={draftQuery.data.work_order_text} /> : <div className="rounded-2xl border border-dashed border-border p-8 text-sm text-foreground-muted">{draftQuery.isLoading ? "Loading the saved plan..." : formalizePending ? "Generating your plan..." : "When the direction feels right, generate a plan from this conversation."}</div>}
-        {draftQuery.error && <div role="alert" className="text-sm text-status-failed">The saved plan could not be loaded.<Button variant="ghost" size="sm" onClick={() => void draftQuery.refetch()}>Retry</Button></div>}
-        {stop.available && formalizePending && <Button variant="outline" disabled={stop.pending} onClick={() => void stop.onStop().catch(() => {})}>Stop Generation</Button>}
-        {formalizePending && draftQuery.data && (
-          <details className="rounded-xl border border-border p-4">
-            <summary className="cursor-pointer text-sm font-medium">Previous Saved Plan</summary>
-            <div className="mt-4 space-y-4">
-              <h3 className="font-display text-2xl">{draftQuery.data.work_order_title}</h3>
-              <MarkdownBlock content={draftQuery.data.work_order_text} />
-              <Link className={buttonVariants({ variant: "outline" })} to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}>
-                Review &amp; Issue Saved {workName}
-              </Link>
+      {tab === "plan" && (
+        <section
+          role="tabpanel"
+          id="planning-panel-plan"
+          aria-labelledby="planning-tab-plan"
+          className="min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8"
+        >
+          <div className="mx-auto max-w-3xl space-y-6">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <h2 className="font-display text-3xl">
+                  {formalizePending
+                    ? "New Plan in Progress"
+                    : draftQuery.data?.work_order_title || "Your Plan"}
+                </h2>
+                <p className="mt-2 text-sm text-foreground-muted">
+                  {formalizePending
+                    ? "The plan is taking shape. You can switch sessions while it runs."
+                    : "Review the settled plan before moving into execution."}
+                </p>
+              </div>
+              {draftQuery.data && !formalizePending && (
+                <Link
+                  className={buttonVariants()}
+                  to="/work-orders/new"
+                  search={{
+                    planning_session_id: sessionId,
+                    planning_draft_id: draftQuery.data.planning_draft_id,
+                  }}
+                >
+                  Review &amp; Issue {workName}
+                </Link>
+              )}
             </div>
-          </details>
-        )}
-      </div></section>}
+            {activeOperation?.kind === "formalize" && activeOperation.error ? (
+              <p role="alert" className="text-sm text-status-failed">
+                {activeOperation.error}
+              </p>
+            ) : null}
+            {formalizePending && activeOperation?.formalizeText ? (
+              <MarkdownBlock content={activeOperation.formalizeText} />
+            ) : !formalizePending && draftQuery.data ? (
+              <MarkdownBlock content={draftQuery.data.work_order_text} />
+            ) : (
+              <div className="rounded-2xl border border-dashed border-border p-8 text-sm text-foreground-muted">
+                {draftQuery.isLoading
+                  ? "Loading the saved plan..."
+                  : formalizePending
+                    ? "Generating your plan..."
+                    : "When the direction feels right, generate a plan from this conversation."}
+              </div>
+            )}
+            {draftQuery.error && (
+              <div role="alert" className="text-sm text-status-failed">
+                The saved plan could not be loaded.
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => void draftQuery.refetch()}
+                >
+                  Retry
+                </Button>
+              </div>
+            )}
+            {stop.available && formalizePending && (
+              <Button
+                variant="outline"
+                disabled={stop.pending}
+                onClick={() => void stop.onStop().catch(() => {})}
+              >
+                Stop Generation
+              </Button>
+            )}
+            {formalizePending && draftQuery.data && (
+              <details className="rounded-xl border border-border p-4">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Previous Saved Plan
+                </summary>
+                <div className="mt-4 space-y-4">
+                  <h3 className="font-display text-2xl">
+                    {draftQuery.data.work_order_title}
+                  </h3>
+                  <MarkdownBlock content={draftQuery.data.work_order_text} />
+                  <Link
+                    className={buttonVariants({ variant: "outline" })}
+                    to="/work-orders/new"
+                    search={{
+                      planning_session_id: sessionId,
+                      planning_draft_id: draftQuery.data.planning_draft_id,
+                    }}
+                  >
+                    Review &amp; Issue Saved {workName}
+                  </Link>
+                </div>
+              </details>
+            )}
+          </div>
+        </section>
+      )}
       {recoverableAttachSource.pendingRequest && !attachmentBusy && (
-        <div className="mx-4 mb-3 space-y-2 rounded-lg border border-status-warning/30 bg-status-warning/5 p-3 text-xs sm:mx-8" role="status">
-          <p>The source attachment for issue #{recoverableAttachSource.pendingRequest.issue_number} needs recovery. Resolve this request before selecting another issue.</p>
-          <details><summary className="cursor-pointer font-medium">Attachment Request Details</summary><dl className="mt-2 space-y-1"><dt>Repository ID</dt><dd className="break-all">{recoverableAttachSource.pendingRequest.repository_id}</dd><dt>Request ID</dt><dd className="break-all font-mono">{recoverableAttachSource.pendingKey}</dd></dl></details>
-          {recoverableAttachSource.recoveryBlocked && <p>This request belongs to an earlier browser session. Its outcome remains unresolved; it will not be replayed.</p>}
-          <Button type="button" size="sm" variant="outline" onClick={() => void recoverAttachment()}>Recover Source Attachment</Button>
-          {attachmentError && <p role="alert" className="text-status-failed">{attachmentError}</p>}
+        <div
+          className="mx-4 mb-3 space-y-2 rounded-lg border border-status-warning/30 bg-status-warning/5 p-3 text-xs sm:mx-8"
+          role="status"
+        >
+          <p>
+            The source attachment for issue #
+            {recoverableAttachSource.pendingRequest.issue_number} needs
+            recovery. Resolve this request before selecting another issue.
+          </p>
+          <details>
+            <summary className="cursor-pointer font-medium">
+              Attachment Request Details
+            </summary>
+            <dl className="mt-2 space-y-1">
+              <dt>Repository ID</dt>
+              <dd className="break-all">
+                {recoverableAttachSource.pendingRequest.repository_id}
+              </dd>
+              <dt>Request ID</dt>
+              <dd className="break-all font-mono">
+                {recoverableAttachSource.pendingKey}
+              </dd>
+            </dl>
+          </details>
+          {recoverableAttachSource.recoveryBlocked && (
+            <p>
+              This request belongs to an earlier browser session. Its outcome
+              remains unresolved; it will not be replayed.
+            </p>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={() => void recoverAttachment()}
+          >
+            Recover Source Attachment
+          </Button>
+          {attachmentError && (
+            <p role="alert" className="text-status-failed">
+              {attachmentError}
+            </p>
+          )}
         </div>
       )}
-      {tab === "context" && <section role="tabpanel" id="planning-panel-context" aria-labelledby="planning-tab-context" className="min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8"><div className="mx-auto max-w-3xl space-y-8"><PlanningContextPanel session={session} onChanged={() => sessionQuery.refetch()} /><div className="border-t border-border pt-6"><h2 className="mb-4 font-display text-2xl">Linked Sources</h2><PlanningSourcesPanel attachmentPending={recoverableAttachSource.hasPendingRecovery} workspace={session.project_root} sessionId={sessionId} sources={externalSources} onAttach={attachSource} onChanged={() => sessionQuery.refetch()} /></div></div></section>}
       <PlanResultModal
         open={showPlanModal}
         draft={draftQuery.data ?? null}
-        planningLineage={draftQuery.data ? {
-          planning_session_id: sessionId,
-          planning_draft_id: draftQuery.data.planning_draft_id,
-        } : undefined}
-        operation={activeOperation?.kind === "formalize" ? activeOperation : null}
+        planningLineage={
+          draftQuery.data
+            ? {
+                planning_session_id: sessionId,
+                planning_draft_id: draftQuery.data.planning_draft_id,
+              }
+            : undefined
+        }
+        operation={
+          activeOperation?.kind === "formalize" ? activeOperation : null
+        }
         onClose={() => setShowPlanModal(false)}
       />
     </div>

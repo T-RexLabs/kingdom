@@ -36,6 +36,8 @@ describe("PlannerMessageCard", () => {
     const onEdit = vi.fn();
     const user = userEvent.setup();
     render(<PlannerMessageCard message={{ planning_message_id: "user-1", planning_session_id: "session-1", role: "user", content_markdown: "My brief", created_at: "2026-06-12T10:00:00Z" }} onEdit={onEdit} />);
+    expect(screen.getByRole("button", { name: "Edit message" })).toHaveTextContent("Edit");
+    expect(screen.getByRole("button", { name: "Edit message" }).querySelector("svg")).toBeNull();
     await user.click(screen.getByRole("button", { name: "Edit message" }));
     expect(onEdit).toHaveBeenCalledTimes(1);
   });

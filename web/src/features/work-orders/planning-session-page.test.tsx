@@ -136,14 +136,10 @@ vi.mock("./global-formalize-context", () => ({
   }),
 }));
 
-/**
- * Planning sources are a collapsed control in the settings row — the header
- * stays one row tall on load — so any test that works with the list has to
- * open it the way an operator would.
- */
+/** Attachments start directly; existing sources have a dedicated review dialog. */
 async function openPlanningSources(user: ReturnType<typeof userEvent.setup>) {
-  await user.click(screen.getByRole("tab", { name: /^Context/ }));
-  await user.click(screen.getByRole("button", { name: /^Planning Sources/ }));
+  const sources = screen.queryByRole("button", { name: /^\d+ Sources?/ });
+  if (sources) await user.click(sources);
 }
 
 function render(ui: Parameters<typeof renderView>[0]) {
@@ -281,6 +277,25 @@ describe("PlanningSessionPage", () => {
     expect(screen.getByRole("button", { name: "Generate Plan" })).toBeInTheDocument();
   });
 
+  it("keeps conversation and plan primary with direct source attachment and auxiliary project context", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<PlanningSessionPage />);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Chat", "Plan"]);
+    expect(screen.getByRole("button", { name: "Attach Source" })).toBeVisible();
+    expect(screen.queryByText("None linked")).not.toBeInTheDocument();
+    expect(container.querySelector(".lucide-sparkles, .lucide-feather")).toBeNull();
+    screen.getByRole("tab", { name: "Chat" }).focus();
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Plan" })).toHaveFocus();
+    expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{ArrowRight}");
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: "Project Context" }));
+    const context = screen.getByRole("dialog", { name: "Project Context" });
+    expect(within(context).getByRole("button", { name: "Refresh Context" })).toBeEnabled();
+    expect(within(context).getByText("planning-context-1")).toBeInTheDocument();
+  });
+
   it("attaches a GitHub issue to the existing session and refreshes every source card", async () => {
     let request: { url: string; init?: RequestInit } | undefined;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -301,7 +316,7 @@ describe("PlanningSessionPage", () => {
     render(<PlanningSessionPage />);
 
     await openPlanningSources(user);
-    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await user.click(screen.getByRole("button", { name: "Attach Source" }));
 
     await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
     expect(request?.url).toMatch(/\/planning-sessions\/planning-session-1\/external-sources$/);
@@ -342,7 +357,7 @@ describe("PlanningSessionPage", () => {
     render(<PlanningSessionPage />);
 
     await openPlanningSources(user);
-    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await user.click(screen.getByRole("button", { name: "Attach Source" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await user.click(screen.getByRole("button", { name: "Recover Source Attachment" }));
 
@@ -362,15 +377,14 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     const original = render(<PlanningSessionPage />);
     await openPlanningSources(user);
-    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await user.click(screen.getByRole("button", { name: "Attach Source" }));
     await waitFor(() => expect(sent).toHaveLength(1));
     selectedIssue = 42;
-    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await user.click(screen.getByRole("button", { name: "Attach Source" }));
     expect(sent).toHaveLength(1);
     original.unmount();
     queryClientMock = { invalidateQueries, setQueryData, setQueriesData };
     render(<PlanningSessionPage />);
-    await user.click(screen.getByRole("tab", { name: /^Context/ }));
     expect(screen.getByText(/issue #23 needs recovery/)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Recover Source Attachment" }));
     await waitFor(() => expect(sent).toHaveLength(2));
@@ -383,7 +397,7 @@ describe("PlanningSessionPage", () => {
     const user = userEvent.setup();
     const original = render(<PlanningSessionPage />);
     await openPlanningSources(user);
-    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await user.click(screen.getByRole("button", { name: "Attach Source" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
     const key = new Headers(fetchMock.mock.calls[0][1]?.headers).get("Idempotency-Key");
     original.unmount();
@@ -604,34 +618,31 @@ describe("PlanningSessionPage", () => {
     expect(within(review).getByRole("button", { name: "Adopt Update" })).toBeInTheDocument();
   });
 
-  it("keeps the sources panel open while the import dialog is open", async () => {
+  it("leaves direct attachment available after dismissing the import dialog", async () => {
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
 
     await openPlanningSources(user);
     await user.click(screen.getByTestId("open-import-dialog"));
 
-    // The import dialog opens over the panel. Left dismissable, the first press
-    // that reached the dialog would close the list the operator is coming back
-    // to with their new source.
     await user.keyboard("{Escape}");
-    expect(screen.getByRole("button", { name: "Add GitHub Issue" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attach Source" })).toBeInTheDocument();
   });
 
-  it("wires the sources popover to responsive fixed width and end alignment", async () => {
+  it("opens linked sources in a named dialog instead of a selection dropdown", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({ data: { ...base, external_sources: [
+      { link_id: "link-1", provider: "github", repository: "owner/repo", issue_number: 1, canonical_url: "https://github.com/owner/repo/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+    ] }, error: null, refetch: refetchPlanningSession });
     const user = userEvent.setup();
     render(<PlanningSessionPage />);
-
+    expect(screen.getByRole("button", { name: "1 Source" })).toHaveAttribute("aria-haspopup", "dialog");
     await openPlanningSources(user);
-    const panel = document.querySelector<HTMLElement>("#planning-sources-popover");
-
-    expect(panel).toBeInTheDocument();
-    expect(panel).toHaveAttribute("data-popover-placement", "bottom-end");
-    expect(panel).toHaveClass("w-[264px]");
-    expect(panel).toHaveClass("sm:w-[380px]");
-    expect(panel).toHaveClass("max-w-[calc(100vw_-_16px)]");
-    await waitFor(() => expect(panel?.style.maxWidth).not.toBe(""));
-    expect(panel?.style.minWidth).toBe("");
+    const panel = screen.getByRole("dialog", { name: "Linked Sources" });
+    expect(within(panel).getByRole("region", { name: "Linked GitHub source owner/repo#1" })).toBeInTheDocument();
+    await user.click(within(panel).getByRole("button", { name: "Done" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Attach Source" })).toBeVisible();
   });
 
   it("removes a source only after confirmation and detaches it on the server", async () => {
@@ -704,7 +715,7 @@ describe("PlanningSessionPage", () => {
 
     // A source Kingdom can no longer read has to be visible before anything is
     // expanded, or the operator plans against context that is silently gone.
-    expect(screen.getByRole("tab", { name: /^Context/ })).toHaveTextContent("1 Unreadable");
+    expect(screen.getByRole("button", { name: /^1 Source/ })).toHaveTextContent("1 Unreadable");
 
     await openPlanningSources(user);
     expect(screen.getByText(/GitHub App access was revoked/i)).toBeInTheDocument();

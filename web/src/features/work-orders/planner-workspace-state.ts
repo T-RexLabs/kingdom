@@ -32,7 +32,7 @@ export type TrackedPlannerOperation = PlannerScope & {
   notified?: boolean;
 };
 export type PlannerSessionUI = {
-  selectedTab?: "chat" | "plan" | "context";
+  selectedTab?: "chat" | "plan";
   drafts: Record<string, PlannerDraft>;
   leafBranches: Record<string, string>;
   trackedOperationId?: string;
@@ -87,7 +87,7 @@ function readSession(scope: PlannerScope): PlannerSessionUI {
         if (typeof branch === "string") state.leafBranches[leaf] = branch;
       }
     }
-    if (["chat", "plan", "context"].includes(String(saved.selectedTab))) state.selectedTab = saved.selectedTab as PlannerSessionUI["selectedTab"];
+    if (["chat", "plan"].includes(String(saved.selectedTab))) state.selectedTab = saved.selectedTab as PlannerSessionUI["selectedTab"];
     if (typeof saved.trackedOperationId === "string") state.trackedOperationId = saved.trackedOperationId;
     const request = saved.request;
     if (record(request) && ["reply", "regenerate", "formalize", "stop"].includes(String(request.kind)) && typeof request.key === "string" && record(request.body)) {

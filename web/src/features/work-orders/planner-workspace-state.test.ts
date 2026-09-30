@@ -100,11 +100,11 @@ it("persists transcript positions independently of other sessions, branches, and
   store.setText(scope, "main", "Unsent");
   const generation = store.draft(scope, "main").generation;
   store.updateDraft(scope, "main", (draft) => ({ ...draft, scroll: { messageId: "old-message", offset: -44, pinned: false } }));
-  store.updateSession(scope, (state) => ({ ...state, selectedTab: "context" }));
+  store.updateSession(scope, (state) => ({ ...state, selectedTab: "plan" }));
   store.clearSubmittedDraft(scope, "main", generation);
   const restored = new PlannerWorkspaceState();
   expect(restored.draft(scope, "main")).toMatchObject({ text: "", scroll: { messageId: "old-message", offset: -44, pinned: false } });
   expect(restored.draft(scope, "other").scroll).toBeUndefined();
   expect(restored.draft({ ...scope, sessionId: "another" }, "main").scroll).toBeUndefined();
-  expect(restored.getSession(scope).selectedTab).toBe("context");
+  expect(restored.getSession(scope).selectedTab).toBe("plan");
 });

@@ -1,5 +1,3 @@
-import { Feather } from "lucide-react";
-
 export function PlannerEditAction({ onEdit }: { onEdit: () => void }) {
   return (
     <div className="flex justify-end opacity-100 transition-opacity sm:opacity-0 group-hover:opacity-100 focus-within:opacity-100">
@@ -7,9 +5,9 @@ export function PlannerEditAction({ onEdit }: { onEdit: () => void }) {
         type="button"
         onClick={onEdit}
         aria-label="Edit message"
-        className="flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-surface-raised/80 text-foreground-subtle transition-colors hover:border-accent/40 hover:text-accent"
+        className="rounded px-2 py-1 text-xs text-foreground-subtle transition-colors hover:text-foreground focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
       >
-        <Feather className="h-3 w-3" />
+        Edit
       </button>
     </div>
   );
