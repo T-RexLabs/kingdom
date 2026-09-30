@@ -746,6 +746,22 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 			return nil
 		}
 		path := entry.Path
+		requiredParent, err := index.hasLiveDescendant(ctx, 0, path)
+		if err != nil {
+			return err
+		}
+		if requiredParent {
+			current, err := secureRoot.ReadEntry(path)
+			if err != nil {
+				return fmt.Errorf("inspect restored parent %q: %w", path, err)
+			}
+			if current.Type == securefs.EntryTypeDirectory {
+				// This tombstone deletes the old file, not the directory that
+				// now contains live files in the resolved snapshot.
+				return nil
+			}
+			return fmt.Errorf("restored parent %q is no longer a directory", path)
+		}
 		if err := secureRoot.RemoveEntry(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove snapshot deletion %q: %w", path, err)
 		}
