@@ -405,7 +405,7 @@ export function IssuePicker({
                     {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}
                   </div>
                 </div>
-              ) : <div className="flex h-full min-h-40 items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">Select an issue to preview its bounded import before continuing.</div>}
+              ) : <div className="flex h-full min-h-40 items-center justify-center rounded-lg border border-dashed border-border p-6 text-center text-sm text-foreground-muted">Select an issue to preview its content before continuing.</div>}
             </div>
           </div>
       </Modal>

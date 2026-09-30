@@ -865,63 +865,81 @@ describe("ConnectionsPage", () => {
     expect(installationRequests).toBe(1);
   });
 
-  it("keeps manual metadata in a secondary modal and shows post-save CLI guidance", async () => {
-    let postBody: Record<string, unknown> | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input);
-        if (
-          url.endsWith("/connections") &&
-          (!init?.method || init.method === "GET")
-        )
-          return json({ items: [] });
-        if (url.endsWith("/manifest-flows"))
-          return new Response(null, { status: 404 });
-        if (url.endsWith("/connections") && init?.method === "POST") {
-          postBody = JSON.parse(String(init.body));
-          return new Response(JSON.stringify(connection("Manual")), {
-            status: 201,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`unexpected request ${url}`);
-      }),
-    );
-    const user = userEvent.setup();
-    render(<ConnectionsPage />);
-    await openManualUI(user);
-    const dialog = await screen.findByRole("dialog", {
-      name: /manual github app setup/i,
-    });
-    for (const [label, value] of [
-      ["Display Name", "Manual"],
-      ["App ID", "1"],
-      ["Client ID", "Iv1"],
-      ["Installation ID", "2"],
-    ]) {
-      await user.type(within(dialog).getByLabelText(label), value);
-    }
-    await user.click(
-      within(dialog).getByRole("button", { name: /save connection metadata/i }),
-    );
-    expect(
-      await within(dialog).findByText(/metadata saved/i),
-    ).toBeInTheDocument();
-    expect(
-      within(dialog).getByText(
-        /kd connections github key provision --connection-id conn-1/i,
-      ),
-    ).toBeInTheDocument();
-    expect(postBody).toEqual({
-      provider: "github",
-      credential_strategy: "app_private_key",
-      display_name: "Manual",
-      app_id: "1",
-      client_id: "Iv1",
-      installation_id: "2",
-    });
-  });
+  it.each(["Close", "Close dialog"])(
+    "keeps manual metadata in a secondary modal and dismisses saved guidance with %s",
+    async (closeLabel) => {
+      let postBody: Record<string, unknown> | undefined;
+      let listed: Array<ReturnType<typeof connection>> = [];
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+          const url = String(input);
+          if (
+            url.endsWith("/connections") &&
+            (!init?.method || init.method === "GET")
+          )
+            return json({ items: listed });
+          if (url.endsWith("/manifest-flows"))
+            return new Response(null, { status: 404 });
+          if (url.endsWith("/connections") && init?.method === "POST") {
+            postBody = JSON.parse(String(init.body));
+            listed = [connection("Manual")];
+            return new Response(JSON.stringify(connection("Manual")), {
+              status: 201,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          throw new Error(`unexpected request ${url}`);
+        }),
+      );
+      const user = userEvent.setup();
+      render(<ConnectionsPage />);
+      await openManualUI(user);
+      const dialog = await screen.findByRole("dialog", {
+        name: /manual github app setup/i,
+      });
+      for (const [label, value] of [
+        ["Display Name", "Manual"],
+        ["App ID", "1"],
+        ["Client ID", "Iv1"],
+        ["Installation ID", "2"],
+      ]) {
+        await user.type(within(dialog).getByLabelText(label), value);
+      }
+      await user.click(
+        within(dialog).getByRole("button", { name: /save connection metadata/i }),
+      );
+      expect(
+        await within(dialog).findByText(/metadata saved/i),
+      ).toBeInTheDocument();
+      expect(
+        within(dialog).getByText(
+          /kd connections github key provision --connection-id conn-1/i,
+        ),
+      ).toBeInTheDocument();
+      expect(postBody).toEqual({
+        provider: "github",
+        credential_strategy: "app_private_key",
+        display_name: "Manual",
+        app_id: "1",
+        client_id: "Iv1",
+        installation_id: "2",
+      });
+      const close = within(dialog).getByRole("button", {
+        name: closeLabel,
+      });
+      expect(close).toBeEnabled();
+      await user.click(close);
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: /manual github app setup/i }),
+        ).not.toBeInTheDocument(),
+      );
+      expect(
+        await screen.findByRole("button", { name: "Manage Manual" }),
+      ).toBeEnabled();
+    },
+  );
 
   // The reported bug: add a connection, go to the planner or the work order form,
   // and the import trigger is still the setup link. Both surfaces read the

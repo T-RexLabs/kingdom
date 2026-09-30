@@ -49,7 +49,7 @@ export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], 
     <div className="space-y-3">
       {showFinalApproval && isAwaitingApproval && <FinalApprovalCard run={run} cardRef={finalApprovalCardRef} />}
       {showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0 && (
-        <NodeActionsCard runId={run.run_id} nodes={actionNodes} cancelled={isCancelledRun} />
+        <NodeActionsCard key={run.run_id} runId={run.run_id} nodes={actionNodes} cancelled={isCancelledRun} />
       )}
     </div>
   );
@@ -133,6 +133,7 @@ export function NodeActionsCard({
     runId,
   );
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(!cancelled && nodes.length === 1);
 
   // Queuing succeeds by removing the node from this list, which unmounts the
   // card — so a success banner here could only ever flash and vanish. The run
@@ -152,29 +153,29 @@ export function NodeActionsCard({
 
   return (
     <Card className="border-status-failed/20">
-      <CardHeader className="pb-3">
-        {/* Named for what these nodes have in common — the run stopped and they
-            are where it can be picked up again — because the list can hold a
-            reviewer that asked for rework alongside steps that genuinely broke.
-            Each row's badge names its own state. */}
-        <CardTitle className="flex items-center gap-2 text-sm">
-          <AlertTriangle className="h-4 w-4 text-status-failed" />
-          <span className="text-status-failed">
-            {cancelled ? "Cancelled Run Nodes" : "Nodes to Recover"} ({nodes.length})
-          </span>
-        </CardTitle>
-        <p className="text-xs text-foreground-subtle">
-          Retry reruns only the selected node. Rerun replays from the selected node and downstream (completion rerun promotes to plan drafting).
-        </p>
-      </CardHeader>
-      <CardContent className="space-y-2">
-        {(retry.error || rerun.error) && (
+      {(retry.error || rerun.error) && (
+        <div className="mb-3" role="alert">
           <ErrorBanner
             message={
               (retry.error ?? rerun.error)?.message ?? "Action failed"
             }
           />
-        )}
+        </div>
+      )}
+      <details
+        open={expanded}
+        onToggle={(event) => setExpanded(event.currentTarget.open)}
+      >
+        <summary className="cursor-pointer rounded text-sm font-medium text-status-failed focus-visible:outline focus-visible:outline-2 focus-visible:outline-accent">
+          <span className="ml-1 inline-flex items-center gap-2 align-middle">
+            <AlertTriangle className="h-4 w-4" />
+            {cancelled ? "Cancelled Run Nodes" : "Nodes to Recover"} ({nodes.length})
+          </span>
+        </summary>
+        <p className="mb-3 mt-3 text-xs text-foreground-subtle">
+          Retry reruns only the selected node. Rerun replays from the selected node and downstream (completion rerun promotes to plan drafting).
+        </p>
+        <div className="space-y-2">
         {nodes.map((node) => {
           const { executionModeLabel, roleLabel } = nodeExecutionSemantics(node.execution_ownership, node.required_role);
           const reason = node.failure_reason ?? (cancelled ? "" : "Failure reason unavailable.");
@@ -227,7 +228,8 @@ export function NodeActionsCard({
             </div>
           );
         })}
-      </CardContent>
+        </div>
+      </details>
     </Card>
   );
 }

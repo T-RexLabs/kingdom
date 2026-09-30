@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GovernanceActions } from "./governance-actions";
 import type { RunGraphNode, RunSummary } from "@/api/hooks";
@@ -11,12 +11,14 @@ const finalApprovalState = {
   error: null,
   data: null as null | { status: string },
 };
+const retryState = { mutateAsync: vi.fn(), isPending: false, error: null as Error | null };
+const rerunState = { mutateAsync: vi.fn(), isPending: false, error: null as Error | null };
 
 vi.mock("@/api/hooks", () => ({
   newIdempotencyKey: () => "idem-final-approval-test",
   useCreateFinalApproval: () => finalApprovalState,
-  useRetryNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
-  useRerunFromNode: () => ({ mutateAsync: vi.fn(), isPending: false, error: null }),
+  useRetryNode: () => retryState,
+  useRerunFromNode: () => rerunState,
 }));
 
 describe("governance actions visibility", () => {
@@ -63,6 +65,10 @@ describe("governance actions visibility", () => {
 
   beforeEach(() => {
     finalApprovalState.mutateAsync.mockClear();
+    retryState.mutateAsync.mockReset();
+    retryState.error = null;
+    rerunState.mutateAsync.mockReset();
+    rerunState.error = null;
   });
 
   it("hides retry and rerun controls when run is not failed", () => {
@@ -95,7 +101,7 @@ describe("governance actions visibility", () => {
     expect(screen.getByText("Reviewer rejected missing evidence.")).toHaveClass("text-wrap-anywhere");
   });
 
-  it("shows every supplied workflow node when a run is cancelled", () => {
+  it("shows every supplied workflow node when a run is cancelled", async () => {
     render(
       <GovernanceActions
         run={cancelledRun}
@@ -104,10 +110,52 @@ describe("governance actions visibility", () => {
     );
 
     expect(screen.getByText("Cancelled Run Nodes (1)")).toBeInTheDocument();
+    await userEvent.click(screen.getByText("Cancelled Run Nodes (1)"));
     expect(screen.getByText("execution_review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
     expect(screen.queryByText("Failure reason unavailable.")).not.toBeInTheDocument();
+  });
+
+  it("starts fourteen cancelled nodes collapsed and exposes every recovery action on demand", async () => {
+    const nodes = Array.from({ length: 14 }, (_, index) => ({ ...failedNode, node_id: `node-${index}`, state: "cancelled" as const, failure_reason: undefined }));
+    render(<GovernanceActions run={cancelledRun} cancelledNodes={nodes} />);
+    const summary = screen.getByText("Cancelled Run Nodes (14)");
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    // Native details retains its content in the DOM while hiding it.
+    for (const action of screen.getAllByRole("button", { name: /^(Retry|Rerun)$/ })) {
+      expect(action).not.toBeVisible();
+    }
+    await userEvent.click(summary);
+    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(14);
+    expect(screen.getAllByRole("button", { name: "Rerun" })).toHaveLength(14);
+    for (const node of nodes) expect(screen.getByText(node.node_id)).toBeVisible();
+  });
+
+  it.each(["retry", "rerun"] as const)("preserves an uncertain %s request and its visible error while the recovery list is collapsed", async (action) => {
+    const state = action === "retry" ? retryState : rerunState;
+    state.mutateAsync.mockImplementationOnce(async () => {
+      const error = new TypeError("Response lost; original outcome remains unresolved.");
+      state.error = error;
+      throw error;
+    }).mockImplementationOnce(async () => { state.error = null; });
+    const nodes = [failedNode, { ...failedNode, node_id: "second-node" }];
+    const user = userEvent.setup();
+    render(<GovernanceActions run={failedRun} failedNodes={nodes} />);
+    const summary = screen.getByText("Nodes to Recover (2)");
+    await user.click(summary);
+    await user.click(screen.getAllByRole("button", { name: action === "retry" ? "Retry" : "Rerun" })[0]);
+    await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledOnce());
+    const original = state.mutateAsync.mock.calls[0][0];
+    await user.click(summary);
+    expect(screen.getByText("Response lost; original outcome remains unresolved.")).toBeVisible();
+    expect(summary.closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" })).not.toBeVisible();
+    await user.click(summary);
+    expect(screen.getByRole("button", { name: action === "retry" ? "Retry" : "Rerun" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" }));
+    await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(state.mutateAsync.mock.calls[1][0]).toEqual(original);
   });
 
   it("does not leave final approval stuck in success state when the run is actionable again", () => {
