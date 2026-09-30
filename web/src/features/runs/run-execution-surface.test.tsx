@@ -191,8 +191,11 @@ describe("focused execution inspector", () => {
     expect(conversation).toBeVisible();
   });
 
-  it("keeps instructions behind a tab and preserves the read-only conversation when switching views", async () => {
-    renderSurface();
+  it("keeps instructions behind a tab and pins the first attempt while preserving the conversation", async () => {
+    const props = renderSurface({
+      nodes: [node({ attempt_count: 1 })],
+      attempts: [],
+    });
     expect(
       screen.queryByText("Complete dispatched instructions"),
     ).not.toBeInTheDocument();
@@ -202,6 +205,7 @@ describe("focused execution inspector", () => {
     const conversation = screen.getByTestId("run-execution-activity");
     expect(conversation).toBeVisible();
     await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-current");
     expect(
       screen.getByRole("tabpanel", { name: "Instructions" }),
     ).toBeVisible();

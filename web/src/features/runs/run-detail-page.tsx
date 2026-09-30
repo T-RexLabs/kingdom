@@ -684,12 +684,20 @@ export function RunDetailPage() {
       if (!nodeId) {
         return;
       }
-      if (!nodeAttempts.some((item) => item.attempt_id === attemptId)) {
+      if (
+        selectedNode?.current_execution?.attempt_id !== attemptId &&
+        !nodeAttempts.some((item) => item.attempt_id === attemptId)
+      ) {
         return;
       }
       setSelectedExecution({ runId, nodeId, attemptId });
     },
-    [nodeAttempts, runId, selectedExecutionNodeId],
+    [
+      nodeAttempts,
+      runId,
+      selectedExecutionNodeId,
+      selectedNode?.current_execution?.attempt_id,
+    ],
   );
 
   const handleSelectCurrentExecutionAttempt = useCallback(() => {

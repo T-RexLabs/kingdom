@@ -994,6 +994,70 @@ describe("run detail page", () => {
     );
   });
 
+  it("pins the first current attempt without history and keeps it when workflow activity advances", async () => {
+    const coordinator = runExecution({
+      node_id: "advisory_synthesis",
+      attempt_id: "coordinator:1",
+      required_role: "coordinator",
+      status: "running",
+    });
+    const builder = runExecution({
+      node_id: "implementation",
+      attempt_id: "builder:1",
+      required_role: "builder",
+      status: "queued",
+    });
+    mockExecutions = [runNode(coordinator), runNode(builder)];
+    useInfiniteRunNodeAttemptsMock.mockReturnValue({
+      data: undefined,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    const view = render(<RunDetailPage />);
+    expect(useInfiniteRunNodeAttemptsMock).toHaveBeenLastCalledWith(
+      "run-1",
+      "advisory_synthesis",
+      { enabled: false },
+    );
+    const activity = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+      onSelectAttempt: (attemptId: string) => void;
+    };
+    await act(async () => activity.onSelectAttempt("coordinator:1"));
+    mockExecutions = [
+      runNode({ ...coordinator, status: "succeeded" }),
+      runNode({ ...builder, status: "running" }),
+    ];
+    view.rerender(<RunDetailPage />);
+    expect(executionSurfacePropsMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectedNodeId: "advisory_synthesis",
+      selectedAttemptId: "coordinator:1",
+    });
+    await userEvent.click(screen.getByRole("button", { name: "Run Details" }));
+    view.rerender(<RunDetailPage />);
+    expect(executionSurfacePropsMock.mock.calls.at(-1)?.[0]).toMatchObject({
+      selectedNodeId: "advisory_synthesis",
+      selectedAttemptId: "coordinator:1",
+    });
+  });
+
+  it("rejects an attempt that belongs to neither the selected current node nor loaded history", async () => {
+    useInfiniteRunNodeAttemptsMock.mockReturnValue({
+      data: undefined,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    });
+    render(<RunDetailPage />);
+    const activity = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+      onSelectAttempt: (attemptId: string) => void;
+    };
+    await act(async () => activity.onSelectAttempt("unrelated-attempt"));
+    expect(
+      executionSurfacePropsMock.mock.calls.at(-1)?.[0].selectedAttemptId,
+    ).toBe("attempt-1");
+  });
+
 	it("keeps a selected historical attempt through canonical and SSE refreshes", async () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [runNode(runExecution({
