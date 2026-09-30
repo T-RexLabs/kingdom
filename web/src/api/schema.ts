@@ -1300,6 +1300,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/instructions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the complete immutable prompt body prepared for this attempt.
+         * @description Returns the exact stored body consumed by provider dispatch, with verified content and run/attempt lineage. Never reconstructs historical instructions from current settings or the work-order brief.
+         */
+        get: operations["getExecutionInstructions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/executions/{attemptId}/activity": {
         parameters: {
             query?: never;
@@ -6475,6 +6495,41 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getExecutionInstructions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete verified prompt text, preserving whitespace. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            /** @description The attempt or its persisted instructions do not exist within this run. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorEnvelope"];
+                };
+            };
             default: components["responses"]["ErrorResponse"];
         };
     };

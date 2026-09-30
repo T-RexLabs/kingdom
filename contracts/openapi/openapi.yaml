@@ -1799,6 +1799,35 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /runs/{id}/executions/{attemptId}/instructions:
+    get:
+      tags: [runs]
+      operationId: getExecutionInstructions
+      summary: Read the complete immutable prompt body prepared for this attempt.
+      description: Returns the exact stored body consumed by provider dispatch, with verified content and run/attempt lineage. Never reconstructs historical instructions from current settings or the work-order brief.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+      responses:
+        "200":
+          description: Complete verified prompt text, preserving whitespace.
+          content:
+            text/plain:
+              schema:
+                type: string
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          description: The attempt or its persisted instructions do not exist within this run.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /runs/{id}/executions/{attemptId}/activity:
     get:
       tags: [runs]

@@ -89,3 +89,20 @@ func OpenExecutionPrompt(ctx context.Context, db *sql.DB, attemptID string, expe
 	}
 	return reader, nil
 }
+
+// OpenRunExecutionPrompt verifies run and attempt lineage before returning the
+// complete immutable dispatch body. Verification finishes before callers can
+// publish any bytes; missing prompts are never replaced by a generated brief.
+func OpenRunExecutionPrompt(ctx context.Context, db *sql.DB, runID, attemptID string) (io.ReadCloser, int64, error) {
+	var ref RequestContentReference
+	err := db.QueryRowContext(ctx, `SELECT p.content_id,c.sha256,c.size_bytes
+ FROM execution_prompt_refs p
+ JOIN attempt_executions a ON a.attempt_id=p.attempt_id AND a.run_id=p.run_id AND a.node_run_id=p.node_run_id
+ JOIN request_contents c ON c.content_id=p.content_id
+ WHERE p.run_id=? AND p.attempt_id=?`, runID, attemptID).Scan(&ref.ContentID, &ref.SHA256, &ref.SizeBytes)
+	if err != nil {
+		return nil, 0, err
+	}
+	reader, err := OpenExecutionPrompt(ctx, db, attemptID, ref)
+	return reader, ref.SizeBytes, err
+}
