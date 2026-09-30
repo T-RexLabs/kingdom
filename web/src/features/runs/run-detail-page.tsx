@@ -47,6 +47,7 @@ import { DAGVisualization } from "./dag-visualization";
 import { AgentDetailPanel } from "./agent-detail-panel";
 import { MailboxPanel } from "./mailbox-panel";
 import { RunExecutionSurface } from "./run-execution-surface";
+import { selectRunExecutionNode } from "./run-execution-selection";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunAttemptProvenance } from "./run-attempt-provenance";
 import { RunExecutionsPanel } from "./run-executions-panel";
@@ -182,22 +183,10 @@ export function RunDetailPage() {
     useState<SelectedExecutionState | null>(null);
   const storedSelectedExecution =
     selectedExecution?.runId === runId ? selectedExecution : null;
-  const storedSelectedNode =
-    presentedNodes.find(
-      (node) => node.node_id === storedSelectedExecution?.nodeId,
-    ) ?? null;
-  const selectedNode =
-    storedSelectedNode ??
-    presentedNodes.find(
-      (node) =>
-        node.current_execution?.status === "running" &&
-        node.execution_ownership === "provider_backed",
-    ) ??
-    presentedNodes.find(
-      (node) => node.execution_ownership === "provider_backed",
-    ) ??
-    presentedNodes[0] ??
-    null;
+  const selectedNode = selectRunExecutionNode(
+    presentedNodes,
+    storedSelectedExecution?.nodeId,
+  );
   const selectedExecutionNodeId = selectedNode?.node_id ?? null;
   const nodeAttemptsQuery = useInfiniteRunNodeAttempts(
     runId,

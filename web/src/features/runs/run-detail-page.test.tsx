@@ -755,6 +755,19 @@ describe("run detail page", () => {
 		]);
 	});
 
+  it("keeps a recorded conversation visible when active agents settle at the plan gate", () => {
+    const future: RunNodeExecution = { node_id: "implementation", required_role: "builder", execution_ownership: "provider_backed", status: "pending", attempt_count: 0 };
+    const advisor = runExecution({ node_id: "risk_advisory", attempt_id: "advisor-attempt", required_role: "risk-advisor", status: "running", activity_at: "2026-09-30T10:05:00Z" });
+    mockExecutions = [future, runNode(advisor)];
+    const view = render(<RunDetailPage />);
+    expect(executionSurfacePropsMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedNodeId: "risk_advisory", selectedAttemptId: "advisor-attempt" }));
+    mockExecutions = [future, runNode({ ...advisor, status: "succeeded" }, { status: "succeeded" })];
+    mockRun.display_state = "awaiting_plan_decision";
+    mockRun.plan_state = "awaiting_plan_decision";
+    view.rerender(<RunDetailPage />);
+    expect(executionSurfacePropsMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedNodeId: "risk_advisory", selectedAttemptId: "advisor-attempt" }));
+  });
+
 	it("defaults to the first observed active provider node before settled steps", () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
@@ -834,7 +847,7 @@ describe("run detail page", () => {
 		expect(lastCall.selectedAttemptId).toBe("attempt-running");
 	});
 
-	it("keeps the first server-provided logical node when no work is in flight", () => {
+	it("shows the latest recorded conversation when no work is in flight", () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
 			runNode(runExecution({
@@ -869,8 +882,8 @@ describe("run detail page", () => {
 			selectedAttemptId?: string | null;
 			selectedNodeId?: string | null;
 		};
-		expect(lastCall.selectedNodeId).toBe("execution_review");
-		expect(lastCall.selectedAttemptId).toBe("attempt-failed");
+		expect(lastCall.selectedNodeId).toBe("quality_validation");
+		expect(lastCall.selectedAttemptId).toBe("attempt-succeeded");
 	});
 
 	it("preserves a manual execution selection after the operator changes focus", async () => {
