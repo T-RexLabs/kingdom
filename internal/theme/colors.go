@@ -88,7 +88,10 @@ func derivePalette(p map[string]string) map[string]string {
 	}
 	return t
 }
-func validateContrast(m Manifest) error {
+
+// contrastWarnings offers readability guidance without overriding authored colors
+// or blocking experimentation, private preview, saving, or publication.
+func contrastWarnings(m Manifest) []Diagnostic {
 	t := m.Tokens
 	var issues []Diagnostic
 	check := func(fg, bg string, min float64) {
@@ -121,8 +124,5 @@ func validateContrast(m Manifest) error {
 		check("status."+state+".foreground", "status."+state+".background", 4.5)
 		check("status."+state+".border", "surface.base", 3)
 	}
-	if len(issues) > 0 {
-		return &ValidationError{issues}
-	}
-	return nil
+	return issues
 }

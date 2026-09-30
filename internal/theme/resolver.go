@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -314,10 +315,7 @@ func (r *Resolver) Resolve(raw []byte, files map[string][]byte) (Package, error)
 			}
 		}
 	}
-	if err = validateContrast(m); err != nil {
-		return Package{}, err
-	}
-	p := Package{Manifest: m, Source: bytes.Clone(raw), Assets: cloneFiles(files)}
+	p := Package{Manifest: m, Source: bytes.Clone(raw), Assets: cloneFiles(files), Warnings: contrastWarnings(m)}
 	p.SourceDigest = sourceDigest(raw, sourceFiles)
 	p.ResolvedDigest = resolvedDigest(m, files)
 	return p, nil
@@ -372,7 +370,7 @@ func mergeManifest(base, overlay Manifest) Manifest {
 	if y.Radius != nil {
 		x.Radius = y.Radius
 	}
-	if y.BorderWidth != 0 {
+	if y.BorderWidth != nil {
 		x.BorderWidth = y.BorderWidth
 	}
 	if y.Elevation != "" {
@@ -431,5 +429,6 @@ func clonePackage(p Package) Package {
 	p.Manifest = cloneManifest(p.Manifest)
 	p.Source = bytes.Clone(p.Source)
 	p.Assets = cloneFiles(p.Assets)
+	p.Warnings = slices.Clone(p.Warnings)
 	return p
 }

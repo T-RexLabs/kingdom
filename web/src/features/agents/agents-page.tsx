@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal-shell";
 import {
   ThemeIcon,
+  ThemeArtwork,
   RolePortrait,
   useRoleIdentity,
   useThemeCopy,
@@ -133,6 +134,7 @@ function AgentCard({
       className="ui-card group flex min-h-60 flex-col rounded-xl border border-border bg-surface p-6 text-left transition-colors hover:border-accent/60 hover:bg-surface-raised"
       aria-label={`About ${identity.name}`}
     >
+      <ThemeArtwork slot="agentBackdrop" className="mb-5 h-24 w-full rounded-lg object-cover" />
       <span className="mb-5 flex h-11 w-11 items-center justify-center rounded-xl bg-accent/10 text-accent">
         <ThemeIcon slot={`role.${group.id}`} className="h-5 w-5" />
       </span>

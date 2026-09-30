@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
 import { builtInThemes } from "@/theme";
 import { themePackage } from "@/theme/contract";
 import { ThemePreviewCard } from "./theme-preview-card";
@@ -63,4 +64,51 @@ it("previews surface settings and native controls inside the draft boundary", ()
   expect(sample.style.getPropertyValue("--theme-shadow")).toBe("none");
   expect(sample.style.colorScheme).toBe("dark");
   expect(sample).toHaveAttribute("data-ornamentation", "minimal");
+});
+
+it("updates body, display and monospace typography inside its scoped preview", () => {
+  const manifest = structuredClone(builtInThemes[0]);
+  manifest.typography = { body: "bundled:jetbrains-mono", display: "bundled:system-sans", mono: "bundled:classic-sans", bodyWeight: 500, headingWeight: 600 };
+  const view = render(<ThemePreviewCard manifest={manifest} context="controls" />);
+  const sample = screen.getByLabelText(`${manifest.name} presentation sample`);
+  expect(sample).toHaveStyle({ fontWeight: "var(--theme-weight-body)" });
+  expect(sample.style.getPropertyValue("--theme-font-body")).toContain("JetBrains Mono");
+  expect(sample.style.getPropertyValue("--theme-font-display")).toContain("system-ui");
+  expect(screen.getByText("const progress = 98;")).toHaveStyle({ fontFamily: "var(--theme-font-mono)" });
+  view.rerender(<ThemePreviewCard manifest={{ ...manifest, typography: { ...manifest.typography, bodyWeight: 400 } }} context="controls" />);
+  expect(sample.style.getPropertyValue("--theme-weight-body")).toBe("400");
+});
+it("previews the selected role and its validated portrait, rather than always Builder", () => {
+  const manifest = structuredClone(builtInThemes[0]);
+  manifest.identities.reviewer = { name: "Test Reviewer", description: "A changed responsibility description.", lore: "New role lore.", portrait: "asset:portrait" };
+  manifest.icons["role.reviewer"] = "lucide:flask-conical";
+  manifest.assets.portrait = { path: "assets/portrait.png", mediaType: "image/png" };
+  const pkg = themePackage({ manifest, sourceDigest: "a".repeat(64), resolvedDigest: "b".repeat(64) });
+  render(<ThemePreviewCard manifest={manifest} pkg={pkg} files={{ "assets/portrait.png": btoa("validated image") }} role="reviewer" context="agent" />);
+  expect(screen.getByText("Test Reviewer")).toBeInTheDocument();
+  expect(screen.getByText("A changed responsibility description.")).toBeInTheDocument();
+  expect(screen.getByText("New role lore.")).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Test Reviewer portrait" })).toHaveAttribute("src", `data:image/png;base64,${btoa("validated image")}`);
+  expect(screen.getByRole("img", { name: "Reviewer icon" })).toHaveTextContent("flask-conical");
+});
+it("shows authored copy and artwork in selectable contexts with keyboard navigation", async () => {
+  const user = userEvent.setup();
+  const manifest = structuredClone(builtInThemes[0]);
+  manifest.copy["overview.welcome"] = "A Changed Welcome";
+  manifest.copy["planning.emptyTitle"] = "An Updated Planning Start";
+  manifest.copy["planning.emptyDescription"] = "A changed planning description.";
+  manifest.assets.scene = { path: "assets/scene.png", mediaType: "image/png" };
+  manifest.artwork = { overview: "asset:scene", planningEmpty: "asset:scene", agentBackdrop: "asset:scene" };
+  const pkg = themePackage({ manifest, sourceDigest: "a".repeat(64), resolvedDigest: "b".repeat(64) });
+  render(<ThemePreviewCard manifest={manifest} pkg={pkg} context="overview" />);
+  expect(screen.getByText("A Changed Welcome")).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Overview artwork" })).toHaveAttribute("src", `/api/v1/themes/${manifest.id}/revisions/${"b".repeat(64)}/assets/scene`);
+  screen.getByRole("tab", { name: "Overview" }).focus();
+  await user.keyboard("{ArrowRight}");
+  expect(screen.getByRole("tab", { name: "Planning" })).toHaveFocus();
+  expect(screen.getByText("An Updated Planning Start")).toBeInTheDocument();
+  expect(screen.getByText("A changed planning description.")).toBeInTheDocument();
+  expect(screen.getByRole("img", { name: "Planning artwork" })).toBeInTheDocument();
+  await user.click(screen.getByRole("tab", { name: "Agent" }));
+  expect(screen.getByRole("img", { name: "Agent backdrop artwork" })).toBeInTheDocument();
 });

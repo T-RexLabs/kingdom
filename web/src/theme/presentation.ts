@@ -41,7 +41,7 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
   let disposed = false;
   if (typeof FontFace !== "undefined" && document.fonts) {
     for (const { family, url } of fonts.loads) {
-      const font = new FontFace(family, `url("${url}")`, { display: "swap", weight: "100 900" });
+      const font = new FontFace(family, `url("${url}")`, { display: "swap", weight: "1 1000" });
       void font.load().then((face) => {
         if (!disposed) { document.fonts.add(face); loaded.push(face); }
       }).catch(() => { /* The fixed fallback stack remains readable. */ });

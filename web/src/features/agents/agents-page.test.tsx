@@ -10,6 +10,7 @@ vi.mock("@/api/hooks", () => ({
   useRoles: () => useRolesMock(),
 }));
 vi.mock("@/theme", () => ({
+  ThemeArtwork: () => null,
   ThemeIcon: () => <span aria-hidden="true" />,
   RolePortrait: () => null,
   useThemeCopy: () => "The Court",

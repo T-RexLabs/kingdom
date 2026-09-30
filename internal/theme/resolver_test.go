@@ -76,7 +76,6 @@ func TestThemeInputBoundaries(t *testing.T) {
 		"unknown font":    func(m map[string]any) { m["typography"] = map[string]string{"body": "bundled:remote-font"} },
 		"missing base":    func(m map[string]any) { m["base"] = map[string]string{"id": DefaultID, "version": "99.0.0"} },
 		"incomplete root": func(m map[string]any) { delete(m, "base") },
-		"invisible text":  func(m map[string]any) { m["tokens"] = map[string]string{"text.primary": "#0d1110"} },
 		"empty name":      func(m map[string]any) { m["name"] = "   " },
 	}
 	for name, mutate := range tests {
@@ -184,14 +183,53 @@ func TestBuiltinTokensMatchCanonicalPaletteResolver(t *testing.T) {
 	}
 }
 
-func TestThemeRejectsInvisibleAccentText(t *testing.T) {
-	r := resolverForTest(t)
+func TestThemeContrastIsAdvisoryThroughoutPublication(t *testing.T) {
+	s, _ := storeForTest(t)
 	draft := draftForTest()
 	draft["palette"] = map[string]string{"accent": "#0d1110"}
-	_, err := r.Resolve(rawForTest(t, draft), nil)
-	var validation *ValidationError
-	if !errors.As(err, &validation) {
-		t.Fatalf("invisible accent text accepted: %v", err)
+	draft["tokens"] = map[string]string{"text.primary": "#0d1110"}
+	source := rawForTest(t, draft)
+	preview, err := s.resolver.Resolve(source, nil)
+	if err != nil {
+		t.Fatalf("contrast must not prevent preview: %v", err)
+	}
+	assertWarnings := func(p Package) {
+		t.Helper()
+		var response struct {
+			Warnings []Diagnostic `json:"warnings"`
+		}
+		if err := json.Unmarshal(rawForTest(t, p), &response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.Warnings) == 0 {
+			t.Fatal("low contrast should produce advisory warnings")
+		}
+		for _, warning := range response.Warnings {
+			if warning.Code != "contrast" || warning.Path == "" || warning.Message == "" {
+				t.Fatalf("unexpected warning: %#v", warning)
+			}
+		}
+		if p.Manifest.Tokens["text.primary"] != "#0d1110" || p.Manifest.Tokens["accent.base"] != "#0d1110" {
+			t.Fatal("contrast warning changed authored colors")
+		}
+	}
+	assertWarnings(preview)
+	saved, err := s.SaveSource(source, nil, "")
+	if err != nil {
+		t.Fatalf("contrast must not prevent saving: %v", err)
+	}
+	published, err := s.Publish(saved.Manifest, saved.Assets)
+	if err != nil {
+		t.Fatalf("contrast must not prevent publication: %v", err)
+	}
+	assertWarnings(published)
+	restored, err := s.ReadRevision("custom", published.ResolvedDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWarnings(restored)
+	if restored.ResolvedDigest != preview.ResolvedDigest {
+		t.Fatal("advisory warnings changed revision identity")
 	}
 }
 

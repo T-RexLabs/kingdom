@@ -37,6 +37,7 @@ import {
 } from "./theme-api";
 import { useThemeOperation } from "./use-theme-operation";
 import { ThemePreviewCard } from "./theme-preview-card";
+import { ThemeColorAdvice } from "./theme-color-advice";
 import "./appearance.css";
 
 type EditorTab = "colors" | "identity" | "file";
@@ -193,7 +194,8 @@ export function CreateThemePage() {
       (theme) => theme.id === stringAt(manifest, "base", "id"),
     ) ?? defaultTheme;
   const visual = previewQuery.data?.pkg.manifest ?? base;
-  const diagnostics = themeDiagnostics(previewQuery.error);
+  const currentError = draft.generation === debounced.generation ? previewQuery.error : null;
+  const diagnostics = themeDiagnostics(currentError);
   const id = stringAt(manifest, "id");
   const identityMismatch = !!draft.sourceID && draft.sourceID !== id;
   const conflict =
@@ -735,6 +737,8 @@ export function CreateThemePage() {
           >
             <ThemePreviewCard
               manifest={visual}
+              role={role}
+              context={effectiveTab === "identity" ? "agent" : "controls"}
               pkg={previewQuery.data?.pkg}
               files={previewQuery.data?.assets}
             />
@@ -742,12 +746,13 @@ export function CreateThemePage() {
               {!manifest
                 ? "JSON needs correction before previewing or saving."
                 : currentValidation
-                  ? "Validated · Contrast, references and package structure checked."
+                  ? "Preview is up to date."
                   : previewQuery.isError &&
                       draft.generation === debounced.generation
-                    ? "Validation found issues. Your last published theme stays usable."
+                    ? "Fix the highlighted fields to update the preview."
                     : "Checking the current draft…"}
             </div>
+            <ThemeColorAdvice warnings={previewQuery.data?.pkg.warnings ?? []} />
             {!manifest && (
               <p className="text-sm text-status-failed" role="alert">
                 Enter one valid JSON object in Theme File.
@@ -766,9 +771,9 @@ export function CreateThemePage() {
                 ))}
               </ul>
             ) : (
-              previewQuery.error && (
+              currentError && (
                 <p className="text-sm text-status-failed" role="alert">
-                  {themeError(previewQuery.error)}
+                  {themeError(currentError)}
                 </p>
               )
             )}

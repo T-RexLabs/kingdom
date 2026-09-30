@@ -160,3 +160,45 @@ func TestThemeArchiveValidationDoesNotPublishOrSaveSource(t *testing.T) {
 		t.Fatalf("invalid archive: %d %s", invalid.Code, invalid.Body.String())
 	}
 }
+
+func TestThemeStylingWarningsDoNotBlockPreviewSaveOrPublish(t *testing.T) {
+	store, err := theme.OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ThemeStore: store})
+	const source = `{"schemaVersion":1,"resolverVersion":1,"id":"experimental-theme","version":"1.0.0","name":"Experimental Theme","base":{"id":"obsidian-court","version":"1.0.0"},"tokens":{"text.primary":"#0d1110"},"surfaces":{"radius":128.5,"borderWidth":0},"typography":{"bodyWeight":250.5,"headingWeight":900}}`
+	request := func(method, path string, body map[string]any, status int) []byte {
+		t.Helper()
+		res := performJSONRequest(t, handler, requestSpec{method: method, path: "/api/v1" + path, idempotencyKey: method + path, body: body})
+		if res.Code != status {
+			t.Fatalf("%s %s: %d %s", method, path, res.Code, res.Body.String())
+		}
+		return res.Body.Bytes()
+	}
+	assertPackage := func(raw []byte) theme.Package {
+		t.Helper()
+		var p theme.Package
+		if err := json.Unmarshal(raw, &p); err != nil {
+			t.Fatal(err)
+		}
+		if len(p.Warnings) == 0 || p.Warnings[0].Code != "contrast" {
+			t.Fatalf("contrast warnings missing from API package: %s", raw)
+		}
+		if p.Manifest.Surfaces.BorderWidth == nil || *p.Manifest.Surfaces.BorderWidth != 0 || p.Manifest.Surfaces.Radius == nil || *p.Manifest.Surfaces.Radius != 128.5 || p.Manifest.Typography.BodyWeight != 250.5 {
+			t.Fatalf("authored numeric styles did not survive serialization: %s", raw)
+		}
+		return p
+	}
+	preview := assertPackage(request("POST", "/themes/validate", map[string]any{"source": source, "assets": map[string][]byte{}}, http.StatusOK))
+	var saved gen.ThemeSource
+	if err := json.Unmarshal(request("PUT", "/themes/experimental-theme/source", map[string]any{"source": source, "assets": map[string][]byte{}, "expected_source_digest": ""}, http.StatusOK), &saved); err != nil {
+		t.Fatal(err)
+	}
+	published := assertPackage(request("POST", "/themes/experimental-theme/publish", map[string]any{"expected_source_digest": saved.SourceDigest}, http.StatusCreated))
+	assertPackage(request("GET", "/themes/experimental-theme/revisions/"+published.ResolvedDigest, nil, http.StatusOK))
+	if published.ResolvedDigest != preview.ResolvedDigest {
+		t.Fatal("preview and published theme differ")
+	}
+}

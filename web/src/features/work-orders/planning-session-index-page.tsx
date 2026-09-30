@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
-import { useThemeCopy, ThemeIcon } from "@/theme";
+import { useThemeCopy, ThemeArtwork, ThemeIcon } from "@/theme";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { ThinkingEffortField } from "./thinking-effort-field";
@@ -74,6 +74,7 @@ export function PlanningSessionIndexPage() {
       <div className="mx-auto my-auto w-full max-w-2xl py-8">
         <div className="space-y-8">
           <div className="space-y-4">
+            <ThemeArtwork slot="planningEmpty" className="h-32 w-full rounded-xl object-cover sm:h-40" />
             <ThemeIcon slot="nav.planning" className="h-8 w-8 text-accent" />
             <h2 className="font-display text-4xl leading-tight sm:text-5xl">{emptyTitle}</h2>
             <p className="max-w-xl text-sm leading-7 text-foreground-muted">{emptyDescription}</p>

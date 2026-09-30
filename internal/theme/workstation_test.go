@@ -2,6 +2,8 @@ package theme
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -170,24 +172,71 @@ func TestInheritedAssetsRejectShadowBytesAndPathCollisions(t *testing.T) {
 	}
 }
 
-func TestThemeBorderWidthRange(t *testing.T) {
+func TestThemeNumericStylesFollowCSSRanges(t *testing.T) {
 	r := resolverForTest(t)
-	for _, width := range []int{1, 2, 4, 8} {
-		m := workstationDraft()
-		m["surfaces"] = map[string]any{"borderWidth": width}
-		p, err := r.Resolve(rawForTest(t, m), nil)
-		if err != nil {
-			t.Fatalf("width %d: %v", width, err)
+	for _, field := range []string{"radius", "borderWidth"} {
+		for _, value := range []float64{0, 0.5, 1, 9, 21, 1024.75} {
+			t.Run(fmt.Sprintf("%s/%g", field, value), func(t *testing.T) {
+				m := workstationDraft()
+				m["surfaces"] = map[string]any{field: value}
+				p, err := r.Resolve(rawForTest(t, m), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var resolved map[string]any
+				if err := json.Unmarshal(rawForTest(t, p.Manifest.Surfaces), &resolved); err != nil {
+					t.Fatal(err)
+				}
+				if resolved[field] != value {
+					t.Fatalf("authored %s=%g was not retained: %v", field, value, resolved[field])
+				}
+				flattened, err := r.Resolve(rawForTest(t, p.Manifest), p.Assets)
+				if err != nil || flattened.ResolvedDigest != p.ResolvedDigest {
+					t.Fatalf("numeric style round trip changed: %v", err)
+				}
+			})
 		}
-		if p.Manifest.Surfaces.BorderWidth != width {
-			t.Fatalf("width %d was not retained", width)
+		for _, value := range []any{-0.1, "4px", nil} {
+			m := workstationDraft()
+			m["surfaces"] = map[string]any{field: value}
+			if _, err := r.Resolve(rawForTest(t, m), nil); err == nil {
+				t.Fatalf("invalid %s=%v accepted", field, value)
+			}
 		}
 	}
-	for _, width := range []any{0, 9, 1.5, "4px"} {
-		m := workstationDraft()
-		m["surfaces"] = map[string]any{"borderWidth": width}
-		if _, err := r.Resolve(rawForTest(t, m), nil); err == nil {
-			t.Fatalf("invalid width %v accepted", width)
+	for _, field := range []string{"bodyWeight", "headingWeight"} {
+		for _, value := range []float64{1, 100, 250.5, 500, 950.25, 1000} {
+			t.Run(fmt.Sprintf("%s/%g", field, value), func(t *testing.T) {
+				m := draftForTest()
+				m["typography"] = map[string]any{field: value}
+				p, err := r.Resolve(rawForTest(t, m), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var resolved map[string]any
+				if err := json.Unmarshal(rawForTest(t, p.Manifest.Typography), &resolved); err != nil {
+					t.Fatal(err)
+				}
+				if resolved[field] != value {
+					t.Fatalf("authored %s=%g was not retained: %v", field, value, resolved[field])
+				}
+			})
+		}
+		for _, value := range []any{0, 1000.1, "bold", nil} {
+			m := draftForTest()
+			m["typography"] = map[string]any{field: value}
+			if _, err := r.Resolve(rawForTest(t, m), nil); err == nil {
+				t.Fatalf("invalid %s=%v accepted", field, value)
+			}
+		}
+	}
+	for _, raw := range []string{
+		`{"radius":1e400}`, `{"borderWidth":1e400}`, `{"radius":NaN}`, `{"borderWidth":Infinity}`,
+	} {
+		m := draftForTest()
+		source := strings.TrimSuffix(string(rawForTest(t, m)), "}") + `,"surfaces":` + raw + "}"
+		if _, err := r.Resolve([]byte(source), nil); err == nil {
+			t.Fatalf("nonfinite surface accepted: %s", raw)
 		}
 	}
 }

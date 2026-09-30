@@ -13,7 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { Sparkline } from "@/components/ui/sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
-import { useThemeCopy } from "@/theme";
+import { ThemeArtwork, useThemeCopy } from "@/theme";
 import {
   runDisplayBadgeStatus,
   runDisplayStateLabel,
@@ -53,6 +53,10 @@ export function DashboardPage() {
         </>
       }
     >
+      <ThemeArtwork
+        slot="overview"
+        className="mb-8 h-32 w-full rounded-xl object-cover sm:h-40"
+      />
       <div className="space-y-10">
         <OverviewQueue
           title="Needs Your Decision"

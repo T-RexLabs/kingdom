@@ -18,6 +18,7 @@ import {
 
 export function RunsPage() {
   const workName = useThemeCopy("workOrder.singular");
+  const workNames = useThemeCopy("workOrder.plural");
   const navigate = useNavigate({ from: "/runs" });
   const search = useSearch({ from: "/runs" });
   const activeFilter = search.state_filter ?? "all";
@@ -44,7 +45,7 @@ export function RunsPage() {
     <WorkspacePage
       section="Runs"
       title="Runs"
-      description="Follow every workflow from its first observation to its final result."
+      description={`Follow ${workNames} from their first observation to their final result.`}
       actions={
         <Link to="/work-orders/new">
           <Button size="sm">

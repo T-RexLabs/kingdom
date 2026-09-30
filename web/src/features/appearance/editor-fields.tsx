@@ -47,11 +47,11 @@ export function Field({
 }
 // Keep a temporary empty value while editing instead of coercing it to zero.
 // Only complete numbers enter the canonical draft; blur restores an empty field.
-function NumericSetting({ label, value, min, max, step = 1, help = `Between ${min} and ${max} pixels.`, change }: { label: string; value: number; min: number; max: number; step?: number; help?: string; change: (value: number) => void }) {
+function NumericSetting({ label, value, min, max, help, change }: { label: string; value: number; min?: number; max?: number; help?: string; change: (value: number) => void }) {
   const [editing, setEditing] = useState<{ source: number; text: string } | null>(null);
   const text = editing?.source === value ? editing.text : String(value);
   return <Field label={label} help={help}>
-    <input type="number" className="appearance-input" min={min} max={max} step={step} value={text}
+    <input type="number" className="appearance-input" min={min} max={max} step="any" value={text}
       onChange={(event) => {
         const next = event.target.value;
         const numeric = Number(next);
@@ -122,7 +122,7 @@ export function EditorColors({
             <p>
               Explicit semantic colors take priority over the palette.
               Regenerating removes these color overrides and uses the palette to
-              derive accessible states.
+              derive the other colors.
             </p>
             <button
               type="button"
@@ -176,10 +176,10 @@ export function EditorColors({
               ]}
             />
           ))}
-          <NumericSetting label="Heading Weight" min={400} max={700} step={100} help="400–700, in steps of 100."
+          <NumericSetting label="Heading Weight" min={1} max={1000} help="Use any CSS font weight from 1 to 1,000. The result depends on the font."
             value={numberAt(manifest, "typography", "headingWeight", view.typography.headingWeight)}
             change={(next) => update(["typography", "headingWeight"], next)} />
-          <NumericSetting label="Body Weight" min={400} max={500} step={100} help="400 (regular) or 500 (medium)."
+          <NumericSetting label="Body Weight" min={1} max={1000} help="Use any CSS font weight from 1 to 1,000. The result depends on the font."
             value={numberAt(manifest, "typography", "bodyWeight", view.typography.bodyWeight)}
             change={(next) => update(["typography", "bodyWeight"], next)} />
         </div>
@@ -195,10 +195,10 @@ export function EditorColors({
             value={optionalStringAt(manifest, "surfaces", "iconRendering") ?? view.surfaces.iconRendering ?? "mask"}
             onChange={(next) => update(["surfaces", "iconRendering"], next)}
             options={[{ value: "mask", label: "Match Text" }, { value: "original", label: "Original Artwork" }]} />
-          <NumericSetting label="Corner Radius" min={0} max={20}
+          <NumericSetting label="Corner Radius" min={0} help="Pixels. Use 0 for square corners; decimal values are welcome."
             value={numberAt(manifest, "surfaces", "radius", view.surfaces.radius)}
             change={(next) => update(["surfaces", "radius"], next)} />
-          <NumericSetting label="Border Width" min={1} max={8}
+          <NumericSetting label="Border Width" min={0} help="Pixels. Use 0 for no border; decimal values are welcome."
             value={numberAt(manifest, "surfaces", "borderWidth", view.surfaces.borderWidth)}
             change={(next) => update(["surfaces", "borderWidth"], next)} />
           <SelectField id="theme-elevation" label="Elevation" disabled={disabled}
@@ -318,7 +318,7 @@ export function EditorIdentity({
         value={optionalStringAt(manifest, "icons", `role.${role}`) ?? view.icons[`role.${role}`]}
         onChange={(next) => update(["icons", `role.${role}`], next)}
       />
-      <ThemeImagePicker id="theme-portrait" label="Portrait" kind="image" disabled={disabled}
+      <ThemeImagePicker id="theme-portrait" label="Portrait" help="An optional avatar for this role, shown in its agent details. Choose an uploaded image; the role icon is used separately in navigation and activity." kind="image" disabled={disabled}
           theme={assetTheme} assetURLs={assetURLs}
           value={stringAt(manifest, "identities", role, "portrait")}
           inheritedValue={base.identities[role].portrait}
@@ -378,6 +378,7 @@ export function EditorIdentity({
       </details>
       <details className="appearance-form-section">
         <summary className="text-sm">Artwork</summary>
+        <p className="appearance-help mt-3">Optional illustrations for specific areas of the app. Upload an image under Local Assets, then choose where it appears.</p>
         <div className="mt-4 space-y-4">
           {["overview", "planningEmpty", "agentBackdrop"].map((key) => (
             <ThemeImagePicker
@@ -387,6 +388,7 @@ export function EditorIdentity({
               label={key
                 .replace(/([A-Z])/g, " $1")
                 .replace(/\b\w/g, (char) => char.toUpperCase())}
+              help={{ overview: "An illustration below the Overview welcome header.", planningEmpty: "An illustration above the welcome message in a new planning session.", agentBackdrop: "A banner above each role card on the Agents page. Text stays outside the image." }[key]}
               disabled={disabled}
                 value={stringAt(manifest, "artwork", key)}
                 inheritedValue={stringAt(base, "artwork", key)}

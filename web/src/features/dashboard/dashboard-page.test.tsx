@@ -10,7 +10,7 @@ vi.mock("@/api/client", async () => ({
   ...(await vi.importActual("@/api/client")),
   apiFetch: (...args: unknown[]) => api(...args),
 }));
-vi.mock("@/theme", () => ({ useThemeCopy: (slot: string) => slot === "workOrder.singular" ? "Decree" : "Your Workspace" }));
+vi.mock("@/theme", () => ({ ThemeArtwork: () => null, useThemeCopy: (slot: string) => slot === "workOrder.singular" ? "Decree" : "Your Workspace" }));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
     children,

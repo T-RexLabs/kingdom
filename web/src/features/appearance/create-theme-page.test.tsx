@@ -107,3 +107,19 @@ it("exposes canonical starting themes and preserves font product spellings", asy
   await user.click(screen.getByRole("option", { name: "Nautilus" }));
   expect(router.navigate).toHaveBeenCalledWith({ to: "/appearance/create", search: { base: "nautilus" } });
 });
+
+it("updates the preview and permits saving and app preview when contrast advice is returned", async () => {
+  vi.spyOn(themeAPI, "validate").mockImplementation(async ({ source }) => {
+    const pkg = resolved(source);
+    const authored = parseDraft(source)!;
+    return themePackage({ ...pkg, manifest: { ...pkg.manifest, typography: { ...pkg.manifest.typography, ...authored.typography } }, warnings: [{ path: "/tokens/text.primary", code: "contrast", message: "Low contrast is advisory." }] });
+  });
+  const view = setup();
+  fireEvent.change(screen.getByRole("spinbutton", { name: /Heading Weight/ }), { target: { value: "925.5" } });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Preview in App" })).toBeEnabled());
+  expect(screen.getByRole("button", { name: "Save Source" })).toBeEnabled();
+  expect(screen.getByText("Preview is up to date.")).toBeInTheDocument();
+  expect(screen.getByText(/still preview, save and publish/)).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Preview in App" }));
+  expect(view.context.previewTheme).toHaveBeenCalledWith(expect.objectContaining({ manifest: expect.objectContaining({ typography: expect.objectContaining({ headingWeight: 925.5 }) }) }), expect.any(Object));
+});

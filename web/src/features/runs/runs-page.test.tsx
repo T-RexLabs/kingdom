@@ -229,9 +229,10 @@ afterEach(() => {
 });
 
 describe("runs page quick filters", () => {
-  it("uses the active theme's work order noun in the create action", () => {
+  it("uses the active theme's work order nouns in the create action and description", () => {
     render(<RunsPage />);
     expect(screen.getByRole("button", { name: "New Decree" })).toBeInTheDocument();
+    expect(screen.getByText("Follow Decrees from their first observation to their final result.")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "New Decree" })).toHaveAttribute("href", "/work-orders/new");
   });
   it("drives the active filter from URL search state and labels decision stages clearly", async () => {

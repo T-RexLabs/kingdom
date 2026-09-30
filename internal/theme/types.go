@@ -31,19 +31,19 @@ type Reference struct {
 	Version string `json:"version"`
 }
 type Typography struct {
-	Body          string `json:"body,omitempty"`
-	Display       string `json:"display,omitempty"`
-	Mono          string `json:"mono,omitempty"`
-	BodyWeight    int    `json:"bodyWeight,omitempty"`
-	HeadingWeight int    `json:"headingWeight,omitempty"`
+	Body          string  `json:"body,omitempty"`
+	Display       string  `json:"display,omitempty"`
+	Mono          string  `json:"mono,omitempty"`
+	BodyWeight    float64 `json:"bodyWeight,omitempty"`
+	HeadingWeight float64 `json:"headingWeight,omitempty"`
 }
 type Surfaces struct {
-	Radius        *int   `json:"radius,omitempty"`
-	BorderWidth   int    `json:"borderWidth,omitempty"`
-	Elevation     string `json:"elevation,omitempty"`
-	Ornamentation string `json:"ornamentation,omitempty"`
-	Chrome        string `json:"chrome,omitempty"`
-	IconRendering string `json:"iconRendering,omitempty"`
+	Radius        *float64 `json:"radius,omitempty"`
+	BorderWidth   *float64 `json:"borderWidth,omitempty"`
+	Elevation     string   `json:"elevation,omitempty"`
+	Ornamentation string   `json:"ornamentation,omitempty"`
+	Chrome        string   `json:"chrome,omitempty"`
+	IconRendering string   `json:"iconRendering,omitempty"`
 }
 type Identity struct {
 	Name        string `json:"name,omitempty"`
@@ -85,6 +85,7 @@ type Package struct {
 	Manifest       Manifest          `json:"manifest"`
 	SourceDigest   string            `json:"sourceDigest"`
 	ResolvedDigest string            `json:"resolvedDigest"`
+	Warnings       []Diagnostic      `json:"warnings,omitempty"`
 	Source         json.RawMessage   `json:"-"`
 	Assets         map[string][]byte `json:"-"`
 }

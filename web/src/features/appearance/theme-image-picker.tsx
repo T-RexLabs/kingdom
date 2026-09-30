@@ -36,9 +36,10 @@ function ChoiceThumbnail({ reference, kind, theme, assetURLs }: {
 }
 
 /** Search the full catalog; render glyphs only for a bounded, expandable batch. */
-export function ThemeImagePicker({ id, label, value, inheritedValue = "", kind, theme, assetURLs, disabled, onChange }: {
+export function ThemeImagePicker({ id, label, help, value, inheritedValue = "", kind, theme, assetURLs, disabled, onChange }: {
   id: string;
   label: string;
+  help?: string;
   value: string;
   inheritedValue?: string;
   kind: "icon" | "image";
@@ -85,5 +86,6 @@ export function ThemeImagePicker({ id, label, value, inheritedValue = "", kind, 
         <Check size={16} className={selected ? "shrink-0" : "invisible shrink-0"} aria-hidden="true" />
       </>}
     />
+    {help && <p className="appearance-help mt-2">{help}</p>}
   </div>;
 }

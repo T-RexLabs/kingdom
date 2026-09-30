@@ -130,3 +130,22 @@ it("uses the same editable numeric control for every number setting", async () =
     expect(input).toHaveValue(Number(value));
   }
 });
+
+it("allows CSS font weights and uncapped nonnegative surface sizes", () => {
+  function Editor() {
+    const [manifest, change] = useState(parseDraft(newDraft().source)!);
+    return <><EditorColors manifest={manifest} disabled={false} change={change} /><output data-testid="draft">{JSON.stringify(manifest)}</output></>;
+  }
+  render(<Editor />);
+  for (const [name, value] of [["Heading Weight", "925.5"], ["Body Weight", "250"], ["Corner Radius", "48.5"], ["Border Width", "12.5"]]) {
+    const input = screen.getByRole("spinbutton", { name: new RegExp(name) }) as HTMLInputElement;
+    fireEvent.change(input, { target: { value } });
+    expect(input.validity.valid, `${name} must accept ${value}`).toBe(true);
+  }
+  const border = screen.getByRole("spinbutton", { name: /Border Width/ });
+  fireEvent.change(border, { target: { value: "0" } });
+  expect((border as HTMLInputElement).validity.valid).toBe(true);
+  expect(screen.getByRole("spinbutton", { name: /Corner Radius/ })).not.toHaveAttribute("max");
+  expect(border).not.toHaveAttribute("max");
+  expect(JSON.parse(screen.getByTestId("draft").textContent!)).toMatchObject({ typography: { headingWeight: 925.5, bodyWeight: 250 }, surfaces: { radius: 48.5, borderWidth: 0 } });
+});

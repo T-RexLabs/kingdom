@@ -98,3 +98,22 @@ it("never treats stored preference payloads as a theme stylesheet", async () => 
   localStorage.setItem(preferenceKey("workspace"), JSON.stringify({ ...ref, tokens: { canvas: "url(https://bad.invalid)" } }));
   expect(readPreference("workspace")).toEqual(ref);
 });
+
+it("does not narrow the CSS weight range when loading an authored variable font", () => {
+  const theme = structuredClone(defaultTheme);
+  theme.assets["body-font"] = { path: "assets/body.woff2", mediaType: "font/woff2" };
+  theme.typography.body = "asset:body-font";
+  const Font = vi.fn(function(this: { load: () => Promise<never> }) { this.load = () => new Promise(() => {}); });
+  vi.stubGlobal("FontFace", Font);
+  const originalFonts = Object.getOwnPropertyDescriptor(document, "fonts");
+  Object.defineProperty(document, "fonts", { configurable: true, value: { add: vi.fn(), delete: vi.fn() } });
+  try {
+    const dispose = applyPresentation({ theme, assetURLs: { "body-font": "blob:validated-font" }, activePackage: null }, document.createElement("div"));
+    expect(Font).toHaveBeenCalledWith(expect.any(String), 'url("blob:validated-font")', { display: "swap", weight: "1 1000" });
+    dispose();
+  } finally {
+    vi.unstubAllGlobals();
+    if (originalFonts) Object.defineProperty(document, "fonts", originalFonts);
+    else Reflect.deleteProperty(document, "fonts");
+  }
+});

@@ -1877,6 +1877,8 @@ export interface components {
             manifest: components["schemas"]["ThemeManifest"];
             sourceDigest: string;
             resolvedDigest: string;
+            /** @description Advisory readability diagnostics; these do not block preview, saving, or publication. */
+            warnings?: components["schemas"]["ThemeDiagnostic"][];
         };
         ThemeDiagnostic: {
             path: string;
@@ -3627,7 +3629,7 @@ export interface components {
         };
         /**
          * Kingdom Theme Package
-         * @description Version 1 presentation-only theme package. Structural validation is followed by asset, catalog and resolved accessibility validation.
+         * @description Version 1 presentation-only theme package. Structural validation is followed by asset and catalog validation, with advisory readability warnings.
          */
         ThemeManifest: {
             /** @description Editor hint only. Runtime never fetches arbitrary schema URLs. */
@@ -3718,10 +3720,8 @@ export interface components {
                 body?: components["schemas"]["ThemeFont"];
                 display?: components["schemas"]["ThemeFont"];
                 mono?: components["schemas"]["ThemeFont"];
-                /** @enum {integer} */
-                bodyWeight?: 400 | 500;
-                /** @enum {integer} */
-                headingWeight?: 400 | 500 | 600 | 700;
+                bodyWeight?: number;
+                headingWeight?: number;
             };
             surfaces?: {
                 radius?: number;

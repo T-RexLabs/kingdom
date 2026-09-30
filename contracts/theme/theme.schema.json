@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Kingdom Theme Package",
-  "description": "Version 1 presentation-only theme package. Structural validation is followed by asset, catalog and resolved accessibility validation.",
+  "description": "Version 1 presentation-only theme package. Structural validation is followed by asset and catalog validation, with advisory readability warnings.",
   "type": "object",
   "additionalProperties": false,
   "properties": {
@@ -277,18 +277,14 @@
           "$ref": "#/definitions/font"
         },
         "bodyWeight": {
-          "enum": [
-            400,
-            500
-          ]
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000
         },
         "headingWeight": {
-          "enum": [
-            400,
-            500,
-            600,
-            700
-          ]
+          "type": "number",
+          "minimum": 1,
+          "maximum": 1000
         }
       }
     },
@@ -297,14 +293,12 @@
       "additionalProperties": false,
       "properties": {
         "radius": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 20
+          "type": "number",
+          "minimum": 0
         },
         "borderWidth": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 8
+          "type": "number",
+          "minimum": 0
         },
         "elevation": {
           "enum": [
