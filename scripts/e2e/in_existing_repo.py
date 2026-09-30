@@ -4,7 +4,7 @@ import shutil
 from pathlib import Path
 
 from scripts.e2e.in_existing_repo_report import brief_from_analysis, build_bootstrap_failure_analysis, build_in_existing_repo_analysis, write_summary
-from scripts.e2e.models import DEFAULT_WORKFLOW_ID, InExistingRepoConfig, RunRequest, WorkspacePaths, WorktreeRecord
+from scripts.e2e.models import InExistingRepoConfig, RunRequest, WorkspacePaths, WorktreeRecord
 from scripts.e2e.runtime import RuntimeService
 
 
@@ -62,7 +62,6 @@ def run_in_existing_repo(config: InExistingRepoConfig, root_dir: Path) -> None:
         run_request = RunRequest(
             title=DEFAULT_DECREE_TITLE,
             text=DEFAULT_DECREE_TEXT,
-            workflow_id=DEFAULT_WORKFLOW_ID,
             publish_mode=config.publish_mode,
             global_model=config.common.global_model,
             agent_model_overrides=config.common.agent_model_overrides,

@@ -15,7 +15,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Sequence
 
-from scripts.e2e.models import DEFAULT_BASE_PATH, DEFAULT_WORKFLOW_ID, PollResult, RunRequest, WorktreeRecord, WorkspacePaths
+from scripts.e2e.models import DEFAULT_BASE_PATH, PollResult, RunRequest, WorktreeRecord, WorkspacePaths
 
 
 def new_idempotency_key(scope: str) -> str:
@@ -87,8 +87,6 @@ class RuntimeService:
                 publish_mode,
                 "--provider-engine",
                 "opencode",
-                "--default-workflow-id",
-                DEFAULT_WORKFLOW_ID,
                 "--listen",
                 f"127.0.0.1:{port}",
                 "--base-path",
@@ -169,7 +167,6 @@ class RuntimeService:
     def build_run_payload(self, work_order_id: str, request: RunRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "work_order_id": work_order_id,
-            "workflow_id": request.workflow_id,
             "publish_mode": request.publish_mode,
             "max_execution_review_cycles": request.max_execution_review_cycles,
             "max_validation_rework_cycles": request.max_validation_rework_cycles,

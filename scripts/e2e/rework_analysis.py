@@ -3,7 +3,7 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from scripts.e2e.models import DEFAULT_WORKFLOW_ID, PUBLISH_MODE_DIRECT, ReworkAnalysisConfig, ReworkProfile, RunRequest, WorkspacePaths
+from scripts.e2e.models import PUBLISH_MODE_DIRECT, ReworkAnalysisConfig, ReworkProfile, RunRequest, WorkspacePaths
 from scripts.e2e.rework_analysis_report import brief_from_analysis, build_bootstrap_failure_analysis, build_rework_analysis, write_summary
 from scripts.e2e.runtime import RuntimeService
 
@@ -77,7 +77,6 @@ def run_profile(
         run_request = RunRequest(
             title=profile.title,
             text=profile.prompt_text,
-            workflow_id=DEFAULT_WORKFLOW_ID,
             publish_mode=PUBLISH_MODE_DIRECT,
             global_model=config.common.global_model,
             agent_model_overrides=config.common.agent_model_overrides,
