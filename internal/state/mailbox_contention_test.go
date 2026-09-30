@@ -74,7 +74,7 @@ func TestMailboxSendRetriesConcurrentWALWriter(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 			req := SendMailboxMessageRequest{
-				MessageID: "msg_contended", RunID: "run_1", FromAgentID: "agent_council", ToAgentID: "agent_chancellor",
+				MessageID: "msg_contended", RunID: "run_1", FromAgentID: "agent_council", ToAgentID: "agent_coordinator",
 				ThreadID: "thread_wal", MessageType: MailboxMessageTypeStatus, Priority: MailboxPriorityNormal,
 				PayloadJSON: `{"status":"prepared"}`, CreatedAt: "2026-03-01T16:01:00Z",
 			}
