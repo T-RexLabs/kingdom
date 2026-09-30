@@ -27,7 +27,7 @@ export function PopoverSurface({
 	modalOwned: boolean;
 	floatingProps: Record<string, unknown>;
 	/** -1 focuses the panel itself; use it when the panel owns its own focus. */
-	initialFocus?: number;
+	initialFocus?: number | React.MutableRefObject<HTMLElement | null>;
 	className?: string;
 	onKeyDownCapture?: React.KeyboardEventHandler<HTMLDivElement>;
 	children: React.ReactNode;

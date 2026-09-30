@@ -1,17 +1,31 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { AnalyticsTimeRange } from "@/lib/analytics-time-range";
 import { TimeRangePicker } from "./time-range-picker";
 
-function nativeCalendar(endpoint: "From" | "To"): HTMLInputElement {
-  const button = screen.getByRole("button", { name: `Choose ${endpoint} date` });
-  const calendar = document.getElementById(button.getAttribute("aria-controls")!) as HTMLInputElement;
-  expect(calendar).toHaveAttribute("type", "date");
-  expect(calendar).not.toHaveAttribute("step");
-  expect(calendar).toHaveAttribute("aria-hidden", "true");
-  expect(calendar).toHaveAttribute("tabindex", "-1");
-  return calendar;
+type TestUser = ReturnType<typeof userEvent.setup>;
+
+async function openCalendar(user: TestUser, endpoint: "From" | "To") {
+  await user.click(screen.getByRole("button", { name: `Choose ${endpoint} date` }));
+  return screen.getByRole("dialog", { name: `${endpoint} Calendar` });
+}
+
+function calendarDay(calendar: HTMLElement, day: string) {
+  const name = new Intl.DateTimeFormat(undefined, { dateStyle: "full" }).format(new Date(`${day}T12:00:00`));
+  return within(calendar).getByRole("button", { name });
+}
+
+async function chooseCalendarDay(user: TestUser, endpoint: "From" | "To", day: string) {
+  const calendar = await openCalendar(user, endpoint);
+  // Navigate the same month controls used by people; selected and adjacent dates need no navigation.
+  for (let months = 0; !calendar.querySelector(`button[data-date="${day}"]`) && months < 240; months += 1) {
+    const days = Array.from(calendar.querySelectorAll<HTMLButtonElement>("button[data-date]"));
+    const middleDay = days[Math.floor(days.length / 2)].dataset.date!;
+    await user.click(within(calendar).getByRole("button", { name: day < middleDay ? "Previous month" : "Next month" }));
+  }
+  await user.click(calendarDay(calendar, day));
+  expect(screen.queryByRole("dialog", { name: `${endpoint} Calendar` })).not.toBeInTheDocument();
 }
 
 function localDateTime(timestamp: string): string {
@@ -135,6 +149,15 @@ describe("rolling time window", () => {
 
 
 describe("combined calendar time window", () => {
+  it("uses application calendars without native date controls or a separate Now button", async () => {
+    const user = userEvent.setup();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    expect(document.querySelector('input[type="date"], input[type="datetime-local"]')).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Now" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument();
+  });
+
   it("uses one timestamp field per endpoint and identifies the browser time zone", async () => {
     const user = userEvent.setup();
     render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={vi.fn()} />);
@@ -146,7 +169,7 @@ describe("combined calendar time window", () => {
     expect(screen.getByLabelText("To")).toHaveAttribute("placeholder", "YYYY-MM-DD HH:mm:ss");
     expect(screen.getByText("Browser Time Zone")).toBeInTheDocument();
     expect(screen.getByText(Intl.DateTimeFormat().resolvedOptions().timeZone)).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Now" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Now" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reset" })).toBeInTheDocument();
   });
 
@@ -199,29 +222,16 @@ describe("combined calendar time window", () => {
     }
   });
 
-  it("opens date-only calendars and applies fresh selections as inclusive local days", async () => {
+  it("opens themed date-only calendars and applies fresh selections as inclusive local days", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
-    const fromCalendar = nativeCalendar("From");
-    const toCalendar = nativeCalendar("To");
-    const showFrom = vi.fn();
-    const showTo = vi.fn();
-    Object.defineProperty(fromCalendar, "showPicker", { configurable: true, value: showFrom });
-    Object.defineProperty(toCalendar, "showPicker", { configurable: true, value: showTo });
-
-    await user.click(screen.getByRole("button", { name: "Choose From date" }));
-    expect(showFrom).toHaveBeenCalledOnce();
-    expect(showTo).not.toHaveBeenCalled();
-    fireEvent.change(fromCalendar, { target: { value: "2026-02-01" } });
+    await chooseCalendarDay(user, "From", "2026-02-01");
     expect(screen.getByLabelText("From")).toHaveValue("2026-02-01");
     expect(screen.getByLabelText("To")).toHaveValue("Now");
-
-    await user.click(screen.getByRole("button", { name: "Choose To date" }));
-    expect(showTo).toHaveBeenCalledOnce();
-    expect(showFrom).toHaveBeenCalledOnce();
-    fireEvent.change(toCalendar, { target: { value: "2026-02-28" } });
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose From date" })).toHaveFocus());
+    await chooseCalendarDay(user, "To", "2026-02-28");
     expect(screen.getByLabelText("From")).toHaveValue("2026-02-01");
     expect(screen.getByLabelText("To")).toHaveValue("2026-02-28");
     expect(onChange).not.toHaveBeenCalled();
@@ -231,36 +241,38 @@ describe("combined calendar time window", () => {
     });
   });
 
-  it("leaves relative and invalid calendar values unselected without inventing a date", async () => {
+  it("leaves relative and invalid calendar dates unselected and focuses today", async () => {
     const user = userEvent.setup();
     render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={vi.fn()} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
-    expect(nativeCalendar("From")).toHaveValue("");
-    expect(nativeCalendar("To")).toHaveValue("");
+    const today = localDateTime(new Date().toISOString()).slice(0, 10);
     for (const value of ["now-2h", "Now", "invalid", "2026-02-30", "2026-02-30 12:00:00"]) {
       changeEndpoint("To", value);
-      expect(nativeCalendar("To")).toHaveValue("");
+      const calendar = await openCalendar(user, "To");
+      expect(calendar.querySelector('[aria-selected="true"]')).not.toBeInTheDocument();
+      expect(calendarDay(calendar, today)).toHaveAttribute("aria-current", "date");
+      await waitFor(() => expect(calendarDay(calendar, today)).toHaveFocus());
       expect(screen.getByLabelText("To")).toHaveValue(value);
+      await user.keyboard("{Escape}");
     }
     changeEndpoint("To", "2026-09-30");
-    expect(nativeCalendar("To")).toHaveValue("2026-09-30");
+    const calendar = await openCalendar(user, "To");
+    expect(calendarDay(calendar, "2026-09-30").closest('[aria-selected]')).toHaveAttribute("aria-selected", "true");
   });
 
-  it("prefills dates and preserves typed local or RFC3339 clock precision when changing dates", async () => {
+  it("preserves typed local or RFC3339 clock precision when selecting application calendar dates", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     changeEndpoint("From", "2026-09-29 08:15:31.123");
-    expect(nativeCalendar("From")).toHaveValue("2026-09-29");
     const timestamp = "2026-09-30T12:34:56.789+02:00";
     const localClock = localDateTime(timestamp).split(" ")[1];
     changeEndpoint("To", timestamp);
-    expect(nativeCalendar("To")).toHaveValue(localDateTime(timestamp).slice(0, 10));
-    fireEvent.change(nativeCalendar("From"), { target: { value: "2026-09-30" } });
+    await chooseCalendarDay(user, "From", "2026-09-30");
     expect(screen.getByLabelText("From")).toHaveValue("2026-09-30 08:15:31.123");
     expect(screen.getByLabelText("To")).toHaveValue(timestamp);
-    fireEvent.change(nativeCalendar("To"), { target: { value: "2026-10-01" } });
+    await chooseCalendarDay(user, "To", "2026-10-01");
     expect(screen.getByLabelText("To")).toHaveValue(`2026-10-01 ${localClock}`);
     expect(screen.getByLabelText("From")).toHaveValue("2026-09-30 08:15:31.123");
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
@@ -269,13 +281,13 @@ describe("combined calendar time window", () => {
     });
   });
 
-  it("clears only the selected endpoint when clearing its native calendar", async () => {
+  it("clears only the selected endpoint through its editable text field", async () => {
     const user = userEvent.setup();
     const onChange = vi.fn();
     render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     changeEndpoint("To", "2026-09-30 12:30:00");
-    fireEvent.change(nativeCalendar("To"), { target: { value: "" } });
+    await user.clear(screen.getByLabelText("To"));
     expect(screen.getByLabelText("To")).toHaveValue("");
     expect(screen.getByLabelText("From")).toHaveValue("now-1d");
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
@@ -355,8 +367,6 @@ describe("combined calendar time window", () => {
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     expect(screen.getByLabelText("From")).toHaveValue(localDateTime(value.startAt));
     expect(screen.getByLabelText("To")).toHaveValue(localDateTime(value.endAt));
-    expect(nativeCalendar("From")).toHaveValue(localDateTime(value.startAt).slice(0, 10));
-    expect(nativeCalendar("To")).toHaveValue(localDateTime(value.endAt).slice(0, 10));
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
     expect(onChange).toHaveBeenCalledWith(value);
   });
@@ -380,7 +390,7 @@ describe("combined calendar time window", () => {
     });
   });
 
-  it("restores only the end with Now and resets the complete draft without applying", async () => {
+  it("accepts typed now and resets the complete draft without applying", async () => {
     const onChange = vi.fn();
     const user = userEvent.setup();
     const value: AnalyticsTimeRange = {
@@ -388,10 +398,10 @@ describe("combined calendar time window", () => {
     };
     render(<TimeRangePicker value={value} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
-    await user.click(screen.getByRole("button", { name: "Now" }));
+    await user.clear(screen.getByLabelText("To"));
+    await user.type(screen.getByLabelText("To"), "now");
     expect(screen.getByLabelText("From")).toHaveValue("2026-09-29 08:15:00");
-    expect(screen.getByLabelText("To")).toHaveValue("Now");
-    expect(nativeCalendar("To")).toHaveValue("");
+    expect(screen.getByLabelText("To")).toHaveValue("now");
     expect(onChange).not.toHaveBeenCalled();
     changeEndpoint("From", "2026-09-29 25:00:00");
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
@@ -399,8 +409,6 @@ describe("combined calendar time window", () => {
     await user.click(screen.getByRole("button", { name: "Reset" }));
     expect(screen.getByLabelText("From")).toHaveValue("now-1d");
     expect(screen.getByLabelText("To")).toHaveValue("Now");
-    expect(nativeCalendar("From")).toHaveValue("");
-    expect(nativeCalendar("To")).toHaveValue("");
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
@@ -468,7 +476,6 @@ describe("combined calendar time window", () => {
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     changeEndpoint("From", skippedLocalTime!);
     changeEndpoint("To", `${skippedLocalTime!.slice(0, 10)} 12:00:00`);
-    expect(nativeCalendar("From")).toHaveValue("");
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
     expect(screen.getByRole("alert")).toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
@@ -485,8 +492,8 @@ describe("combined calendar time window", () => {
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     expect(screen.getByLabelText("From")).toHaveValue(localDateTime(startAt));
     expect(screen.getByLabelText("To")).toHaveValue(localDateTime(endAt));
-    fireEvent.change(nativeCalendar("From"), { target: { value: localDateTime(startAt).slice(0, 10) } });
-    fireEvent.change(nativeCalendar("To"), { target: { value: localDateTime(endAt).slice(0, 10) } });
+    await chooseCalendarDay(user, "From", localDateTime(startAt).slice(0, 10));
+    await chooseCalendarDay(user, "To", localDateTime(endAt).slice(0, 10));
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
     expect(onChange).toHaveBeenCalledWith(value);
   });
@@ -500,7 +507,7 @@ describe("combined calendar time window", () => {
       kind: "absolute", startAt, endAt: "2026-10-26T12:00:00.000Z",
     }} onChange={onChange} />);
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
-    fireEvent.change(nativeCalendar("From"), { target: { value: "2026-10-23" } });
+    await chooseCalendarDay(user, "From", "2026-10-23");
     expect(screen.getByLabelText("From")).toHaveValue(`2026-10-23 ${localClock}`);
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
     expect(onChange).toHaveBeenCalledWith({
@@ -519,11 +526,114 @@ describe("combined calendar time window", () => {
     await user.click(screen.getByRole("button", { name: "Custom time window" }));
     changeEndpoint("From", `${previousDay} ${clock}`);
     changeEndpoint("To", `${gapDay} 12:00:00`);
-    expect(nativeCalendar("From")).toHaveValue(previousDay);
-    fireEvent.change(nativeCalendar("From"), { target: { value: gapDay } });
+    await chooseCalendarDay(user, "From", gapDay);
     expect(screen.getByLabelText("From")).toHaveValue(skippedLocalTime);
     await user.click(screen.getByRole("button", { name: "Apply Window" }));
     expect(screen.getByRole("alert")).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("application calendar interaction", () => {
+  it("uses the themed popover and focuses the selected date with one tabbable day", async () => {
+    const user = userEvent.setup();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    changeEndpoint("From", "2026-09-30 08:15:31.123");
+    const calendar = await openCalendar(user, "From");
+    expect(calendar).toHaveClass("ui-popover");
+    expect(document.querySelector('input[type="date"], input[type="datetime-local"]')).not.toBeInTheDocument();
+    const selectedDay = calendarDay(calendar, "2026-09-30");
+    expect(selectedDay.closest('[aria-selected]')).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(selectedDay).toHaveFocus());
+    expect(calendar.querySelectorAll('button[data-date][tabindex="0"]')).toHaveLength(1);
+    expect(within(calendar).getAllByRole("columnheader")[0]).toHaveTextContent(/Mo/i);
+  });
+
+  it("navigates months across years without changing the draft or applying", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    changeEndpoint("From", "2026-01-15");
+    const calendar = await openCalendar(user, "From");
+    await user.click(within(calendar).getByRole("button", { name: "Previous month" }));
+    expect(calendarDay(calendar, "2025-12-15")).toBeInTheDocument();
+    await user.click(within(calendar).getByRole("button", { name: "Next month" }));
+    expect(calendarDay(calendar, "2026-01-15")).toBeInTheDocument();
+    expect(screen.getByLabelText("From")).toHaveValue("2026-01-15");
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("navigates days, weeks, months and years by keyboard with month-end clamping", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    changeEndpoint("From", "2026-01-31 08:15:00");
+    const calendar = await openCalendar(user, "From");
+    await waitFor(() => expect(calendarDay(calendar, "2026-01-31")).toHaveFocus());
+    const movements = [
+      ["{PageDown}", "2026-02-28"],
+      ["{Shift>}{PageDown}{/Shift}", "2027-02-28"],
+      ["{Home}", "2027-02-22"],
+      ["{End}", "2027-02-28"],
+      ["{ArrowRight}", "2027-03-01"],
+      ["{ArrowUp}", "2027-02-22"],
+      ["{ArrowLeft}", "2027-02-21"],
+      ["{ArrowDown}", "2027-02-28"],
+      ["{Shift>}{PageUp}{/Shift}", "2026-02-28"],
+      ["{PageUp}", "2026-01-28"],
+    ];
+    for (const [keys, expectedDay] of movements) {
+      await user.keyboard(keys);
+      await waitFor(() => expect(calendarDay(calendar, expectedDay)).toHaveFocus());
+    }
+    expect(screen.getByLabelText("From")).toHaveValue("2026-01-31 08:15:00");
+    expect(onChange).not.toHaveBeenCalled();
+    await user.keyboard("{Enter}");
+    expect(screen.getByLabelText("From")).toHaveValue("2026-01-28 08:15:00");
+    expect(screen.queryByRole("dialog", { name: "From Calendar" })).not.toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("closes the calendar first on Escape and restores each parent trigger", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} />, { container: document.getElementById("scene-root")! });
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    await openCalendar(user, "From");
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "From Calendar" })).not.toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Custom Time Window" })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Choose From date" })).toHaveFocus());
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Custom time window" })).toHaveFocus());
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("switches endpoints with only one calendar open", async () => {
+    const user = userEvent.setup();
+    render(<TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={vi.fn()} />);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    await openCalendar(user, "From");
+    await openCalendar(user, "To");
+    expect(screen.queryByRole("dialog", { name: "From Calendar" })).not.toBeInTheDocument();
+    expect(screen.getAllByRole("dialog")).toHaveLength(2);
+    expect(screen.getByRole("dialog", { name: "Custom Time Window" })).toBeInTheDocument();
+  });
+
+  it("dismisses both calendar and parent on an outside click without applying", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    render(<><TimeRangePicker value={{ kind: "relative", minutes: 1440 }} onChange={onChange} /><button>Outside</button></>);
+    await user.click(screen.getByRole("button", { name: "Custom time window" }));
+    await openCalendar(user, "From");
+    await user.click(screen.getByRole("button", { name: "Outside" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Outside" })).toHaveFocus();
     expect(onChange).not.toHaveBeenCalled();
   });
 });
