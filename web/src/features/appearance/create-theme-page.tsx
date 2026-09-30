@@ -365,6 +365,7 @@ export function CreateThemePage() {
   const busyLoading = mismatch && !askReplace;
   return (
     <WorkspacePage
+      contentClassName="appearance-editor-viewport"
       section="Appearance / Create Theme"
       title={draft.sourceID ? "Edit Theme" : "Create a Theme"}
       description="Start with a world you love, then make it your own. The visual controls and theme.json edit one draft. Preview the real app before sharing a revision."
@@ -643,6 +644,7 @@ export function CreateThemePage() {
                 <EditorIdentity
                   manifest={manifest}
                   resolved={validated?.manifest}
+                  assetPreview={previewQuery.data ? { manifest: previewQuery.data.pkg.manifest, files: previewQuery.data.assets } : undefined}
                   disabled={locked}
                   role={role}
                   setRole={setRole}

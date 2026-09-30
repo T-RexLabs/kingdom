@@ -509,7 +509,7 @@ function RunAnalyticsSection({
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card className="min-h-[320px] border-0 bg-transparent p-0 py-4">
+        <Card className="min-h-[320px] min-w-0">
           <CardHeader>
             <CardTitle>Run Outcomes Over Time</CardTitle>
             <p className="mt-2 text-xs text-foreground-muted">
@@ -525,7 +525,7 @@ function RunAnalyticsSection({
           </CardContent>
         </Card>
 
-        <Card className="min-h-[320px] border-0 bg-transparent p-0 py-4">
+        <Card className="min-h-[320px] min-w-0">
           <CardHeader>
             <CardTitle>Execution Duration by Role</CardTitle>
             <p className="mt-2 text-xs text-foreground-muted">

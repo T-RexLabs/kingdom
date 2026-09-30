@@ -299,7 +299,7 @@ export function PopoverListbox({
                 id={listboxId}
                 role="listbox"
                 aria-labelledby={triggerId}
-                className="min-h-0 flex-1 overflow-auto p-1"
+                className="min-h-0 flex-1 overflow-auto p-1.5"
               >
                 {items.length === 0
                   ? (emptyState ?? <p className="px-3 py-2 text-xs text-foreground-subtle">No options available.</p>)

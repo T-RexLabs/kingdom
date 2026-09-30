@@ -3725,8 +3725,7 @@ export interface components {
             };
             surfaces?: {
                 radius?: number;
-                /** @enum {integer} */
-                borderWidth?: 1 | 2;
+                borderWidth?: number;
                 /** @enum {string} */
                 elevation?: "flat" | "soft";
                 /** @enum {string} */

@@ -21,6 +21,8 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
     "--theme-radius": `${theme.surfaces.radius}px`,
     "--theme-border-width": `${theme.surfaces.borderWidth}px`,
     "--theme-shadow": theme.surfaces.elevation === "soft" ? "0 12px 40px rgb(0 0 0 / 0.12)" : "none",
+    // A zero shadow can be composed with classic inset bevels; `none` cannot.
+    "--theme-surface-shadow": theme.surfaces.elevation === "soft" ? "0 12px 40px rgb(0 0 0 / 0.12)" : "0 0 transparent",
     "color-scheme": theme.colorScheme,
   });
   const previous = Object.fromEntries(Object.keys(properties).map((key) => [key, [root.style.getPropertyValue(key), root.style.getPropertyPriority(key)]]));

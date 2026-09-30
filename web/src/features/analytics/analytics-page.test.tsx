@@ -420,6 +420,26 @@ afterEach(() => {
 });
 
 describe("AnalyticsPage", () => {
+  it("keeps chart headings and plots inside the shared card inset", async () => {
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
+      window_minutes: 1440,
+    });
+    setDefaultResponse(
+      "/analytics/execution-detail",
+      aggregateExecutionDetailSnapshot,
+      { window_minutes: 1440 },
+    );
+    installApiFetchMock();
+    render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+
+    for (const title of ["Run Outcomes Over Time", "Execution Duration by Role"]) {
+      const heading = await screen.findByText(title);
+      const card = heading.closest(".ui-card");
+      expect(card).toHaveClass("p-4");
+      expect(card).not.toHaveClass("p-0", "px-0");
+    }
+  });
+
   it("renders recent runs with canonical awaiting-decision state and action-required cues", async () => {
     setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
       window_minutes: 1440,

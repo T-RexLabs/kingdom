@@ -61,7 +61,7 @@ const components = {
     </div>
   ),
   code: ({ children }: { children?: React.ReactNode }) => (
-    <code className="text-wrap-anywhere rounded bg-surface-raised px-1 py-0.5 font-mono text-[11px]">
+    <code className="text-wrap-anywhere rounded bg-surface-raised px-1.5 py-0.5 font-mono text-[11px]">
       {children}
     </code>
   ),

@@ -12,10 +12,10 @@ export const buttonVariants = cva(
         destructive: "ui-button--destructive bg-status-failed/15 text-status-failed hover:bg-status-failed/25",
       },
       size: {
-        default: "h-9 px-4 py-2",
-        sm: "h-8 px-3 text-xs",
-        lg: "h-11 px-6",
-        icon: "h-9 w-9",
+        default: "min-h-9 px-4 py-1.5",
+        sm: "min-h-8 px-3 py-1.5 text-xs",
+        lg: "min-h-11 px-6 py-2.5",
+        icon: "min-h-9 min-w-9 p-2",
       },
     },
     defaultVariants: {

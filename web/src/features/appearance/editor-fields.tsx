@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { SelectField } from "@/components/ui/select-field";
 import { AdvancedColors } from "./advanced-colors";
 import {
@@ -10,7 +10,8 @@ import {
   type ThemeManifest,
 } from "@/theme";
 import schemaText from "../../../../contracts/theme/theme.schema.json?raw";
-import iconCatalogText from "../../../../contracts/theme/lucide-icons.json?raw";
+import { ThemeImagePicker } from "./theme-image-picker";
+import { useValidatedAssetURLs, type ValidatedAssetPreview } from "./use-theme-picker-assets";
 
 const fontReferences: string[] =
   JSON.parse(schemaText).definitions.font.anyOf[0].enum;
@@ -19,7 +20,6 @@ const fontLabels: Record<string, string> = {
   "bundled:classic-sans": "Classic Windows (Tahoma)",
   "bundled:jetbrains-mono": "JetBrains Mono",
 };
-const iconReferences: string[] = JSON.parse(iconCatalogText);
 const roles = Object.keys(defaultTheme.identities) as RoleID[];
 import {
   objectValue,
@@ -44,6 +44,23 @@ export function Field({
       {help && <small className="appearance-help">{help}</small>}
     </label>
   );
+}
+// Keep a temporary empty value while editing instead of coercing it to zero.
+// Only complete numbers enter the canonical draft; blur restores an empty field.
+function NumericSetting({ label, value, min, max, step = 1, help = `Between ${min} and ${max} pixels.`, change }: { label: string; value: number; min: number; max: number; step?: number; help?: string; change: (value: number) => void }) {
+  const [editing, setEditing] = useState<{ source: number; text: string } | null>(null);
+  const text = editing?.source === value ? editing.text : String(value);
+  return <Field label={label} help={help}>
+    <input type="number" className="appearance-input" min={min} max={max} step={step} value={text}
+      onChange={(event) => {
+        const next = event.target.value;
+        const numeric = Number(next);
+        const complete = next !== "" && Number.isFinite(numeric);
+        setEditing({ source: complete ? numeric : value, text: next });
+        if (complete) change(numeric);
+      }}
+      onBlur={() => setEditing(null)} />
+  </Field>;
 }
 export function EditorColors({
   manifest,
@@ -159,33 +176,12 @@ export function EditorColors({
               ]}
             />
           ))}
-          <SelectField id="theme-heading-weight" label="Heading Weight" disabled={disabled}
-              value={String(numberAt(
-                manifest,
-                "typography",
-                "headingWeight",
-                view.typography.headingWeight,
-              ))}
-              onChange={(next) =>
-                update(
-                  ["typography", "headingWeight"],
-                  Number(next),
-                )
-              }
-              options={[400, 500, 600, 700].map((weight) => ({ value: String(weight), label: String(weight) }))}
-          />
-          <SelectField id="theme-body-weight" label="Body Weight" disabled={disabled}
-              value={String(numberAt(
-                manifest,
-                "typography",
-                "bodyWeight",
-                view.typography.bodyWeight,
-              ))}
-              onChange={(next) =>
-                update(["typography", "bodyWeight"], Number(next))
-              }
-              options={[400, 500].map((weight) => ({ value: String(weight), label: String(weight) }))}
-          />
+          <NumericSetting label="Heading Weight" min={400} max={700} step={100} help="400–700, in steps of 100."
+            value={numberAt(manifest, "typography", "headingWeight", view.typography.headingWeight)}
+            change={(next) => update(["typography", "headingWeight"], next)} />
+          <NumericSetting label="Body Weight" min={400} max={500} step={100} help="400 (regular) or 500 (medium)."
+            value={numberAt(manifest, "typography", "bodyWeight", view.typography.bodyWeight)}
+            change={(next) => update(["typography", "bodyWeight"], next)} />
         </div>
       </section>
       <section className="appearance-form-section">
@@ -199,35 +195,12 @@ export function EditorColors({
             value={optionalStringAt(manifest, "surfaces", "iconRendering") ?? view.surfaces.iconRendering ?? "mask"}
             onChange={(next) => update(["surfaces", "iconRendering"], next)}
             options={[{ value: "mask", label: "Match Text" }, { value: "original", label: "Original Artwork" }]} />
-          <Field label="Corner Radius" help="Between 0 and 20 pixels.">
-            <input
-              type="number"
-              className="appearance-input"
-              min={0}
-              max={20}
-              value={numberAt(
-                manifest,
-                "surfaces",
-                "radius",
-                view.surfaces.radius,
-              )}
-              onChange={(event) =>
-                update(["surfaces", "radius"], Number(event.target.value))
-              }
-            />
-          </Field>
-          <SelectField id="theme-border-width" label="Border Width" disabled={disabled}
-              value={String(numberAt(
-                manifest,
-                "surfaces",
-                "borderWidth",
-                view.surfaces.borderWidth,
-              ))}
-              onChange={(next) =>
-                update(["surfaces", "borderWidth"], Number(next))
-              }
-              options={[{ value: "1", label: "1 Pixel" }, { value: "2", label: "2 Pixels" }]}
-          />
+          <NumericSetting label="Corner Radius" min={0} max={20}
+            value={numberAt(manifest, "surfaces", "radius", view.surfaces.radius)}
+            change={(next) => update(["surfaces", "radius"], next)} />
+          <NumericSetting label="Border Width" min={1} max={8}
+            value={numberAt(manifest, "surfaces", "borderWidth", view.surfaces.borderWidth)}
+            change={(next) => update(["surfaces", "borderWidth"], next)} />
           <SelectField id="theme-elevation" label="Elevation" disabled={disabled}
               value={
                 optionalStringAt(manifest, "surfaces", "elevation") ??
@@ -248,6 +221,7 @@ export function EditorColors({
               }
               options={[{ value: "minimal", label: "Minimal" }, { value: "balanced", label: "Balanced" }]}
           />
+          <div className="space-y-2 sm:col-span-2">
           <SelectField id="theme-color-scheme" label="Native Control Scheme" disabled={disabled}
               value={
                 optionalStringAt(manifest, "colorScheme") ?? view.colorScheme
@@ -255,6 +229,8 @@ export function EditorColors({
               onChange={(next) => update(["colorScheme"], next)}
               options={[{ value: "dark", label: "Dark" }, { value: "light", label: "Light" }]}
           />
+          <p className="appearance-help">Changes browser-drawn controls, such as checkboxes and date pickers. The palette stays the same.</p>
+          </div>
         </div>
       </section>
     </fieldset>
@@ -263,6 +239,7 @@ export function EditorColors({
 export function EditorIdentity({
   manifest,
   resolved,
+  assetPreview,
   disabled,
   role,
   setRole,
@@ -270,6 +247,7 @@ export function EditorIdentity({
 }: {
   manifest: ThemeManifest;
   resolved?: ResolvedThemeManifest;
+  assetPreview?: ValidatedAssetPreview;
   disabled: boolean;
   role: RoleID;
   setRole: (role: RoleID) => void;
@@ -283,9 +261,8 @@ export function EditorIdentity({
   const identity = view.identities[role];
   const update = (path: string[], value: unknown) =>
     change(setDraftField(manifest, path, value));
-  const images = Object.entries(objectValue(manifest.assets)).filter(
-    ([, asset]) => String(objectValue(asset).mediaType).startsWith("image/"),
-  );
+  const assetTheme = assetPreview?.manifest ?? view;
+  const assetURLs = useValidatedAssetURLs(assetTheme, assetPreview);
   return (
     <fieldset disabled={disabled} className="space-y-4">
       <SelectField id="theme-responsibility" label="Responsibility" disabled={disabled}
@@ -335,62 +312,40 @@ export function EditorIdentity({
           }
         />
       </Field>
-      <Field
-        label="Role Icon"
-        help="Use a Lucide symbol or asset:<id> for a validated local SVG."
-      >
-        <input
-          className="appearance-input font-mono text-xs"
-          list="theme-icon-options"
-          value={
-            optionalStringAt(manifest, "icons", `role.${role}`) ??
-            view.icons[`role.${role}`]
-          }
-          onChange={(event) =>
-            update(["icons", `role.${role}`], event.target.value)
-          }
-        />
-      </Field>
-      <SelectField id="theme-portrait" label="Portrait" disabled={disabled}
+      <ThemeImagePicker
+        id="theme-role-icon" label="Role Icon" kind="icon" disabled={disabled}
+        theme={assetTheme} assetURLs={assetURLs}
+        value={optionalStringAt(manifest, "icons", `role.${role}`) ?? view.icons[`role.${role}`]}
+        onChange={(next) => update(["icons", `role.${role}`], next)}
+      />
+      <ThemeImagePicker id="theme-portrait" label="Portrait" kind="image" disabled={disabled}
+          theme={assetTheme} assetURLs={assetURLs}
           value={stringAt(manifest, "identities", role, "portrait")}
+          inheritedValue={base.identities[role].portrait}
           onChange={(next) =>
             update(
               ["identities", role, "portrait"],
               next || undefined,
             )
           }
-          options={[{ value: "", label: "None / Inherited" }, ...images.map(([id]) => ({ value: `asset:${id}`, label: id }))]}
       />
-      <datalist id="theme-icon-options">
-        {iconReferences.map((name) => (
-          <option key={name} value={`lucide:${name}`} />
-        ))}
-      </datalist>
       <details className="appearance-form-section">
         <summary className="text-sm">Navigation and Workflow Icons</summary>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
           {Object.keys(defaultTheme.icons)
             .filter((key) => !key.startsWith("role."))
             .map((key) => (
-              <Field
+              <ThemeImagePicker
                 key={key}
+                id={`theme-icon-${key}`} kind="icon" disabled={disabled}
+                theme={assetTheme} assetURLs={assetURLs}
                 label={key
                   .replaceAll(".", " · ")
                   .replaceAll("-", " ")
                   .replace(/\b\w/g, (char) => char.toUpperCase())}
-              >
-                <input
-                  className="appearance-input font-mono text-xs"
-                  list="theme-icon-options"
-                  value={
-                    optionalStringAt(manifest, "icons", key) ??
-                    stringAt(view, "icons", key)
-                  }
-                  onChange={(event) =>
-                    update(["icons", key], event.target.value)
-                  }
-                />
-              </Field>
+                value={optionalStringAt(manifest, "icons", key) ?? stringAt(view, "icons", key)}
+                onChange={(next) => update(["icons", key], next)}
+              />
             ))}
         </div>
       </details>
@@ -425,18 +380,19 @@ export function EditorIdentity({
         <summary className="text-sm">Artwork</summary>
         <div className="mt-4 space-y-4">
           {["overview", "planningEmpty", "agentBackdrop"].map((key) => (
-            <SelectField
+            <ThemeImagePicker
               key={key}
               id={`theme-artwork-${key}`}
+              kind="image" theme={assetTheme} assetURLs={assetURLs}
               label={key
                 .replace(/([A-Z])/g, " $1")
                 .replace(/\b\w/g, (char) => char.toUpperCase())}
               disabled={disabled}
                 value={stringAt(manifest, "artwork", key)}
+                inheritedValue={stringAt(base, "artwork", key)}
                 onChange={(next) =>
                   update(["artwork", key], next || undefined)
                 }
-              options={[{ value: "", label: "None / Inherited" }, ...images.map(([id]) => ({ value: `asset:${id}`, label: id }))]}
             />
           ))}
         </div>

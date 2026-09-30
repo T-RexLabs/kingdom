@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { cn } from "@/lib/utils";
 import { PageContent, PageHeader } from "./page-layout";
 
 /** Shared hierarchy for collection/settings screens; workflow and chat own
@@ -8,12 +9,14 @@ export function WorkspacePage({
   title,
   description,
   actions,
+  contentClassName,
   children,
 }: {
   section: string;
   title: string;
   description?: string;
   actions?: ReactNode;
+  contentClassName?: string;
   children: ReactNode;
 }) {
   return (
@@ -21,7 +24,7 @@ export function WorkspacePage({
       <PageHeader>
         <span className="text-sm text-foreground-muted">{section}</span>
       </PageHeader>
-      <PageContent className="py-8 sm:py-10">
+      <PageContent className={cn("py-8 sm:py-10", contentClassName)}>
         <div className="mx-auto w-full max-w-6xl">
           <div className="mb-8 flex flex-wrap items-start justify-between gap-5">
             <div>

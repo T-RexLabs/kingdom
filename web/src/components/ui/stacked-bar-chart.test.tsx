@@ -1,9 +1,62 @@
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { StackedBarChart } from "./stacked-bar-chart";
-import { computeLegendLayout } from "./stacked-bar-chart-layout";
 
 describe("stacked bar chart", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("lets the legend wrap outside the plot at narrow widths", () => {
+    const { container } = render(
+      <StackedBarChart
+        width={180}
+        height={250}
+        data={[{
+          label: "12:00",
+          values: [
+            { key: "succeeded", value: 3, color: "#22c55e" },
+            { key: "failed", value: 1, color: "#ef4444" },
+            { key: "cancelled", value: 1, color: "#a855f7" },
+          ],
+        }]}
+      />,
+    );
+
+    const legend = container.querySelector(".legend");
+    expect(legend?.closest("svg")).toBeNull();
+    expect(legend).toHaveClass("flex-wrap");
+    expect(screen.getByText("Succeeded")).toBeVisible();
+    expect(screen.getByText("Failed")).toBeVisible();
+    expect(screen.getByText("Cancelled")).toBeVisible();
+  });
+
+  it("sizes the plot to the remaining container without a minimum-width overflow", () => {
+    let resize!: ResizeObserverCallback;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const { container } = render(
+      <StackedBarChart data={[{
+        label: "12:00",
+        values: [{ key: "succeeded", value: 3, color: "#22c55e" }],
+      }]} />,
+    );
+
+    act(() => resize(
+      [{ contentRect: { width: 180, height: 160 } }] as ResizeObserverEntry[],
+      {} as ResizeObserver,
+    ));
+    const svg = screen.getByRole("img");
+    expect(svg).toHaveAttribute("width", "180");
+    expect(svg).toHaveAttribute("height", "160");
+    const chartRoot = container.querySelector(".chart-root")!;
+    const left = Number(chartRoot.getAttribute("transform")?.match(/translate\(([^,]+)/)?.[1]);
+    for (const bar of container.querySelectorAll(".stack-segment")) {
+      expect(left + Number(bar.getAttribute("x")) + Number(bar.getAttribute("width"))).toBeLessThanOrEqual(180);
+    }
+  });
+
   it("reuses bars, grid lines, and legend items across updates", () => {
     const { container, rerender } = render(
       <StackedBarChart
@@ -64,34 +117,6 @@ describe("stacked bar chart", () => {
     expect(container.querySelector(".stack-segment")).toBe(firstSegmentBefore);
     expect(container.querySelector(".grid-line")).toBe(firstGridLineBefore);
     expect(container.querySelector(".legend-item")).toBe(firstLegendItemBefore);
-  });
-
-  it("computes uniform spacing between legend labels", () => {
-    const keys = ["Succeeded", "Failed", "Cancelled"];
-    const widths = new Map<string, number>([
-      ["Succeeded", 54],
-      ["Failed", 35],
-      ["Cancelled", 49],
-    ]);
-
-    const layout = computeLegendLayout({
-      keys,
-      chartLeft: 34,
-      chartWidth: 460,
-      markerWidth: 8,
-      markerToTextGap: 8,
-      itemGap: 18,
-      measureLabel: (label) => widths.get(label) ?? 0,
-    });
-
-    expect(layout.items).toHaveLength(3);
-    expect(layout.items[0].x).toBe(34 + (460 - layout.totalWidth) / 2);
-
-    const firstGap = layout.items[1].x - (layout.items[0].x + 8 + 8 + widths.get("Succeeded")!);
-    const secondGap = layout.items[2].x - (layout.items[1].x + 8 + 8 + widths.get("Failed")!);
-
-    expect(firstGap).toBe(18);
-    expect(secondGap).toBe(18);
   });
 
   it("renders legend labels in title case", () => {

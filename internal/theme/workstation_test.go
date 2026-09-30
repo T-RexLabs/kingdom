@@ -169,3 +169,25 @@ func TestInheritedAssetsRejectShadowBytesAndPathCollisions(t *testing.T) {
 		t.Fatal("different asset identity at an inherited path accepted")
 	}
 }
+
+func TestThemeBorderWidthRange(t *testing.T) {
+	r := resolverForTest(t)
+	for _, width := range []int{1, 2, 4, 8} {
+		m := workstationDraft()
+		m["surfaces"] = map[string]any{"borderWidth": width}
+		p, err := r.Resolve(rawForTest(t, m), nil)
+		if err != nil {
+			t.Fatalf("width %d: %v", width, err)
+		}
+		if p.Manifest.Surfaces.BorderWidth != width {
+			t.Fatalf("width %d was not retained", width)
+		}
+	}
+	for _, width := range []any{0, 9, 1.5, "4px"} {
+		m := workstationDraft()
+		m["surfaces"] = map[string]any{"borderWidth": width}
+		if _, err := r.Resolve(rawForTest(t, m), nil); err == nil {
+			t.Fatalf("invalid width %v accepted", width)
+		}
+	}
+}

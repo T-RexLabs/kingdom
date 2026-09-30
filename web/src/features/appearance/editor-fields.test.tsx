@@ -42,10 +42,8 @@ it("keeps canonical font, numeric, and surface values when choosing through shar
   render(<Editor />);
   await user.click(screen.getByRole("button", { name: "Body Font" }));
   await user.click(screen.getByRole("option", { name: "local (Local Font)" }));
-  await user.click(screen.getByRole("button", { name: "Heading Weight" }));
-  await user.click(screen.getByRole("option", { name: "600" }));
-  await user.click(screen.getByRole("button", { name: "Border Width" }));
-  await user.click(screen.getByRole("option", { name: "2 Pixels" }));
+  fireEvent.change(screen.getByRole("spinbutton", { name: /Heading Weight/ }), { target: { value: "600" } });
+  fireEvent.change(screen.getByRole("spinbutton", { name: /Border Width/ }), { target: { value: "2" } });
   await user.click(screen.getByRole("button", { name: "Native Control Scheme" }));
   await user.click(screen.getByRole("option", { name: "Light" }));
   await user.click(screen.getByRole("button", { name: "Control Style" }));
@@ -92,4 +90,43 @@ it("edits and resets a semantic color without dropping other customizations", ()
   expect(
     screen.getByRole("button", { name: "Reset text primary color" }),
   ).toBeDisabled();
+});
+
+
+it("lets numeric surface values be cleared and replaced, including wider borders", async () => {
+  const user = userEvent.setup();
+  function Editor() {
+    const [manifest, change] = useState(parseDraft(newDraft("workstation-98").source)!);
+    return <><EditorColors manifest={manifest} disabled={false} change={change} /><output data-testid="draft">{JSON.stringify(manifest)}</output></>;
+  }
+  render(<Editor />);
+  const radius = screen.getByRole("spinbutton", { name: /Corner Radius/ });
+  await user.clear(radius);
+  expect(radius).toHaveValue(null);
+  await user.type(radius, "12");
+  expect(radius).toHaveValue(12);
+  const border = screen.getByRole("spinbutton", { name: /Border Width/ });
+  await user.clear(border);
+  expect(border).toHaveValue(null);
+  await user.type(border, "6");
+  expect(border).toHaveValue(6);
+  expect(JSON.parse(screen.getByTestId("draft").textContent!)).toMatchObject({ surfaces: { radius: 12, borderWidth: 6 } });
+});
+
+it("uses the same editable numeric control for every number setting", async () => {
+  const user = userEvent.setup();
+  function Editor() {
+    const [manifest, change] = useState(parseDraft(newDraft().source)!);
+    return <EditorColors manifest={manifest} disabled={false} change={change} />;
+  }
+  render(<Editor />);
+  for (const [name, value] of [["Heading Weight", "600"], ["Body Weight", "500"], ["Corner Radius", "8"], ["Border Width", "4"]]) {
+    const input = screen.getByRole("spinbutton", { name: new RegExp(name) });
+    expect(input).toHaveClass("appearance-input");
+    expect(screen.queryByRole("button", { name })).not.toBeInTheDocument();
+    await user.clear(input);
+    expect(input).toHaveValue(null);
+    await user.type(input, value);
+    expect(input).toHaveValue(Number(value));
+  }
 });

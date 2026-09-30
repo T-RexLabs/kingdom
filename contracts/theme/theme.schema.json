@@ -302,10 +302,9 @@
           "maximum": 20
         },
         "borderWidth": {
-          "enum": [
-            1,
-            2
-          ]
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8
         },
         "elevation": {
           "enum": [

@@ -10,7 +10,7 @@ export function Badge({ className, variant = "default", status, children, ...pro
   return (
     <span
       className={cn(
-        "ui-badge inline-flex items-center rounded-md px-2 py-0.5 text-xs font-medium",
+        "ui-badge inline-flex items-center rounded-md px-2.5 py-1 text-xs font-medium",
         variant === "status" && status ? getStatusBg(status) : "bg-surface-raised text-foreground-muted",
         className
       )}

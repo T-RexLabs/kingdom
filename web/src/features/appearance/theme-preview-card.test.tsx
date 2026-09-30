@@ -42,3 +42,25 @@ it("isolates flat sample text from classic chrome and leaves classic bevels appl
   expect(screen.getByText("Plan").style.borderColor).toBe("");
   expect(screen.getByLabelText(`${classic.name} presentation sample`)).toHaveAttribute("data-chrome", "classic");
 });
+
+
+it("previews surface settings and native controls inside the draft boundary", () => {
+  const manifest = structuredClone(builtInThemes[0]);
+  manifest.surfaces = { ...manifest.surfaces, borderWidth: 6, radius: 12, elevation: "soft", ornamentation: "balanced" };
+  manifest.colorScheme = "light";
+  const view = render(<ThemePreviewCard manifest={manifest} />);
+  const sample = screen.getByLabelText(`${manifest.name} presentation sample`);
+  expect(sample).toHaveClass("theme-overlay");
+  expect(sample.style.getPropertyValue("--theme-border-width")).toBe("6px");
+  expect(sample.style.getPropertyValue("--theme-radius")).toBe("12px");
+  expect(sample.style.getPropertyValue("--theme-shadow")).not.toBe("none");
+  expect(sample).toHaveAttribute("data-ornamentation", "balanced");
+  expect(sample.style.colorScheme).toBe("light");
+  expect(screen.getByLabelText("Checkbox")).toHaveAttribute("type", "checkbox");
+  expect(screen.getByLabelText("Date")).toHaveAttribute("type", "date");
+  expect(view.container.querySelector(".theme-ornament")).not.toBeNull();
+  view.rerender(<ThemePreviewCard manifest={{ ...manifest, colorScheme: "dark", surfaces: { ...manifest.surfaces, elevation: "flat", ornamentation: "minimal" } }} />);
+  expect(sample.style.getPropertyValue("--theme-shadow")).toBe("none");
+  expect(sample.style.colorScheme).toBe("dark");
+  expect(sample).toHaveAttribute("data-ornamentation", "minimal");
+});
