@@ -1,7 +1,7 @@
 import { useId, useRef, useState } from "react";
 import { useInteractions } from "@floating-ui/react";
-import { CalendarDays, ChevronDown } from "lucide-react";
-import { parseAnalyticsTimestamp, type AnalyticsTimeRange } from "@/lib/analytics-time-range";
+import { CalendarDays, ChevronDown, RotateCcw } from "lucide-react";
+import { DEFAULT_ANALYTICS_TIME_RANGE, parseAnalyticsTimestamp, type AnalyticsTimeRange } from "@/lib/analytics-time-range";
 import { cn } from "@/lib/utils";
 import { usePopoverFloating } from "@/lib/use-popover-floating";
 import { Button } from "./button";
@@ -143,8 +143,12 @@ function parseLocalDate(value: string): Date | null {
 }
 
 function calendarRangeLabel(range: Extract<AnalyticsTimeRange, { kind: "absolute" }>): string {
-  const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", year: "numeric" });
-  return formatter.formatRange(new Date(range.startAt), new Date(new Date(range.endAt).getTime() - 1));
+  const timed = Boolean(endpointDraft(range.startAt, "from").time || endpointDraft(range.endAt, "to").time);
+  const formatter = new Intl.DateTimeFormat(undefined, {
+    month: "short", day: "numeric", year: "numeric",
+    ...(timed ? { hour: "2-digit", minute: "2-digit", hourCycle: "h23" } as const : {}),
+  });
+  return formatter.formatRange(new Date(range.startAt), new Date(new Date(range.endAt).getTime() - (timed ? 0 : 1)));
 }
 
 function nextLocalDay(date: Date): Date {
@@ -155,13 +159,29 @@ function nextLocalDay(date: Date): Date {
   return next;
 }
 
-function endpointDraft(timestamp: string, endpoint: "from" | "to"): string {
+interface EndpointDraft {
+  value: string;
+  time: string;
+  // Preserve the offset in an existing DST fold until the user edits this endpoint.
+  originalInstant?: string;
+}
+
+function localTimeValue(date: Date): string {
+  const time = `${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+  const seconds = date.getSeconds();
+  const milliseconds = date.getMilliseconds();
+  return time + (seconds || milliseconds ? `:${String(seconds).padStart(2, "0")}` : "")
+    + (milliseconds ? `.${String(milliseconds).padStart(3, "0")}` : "");
+}
+
+function endpointDraft(timestamp: string, endpoint: "from" | "to", timed = false): EndpointDraft {
   const instant = new Date(timestamp);
   const day = localDateValue(new Date(instant.getTime() - (endpoint === "to" ? 1 : 0)));
   const midnight = parseLocalDate(day);
   const boundary = midnight && (endpoint === "to" ? nextLocalDay(midnight) : midnight);
-  // Keep precise endpoints precise when reopening a mixed or timestamp range.
-  return boundary?.getTime() === instant.getTime() ? day : timestamp;
+  return !timed && boundary?.getTime() === instant.getTime()
+    ? { value: day, time: "" }
+    : { value: localDateValue(instant), time: localTimeValue(instant), originalInstant: timestamp };
 }
 
 function relativeMinutes(value: string): number | null {
@@ -170,8 +190,20 @@ function relativeMinutes(value: string): number | null {
   return Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= 525600 ? minutes : null;
 }
 
-function endpointDate(value: string, endpoint: "from" | "to", now: number): Date | null {
-  const trimmed = value.trim();
+function endpointDate(draft: EndpointDraft, endpoint: "from" | "to", now: number): Date | null {
+  if (draft.originalInstant) return new Date(draft.originalInstant);
+  const trimmed = draft.value.trim();
+  const time = draft.time.trim();
+  if (time) {
+    if (!parseLocalDate(trimmed) || !/^([01]\d|2[0-3]):[0-5]\d(?::[0-5]\d(?:\.\d{1,3})?)?$/.test(time)) return null;
+    const normalizedTime = time.length === 5 ? `${time}:00` : time;
+    const date = new Date(`${trimmed}T${normalizedTime}`);
+    // Date normalizes nonexistent local times forward. Reject that silent shift.
+    const [hours, minutes, seconds = "0"] = time.split(":");
+    return localDateValue(date) === trimmed && date.getHours() === Number(hours)
+      && date.getMinutes() === Number(minutes) && date.getSeconds() === Math.floor(Number(seconds))
+      ? date : null;
+  }
   if (/^now$/i.test(trimmed)) return new Date(now);
   const minutes = relativeMinutes(trimmed);
   if (minutes !== null) return new Date(now - minutes * 60_000);
@@ -181,22 +213,35 @@ function endpointDate(value: string, endpoint: "from" | "to", now: number): Date
   return timestamp === null ? null : new Date(timestamp);
 }
 
-function TimeEndpointField({ id, label, value, onChange, error, descriptionId }: {
+function TimeEndpointField({ id, label, draft, onChange, onNow, error, descriptionId }: {
   id: string;
   label: "From" | "To";
-  value: string;
-  onChange: (value: string) => void;
+  draft: EndpointDraft;
+  onChange: (draft: EndpointDraft) => void;
+  onNow?: () => void;
   error: boolean;
   descriptionId: string;
 }) {
   const calendar = useRef<HTMLInputElement>(null);
   return (
     <div>
-      <label htmlFor={id} className={fieldLabelClass}>{label}</label>
-      <div className="flex items-stretch gap-2">
-        <input id={id} type="text" value={value} autoComplete="off" spellCheck={false}
-          onChange={(event) => onChange(event.target.value)}
-          aria-invalid={error} aria-describedby={descriptionId} className={cn(fieldClass, "font-mono")}
+      <div className="mb-1.5 flex min-h-7 items-center justify-between gap-2">
+        <label htmlFor={id} className={cn(fieldLabelClass, "mb-0")}>{label}</label>
+        {onNow && <Button type="button" variant="outline" size="sm" onClick={onNow}>Now</Button>}
+      </div>
+      <div className="flex items-stretch gap-2 max-[360px]:flex-wrap">
+        <input id={id} type="text" value={draft.value} autoComplete="off" spellCheck={false}
+          onChange={(event) => onChange({ value: event.target.value, time: draft.time })}
+          aria-invalid={error} aria-describedby={descriptionId} className={cn(fieldClass, "flex-1 font-mono")}
+        />
+        <input type="text" aria-label={`${label} time`} placeholder="HH:MM" value={draft.time}
+          autoComplete="off" spellCheck={false} aria-invalid={error} aria-describedby={descriptionId}
+          onChange={(event) => {
+            const time = event.target.value;
+            const resolved = time && !parseLocalDate(draft.value.trim()) ? endpointDate(draft, "from", Date.now()) : null;
+            onChange({ value: resolved ? localDateValue(resolved) : draft.value, time });
+          }}
+          className={cn(fieldClass, "shrink-0 px-2 font-mono max-[360px]:order-1 max-[360px]:basis-full", draft.time.length > 5 ? "w-32" : "w-[5.5rem]")}
         />
         <div className="relative flex shrink-0">
           <Button type="button" variant="outline" aria-label={`Choose ${label} date`}
@@ -208,8 +253,8 @@ function TimeEndpointField({ id, label, value, onChange, error, descriptionId }:
           {/* Anchor the native calendar beside its trigger. Only preselect literal dates, so
               choosing today replaces “Now” instead of being swallowed as an unchanged value. */}
           <input ref={calendar} id={`${id}-calendar`} type="date" tabIndex={-1} aria-hidden="true"
-            value={parseLocalDate(value.trim()) ? value.trim() : ""}
-            onChange={(event) => onChange(event.target.value)}
+            value={parseLocalDate(draft.value.trim()) ? draft.value.trim() : ""}
+            onChange={(event) => onChange({ value: event.target.value, time: draft.time })}
             className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
           />
         </div>
@@ -223,9 +268,11 @@ function CustomWindow({ id, initial, onApply }: {
   initial: AnalyticsTimeRange;
   onApply: (range: AnalyticsTimeRange) => void;
 }) {
-  const [from, setFrom] = useState(() => initial.kind === "relative"
-    ? `now-${durationLabel(initial.minutes)}` : endpointDraft(initial.startAt, "from"));
-  const [to, setTo] = useState(() => initial.kind === "relative" ? "Now" : endpointDraft(initial.endAt, "to"));
+  const timed = initial.kind === "absolute" && Boolean(endpointDraft(initial.startAt, "from").time || endpointDraft(initial.endAt, "to").time);
+  const [from, setFrom] = useState<EndpointDraft>(() => initial.kind === "relative"
+    ? { value: `now-${durationLabel(initial.minutes)}`, time: "" } : endpointDraft(initial.startAt, "from", timed));
+  const [to, setTo] = useState<EndpointDraft>(() => initial.kind === "relative"
+    ? { value: "Now", time: "" } : endpointDraft(initial.endAt, "to", timed));
   const [error, setError] = useState("");
   const descriptionId = `${id}-help${error ? ` ${id}-error` : ""}`;
   return (
@@ -234,8 +281,8 @@ function CustomWindow({ id, initial, onApply }: {
       className="min-h-0 overflow-y-auto p-5"
       onSubmit={(event) => {
         event.preventDefault();
-        const minutes = relativeMinutes(from);
-        if (minutes !== null && /^now$/i.test(to.trim())) {
+        const minutes = relativeMinutes(from.value);
+        if (minutes !== null && !from.time.trim() && !to.time.trim() && /^now$/i.test(to.value.trim())) {
           onApply({ kind: "relative", minutes });
           return;
         }
@@ -243,7 +290,7 @@ function CustomWindow({ id, initial, onApply }: {
         const start = endpointDate(from, "from", now);
         const end = endpointDate(to, "to", now);
         if (!start || !end) {
-          setError("Enter a date (YYYY-MM-DD), a timestamp, Now, or a relative time such as now-90m. Relative times support 1 minute to 365 days in whole minutes.");
+          setError("Enter valid dates and local times (HH:MM), Now, or a relative time such as now-90m. Relative times support 1 minute to 365 days in whole minutes.");
           return;
         }
         if (start.getUTCFullYear() < 0 || end.getUTCFullYear() > 9999) {
@@ -251,7 +298,7 @@ function CustomWindow({ id, initial, onApply }: {
           return;
         }
         if (end <= start) {
-          setError("The end must be after the start. Calendar dates include the whole day.");
+          setError("The end must be after the start. Leave the time blank to include the whole day.");
           return;
         }
         onApply({ kind: "absolute", startAt: start.toISOString(), endAt: end.toISOString() });
@@ -259,18 +306,27 @@ function CustomWindow({ id, initial, onApply }: {
     >
       <h2 id={`${id}-title`} className="text-sm font-semibold">Custom Time Window</h2>
       <p id={`${id}-help`} className="mt-3 text-xs leading-relaxed text-foreground-muted">
-        Type now-1d, Now, or a date. Calendar dates include the whole day in {Intl.DateTimeFormat().resolvedOptions().timeZone}.
+        Use dates or relative times such as now-1d. Times are 24-hour in {Intl.DateTimeFormat().resolvedOptions().timeZone}; leave them blank for whole days.
       </p>
       <div className="mt-5 space-y-4">
-        <TimeEndpointField id={`${id}-from`} label="From" value={from}
+        <TimeEndpointField id={`${id}-from`} label="From" draft={from}
           onChange={(value) => { setFrom(value); setError(""); }} error={Boolean(error)} descriptionId={descriptionId}
         />
-        <TimeEndpointField id={`${id}-to`} label="To" value={to}
+        <TimeEndpointField id={`${id}-to`} label="To" draft={to}
+          onNow={() => { setTo({ value: "Now", time: "" }); setError(""); }}
           onChange={(value) => { setTo(value); setError(""); }} error={Boolean(error)} descriptionId={descriptionId}
         />
       </div>
       {error && <p id={`${id}-error`} role="alert" className="mt-3 text-xs leading-relaxed text-status-failed">{error}</p>}
-      <div className="mt-5 flex justify-end border-t border-border pt-4">
+      <div className="mt-5 flex items-center justify-between gap-3 border-t border-border pt-4">
+        <Button type="button" variant="ghost" size="sm" onClick={() => {
+          setFrom({ value: `now-${durationLabel(DEFAULT_ANALYTICS_TIME_RANGE.minutes)}`, time: "" });
+          setTo({ value: "Now", time: "" });
+          setError("");
+        }}>
+          <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" />
+          Reset
+        </Button>
         <Button type="submit" size="sm">Apply Window</Button>
       </div>
     </form>
