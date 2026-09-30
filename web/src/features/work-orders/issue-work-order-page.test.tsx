@@ -203,8 +203,8 @@ describe("issue work order page", () => {
   it("keeps model and approval decisions visible while advanced controls stay optional", async () => {
     const user = userEvent.setup();
     render(<IssueWorkOrderPage />);
-    expect(screen.getByRole("heading", { name: "Model", exact: true })).toBeVisible();
-    expect(screen.getByRole("heading", { name: "Run Options", exact: true })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /^Model$/ })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /^Run Options$/ })).toBeVisible();
     expect(screen.getByRole("combobox", { name: "Global Model" })).toBeVisible();
     expect(screen.getByRole("switch", { name: "Require Human Approval" })).toBeVisible();
     expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toBeVisible();
