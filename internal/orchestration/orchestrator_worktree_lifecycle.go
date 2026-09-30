@@ -29,26 +29,6 @@ func (o *orchestrationLoop) scheduleRunWorktreeCleanup(ctx context.Context) erro
 	return nil
 }
 
-func (o *orchestrationLoop) drainRunWorktreeCleanup(ctx context.Context) error {
-	if o == nil || o.runWorktrees == nil {
-		return nil
-	}
-	now := o.now().UTC().Format(time.RFC3339)
-	if err := o.runWorktrees.ReclaimAbandonedCleanupClaims(ctx, now); err != nil {
-		return fmt.Errorf("reclaim abandoned run worktree cleanup claims: %w", err)
-	}
-	records, err := o.runWorktrees.ListDueForCleanup(ctx, now, runWorktreeCleanupBatchSize)
-	if err != nil {
-		return fmt.Errorf("list due run worktrees for cleanup: %w", err)
-	}
-	for _, record := range records {
-		if _, err := o.cleanupRunWorktree(ctx, record, now); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
 func (o *orchestrationLoop) cleanupRunWorktree(ctx context.Context, record workspace.RunWorktreeRecord, now string) (bool, error) {
 	return o.cleanupManagedRunWorktree(ctx, record.RunID, now, false)
 }

@@ -51,11 +51,11 @@ Chunking and paged traversal avoid whole-content buffers on these write/transpor
 
 ## Artifact Tables
 
-- `artifacts`: artifact metadata (`artifact_kind`, producer role, path, checksum, size, provenance).
+- `artifacts`: artifact metadata (`artifact_kind`, producer role, path, checksum, size, basic permission bits, provenance). Write actions require `mode_bits` from `0` through `511` (octal `0000`–`0777`); deletion actions have no mode.
 - `artifact_contents`: content manifest keyed by `artifact_id`.
 - `artifact_content_chunks`: canonical artifact bytes in ordered chunks of at most 1 MiB, published with metadata in the same transaction.
 
-Artifact content persistence is the system of record. Publishing files into the project root or a git worktree is a separate projection step.
+Artifact content and permission metadata are the system of record. Publishing files into the project root or a git worktree is a separate projection step. Direct publication records expected, observed, and desired permissions alongside content digests, so chmod-only changes and external permission conflicts survive replay. Permissions are applied to staged files before atomic replacement, and ZIP exports retain canonical file modes. Filesystem comparisons use exact basic permissions on Darwin/Linux and the supported owner-write/read-only bit on Windows.
 
 Artifact download, archive export, and publication stream content from SQLite. Filesystem snapshot manifests remain in `filesystem_snapshots` and `filesystem_snapshot_entries`, with digest-addressed runtime filesystem blobs. Capture, diff, and restoration use incremental no-follow traversal and a disposable disk-backed SQLite index rather than collecting a whole tree. File size, aggregate workspace bytes, entry count, and directory depth have no fixed Kingdom workload ceiling. Snapshot lineage depth and resumable cleanup batch sizes remain control bounds.
 

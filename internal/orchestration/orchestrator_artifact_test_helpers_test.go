@@ -13,6 +13,10 @@ func artifactProjectionSlice(artifacts []artifactOutputRecord) artifactProjectio
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].ArtifactID < artifacts[j].ArtifactID })
 	return func(ctx context.Context, visit func(artifactOutputRecord) error) error {
 		for _, artifact := range artifacts {
+			if artifact.ArtifactAction != "delete" && artifact.ModeBits == nil {
+				mode := int64(0644)
+				artifact.ModeBits = &mode
+			}
 			if err := ctx.Err(); err != nil {
 				return err
 			}

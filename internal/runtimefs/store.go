@@ -186,6 +186,8 @@ func (s *Store) PrepareResponseOnlyWorkspace(ctx context.Context, runID, attempt
 	return s.ResponseOnlyWorkspaceRoot(runID, attemptID), nil
 }
 
+// Private workspace cleanup follows durable terminalization and projection. It
+// must not reserve an attempt ahead of its finalizer or cancellation handoff.
 func (s *Store) ListPendingResponseOnlyWorkspaceCleanups(ctx context.Context, afterAttemptID string, limit int) ([]ResponseOnlyWorkspaceCleanupCandidate, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("runtime fs store is required")
@@ -195,28 +197,14 @@ func (s *Store) ListPendingResponseOnlyWorkspaceCleanups(ctx context.Context, af
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT ae.run_id, ae.attempt_id, ae.response_only_workspace_cleanup_pending_at
 		FROM attempt_executions ae
-		LEFT JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
 		WHERE ae.attempt_id > ? AND ae.response_only_workspace_cleanup_pending_at IS NOT NULL
-		  AND (
-		    ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
-		    OR EXISTS (
-		      SELECT 1 FROM node_runs nr
-		      WHERE nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
-		        AND nr.node_status IN ('succeeded', 'failed', 'cancelled', 'skipped')
-		    )
-		    OR (
-		      ae.state IN ('starting', 'running')
-		      AND (
-		        EXISTS (SELECT 1 FROM provider_process_guards ppg WHERE ppg.attempt_id = ae.attempt_id AND ppg.owner_kind = 'work_order_attempt')
-		        OR (pi.terminal_handoff_pending_at IS NOT NULL
-		            AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner
-		            AND pi.terminal_handoff_pending_lease_version = ae.lease_version)
-		        OR (pi.terminal_recovery_required_at IS NOT NULL
-		            AND pi.terminal_recovery_required_lease_owner = ae.lease_owner
-		            AND pi.terminal_recovery_required_lease_version = ae.lease_version)
-	      )
-	    )
-	  )
+		  AND ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
+		  )
 	ORDER BY ae.attempt_id ASC
 	LIMIT ?`, strings.TrimSpace(afterAttemptID), limit)
 	if err != nil {
@@ -746,6 +734,22 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 			return nil
 		}
 		path := entry.Path
+		requiredParent, err := index.hasLiveDescendant(ctx, 0, path)
+		if err != nil {
+			return err
+		}
+		if requiredParent {
+			current, err := secureRoot.ReadEntry(path)
+			if err != nil {
+				return fmt.Errorf("inspect restored parent %q: %w", path, err)
+			}
+			if current.Type == securefs.EntryTypeDirectory {
+				// This tombstone deletes the old file, not the directory that
+				// now contains live files in the resolved snapshot.
+				return nil
+			}
+			return fmt.Errorf("restored parent %q is no longer a directory", path)
+		}
 		if err := secureRoot.RemoveEntry(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove snapshot deletion %q: %w", path, err)
 		}

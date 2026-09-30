@@ -209,6 +209,7 @@ func (r *Reconciler) recoverUnprojectedAutomaticWorkOrderRetries(ctx context.Con
 		LEFT JOIN retry_decisions rd ON rd.source_attempt_id = ae.attempt_id AND rd.subject_kind = 'work_order_attempt'
 		WHERE ae.execution_mode = 'provider_backed' AND ae.state = 'committed_failure' AND nr.node_status IN ('starting', 'running') AND wr.run_status = 'running' AND rd.retry_decision_id IS NULL
 		  AND COALESCE(ae.failure_code, '') NOT IN ('execution_review_rework', 'validation_gate_rework')
+		  AND NOT EXISTS (SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending')
 		ORDER BY ae.committed_at, ae.attempt_id`)
 	if err != nil {
 		return fmt.Errorf("list unprojected automatic work order retries: %w", err)
@@ -268,7 +269,7 @@ func (r *Reconciler) recoverUnprojectedAutomaticWorkOrderRetries(ctx context.Con
 		if err != nil {
 			return err
 		}
-		_, _, err = r.transition.RecordAutomaticWorkOrderRetry(ctx, AutomaticWorkOrderRetryRecordRequest{Transition: TransitionRequest{TransitionID: fmt.Sprintf("tr_reconcile_%s_retry_projection", candidate.attemptID), EventID: fmt.Sprintf("evt_reconcile_%s_retry_projection", candidate.attemptID), RunID: candidate.runID, NodeRunID: sql.NullString{String: candidate.nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: candidate.nodeStatus, ToState: "failed", ActorID: "reconciler", RoleID: candidate.roleID, AuthoritySource: "system.reconciler", ReasonCode: string(code), ReasonText: "recovered settled provider failure", CorrelationID: "corr_reconcile_" + candidate.runID, CausationID: "caus_reconcile_" + candidate.attemptID, OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: candidate.attemptID, SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: eventSeq, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(candidate.attemptID, ":", "_")), SubjectKind: RetrySubjectKindWorkOrderAttempt, RunID: candidate.runID, NodeID: candidate.nodeID, NodeRunID: candidate.nodeRunID, SourceAttemptID: candidate.attemptID, PolicyID: retryPlannerPolicyID(r.retryPlanner), RetryClass: plan.RetryClass, ErrorCode: string(code), OperatorText: automaticRetryDecisionText(kind, evidence.Observation.MeaningfulProgress), MeaningfulProgress: evidence.Observation.MeaningfulProgress, Decision: kind, RetryIndex: retryIndex, MaxRetries: plan.MaxRetries, PolicyDelay: plan.NextDelay, ProviderRetryAt: providerRetryAt, DueAt: dueAt, CreatedAt: settledAt.UTC(), EscalationTarget: plan.EscalationTarget}})
+		err = r.transition.recoverAutomaticWorkOrderRetry(ctx, AutomaticWorkOrderRetryRecordRequest{Transition: TransitionRequest{TransitionID: fmt.Sprintf("tr_reconcile_%s_retry_projection", candidate.attemptID), EventID: fmt.Sprintf("evt_reconcile_%s_retry_projection", candidate.attemptID), RunID: candidate.runID, NodeRunID: sql.NullString{String: candidate.nodeRunID, Valid: true}, Entity: EntityTypeNode, FromState: candidate.nodeStatus, ToState: "failed", ActorID: "reconciler", RoleID: candidate.roleID, AuthoritySource: "system.reconciler", ReasonCode: string(code), ReasonText: "recovered settled provider failure", CorrelationID: "corr_reconcile_" + candidate.runID, CausationID: "caus_reconcile_" + candidate.attemptID, OccurredAt: now.UTC().Format(time.RFC3339Nano), AttemptID: candidate.attemptID, SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: eventSeq, PayloadJSON: `{}`}, Decision: RetryDecisionCreateRequest{DecisionID: fmt.Sprintf("retry_decision_%s", strings.ReplaceAll(candidate.attemptID, ":", "_")), SubjectKind: RetrySubjectKindWorkOrderAttempt, RunID: candidate.runID, NodeID: candidate.nodeID, NodeRunID: candidate.nodeRunID, SourceAttemptID: candidate.attemptID, PolicyID: retryPlannerPolicyID(r.retryPlanner), RetryClass: plan.RetryClass, ErrorCode: string(code), OperatorText: automaticRetryDecisionText(kind, evidence.Observation.MeaningfulProgress), MeaningfulProgress: evidence.Observation.MeaningfulProgress, Decision: kind, RetryIndex: retryIndex, MaxRetries: plan.MaxRetries, PolicyDelay: plan.NextDelay, ProviderRetryAt: providerRetryAt, DueAt: dueAt, CreatedAt: settledAt.UTC(), EscalationTarget: plan.EscalationTarget}})
 		if err != nil {
 			return err
 		}
@@ -331,6 +332,9 @@ func (r *Reconciler) projectDurableTerminalNodes(ctx context.Context, nowTime ti
 	SELECT run_id, node_run_id, attempt_id
 	FROM latest_attempts
 	WHERE rn = 1
+	  -- A pending outbox owns the terminal transition and its retry decision.
+	  -- Repair must not terminalize the node ahead of that atomic projection.
+	  AND NOT EXISTS (SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = latest_attempts.attempt_id AND ao.status = 'pending')
 	  -- A fenced stale attempt is durably cancelled but remains the visible
 	  -- authority until its cancellation handoff releases the replacement.
 	  AND NOT (state = 'committed_cancelled' AND node_status = 'blocked' AND EXISTS (

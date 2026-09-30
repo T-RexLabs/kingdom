@@ -139,8 +139,10 @@ type AutomaticWorkOrderRetryRecordRequest struct {
 }
 
 type DirectExecutionTerminalRequest struct {
-	Transition   TransitionRequest
-	StaleAttempt *staleAttempt
+	Transition           TransitionRequest
+	StaleAttempt         *staleAttempt
+	ExpectedLeaseOwner   string
+	ExpectedLeaseVersion int64
 }
 
 // DirectExecutionTerminalWithRetryRequest atomically records a recovery-owned
@@ -150,6 +152,8 @@ type DirectExecutionTerminalWithRetryRequest struct {
 	StaleAttempt          *staleAttempt
 	Decision              RetryDecisionCreateRequest
 	EscalationFromAgentID string
+	ExpectedLeaseOwner    string
+	ExpectedLeaseVersion  int64
 }
 
 type LoopCapAutoSuccessRecordRequest struct {
@@ -268,6 +272,18 @@ func (s *TransitionService) RecordNodeCompletion(ctx context.Context, req NodeCo
 }
 
 func (s *TransitionService) RecordAutomaticWorkOrderRetry(ctx context.Context, req AutomaticWorkOrderRetryRecordRequest) (QueuedNodeAttempt, bool, error) {
+	return s.recordAutomaticWorkOrderRetry(ctx, req, false)
+}
+
+// recoverAutomaticWorkOrderRetry repairs only work that has no current projection
+// owner. Reconciliation candidates are snapshots; eligibility is checked again
+// in the same transaction that records the failed node and retry decision.
+func (s *TransitionService) recoverAutomaticWorkOrderRetry(ctx context.Context, req AutomaticWorkOrderRetryRecordRequest) error {
+	_, _, err := s.recordAutomaticWorkOrderRetry(ctx, req, true)
+	return err
+}
+
+func (s *TransitionService) recordAutomaticWorkOrderRetry(ctx context.Context, req AutomaticWorkOrderRetryRecordRequest, requireUnprojected bool) (QueuedNodeAttempt, bool, error) {
 	if req.Transition.Entity != EntityTypeNode || req.Transition.ToState != "failed" || !req.Transition.NodeRunID.Valid {
 		return QueuedNodeAttempt{}, false, fmt.Errorf("automatic work order retry requires a failed node transition")
 	}
@@ -277,6 +293,7 @@ func (s *TransitionService) RecordAutomaticWorkOrderRetry(ctx context.Context, r
 	var queued QueuedNodeAttempt
 	var scheduled bool
 	_, err := sqlitex.Retry(ctx, func() error {
+		queued, scheduled = QueuedNodeAttempt{}, false
 		tx, err := s.db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin automatic work order retry transaction: %w", err)
@@ -288,6 +305,24 @@ func (s *TransitionService) RecordAutomaticWorkOrderRetry(ctx context.Context, r
 			}
 		}()
 		transition := req.Transition
+		if requireUnprojected {
+			err := tx.QueryRowContext(ctx, `SELECT nr.node_status
+				FROM attempt_executions ae
+				JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
+				JOIN workflow_runs wr ON wr.run_id = ae.run_id
+				WHERE ae.attempt_id = ? AND ae.run_id = ? AND ae.node_run_id = ?
+				  AND ae.execution_mode = 'provider_backed' AND ae.state = 'committed_failure'
+				  AND nr.node_status IN ('starting', 'running') AND wr.run_status = 'running'
+				  AND NOT EXISTS (SELECT 1 FROM retry_decisions rd WHERE rd.source_attempt_id = ae.attempt_id AND rd.subject_kind = 'work_order_attempt')
+				  AND NOT EXISTS (SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending')`,
+				transition.AttemptID, transition.RunID, transition.NodeRunID.String).Scan(&transition.FromState)
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("check automatic work order retry repair ownership: %w", err)
+			}
+		}
 		if err := s.applyTx(ctx, tx, transition); err != nil {
 			return err
 		}
@@ -1855,6 +1890,18 @@ func (s *TransitionService) RecordDirectExecutionTerminal(ctx context.Context, r
 		return err
 	}
 	err := s.applyWithEffects(ctx, transition, func(ctx context.Context, tx *sql.Tx) error {
+		if err := requireDirectTerminalLeaseTx(ctx, tx, transition.AttemptID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, transition.OccurredAt); err != nil {
+			return err
+		}
+		if req.ExpectedLeaseOwner != "" {
+			var sessionID string
+			if err := tx.QueryRowContext(ctx, `SELECT session_ref FROM attempt_executions WHERE attempt_id = ?`, transition.AttemptID).Scan(&sessionID); err != nil {
+				return fmt.Errorf("load preparation session: %w", err)
+			}
+			if err := closeAttemptSessionLeaseTx(ctx, tx, sessionID, transition.OccurredAt); err != nil {
+				return err
+			}
+		}
 		if err := ensureAttemptExecutionRowForDirectTerminalTx(ctx, tx, transition.AttemptID, transition.RunID, transition.NodeRunID.String, transition.FromState, transition.OccurredAt); err != nil {
 			return err
 		}
@@ -1903,6 +1950,9 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 				_ = tx.Rollback()
 			}
 		}()
+		if err := requireDirectTerminalLeaseTx(ctx, tx, transition.AttemptID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, transition.OccurredAt); err != nil {
+			return err
+		}
 		stale := staleAttempt{
 			NodeRunID:     transition.NodeRunID.String,
 			RunID:         transition.RunID,
@@ -1996,6 +2046,34 @@ func (s *TransitionService) RecordDirectExecutionTerminalWithRetry(ctx context.C
 		return nil
 	}, sqlitex.Options{})
 	return err
+}
+
+func requireDirectTerminalLeaseTx(ctx context.Context, tx *sql.Tx, attemptID, owner string, version int64, now string) error {
+	if owner == "" && version == 0 {
+		return nil
+	}
+	if owner == "" || version <= 0 {
+		return fmt.Errorf("preparation terminal transition requires complete lease lineage")
+	}
+	var expiry string
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(lease_expires_at, '') FROM attempt_executions
+		WHERE attempt_id = ? AND execution_mode = 'provider_backed'
+		  AND state IN ('queued', 'starting') AND lease_owner = ? AND lease_version = ?`, attemptID, owner, version).Scan(&expiry)
+	if err != nil {
+		return fmt.Errorf("preparation terminal transition lost lease authority: %w", err)
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, expiry)
+	if err != nil {
+		return fmt.Errorf("parse preparation lease expiry: %w", err)
+	}
+	observedAt, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		return fmt.Errorf("parse preparation failure time: %w", err)
+	}
+	if !expiresAt.After(observedAt) {
+		return fmt.Errorf("preparation terminal transition lost expired lease authority")
+	}
+	return nil
 }
 
 func (s *TransitionService) RecordLoopCapAutoSuccess(ctx context.Context, req LoopCapAutoSuccessRecordRequest) error {
@@ -2288,6 +2366,7 @@ func (s *TransitionService) SupersedeQueuedAttemptsBeforeLaunch(ctx context.Cont
 		        COALESCE(ae.session_ref, '') AS session_ref,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
 		        COALESCE(ae.state, '') AS execution_state,
+		        COALESCE(ae.lease_version, 0) AS lease_version,
 		        COALESCE(ae.launch_started_at, '') AS launch_started_at,
 		        COALESCE(ae.started_at, '') AS started_at,
 		        COALESCE(ae.provider_session_id, '') AS provider_session_id,
@@ -2316,7 +2395,7 @@ func (s *TransitionService) SupersedeQueuedAttemptsBeforeLaunch(ctx context.Cont
 	for rows.Next() {
 		var attempt liveNodeAttempt
 		var executionMode string
-		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
+		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LeaseVersion, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
 			return result, fmt.Errorf("scan newer queued attempt to supersede: %w", err)
 		}
 		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
@@ -2407,27 +2486,11 @@ func (s *TransitionService) TerminalizeRunAndCancelLiveNodes(ctx context.Context
 	if strings.TrimSpace(transition.OccurredAt) == "" {
 		transition.OccurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin run terminalization transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := s.terminalizeRunAndCancelLiveNodesTx(ctx, tx, req); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit run terminalization transaction: %w", err)
-	}
-	committed = true
-	return nil
+	req.Transition = transition
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		return s.terminalizeRunAndCancelLiveNodesTx(ctx, tx, req)
+	}, sqlitex.Options{})
+	return err
 }
 
 func (s *TransitionService) terminalizeRunAndCancelLiveNodesTx(ctx context.Context, tx *sql.Tx, req RunTerminalizationRequest) error {
@@ -2512,6 +2575,7 @@ func (s *TransitionService) loadLiveNodeAttemptsTx(ctx context.Context, tx *sql.
 	       COALESCE(ae.session_ref, '') AS session_ref,
 	       COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
 	       COALESCE(ae.state, '') AS execution_state,
+	       COALESCE(ae.lease_version, 0) AS lease_version,
 	       COALESCE(ae.launch_started_at, '') AS launch_started_at,
 	       COALESCE(ae.started_at, '') AS started_at,
 	       COALESCE(ae.provider_session_id, '') AS provider_session_id,
@@ -2531,7 +2595,7 @@ func (s *TransitionService) loadLiveNodeAttemptsTx(ctx context.Context, tx *sql.
 	for rows.Next() {
 		var attempt liveNodeAttempt
 		var executionMode string
-		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
+		if err := rows.Scan(&attempt.RunID, &attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.NodeStatus, &attempt.SupersededAt, &attempt.FailureCode, &attempt.RequiredRole, &attempt.AgentID, &attempt.SessionID, &executionMode, &attempt.ExecutionState, &attempt.LeaseVersion, &attempt.LaunchStartedAt, &attempt.StartedAt, &attempt.ProviderSessionID, &attempt.ActiveProviderInvocationID); err != nil {
 			return nil, fmt.Errorf("scan live node attempt: %w", err)
 		}
 		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
@@ -2975,7 +3039,7 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 	if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		return nil
 	}
-	if strings.TrimSpace(attempt.SessionID) == "" {
+	if strings.TrimSpace(attempt.SessionID) == "" && !attemptPreparationWasAdmitted(attempt) {
 		return nil
 	}
 	if !attemptCancelDispatchRequired(attempt) {
@@ -3135,34 +3199,36 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 // ClaimAttemptCancelHandoffDispatch records the point after which a cancellation
 // request may perform its external provider stop. A crash after this claim leaves
 // the handoff paused instead of replaying an unbounded external side effect.
-func (s *TransitionService) ClaimAttemptCancelHandoffDispatch(ctx context.Context, cancelOutboxID, occurredAt string) (bool, error) {
+// The returned phase fences later bookkeeping; an empty phase means no claim.
+func (s *TransitionService) ClaimAttemptCancelHandoffDispatch(ctx context.Context, cancelOutboxID, occurredAt string) (string, error) {
 	if s == nil || s.db == nil {
-		return false, fmt.Errorf("transition service database is required")
+		return "", fmt.Errorf("transition service database is required")
 	}
 	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
 	occurredAt = strings.TrimSpace(occurredAt)
 	if cancelOutboxID == "" {
-		return false, fmt.Errorf("cancel outbox id is required")
+		return "", fmt.Errorf("cancel outbox id is required")
 	}
 	if occurredAt == "" {
 		occurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+	var dispatchedState string
+	err := s.db.QueryRowContext(ctx, `UPDATE attempt_cancel_outbox
 		SET handoff_state = CASE handoff_state
 			WHEN 'cancellation_requested' THEN 'cancellation_dispatched'
 			WHEN 'stop_retry_requested' THEN 'stop_retry_dispatched'
 		END,
 		updated_at = ?
 		WHERE cancel_outbox_id = ? AND status = 'pending'
-		  AND handoff_state IN ('cancellation_requested', 'stop_retry_requested')`, occurredAt, cancelOutboxID)
-	if err != nil {
-		return false, fmt.Errorf("claim attempt cancellation handoff dispatch: %w", err)
+		  AND handoff_state IN ('cancellation_requested', 'stop_retry_requested')
+		RETURNING handoff_state`, occurredAt, cancelOutboxID).Scan(&dispatchedState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	rows, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("read attempt cancellation dispatch claim rows affected: %w", err)
+		return "", fmt.Errorf("claim attempt cancellation handoff dispatch: %w", err)
 	}
-	return rows == 1, nil
+	return dispatchedState, nil
 }
 
 func attemptSupersessionDecisionForAttempt(attempt liveNodeAttempt) attemptSupersessionDecision {
@@ -3182,7 +3248,7 @@ func attemptSupersessionDecisionForAttempt(attempt liveNodeAttempt) attemptSuper
 		}
 		return attemptSupersessionDecision{}
 	case "pending", "ready", "starting":
-		if attemptCancelDispatchRequired(attempt) {
+		if attemptReachedLaunchHandoff(attempt) {
 			return attemptSupersessionDecision{stage: attemptSupersessionStageLaunched}
 		}
 		if trimmedExecutionState == "" || trimmedExecutionState == "queued" || executionstore.AttemptInPreLaunch(trimmedExecutionState, attempt.StartedAt) {
@@ -3238,6 +3304,18 @@ func attemptCancelDispatchRequired(attempt liveNodeAttempt) bool {
 	if strings.TrimSpace(attempt.ExecutionState) == "terminal_observed" || isDurablyTerminalAttemptExecutionState(attempt.ExecutionState) {
 		return false
 	}
+	return attemptPreparationWasAdmitted(attempt) || attemptReachedLaunchHandoff(attempt)
+}
+
+func attemptPreparationWasAdmitted(attempt liveNodeAttempt) bool {
+	// A retained generation proves preparation may have touched the workspace,
+	// even after its worker drained and released the current lease owner. The
+	// cancellation handoff must still wait for drain and restore that baseline.
+	return attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked &&
+		strings.TrimSpace(attempt.ExecutionState) == "queued" && attempt.LeaseVersion > 0
+}
+
+func attemptReachedLaunchHandoff(attempt liveNodeAttempt) bool {
 	return executionstore.AttemptReachedLaunchHandoff(
 		attempt.ExecutionState,
 		attempt.LaunchStartedAt,

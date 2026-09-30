@@ -10,6 +10,8 @@ import (
 	"kingdom/internal/securefs"
 )
 
+// Protected paths belong to VCS or runtime/tool state. They are never visited,
+// regardless of entry type, and cannot be published as project artifacts.
 var protectedRootSegments = map[string]struct{}{
 	".git":              {},
 	".hg":               {},
@@ -22,7 +24,21 @@ var protectedRootSegments = map[string]struct{}{
 	".tmp":              {},
 	"kd-sandbox":        {},
 	"kingdom-artifacts": {},
-	"node_modules":      {},
+}
+
+// Generated directories are excluded from project content, not reserved paths.
+// Regular files with these names remain eligible, and links remain visible to
+// identity-checked restore cleanup without following their targets.
+var generatedDirectoryNames = map[string]struct{}{
+	"node_modules":  {},
+	".venv":         {},
+	"__pycache__":   {},
+	".pytest_cache": {},
+	".ruff_cache":   {},
+	".mypy_cache":   {},
+	".tox":          {},
+	".nox":          {},
+	".terraform":    {},
 }
 
 type Metadata struct {
@@ -72,7 +88,15 @@ func IsProtectedRelativePath(path string) bool {
 }
 
 func ShouldSkipDirectory(path string) bool {
-	return IsProtectedRelativePath(path)
+	for _, segment := range strings.Split(NormalizeRelativePath(path), "/") {
+		if _, protected := protectedRootSegments[segment]; protected {
+			return true
+		}
+		if _, generated := generatedDirectoryNames[segment]; generated {
+			return true
+		}
+	}
+	return false
 }
 
 func MetadataFromInfo(info fs.FileInfo) Metadata {
@@ -80,9 +104,6 @@ func MetadataFromInfo(info fs.FileInfo) Metadata {
 		return Metadata{}
 	}
 	modeBits := int64(info.Mode().Perm())
-	if info.Mode()&0o111 != 0 {
-		modeBits |= 0o111
-	}
 	return Metadata{
 		SizeBytes:  info.Size(),
 		ModeBits:   modeBits,
@@ -135,11 +156,14 @@ func VisitTrackedEntriesRoot(ctx context.Context, root *securefs.Root, visit fun
 			if directory != "" {
 				relativePath = directory + "/" + entry.Name
 			}
+			if entry.Type == securefs.EntryTypeDirectory {
+				if ShouldSkipDirectory(relativePath) {
+					return nil
+				}
+				return walk(relativePath)
+			}
 			if IsProtectedRelativePath(relativePath) {
 				return nil
-			}
-			if entry.Type == securefs.EntryTypeDirectory {
-				return walk(relativePath)
 			}
 			return visit(TrackedEntry{RelativePath: relativePath, Type: entry.Type, Identity: entry.Identity})
 		})

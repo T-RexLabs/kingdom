@@ -404,16 +404,16 @@ func windowsNameCollision(err error) bool {
 }
 
 func ensureRootDir(root *Root, path string, mode fs.FileMode) error {
-	return ensureRootDirWithPolicy(root, path, mode, false)
+	return ensureRootDirWithPolicy(root, path, mode, false, true)
 }
 
 // ensureRootDirReplacingNonDirectories preserves the parent replacement
 // semantics used by ReplaceRegular and CreateRegularExact.
 func ensureRootDirReplacingNonDirectories(root *Root, path string, mode fs.FileMode) error {
-	return ensureRootDirWithPolicy(root, path, mode, true)
+	return ensureRootDirWithPolicy(root, path, mode, true, true)
 }
 
-func ensureRootDirWithPolicy(root *Root, path string, mode fs.FileMode, replaceNonDirectories bool) error {
+func ensureRootDirWithPolicy(root *Root, path string, mode fs.FileMode, replaceNonDirectories, durable bool) error {
 	components, err := windowsRelativeComponents(path)
 	if err != nil {
 		return err
@@ -423,7 +423,7 @@ func ensureRootDirWithPolicy(root *Root, path string, mode fs.FileMode, replaceN
 		current = filepath.Join(current, part)
 		entry, err := readRootEntry(root, current)
 		if errors.Is(err, os.ErrNotExist) {
-			if err := createRootDirectoryComponent(root, current, mode); err != nil {
+			if err := createRootDirectoryComponent(root, current, mode, durable); err != nil {
 				return fmt.Errorf("create secure directory component %q: %w", current, err)
 			}
 			continue
@@ -440,14 +440,14 @@ func ensureRootDirWithPolicy(root *Root, path string, mode fs.FileMode, replaceN
 		if err := removeRootEntryIfIdentity(root, current, entry.Type, entry.Identity); err != nil {
 			return fmt.Errorf("remove replaceable secure directory component %q: %w", current, err)
 		}
-		if err := createRootDirectoryComponent(root, current, mode); err != nil {
+		if err := createRootDirectoryComponent(root, current, mode, durable); err != nil {
 			return fmt.Errorf("create secure directory component %q: %w", current, err)
 		}
 	}
 	return nil
 }
 
-func createRootDirectoryComponent(root *Root, path string, mode fs.FileMode) error {
+func createRootDirectoryComponent(root *Root, path string, mode fs.FileMode, durable bool) error {
 	components, err := windowsRelativeComponents(path)
 	if err != nil {
 		return err
@@ -457,7 +457,7 @@ func createRootDirectoryComponent(root *Root, path string, mode fs.FileMode) err
 		return fmt.Errorf("open secure parent for %q: %w", path, err)
 	}
 	defer parent.Close()
-	if err := createWindowsDirectoryAt(parent, components[len(components)-1], mode); err != nil {
+	if err := createWindowsDirectoryAt(parent, components[len(components)-1], mode, durable); err != nil {
 		if !windowsNameCollision(err) {
 			return err
 		}
@@ -504,7 +504,7 @@ func createOSRootDirectory(root *os.Root, name string, mode fs.FileMode) (bool, 
 	if err != nil || !os.SameFile(expected, opened) {
 		return false, ErrIdentityMismatch
 	}
-	if err := createWindowsDirectoryAt(parent, name, mode); err != nil {
+	if err := createWindowsDirectoryAt(parent, name, mode, true); err != nil {
 		if !windowsNameCollision(err) {
 			return false, err
 		}
@@ -517,10 +517,13 @@ func createOSRootDirectory(root *os.Root, name string, mode fs.FileMode) (bool, 
 	return true, nil
 }
 
-func createWindowsDirectoryAt(parent *os.File, name string, mode fs.FileMode) error {
+func createWindowsDirectoryAt(parent *os.File, name string, mode fs.FileMode, durable bool) error {
 	// Windows directories inherit their ACL from the parent, as with os.Root.Mkdir.
 	parentHandle := windows.Handle(parent.Fd())
-	options := uint32(windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_FOR_BACKUP_INTENT | windows.FILE_SYNCHRONOUS_IO_NONALERT | windows.FILE_WRITE_THROUGH)
+	options := uint32(windows.FILE_DIRECTORY_FILE | windows.FILE_OPEN_FOR_BACKUP_INTENT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if durable {
+		options |= windows.FILE_WRITE_THROUGH
+	}
 	for range 32 {
 		var token [16]byte
 		if _, err := rand.Read(token[:]); err != nil {
@@ -539,7 +542,7 @@ func createWindowsDirectoryAt(parent *os.File, name string, mode fs.FileMode) er
 			_ = windows.CloseHandle(handle)
 			return fmt.Errorf("create secure temporary directory: invalid handle")
 		}
-		if err := renameWindowsEntryNoReplaceWriteThrough(directory, parent, name); err != nil {
+		if err := renameWindowsEntryAt(directory, parent, name, false); err != nil {
 			cleanupErr := deleteWindowsEntryByHandle(directory)
 			closeErr := directory.Close()
 			return errors.Join(fmt.Errorf("publish secure directory %q: %w", name, err), cleanupErr, closeErr)
@@ -553,7 +556,7 @@ func createWindowsDirectoryAt(parent *os.File, name string, mode fs.FileMode) er
 }
 
 func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.FileMode, modified time.Time) error {
-	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modified)
+	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modified, true)
 }
 func createRootRegularExact(root *Root, path string, data []byte, mode, dirMode fs.FileMode) (FileIdentity, error) {
 	components, err := windowsRelativeComponents(path)
@@ -741,10 +744,12 @@ func newWindowsClaimPath(path string) (string, error) {
 // CreateRegularExact's no-replace behavior without resolving a path from the
 // process working directory or following parent reparse points.
 func renameWindowsEntryNoReplaceWriteThrough(source, parent *os.File, name string) error {
-	return renameWindowsEntryWriteThrough(source, parent, name, false)
+	return renameWindowsEntryAt(source, parent, name, false)
 }
 
-func renameWindowsEntryWriteThrough(source, parent *os.File, name string, replace bool) error {
+// Rename is handle-relative in both modes. Durability comes from opening the
+// source with FILE_WRITE_THROUGH, which private materialization omits.
+func renameWindowsEntryAt(source, parent *os.File, name string, replace bool) error {
 	utf16Name, err := windows.UTF16FromString(name)
 	if err != nil {
 		return err
@@ -954,7 +959,14 @@ func secureWindowsTempAt(parent windows.Handle, data []byte, mode fs.FileMode) (
 }
 
 func secureWindowsTempFromAt(parent windows.Handle, produce func(io.Writer) error, mode fs.FileMode) (*os.File, error) {
-	options := uint32(windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_FOR_BACKUP_INTENT | windows.FILE_SYNCHRONOUS_IO_NONALERT | windows.FILE_WRITE_THROUGH)
+	return secureWindowsTempFromAtWithDurability(parent, produce, mode, true)
+}
+
+func secureWindowsTempFromAtWithDurability(parent windows.Handle, produce func(io.Writer) error, mode fs.FileMode, durable bool) (*os.File, error) {
+	options := uint32(windows.FILE_NON_DIRECTORY_FILE | windows.FILE_OPEN_FOR_BACKUP_INTENT | windows.FILE_SYNCHRONOUS_IO_NONALERT)
+	if durable {
+		options |= windows.FILE_WRITE_THROUGH
+	}
 	access := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_WRITE | windows.DELETE)
 	for range 32 {
 		var token [16]byte
@@ -985,8 +997,10 @@ func secureWindowsTempFromAt(parent windows.Handle, produce func(io.Writer) erro
 		if err := file.Chmod(mode.Perm()); err != nil {
 			return nil, cleanup(fmt.Errorf("set secure temporary file mode: %w", err))
 		}
-		if err := file.Sync(); err != nil {
-			return nil, cleanup(fmt.Errorf("sync secure temporary file: %w", err))
+		if durable {
+			if err := file.Sync(); err != nil {
+				return nil, cleanup(fmt.Errorf("sync secure temporary file: %w", err))
+			}
 		}
 		return file, nil
 	}

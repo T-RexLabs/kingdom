@@ -16,6 +16,7 @@ import (
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/filemode"
 	"kingdom/internal/securefs"
 )
 
@@ -80,6 +81,7 @@ type ArtifactRecord struct {
 	Path           string
 	SHA256         string
 	SizeBytes      int64
+	ModeBits       *int64
 	ProducerRole   string
 	CreatedAt      string
 }
@@ -98,6 +100,7 @@ type WorkerArtifact struct {
 	MIME        string                                       `json:"mime"`
 	Path        string                                       `json:"path"`
 	SHA256      string                                       `json:"sha256,omitempty"`
+	ModeBits    *int64                                       `json:"mode_bits,omitempty"`
 	SizeBytes   *int64                                       `json:"size_bytes,omitempty"`
 	OpenContent func(context.Context) (io.ReadCloser, error) `json:"-"`
 }
@@ -253,6 +256,9 @@ func (*workerArtifactSlice) Close() error { return nil }
 
 func (v *WorkerOutputValidator) buildArtifactRecord(ctx context.Context, req WorkerOutputValidationRequest, artifact WorkerArtifact, index int) (ArtifactRecord, io.ReadCloser, error) {
 	action := firstNonEmptyArtifactAction(artifact.Action)
+	if err := ValidateArtifactMode(action, artifact.ModeBits); err != nil {
+		return ArtifactRecord{}, nil, &WorkerOutputValidationError{Code: string(errorcatalog.CodeInvalidOutputSchema), Reason: err.Error(), err: err}
+	}
 	artifactPath := strings.TrimSpace(artifact.Path)
 	if err := validateArtifactPathReference(artifactPath); err != nil {
 		return ArtifactRecord{}, nil, &WorkerOutputValidationError{
@@ -339,6 +345,7 @@ func (v *WorkerOutputValidator) buildArtifactRecord(ctx context.Context, req Wor
 		Path:           artifactPath,
 		SHA256:         "",
 		SizeBytes:      0,
+		ModeBits:       artifact.ModeBits,
 		ProducerRole:   req.ProducerRole,
 		CreatedAt:      req.CreatedAt,
 	}, content, nil
@@ -420,8 +427,8 @@ func openWorkspaceArtifact(ctx context.Context, workspacePath, artifactPath stri
 func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactRecord) error {
 	_, err := tx.ExecContext(
 		ctx,
-		`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, mode_bits, producer_role, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		artifact.ArtifactID,
 		artifact.RunID,
 		artifact.NodeRunID,
@@ -433,6 +440,7 @@ func insertArtifactRecord(ctx context.Context, tx *sql.Tx, artifact ArtifactReco
 		artifact.Path,
 		artifact.SHA256,
 		artifact.SizeBytes,
+		artifact.ModeBits,
 		artifact.ProducerRole,
 		artifact.CreatedAt,
 	)
@@ -500,4 +508,18 @@ func firstNonEmptyArtifactAction(value string) string {
 		return "delete"
 	}
 	return "write"
+}
+
+// ValidateArtifactMode rejects incomplete or contradictory file metadata.
+func ValidateArtifactMode(action string, bits *int64) error {
+	if action == "delete" {
+		if bits != nil {
+			return fmt.Errorf("deletion artifact must not contain a file mode")
+		}
+		return nil
+	}
+	if bits == nil {
+		return fmt.Errorf("write artifact requires a file mode")
+	}
+	return filemode.Validate(*bits)
 }

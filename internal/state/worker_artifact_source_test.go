@@ -48,7 +48,7 @@ func (c *generatedWorkerArtifacts) Next(ctx context.Context) (WorkerArtifact, er
 	index := c.position
 	c.position++
 	size := int64(0)
-	artifact := WorkerArtifact{Kind: "deliverable", Action: "write", Name: fmt.Sprintf("file-%06d", index), MIME: "text/plain", Path: fmt.Sprintf("%sfile-%06d", c.pathPrefix, index), SHA256: checksumHex(nil), SizeBytes: &size}
+	artifact := WorkerArtifact{ModeBits: artifactTestMode(0644), Kind: "deliverable", Action: "write", Name: fmt.Sprintf("file-%06d", index), MIME: "text/plain", Path: fmt.Sprintf("%sfile-%06d", c.pathPrefix, index), SHA256: checksumHex(nil), SizeBytes: &size}
 	artifact.OpenContent = func(context.Context) (io.ReadCloser, error) {
 		body := io.Reader(strings.NewReader(""))
 		if index == c.count-1 && c.failure == "hash" {
@@ -154,8 +154,10 @@ func TestWorkerArtifactSourceRejectsCompetingMetadataInputs(t *testing.T) {
 		opened = true
 		return &generatedWorkerArtifacts{}, nil
 	})
-	req.OutputJSON = []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"a","mime":"text/plain","path":"a"}],"error_reason":null}`)
+	req.OutputJSON = []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"a","mime":"text/plain","mode_bits":420,"path":"a"}],"error_reason":null}`)
 	if _, err := NewWorkerOutputValidator(db, loadSchemaSet(t)).ValidateAndPersist(context.Background(), req); err == nil || opened {
 		t.Fatalf("competing source accepted or opened: %v %t", err, opened)
 	}
 }
+
+func artifactTestMode(bits int64) *int64 { return &bits }

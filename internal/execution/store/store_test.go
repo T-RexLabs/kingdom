@@ -1034,7 +1034,11 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 		t.Fatalf("queue attempt cancel: %v", err)
 	}
 
-	pending, err := s.ListPendingAttemptCancels(ctx, 10)
+	through, err := s.PendingAttemptCancelHighWatermark(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
 	if err != nil {
 		t.Fatalf("list pending attempt cancels: %v", err)
 	}
@@ -1048,8 +1052,11 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 		t.Fatalf("expected new cancellation to request cancellation, got %q", pending[0].HandoffState)
 	}
 
-	if err := s.RecordAttemptCancelFailure(ctx, "cancel_outbox_1", "transport timeout", "awaiting_quiescence", "2026-03-01T12:00:03Z"); err != nil {
-		t.Fatalf("record attempt cancel failure: %v", err)
+	if applied, err := s.RecordAttemptCancelFailure(ctx, RecordAttemptCancelFailureRequest{
+		CancelOutboxID: "cancel_outbox_1", ExpectedHandoffState: "cancellation_requested",
+		LastError: "transport timeout", HandoffState: "awaiting_quiescence", UpdatedAt: "2026-03-01T12:00:03Z",
+	}); err != nil || !applied {
+		t.Fatalf("record attempt cancel failure: applied=%t err=%v", applied, err)
 	}
 
 	var publishAttempts int
@@ -1068,7 +1075,7 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 		t.Fatalf("expected failed cancellation to await quiescence, got %q", handoffState)
 	}
 	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_dispatched' WHERE cancel_outbox_id = 'cancel_outbox_1'`)
-	pending, err = s.ListPendingAttemptCancels(ctx, 10)
+	pending, err = s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
 	if err != nil {
 		t.Fatalf("list dispatched stop retry handoffs: %v", err)
 	}
@@ -1081,7 +1088,7 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 		t.Fatalf("mark attempt cancel published: %v", err)
 	}
 
-	pending, err = s.ListPendingAttemptCancels(ctx, 10)
+	pending, err = s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
 	if err != nil {
 		t.Fatalf("list pending attempt cancels after publish: %v", err)
 	}
@@ -1142,7 +1149,11 @@ func TestStoreListPendingAttemptCancelsPrefersProviderSessionID(t *testing.T) {
 		t.Fatalf("queue attempt cancel: %v", err)
 	}
 
-	pending, err := s.ListPendingAttemptCancels(ctx, 10)
+	through, err := s.PendingAttemptCancelHighWatermark(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
 	if err != nil {
 		t.Fatalf("list pending attempt cancels: %v", err)
 	}

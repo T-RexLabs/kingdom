@@ -18,7 +18,17 @@ func (a *stepOutputAssembler) startStep() {
 	}
 	a.currentStep.close()
 	a.currentStep = textSpool{}
+	a.clearTerminal()
 	a.stepOpen = true
+}
+
+func (a *stepOutputAssembler) clearTerminal() {
+	if a.terminal.err != nil {
+		a.err = a.terminal.err
+	}
+	a.terminal.close()
+	a.terminal = textSpool{}
+	a.terminalCache = ""
 }
 
 func (a *stepOutputAssembler) appendChunk(text string, first bool) {
@@ -36,9 +46,8 @@ func (a *stepOutputAssembler) appendChunk(text string, first bool) {
 }
 
 func (a *stepOutputAssembler) finishStep(class stepFinishTerminalClass) {
+	a.clearTerminal()
 	if class == stepFinishTerminalSuccessCandidate {
-		a.terminalCache = ""
-		a.terminal.close()
 		a.terminal = a.currentStep
 		a.currentStep = textSpool{}
 	} else {

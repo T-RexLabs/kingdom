@@ -161,6 +161,7 @@ type Runtime struct {
 	cancelDispatch           context.CancelFunc
 	completionDone           chan error
 	cancelCompletion         context.CancelFunc
+	cancelMaintenance        context.CancelFunc
 	completionWake           chan struct{}
 	startupRecoveryGate      chan struct{}
 	startupRecoveryOpen      bool
@@ -540,7 +541,7 @@ func isolatedValidationDatabasePath(databasePath string) (string, func(), error)
 	return filepath.Join(tmpDir, filepath.Base(trimmed)), cleanup, nil
 }
 
-func (r *Runtime) Start(ctx context.Context) error {
+func (r *Runtime) Start(ctx context.Context) (startErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -554,6 +555,14 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("runtime already started")
 	}
 	r.mu.Unlock()
+	if err := r.ensureMaintenanceContext(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		if startErr != nil {
+			r.stopMaintenance()
+		}
+	}()
 	r.beginStartupRecovery()
 	if r.orchestrator != nil && r.orchestrator.runWorktrees != nil {
 		reclaimedAt := time.Now().UTC()
@@ -716,30 +725,11 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				}
 				slog.Warn("provider process guard ingestion loop failed", "error", guardErr)
 			} else {
-				remaining := providerTerminalHandoffPassLimit
-				fileVisited, fileErr := r.orchestrator.recoverProviderTerminalHandoffFilesWithLimit(ctx, remaining)
-				if fileErr != nil {
-					if errors.Is(fileErr, context.Canceled) {
-						return nil
-					}
-					slog.Warn("provider terminal handoff file recovery loop failed", "error", fileErr)
+				_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerTerminalHandoffPassLimit)
+				if err != nil {
+					slog.Warn("provider terminal handoff file admission failed", "error", err)
 				} else {
-					remaining -= fileVisited
-					if fileVisited < providerTerminalHandoffPassLimit {
-						r.orchestrator.resetProviderTerminalHandoffFileRecoveryCursor()
-					}
-					if remaining > 0 {
-						databaseVisited, handoffErr := r.orchestrator.convergeProviderTerminalHandoffsWithLimit(ctx, remaining)
-						if handoffErr != nil {
-							if errors.Is(handoffErr, context.Canceled) {
-								return nil
-							}
-							slog.Warn("provider terminal handoff convergence loop failed", "error", handoffErr)
-						} else {
-							remaining -= databaseVisited
-							terminalRecoveryReady = remaining > 0
-						}
-					}
+					terminalRecoveryReady = caughtUp
 				}
 			}
 		}
@@ -755,30 +745,12 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				}
 			}
 		}
-		if r.startupRecoveryIsOpen() {
-			if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		if r.pendingStartupRecoveryStage() != startupRecoveryStageGuards {
+			if err := r.orchestrator.scheduleMaintenancePass(ctx); err != nil {
 				if errors.Is(err, context.Canceled) {
 					return nil
 				}
-				slog.Warn("completion projection loop failed", "error", err)
-			}
-		}
-		if !startupRecoveryPending {
-			if visited, err := r.orchestrator.recoverProviderTerminalHandoffFileCleanupsWithLimit(ctx, providerTerminalHandoffPassLimit); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return nil
-				}
-				slog.Warn("provider terminal handoff cleanup loop failed", "error", err)
-			} else if visited < providerTerminalHandoffPassLimit {
-				r.orchestrator.resetProviderTerminalHandoffCleanupCursor()
-			}
-			if visited, err := r.orchestrator.recoverResponseOnlyWorkspaceCleanupsWithLimit(ctx, providerTerminalHandoffPassLimit); err != nil {
-				if errors.Is(err, context.Canceled) {
-					return nil
-				}
-				slog.Warn("response-only workspace cleanup loop failed", "error", err)
-			} else if visited < providerTerminalHandoffPassLimit {
-				r.orchestrator.resetResponseOnlyWorkspaceCleanupCursor()
+				slog.Warn("durable maintenance admission failed", "error", err)
 			}
 		}
 
@@ -808,19 +780,11 @@ func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error
 			return r.completeStartupRecoveryStage(startupRecoveryStageGuards), nil
 		}
 	case startupRecoveryStageHandoffs:
-		filesVisited, err := r.orchestrator.recoverProviderTerminalHandoffFilesWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+		_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerlimits.StartupReplayBatchItems)
 		if err != nil {
-			return false, fmt.Errorf("recover provider terminal handoff files: %w", err)
+			return false, fmt.Errorf("admit provider terminal handoff files: %w", err)
 		}
-		if filesVisited >= providerlimits.StartupReplayBatchItems {
-			return false, nil
-		}
-		handoffsVisited, err := r.orchestrator.convergeProviderTerminalHandoffsWithLimit(ctx, providerlimits.StartupReplayBatchItems-filesVisited)
-		if err != nil {
-			return false, fmt.Errorf("converge provider terminal handoffs: %w", err)
-		}
-		visited := filesVisited + handoffsVisited
-		if visited < providerlimits.StartupReplayBatchItems {
+		if caughtUp {
 			return r.completeStartupRecoveryStage(startupRecoveryStageHandoffs), nil
 		}
 	case startupRecoveryStageLostHandoffs:
@@ -835,21 +799,6 @@ func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error
 		return true, nil
 	}
 	return false, nil
-}
-
-func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
-	if r == nil || r.orchestrator == nil {
-		return nil
-	}
-	for {
-		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		if processed == 0 {
-			return nil
-		}
-	}
 }
 
 // replayStartupWork bounds one startup recovery category. Deferred durable work
@@ -900,26 +849,8 @@ func (r *Runtime) replayStartupProviderTerminalHandoffs(ctx context.Context) (bo
 	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
 		return false, nil
 	}
-	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
-		filesVisited, err := r.orchestrator.recoverProviderTerminalHandoffFilesWithLimit(ctx, limit)
-		if err != nil || filesVisited >= limit {
-			return filesVisited, err
-		}
-		handoffsVisited, err := r.orchestrator.convergeProviderTerminalHandoffsWithLimit(ctx, limit-filesVisited)
-		return filesVisited + handoffsVisited, err
-	}, func(ctx context.Context) (bool, error) {
-		if r.orchestrator.fsStore != nil {
-			files, err := r.orchestrator.executionStore.ListProviderTerminalHandoffFileRecoveryCandidates(ctx, r.orchestrator.terminalHandoffFileCursor, 1)
-			if err != nil {
-				return false, err
-			}
-			if len(files) > 0 {
-				return true, nil
-			}
-		}
-		handoffs, err := r.orchestrator.executionStore.ListPendingProviderTerminalHandoffs(ctx, r.orchestrator.terminalHandoffCursor, 1)
-		return len(handoffs) > 0, err
-	})
+	_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerlimits.StartupReplayBatchItems)
+	return !caughtUp, err
 }
 
 func (r *Runtime) replayStartupLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {
@@ -965,54 +896,14 @@ func (r *Runtime) replayStartupExecutionOutbox(ctx context.Context) (bool, error
 	if r == nil || r.orchestrator == nil {
 		return false, nil
 	}
-	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
-		visited, _, err := r.orchestrator.drainExecutionOutboxPass(ctx, limit)
-		return visited, err
-	}, r.hasPendingExecutionOutbox)
+	if _, err := r.orchestrator.scheduleExecutionOutbox(ctx); err != nil {
+		return false, err
+	}
+	return r.hasPendingExecutionOutbox(ctx)
 }
 
 func logDeferredStartupReplay(resource string) {
-	slog.Warn("startup replay budget exhausted; normal completion loop will continue", "resource", resource, "max_passes", providerlimits.StartupReplayMaxPasses, "max_items", providerlimits.StartupReplayMaxItems)
-}
-
-func (r *Runtime) drainProviderTerminalHandoffs(ctx context.Context) error {
-	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
-		return nil
-	}
-	for {
-		visited, err := r.orchestrator.convergeProviderTerminalHandoffs(ctx)
-		if err != nil {
-			return err
-		}
-		if visited == 0 {
-			return nil
-		}
-	}
-}
-
-func (r *Runtime) drainExecutionOutboxUntilDrained(ctx context.Context) error {
-	if r == nil || r.orchestrator == nil {
-		return nil
-	}
-	for {
-		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		pending, err := r.hasPendingExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		if !pending {
-			return nil
-		}
-		if processed > 0 {
-			continue
-		}
-		if err := sleepWithContext(ctx, nil, r.completionProjectionInterval()); err != nil {
-			return err
-		}
-	}
+	slog.Warn("startup recovery deferred; completion loop will continue", "resource", resource, "max_passes", providerlimits.StartupReplayMaxPasses, "max_items", providerlimits.StartupReplayMaxItems)
 }
 
 func (r *Runtime) hasPendingExecutionOutbox(ctx context.Context) (bool, error) {
@@ -1037,6 +928,45 @@ func (r *Runtime) Close() error {
 	return r.GracefulClose(context.Background())
 }
 
+// Filesystem finalization outlives dispatch/completion loop cancellation. Its
+// one runtime-owned context is cancelled explicitly on graceful or forced stop.
+func (r *Runtime) ensureMaintenanceContext(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closeMode != nil && r.closeMode.IsForced() {
+		return context.Canceled
+	}
+	if r.orchestrator == nil {
+		return nil
+	}
+	r.orchestrator.execMu.Lock()
+	defer r.orchestrator.execMu.Unlock()
+	if r.cancelMaintenance != nil {
+		current := r.orchestrator.maintenance.runtimeCtx
+		if current != nil && current.Err() == nil {
+			return nil
+		}
+		// A timed-out close may be retried once its cancelled workers have
+		// unwound. Never strand durable work behind a cancelled generation.
+		if len(r.orchestrator.maintenance.active) != 0 {
+			return context.Canceled
+		}
+	}
+	maintenanceCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	r.cancelMaintenance = cancel
+	r.orchestrator.maintenance.runtimeCtx = maintenanceCtx
+	return nil
+}
+
+func (r *Runtime) stopMaintenance() {
+	r.mu.Lock()
+	cancel := r.cancelMaintenance
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // GracefulClose stops runtime loops and waits for runtime-owned durable
 // handoff goroutines to finish within the supplied context.
 func (r *Runtime) GracefulClose(ctx context.Context) error {
@@ -1057,12 +987,16 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer r.stopMaintenance()
 	cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, ok := r.stopHandles(false)
 	if !ok && done == nil && dispatchDone == nil && completionDone == nil {
 		if r.orchestrator != nil {
 			if err := r.orchestrator.waitForAsyncDrain(ctx); err != nil {
 				return err
 			}
+		}
+		if err := r.drainMaintenance(ctx); err != nil {
+			return err
 		}
 		return r.closeProviderAdapter(ctx)
 	}
@@ -1100,13 +1034,10 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		closeErr = errors.Join(closeErr, err)
 		consumersDrained = consumersDrained && drained
 	}
-	if err := r.drainProviderTerminalHandoffs(ctx); err != nil {
+	if err := r.drainMaintenance(ctx); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = false
 	}
-	if err := r.drainExecutionOutboxUntilDrained(ctx); err != nil {
-		closeErr = errors.Join(closeErr, err)
-	}
-
 	if consumersDrained {
 		closeErr = errors.Join(closeErr, r.closeProviderAdapter(ctx))
 	}
@@ -1142,6 +1073,7 @@ func (r *Runtime) closeProviderAdapter(ctx context.Context) error {
 // the runtime loops to drain.
 func (r *Runtime) ForceClose() error {
 	cancel, cancelDispatch, cancelCompletion, _, _, _, _ := r.stopHandles(true)
+	r.stopMaintenance()
 	if cancel != nil {
 		cancel()
 	}
@@ -1291,7 +1223,7 @@ func (r *Runtime) finishStartupRecovery(ctx context.Context, replayDeferred bool
 	if _, err := r.reconciler.RunStartup(ctx); err != nil {
 		return fmt.Errorf("startup reconcile: %w", err)
 	}
-	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
+	if _, err := r.orchestrator.scheduleAttemptCancellations(ctx); err != nil {
 		return fmt.Errorf("startup stale cancellation replay: %w", err)
 	}
 	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339Nano)); err != nil {

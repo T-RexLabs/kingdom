@@ -49,7 +49,8 @@ func (s *Store) newWorkspaceIndex(ctx context.Context) (_ *workspaceIndex, err e
 	}
 	index.db.SetMaxOpenConns(1)
 	_, err = index.db.ExecContext(ctx, `PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA mmap_size=0; PRAGMA cache_size=-1024; PRAGMA temp_store=FILE;
-CREATE TABLE entries (space INTEGER NOT NULL, path TEXT NOT NULL, entry_type TEXT NOT NULL, blob_id TEXT NOT NULL, size_bytes INTEGER NOT NULL, mode_bits INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, PRIMARY KEY(space, path)) WITHOUT ROWID`)
+CREATE TABLE entries (space INTEGER NOT NULL, path TEXT NOT NULL, entry_type TEXT NOT NULL, blob_id TEXT NOT NULL, size_bytes INTEGER NOT NULL, mode_bits INTEGER NOT NULL, mtime_ns INTEGER NOT NULL, PRIMARY KEY(space, path)) WITHOUT ROWID;
+CREATE INDEX entries_live_paths ON entries(space, path) WHERE entry_type = 'file'`)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +110,16 @@ func (i *workspaceIndex) get(ctx context.Context, space int, path string) (Snaps
 func (i *workspaceIndex) remove(ctx context.Context, space int, path string) error {
 	_, err := i.deleteStmt.ExecContext(ctx, space, path)
 	return err
+}
+
+// hasLiveDescendant distinguishes an obsolete file tombstone from a required
+// parent directory. The range uses '/' and its next byte, '0', so literal path
+// names (including SQL wildcard characters) need no escaping or full-tree scan.
+func (i *workspaceIndex) hasLiveDescendant(ctx context.Context, space int, path string) (bool, error) {
+	var found bool
+	err := i.tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM entries
+WHERE space = ? AND entry_type = 'file' AND path >= ? AND path < ?)`, space, path+"/", path+"0").Scan(&found)
+	return found, err
 }
 
 // visit releases each cursor before invoking callers, which may perform indexed
@@ -220,6 +231,13 @@ func (m *SnapshotManifest) Lookup(ctx context.Context, path string) (SnapshotEnt
 	e, found, err := m.index.get(ctx, 0, path)
 	return e, found && e.EntryType == "file", err
 }
+
+// HasLiveDescendant reports whether the resolved snapshot requires path to be
+// a directory. It performs an indexed literal-prefix lookup, not a tree scan.
+func (m *SnapshotManifest) HasLiveDescendant(ctx context.Context, path string) (bool, error) {
+	return m.index.hasLiveDescendant(ctx, 0, path)
+}
+
 func (m *SnapshotManifest) Visit(ctx context.Context, visit func(SnapshotEntry) error) error {
 	return m.index.visit(ctx, 0, func(e SnapshotEntry) error {
 		if e.EntryType == "delete" {

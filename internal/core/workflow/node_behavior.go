@@ -32,7 +32,6 @@ const (
 type NodeBehavior struct {
 	ExecutionOwnership           NodeExecutionOwnership
 	ProviderCompletionMode       ProviderCompletionMode
-	RequiresWorkspace            bool
 	ArtifactPersistence          NodeArtifactPersistence
 	ProjectArtifacts             bool
 	IncludeInExecutionAnalytics  bool
@@ -78,15 +77,15 @@ var canonicalNodeContracts = map[string]canonicalNodeContract{
 		requiredRoles: roleSet("plan-author"),
 	},
 	NodeClassDelegatedExecution: {
-		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
 		requiredRoles: roleSet("builder"),
 	},
 	NodeClassExecutionReview: {
-		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
 		requiredRoles: roleSet("reviewer"),
 	},
 	NodeClassValidationGates: {
-		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, RequiresWorkspace: true, ArtifactPersistence: NodeArtifactPersistenceWorkspace, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
+		behavior:      NodeBehavior{ExecutionOwnership: NodeExecutionOwnershipProviderBacked, ProviderCompletionMode: ProviderCompletionModeServerResponse, ArtifactPersistence: NodeArtifactPersistenceDirect, ProjectArtifacts: true, IncludeInExecutionAnalytics: true},
 		requiredRoles: roleSet("qa-validator", "security-validator", "resilience-validator"),
 	},
 	NodeClassCompletion: {

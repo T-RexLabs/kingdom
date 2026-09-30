@@ -398,6 +398,10 @@ WHERE run_id = ? AND cleanup_owner = ? AND cleanup_fence = ? AND `+stateClause+`
 }
 
 func (s *RunWorktreeStore) ListDueForCleanup(ctx context.Context, dueAt string, limit int) ([]RunWorktreeRecord, error) {
+	return s.ListDueForCleanupAfter(ctx, dueAt, "", "", limit)
+}
+
+func (s *RunWorktreeStore) ListDueForCleanupAfter(ctx context.Context, dueAt, afterCleanupAt, afterRunID string, limit int) ([]RunWorktreeRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("run worktree store is required")
 	}
@@ -417,8 +421,9 @@ WHERE rw.state IN (?, ?)
   AND wr.run_status IN ('succeeded', 'failed', 'cancelled')
   AND rw.cleanup_after IS NOT NULL
   AND rw.cleanup_after <= ?
+  AND (rw.cleanup_after, rw.run_id) > (?, ?)
 ORDER BY rw.cleanup_after ASC, rw.run_id ASC
-LIMIT ?`, RunWorktreeStateCleanupPending, RunWorktreeStateCleanupFailed, trimmedDueAt, limit)
+LIMIT ?`, RunWorktreeStateCleanupPending, RunWorktreeStateCleanupFailed, trimmedDueAt, afterCleanupAt, afterRunID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -572,43 +577,85 @@ func (s *RunWorktreeStore) ReleaseCleanupClaim(ctx context.Context, claim RunWor
 // generation that owned them is no longer present. A second runtime sharing
 // the database must not take ownership from a live filesystem cleanup batch.
 func (s *RunWorktreeStore) ReclaimAbandonedCleanupClaims(ctx context.Context, reclaimedAt string) error {
+	var cursor RunWorktreeCleanupClaimCursor
+	for {
+		next, err := s.ReclaimAbandonedCleanupClaimsBatch(ctx, reclaimedAt, cursor, 64)
+		if err != nil {
+			return err
+		}
+		if next == (RunWorktreeCleanupClaimCursor{}) {
+			return nil
+		}
+		cursor = next
+	}
+}
+
+// RunWorktreeCleanupClaimCursor fixes the upper run-ID boundary of one
+// inspection cycle so new runs cannot continually extend that cycle.
+type RunWorktreeCleanupClaimCursor struct {
+	AfterRunID   string
+	ThroughRunID string
+}
+
+// ReclaimAbandonedCleanupClaimsBatch inspects at most limit process identities.
+// A zero returned cursor completes the cycle. Individual inspection failures
+// leave ownership unchanged and do not prevent other owners from being checked.
+func (s *RunWorktreeStore) ReclaimAbandonedCleanupClaimsBatch(ctx context.Context, reclaimedAt string, cursor RunWorktreeCleanupClaimCursor, limit int) (RunWorktreeCleanupClaimCursor, error) {
 	if s == nil || s.db == nil {
-		return fmt.Errorf("run worktree store is required")
+		return cursor, fmt.Errorf("run worktree store is required")
 	}
 	reclaimedAt = strings.TrimSpace(reclaimedAt)
 	if reclaimedAt == "" {
-		return fmt.Errorf("cleanup claim reclamation timestamp is required")
+		return cursor, fmt.Errorf("cleanup claim reclamation timestamp is required")
+	}
+	if limit <= 0 {
+		return cursor, fmt.Errorf("cleanup claim reclamation limit must be positive")
+	}
+	if cursor.ThroughRunID == "" {
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(run_id), '') FROM run_worktrees WHERE cleanup_owner <> ''`).Scan(&cursor.ThroughRunID); err != nil {
+			return cursor, fmt.Errorf("read run worktree cleanup claim high watermark: %w", err)
+		}
+		if cursor.ThroughRunID == "" {
+			return RunWorktreeCleanupClaimCursor{}, nil
+		}
 	}
 	type persistedOwner struct {
 		runID, owner, identityToken string
 		pid                         int
 		fence                       int64
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT run_id, cleanup_owner, cleanup_fence, cleanup_owner_pid, cleanup_owner_identity_token FROM run_worktrees WHERE cleanup_owner <> ''`)
+	rows, err := s.db.QueryContext(ctx, `SELECT run_id, cleanup_owner, cleanup_fence, cleanup_owner_pid, cleanup_owner_identity_token
+FROM run_worktrees WHERE cleanup_owner <> '' AND run_id > ? AND run_id <= ? ORDER BY run_id LIMIT ?`, cursor.AfterRunID, cursor.ThroughRunID, limit)
 	if err != nil {
-		return fmt.Errorf("reclaim abandoned run worktree cleanup claims: %w", err)
+		return cursor, fmt.Errorf("reclaim abandoned run worktree cleanup claims: %w", err)
 	}
 	var owners []persistedOwner
 	for rows.Next() {
 		var owner persistedOwner
 		if err := rows.Scan(&owner.runID, &owner.owner, &owner.fence, &owner.pid, &owner.identityToken); err != nil {
 			_ = rows.Close()
-			return fmt.Errorf("read run worktree cleanup claim owner: %w", err)
+			return cursor, fmt.Errorf("read run worktree cleanup claim owner: %w", err)
 		}
 		owners = append(owners, owner)
 	}
 	rowsErr := rows.Err()
 	closeErr := rows.Close()
 	if err := errors.Join(rowsErr, closeErr); err != nil {
-		return fmt.Errorf("finish reading run worktree cleanup claim owners: %w", err)
+		return cursor, fmt.Errorf("finish reading run worktree cleanup claim owners: %w", err)
 	}
+	var reclaimErr error
 	for _, owner := range owners {
+		if err := ctx.Err(); err != nil {
+			return cursor, errors.Join(reclaimErr, err)
+		}
+		cursor.AfterRunID = owner.runID
 		if owner.pid <= 0 || strings.TrimSpace(owner.identityToken) == "" {
 			continue
 		}
 		matches, err := processguardian.ProcessIdentityMatches(owner.pid, owner.identityToken)
 		if err != nil {
-			return fmt.Errorf("verify run worktree cleanup owner %q: %w", owner.owner, err)
+			reclaimErr = errors.Join(reclaimErr, fmt.Errorf("verify run worktree cleanup owner %q: %w", owner.owner, err))
+			continue
 		}
 		if matches {
 			continue
@@ -620,10 +667,13 @@ SET cleanup_owner = '', cleanup_owner_pid = 0, cleanup_owner_identity_token = ''
     ) THEN ? ELSE cleanup_after END
 WHERE run_id = ? AND cleanup_owner = ? AND cleanup_fence = ? AND cleanup_owner_pid = ? AND cleanup_owner_identity_token = ?`, reclaimedAt, owner.runID, owner.owner, owner.fence, owner.pid, owner.identityToken)
 		if err != nil {
-			return fmt.Errorf("fence abandoned run worktree cleanup owner %q: %w", owner.owner, err)
+			reclaimErr = errors.Join(reclaimErr, fmt.Errorf("fence abandoned run worktree cleanup owner %q: %w", owner.owner, err))
 		}
 	}
-	return nil
+	if len(owners) < limit || cursor.AfterRunID == cursor.ThroughRunID {
+		cursor = RunWorktreeCleanupClaimCursor{}
+	}
+	return cursor, reclaimErr
 }
 
 func validateRunWorktreeCleanupClaim(claim RunWorktreeCleanupClaim) error {

@@ -46,6 +46,7 @@ type runArtifactItem struct {
 	MIME            string `json:"mime"`
 	Path            string `json:"path"`
 	SizeBytes       int64  `json:"size_bytes"`
+	ModeBits        *int64 `json:"mode_bits,omitempty"`
 	SHA256          string `json:"sha256,omitempty"`
 	CreatedAt       string `json:"created_at"`
 	DownloadURL     string `json:"download_url,omitempty"`
@@ -133,6 +134,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 			MIME:            record.MIME,
 			Path:            record.Path,
 			SizeBytes:       record.SizeBytes,
+			ModeBits:        record.ModeBits,
 			SHA256:          record.SHA256,
 			CreatedAt:       record.CreatedAt,
 			DownloadURL:     downloadURL,
@@ -248,7 +250,7 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 			return nameErr
 		}
 		header := &zip.FileHeader{Name: entryName, Method: zip.Deflate}
-		header.SetMode(0o644)
+		header.SetMode(os.FileMode(*record.ModeBits))
 		header.Modified = mustParseRFC3339(record.CreatedAt)
 		return archiveWriter.Add(header, func(dst io.Writer) error {
 			_, err := s.artifactService.CopyArtifactContent(r.Context(), record.ArtifactID, dst)
@@ -265,7 +267,9 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 			name, err = reserveArchiveName(state.ArtifactRecord{ArtifactID: "metadata", Path: "deletions.json"}, reserve)
 		}
 		if err == nil {
-			err = archiveWriter.Add(&zip.FileHeader{Name: name}, func(dst io.Writer) error { _, err := io.Copy(dst, deletions); return err })
+			header := &zip.FileHeader{Name: name}
+			header.SetMode(0o644)
+			err = archiveWriter.Add(header, func(dst io.Writer) error { _, err := io.Copy(dst, deletions); return err })
 		}
 	}
 	if err == nil {
@@ -427,7 +431,7 @@ func (z *stagedZIP) Add(header *zip.FileHeader, produce func(io.Writer) error) e
 	binary.LittleEndian.PutUint32(central[24:], 0xffffffff)
 	binary.LittleEndian.PutUint16(central[28:], uint16(len(header.Name)))
 	binary.LittleEndian.PutUint16(central[30:], 28)
-	binary.LittleEndian.PutUint32(central[38:], 0o100644<<16)
+	binary.LittleEndian.PutUint32(central[38:], header.ExternalAttrs)
 	binary.LittleEndian.PutUint32(central[42:], 0xffffffff)
 	copy(central[46:], header.Name)
 	extra = central[46+len(header.Name):]
@@ -599,6 +603,8 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if record.ArtifactAction != "delete" {
 		sha256 := record.SHA256
 		downloadURL := s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content"
+		mode := int(*record.ModeBits)
+		response.ModeBits = &mode
 		response.Sha256 = &sha256
 		response.DownloadUrl = &downloadURL
 	}

@@ -514,6 +514,9 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 		if !sameProviderProcessGuardQuiescence(guard, normalized) {
 			return result, providerSettlementError("ingest_provider_process_guard_quiescence", "quiescence_conflict", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 		}
+		if err := resumeQuiescentAttemptCancellation(ctx, tx, guard.AttemptID, normalized.QuiescentAt); err != nil {
+			return result, err
+		}
 		if err := tx.Commit(); err != nil {
 			return result, fmt.Errorf("commit provider process guard quiescence replay transaction: %w", err)
 		}
@@ -532,18 +535,8 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 	); err != nil {
 		return result, fmt.Errorf("mark provider process guard %q quiescent: %w", guard.GuardID, err)
 	}
-	// A delayed valid record supersedes an evidence-loss quarantine, but the
-	// cancellation worker still rechecks quiescence before it can release.
-	if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
-		SET handoff_state = 'cancellation_requested', last_error = '', updated_at = ?
-		WHERE attempt_id = ? AND status = 'pending'
-		  AND handoff_state IN ('awaiting_quiescence', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested')
-		  AND NOT EXISTS (
-			SELECT 1 FROM provider_process_guards unresolved
-			WHERE unresolved.owner_kind = 'work_order_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
-			  AND unresolved.lifecycle <> 'quiescent'
-		  )`, normalized.QuiescentAt, guard.AttemptID); err != nil {
-		return result, fmt.Errorf("resume attempt cancellation handoff for guard %q: %w", guard.GuardID, err)
+	if err := resumeQuiescentAttemptCancellation(ctx, tx, guard.AttemptID, normalized.QuiescentAt); err != nil {
+		return result, err
 	}
 	guard, found, err = loadProviderProcessGuardTx(ctx, tx, guard.GuardID)
 	if err != nil {
@@ -557,6 +550,27 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 	}
 	committed = true
 	return IngestProviderProcessGuardQuiescenceResult{Guard: guard}, nil
+}
+
+// Persist the handoff wakeup alongside proof, including when a proof is replayed
+// after cancellation was queued. Worker drain and workspace restoration remain
+// separate gates; neither requires another provider stop request.
+// Cancellation is queued atomically with terminal fencing, so subsequent
+// commands cannot gain launch authority after the current guards quiesce.
+func resumeQuiescentAttemptCancellation(ctx context.Context, tx *sql.Tx, attemptID, quiescentAt string) error {
+	_, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+		SET handoff_state = 'awaiting_workspace_quiescence', last_error = '', updated_at = ?
+		WHERE attempt_id = ? AND status = 'pending'
+		  AND handoff_state IN ('cancellation_requested', 'cancellation_dispatched', 'stop_retry_requested', 'stop_retry_dispatched', 'awaiting_quiescence', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested')
+		  AND NOT EXISTS (
+			SELECT 1 FROM provider_process_guards unresolved
+			WHERE unresolved.owner_kind = 'work_order_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
+			  AND unresolved.lifecycle <> 'quiescent'
+		  )`, quiescentAt, attemptID)
+	if err != nil {
+		return fmt.Errorf("resume cancellation handoff for attempt %q: %w", attemptID, err)
+	}
+	return nil
 }
 
 const providerProcessGuardSelect = `SELECT guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id,

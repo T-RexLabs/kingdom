@@ -7,12 +7,16 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"kingdom/internal/sqlitex"
 )
 
 type ExecutionPromptRequest struct {
 	AttemptID, RunID, NodeRunID, LeaseOwner, CreatedAt string
 	LeaseVersion                                       int64
-	Source                                             RequestContentSource
+	// Source.Reader must be an immutable io.ReadSeeker. Publication may replay
+	// from its initial position after SQLite rolls back a contended transaction.
+	Source RequestContentSource
 }
 
 // PersistExecutionPrompt freezes the exact stdin body under the queued lease.
@@ -21,6 +25,29 @@ func PersistExecutionPrompt(ctx context.Context, db *sql.DB, req ExecutionPrompt
 	if req.Source.Reader == nil || req.Source.SizeBytes <= 0 {
 		return RequestContentReference{}, fmt.Errorf("execution prompt content is required")
 	}
+	reader, ok := req.Source.Reader.(io.ReadSeeker)
+	if !ok {
+		return RequestContentReference{}, fmt.Errorf("execution prompt source must be replayable")
+	}
+	position, err := reader.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return RequestContentReference{}, fmt.Errorf("read execution prompt source position: %w", err)
+	}
+	var ref RequestContentReference
+	_, err = sqlitex.Retry(ctx, func() error {
+		// Rewind before opening the transaction. The full transaction repeats,
+		// including the queued lease fence, never only a failed chunk insert.
+		if _, err := reader.Seek(position, io.SeekStart); err != nil {
+			return fmt.Errorf("rewind execution prompt source: %w", err)
+		}
+		var persistErr error
+		ref, persistErr = persistExecutionPromptOnce(ctx, db, req)
+		return persistErr
+	}, sqlitex.Options{})
+	return ref, err
+}
+
+func persistExecutionPromptOnce(ctx context.Context, db *sql.DB, req ExecutionPromptRequest) (RequestContentReference, error) {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return RequestContentReference{}, err

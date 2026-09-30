@@ -36,7 +36,7 @@ func TestArtifactInventoryUsesOnePublicationSnapshot(t *testing.T) {
 	}
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	insert := `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, 'run_1', 'nr_1', 'att_1', 'file', 'text/plain', 'file', '', 0, 'governance', '2026-03-01T12:00:00Z')`
+	insert := `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, ?, 'run_1', 'nr_1', 'att_1', 'file', 'text/plain', 'file', '', 0, 'governance', '2026-03-01T12:00:00Z')`
 	for _, id := range []string{"middle-1", "middle-2"} {
 		if _, err := db.Exec(insert, id); err != nil {
 			t.Fatal(err)
@@ -78,7 +78,7 @@ func TestArtifactContentMigrationPreservesMonolithicBytes(t *testing.T) {
 	seedMinimumGraph(t, db)
 	body := bytes.Repeat([]byte("m"), (2<<20)+7)
 	checksum := checksumHex(body)
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('migrated', 'run_1', 'nr_1', 'att_1', 'migrated', 'text/plain', 'migrated', ?, ?, 'governance', '2026-03-01T12:00:00Z')`, checksum, len(body)); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'migrated', 'run_1', 'nr_1', 'att_1', 'migrated', 'text/plain', 'migrated', ?, ?, 'governance', '2026-03-01T12:00:00Z')`, checksum, len(body)); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES ('migrated', ?, ?, ?, '2026-03-01T12:00:00Z')`, body, checksum, len(body)); err != nil {
@@ -113,7 +113,7 @@ func TestArtifactServiceRejectsCorruptAndPartialCanonicalChunks(t *testing.T) {
 			db := openTestDB(t)
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			seedMinimumGraph(t, db)
-			mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('a', 'run_1', 'nr_1', 'att_1', 'a', 'text/plain', 'a', '`+checksumHex([]byte("abcdef"))+`', 6, 'governance', '2026-03-01T12:00:00Z')`)
+			mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'a', 'run_1', 'nr_1', 'att_1', 'a', 'text/plain', 'a', '`+checksumHex([]byte("abcdef"))+`', 6, 'governance', '2026-03-01T12:00:00Z')`)
 			mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts`)
 			mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('a', 0, x'616263'), ('a', 1, x'646566')`)
 			service := NewArtifactService(db)
@@ -137,7 +137,7 @@ func TestArtifactServiceGetArtifact(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_1', 'run_1', 'nr_1', 'att_1', 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 'governance', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_1', 'run_1', 'nr_1', 'att_1', 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 'governance', '2026-03-01T12:00:00Z')`)
 
 	service := NewArtifactService(db)
 	record, err := service.GetArtifact(context.Background(), "artifact_1")
@@ -179,8 +179,8 @@ func TestArtifactServiceListRunArtifacts(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_deliverable', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 100, 'governance', '2026-03-01T12:00:01Z')`)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_meta', 'run_1', 'nr_1', 'att_1', 'orchestration_meta', 'execution-report.md', 'text/markdown', 'artifacts/execution-report.md', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 80, 'governance', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_deliverable', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 100, 'governance', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_meta', 'run_1', 'nr_1', 'att_1', 'orchestration_meta', 'execution-report.md', 'text/markdown', 'artifacts/execution-report.md', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 80, 'governance', '2026-03-01T12:00:02Z')`)
 
 	service := NewArtifactService(db)
 	records, err := service.ListRunArtifacts(context.Background(), "run_1")
@@ -213,7 +213,7 @@ func TestArtifactServiceNeverFallsBackToWorkspaceContent(t *testing.T) {
 	}
 
 	mustExec(t, db, `INSERT INTO workspaces (workspace_id, run_id, node_run_id, workspace_path, status, created_at, released_at) VALUES ('ws_1', 'run_1', 'nr_1', '`+workspacePath+`', 'released', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 13, 'governance', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 13, 'governance', '2026-03-01T12:00:01Z')`)
 
 	service := NewArtifactService(db)
 	_, _, err := getArtifactContentForTest(service, "artifact_1")
@@ -230,8 +230,8 @@ func TestArtifactServiceGetArtifactContentPrefersArtifactIDBinding(t *testing.T)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_a', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:01Z')`)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_b', 'run_1', 'nr_1', 'att_1', 'verification', 'index.html', 'text/html', 'index.html', '711e9609339e92b03ddc0a211827dba421f38f9ed8b9d806e1ffdd8c15ffa03d', 6, 'governance', '2026-03-01T12:00:02Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_a', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_b', 'run_1', 'nr_1', 'att_1', 'verification', 'index.html', 'text/html', 'index.html', '711e9609339e92b03ddc0a211827dba421f38f9ed8b9d806e1ffdd8c15ffa03d', 6, 'governance', '2026-03-01T12:00:02Z')`)
 	mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact_a', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, '2026-03-01T12:00:01Z')`)
 	mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact_b', '711e9609339e92b03ddc0a211827dba421f38f9ed8b9d806e1ffdd8c15ffa03d', 6, '2026-03-01T12:00:02Z')`)
 	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('artifact_a', 0, x'68656c6c6f'), ('artifact_b', 0, x'776f726c6421')`)
@@ -272,7 +272,7 @@ func TestArtifactServiceGetArtifactContentFallbackChecksumMismatch(t *testing.T)
 	}
 
 	mustExec(t, db, `INSERT INTO workspaces (workspace_id, run_id, node_run_id, workspace_path, status, created_at, released_at) VALUES ('ws_1', 'run_1', 'nr_1', '`+workspacePath+`', 'released', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 8, 'governance', '2026-03-01T12:00:01Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 8, 'governance', '2026-03-01T12:00:01Z')`)
 
 	service := NewArtifactService(db)
 	_, _, err := getArtifactContentForTest(service, "artifact_1")

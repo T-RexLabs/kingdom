@@ -95,9 +95,6 @@ func TestBehaviorForResponseFirstPlanningNodes(t *testing.T) {
 		if behavior.ExecutionOwnership != NodeExecutionOwnershipProviderBacked {
 			t.Fatalf("expected %s to stay provider-backed, got %q", nodeClass, behavior.ExecutionOwnership)
 		}
-		if behavior.RequiresWorkspace {
-			t.Fatalf("expected %s to avoid workspace preparation", nodeClass)
-		}
 		if behavior.ArtifactPersistence != NodeArtifactPersistenceDirect {
 			t.Fatalf("expected %s direct artifact persistence, got %q", nodeClass, behavior.ArtifactPersistence)
 		}
@@ -107,13 +104,22 @@ func TestBehaviorForResponseFirstPlanningNodes(t *testing.T) {
 	}
 
 	builder := BehaviorForNode(NodeClassDelegatedExecution, NodeClassDelegatedExecution)
-	if !builder.RequiresWorkspace {
-		t.Fatal("expected delegated execution to remain workspace-backed")
-	}
 	if builder.ArtifactPersistence != NodeArtifactPersistenceWorkspace {
 		t.Fatalf("expected delegated execution workspace artifact persistence, got %q", builder.ArtifactPersistence)
 	}
 	if !builder.ProjectArtifacts {
 		t.Fatal("expected delegated execution to keep project artifact publication enabled")
+	}
+}
+
+func TestInspectionResponsesPersistWithoutTheirDisposableWorkspace(t *testing.T) {
+	for _, nodeClass := range []string{NodeClassExecutionReview, NodeClassValidationGates} {
+		behavior := BehaviorForNode(nodeClass, nodeClass)
+		if behavior.ArtifactPersistence != NodeArtifactPersistenceDirect {
+			t.Errorf("%s response must persist independently of its disposable workspace: %q", nodeClass, behavior.ArtifactPersistence)
+		}
+		if !behavior.ProjectArtifacts {
+			t.Errorf("%s must retain canonical response artifacts", nodeClass)
+		}
 	}
 }

@@ -113,7 +113,7 @@ func TestIsProtectedRelativePath(t *testing.T) {
 		{path: ".playwright-mcp/page.yml", want: true},
 		{path: ".playwright-cli/page.yml", want: true},
 		{path: ".opencode/cache/state", want: true},
-		{path: "web/node_modules/pkg/index.js", want: true},
+		{path: "web/node_modules/pkg/index.js", want: false},
 		{path: "kd-sandbox/run/output.txt", want: true},
 		{path: "build/.tmp/cache", want: true},
 		{path: "src/app.js", want: false},

@@ -274,6 +274,12 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 		case <-ctx.Done():
 			t.Fatal(ctx.Err())
 		}
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := rt.drainMaintenance(ctx); err != nil {
+			t.Fatal(err)
+		}
 		for {
 			if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
 				t.Fatal(err)

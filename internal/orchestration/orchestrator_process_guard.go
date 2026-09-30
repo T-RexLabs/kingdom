@@ -251,7 +251,8 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 			return cursor, visited, fmt.Errorf("run %q disappeared during lost terminal handoff recovery", result.run.RunID)
 		}
 		result.run = run
-		if executionSpecForNode(result.node.NodeID, result.node.NodeClass).RequiresWorkspace {
+		kind := executionSpecForNode(result.node.NodeID, result.node.NodeClass).WorkspaceKind
+		if kind == workspaceCanonical {
 			if o.fsStore == nil {
 				return cursor, visited, fmt.Errorf("runtime filesystem store is required to recover workspace-owned attempt %q", result.attemptID)
 			}
@@ -264,6 +265,11 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 			}
 			result.workspaceID = result.run.RunID
 			result.workspacePath = target.ExecutionRoot
+		} else if (kind == workspacePrivateSnapshot || kind == workspacePrivateSource) && o.fsStore != nil {
+			result.workspacePath, err = o.privateAttemptWorkspacePath(ctx, run, result.attemptID)
+			if err != nil {
+				return cursor, visited, err
+			}
 		}
 		if err := o.commitRecoveredGuardFailure(ctx, result); err != nil {
 			return cursor, visited, err

@@ -84,6 +84,7 @@ type opencodeRunEvent struct {
 		CallID        string `json:"callID"`
 		MessageID     string `json:"messageID"`
 		Text          string `json:"text"`
+		Synthetic     bool   `json:"synthetic"`
 		Tool          string `json:"tool"`
 		Reason        string `json:"reason"`
 		ReasonPresent bool   `json:"-"`
@@ -184,36 +185,28 @@ type IncompleteTerminalStateError struct {
 }
 
 type continuationTurnResult struct {
-	TextPreview                 string
-	TerminalText                string
-	TerminalContent             *providerexecution.StagedContent
-	Tokens                      TokenUsage
-	LastReason                  stepFinishReasonEvidence
-	ProviderSessionID           string
-	UpstreamErrorText           string
-	ProviderErrorPresent        bool
-	ProviderErrorCode           string
-	ProviderErrorCategory       string
-	ProviderErrorStatus         int
-	RetryAt                     string
-	RetryAfterMS                *float64
-	Stderr                      stderrCapture
-	WaitError                   string
-	EventCount                  int
-	TerminalSequence            int
-	FinalTurnID                 string
-	FinalStepID                 string
-	MalformedCount              int
-	ConflictingTerminalEvidence bool
-	LaterEventAfterTerminal     bool
-	MeaningfulProgress          bool
-	ProcessExited               bool
-	ExitCode                    *int
-	ExitSignal                  *int
-	StdoutDrained               bool
-	StderrDrained               bool
-	TimedOut                    bool
-	GuardResult                 processguardian.Result
+	TextPreview           string
+	Tokens                TokenUsage
+	ProviderSessionID     string
+	UpstreamErrorText     string
+	ProviderErrorPresent  bool
+	ProviderErrorCode     string
+	ProviderErrorCategory string
+	ProviderErrorStatus   int
+	RetryAt               string
+	RetryAfterMS          *float64
+	Stderr                stderrCapture
+	WaitError             string
+	EventCount            int
+	MalformedCount        int
+	MeaningfulProgress    bool
+	ProcessExited         bool
+	ExitCode              *int
+	ExitSignal            *int
+	StdoutDrained         bool
+	StderrDrained         bool
+	TimedOut              bool
+	GuardResult           processguardian.Result
 }
 
 type startedOpencodeRun struct {
@@ -326,14 +319,6 @@ func executionResultForCancellation(err error, providerSessionID, failureText st
 		Cancelled:         true,
 		FailureText:       firstNonEmpty(strings.TrimSpace(failureText), strings.TrimSpace(errorString(err)), "opencode run cancelled"),
 	}).Result
-}
-
-func canonicalSettledOutputText(terminalText, latestContinuationText string, usedContinuation bool) string {
-	trimmedTerminal := strings.TrimSpace(terminalText)
-	if !usedContinuation {
-		return trimmedTerminal
-	}
-	return firstNonEmpty(strings.TrimSpace(latestContinuationText), trimmedTerminal)
 }
 
 func shouldContinueLiveStream(reason stepFinishReasonEvidence) bool {
@@ -1134,11 +1119,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 
 	textChunks := textSpool{}
 	defer textChunks.close()
-	stepText := stepOutputAssembler{}
-	defer stepText.close()
+	responseState := responseStream{}
+	responseState.resetStep()
+	defer responseState.close()
 	var accumulatedTokens TokenUsage
 	stderrSnapshot := stderrCapture{}
-	lastStepFinish := buildStepFinishReasonEvidence("", false)
 	upstreamErrorText := ""
 	providerErrorSeen := false
 	providerErrorCode := ""
@@ -1146,15 +1131,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 	providerErrorStatus := 0
 	providerRetryAt := ""
 	var providerRetryAfterMS *float64
-	terminalSuccessSeen := false
-	terminalFailureSeen := false
-	conflictingTerminalEvidence := false
-	finalTurnID := ""
-	finalStepID := ""
-	finalSequence := 0
-	canonicalTerminalText := ""
-	var canonicalTerminalContent *providerexecution.StagedContent
-	laterEventAfterTerminal := false
 	meaningfulProgress := false
 	allProcessesExited := false
 	allStdoutDrained := false
@@ -1166,31 +1142,22 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 	var watchdog *commandWatchdog
 	processGuards := make([]ProcessGuardObservation, 0, 1)
 	finish := func(resp ExecuteResponse) ExecuteResponse {
-		if canonicalTerminalContent == nil {
-			content, err := stepText.terminalContent(invocationID)
-			if err != nil {
-				stepText.err = err
-			}
-			canonicalTerminalContent = content
-			if content != nil {
-				a.retainContentPath(req.AttemptID, content.Path)
-			}
+		canonicalTerminalContent, contentErr := responseState.terminalContent(invocationID)
+		if canonicalTerminalContent != nil {
+			a.retainContentPath(req.AttemptID, canonicalTerminalContent.Path)
 		}
 		staged, captureErr := capture.finish(invocationID)
 		a.mu.Lock()
 		journalErr := a.attempts[req.AttemptID].err
 		a.mu.Unlock()
 		toolPreview, pendingTools := tools.preview(), tools.pending()
-		if err := firstNonNilError(captureErr, journalErr, stepText.err, stepText.terminal.err, tools.err); err != nil {
+		if err := firstNonNilError(contentErr, captureErr, journalErr, responseState.err, responseState.terminal.err, tools.err); err != nil {
 			resp.Accepted = false
 			resp.Outcome = ExecutionOutcome{State: "failed", ReasonCode: "provider_unknown_failure", FailureText: fmt.Sprintf("persist provider stream: %v", err), EvidenceSource: "stream"}
 			providerErrorSeen = true
 			upstreamErrorText = resp.Outcome.FailureText
 		}
-		terminalText := strings.TrimSpace(canonicalTerminalText)
-		if terminalText == "" {
-			terminalText = strings.TrimSpace(stepText.terminalOutput())
-		}
+		terminalText := strings.TrimSpace(responseState.terminalOutput())
 		timedOut := inputTimedOut || continuationTimedOut
 		cancelled := inputCancelled
 		if !inputTerminalSet {
@@ -1204,11 +1171,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			ReleaseContent:              releaseContent,
 			StagedDiagnosticContent:     staged,
 			ProviderSessionID:           strings.TrimSpace(actualSessionID),
-			FinalTurnID:                 strings.TrimSpace(finalTurnID),
-			FinalStepID:                 strings.TrimSpace(finalStepID),
-			FinalSequence:               finalSequence,
-			RawFinishReason:             lastStepFinish.Raw,
-			NormalizedFinishReason:      strings.TrimSpace(lastStepFinish.Normalized),
+			FinalTurnID:                 responseState.completed.turnID,
+			FinalStepID:                 responseState.completed.stepID,
+			FinalSequence:               responseState.completed.sequence,
+			RawFinishReason:             responseState.completed.reason.Raw,
+			NormalizedFinishReason:      strings.TrimSpace(responseState.completed.reason.Normalized),
 			CanonicalTerminalText:       terminalText,
 			ToolCalls:                   toolPreview,
 			PendingToolCount:            pendingTools,
@@ -1228,8 +1195,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			ProviderErrorCategory:       strings.TrimSpace(providerErrorCategory),
 			ProviderErrorStatus:         providerErrorStatus,
 			MalformedProtocolCount:      execDiag.StdoutMalformedLineCount,
-			ConflictingTerminalEvidence: conflictingTerminalEvidence,
-			LaterEventAfterTerminal:     laterEventAfterTerminal,
+			ConflictingTerminalEvidence: responseState.conflictingTerminalEvidence,
+			LaterEventAfterTerminal:     responseState.laterEventAfterTerminal(),
 			MeaningfulProgress:          meaningfulProgress || accumulatedTokens.ReasoningTokens > 0 || accumulatedTokens.OutputTokens > 0,
 		}
 		if content := canonicalTerminalContent; content != nil {
@@ -1377,37 +1344,11 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			providerRetryAfterMS = event.RetryAfterMS
 		}
 
-		if terminalSuccessSeen || terminalFailureSeen {
-			laterEventAfterTerminal = true
-		}
-		if strings.TrimSpace(event.Part.MessageID) != "" {
-			finalTurnID = strings.TrimSpace(event.Part.MessageID)
-		}
-		if event.Type == "step_start" {
-			stepText.startStep()
-		}
-		if event.Type == "step_finish" {
-			finalStepID = strings.TrimSpace(event.Part.ID)
-			finalSequence = diagnostics.EventCount
-			execDiag.StepFinishSeen = true
-			lastStepFinish = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
-			execDiag.LastStepFinishReason = strings.TrimSpace(lastStepFinish.Normalized)
-			execDiag.LastStepFinishReasonKind = string(lastStepFinish.Kind)
-			execDiag.TerminalStateClass = string(lastStepFinish.Class)
-			switch lastStepFinish.Class {
-			case stepFinishTerminalSuccessCandidate:
-				if terminalFailureSeen {
-					conflictingTerminalEvidence = true
-				}
-				terminalSuccessSeen = true
-			case stepFinishTerminalFailure:
-				if terminalSuccessSeen {
-					conflictingTerminalEvidence = true
-				}
-				terminalFailureSeen = true
-			}
-			stepText.finishStep(lastStepFinish.Class)
-		}
+		acceptText := responseState.observe(event)
+		execDiag.StepFinishSeen = responseState.completed.sequence > 0
+		execDiag.LastStepFinishReason = strings.TrimSpace(responseState.completed.reason.Normalized)
+		execDiag.LastStepFinishReasonKind = string(responseState.completed.reason.Kind)
+		execDiag.TerminalStateClass = string(responseState.completed.reason.Class)
 		if event.Type == "step_finish" && event.Part.Tokens != nil {
 			accumulatedTokens.InputTokens += event.Part.Tokens.Input
 			accumulatedTokens.OutputTokens += event.Part.Tokens.Output
@@ -1446,8 +1387,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			} else {
 				textChunks.write(text)
 			}
-			stepText.appendChunk(text, first)
-			if err := firstNonNilError(textChunks.err, stepText.err); err != nil {
+			if acceptText {
+				responseState.appendChunk(text, first)
+			}
+			if err := firstNonNilError(textChunks.err, responseState.err); err != nil {
 				return err
 			}
 			if req.OnProgress != nil {
@@ -1572,9 +1515,6 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 		a.bindActualSession(req.SessionID, actualSessionID)
 	}
 	partialCombinedText := strings.TrimSpace(textChunks.preview)
-	canonicalTerminalText = strings.TrimSpace(stepText.terminalOutput())
-	continuationUsed := false
-	latestContinuationText := ""
 	decision := attemptCompletionDecision{}
 	result := attemptCompletionResult{}
 	adjudicated := false
@@ -1636,27 +1576,27 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 
 	if fatalResult, fatal := adjudicateFatalExecutionEvidence(attemptCompletionEvidence{
 		ProviderSessionID:           actualSessionID,
-		OutputText:                  canonicalTerminalText,
+		OutputText:                  strings.TrimSpace(responseState.terminalOutput()),
 		Tokens:                      accumulatedTokens,
 		StepFinishSeen:              execDiag.StepFinishSeen,
-		LastStepFinish:              lastStepFinish,
+		LastStepFinish:              responseState.completed.reason,
 		UpstreamErrorText:           upstreamErrorText,
 		ProviderErrorPresent:        providerErrorSeen,
 		ProviderErrorCode:           providerErrorCode,
 		ProviderErrorCategory:       providerErrorCategory,
 		ProviderErrorStatus:         providerErrorStatus,
-		ConflictingTerminalEvidence: conflictingTerminalEvidence,
+		ConflictingTerminalEvidence: responseState.conflictingTerminalEvidence,
 		MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 		ProcessFailed:               providerProcessObservationFailed(allProcessesExited, execDiag.ExitCode, execDiag.ExitSignal, allStdoutDrained, allStderrDrained),
 		PendingToolCount:            tools.pending(),
-		LaterEventAfterTerminal:     laterEventAfterTerminal,
+		LaterEventAfterTerminal:     responseState.laterEventAfterTerminal(),
 	}); fatal {
 		result = fatalResult
 		adjudicated = true
 	}
 
-	if shouldContinueLiveStream(lastStepFinish) && !adjudicated {
-		for shouldContinueLiveStream(lastStepFinish) {
+	if shouldContinueLiveStream(responseState.completed.reason) && !adjudicated {
+		for shouldContinueLiveStream(responseState.completed.reason) {
 			if attemptCtx.Err() != nil {
 				if isExecutionTimedOut(attemptCtx.Err()) {
 					result := executionResultForTimeout(attemptCtx.Err(), actualSessionID)
@@ -1696,22 +1636,14 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 				PayloadJSON: string(continuationPayload),
 				OccurredAt:  time.Now().UTC().Format(time.RFC3339),
 			})
-			continuationResult, continuationErr := a.executeContinuationTurn(attemptCtx, req, actualSessionID, invocationID, execDiag.ContinuationTurnsElapsed+1, capture, tools)
+			responseState.resetStep()
+			continuationResult, continuationErr := a.executeContinuationTurn(attemptCtx, req, actualSessionID, invocationID, execDiag.ContinuationTurnsElapsed+1, capture, tools, &responseState)
 			// Every command's ownership and quiescence already crossed the durable
 			// callbacks. Retain only the last diagnostic observation in memory;
 			// settlement checks every guard row for this invocation and lease.
 			processGuards = append(processGuards[:0], processGuardObservation(execDiag.ContinuationTurnsElapsed+1, continuationResult.GuardResult))
-			continuationUsed = true
-			priorEventCount := diagnostics.EventCount
 			diagnostics.EventCount += continuationResult.EventCount
-			finalTurnID = strings.TrimSpace(continuationResult.FinalTurnID)
-			finalStepID = strings.TrimSpace(continuationResult.FinalStepID)
-			if continuationResult.TerminalSequence > 0 {
-				finalSequence = priorEventCount + continuationResult.TerminalSequence
-			}
 			execDiag.StdoutMalformedLineCount += continuationResult.MalformedCount
-			conflictingTerminalEvidence = conflictingTerminalEvidence || continuationResult.ConflictingTerminalEvidence
-			laterEventAfterTerminal = laterEventAfterTerminal || continuationResult.LaterEventAfterTerminal
 			meaningfulProgress = meaningfulProgress || continuationResult.MeaningfulProgress
 			allProcessesExited = allProcessesExited && continuationResult.ProcessExited
 			allStdoutDrained = allStdoutDrained && continuationResult.StdoutDrained
@@ -1722,13 +1654,10 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 			if continuationResult.ExitSignal != nil {
 				execDiag.ExitSignal = continuationResult.ExitSignal
 			}
-			if continuationResult.EventCount > 0 {
-				lastStepFinish = continuationResult.LastReason
-			}
-			execDiag.LastStepFinishReason = strings.TrimSpace(lastStepFinish.Normalized)
-			execDiag.LastStepFinishReasonKind = string(lastStepFinish.Kind)
-			execDiag.TerminalStateClass = string(lastStepFinish.Class)
-			execDiag.StepFinishSeen = lastStepFinish.Present
+			execDiag.LastStepFinishReason = strings.TrimSpace(responseState.completed.reason.Normalized)
+			execDiag.LastStepFinishReasonKind = string(responseState.completed.reason.Kind)
+			execDiag.TerminalStateClass = string(responseState.completed.reason.Class)
+			execDiag.StepFinishSeen = responseState.completed.sequence > 0
 			stderrSnapshot = mergeStderrCapture(stderrSnapshot, continuationResult.Stderr)
 			execDiag.StderrLineCount = stderrSnapshot.lineCount
 			execDiag.LastStderrLineAt = stderrSnapshot.lastLineAt
@@ -1755,13 +1684,8 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 				execDiag.SessionID = actualSessionID
 			}
 			textChunks.append(continuationResult.TextPreview)
-			if continuationText := strings.TrimSpace(continuationResult.TerminalText); continuationText != "" {
-				latestContinuationText = continuationText
-				canonicalTerminalText = continuationText
-				canonicalTerminalContent = continuationResult.TerminalContent
-			}
 			accumulateTokenUsage(&accumulatedTokens, continuationResult.Tokens)
-			combinedContinuationText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
+			combinedContinuationText := strings.TrimSpace(responseState.terminalOutput())
 			if isExecutionCancelled(continuationErr) {
 				result := executionResultForCancellation(continuationErr, actualSessionID, "opencode continuation cancelled")
 				result.OutputText = firstNonEmpty(combinedContinuationText, textChunks.preview)
@@ -1830,64 +1754,50 @@ func (a *SessionAdapter) Execute(ctx context.Context, req ExecuteRequest) (respo
 				OutputText:                  combinedContinuationText,
 				Tokens:                      accumulatedTokens,
 				StepFinishSeen:              execDiag.StepFinishSeen,
-				LastStepFinish:              lastStepFinish,
+				LastStepFinish:              responseState.completed.reason,
 				UpstreamErrorText:           upstreamErrorText,
 				ProviderErrorPresent:        providerErrorSeen,
 				ProviderErrorCode:           providerErrorCode,
 				ProviderErrorCategory:       providerErrorCategory,
 				ProviderErrorStatus:         providerErrorStatus,
-				ConflictingTerminalEvidence: conflictingTerminalEvidence,
+				ConflictingTerminalEvidence: responseState.conflictingTerminalEvidence,
 				MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 				ProcessFailed:               providerProcessObservationFailed(allProcessesExited, execDiag.ExitCode, execDiag.ExitSignal, allStdoutDrained, allStderrDrained),
 				PendingToolCount:            tools.pending(),
-				LaterEventAfterTerminal:     laterEventAfterTerminal,
+				LaterEventAfterTerminal:     responseState.laterEventAfterTerminal(),
 			}); fatal {
 				result = fatalResult
 				adjudicated = true
-				break
-			}
-			if execDiag.TerminalStateClass == "terminal_success_candidate" {
-				if terminalFailureSeen {
-					conflictingTerminalEvidence = true
-				}
-				terminalSuccessSeen = true
-				break
-			}
-			if execDiag.TerminalStateClass == "terminal_failure" {
-				if terminalSuccessSeen {
-					conflictingTerminalEvidence = true
-				}
-				terminalFailureSeen = true
 				break
 			}
 		}
 	}
 
 	observedCombinedText := strings.TrimSpace(textChunks.preview)
-	canonicalCombinedText := canonicalSettledOutputText(stepText.terminalOutput(), latestContinuationText, continuationUsed)
+	canonicalCombinedText := strings.TrimSpace(responseState.terminalOutput())
 	if !adjudicated {
 		decision = attemptCompletionAdjudicator{}.Adjudicate(attemptCompletionEvidence{
 			ProviderSessionID:           actualSessionID,
 			OutputText:                  canonicalCombinedText,
 			Tokens:                      accumulatedTokens,
 			StepFinishSeen:              execDiag.StepFinishSeen,
-			LastStepFinish:              lastStepFinish,
+			LastStepFinish:              responseState.completed.reason,
 			UpstreamErrorText:           upstreamErrorText,
 			ProviderErrorPresent:        providerErrorSeen,
 			ProviderErrorCode:           providerErrorCode,
 			ProviderErrorCategory:       providerErrorCategory,
 			ProviderErrorStatus:         providerErrorStatus,
-			ConflictingTerminalEvidence: conflictingTerminalEvidence,
+			ConflictingTerminalEvidence: responseState.conflictingTerminalEvidence,
 			MalformedProtocol:           execDiag.StdoutMalformedLineCount > 0,
 			CleanEOF:                    waitErr == nil,
 			PendingToolCount:            tools.pending(),
-			LaterEventAfterTerminal:     laterEventAfterTerminal,
+			LaterEventAfterTerminal:     responseState.laterEventAfterTerminal(),
 		})
 		result = decision.Result
 	}
 
 	if result.State != attemptCompletionStateSuccess {
-		if canonicalCombinedText == "" && !terminalSuccessSeen {
+		if canonicalCombinedText == "" && responseState.completed.reason.Class != stepFinishTerminalSuccessCandidate {
 			result.OutputText = observedCombinedText
 		}
 		reason := firstNonEmpty(result.ReasonCode, execDiag.LastStepFinishReasonKind, execDiag.LastStepFinishReason)
@@ -2123,7 +2033,7 @@ func (a *SessionAdapter) Cancel(ctx context.Context, req CancelRequest) error {
 	return nil
 }
 
-func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req ExecuteRequest, sessionID, invocationID string, commandOrdinal int, capture *invocationCapture, tools *toolStateStorage) (continuationTurnResult, error) {
+func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req ExecuteRequest, sessionID, invocationID string, commandOrdinal int, capture *invocationCapture, tools *toolStateStorage, responseState *responseStream) (continuationTurnResult, error) {
 	startedRun, err := a.startOpencodeRun(ctx, req, sessionID, commandOrdinal)
 	if err != nil {
 		return continuationTurnResult{}, err
@@ -2149,14 +2059,9 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	stderrDone := startStderrCapture(io.TeeReader(stderr, capture.stderr))
 
 	result := continuationTurnResult{
-		LastReason:        buildStepFinishReasonEvidence("", false),
 		ProviderSessionID: strings.TrimSpace(sessionID),
 	}
-	stepText := stepOutputAssembler{}
-	defer stepText.close()
 	providerSessionObserved := false
-	terminalSuccessSeen := false
-	terminalFailureSeen := false
 	continuationPrompt := providerInvocationPromptParts("Continue from the pending tool-call state and finish the response.", req.AttemptID, invocationID)
 	inputTimeout := a.streamInactivityTimeout
 	if inputTimeout <= 0 {
@@ -2191,14 +2096,8 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		startedRun.databaseStartupObserved()
 		watchdog.Signal()
 		result.EventCount++
-		if terminalSuccessSeen || terminalFailureSeen {
-			result.LaterEventAfterTerminal = true
-		}
 		if strings.TrimSpace(event.SessionID) != "" {
 			result.ProviderSessionID = a.observeProviderSession(req, result.ProviderSessionID, event.SessionID, &providerSessionObserved)
-		}
-		if strings.TrimSpace(event.Part.MessageID) != "" {
-			result.FinalTurnID = strings.TrimSpace(event.Part.MessageID)
 		}
 		if strings.TrimSpace(event.Type) == "error" {
 			result.ProviderErrorPresent = true
@@ -2209,26 +2108,8 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 			result.RetryAt = event.RetryAt
 			result.RetryAfterMS = event.RetryAfterMS
 		}
-		if event.Type == "step_start" {
-			stepText.startStep()
-		}
+		acceptText := responseState.observe(event)
 		if event.Type == "step_finish" {
-			result.FinalStepID = strings.TrimSpace(event.Part.ID)
-			result.TerminalSequence = result.EventCount
-			result.LastReason = buildStepFinishReasonEvidence(event.Part.Reason, event.Part.ReasonPresent)
-			switch result.LastReason.Class {
-			case stepFinishTerminalSuccessCandidate:
-				if terminalFailureSeen {
-					result.ConflictingTerminalEvidence = true
-				}
-				terminalSuccessSeen = true
-			case stepFinishTerminalFailure:
-				if terminalSuccessSeen {
-					result.ConflictingTerminalEvidence = true
-				}
-				terminalFailureSeen = true
-			}
-			stepText.finishStep(result.LastReason.Class)
 			if event.Part.Tokens != nil {
 				result.Tokens.InputTokens += event.Part.Tokens.Input
 				result.Tokens.OutputTokens += event.Part.Tokens.Output
@@ -2254,9 +2135,11 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 					result.TextPreview += text[:min(len(text), streamPreviewBytes-len(result.TextPreview))]
 				}
 				result.MeaningfulProgress = true
-				stepText.appendChunk(text, first)
-				if stepText.err != nil {
-					return stepText.err
+				if acceptText {
+					responseState.appendChunk(text, first)
+				}
+				if responseState.err != nil {
+					return responseState.err
 				}
 				if req.OnProgress != nil {
 					req.OnProgress(text)
@@ -2293,15 +2176,7 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 	result.ProcessExited = guardResult.Quiescent
 	result.Stderr = stderrSnapshot
 	result.StderrDrained = result.Stderr.eofSeen
-	result.TerminalText = stepText.terminalOutput()
-	result.TerminalContent, err = stepText.terminalContent(invocationID)
-	if err != nil {
-		stepText.err = err
-	}
-	if result.TerminalContent != nil {
-		a.retainContentPath(req.AttemptID, result.TerminalContent.Path)
-	}
-	streamErr = firstNonNilError(streamErr, stepText.err, stepText.terminal.err)
+	streamErr = firstNonNilError(streamErr, responseState.err, responseState.terminal.err)
 	exitCode := guardResult.ExitCode
 	result.ExitCode = &exitCode
 	if guardResult.ExitSignal != 0 {
@@ -2342,9 +2217,6 @@ func (a *SessionAdapter) executeContinuationTurn(ctx context.Context, req Execut
 		return result, fmt.Errorf("opencode continuation failed: %s", result.UpstreamErrorText)
 	}
 
-	if !result.LastReason.Present {
-		result.LastReason = buildStepFinishReasonEvidence("", false)
-	}
 	return result, nil
 }
 

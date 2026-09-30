@@ -287,19 +287,21 @@ func validateAttemptEventIngestionRequest(req AttemptEventIngestionRequest) erro
 	return nil
 }
 
+// Settlement may reserve a terminal sequence in the canonical journal before
+// its operator-event projection runs. Observations must respect both journals.
 func latestAttemptSequence(ctx context.Context, tx *sql.Tx, attemptID string) (int, bool, error) {
-	var lastSeq int
+	var lastSeq sql.NullInt64
 	err := tx.QueryRowContext(ctx,
-		`SELECT seq FROM events WHERE attempt_id = ? ORDER BY seq DESC LIMIT 1`,
-		attemptID,
+		`SELECT MAX(seq) FROM (
+			SELECT MAX(seq) AS seq FROM events WHERE attempt_id = ?
+			UNION ALL
+			SELECT MAX(seq) AS seq FROM attempt_event_log WHERE attempt_id = ?
+		)`, attemptID, attemptID,
 	).Scan(&lastSeq)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, false, nil
-	}
 	if err != nil {
 		return 0, false, fmt.Errorf("query latest sequence for attempt %q: %w", attemptID, err)
 	}
-	return lastSeq, true, nil
+	return int(lastSeq.Int64), lastSeq.Valid, nil
 }
 
 func attemptSequenceExists(ctx context.Context, tx *sql.Tx, attemptID string, seq int) (bool, error) {

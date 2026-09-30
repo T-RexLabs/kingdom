@@ -106,6 +106,10 @@ export function liveExecutionLabel(
 	nodeState?: string,
 ): string | undefined {
 	switch ((reasonCode ?? "").trim()) {
+		case "preparation_admitted":
+			return "Preparation Queued";
+		case "workspace_preparing":
+			return "Preparing Workspace";
 		case "workspace_prepared":
 			return "Workspace prepared";
 		case "provider_launching":
@@ -236,6 +240,9 @@ export function badgeToneForLabel(label: string | undefined, fallbackTone: RunSt
 	export function timelineEventTone(event: Pick<TimelineEvent, "event_type" | "reason_code" | "payload_json">): RunStatusTone {
 	if (isReworkTimelineEvent(event)) {
 		return "rework";
+	}
+	if (normalizedToken(event.event_type) === "attempt.progress" && ["preparation_admitted", "workspace_preparing"].includes(normalizedToken(event.reason_code))) {
+		return "ready";
 	}
 	if (normalizedToken(event.event_type) === "attempt.progress" && isPreLaunchProgressReasonCode(event.reason_code)) {
 		return "starting";

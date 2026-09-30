@@ -50,6 +50,8 @@ What that means in practice:
 
 Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
 
+Builders work in the run's execution target. Advisors and planners receive private project copies, while reviewers and validators receive independent copies of the implementation snapshot selected for their attempt. Validation setup and test side effects stay in those disposable copies. Generated dependency and cache directories are excluded from implementation snapshots and deliverables; validators may need to run the project's documented dependency setup before testing. Ordinary project files remain included even when Git ignores them.
+
 ## Quickstart Guide
 
 ### Prerequisites
@@ -173,13 +175,14 @@ Important boundaries:
 
 - `work order intake`, `governance plan decision`, `execution kickoff`, and `royal closure` are runtime-owned deterministic steps; provider-backed run nodes are host-launched through OpenCode sessions, not containers.
 - SQLite is the system of record. 
-- Publication is done into the project root or a git worktree if toggled on and in a Git repo.
+- Publication is done into the project root or a git worktree if toggled on and in a Git repo. Basic file permissions are retained in canonical artifacts and ZIP exports; chmod-only changes are deliverables, and publication checks permissions as well as content for conflicts.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
-- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
+- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success. OpenCode may continue after intermediate stopped steps during compaction or tool use; only the final completed assistant step supplies the settled response.
 - Decree/planning text, persisted execution prompts, provider terminal content, and artifacts use SQLite content manifests and chunks. Decree terminal handoffs reference verified content rather than embedding full output. Complete invocation diagnostics are retained separately from bounded activity/output previews.
 - Runtime content processing uses streaming and disk staging without fixed provider-output, tracked-file-size, aggregate-workspace-size, entry-count, or directory-depth ceilings. Some individual scalar values and read responses still materialize in memory; host resources and provider context windows remain practical constraints.
 - There is no run-wide attempt-count budget. Per-error automatic retries, review/validation cycle caps and ready-node auto-success, `run_until_all_approve`, recovery batching, active timeouts, and guardian metadata boundaries retain their existing roles.
+- After a provider stop is proven, cancellation resumes automatically when worker cleanup and workspace restoration finish. Unproven stops retain the explicit **Retry Stop** gate; see [`docs/errors-and-retries.md`](docs/errors-and-retries.md).
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 

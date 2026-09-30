@@ -4943,7 +4943,7 @@ components:
           minLength: 1
         skip_reviews_and_validations:
           type: boolean
-          description: When true, Kingdom uses the built-in alternate workflow that routes builder output directly to royal closure.
+          description: When true, Kingdom uses the built-in alternate workflow that routes builder output directly to completion.
         run_until_all_approve:
           type: boolean
           description: When true, review and validation loops continue until approval. Workflows without execution review or validation nodes normalize this to false.
@@ -6463,6 +6463,11 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+        mode_bits:
+          type: integer
+          minimum: 0
+          maximum: 511
+          description: Basic permission bits, present for write artifacts and absent for deletions.
         sha256:
           type: string
           pattern: "^[a-f0-9]{64}$"
@@ -6539,6 +6544,11 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+        mode_bits:
+          type: integer
+          minimum: 0
+          maximum: 511
+          description: Basic permission bits, present for write artifacts and absent for deletions.
         sha256:
           type: string
           pattern: "^[a-f0-9]{64}$"

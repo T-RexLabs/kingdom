@@ -1108,7 +1108,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 	}
 
 	loop := orchestrationLoop{db: db, yoloRoot: projectRoot, publishMode: PublishModeGitWorktree, gitRunner: fakeRunner, runWorktrees: workspace.NewRunWorktreeStore(db), now: time.Now}
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'deliverables/index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact-1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'deliverables/index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts WHERE artifact_id = 'artifact-1'`)
 	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, x'68656c6c6f')`)
 	if err := loop.publishArtifactsToProjectRoot(context.Background(), workspaceRoot, runID, []artifactOutputRecord{{ArtifactID: "artifact-1", ArtifactKind: "deliverable", RelativePath: "deliverables/index.html", ProducerRole: "builder", NodeID: "implementation", Attempt: 1}}); err != nil {
@@ -1785,8 +1785,13 @@ func TestRunWorktreeCleanupReclaimsOwnerThatExitedAfterStartup(t *testing.T) {
 
 	secondRuntime := workspace.NewRunWorktreeStore(db)
 	loop := orchestrationLoop{db: db, runWorktrees: secondRuntime, now: func() time.Time { return now }}
-	if err := loop.drainRunWorktreeCleanup(context.Background()); err != nil {
-		t.Fatalf("drain cleanup after owner exit: %v", err)
+	if err := loop.scheduleMaintenancePass(context.Background()); err != nil {
+		t.Fatalf("schedule maintenance after owner exit: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := loop.waitForMaintenance(waitCtx); err != nil {
+		t.Fatalf("wait for maintenance after owner exit: %v", err)
 	}
 	current, err := secondRuntime.GetByRun(context.Background(), "run_1")
 	if err != nil {

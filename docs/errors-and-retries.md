@@ -87,3 +87,5 @@ Kingdom does not impose an aggregate provider-prompt byte cap or reject prompt s
 ## Paused Stop Recovery
 
 When Kingdom cannot prove that a stale provider process stopped, it keeps the stale node `blocked`, leaves the cancellation handoff pending, and does not release its replacement. This does not automatically send repeated stop requests. The paused execution exposes **Retry Stop** only for an `agent_unresponsive` attempt with a pending handoff and an addressable guardian. The action is idempotent and requests one further bounded stop attempt; it never bypasses guardian quiescence, trusted workspace restoration, or the cancellation handoff barrier. Investigate the guardian and cancellation handoff first; use Retry or Rerun only after the run is eligible to reopen.
+
+Once guardian evidence proves the process stopped, Kingdom automatically resumes cancellation after its local worker and any shared-workspace consumers finish. This wait survives restart and needs no further **Retry Stop** action. Workspace restoration and terminal projection must still succeed before a replacement is released.

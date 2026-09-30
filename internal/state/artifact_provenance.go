@@ -87,7 +87,7 @@ func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, 
 	page := RunArtifactPage{Items: make([]RunArtifactProvenance, 0, limit), SnapshotID: hex.EncodeToString(snapshotDigest[:])}
 	query := successfulBuildersCTE + `
  SELECT a.artifact_id,a.run_id,a.node_run_id,a.attempt_id,a.artifact_kind,a.artifact_action,
-  a.name,a.mime,a.path,a.sha256,a.size_bytes,a.producer_role,a.created_at,
+  a.name,a.mime,a.path,a.sha256,a.size_bytes,a.mode_bits,a.producer_role,a.created_at,
   nr.node_id,nr.attempt,nr.agent_id,
   CASE WHEN sb.rank=1 AND a.artifact_kind='deliverable' AND a.producer_role=nr.required_role
    THEN 'canonical_deliverable' ELSE 'audit' END
@@ -118,8 +118,11 @@ func (s *ArtifactService) PageRunArtifactProvenance(ctx context.Context, runID, 
 	for rows.Next() {
 		var item RunArtifactProvenance
 		if err := rows.Scan(&item.ArtifactID, &item.RunID, &item.NodeRunID, &item.AttemptID, &item.ArtifactKind, &item.ArtifactAction,
-			&item.Name, &item.MIME, &item.Path, &item.SHA256, &item.SizeBytes, &item.ProducerRole, &item.CreatedAt,
+			&item.Name, &item.MIME, &item.Path, &item.SHA256, &item.SizeBytes, &item.ModeBits, &item.ProducerRole, &item.CreatedAt,
 			&item.NodeID, &item.Attempt, &item.ProducerAgentID, &item.Lineage); err != nil {
+			return RunArtifactPage{}, err
+		}
+		if err := ValidateArtifactMode(item.ArtifactAction, item.ModeBits); err != nil {
 			return RunArtifactPage{}, err
 		}
 		if len(page.Items) == limit {

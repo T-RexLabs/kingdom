@@ -257,6 +257,9 @@ func TestServerDeletionArtifactMetadataOmitsContentFields(t *testing.T) {
 	if deletion == nil || deletion["artifact_action"] != "delete" {
 		t.Fatalf("deletion metadata=%v", deletion)
 	}
+	if _, ok := deletion["mode_bits"]; ok {
+		t.Fatal("deletion artifact exposed permissions")
+	}
 	if _, ok := deletion["sha256"]; ok {
 		t.Fatal("deletion artifact exposed a checksum")
 	}
@@ -274,6 +277,9 @@ func TestServerDeletionArtifactMetadataOmitsContentFields(t *testing.T) {
 	}
 	if detailed["artifact_action"] != "delete" {
 		t.Fatalf("detail artifact action=%v", detailed["artifact_action"])
+	}
+	if _, ok := detailed["mode_bits"]; ok {
+		t.Fatal("deletion detail exposed permissions")
 	}
 	if _, ok := detailed["sha256"]; ok {
 		t.Fatal("deletion detail exposed a checksum")
@@ -456,7 +462,7 @@ func TestServerGetRunArtifactsArchiveExportsBeyondFormerEntryLimit(t *testing.T)
 	seedArtifact(t, db, runID)
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < 1000; i++ {
-		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-1', 'attempt-seed', 'deliverable', 'write', ?, 'text/plain', ?, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'plan-author', ?)`, "artifact-limit-"+strconv.Itoa(i), runID, "file-"+strconv.Itoa(i)+".txt", "artifacts/file-"+strconv.Itoa(i)+".txt", now); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, ?, ?, 'node-run-1', 'attempt-seed', 'deliverable', 'write', ?, 'text/plain', ?, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'plan-author', ?)`, "artifact-limit-"+strconv.Itoa(i), runID, "file-"+strconv.Itoa(i)+".txt", "artifacts/file-"+strconv.Itoa(i)+".txt", now); err != nil {
 			t.Fatalf("seed artifact %d: %v", i, err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts WHERE artifact_id = ?`, "artifact-limit-"+strconv.Itoa(i)); err != nil {

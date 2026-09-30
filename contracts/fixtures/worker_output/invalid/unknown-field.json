@@ -8,7 +8,8 @@
       "name": "log.txt",
       "mime": "text/plain",
       "path": "artifacts/log.txt",
-      "extra": "forbidden"
+      "extra": "forbidden",
+      "mode_bits": 420
     }
   ],
   "error_reason": "invalid_output_schema"

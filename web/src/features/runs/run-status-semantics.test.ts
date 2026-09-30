@@ -30,4 +30,15 @@ describe("run status semantics", () => {
 		expect(liveExecutionLabel(undefined, "node.state_changed", "blocked")).toBe("Blocked");
 	});
 
+	it.each([
+		["preparation_admitted", "Preparation Queued"],
+		["workspace_preparing", "Preparing Workspace"],
+	])("keeps %s in preparation without implying provider execution", (reasonCode, label) => {
+		expect(liveExecutionLabel(reasonCode, "attempt.progress")).toBe(label);
+		expect(timelineEventTone({
+			event_type: "attempt.progress",
+			reason_code: reasonCode,
+			payload_json: {},
+		})).toBe("ready");
+	});
 });

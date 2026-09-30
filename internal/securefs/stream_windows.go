@@ -23,13 +23,13 @@ func directoryEntry(directory *os.File, name string) (Entry, error) {
 	return readRootEntry(&Root{rootFile: directory}, name)
 }
 
-func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time) error {
+func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time, durable bool) error {
 	staging, relativePath, err := openWindowsStagingParent(root, path)
 	if err != nil {
 		return err
 	}
 	defer staging.Close()
-	temp, err := secureWindowsTempFromAt(windows.Handle(staging.Fd()), produce, mode)
+	temp, err := secureWindowsTempFromAtWithDurability(windows.Handle(staging.Fd()), produce, mode, durable)
 	if err != nil {
 		return err
 	}
@@ -44,18 +44,20 @@ func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produc
 	if err := windows.SetFileTime(windows.Handle(temp.Fd()), nil, &stamp, &stamp); err != nil {
 		return err
 	}
-	if err := temp.Sync(); err != nil {
-		return err
+	if durable {
+		if err := temp.Sync(); err != nil {
+			return err
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// The producer, metadata writes and flush have all succeeded. Only now may
+	// The producer, metadata writes and any required flush succeeded. Only now may
 	// conflicting ancestors be claimed and repaired under the pinned directory.
 	stagingRoot := &Root{rootFile: staging}
 	dir := filepath.Dir(relativePath)
 	if dir != "." {
-		if err := ensureRootDirReplacingNonDirectories(stagingRoot, dir, dirMode); err != nil {
+		if err := ensureRootDirWithPolicy(stagingRoot, dir, dirMode, true, durable); err != nil {
 			return err
 		}
 	}
@@ -66,7 +68,7 @@ func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produc
 	defer parent.Close()
 	// Handle-relative rename replaces the link itself, never its target, and
 	// refuses to replace a real directory with a file.
-	if err := renameWindowsEntryWriteThrough(temp, parent, filepath.Base(relativePath), true); err != nil {
+	if err := renameWindowsEntryAt(temp, parent, filepath.Base(relativePath), true); err != nil {
 		return err
 	}
 	published = true

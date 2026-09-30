@@ -73,6 +73,8 @@ func (o *orchestrationLoop) builderArtifactSource(node nodeDefinition, workspace
 				if diff.EntryType == "delete" {
 					artifact.Action = "delete"
 				} else {
+					mode := diff.ModeBits
+					artifact.ModeBits = &mode
 					size := diff.SizeBytes
 					artifact.SizeBytes = &size
 					artifact.SHA256 = diff.BlobID
@@ -81,7 +83,7 @@ func (o *orchestrationLoop) builderArtifactSource(node nodeDefinition, workspace
 			})
 		} else {
 			err = visitWorkspaceArtifacts(ctx, workspace, func(artifact executionArtifact) error {
-				return stage(state.WorkerArtifact{Path: artifact.Path, Name: artifact.Name, MIME: artifact.MIME, Action: artifact.Action}, "")
+				return stage(state.WorkerArtifact{Path: artifact.Path, Name: artifact.Name, MIME: artifact.MIME, Action: artifact.Action, ModeBits: artifact.ModeBits}, "")
 			})
 		}
 		if err != nil {
@@ -170,7 +172,7 @@ func (c *discoveredArtifactCursor) Next(ctx context.Context) (state.WorkerArtifa
 	}
 	item := c.items[c.offset]
 	c.offset++
-	return state.WorkerArtifact{Kind: determineArtifactKind(c.node.NodeID, c.node.NodeClass, c.node.RequiredRole, item.Path), Action: firstNonEmptyString(item.Action, "write"), Name: item.Name, MIME: item.MIME, Path: item.Path}, nil
+	return state.WorkerArtifact{Kind: determineArtifactKind(c.node.NodeID, c.node.NodeClass, c.node.RequiredRole, item.Path), Action: firstNonEmptyString(item.Action, "write"), Name: item.Name, MIME: item.MIME, Path: item.Path, ModeBits: item.ModeBits}, nil
 }
 func (*discoveredArtifactCursor) Close() error { return nil }
 
@@ -182,14 +184,14 @@ func (o *orchestrationLoop) persistedArtifactProjection(node nodeDefinition, att
 	return func(ctx context.Context, visit func(artifactOutputRecord) error) error {
 		after := ""
 		for {
-			rows, err := o.db.QueryContext(ctx, `SELECT artifact_id,artifact_kind,artifact_action,path,producer_role,sha256 FROM artifacts WHERE attempt_id=? AND artifact_id>? ORDER BY artifact_id LIMIT 128`, attemptID, after)
+			rows, err := o.db.QueryContext(ctx, `SELECT artifact_id,artifact_kind,artifact_action,path,producer_role,sha256,mode_bits FROM artifacts WHERE attempt_id=? AND artifact_id>? ORDER BY artifact_id LIMIT 128`, attemptID, after)
 			if err != nil {
 				return err
 			}
 			page := make([]artifactOutputRecord, 0, 128)
 			for rows.Next() {
 				r := artifactOutputRecord{NodeID: node.NodeID, Attempt: attempt.Attempt}
-				if err := rows.Scan(&r.ArtifactID, &r.ArtifactKind, &r.ArtifactAction, &r.RelativePath, &r.ProducerRole, &r.SHA256); err != nil {
+				if err := rows.Scan(&r.ArtifactID, &r.ArtifactKind, &r.ArtifactAction, &r.RelativePath, &r.ProducerRole, &r.SHA256, &r.ModeBits); err != nil {
 					rows.Close()
 					return err
 				}

@@ -624,7 +624,7 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("artifact_attempt_provenance_required", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'governance', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'governance', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected NOT NULL failure for artifacts.attempt_id")
 		}

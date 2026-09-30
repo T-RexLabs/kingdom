@@ -267,6 +267,12 @@ type OutboxRecord struct {
 	PublishCount  int
 	FailureCode   string
 	FailureText   string
+	CreatedAt     string
+}
+
+type OutboxCursor struct {
+	CreatedAt string
+	OutboxID  string
 }
 
 type AttemptCancelRecord struct {
@@ -286,6 +292,20 @@ type AttemptCancelRecord struct {
 	NodeID         string
 	NodeClass      string
 	BaseSnapshotID string
+	CreatedAt      string
+}
+
+type AttemptCancelCursor struct {
+	CreatedAt      string
+	CancelOutboxID string
+}
+
+type RecordAttemptCancelFailureRequest struct {
+	CancelOutboxID       string
+	ExpectedHandoffState string
+	LastError            string
+	HandoffState         string
+	UpdatedAt            string
 }
 
 type ActiveRunAttempt struct {
@@ -1155,7 +1175,30 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 	return claim, claimed, nil
 }
 
-// RenewProviderAttemptLease extends an active provider execution lease without
+// ReleaseQueuedProviderAttemptLease relinquishes only this worker's unlaunched
+// claim. It cannot clear another generation or an activated provider invocation.
+func (s *Store) ReleaseQueuedProviderAttemptLease(ctx context.Context, attemptID, owner string, version int64, releasedAt string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store database is required")
+	}
+	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(owner) == "" || version <= 0 {
+		return fmt.Errorf("attempt_id and complete lease lineage are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, releasedAt); err != nil {
+		return fmt.Errorf("parse released_at: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET lease_owner = '', lease_expires_at = NULL, updated_at = ?
+		WHERE attempt_id = ? AND execution_mode = 'provider_backed' AND state = 'queued'
+		  AND lease_owner = ? AND lease_version = ?
+		  AND COALESCE(active_provider_invocation_id, '') = ''`, releasedAt, attemptID, owner, version)
+	if err != nil {
+		return fmt.Errorf("release queued provider preparation lease: %w", err)
+	}
+	return nil
+}
+
+// RenewProviderAttemptLease extends a preparing or active provider execution lease without
 // changing its generation. A missing, cleared, expired, or replaced lease is
 // reported as a lost renewal rather than being recreated.
 func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProviderAttemptLeaseRequest) (bool, error) {
@@ -1196,7 +1239,7 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 			FROM attempt_executions
 			WHERE attempt_id = ?
 			  AND execution_mode = 'provider_backed'
-			  AND state IN ('starting', 'running')
+			  AND state IN ('queued', 'starting', 'running')
 			  AND lease_owner = ?
 			  AND lease_version = ?
 			  AND lease_expires_at IS NOT NULL`, attemptID, owner, req.LeaseVersion).Scan(&currentExpiry)
@@ -1217,7 +1260,7 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 		SET lease_expires_at = ?
 		WHERE attempt_id = ?
 		  AND execution_mode = 'provider_backed'
-		  AND state IN ('starting', 'running')
+		  AND state IN ('queued', 'starting', 'running')
 		  AND lease_owner = ?
 		  AND lease_version = ?
 		  AND lease_expires_at IS NOT NULL
@@ -1992,6 +2035,22 @@ func firstNonEmptyTrimmed(values ...string) string {
 }
 
 func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecord, error) {
+	return s.ListPendingOutboxAfter(ctx, OutboxCursor{}, OutboxCursor{}, limit)
+}
+
+func (s *Store) PendingOutboxHighWatermark(ctx context.Context) (OutboxCursor, error) {
+	var cursor OutboxCursor
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, outbox_id FROM attempt_outbox
+		WHERE status = 'pending' ORDER BY created_at DESC, outbox_id DESC LIMIT 1`).Scan(&cursor.CreatedAt, &cursor.OutboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OutboxCursor{}, nil
+	}
+	return cursor, err
+}
+
+// A finite scan continues past busy rows without letting newly arriving work
+// postpone revisiting older records indefinitely.
+func (s *Store) ListPendingOutboxAfter(ctx context.Context, after, through OutboxCursor, limit int) ([]OutboxRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store database is required")
 	}
@@ -1999,8 +2058,7 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 		limit = 1
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ao.outbox_id,
+	query := `SELECT ao.outbox_id,
 		        ao.attempt_id,
 		        ao.run_id,
 		        ao.node_run_id,
@@ -2011,14 +2069,25 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 		        ao.status,
 		        ao.publish_attempts,
 		        COALESCE(ae.failure_code, ''),
-		        COALESCE(ae.failure_text, '')
+		        COALESCE(ae.failure_text, ''),
+		        ao.created_at
 		 FROM attempt_outbox ao
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = ao.attempt_id
-		 WHERE ao.status = 'pending'
-		 ORDER BY ao.created_at ASC, ao.outbox_id ASC
-		 LIMIT ?`,
-		limit,
-	)
+		 WHERE ao.status = 'pending'`
+	args := make([]any, 0, 5)
+	// Keep cursor predicates unconditional when present so SQLite can seek
+	// directly into the compound index instead of rescanning each prior page.
+	if after.OutboxID != "" {
+		query += ` AND (ao.created_at, ao.outbox_id) > (?, ?)`
+		args = append(args, after.CreatedAt, after.OutboxID)
+	}
+	if through.OutboxID != "" {
+		query += ` AND (ao.created_at, ao.outbox_id) <= (?, ?)`
+		args = append(args, through.CreatedAt, through.OutboxID)
+	}
+	query += ` ORDER BY ao.created_at ASC, ao.outbox_id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending outbox records: %w", err)
 	}
@@ -2027,7 +2096,7 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 	records := make([]OutboxRecord, 0)
 	for rows.Next() {
 		var rec OutboxRecord
-		if err := rows.Scan(&rec.OutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.TerminalSeq, &rec.TerminalState, &rec.AttemptState, &rec.PayloadJSON, &rec.Status, &rec.PublishCount, &rec.FailureCode, &rec.FailureText); err != nil {
+		if err := rows.Scan(&rec.OutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.TerminalSeq, &rec.TerminalState, &rec.AttemptState, &rec.PayloadJSON, &rec.Status, &rec.PublishCount, &rec.FailureCode, &rec.FailureText, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending outbox record: %w", err)
 		}
 		records = append(records, rec)
@@ -2039,7 +2108,28 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 	return records, nil
 }
 
-func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]AttemptCancelRecord, error) {
+const pendingAttemptCancelStates = `('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')`
+
+// PendingAttemptCancelHighWatermark fixes the end of one finite scan cycle.
+// New cancellations wait for the next cycle instead of delaying revisits.
+func (s *Store) PendingAttemptCancelHighWatermark(ctx context.Context) (AttemptCancelCursor, error) {
+	if s == nil || s.db == nil {
+		return AttemptCancelCursor{}, fmt.Errorf("store database is required")
+	}
+	var cursor AttemptCancelCursor
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, cancel_outbox_id FROM attempt_cancel_outbox
+		WHERE status = 'pending' AND handoff_state IN `+pendingAttemptCancelStates+`
+		ORDER BY created_at DESC, cancel_outbox_id DESC LIMIT 1`).Scan(&cursor.CreatedAt, &cursor.CancelOutboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AttemptCancelCursor{}, nil
+	}
+	if err != nil {
+		return AttemptCancelCursor{}, fmt.Errorf("load pending attempt cancellation high watermark: %w", err)
+	}
+	return cursor, nil
+}
+
+func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through AttemptCancelCursor, limit int) ([]AttemptCancelRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store database is required")
 	}
@@ -2052,17 +2142,19 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 		        COALESCE(NULLIF(TRIM(ae.provider_session_id), ''), aco.session_id) AS session_id,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
 		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
-		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, '')
+		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, ''), aco.created_at
 		 FROM attempt_cancel_outbox aco
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id
 		 LEFT JOIN node_runs nr ON nr.node_run_id = aco.node_run_id AND nr.run_id = aco.run_id
 		 LEFT JOIN workflow_runs wr ON wr.run_id = aco.run_id
 		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE status = 'pending'
-		   AND handoff_state IN ('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')
+		   AND handoff_state IN `+pendingAttemptCancelStates+`
+		   AND (aco.created_at, aco.cancel_outbox_id) > (?, ?)
+		   AND (aco.created_at, aco.cancel_outbox_id) <= (?, ?)
 		 ORDER BY aco.created_at ASC, aco.cancel_outbox_id ASC
 		 LIMIT ?`,
-		limit,
+		after.CreatedAt, after.CancelOutboxID, through.CreatedAt, through.CancelOutboxID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list pending attempt cancels: %w", err)
@@ -2073,7 +2165,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 	for rows.Next() {
 		var rec AttemptCancelRecord
 		var executionMode string
-		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID); err != nil {
+		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending attempt cancel: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)
@@ -2331,22 +2423,25 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 	return nil
 }
 
-func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, lastError, handoffState, updatedAt string) error {
+// RecordAttemptCancelFailure only updates the phase observed by the caller.
+// Provider proof or a new operator stop authorization may have superseded it.
+func (s *Store) RecordAttemptCancelFailure(ctx context.Context, req RecordAttemptCancelFailureRequest) (bool, error) {
 	if s == nil || s.db == nil {
-		return fmt.Errorf("store database is required")
+		return false, fmt.Errorf("store database is required")
 	}
-	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
-	lastError = strings.TrimSpace(lastError)
-	handoffState = strings.TrimSpace(handoffState)
-	updatedAt = strings.TrimSpace(updatedAt)
-	if cancelOutboxID == "" {
-		return fmt.Errorf("cancel_outbox_id is required")
+	cancelOutboxID := strings.TrimSpace(req.CancelOutboxID)
+	expectedHandoffState := strings.TrimSpace(req.ExpectedHandoffState)
+	lastError := strings.TrimSpace(req.LastError)
+	handoffState := strings.TrimSpace(req.HandoffState)
+	updatedAt := strings.TrimSpace(req.UpdatedAt)
+	if cancelOutboxID == "" || expectedHandoffState == "" {
+		return false, fmt.Errorf("cancel_outbox_id and expected handoff state are required")
 	}
 	if lastError == "" {
 		lastError = "attempt cancel failed"
 	}
 	if handoffState != "awaiting_quiescence" && handoffState != "guardian_evidence_recovery_requested" && handoffState != "awaiting_workspace_quiescence" && handoffState != "workspace_restore_failed" {
-		return fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
+		return false, fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
 	}
 	if updatedAt == "" {
 		updatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2358,23 +2453,24 @@ func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, 
 		     last_error = ?,
 		     handoff_state = ?,
 		     updated_at = ?
-		 WHERE cancel_outbox_id = ? AND status = 'pending'`,
+		 WHERE cancel_outbox_id = ? AND status = 'pending' AND handoff_state = ?
+		   AND (handoff_state <> ? OR last_error <> ?)`,
 		lastError,
 		handoffState,
 		updatedAt,
 		cancelOutboxID,
+		expectedHandoffState,
+		handoffState,
+		lastError,
 	)
 	if err != nil {
-		return fmt.Errorf("record attempt cancel failure for %q: %w", cancelOutboxID, err)
+		return false, fmt.Errorf("record attempt cancel failure for %q: %w", cancelOutboxID, err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read attempt cancel failure rows affected: %w", err)
+		return false, fmt.Errorf("read attempt cancel failure rows affected: %w", err)
 	}
-	if rows == 0 {
-		return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
-	}
-	return nil
+	return rows == 1, nil
 }
 
 func (s *Store) QueueOutbox(ctx context.Context, req QueueOutboxRequest) error {

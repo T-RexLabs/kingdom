@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/filemode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 )
@@ -40,16 +41,22 @@ func trackedProjectionFixture(t *testing.T) (*orchestrationLoop, *sql.DB, string
 	loop := &orchestrationLoop{db: db, fsStore: fsStore, yoloRoot: root, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	const attempt = "audit-attempt"
 	mustExec(t, db, `INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,completion_mode,created_at,updated_at) VALUES ('audit-attempt','run_1','nr_1','committed_success','server_response','2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`)
-	if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES ('audit-attempt_artifact_1','run_1','nr_1','audit-attempt','deliverable','output.txt','text/plain','output.txt',?,7,'governance',?)`, sha256Hex([]byte("content")), at); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (420, 'audit-attempt_artifact_1','run_1','nr_1','audit-attempt','deliverable','output.txt','text/plain','output.txt',?,7,'governance',?)`, sha256Hex([]byte("content")), at); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, db, `INSERT INTO artifact_contents(artifact_id,sha256,size_bytes,created_at) SELECT artifact_id,sha256,size_bytes,created_at FROM artifacts`)
 	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('audit-attempt_artifact_1',0,x'636f6e74656e74')`)
-	return loop, db, root, []artifactOutputRecord{{ArtifactID: attempt + "_artifact_1", ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder", NodeID: "builder", Attempt: 1}}
+	mode := int64(0644)
+	return loop, db, root, []artifactOutputRecord{{ModeBits: &mode, ArtifactID: attempt + "_artifact_1", ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder", NodeID: "builder", Attempt: 1}}
 }
 
 func TestArtifactPublicationReplayRepairsFilesystemBeforeAuditCommitFailure(t *testing.T) {
 	loop, db, root, artifacts := trackedProjectionFixture(t)
+	mode := int64(0751)
+	artifacts[0].ModeBits = &mode
+	if _, err := db.Exec(`UPDATE artifacts SET mode_bits=? WHERE artifact_id=?`, mode, artifacts[0].ArtifactID); err != nil {
+		t.Fatal(err)
+	}
 	mustExec(t, db, `CREATE TRIGGER reject_publication_entry BEFORE INSERT ON run_publication_entries BEGIN SELECT RAISE(ABORT,'injected audit failure'); END`)
 	publish := func() error {
 		return loop.publishArtifactsDirectWithTracking(context.Background(), "", nil, "run_1", root, "kingdom-artifacts/run_1", artifacts)
@@ -79,6 +86,10 @@ func TestArtifactPublicationReplayRepairsFilesystemBeforeAuditCommitFailure(t *t
 	}
 	if err := db.QueryRow(`SELECT count(*) FROM run_publication_entries WHERE status='published'`).Scan(&entries); err != nil {
 		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(root, "output.txt"))
+	if err != nil || !filemode.Equal(int64(info.Mode().Perm()), mode) {
+		t.Fatalf("replay permissions=%v err=%v", info, err)
 	}
 	if batches != 1 || entries != 1 || published != 1 {
 		t.Fatalf("duplicated or incomplete replay: batches=%d entries=%d published=%d", batches, entries, published)
@@ -191,7 +202,7 @@ func TestArtifactPublicationIdentitySurvivesSameClockReplay(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,completion_mode,created_at,updated_at) VALUES (?,'run_1','nr_1','committed_success','server_response',?,?)`, attemptID, at, at); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (?,'run_1','nr_1',?,'deliverable','output.txt','text/plain','output.txt',?,?,'governance',?)`, artifactID, attemptID, sha256Hex([]byte(body)), len(body), at); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (420, ?,'run_1','nr_1',?,'deliverable','output.txt','text/plain','output.txt',?,?,'governance',?)`, artifactID, attemptID, sha256Hex([]byte(body)), len(body), at); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifact_contents(artifact_id,sha256,size_bytes,created_at) SELECT artifact_id,sha256,size_bytes,created_at FROM artifacts WHERE artifact_id=?`, artifactID); err != nil {
@@ -232,7 +243,7 @@ func TestArtifactProjectionStreamsCanonicalContentAndRejectsCorruptionAtomically
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('large', 'run_1', 'nr_1', 'att_1', 'deliverable', 'large.bin', 'application/octet-stream', 'large.bin', '', 0, 'governance', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'large', 'run_1', 'nr_1', 'att_1', 'deliverable', 'large.bin', 'application/octet-stream', 'large.bin', '', 0, 'governance', '2026-03-01T12:00:00Z')`)
 	chunk := bytes.Repeat([]byte("x"), 1<<20)
 	hash := sha256.New()
 	tx, err := db.Begin()
@@ -262,7 +273,8 @@ func TestArtifactProjectionStreamsCanonicalContentAndRejectsCorruptionAtomically
 	}
 	root := t.TempDir()
 	loop := &orchestrationLoop{db: db}
-	artifact := artifactOutputRecord{ArtifactID: "large", RelativePath: "large.bin", ArtifactAction: "write"}
+	mode := int64(0644)
+	artifact := artifactOutputRecord{ModeBits: &mode, ArtifactID: "large", RelativePath: "large.bin", ArtifactAction: "write"}
 	got, err := loop.writeProjectedArtifact(context.Background(), "/missing-workspace", map[string][]byte{"large.bin": []byte("wrong inline bytes")}, root, "large.bin", artifact)
 	if err != nil || got != checksum {
 		t.Fatalf("project: checksum=%s err=%v", got, err)

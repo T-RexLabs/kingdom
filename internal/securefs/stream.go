@@ -93,6 +93,18 @@ func copyRegularFile(ctx context.Context, file *os.File, dst io.Writer) (FileIde
 // staging I/O leaves destination ancestors untouched too. Ancestor repair begins
 // only after successful staging and the final pre-publication cancellation check.
 func (r *Root) ReplaceRegularFrom(ctx context.Context, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time) error {
+	return r.writeRegularFrom(ctx, path, produce, mode, dirMode, modified, true)
+}
+
+// MaterializeRegularFrom creates an atomic, verified private working copy without
+// durability syncs. It must only be used for rebuildable files whose canonical
+// content is stored elsewhere. It retains ReplaceRegularFrom's no-follow access,
+// metadata preservation, and verification-before-replacement guarantees.
+func (r *Root) MaterializeRegularFrom(ctx context.Context, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time) error {
+	return r.writeRegularFrom(ctx, path, produce, mode, dirMode, modified, false)
+}
+
+func (r *Root) writeRegularFrom(ctx context.Context, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modified time.Time, durable bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -101,7 +113,7 @@ func (r *Root) ReplaceRegularFrom(ctx context.Context, path string, produce func
 			return err
 		}
 		return ctx.Err()
-	}, mode, dirMode, modified)
+	}, mode, dirMode, modified, durable)
 }
 
 // IterateDir visits a directory incrementally in filesystem order through a

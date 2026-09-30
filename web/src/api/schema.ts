@@ -2893,7 +2893,7 @@ export interface components {
          */
         CreateRunRequest: {
             work_order_id: string;
-            /** @description When true, Kingdom uses the built-in alternate workflow that routes builder output directly to royal closure. */
+            /** @description When true, Kingdom uses the built-in alternate workflow that routes builder output directly to completion. */
             skip_reviews_and_validations?: boolean;
             /** @description When true, review and validation loops continue until approval. Workflows without execution review or validation nodes normalize this to false. */
             run_until_all_approve?: boolean;
@@ -3612,6 +3612,8 @@ export interface components {
             name: string;
             mime: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: uri */
             download_url?: string;
@@ -3644,6 +3646,8 @@ export interface components {
             mime: string;
             path: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: date-time */
             created_at: string;
