@@ -1,12 +1,13 @@
 import { useState } from "react";
-import { CheckCircle2, ChevronDown, Circle, CircleDot, CircleSlash, ExternalLink, Feather } from "lucide-react";
+import { CheckCircle2, ChevronDown, Circle, CircleDot, CircleSlash, ExternalLink } from "lucide-react";
+import { ThemeIcon } from "@/theme";
 import { cn } from "@/lib/utils";
 import { useTextReveal } from "@/lib/use-text-reveal";
 import type { ActivityState, ActivitySourceEntry, ActivityThoughtEntry, TodoList, TodoStatus } from "./activity-view";
 
 // ActivityLiveStream renders the in-flight activity: the agent's reasoning revealed
 // at a natural pace, with the current action (thinking / tool call) anchored beneath
-// it and an animated quill. Renders nothing when there is no live activity to show.
+// it and the themed planner icon. Renders nothing when there is no live activity to show.
 export function ActivityLiveStream({
   state,
   isStreaming,
@@ -31,7 +32,7 @@ export function ActivityLiveStream({
       {state.currentEvent ? (
         <div className="flex items-center justify-between gap-3 text-xs font-medium text-foreground-subtle/90">
           <span className="truncate">{state.currentEvent.label}</span>
-          <Feather className="h-3.5 w-3.5 shrink-0 animate-quill-write text-accent/75" />
+          <ThemeIcon slot="role.planning-assistant" size={14} className="shrink-0 motion-safe:animate-pulse text-accent/75" />
         </div>
       ) : null}
     </div>
