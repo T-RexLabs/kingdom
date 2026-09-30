@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { PlanningSessionDetail } from "@/api/hooks";
 import { PlannerThread } from "./planner-thread";
+import type { PlannerOperationState } from "./planner-operation-controller";
 
 beforeEach(() => sessionStorage.clear());
 const renderThread = (ui: ReactNode) => {
@@ -205,5 +206,153 @@ describe("PlannerThread session ownership", () => {
     expect(screen.getByRole("textbox")).toHaveValue("Unsent B");
     view.rerender(<PlannerThread {...props} session={session} />);
     expect(screen.getByRole("textbox")).toHaveValue("New A");
+  });
+});
+
+
+describe("PlannerThread response cancellation", () => {
+  const operation: PlannerOperationState = {
+    kind: "reply",
+    operationId: "op-1",
+    status: "streaming",
+    lastEventSeq: 1,
+    pendingReply: null,
+    replyText: "",
+    formalizeText: "",
+    error: null,
+    activityReconciled: false,
+    activityItems: [],
+  };
+  const props = {
+    replyRecoveryPending: false,
+    onRetryReplyRecovery: vi.fn(),
+    onSubmitReply: vi.fn(),
+    onRegenerate: vi.fn(),
+    onActivateVariant: vi.fn(),
+  };
+
+  it("keeps the draft and reports Stopped only after canonical cancellation", async () => {
+    const onStop = vi.fn().mockResolvedValue(undefined);
+    const view = renderThread(<PlannerThread {...props} session={session} />);
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "My next reply" },
+    });
+    view.rerender(
+      <PlannerThread
+        {...props}
+        session={{ ...session, conversation_state: "processing" }}
+        operation={operation}
+        stop={{ available: true, pending: false, onStop }}
+      />,
+    );
+    const stop = screen.getByRole("button", { name: "Stop response" });
+    expect(stop.nextElementSibling).toBe(
+      screen.getByRole("button", { name: "Send" }),
+    );
+    await act(async () => {
+      fireEvent.click(stop);
+    });
+    expect(onStop).toHaveBeenCalledOnce();
+    expect(screen.queryByText("Response Stopped")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("My next reply");
+
+    view.rerender(
+      <PlannerThread
+        {...props}
+        session={{ ...session, conversation_state: "processing" }}
+        operation={operation}
+        stop={{ available: true, pending: true, onStop }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: "Stopping response" })).toBe(stop);
+    expect(
+      screen.getByRole("button", { name: "Stopping response" }),
+    ).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent("Stopping response…");
+    expect(screen.queryByText("Response Stopped")).not.toBeInTheDocument();
+
+    view.rerender(
+      <PlannerThread
+        {...props}
+        session={session}
+        operation={{
+          ...operation,
+          status: "cancelled",
+          error: "planner run cancelled by user",
+        }}
+        stop={{ available: false, pending: false, onStop }}
+      />,
+    );
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent("Response Stopped");
+    expect(status.parentElement).toContainElement(screen.getByRole("textbox"));
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("planner run cancelled by user"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Stop response" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox")).toHaveValue("My next reply");
+    expect(screen.getByRole("textbox")).toBeEnabled();
+  });
+
+  it("retains stop errors and recovery blocking without claiming the response stopped", () => {
+    const onStop = vi.fn();
+    renderThread(
+      <PlannerThread
+        {...props}
+        session={{ ...session, conversation_state: "processing" }}
+        operation={operation}
+        stop={{
+          available: true,
+          pending: false,
+          error: "Stop outcome could not be verified",
+          onStop,
+        }}
+        recoveryBlocked
+      />,
+    );
+    const stop = screen.getByRole("button", { name: "Stop response" });
+    expect(stop).toBeDisabled();
+    fireEvent.click(stop);
+    expect(onStop).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Stop outcome could not be verified"),
+    ).toHaveAttribute("role", "alert");
+    expect(
+      screen.getByText(/previous planner request has an unresolved outcome/),
+    ).toBeVisible();
+    expect(screen.queryByText("Response Stopped")).not.toBeInTheDocument();
+  });
+
+  it("reports confirmed cancellation even when no raw reason was recorded", () => {
+    renderThread(
+      <PlannerThread
+        {...props}
+        session={session}
+        operation={{ ...operation, status: "cancelled", error: null }}
+      />,
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("Response Stopped");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("keeps actual operation failure distinct from cancellation", () => {
+    renderThread(
+      <PlannerThread
+        {...props}
+        session={session}
+        operation={{
+          ...operation,
+          status: "error",
+          error: "Provider failed before settlement",
+        }}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Provider failed before settlement",
+    );
+    expect(screen.queryByText("Response Stopped")).not.toBeInTheDocument();
   });
 });

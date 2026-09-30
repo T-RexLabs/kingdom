@@ -141,3 +141,45 @@ it("does not send an Enter used by IME composition", () => {
   fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", keyCode: 229 });
   expect(onSend).not.toHaveBeenCalled();
 });
+
+it("places the Stop icon immediately beside Send inside the composer", () => {
+  const onStop = vi.fn();
+  const onSend = vi.fn();
+  render(
+    <PlannerComposer
+      value="Kept draft"
+      disabled
+      onChange={() => {}}
+      onSend={onSend}
+      stop={{ pending: false, onStop }}
+    />,
+  );
+  const stop = screen.getByRole("button", { name: "Stop response" });
+  const send = screen.getByRole("button", { name: "Send" });
+  expect(stop.nextElementSibling).toBe(send);
+  expect(stop.parentElement).toContainElement(screen.getByRole("textbox"));
+  expect(stop.textContent).toBe("");
+  expect(stop).toBeEnabled();
+  expect(send).toBeDisabled();
+  fireEvent.click(stop);
+  expect(onStop).toHaveBeenCalledOnce();
+  expect(onSend).not.toHaveBeenCalled();
+});
+
+it("labels and disables a pending stop without enabling Send", () => {
+  const onStop = vi.fn();
+  render(
+    <PlannerComposer
+      value="Kept draft"
+      disabled
+      onChange={() => {}}
+      onSend={() => {}}
+      stop={{ pending: true, onStop }}
+    />,
+  );
+  const stop = screen.getByRole("button", { name: "Stopping response" });
+  expect(stop).toBeDisabled();
+  expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+  fireEvent.click(stop);
+  expect(onStop).not.toHaveBeenCalled();
+});

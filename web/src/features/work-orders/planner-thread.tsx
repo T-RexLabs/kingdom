@@ -113,9 +113,8 @@ export function PlannerThread({
     !operation || (operation.status !== "done" && operation.status !== "error" && operation.status !== "cancelled")
       ? connection?.state === "failed" || connection?.state === "retrying"
       : false;
-  // `cancelled` is a system event (server shutdown), not a planner
-  // failure. Render it as a neutral notice instead of a red error chip
-  // so the user reads it the way it actually means it.
+  // Only the canonical cancelled state confirms that the response stopped.
+  // A stop request or transport failure never supplies that authority.
   const isCancelled = operation?.status === "cancelled";
   const isLoading = messagePages.isLoading;
   const composerDisabled = session.conversation_state !== "ready";
@@ -280,14 +279,10 @@ export function PlannerThread({
         </div>
       ) : null}
 
-      {operationError ? (
+      {operationError && !isCancelled ? (
         <div
           role="alert"
-          className={
-            isCancelled
-              ? "mx-4 mt-2 rounded-xl border border-border/40 bg-surface-raised/40 p-3 text-sm text-foreground-subtle"
-              : "mx-4 mt-2 rounded-xl border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
-          }
+          className="mx-4 mt-2 rounded-xl border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
         >
           {operationError}
         </div>
@@ -295,10 +290,6 @@ export function PlannerThread({
 
       {state.storageUnavailable ? <p role="status" className="mx-4 mt-2 text-sm text-foreground-subtle">Browser storage is unavailable. Drafts are kept only while this page remains open.</p> : null}
       {recoveryBlocked ? <p role="alert" className="mx-4 mt-2 text-sm text-status-failed">A previous planner request has an unresolved outcome from an earlier browser session. Your draft is preserved. Sending and retrying are blocked until that request can be verified. {recovery ? <button type="button" disabled={recovery.checking} onClick={() => void recovery.onCheck()} className="ml-2 underline">{recovery.checking ? "Checking..." : "Check Previous Request"}</button> : null}</p> : null}
-      {stop?.available ? <div className="mx-4 mt-2 flex items-center gap-2">
-        <button type="button" disabled={stop.pending || recoveryBlocked} onClick={() => void stop.onStop().catch(() => {})} className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50">{stop.pending ? "Stopping..." : "Stop"}</button>
-        {stop.error ? <span role="alert" className="text-sm text-status-failed">{stop.error}</span> : null}
-      </div> : null}
       {recovery?.pendingKind && recovery.pendingKind !== "reply" && recovery.pendingKind !== "stop" && !recoveryBlocked ? <div role="status" className="mx-4 mt-2 text-sm text-foreground-subtle">
         A previous planner request could not be confirmed. Your draft is preserved.
         <button type="button" onClick={() => void recovery.onRetry?.().catch(() => {})} className="ml-2 underline">Retry Previous Request</button>
@@ -322,17 +313,40 @@ export function PlannerThread({
         </div>
       ) : null}
 
-      <div className="mx-auto w-full max-w-4xl shrink-0 px-4 pb-5 pt-3 sm:px-8">
+      <div className="mx-auto w-full max-w-4xl shrink-0 px-4 pb-5 pt-2 sm:px-8">
         <PlannerComposer
           value={inputText}
           disabled={composerDisabled}
           sendDisabled={replyRecoveryPending || recoveryBlocked || Boolean(recovery?.pendingKind)}
           textareaRef={composerTextareaRef}
+          stop={
+            stop && (stop.available || stop.pending)
+              ? {
+                  pending: stop.pending,
+                  disabled: recoveryBlocked,
+                  onStop: () => void stop.onStop().catch(() => {}),
+                }
+              : undefined
+          }
           onChange={setInputText}
           onSend={() => {
             void sendText(inputText, inputText.trim() ? { text: inputText.trim() } : undefined, undefined, "composer");
           }}
         />
+        {stop?.pending ? (
+          <p role="status" className="mt-2 px-2 text-xs text-foreground-muted">
+            Stopping response…
+          </p>
+        ) : isCancelled ? (
+          <p role="status" className="mt-2 px-2 text-xs text-foreground-muted">
+            Response Stopped
+          </p>
+        ) : null}
+        {stop?.error ? (
+          <p role="alert" className="mt-2 px-2 text-xs text-status-failed">
+            {stop.error}
+          </p>
+        ) : null}
         {composerControls}
       </div>
     </div>
