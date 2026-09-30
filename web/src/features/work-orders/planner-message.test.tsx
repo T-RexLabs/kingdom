@@ -510,11 +510,11 @@ describe("PlannerMessageCard", () => {
     expect(screen.getByRole("link", { name: /example\.com/ })).toHaveAttribute("href", "https://example.com");
     expect(screen.getByRole("status")).toHaveTextContent("Fetching https://example.com");
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
-    expect(screen.queryByText("Searching ACP activity handlers")).not.toBeInTheDocument();
+    const recentTools = screen.getByRole("list", { name: "Recent tool calls" });
+    expect(within(recentTools).getByText("Searching ACP activity handlers")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
-    expect(
-      await screen.findByText("Searching ACP activity handlers"),
-    ).toBeInTheDocument();
+    const history = screen.getByRole("region", { name: "Provider activity history" });
+    expect(await within(history).findByText("Searching ACP activity handlers")).toBeInTheDocument();
   });
 
   it("retains each real webfetch record without fabricating an aggregate event", async () => {
@@ -539,7 +539,7 @@ describe("PlannerMessageCard", () => {
     );
 
     expect(screen.getByRole("status")).toHaveTextContent("Fetched https://bigshotsgolf.com/");
-    expect(screen.getAllByText(/^Fetched https:/)).toHaveLength(1);
+    expect(within(screen.getByRole("list", { name: "Recent tool calls" })).getAllByText(/^Fetched https:/)).toHaveLength(3);
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     const history = screen.getByRole("region", { name: "Provider activity history" });
     await waitFor(() => expect(within(history).getAllByText(/^Fetched https:/)).toHaveLength(3));
