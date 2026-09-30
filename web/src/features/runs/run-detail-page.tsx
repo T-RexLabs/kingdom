@@ -193,7 +193,11 @@ export function RunDetailPage() {
     selectedExecutionNodeId,
     {
       enabled:
-        runReady && executionVisible && (selectedNode?.attempt_count ?? 0) > 1,
+        runReady &&
+        executionVisible &&
+        ((selectedNode?.attempt_count ?? 0) > 1 ||
+          ((selectedNode?.attempt_count ?? 0) > 0 &&
+            !selectedNode?.current_execution)),
     },
   );
   const nodeAttempts = useMemo(

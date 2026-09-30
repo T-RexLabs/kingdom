@@ -755,6 +755,13 @@ describe("run detail page", () => {
 		]);
 	});
 
+  it("loads bounded prior history when the current node generation has no physical attempt", () => {
+    mockExecutions = [{ node_id: "quality_validation", required_role: "quality-validator", execution_ownership: "provider_backed", status: "pending", attempt_count: 1 }];
+    render(<RunDetailPage />);
+    expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "quality_validation", { enabled: true });
+    expect(executionSurfacePropsMock).toHaveBeenLastCalledWith(expect.objectContaining({ selectedNodeId: "quality_validation", selectedAttemptId: null }));
+  });
+
   it("keeps a recorded conversation visible when active agents settle at the plan gate", () => {
     const future: RunNodeExecution = { node_id: "implementation", required_role: "builder", execution_ownership: "provider_backed", status: "pending", attempt_count: 0 };
     const advisor = runExecution({ node_id: "risk_advisory", attempt_id: "advisor-attempt", required_role: "risk-advisor", status: "running", activity_at: "2026-09-30T10:05:00Z" });

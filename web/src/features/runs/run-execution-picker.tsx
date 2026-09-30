@@ -82,11 +82,19 @@ export function RunExecutionPicker({
           className="w-56 max-w-full"
           value={selectedID ?? ""}
           onChange={(value) =>
-            value === current?.attempt_id
+            value === "" || value === current?.attempt_id
               ? onSelectCurrentAttempt()
               : onSelectAttempt(value)
           }
           options={[
+            ...(!current
+              ? [
+                  {
+                    value: "",
+                    label: `Current Step · ${statusLabel(node?.status ?? "pending")}`,
+                  },
+                ]
+              : []),
             ...(selectedID &&
             !options.some((item) => item.attempt_id === selectedID)
               ? [{ value: selectedID, label: "Selected Attempt" }]
@@ -97,6 +105,24 @@ export function RunExecutionPicker({
             })),
           ]}
         />
+      )}
+      {!current && node?.attempt_count === 1 && options[0] && !selectedID && (
+        <button
+          type="button"
+          className="min-h-10 text-xs text-accent"
+          onClick={() => onSelectAttempt(options[0].attempt_id)}
+        >
+          View Previous Attempt
+        </button>
+      )}
+      {selectedID && selectedID !== current?.attempt_id && (
+        <button
+          type="button"
+          className="min-h-10 text-xs text-accent"
+          onClick={onSelectCurrentAttempt}
+        >
+          {current ? "Return to Current Attempt" : "Return to Current Step"}
+        </button>
       )}
       {children}
       {hasMoreAttempts && (

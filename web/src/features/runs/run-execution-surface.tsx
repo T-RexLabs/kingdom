@@ -139,13 +139,6 @@ export function RunExecutionSurface({
             Historical Attempt {execution?.attempt ?? ""}
             {history?.superseded ? " · Superseded" : ""}
           </span>
-          <button
-            type="button"
-            className="min-h-9 text-accent"
-            onClick={onSelectCurrentAttempt}
-          >
-            Return to Current Attempt
-          </button>
         </div>
       )}
       {presentation && showNotice && (

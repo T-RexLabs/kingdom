@@ -164,11 +164,48 @@ function renderSurface(
     stopRetryErrorMessage: null,
     ...overrides,
   };
-  render(<RunExecutionSurface {...props} />);
-  return props;
+  const view = render(<RunExecutionSurface {...props} />);
+  return { ...props, view };
 }
 
 describe("focused execution inspector", () => {
+  it("exposes a single previous attempt when the new generation has not started and returns to current", async () => {
+    const props = renderSurface({
+      nodes: [
+        node({
+          status: "pending",
+          attempt_count: 1,
+          current_execution: undefined,
+        }),
+      ],
+    });
+    expect(
+      screen.queryByRole("button", { name: "Select attempt" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "View Previous Attempt" }),
+    );
+    expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-old");
+    props.view.rerender(
+      <RunExecutionSurface {...props} selectedAttemptId="attempt-old" />,
+    );
+    expect(
+      screen.queryByRole("button", { name: "View Previous Attempt" }),
+    ).not.toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Return to Current Step" }),
+    );
+    expect(props.onSelectCurrentAttempt).toHaveBeenCalledOnce();
+    props.view.rerender(
+      <RunExecutionSurface {...props} selectedAttemptId={null} />,
+    );
+    expect(
+      screen.getByRole("button", { name: "View Previous Attempt" }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: "Select attempt" }),
+    ).not.toBeInTheDocument();
+  });
   it("keeps historical attempt selection keyboard accessible", async () => {
     const user = userEvent.setup();
     const props = renderSurface();
