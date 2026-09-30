@@ -28,7 +28,7 @@ export function ThinkingEffortField({
         ) : null}
         <div
           id={id}
-          className="flex min-h-10 items-center rounded-md border border-dashed border-border bg-surface-raised/25 px-3 py-2 text-sm text-foreground-subtle"
+          className="flex min-h-10 items-center py-2 text-sm text-foreground-muted"
         >
           Not available for this model
         </div>

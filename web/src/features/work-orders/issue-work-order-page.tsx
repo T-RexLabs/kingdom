@@ -34,7 +34,7 @@ export function IssueWorkOrderPage() {
   }, [dispatchResult]);
 
   return (
-    <div className="mx-auto grid w-full max-w-4xl grid-cols-1 gap-8">
+    <div className="mx-auto grid w-full max-w-3xl grid-cols-1 gap-8">
       <div className="min-w-0">
         <WorkOrderForm
           initialPlanningLineage={search}

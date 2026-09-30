@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { selectTriggerClass, fieldLabelClass } from "@/components/ui/field-styles";
+import { SelectTriggerContent } from "@/components/ui/select-trigger";
 import {
   PopoverListbox,
   type PopoverListboxItem,
@@ -74,7 +76,7 @@ export function ModelSelectField({
     return (
       <div className="relative">
         {label !== "" ? (
-          <label htmlFor={id} className="mb-1.5 block text-sm font-medium">
+          <label htmlFor={id} className={fieldLabelClass}>
             {label}
           </label>
         ) : null}
@@ -82,10 +84,10 @@ export function ModelSelectField({
           id={id}
           type="button"
           disabled
-          className="w-full truncate rounded-md border border-border bg-background px-3 py-2 text-left text-sm text-foreground-subtle"
+          className={selectTriggerClass}
           aria-label={comboboxLabel}
         >
-          {selectedProviderModelLabel(options, value, "Loading models...")}
+          <SelectTriggerContent>{selectedProviderModelLabel(options, value, "Loading models...")}</SelectTriggerContent>
         </button>
       </div>
     );
@@ -94,7 +96,7 @@ export function ModelSelectField({
   return (
     <div className="relative">
       {label !== "" ? (
-        <label htmlFor={id} className="mb-1.5 block text-sm font-medium">
+        <label htmlFor={id} className={fieldLabelClass}>
           {label}
         </label>
       ) : null}
@@ -103,11 +105,8 @@ export function ModelSelectField({
         triggerRole="combobox"
         triggerAriaLabel={comboboxLabel}
         triggerDisabled={disabled}
-        triggerClassName={[
-          "w-full truncate rounded-md border border-border bg-background px-3 py-2 text-left text-sm focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent",
-          disabled ? "cursor-not-allowed opacity-50 text-foreground-subtle" : "text-foreground",
-        ].join(" ")}
-        triggerContent={selectedLabel}
+        triggerClassName={selectTriggerClass}
+        triggerContent={<SelectTriggerContent>{selectedLabel}</SelectTriggerContent>}
         items={items}
         selectedId={value || null}
         onSelect={(next) => {

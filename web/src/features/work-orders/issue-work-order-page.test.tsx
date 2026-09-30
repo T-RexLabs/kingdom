@@ -133,9 +133,9 @@ vi.mock("@/api/hooks", async () => ({
   }),
 }));
 
-function renderWithExecutionSettings(view: Parameters<typeof render>[0]) {
+function renderWithReviewOptions(view: Parameters<typeof render>[0]) {
   const result = render(view);
-  const summary = screen.getByText("Execution Settings").closest("summary");
+  const summary = screen.getByText("Review Options").closest("summary");
   if (summary && !summary.closest("details")?.open) fireEvent.click(summary);
   return result;
 }
@@ -200,26 +200,32 @@ describe("issue work order page", () => {
     await user.click(screen.getByRole("option", { name: "GitHub Copilot - GPT-5.3-Codex" }));
   }
 
-  it("summarizes execution settings while retaining the full controls behind disclosure", async () => {
+  it("keeps model and approval decisions visible while advanced controls stay optional", async () => {
     const user = userEvent.setup();
     render(<IssueWorkOrderPage />);
-    expect(screen.getByText("Execution Settings").closest("details")).not.toHaveAttribute("open");
-    expect(screen.getByText(/Autonomous · 5 Review \/ 5 Validation Cycles/)).toBeVisible();
-    expect(screen.getByRole("switch", { name: "Require Human Approval" })).not.toBeVisible();
-    await user.click(screen.getByText("Execution Settings"));
+    expect(screen.getByRole("heading", { name: "Model", exact: true })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Run Options", exact: true })).toBeVisible();
+    expect(screen.getByRole("combobox", { name: "Global Model" })).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Require Human Approval" })).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toBeVisible();
+    expect(screen.queryByRole("switch", { name: "Use for All Agents" })).not.toBeInTheDocument();
+    expect(screen.getByText("Review Options").closest("details")).not.toHaveAttribute("open");
     await user.click(screen.getByRole("switch", { name: "Require Human Approval" }));
-    await user.click(screen.getByText("Execution Settings"));
-    expect(screen.getByText(/Human Approval Required · 5 Review \/ 5 Validation Cycles/)).toBeVisible();
+    expect(screen.getByRole("switch", { name: "Require Human Approval" })).toHaveAttribute("aria-checked", "true");
+    await user.click(screen.getByText("Review Options"));
+    expect(screen.getByRole("switch", { name: "Skip Reviews and Validations" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: /Role Models/i }));
+    expect(screen.getByRole("switch", { name: "Use for All Agents" })).toBeVisible();
   });
 
   it("renders issue work order content", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByRole("heading", { name: "New Work Order" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Issue Work Order" })).toBeInTheDocument();
   });
 
   it("prefills work order title and text from selected planning draft", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByLabelText("Title")).toHaveValue("Draft supplied title");
     expect(screen.getByLabelText("Work Brief")).toHaveValue("Draft supplied text");
@@ -227,28 +233,28 @@ describe("issue work order page", () => {
 
   it("retains separate unsent creation briefs for each source and workspace", async () => {
     const user = userEvent.setup();
-    const fromPlan = renderWithExecutionSettings(<IssueWorkOrderPage />);
+    const fromPlan = renderWithReviewOptions(<IssueWorkOrderPage />);
     await user.clear(screen.getByLabelText("Title"));
     await user.type(screen.getByLabelText("Title"), "My plan draft");
     fromPlan.unmount();
     mockSearch = {};
-    const manual = renderWithExecutionSettings(<IssueWorkOrderPage />);
+    const manual = renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByLabelText("Title")).toHaveValue("");
     await user.type(screen.getByLabelText("Title"), "My separate brief");
     manual.unmount();
     mockSearch = { planning_session_id: "planning-session-1", planning_draft_id: "planning-draft-1" };
-    const backToPlan = renderWithExecutionSettings(<IssueWorkOrderPage />);
+    const backToPlan = renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByLabelText("Title")).toHaveValue("My plan draft");
     backToPlan.unmount();
     mockSearch = {};
     mockWorkspaceCapabilities = { ...mockWorkspaceCapabilities, project_root: "/tmp/another-project" };
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByLabelText("Title")).toHaveValue("");
   });
 
   it("forces autonomous approvals when operator toggle is off", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.type(screen.getByLabelText("Title"), "Work Order A");
@@ -261,7 +267,7 @@ describe("issue work order page", () => {
 
   it("forces manual approvals when operator toggle is on", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("switch", { name: /Require Human Approval/i }));
     await selectGlobalModel(user);
@@ -277,7 +283,7 @@ describe("issue work order page", () => {
     const pendingWorkOrder = deferred<Record<string, unknown>>();
     createWorkOrderMutate.mockImplementationOnce(() => pendingWorkOrder.promise);
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     const form = screen.getByRole("button", { name: "Issue Work Order" }).closest("form") as HTMLFormElement;
@@ -294,7 +300,7 @@ describe("issue work order page", () => {
 
   it("clears work order inputs after a successful dispatch so another work order can be issued immediately", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -322,7 +328,7 @@ describe("issue work order page", () => {
     createRunMutate
       .mockRejectedValueOnce(makeApiError(400, "invalid run settings", { code: "policy_violation", retryable: false, correlationId: "api.create_run" }))
       .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -360,7 +366,7 @@ describe("issue work order page", () => {
     createRunMutate
       .mockRejectedValueOnce(makeApiError(400, "proxy rejected the request", { retryable: true, correlationId: "api.proxy" }))
       .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -389,7 +395,7 @@ describe("issue work order page", () => {
     createWorkOrderMutate
       .mockRejectedValueOnce(new Error("connection lost"))
       .mockResolvedValueOnce(makeWorkOrderResult({ work_order_id: "work-order-replayed" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -425,7 +431,7 @@ describe("issue work order page", () => {
     createRunMutate
       .mockRejectedValueOnce(new Error("connection lost"))
       .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -459,7 +465,7 @@ describe("issue work order page", () => {
     createRunMutate
       .mockRejectedValueOnce(makeApiError(409, "request is still pending", { code: "idempotency_pending", retryable: true, correlationId: "idempotency-middleware" }))
       .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.type(screen.getByLabelText("Title"), "Pending run work order");
@@ -479,14 +485,14 @@ describe("issue work order page", () => {
   it("keeps an ambiguous dispatch guarded across remount without creating another work order", async () => {
     const user = userEvent.setup();
     createRunMutate.mockRejectedValueOnce(new Error("connection lost"));
-    const view = renderWithExecutionSettings(<IssueWorkOrderPage />);
+    const view = renderWithReviewOptions(<IssueWorkOrderPage />);
     await selectGlobalModel(user);
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
     await screen.findByText(/connection dropped before Kingdom could confirm whether the run started/i);
     const originalRun = createRunMutate.mock.calls[0][0];
     expect(screen.queryByRole("button", { name: "Discard Recovery" })).not.toBeInTheDocument();
     view.unmount();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByLabelText("Title")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
     await screen.findByText("Work Order Dispatched");
@@ -499,7 +505,7 @@ describe("issue work order page", () => {
     createRunMutate
       .mockRejectedValueOnce(makeApiError(503, "provider model catalog unavailable", { code: "internal_error", retryable: true, correlationId: "api.create_run" }))
       .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -532,7 +538,7 @@ describe("issue work order page", () => {
       configurable: true,
       value: scrollIntoView,
     });
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     scrollIntoView.mockClear();
@@ -554,7 +560,7 @@ describe("issue work order page", () => {
 
   it("renders the dispatch confirmation before recent runs", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
@@ -586,7 +592,7 @@ describe("issue work order page", () => {
         dispatchEvent: vi.fn(),
       })),
     });
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     scrollIntoView.mockClear();
@@ -603,11 +609,11 @@ describe("issue work order page", () => {
   });
 
   it("renders a git worktree toggle with repository guidance", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toBeEnabled();
     expect(screen.queryByText("Git worktree is available for this project root.")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Use Git Worktree definition")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toHaveAccessibleDescription(/separate Git working copy/);
   });
 
   it("disables the git worktree toggle outside a git repository", () => {
@@ -619,7 +625,7 @@ describe("issue work order page", () => {
       git_worktree_reason: "project root is not a valid git working tree",
     };
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toBeDisabled();
     expect(screen.getByText("project root is not a valid git working tree")).toBeInTheDocument();
@@ -627,7 +633,7 @@ describe("issue work order page", () => {
 
   it("submits git_worktree publish mode when the toggle is enabled", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("switch", { name: "Use Git Worktree" }));
     await selectGlobalModel(user);
@@ -641,7 +647,7 @@ describe("issue work order page", () => {
 
   it("disables cycle inputs and shows warning when run-until-all-approve is enabled", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("switch", { name: "Run Until All Approve" }));
 
@@ -652,7 +658,7 @@ describe("issue work order page", () => {
 
   it("switches to skip-review workflow and greys out review controls", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("switch", { name: "Run Until All Approve" }));
     await user.click(screen.getByRole("switch", { name: "Skip Reviews and Validations" }));
@@ -666,7 +672,7 @@ describe("issue work order page", () => {
 
 	it("preserves zero-valued cycle inputs on blur and explains immediate auto-success", async () => {
 		const user = userEvent.setup();
-		renderWithExecutionSettings(<IssueWorkOrderPage />);
+		renderWithReviewOptions(<IssueWorkOrderPage />);
 
 		const reviewInput = screen.getByLabelText("Max Review Cycles");
 		await user.clear(reviewInput);
@@ -684,7 +690,7 @@ describe("issue work order page", () => {
 
 	it("submits zero-valued cycle inputs to the runtime unchanged", async () => {
 		const user = userEvent.setup();
-		renderWithExecutionSettings(<IssueWorkOrderPage />);
+		renderWithReviewOptions(<IssueWorkOrderPage />);
 
 		await selectGlobalModel(user);
 		await user.clear(screen.getByLabelText("Title"));
@@ -714,7 +720,7 @@ describe("issue work order page", () => {
 	});
 
   it("defaults bounded cycle inputs to five", async () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByLabelText("Max Review Cycles")).toHaveValue(5);
     expect(screen.getByLabelText("Max Validation Cycles")).toHaveValue(5);
@@ -722,7 +728,7 @@ describe("issue work order page", () => {
 
   it("keeps cycle inputs editable without forcing leading zeroes", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     const reviewInput = screen.getByLabelText("Max Review Cycles");
     await user.clear(reviewInput);
@@ -737,50 +743,36 @@ describe("issue work order page", () => {
     expect(validationInput).toHaveValue(12);
   });
 
-  it("keeps review toggles above cycle inputs and keeps git worktree above operator approval", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
-
-    const skipToggle = screen.getByRole("switch", { name: "Skip Reviews and Validations" });
-    const reviewInput = screen.getByLabelText("Max Review Cycles");
-    const validationInput = screen.getByLabelText("Max Validation Cycles");
-    const runUntilToggle = screen.getByRole("switch", { name: "Run Until All Approve" });
-    const gitWorktreeToggle = screen.getByRole("switch", { name: "Use Git Worktree" });
-    const operatorToggle = screen.getByRole("switch", {
-      name: /Require Human Approval/i,
-    });
-
-    expect(reviewInput).toBeInTheDocument();
-    expect(validationInput).toBeInTheDocument();
-    expect(skipToggle).toBeInTheDocument();
-    expect(runUntilToggle).toBeInTheDocument();
-    expect(gitWorktreeToggle).toBeInTheDocument();
+  it("keeps approval and delivery separate from optional review policy", () => {
+    renderWithReviewOptions(<IssueWorkOrderPage />);
+    for (const label of ["Require Human Approval", "Use Git Worktree"]) {
+      expect(screen.getByRole("switch", { name: label }).closest("details")).toBeNull();
+    }
+    for (const label of ["Skip Reviews and Validations", "Run Until All Approve"]) {
+      expect(screen.getByRole("switch", { name: label }).closest("details")).toBe(screen.getByText("Review Options").closest("details"));
+    }
+    expect(screen.getByLabelText("Max Review Cycles")).toBeVisible();
+    expect(screen.getByLabelText("Max Validation Cycles")).toBeVisible();
     expect(screen.queryByLabelText("Workflow ID")).not.toBeInTheDocument();
-    expect(skipToggle.compareDocumentPosition(runUntilToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(runUntilToggle.compareDocumentPosition(reviewInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(reviewInput.compareDocumentPosition(validationInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(runUntilToggle.compareDocumentPosition(gitWorktreeToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(gitWorktreeToggle.compareDocumentPosition(operatorToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(reviewInput.compareDocumentPosition(operatorToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(validationInput.compareDocumentPosition(operatorToggle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-	    expect(screen.queryByText("Advanced Run Options")).not.toBeInTheDocument();
-	  });
-
-  it("uses shared info tooltip triggers for work order toggles", async () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
-
-    expect(screen.getByLabelText("Skip Reviews and Validations definition")).toBeInTheDocument();
-    expect(screen.getByLabelText("Require Human Approval definition")).toBeInTheDocument();
-    expect(screen.getByLabelText("Use Git Worktree definition")).toBeInTheDocument();
-    expect(screen.getByLabelText("Run Until All Approve definition")).toBeInTheDocument();
   });
 
-  it("renders model controls outside advanced options with provider-driven thinking effort", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+  it("explains consequential choices inline without extra tooltip controls", () => {
+    renderWithReviewOptions(<IssueWorkOrderPage />);
+    expect(screen.getByRole("switch", { name: "Require Human Approval" })).toHaveAccessibleDescription("Pause for your decision before implementation and final completion.");
+    expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toHaveAccessibleDescription("Keep changes in a separate Git working copy. When off, publish into this project.");
+    expect(screen.queryByLabelText("Require Human Approval definition")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Use Git Worktree definition")).not.toBeInTheDocument();
+  });
+
+  it("renders model controls outside advanced options with provider-driven thinking effort", async () => {
+    const user = userEvent.setup();
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.queryByLabelText("Model Search")).not.toBeInTheDocument();
+    expect(screen.getByText("Not available for this model")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Role Models/i }));
     expect(screen.getByRole("switch", { name: "Use for All Agents" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("combobox", { name: /Global Model/ })).toHaveTextContent("Select model");
-    expect(screen.getByText("Not available for this model")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Role Models/i })).toBeInTheDocument();
   });
 
@@ -797,7 +789,7 @@ describe("issue work order page", () => {
       refetch: vi.fn(),
     });
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByText("provider model catalog unavailable")).toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Global Model/ })).toBeDisabled();
@@ -825,7 +817,7 @@ describe("issue work order page", () => {
       refetch: vi.fn(),
     });
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     // A refresh Kingdom failed on its own costs the operator nothing here, and
     // recovers on the next poll. Interrupting them over it would report a
@@ -855,7 +847,7 @@ describe("issue work order page", () => {
       refetch: vi.fn(),
     });
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.queryByText("provider model catalog refresh failed")).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: /Global Model/ })).not.toBeDisabled();
@@ -875,7 +867,7 @@ describe("issue work order page", () => {
       refetch: vi.fn(),
     });
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
@@ -899,7 +891,7 @@ describe("issue work order page", () => {
       callbacks?.onError?.(new Error("live refresh failed"), undefined, undefined);
     });
 
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     await user.click(screen.getByRole("button", { name: "Retry" }));
 
     expect(await screen.findByText("live refresh failed")).toBeInTheDocument();
@@ -908,7 +900,7 @@ describe("issue work order page", () => {
 
   it("disables work order submission until a global model is selected", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.type(screen.getByLabelText("Title"), "Work Order A");
     await user.type(screen.getByLabelText("Work Brief"), "Do the thing");
@@ -923,7 +915,7 @@ describe("issue work order page", () => {
 
   it("supports searchable model combobox filtering", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("combobox", { name: /Global Model/ }));
     await user.type(screen.getByPlaceholderText("Search models"), "nano");
@@ -934,7 +926,7 @@ describe("issue work order page", () => {
 
   it("selects the active searchable model option with Enter after arrow navigation", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     const globalModel = screen.getByRole("combobox", { name: /Global Model/ });
     await user.click(globalModel);
@@ -945,7 +937,7 @@ describe("issue work order page", () => {
 
   it("hides thinking effort when the selected model does not support it", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("combobox", { name: /Global Model/ }));
     await user.type(screen.getByPlaceholderText("Search models"), "nano");
@@ -956,7 +948,7 @@ describe("issue work order page", () => {
 
   it("defaults all agent selectors to global model and preserves non-diverged selections", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.click(screen.getByRole("button", { name: /Role Models/i }));
@@ -982,7 +974,7 @@ describe("issue work order page", () => {
 
   it("submits global and role-specific model selections", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.click(screen.getByLabelText("Thinking Effort"));
@@ -1016,7 +1008,7 @@ describe("issue work order page", () => {
 
   it("sends lineage metadata on work order create while preserving run configuration", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -1051,7 +1043,7 @@ describe("issue work order page", () => {
 
 	  it("submits the skip-review intent when the toggle is enabled", async () => {
 	    const user = userEvent.setup();
-	    renderWithExecutionSettings(<IssueWorkOrderPage />);
+	    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("switch", { name: "Skip Reviews and Validations" }));
     await selectGlobalModel(user);
@@ -1074,7 +1066,7 @@ describe("issue work order page", () => {
 
   it("reset clears planning lineage before issuing a fresh work order", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await selectGlobalModel(user);
     await user.click(screen.getByRole("button", { name: "Reset" }));
@@ -1111,7 +1103,7 @@ describe("issue work order page", () => {
 
   it("renders agent override roles in required execution order", async () => {
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
 		await user.click(screen.getByRole("button", { name: /Role Models/i }));
 
@@ -1153,7 +1145,7 @@ describe("issue work order page", () => {
       return new Response(JSON.stringify({ snapshot_id: refreshed ? "snapshot-b" : "snapshot-a", source_id: "source-1", issue: { title: refreshed ? "Issue B" : "Issue A", body: refreshed ? "Body B" : "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: refreshed ? "2026-08-03T00:00:00Z" : "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-03T00:00:00Z", fetched_at: "2026-08-03T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
     await user.click(screen.getByRole("button", { name: "Work Source" }));
     await user.click(screen.getByRole("option", { name: "GitHub Issue" }));
     await user.click(screen.getByRole("button", { name: "Mock prefill issue" }));
@@ -1179,7 +1171,7 @@ describe("issue work order page", () => {
 
   it("does not select the newest plan unless the operator chooses it", () => {
     mockSearch = {};
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByRole("button", { name: "Work Source" })).toHaveTextContent("Write a Brief");
     expect(screen.queryByRole("button", { name: "From Plan" })).not.toBeInTheDocument();
@@ -1188,7 +1180,7 @@ describe("issue work order page", () => {
   });
 
   it("keeps the work order title, plan selector, and actions mobile-safe", () => {
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     const titlePlanRow = screen.getByLabelText("Title").parentElement?.parentElement;
     expect(titlePlanRow).toHaveClass("grid", "min-w-0");
@@ -1217,7 +1209,7 @@ describe("issue work order page", () => {
       return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: true }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 1, fetched_comment_count: 1, retained_comment_count: 1, retained_comment_bytes: 36, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("button", { name: "Work Source" }));
     await user.click(screen.getByRole("option", { name: "GitHub Issue" }));
@@ -1242,7 +1234,7 @@ describe("issue work order page", () => {
       return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("button", { name: "Work Source" }));
     await user.click(screen.getByRole("option", { name: "GitHub Issue" }));
@@ -1269,7 +1261,7 @@ describe("issue work order page", () => {
       return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("button", { name: "Work Source" }));
     await user.click(screen.getByRole("option", { name: "GitHub Issue" }));
@@ -1292,7 +1284,7 @@ describe("issue work order page", () => {
       return new Response(JSON.stringify({ snapshot_id: "snapshot-direct", source_id: "source-1", issue: { title: "Issue A", body: "Body A", state: "open", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", created_at: "2026-08-01T00:00:00Z", updated_at: "2026-08-02T00:00:00Z" }, profile: { include_comments: false }, provider_updated_at: "2026-08-02T00:00:00Z", fetched_at: "2026-08-02T00:00:00Z", comment_count: 0, fetched_comment_count: 0, retained_comment_count: 0, retained_comment_bytes: 0, comments_truncated: false }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
     const user = userEvent.setup();
-    renderWithExecutionSettings(<IssueWorkOrderPage />);
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     await user.click(screen.getByRole("button", { name: "Work Source" }));
     await user.click(screen.getByRole("option", { name: "GitHub Issue" }));

@@ -16,7 +16,7 @@ import {
   type RunSummary,
   type Role,
 } from "@/api/hooks";
-import { ChevronDown, ChevronUp, CircleAlert, Loader2, Play, RefreshCw, Send, X } from "lucide-react";
+import { ChevronDown, CircleAlert, Loader2, RefreshCw, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SelectField } from "@/components/ui/select-field";
 import { ModelSelectField } from "./model-select-field";
@@ -754,10 +754,10 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
 
   return (
     <div className="space-y-8">
-      <header><p className="mb-2 text-xs font-medium text-foreground-muted">Create Work</p><h1 className="font-display text-4xl">New {workName}</h1><p className="mt-3 max-w-2xl text-sm leading-relaxed text-foreground-muted">Give the team a clear brief, choose how it should run, and follow the work from start to finish.</p></header>
+      <header><h1 className="font-display text-4xl">New {workName}</h1><p className="mt-3 max-w-2xl text-sm leading-relaxed text-foreground-muted">Give the team a clear brief, choose how it should run, and follow the work from start to finish.</p></header>
         <div>
-          <form onSubmit={(event) => { void issueAndRun(event).catch((error: unknown) => setDispatchError(error instanceof Error ? error.message : "The dispatch request could not be saved.")); }} className="space-y-6">
-            <div className="grid gap-3 rounded-xl border border-border bg-surface/40 p-4 sm:grid-cols-[200px_minmax(0,1fr)] sm:items-start">
+          <form onSubmit={(event) => { void issueAndRun(event).catch((error: unknown) => setDispatchError(error instanceof Error ? error.message : "The dispatch request could not be saved.")); }} className="space-y-7">
+            <div className="grid gap-4 sm:grid-cols-[180px_minmax(0,1fr)] sm:items-start">
               <SelectField id="work-source" label="Work Source" value={sourceMode} disabled={workOrderLocked} options={[{ label: "Write a Brief", value: "manual" }, { label: "Saved Plan", value: "planning" }, { label: "GitHub Issue", value: "github" }]} onChange={(value) => { setSourceMode(value as typeof sourceMode); if (value !== origin.kind) { setOrigin({ kind: "manual" }); setAppliedDraftKey(""); } }} />
               {sourceMode === "github" && !workOrderLocked ? <div className="min-w-0 sm:pt-6"><IssuePicker actionLabel={`Prefill ${workName}`} onSelect={prefillExternalIssue} /></div> : null}
               {sourceMode === "planning" && <div className="min-w-0">              <div className="min-w-0">
@@ -862,39 +862,19 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                 value={text}
                 disabled={workOrderLocked}
                 onChange={(e) => setText(e.target.value)}
-                placeholder="Describe what must be done..."
+                placeholder="Describe the outcome, constraints, and how you’ll know the work is done…"
                 rows={10}
                 className="w-full resize-y rounded-xl border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle focus:border-accent focus:outline-none focus:ring-1 focus:ring-accent disabled:cursor-not-allowed disabled:bg-surface-raised disabled:text-foreground-subtle"
               />
             </div>
 
-            <section className="space-y-4 rounded-md border border-border bg-surface-raised/30 p-4">
-              <div className="space-y-3">
-                <header className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-foreground">Models</p>
-                    <p className="text-xs text-foreground-subtle">
-                      Pick a global model and thinking effort. Expand role controls to override per agent.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    disabled={runControlsLocked}
-                    onClick={() => setShowAgentModelOverrides((value) => !value)}
-                    className="flex shrink-0 items-center gap-2 rounded-md border border-border bg-background px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-surface-raised disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <span>{showAgentModelOverrides ? "Hide Role Models" : "Role Models"}</span>
-                    {showAgentModelOverrides ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
-                  </button>
-                </header>
-
-                <ProviderModelCatalogNotice
-                  state={providerModelCatalog}
-					onRetry={providerModelCatalogController.retry}
-					retryPending={providerModelCatalogController.retryPending}
-                />
-
-                <div className="grid grid-cols-1 gap-3 lg:grid-cols-3 lg:items-end">
+            <section aria-labelledby="work-model-heading" className="space-y-5 border-t border-border pt-7">
+              <div>
+                <h2 id="work-model-heading" className="font-display text-2xl">Model</h2>
+                <p className="mt-1 text-sm text-foreground-muted">Choose the model the team will use.</p>
+              </div>
+              <ProviderModelCatalogNotice state={providerModelCatalog} onRetry={providerModelCatalogController.retry} retryPending={providerModelCatalogController.retryPending} />
+              <div className="grid gap-4 sm:grid-cols-2">
                   <ModelSelectField
                     id="global-model"
                     label="Global Model"
@@ -938,6 +918,12 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                       }
                     }}
                   />
+              </div>
+              <button type="button" aria-expanded={showAgentModelOverrides} aria-controls="role-model-options" disabled={runControlsLocked} onClick={() => setShowAgentModelOverrides((value) => !value)} className="flex min-h-10 items-center gap-2 text-sm text-foreground-muted hover:text-foreground disabled:opacity-50">
+                <ChevronDown aria-hidden="true" className={`h-3.5 w-3.5 transition-transform ${showAgentModelOverrides ? "rotate-180" : ""}`} />
+                Customize Role Models{!useGlobalModel ? " · Custom" : ""}
+              </button>
+              {showAgentModelOverrides && <div id="role-model-options" className="space-y-6 border-l border-border pl-5">
                   <ToggleRow
                     label="Use for All Agents"
                     checked={useGlobalModel}
@@ -956,18 +942,14 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                     disabled={runControlsLocked}
                     info="When enabled, every visible role inherits the same model selection unless you diverge a role below."
                   />
-                </div>
-
-                {showAgentModelOverrides && (
-                  <div className="space-y-4 border-t border-border/60 pt-3">
-                    {orderedRoleGroups.map((group) => (
+                  {orderedRoleGroups.map((group) => (
                       <div key={group.key} className="space-y-2">
-                        <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-subtle">{group.label}</h4>
+                        <h4 className="text-sm font-medium text-foreground-muted">{group.label}</h4>
                         <div className="space-y-2">
                           {group.roles.map((role) => {
                             const roleSelection = normalizeModelSelectionDraft(allModels, agentSelectionsByRole[role.role_id] ?? normalizedGlobalSelection);
                             return (
-                              <div key={role.role_id} className="grid grid-cols-1 gap-3 lg:grid-cols-3 lg:items-end">
+                              <div key={role.role_id} className="grid grid-cols-1 gap-4 sm:grid-cols-2 sm:items-end">
                                 <ModelSelectField
                                   id={`role-model-${role.role_id}`}
                                   label={roleIdentity(theme, role.role_id).name}
@@ -1005,20 +987,25 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                         </div>
                       </div>
                     ))}
-                  </div>
-                )}
+              </div>}
+            </section>
+            <section aria-labelledby="work-options-heading" className="space-y-5 border-t border-border pt-7">
+              <h2 id="work-options-heading" className="font-display text-2xl">Run Options</h2>
+              <ToggleRow label="Require Human Approval" checked={operatorApprovalRequired} onChange={setOperatorApprovalRequired} disabled={runControlsLocked} description="Pause for your decision before implementation and final completion." />
+              <div className="space-y-2">
+                <ToggleRow label="Use Git Worktree" checked={useGitWorktree} onChange={setUseGitWorktree} disabled={gitWorktreeToggleDisabled} description="Keep changes in a separate Git working copy. When off, publish into this project." />
+                {gitWorktreeStatus ? <p className="text-xs text-foreground-muted">{gitWorktreeStatus}</p> : null}
               </div>
-
-              <details className="border-t border-border/60 pt-4">
-                <summary className="cursor-pointer rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-                  <span className="text-sm font-semibold text-foreground">Execution Settings</span>
-                  <span className="mt-1 block break-all font-mono text-xs text-foreground-muted">{workspace}</span>
-                  <span className="mt-1 block text-xs text-foreground-muted">
-                    {operatorApprovalRequired ? "Human Approval Required" : "Autonomous"} · {skipReviewsAndValidations ? "Reviews and Validations Skipped" : runUntilAllApprove ? "Review Until All Approve" : `${maxExecutionReviewCyclesInput} Review / ${maxValidationReworkCyclesInput} Validation Cycles`} · {useGitWorktree ? "Git Worktree" : "Project Folder"}
-                  </span>
+              <details className="text-sm">
+                <summary className="min-h-10 cursor-pointer text-foreground-muted">Project Location <span className="ml-2 text-foreground">{workspace.split(/[\\/]/).filter(Boolean).at(-1)}</span></summary>
+                <p className="pb-3 break-all font-mono text-xs text-foreground-muted">{workspace}</p>
+              </details>
+              <details className="text-sm">
+                <summary className="min-h-10 cursor-pointer text-foreground-muted">
+                  <span>Review Options</span>
+                  <span className="ml-2 text-foreground">{skipReviewsAndValidations ? "Skipped" : runUntilAllApprove ? "Until All Approve" : `${maxExecutionReviewCyclesInput} Review / ${maxValidationReworkCyclesInput} Validation Cycles`}</span>
                 </summary>
-                <div className="mt-4 space-y-3">
-                <dl className="rounded-lg bg-background/60 px-3 py-2 text-xs"><dt className="mb-1 font-medium text-foreground-muted">Project</dt><dd className="break-all font-mono">{workspace}</dd></dl>
+                <div className="space-y-4 border-l border-border pl-5 pt-2">
                 <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
 	                  <ToggleRow
 	                    label="Skip Reviews and Validations"
@@ -1089,27 +1076,9 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                   </div>
                 )}
 
-                <div className="space-y-1">
-                  <ToggleRow
-                    label="Use Git Worktree"
-                    checked={useGitWorktree}
-                    onChange={setUseGitWorktree}
-                    disabled={gitWorktreeToggleDisabled}
-                    info="On: Kingdom keeps builder changes in a separate Git working copy, so your main project folder stays untouched. That working copy is created in a sibling folder outside the repository: kingdom-worktrees/<repository>/<run-id>/. Off: builder changes are written directly into your project folder. Only available in a Git repository."
-                  />
-                  {gitWorktreeStatus ? <p className="text-xs text-foreground-subtle">{gitWorktreeStatus}</p> : null}
                 </div>
-
-                <ToggleRow
-                  label="Require Human Approval"
-                  checked={operatorApprovalRequired}
-                  onChange={setOperatorApprovalRequired}
-                  disabled={runControlsLocked}
-                  info="On: Kingdom pauses for human approval at the plan stage and again before final completion. Off: Kingdom proceeds autonomously."
-                />
-              </div>
               </details>
-	            </section>
+            </section>
 	            {isRecoveringWorkOrder ? (
 	              <div className="flex items-start gap-2 rounded-md border border-accent/35 bg-accent/10 px-3 py-2 text-xs text-accent">
 	                <CircleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
@@ -1142,7 +1111,6 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
             {dispatchError && <div role="alert"><ErrorBanner message={dispatchError} /></div>}
             <div className="flex flex-wrap items-center gap-2 border-t border-border pt-6">
 	              <Button type="submit" disabled={submitDisabled}>
-                {isSubmitting ? <Send className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
 	                {submitLabel}
               </Button>
 	              {!isPendingRecovery && !isReplayRecovery ? (
