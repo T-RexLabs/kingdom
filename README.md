@@ -174,7 +174,7 @@ Important boundaries:
 
 - `decree intake`, `king plan decision`, `execution kickoff`, and `royal closure` are runtime-owned deterministic steps; provider-backed run nodes are host-launched through OpenCode sessions, not containers.
 - SQLite is the system of record. 
-- Publication is done into the project root or a git worktree if toggled on and in a Git repo.
+- Publication is done into the project root or a git worktree if toggled on and in a Git repo. Basic file permissions are retained in canonical artifacts and ZIP exports; chmod-only changes are deliverables, and publication checks permissions as well as content for conflicts.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
 - Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success. OpenCode may continue after intermediate stopped steps during compaction or tool use; only the final completed assistant step supplies the settled response.

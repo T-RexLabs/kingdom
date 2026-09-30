@@ -80,7 +80,7 @@ func TestWorkerOutputValidatorRollsBackCompleteBatchOnStreamFailure(t *testing.T
 				constraint = `,"size_bytes":3`
 			}
 			closed := 0
-			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_failure", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"first","mime":"text/plain","path":"first"},{"name":"second","mime":"text/plain","path":"second"` + constraint + `}],"error_reason":null}`), OpenArtifact: func(_ context.Context, path string) (io.ReadCloser, error) {
+			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_failure", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"first","mime":"text/plain","mode_bits":420,"path":"first"},{"name":"second","mime":"text/plain","mode_bits":420,"path":"second"` + constraint + `}],"error_reason":null}`), OpenArtifact: func(_ context.Context, path string) (io.ReadCloser, error) {
 				closed++
 				if path == "first" {
 					return io.NopCloser(strings.NewReader("first")), nil
@@ -166,7 +166,7 @@ func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T
 			"artifacts":[
 				{
 					"name":"report.md",
-					"mime":"text/markdown",
+					"mime":"text/markdown","mode_bits":420,
 					"path":"artifacts/report.md",
 					"sha256":"` + checksumHex + `"
 				}
@@ -262,7 +262,7 @@ func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 			"artifacts":[
 				{
 					"name":"report.md",
-					"mime":"text/markdown",
+					"mime":"text/markdown","mode_bits":420,
 					"path":"artifacts/report.md",
 					"sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 				}
@@ -305,7 +305,7 @@ func TestWorkerOutputValidatorStreamsArtifactBeyondFormerFileAndAggregateLimits(
 	}
 	req := WorkerOutputValidationRequest{
 		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_oversized_artifact", ProducerRole: "king", WorkspacePath: workspace,
-		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.bin","mime":"application/octet-stream","path":"report.bin"}],"error_reason":null}`),
+		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.bin","mime":"application/octet-stream","mode_bits":420,"path":"report.bin"}],"error_reason":null}`),
 		CreatedAt:  "2026-03-01T13:10:00Z",
 	}
 	_, err := validator.ValidateAndPersist(context.Background(), req)
@@ -339,7 +339,7 @@ func TestWorkerOutputValidatorDoesNotFollowArtifactSymlinks(t *testing.T) {
 	}
 	req := WorkerOutputValidationRequest{
 		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_symlink_artifact", ProducerRole: "king", WorkspacePath: workspace,
-		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.md","mime":"text/markdown","path":"report.md"}],"error_reason":null}`),
+		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.md","mime":"text/markdown","mode_bits":420,"path":"report.md"}],"error_reason":null}`),
 		CreatedAt:  "2026-03-01T13:10:00Z",
 	}
 	if _, err := validator.ValidateAndPersist(context.Background(), req); err == nil {

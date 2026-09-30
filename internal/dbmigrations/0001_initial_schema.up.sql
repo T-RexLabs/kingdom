@@ -753,8 +753,10 @@ CREATE TABLE artifacts (
   path TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  mode_bits INTEGER,
   producer_role TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  CHECK ((artifact_action = 'write' AND mode_bits IS NOT NULL AND mode_bits BETWEEN 0 AND 511) OR (artifact_action = 'delete' AND mode_bits IS NULL)),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
   FOREIGN KEY (producer_role) REFERENCES roles(role_id)
@@ -904,7 +906,11 @@ CREATE TABLE run_publication_entries (
   blob_id TEXT NOT NULL DEFAULT '',
   expected_sha256 TEXT NOT NULL DEFAULT '',
   observed_sha256 TEXT NOT NULL DEFAULT '',
+  mode_bits INTEGER CHECK (mode_bits IS NULL OR mode_bits BETWEEN 0 AND 511),
+  expected_mode_bits INTEGER CHECK (expected_mode_bits IS NULL OR expected_mode_bits BETWEEN 0 AND 511),
+  observed_mode_bits INTEGER CHECK (observed_mode_bits IS NULL OR observed_mode_bits BETWEEN 0 AND 511),
   created_at TEXT NOT NULL,
+  CHECK ((action = 'write' AND mode_bits IS NOT NULL) OR (action = 'delete' AND mode_bits IS NULL)),
   FOREIGN KEY (publication_batch_id) REFERENCES run_publication_batches(publication_batch_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
@@ -919,7 +925,9 @@ CREATE TABLE run_publication_paths (
   artifact_action TEXT NOT NULL CHECK (artifact_action IN ('write', 'delete')),
   blob_id TEXT NOT NULL DEFAULT '',
   sha256 TEXT NOT NULL DEFAULT '',
+  mode_bits INTEGER,
   updated_at TEXT NOT NULL,
+  CHECK ((artifact_action = 'write' AND mode_bits IS NOT NULL AND mode_bits BETWEEN 0 AND 511) OR (artifact_action = 'delete' AND mode_bits IS NULL)),
   PRIMARY KEY (run_id, path),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id)
 );

@@ -72,6 +72,11 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["name", "mime", "path"],
+      "allOf": [{
+        "if": { "required": ["action"], "properties": { "action": { "const": "delete" } } },
+        "then": { "not": { "required": ["mode_bits"] } },
+        "else": { "required": ["mode_bits"] }
+      }],
       "properties": {
         "kind": {
           "type": "string",
@@ -96,6 +101,11 @@
         "sha256": {
           "type": "string",
           "pattern": "^[a-f0-9]{64}$"
+        },
+        "mode_bits": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 511
         },
         "size_bytes": {
           "type": "integer",

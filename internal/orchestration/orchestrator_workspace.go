@@ -43,10 +43,11 @@ type executionWorkspaceContext struct {
 }
 
 type executionArtifact struct {
-	Path   string `json:"path"`
-	Name   string `json:"name"`
-	MIME   string `json:"mime"`
-	Action string `json:"action,omitempty"`
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	MIME     string `json:"mime"`
+	Action   string `json:"action,omitempty"`
+	ModeBits *int64 `json:"mode_bits,omitempty"`
 }
 
 type runWorktreeContext struct {

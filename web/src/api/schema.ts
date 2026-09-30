@@ -3111,6 +3111,8 @@ export interface components {
             name: string;
             mime: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: uri */
             download_url?: string;
@@ -3129,6 +3131,8 @@ export interface components {
             mime: string;
             path: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: date-time */
             created_at: string;

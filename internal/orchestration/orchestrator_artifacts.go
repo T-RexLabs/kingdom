@@ -19,6 +19,7 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/filemode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 	"kingdom/internal/state"
@@ -147,11 +148,13 @@ func buildNonBuilderResponseSnapshot(nodeID, outputText string) (executionArtifa
 	if strings.TrimSpace(fileName) == "_response.md" {
 		fileName = "node_response.md"
 	}
+	mode := int64(0o644)
 	body := []byte("# Node Response Snapshot\n\n" + summary + "\n")
 	return executionArtifact{
-		Path: fileName,
-		Name: filepath.Base(fileName),
-		MIME: inferMIMEType(fileName),
+		Path:     fileName,
+		Name:     filepath.Base(fileName),
+		MIME:     inferMIMEType(fileName),
+		ModeBits: &mode,
 	}, body
 }
 
@@ -164,6 +167,7 @@ type artifactOutputRecord struct {
 	NodeID         string
 	Attempt        int
 	SHA256         string
+	ModeBits       *int64
 }
 
 func (o *orchestrationLoop) publishArtifactProjection(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, publishMode, attemptID string, artifacts artifactProjectionSource) error {
@@ -194,11 +198,55 @@ func (o *orchestrationLoop) publishArtifactProjection(ctx context.Context, works
 		}
 		return nil
 	}
-	return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+	return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, attemptID, targetRoot, runArtifactRoot, artifacts)
 }
 
-func (o *orchestrationLoop) writeArtifactsToRoot(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, targetRoot, runArtifactRoot string, artifacts artifactProjectionSource) error {
-	return artifacts(ctx, func(artifact artifactOutputRecord) error {
+// Artifact IDs remain the stable hashing/replay order. Filesystem application
+// must remove former files before writing their descendants, independently of
+// the decimal ordinal encoded in an ID. Each pass retains bounded source pages.
+func visitArtifactProjectionInApplyOrder(ctx context.Context, artifacts artifactProjectionSource, visit func(artifactOutputRecord) error) error {
+	for _, deletionPass := range []bool{true, false} {
+		if err := artifacts(ctx, func(artifact artifactOutputRecord) error {
+			if (strings.TrimSpace(artifact.ArtifactAction) == "delete") != deletionPass {
+				return nil
+			}
+			return visit(artifact)
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) writeArtifactsToRoot(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, attemptID, targetRoot, runArtifactRoot string, artifacts artifactProjectionSource) error {
+	var resultManifest *runtimefs.SnapshotManifest
+	manifestLoaded := false
+	defer func() {
+		if resultManifest != nil {
+			resultManifest.Close()
+		}
+	}()
+	loadResultManifest := func() (*runtimefs.SnapshotManifest, error) {
+		if manifestLoaded {
+			return resultManifest, nil
+		}
+		_, resultID, err := o.loadAttemptSnapshotIDs(ctx, attemptID)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return nil, err
+		}
+		if resultID != "" {
+			resultManifest, err = o.fsStore.OpenSnapshotManifest(ctx, resultID)
+			if err != nil {
+				return nil, err
+			}
+		}
+		manifestLoaded = true
+		return resultManifest, nil
+	}
+	return visitArtifactProjectionInApplyOrder(ctx, artifacts, func(artifact artifactOutputRecord) error {
+		if err := state.ValidateArtifactMode(firstNonEmptyString(artifact.ArtifactAction, "write"), artifact.ModeBits); err != nil {
+			return err
+		}
 		if isProtectedPublishPath(artifact.RelativePath) {
 			return fmt.Errorf("artifact path targets protected root segment: %q", artifact.RelativePath)
 		}
@@ -208,6 +256,36 @@ func (o *orchestrationLoop) writeArtifactsToRoot(ctx context.Context, workspaceP
 			return fmt.Errorf("resolve publish destination path: %w", err)
 		}
 		if strings.TrimSpace(artifact.ArtifactAction) == "delete" {
+			if o != nil && o.fsStore != nil && shouldPublishToProjectRoot(artifact) {
+				root, err := securefs.OpenRoot(targetRoot)
+				if err != nil {
+					return err
+				}
+				entry, inspectErr := root.ReadEntry(destinationRelativePath)
+				if err := root.Close(); err != nil {
+					return err
+				}
+				if inspectErr == nil && entry.Type == securefs.EntryTypeDirectory {
+					// Only an existing directory needs final-tree interpretation.
+					// Ordinary writes/deletions never index the whole snapshot.
+					manifest, err := loadResultManifest()
+					if err != nil {
+						return err
+					}
+					if manifest != nil {
+						required, err := manifest.HasLiveDescendant(ctx, artifact.RelativePath)
+						if err != nil {
+							return err
+						}
+						if required {
+							// The tombstone deletes the former file, not this
+							// required directory already present on replay.
+							return nil
+						}
+					}
+				}
+			}
+
 			if err := removeProjectedArtifact(targetRoot, destinationRelativePath); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("delete published artifact: %w", err)
 			}
@@ -222,12 +300,12 @@ func (o *orchestrationLoop) writeArtifactsToRoot(ctx context.Context, workspaceP
 
 func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, workspacePath string, artifactContentByPath map[string][]byte, runID, attemptID, targetRoot, runArtifactRoot string, artifacts artifactProjectionSource) error {
 	if o == nil || o.db == nil || o.fsStore == nil {
-		return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+		return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, attemptID, targetRoot, runArtifactRoot, artifacts)
 	}
 	target, err := o.fsStore.GetExecutionTarget(ctx, runID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, targetRoot, runArtifactRoot, artifacts)
+			return o.writeArtifactsToRoot(ctx, workspacePath, artifactContentByPath, attemptID, targetRoot, runArtifactRoot, artifacts)
 		}
 		return err
 	}
@@ -246,6 +324,9 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 	count := 0
 	lastID := ""
 	if err := artifacts(ctx, func(artifact artifactOutputRecord) error {
+		if err := state.ValidateArtifactMode(firstNonEmptyString(artifact.ArtifactAction, "write"), artifact.ModeBits); err != nil {
+			return err
+		}
 		if artifact.ArtifactID == "" || artifact.ArtifactID <= lastID {
 			return fmt.Errorf("artifact projection metadata must have unique, ordered identities")
 		}
@@ -269,7 +350,7 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 	if _, err := o.db.ExecContext(ctx, `INSERT INTO run_publication_batches (publication_batch_id, run_id, attempt_id, target_mode, status, published_count, conflicted_count, failed_count, created_at) VALUES (?, ?, ?, 'direct', 'failed', 0, 0, 0, ?) ON CONFLICT(publication_batch_id) DO NOTHING`, batchID, runID, attemptID, createdAt); err != nil {
 		return fmt.Errorf("insert publication batch: %w", err)
 	}
-	err = artifacts(ctx, func(artifact artifactOutputRecord) error {
+	err = visitArtifactProjectionInApplyOrder(ctx, artifacts, func(artifact artifactOutputRecord) error {
 		if isProtectedPublishPath(artifact.RelativePath) {
 			return fmt.Errorf("artifact path targets protected root segment: %q", artifact.RelativePath)
 		}
@@ -278,13 +359,14 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 		if err != nil {
 			return err
 		}
-		expectedSHA, err := o.expectedPublishedPathSHA(ctx, target.RunID, baselineManifest, destinationRelativePath)
+		expected, err := o.expectedPublishedPathState(ctx, target.RunID, baselineManifest, destinationRelativePath)
 		if err != nil {
 			return err
 		}
 		entryID := publicationEntryID(batchID, artifact.ArtifactID)
-		var previousStatus, previousExpected string
-		err = o.db.QueryRowContext(ctx, `SELECT status,expected_sha256 FROM run_publication_entries WHERE publication_entry_id=?`, entryID).Scan(&previousStatus, &previousExpected)
+		var previousStatus string
+		var previousExpected publicationFileState
+		err = o.db.QueryRowContext(ctx, `SELECT status,expected_sha256,expected_mode_bits FROM run_publication_entries WHERE publication_entry_id=?`, entryID).Scan(&previousStatus, &previousExpected.SHA256, &previousExpected.ModeBits)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return err
 		}
@@ -292,9 +374,9 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 			return nil
 		}
 		if previousStatus != "" {
-			expectedSHA = previousExpected
+			expected = previousExpected
 		}
-		observedSHA, err := fileSHA256(ctx, targetRoot, destinationRelativePath)
+		observed, err := readPublicationFileState(ctx, targetRoot, destinationRelativePath)
 		if err != nil {
 			return err
 		}
@@ -314,7 +396,11 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 				}
 			}
 		}
-		alreadyApplied := artifact.ArtifactAction == "delete" && observedSHA == "" || desiredSHA != "" && observedSHA == desiredSHA
+		desired := publicationFileState{SHA256: desiredSHA, ModeBits: artifact.ModeBits}
+		if artifact.ArtifactAction == "delete" {
+			desired = publicationFileState{}
+		}
+		alreadyApplied := observed.equal(desired)
 		if alreadyApplied {
 			blobID = desiredSHA
 			if artifact.ArtifactAction != "delete" {
@@ -322,11 +408,11 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 				if err != nil {
 					return err
 				}
-				if record.SHA256 != desiredSHA {
+				if record.SHA256 != desiredSHA || !sameArtifactMode(record.ModeBits, artifact.ModeBits) {
 					return fmt.Errorf("artifact content changed during projection")
 				}
 			}
-		} else if observedSHA != expectedSHA {
+		} else if !observed.equal(expected) {
 			status = "conflicted"
 			reasonCode = conflictReasonCodeForAction(artifact.ArtifactAction)
 			reasonText = simpleConflictReason(destinationRelativePath, artifact.ArtifactAction)
@@ -345,7 +431,7 @@ func (o *orchestrationLoop) publishArtifactSourceDirect(ctx context.Context, wor
 				reasonText = fmt.Sprintf("Could not publish %s because the filesystem rejected the change.", destinationRelativePath)
 			}
 		}
-		return o.recordPublicationEntry(ctx, batchID, target.RunID, attemptID, destinationRelativePath, artifact, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt)
+		return o.recordPublicationEntry(ctx, batchID, target.RunID, attemptID, destinationRelativePath, artifact, status, reasonCode, reasonText, blobID, expected, observed, createdAt)
 	})
 	if err != nil {
 		return err
@@ -378,6 +464,9 @@ func publishDestinationRelativePath(runArtifactRoot string, artifact artifactOut
 }
 
 func (o *orchestrationLoop) writeProjectedArtifact(ctx context.Context, workspacePath string, inline map[string][]byte, targetRoot, destination string, artifact artifactOutputRecord) (string, error) {
+	if err := state.ValidateArtifactMode("write", artifact.ModeBits); err != nil {
+		return "", err
+	}
 	root, err := securefs.OpenRoot(targetRoot)
 	if err != nil {
 		return "", err
@@ -391,7 +480,7 @@ func (o *orchestrationLoop) writeProjectedArtifact(ctx context.Context, workspac
 			if err != nil {
 				return err
 			}
-			if artifact.SHA256 != "" && artifact.SHA256 != record.SHA256 {
+			if artifact.SHA256 != "" && artifact.SHA256 != record.SHA256 || !sameArtifactMode(artifact.ModeBits, record.ModeBits) {
 				return fmt.Errorf("canonical artifact changed during projection")
 			}
 			return nil
@@ -407,27 +496,27 @@ func (o *orchestrationLoop) writeProjectedArtifact(ctx context.Context, workspac
 		defer source.Close()
 		_, _, err = source.CopyRegular(ctx, artifact.RelativePath, dst)
 		return err
-	}, 0o644, 0o755, time.Time{})
+	}, os.FileMode(*artifact.ModeBits), 0o755, time.Time{})
 	return fmt.Sprintf("%x", hash.Sum(nil)), err
 }
 
-func (o *orchestrationLoop) expectedPublishedPathSHA(ctx context.Context, runID string, baselineManifest *runtimefs.SnapshotManifest, path string) (string, error) {
-	var sha string
-	err := o.db.QueryRowContext(ctx, `SELECT sha256 FROM run_publication_paths WHERE run_id = ? AND path = ?`, runID, path).Scan(&sha)
+func (o *orchestrationLoop) expectedPublishedPathState(ctx context.Context, runID string, baselineManifest *runtimefs.SnapshotManifest, path string) (publicationFileState, error) {
+	var expected publicationFileState
+	err := o.db.QueryRowContext(ctx, `SELECT sha256, mode_bits FROM run_publication_paths WHERE run_id = ? AND path = ?`, runID, path).Scan(&expected.SHA256, &expected.ModeBits)
 	if err == nil {
-		return strings.TrimSpace(sha), nil
+		return expected, nil
 	}
-	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return "", fmt.Errorf("load publication path state: %w", err)
+	if !errors.Is(err, sql.ErrNoRows) {
+		return publicationFileState{}, fmt.Errorf("load publication path state: %w", err)
 	}
 	entry, ok, err := baselineManifest.Lookup(ctx, path)
 	if err != nil {
-		return "", err
+		return publicationFileState{}, err
 	}
 	if ok {
-		return strings.TrimSpace(entry.BlobID), nil
+		return publicationFileState{SHA256: entry.BlobID, ModeBits: &entry.ModeBits}, nil
 	}
-	return "", nil
+	return publicationFileState{}, nil
 }
 
 func publicationEntryID(batchID, artifactID string) string {
@@ -438,7 +527,7 @@ func publicationEntryID(batchID, artifactID string) string {
 // Path authority and its audit result advance together. If that commit is
 // ambiguous, replay observes the completed entry or recognizes the canonical
 // checksum already on disk without duplicating audit.
-func (o *orchestrationLoop) recordPublicationEntry(ctx context.Context, batchID, runID, attemptID, destination string, artifact artifactOutputRecord, status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt string) error {
+func (o *orchestrationLoop) recordPublicationEntry(ctx context.Context, batchID, runID, attemptID, destination string, artifact artifactOutputRecord, status, reasonCode, reasonText, blobID string, expected, observed publicationFileState, createdAt string) error {
 	tx, err := o.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -454,12 +543,12 @@ func (o *orchestrationLoop) recordPublicationEntry(ctx context.Context, batchID,
 		return nil
 	}
 	if status == "published" {
-		_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_paths (run_id,path,artifact_action,blob_id,sha256,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(run_id,path) DO UPDATE SET artifact_action=excluded.artifact_action,blob_id=excluded.blob_id,sha256=excluded.sha256,updated_at=excluded.updated_at`, runID, destination, firstNonEmptyString(artifact.ArtifactAction, "write"), blobID, blobID, createdAt)
+		_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_paths (run_id,path,artifact_action,blob_id,sha256,mode_bits,updated_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(run_id,path) DO UPDATE SET artifact_action=excluded.artifact_action,blob_id=excluded.blob_id,sha256=excluded.sha256,mode_bits=excluded.mode_bits,updated_at=excluded.updated_at`, runID, destination, firstNonEmptyString(artifact.ArtifactAction, "write"), blobID, blobID, artifact.ModeBits, createdAt)
 		if err != nil {
 			return err
 		}
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_entries (publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,status,reason_code,reason_text,blob_id,expected_sha256,observed_sha256,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(publication_entry_id) DO UPDATE SET status=excluded.status,reason_code=excluded.reason_code,reason_text=excluded.reason_text,blob_id=excluded.blob_id,observed_sha256=excluded.observed_sha256`, entryID, batchID, runID, attemptID, artifact.RelativePath, firstNonEmptyString(artifact.ArtifactAction, "write"), status, reasonCode, reasonText, blobID, expectedSHA, observedSHA, createdAt)
+	_, err = tx.ExecContext(ctx, `INSERT INTO run_publication_entries (publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,status,reason_code,reason_text,blob_id,expected_sha256,observed_sha256,mode_bits,expected_mode_bits,observed_mode_bits,created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(publication_entry_id) DO UPDATE SET status=excluded.status,reason_code=excluded.reason_code,reason_text=excluded.reason_text,blob_id=excluded.blob_id,observed_sha256=excluded.observed_sha256,observed_mode_bits=excluded.observed_mode_bits`, entryID, batchID, runID, attemptID, artifact.RelativePath, firstNonEmptyString(artifact.ArtifactAction, "write"), status, reasonCode, reasonText, blobID, expected.SHA256, observed.SHA256, artifact.ModeBits, expected.ModeBits, observed.ModeBits, createdAt)
 	if err != nil {
 		return err
 	}
@@ -489,20 +578,43 @@ func removeProjectedArtifact(targetRoot, path string) error {
 	return root.RemoveEntry(path)
 }
 
-func fileSHA256(ctx context.Context, targetRoot, path string) (string, error) {
+// Missing paths have neither a digest nor a mode. An empty regular file still
+// has its SHA-256 and a present mode (including valid 0000 permissions).
+type publicationFileState struct {
+	SHA256   string
+	ModeBits *int64
+}
+
+func (s publicationFileState) equal(other publicationFileState) bool {
+	if s.SHA256 != other.SHA256 {
+		return false
+	}
+	if s.ModeBits == nil || other.ModeBits == nil {
+		return s.ModeBits == nil && other.ModeBits == nil
+	}
+	return filemode.Equal(*s.ModeBits, *other.ModeBits)
+}
+func sameArtifactMode(left, right *int64) bool {
+	if left == nil || right == nil {
+		return left == nil && right == nil
+	}
+	return *left == *right
+}
+func readPublicationFileState(ctx context.Context, targetRoot, path string) (publicationFileState, error) {
 	root, err := securefs.OpenRoot(targetRoot)
 	if err != nil {
-		return "", err
+		return publicationFileState{}, err
 	}
 	defer root.Close()
-	identity, _, err := root.CopyRegular(ctx, path, io.Discard)
+	identity, info, err := root.CopyRegular(ctx, path, io.Discard)
 	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
+		return publicationFileState{}, nil
 	}
 	if err != nil {
-		return "", fmt.Errorf("read checksum source: %w", err)
+		return publicationFileState{}, fmt.Errorf("read publication file state: %w", err)
 	}
-	return identity.ContentSHA256, nil
+	mode := int64(info.Mode().Perm())
+	return publicationFileState{SHA256: identity.ContentSHA256, ModeBits: &mode}, nil
 }
 
 func sha256Hex(raw []byte) string {
@@ -718,7 +830,7 @@ func isNoisyManifestPath(path string) bool {
 
 func visitWorkspaceArtifacts(ctx context.Context, workspacePath string, visit func(executionArtifact) error) error {
 	return trackedfs.VisitTrackedFiles(ctx, workspacePath, func(file trackedfs.TrackedFile) error {
-		return visit(executionArtifact{Path: file.RelativePath, Name: filepath.Base(file.RelativePath), MIME: inferMIMEType(file.RelativePath), Action: "write"})
+		return visit(executionArtifact{Path: file.RelativePath, Name: filepath.Base(file.RelativePath), MIME: inferMIMEType(file.RelativePath), Action: "write", ModeBits: &file.Metadata.ModeBits})
 	})
 }
 

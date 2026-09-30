@@ -5640,6 +5640,11 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+        mode_bits:
+          type: integer
+          minimum: 0
+          maximum: 511
+          description: Basic permission bits, present for write artifacts and absent for deletions.
         sha256:
           type: string
           pattern: "^[a-f0-9]{64}$"
@@ -5686,6 +5691,11 @@ components:
         size_bytes:
           type: integer
           minimum: 0
+        mode_bits:
+          type: integer
+          minimum: 0
+          maximum: 511
+          description: Basic permission bits, present for write artifacts and absent for deletions.
         sha256:
           type: string
           pattern: "^[a-f0-9]{64}$"

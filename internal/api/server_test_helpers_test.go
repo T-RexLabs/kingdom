@@ -1034,7 +1034,7 @@ func seedArtifact(t *testing.T, db *sql.DB, runID string) {
 	body := []byte("seed artifact")
 	sum := sha256.Sum256(body)
 	checksum := hex.EncodeToString(sum[:])
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
 		t.Fatalf("seed artifact: %v", err)
 	}
 	if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, ?)`, body); err != nil { t.Fatal(err) }
@@ -1260,7 +1260,7 @@ func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 		t.Helper()
 		sum := sha256.Sum256([]byte(body))
 		checksum := hex.EncodeToString(sum[:])
-		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, ?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact %s: %v", artifactID, err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?, 0, ?)`, artifactID, []byte(body)); err != nil { t.Fatal(err) }

@@ -80,9 +80,6 @@ func MetadataFromInfo(info fs.FileInfo) Metadata {
 		return Metadata{}
 	}
 	modeBits := int64(info.Mode().Perm())
-	if info.Mode()&0o111 != 0 {
-		modeBits |= 0o111
-	}
 	return Metadata{
 		SizeBytes:  info.Size(),
 		ModeBits:   modeBits,

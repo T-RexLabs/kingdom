@@ -231,6 +231,13 @@ func (m *SnapshotManifest) Lookup(ctx context.Context, path string) (SnapshotEnt
 	e, found, err := m.index.get(ctx, 0, path)
 	return e, found && e.EntryType == "file", err
 }
+
+// HasLiveDescendant reports whether the resolved snapshot requires path to be
+// a directory. It performs an indexed literal-prefix lookup, not a tree scan.
+func (m *SnapshotManifest) HasLiveDescendant(ctx context.Context, path string) (bool, error) {
+	return m.index.hasLiveDescendant(ctx, 0, path)
+}
+
 func (m *SnapshotManifest) Visit(ctx context.Context, visit func(SnapshotEntry) error) error {
 	return m.index.visit(ctx, 0, func(e SnapshotEntry) error {
 		if e.EntryType == "delete" {

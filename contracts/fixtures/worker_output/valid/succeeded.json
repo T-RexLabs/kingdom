@@ -10,7 +10,8 @@
     {
       "name": "report.md",
       "mime": "text/markdown",
-      "path": "artifacts/report.md"
+      "path": "artifacts/report.md",
+      "mode_bits": 420
     }
   ],
   "error_reason": null

@@ -26,11 +26,14 @@ func (e *ArtifactContentUnavailableError) Error() string {
 }
 func NewArtifactService(db *sql.DB) *ArtifactService { return &ArtifactService{db: db} }
 
-const artifactColumns = `artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at`
+const artifactColumns = `artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, mode_bits, producer_role, created_at`
 
 func scanArtifact(row interface{ Scan(...any) error }) (ArtifactRecord, error) {
 	var r ArtifactRecord
-	err := row.Scan(&r.ArtifactID, &r.RunID, &r.NodeRunID, &r.AttemptID, &r.ArtifactKind, &r.ArtifactAction, &r.Name, &r.MIME, &r.Path, &r.SHA256, &r.SizeBytes, &r.ProducerRole, &r.CreatedAt)
+	err := row.Scan(&r.ArtifactID, &r.RunID, &r.NodeRunID, &r.AttemptID, &r.ArtifactKind, &r.ArtifactAction, &r.Name, &r.MIME, &r.Path, &r.SHA256, &r.SizeBytes, &r.ModeBits, &r.ProducerRole, &r.CreatedAt)
+	if err == nil {
+		err = ValidateArtifactMode(r.ArtifactAction, r.ModeBits)
+	}
 	return r, err
 }
 
