@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { twMerge } from "tailwind-merge";
 import { statusBadgeClass } from "./status-system";
+import { formatRelativeTime } from "./date-time";
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -29,19 +30,7 @@ export function formatTimestamp(iso: string): string {
 }
 
 export function formatTimestampAt(iso: string, nowMs: number): string {
-  const date = new Date(iso);
-  const diffMs = nowMs - date.getTime();
-  const diffSec = Math.max(0, Math.floor(diffMs / 1000));
-
-  if (diffSec < 60) return `${diffSec}s ago`;
-  if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-  if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
-  return date.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  return formatRelativeTime(iso, nowMs);
 }
 
 export function formatElapsedDuration(startIso: string, endIso: string): string | null {
