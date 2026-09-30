@@ -8,6 +8,7 @@ import {
 import { RunFinalResponse } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
 import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
+import { ActivitySources } from "@/features/activity/activity-sources";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 import {
   isActiveExecutionStatus,
@@ -61,7 +62,8 @@ function RunAttemptActivity({
   return (
     <section className="space-y-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
-      {!durable.isLoading &&
+      {!isRunning &&
+        !durable.isLoading &&
         !durable.isError &&
         !state.items.length &&
         !hasSettledResponse(detail) && (
@@ -70,11 +72,9 @@ function RunAttemptActivity({
               ? "No messages, thoughts, or tool calls appear in this loaded window. Open activity to load earlier history."
               : isQueuedExecutionStatus(status)
                 ? "This attempt is queued. Provider activity will appear when it starts."
-                : isRunning
-                  ? "Waiting for provider activity."
-                  : hasFinished
-                    ? "No provider messages, thoughts, or tool activity were recorded for this attempt."
-                    : "No provider activity has been recorded yet."}
+                : hasFinished
+                  ? "No provider messages, thoughts, or tool activity were recorded for this attempt."
+                  : "No provider activity has been recorded yet."}
           </p>
         )}
       {liveItems.some(
@@ -86,6 +86,9 @@ function RunAttemptActivity({
       )}
       <ActivityDisclosure
         scopeKey={JSON.stringify([runId, attemptId])}
+        isLive={isRunning}
+        hasFinalResponse={hasSettledResponse(detail)}
+        completionBehavior="keep-open"
         items={state.items}
         gaps={durable.gaps}
         isLoading={durable.isLoading}
@@ -96,6 +99,7 @@ function RunAttemptActivity({
         loadMore={durable.loadMore}
       />
       <RunFinalResponse key={attemptId} detail={detail} />
+      <ActivitySources sources={state.sources} />
     </section>
   );
 }

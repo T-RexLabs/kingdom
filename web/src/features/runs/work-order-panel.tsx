@@ -1,10 +1,7 @@
-import { type ReactNode, useState } from "react";
+import { useState } from "react";
 import {
   useWorkOrder,
-  useProviderModels,
-  type ProviderModel,
   type Role,
-  type RunModelSelectionEntry,
   type RunSummary,
   type WorkOrderDetail,
 } from "@/api/hooks";
@@ -12,8 +9,6 @@ import { apiFetch } from "@/api/client";
 import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { Modal } from "@/components/ui/modal-shell";
-import { modelDisplayLabel } from "@/features/work-orders/provider-model-selection";
 import {
   ExternalSourceCoordinate,
   ExternalSourceStrip,
@@ -23,10 +18,9 @@ import {
   externalSourceStatusNotice,
 } from "@/features/connections/external-source-status";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
-import { roleTitle } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
-import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { Loader2, RefreshCw } from "lucide-react";
+import { WorkOrderSettings } from "./work-order-settings";
 
 export function WorkOrderPanel({
   run,
@@ -35,34 +29,20 @@ export function WorkOrderPanel({
   run: RunSummary;
   roles?: Role[];
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const {
     data: workOrder,
     isLoading,
     error,
     refetch,
   } = useWorkOrder(run.work_order_id);
-  const providerModelsQuery = useProviderModels({ enabled: settingsOpen });
-  const providerModels = providerModelsQuery.data?.items ?? [];
   const workOrderTitle = workOrder?.work_order_title?.trim();
 
   return (
-    <>
+    <div className="space-y-8">
       <section aria-label="Work order" className="space-y-5">
-        <div className="flex items-start justify-between gap-4">
-          <h2 className="font-display text-xl text-foreground">
-            {workOrderTitle || "Work Order"}
-          </h2>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            aria-label="Open work order settings"
-            onClick={() => setSettingsOpen(true)}
-          >
-            Settings
-          </Button>
-        </div>
+        <h2 className="font-display text-xl text-foreground">
+          {workOrderTitle || "Work Order"}
+        </h2>
         <WorkOrderContent
           text={workOrder?.work_order_text}
           sources={workOrder?.external_sources}
@@ -74,15 +54,8 @@ export function WorkOrderPanel({
         />
       </section>
 
-      <WorkOrderSettingsDialog
-        open={settingsOpen}
-        run={run}
-        roles={roles}
-        providerModels={providerModels}
-        providerModelsLoading={providerModelsQuery.isLoading}
-        onClose={() => setSettingsOpen(false)}
-      />
-    </>
+      <WorkOrderSettings run={run} roles={roles} />
+    </div>
   );
 }
 
@@ -186,288 +159,4 @@ function IssuedWorkOrderSourceCard({ source, onRefreshed }: { source: IssuedWork
       {refreshError ? <p role="alert" className="text-status-failed">{refreshError}</p> : null}
     </ExternalSourceStrip>
   );
-}
-
-function WorkOrderSettingsDialog({
-  open,
-  run,
-  roles,
-  providerModels,
-  providerModelsLoading,
-  onClose,
-}: {
-  open: boolean;
-  run: RunSummary;
-  roles: Role[];
-  providerModels: ProviderModel[];
-  providerModelsLoading: boolean;
-  onClose: () => void;
-}) {
-  const skipReviewAndValidation = isSkipReviewValidationWorkflowId(run.workflow_id);
-  const roleOverrides = getOrderedRoleOverrides(run.model_selection?.role_overrides, roles);
-  const globalSelection = run.model_selection?.global;
-  const maxReviewCycles = run.max_execution_review_cycles ?? 0;
-  const maxValidationCycles = run.max_validation_rework_cycles ?? 0;
-  const showLimits = !skipReviewAndValidation && (run.run_until_all_approve || maxReviewCycles > 0 || maxValidationCycles > 0);
-
-  return (
-    <Modal
-      open={open}
-      onClose={onClose}
-      size="lg"
-      height="workbench"
-      title="Work Order Settings"
-      caption="Run Configuration"
-      description={run.work_order_title}
-    >
-	        <div data-testid="work-order-settings-scroll-region" className="space-y-6">
-            <SettingsSection title="How It Runs" description="Workflow, approval mode, review flow, and publish target.">
-              <SettingsSurface>
-                <SettingRow label="Approval">
-                  {run.autonomous_approvals === false ? "Requires your approval" : "Autonomous"}
-                </SettingRow>
-                <SettingRow label="Review Flow">
-                  {describeReviewFlow(run.workflow_id, !!run.run_until_all_approve)}
-                </SettingRow>
-                <SettingRow label="Publish Target">
-                  {formatPublishTarget(run.publish_mode)}
-                </SettingRow>
-              </SettingsSurface>
-            </SettingsSection>
-
-            {showLimits ? (
-              <SettingsSection title="Limits" description="Cycle caps applied to review and validation for this run.">
-                <SettingsSurface>
-                  {run.run_until_all_approve ? (
-                    <SettingRow label="Review and Validation">
-                      No cap
-                    </SettingRow>
-                  ) : (
-                    <>
-                      {maxReviewCycles > 0 ? (
-                        <SettingRow label="Max Review Cycles">
-                          {String(maxReviewCycles)}
-                        </SettingRow>
-                      ) : null}
-                      {maxValidationCycles > 0 ? (
-                        <SettingRow label="Max Validation Cycles">
-                          {String(maxValidationCycles)}
-                        </SettingRow>
-                      ) : null}
-                    </>
-                  )}
-                </SettingsSurface>
-              </SettingsSection>
-            ) : null}
-
-            <SettingsSection
-              title="Models"
-              description="Default model selection and any role-specific overrides recorded for this run."
-            >
-              <div className="space-y-4">
-                {providerModelsLoading ? (
-                  <p className="text-xs text-foreground-subtle">Resolving model labels...</p>
-                ) : null}
-
-                <SettingsSurface>
-                  <ModelSelectionRow
-                    label="Default for all agents"
-                    selection={globalSelection}
-                    providerModels={providerModels}
-                  />
-                </SettingsSurface>
-
-                <div className="space-y-2">
-                  <p className="text-xs font-medium uppercase tracking-wide text-foreground-subtle">Role Overrides</p>
-                  <SettingsSurface>
-                    {roleOverrides.length > 0 ? (
-                      roleOverrides.map((override) => (
-                        <ModelSelectionRow
-                          key={override.roleId}
-                          label={override.roleName}
-                          selection={override.selection}
-                          providerModels={providerModels}
-                        />
-                      ))
-                    ) : (
-                      <EmptyStateRow>No role overrides recorded. All roles used the default selection.</EmptyStateRow>
-                    )}
-                  </SettingsSurface>
-                </div>
-              </div>
-	            </SettingsSection>
-	          </div>
-    </Modal>
-  );
-}
-
-function SettingsSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="space-y-3">
-      <div className="space-y-1">
-        <h4 className="text-sm font-semibold text-foreground">{title}</h4>
-        {description ? <p className="text-sm text-foreground-muted">{description}</p> : null}
-      </div>
-      {children}
-    </section>
-  );
-}
-
-function SettingsSurface({ children }: { children: ReactNode }) {
-  return (
-    <div className="overflow-hidden rounded-lg border border-border/70 bg-background/50 divide-y divide-border/60">
-      {children}
-    </div>
-  );
-}
-
-function SettingRow({
-  label,
-  children,
-  mono = false,
-}: {
-  label: string;
-  children: ReactNode;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex flex-col gap-1 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-      <p className="text-xs font-medium uppercase tracking-wide text-foreground-subtle">{label}</p>
-      <div className={mono ? "text-sm font-mono text-foreground sm:text-right" : "text-sm text-foreground sm:text-right"}>
-        {children}
-      </div>
-    </div>
-  );
-}
-
-function EmptyStateRow({ children }: { children: ReactNode }) {
-  return <p className="px-4 py-3 text-sm text-foreground-subtle">{children}</p>;
-}
-
-function ModelSelectionRow({
-  label,
-  selection,
-  providerModels,
-}: {
-  label: string;
-  selection?: RunModelSelectionEntry;
-  providerModels: ProviderModel[];
-}) {
-  const modelSummary = formatModelSelection(selection, providerModels);
-
-  return (
-    <div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-start sm:justify-between sm:gap-6">
-      <div className="min-w-0">
-        <p className="text-sm font-medium text-foreground">{label}</p>
-      </div>
-
-      <div className="space-y-1 sm:max-w-[60%] sm:text-right">
-        <p className="text-sm text-foreground">{modelSummary.primary}</p>
-        {modelSummary.secondary ? (
-          <p className="font-mono text-xs text-foreground-subtle">{modelSummary.secondary}</p>
-        ) : null}
-        <p className="text-xs text-foreground-subtle">Thinking: {formatThinkingEffort(selection?.thinking_effort)}</p>
-      </div>
-    </div>
-  );
-}
-
-function getOrderedRoleOverrides(
-  roleOverrides: Record<string, RunModelSelectionEntry> | undefined,
-  roles: Role[],
-): Array<{ roleId: string; roleName: string; selection: RunModelSelectionEntry }> {
-  const entries = Object.entries(roleOverrides ?? {});
-  if (entries.length === 0) {
-    return [];
-  }
-
-  const roleMeta = new Map(
-    roles.map((role) => [
-      role.role_id,
-        {
-          roleName: role.display_name,
-          sectionOrder: role.agent_model_selector_section_order,
-          roleOrder: role.agent_model_selector_role_order,
-        },
-      ] as const),
-  );
-
-  return entries
-    .map(([roleId, selection]) => {
-      const meta = roleMeta.get(roleId);
-      return {
-        roleId,
-        roleName: meta?.roleName ?? roleTitle(roleId),
-        selection,
-        sectionOrder: meta?.sectionOrder ?? Number.MAX_SAFE_INTEGER,
-        roleOrder: meta?.roleOrder ?? Number.MAX_SAFE_INTEGER,
-      };
-    })
-    .sort((left, right) => {
-      if (left.sectionOrder !== right.sectionOrder) {
-        return left.sectionOrder - right.sectionOrder;
-      }
-      if (left.roleOrder !== right.roleOrder) {
-        return left.roleOrder - right.roleOrder;
-      }
-      return left.roleName.localeCompare(right.roleName);
-    })
-    .map((override) => ({
-      roleId: override.roleId,
-      roleName: override.roleName,
-      selection: override.selection,
-    }));
-}
-
-function formatModelSelection(selection: RunModelSelectionEntry | undefined, providerModels: ProviderModel[]): {
-  primary: string;
-  secondary?: string;
-} {
-  const modelId = selection?.model?.trim() ?? "";
-  if (modelId === "") {
-    return { primary: "Not recorded" };
-  }
-
-  const providerModel = providerModels.find((model) => model.id === modelId);
-  if (!providerModel) {
-    return { primary: modelId };
-  }
-
-  return {
-    primary: modelDisplayLabel(providerModel),
-    secondary: modelDisplayLabel(providerModel) !== modelId ? modelId : undefined,
-  };
-}
-
-function formatThinkingEffort(thinkingEffort: string | undefined): string {
-  const trimmed = thinkingEffort?.trim() ?? "";
-  if (trimmed === "") {
-    return "Model default";
-  }
-  return trimmed.charAt(0).toUpperCase() + trimmed.slice(1);
-}
-
-function describeReviewFlow(
-  workflowId: string,
-  runUntilAllApprove: boolean,
-): string {
-  if (isSkipReviewValidationWorkflowId(workflowId)) {
-    return "Skip reviews and validations";
-  }
-  if (runUntilAllApprove) {
-    return "Run until all approve";
-  }
-  return "Standard review flow";
-}
-
-function formatPublishTarget(publishMode: RunSummary["publish_mode"]): string {
-  return publishMode === "git_worktree" ? "Git worktree" : "Direct to project";
 }

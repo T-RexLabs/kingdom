@@ -107,7 +107,6 @@ it("keeps the inline settled response outside virtual activity and resets its so
   await user.click(within(response).getByText("Response Details"));
   expect(response.querySelector("pre")).toBeVisible();
   expect(response.querySelector("pre")?.textContent).toBe(data.text);
-  await user.click(screen.getByRole("button", { name: "Show Activity" }));
   const scroller = await screen.findByTestId("virtuoso-scroller");
   await waitFor(() =>
     expect(within(scroller).getByText("Tool 100")).toBeVisible(),

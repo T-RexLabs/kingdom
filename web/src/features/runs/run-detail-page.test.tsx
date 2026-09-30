@@ -1800,40 +1800,41 @@ describe("run detail page", () => {
 		expect(screen.queryByText(/Response Captured, Verifying:/)).not.toBeInTheDocument();
 	});
 
-	it("shows auto-succeeded indicators only when triggered", () => {
-	  mockSearch.panel = "details"; mockSearch.section = "context";
+  it("shows auto-succeeded indicators only when triggered", () => {
     const { rerender } = render(<RunDetailPage />);
-	  expect(screen.queryByText(/Review Auto-Succeeded at Cap/)).not.toBeInTheDocument();
-	  expect(screen.queryByText(/Validation Auto-Succeeded at Cap/)).not.toBeInTheDocument();
-
+    expect(screen.queryByText(/Auto-Succeeded at Cap/)).not.toBeInTheDocument();
     mockRun.review_auto_succeeded_count = 1;
-	  mockRun.validation_auto_succeeded_count = 2;
-	  rerender(<RunDetailPage />);
-
-	  expect(screen.getByText(/^Review Auto-Succeeded at Cap$/)).toBeInTheDocument();
-	  expect(screen.getByText(/^Validation Auto-Succeeded at Cap$/)).toBeInTheDocument();
-	  expect(screen.queryByText(/^1 Review Auto-Succeeded at Cap$/)).not.toBeInTheDocument();
-	  expect(screen.queryByText(/^2 Validation Auto-Succeeded at Cap$/)).not.toBeInTheDocument();
-	});
-
-  it("shows single review/validation cycle counters", () => {
-    mockRun.review_rework_cycles = 2;
-    mockRun.validation_rework_waves = 1;
-    mockSearch.panel = "details"; mockSearch.section = "context";
-    render(<RunDetailPage />);
-    expect(screen.getByText("Review Rework Requests").parentElement).toHaveTextContent("2 · Cap 5");
-    expect(screen.getByText("Validation Rework Requests").parentElement).toHaveTextContent("1 · Cap 5");
+    mockRun.validation_auto_succeeded_count = 2;
+    rerender(<RunDetailPage />);
+    expect(screen.getByText("1 Auto-Succeeded at Cap")).toBeVisible();
+    expect(screen.getByText("2 Auto-Succeeded at Cap")).toBeVisible();
   });
 
-  it("shows skip-review mode and hides review metrics when quality gates are skipped", () => {
-    mockRun.workflow_id = "work-order-skip-review-validation-v1";
+  it("shows single review/validation cycle counters in the main run frame", () => {
+    mockRun.review_rework_cycles = 2;
+    mockRun.validation_rework_waves = 1;
+    render(<RunDetailPage />);
+    const summary = screen.getByRole("region", { name: "Review and validation rework" });
+    expect(within(summary).getByText("Review Rework").parentElement).toHaveTextContent("2 / 5");
+    expect(within(summary).getByText("Validation Rework").parentElement).toHaveTextContent("1 / 5");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("does not duplicate the main rework counters inside Run Details", () => {
     mockSearch.panel = "details"; mockSearch.section = "context";
     render(<RunDetailPage />);
+    const details = screen.getByRole("dialog", { name: "Run Details" });
+    expect(within(details).queryByText("Review Rework")).not.toBeInTheDocument();
+    expect(within(details).queryByText("Validation Rework")).not.toBeInTheDocument();
+  });
 
-    expect(screen.getByText("Review and validation were skipped for this workflow.")).toBeInTheDocument();
-    expect(screen.queryByText(/Review Rework Requests:/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Validation Rework Requests:/)).not.toBeInTheDocument();
-
+  it("shows skip-review mode in the main frame without inventing zero-count quality gates", () => {
+    mockRun.workflow_id = "work-order-skip-review-validation-v1";
+    render(<RunDetailPage />);
+    const summary = screen.getByRole("region", { name: "Review and validation rework" });
+    expect(within(summary).getByText("Skipped")).toBeVisible();
+    expect(within(summary).queryByText("Review Rework")).not.toBeInTheDocument();
+    expect(within(summary).queryByText("Validation Rework")).not.toBeInTheDocument();
     mockRun.workflow_id = "work-order-v1";
   });
 

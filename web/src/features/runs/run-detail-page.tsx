@@ -33,7 +33,6 @@ import {
   MODAL_BODY_TEXT_CLASS,
 } from "@/components/ui/modal-shell";
 import { RelativeTime } from "@/components/ui/relative-time";
-import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { cn } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
@@ -46,6 +45,7 @@ import { RunExecutionPicker } from "./run-execution-picker";
 import { RunDiagnostics } from "./run-diagnostics";
 import { RunOutput } from "./run-output";
 import { RunLiveStatus } from "./run-live-status";
+import { RunReworkSummary } from "./run-rework-summary";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { GovernanceActions } from "./governance-actions";
 import { CurrentPlanPanel } from "./current-plan-panel";
@@ -819,20 +819,12 @@ export function RunDetailPage() {
   const governanceState = describeManualGovernanceState(run);
   const failedNodeCount = run.failed_nodes.length;
   const cancelledNodes = run.status === "cancelled" ? (graph?.nodes ?? []) : [];
-  const untilAllApprove = !!run.run_until_all_approve;
-  const skipReviewAndValidation = isSkipReviewValidationWorkflowId(
-    run.workflow_id,
-  );
   const governanceJumpLabel = governanceState.isAwaitingPlanApproval
     ? "Review Plan"
     : governanceState.isAwaitingFinalApproval
       ? "Review Final Decision"
       : null;
 
-  const reviewReworkCycles = run.review_rework_cycles;
-  const validationReworkWaves = run.validation_rework_waves;
-  const reviewAutoSucceededCount = run.review_auto_succeeded_count;
-  const validationAutoSucceededCount = run.validation_auto_succeeded_count;
   const connected = runStreamState === "open";
   const startedLabel = run.started_at
     ? formatExactTime(run.started_at)
@@ -969,6 +961,7 @@ export function RunDetailPage() {
                 Run Details
               </button>
             </nav>
+            <RunReworkSummary run={run} />
             <RunLiveStatus
               runId={runId}
               nodes={presentedNodes}
@@ -1015,13 +1008,6 @@ export function RunDetailPage() {
                 </Button>
               )}
             </div>
-          )}
-          {untilAllApprove && (
-            <p className="flex items-center gap-2 text-xs text-status-blocked">
-              <AlertTriangle size={14} />
-              Unbounded review and validation: continues until PASS or manual
-              cancellation.
-            </p>
           )}
           {cancelRun.error && (
             <p role="alert" className="text-sm text-status-failed">
@@ -1283,50 +1269,7 @@ export function RunDetailPage() {
             </div>
           )}
           {contextVisible && (
-            <div className="space-y-5">
-              <WorkOrderPanel run={run} roles={roles?.items ?? []} />
-              <div className="rounded-xl border border-border p-5 text-sm">
-                <h2 className="font-medium">Review and Validation</h2>
-                {skipReviewAndValidation ? (
-                  <p className="mt-2 text-foreground-muted">
-                    Review and validation were skipped for this workflow.
-                  </p>
-                ) : (
-                  <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-                    <div>
-                      <dt className="text-foreground-muted">
-                        Review Rework Requests
-                      </dt>
-                      <dd className="mt-1">
-                        {reviewReworkCycles} · Cap{" "}
-                        {run.max_execution_review_cycles ?? 5}
-                      </dd>
-                    </div>
-                    <div>
-                      <dt className="text-foreground-muted">
-                        Validation Rework Requests
-                      </dt>
-                      <dd className="mt-1">
-                        {validationReworkWaves} · Cap{" "}
-                        {run.max_validation_rework_cycles ?? 5}
-                      </dd>
-                    </div>
-                    {reviewAutoSucceededCount > 0 && (
-                      <div>
-                        <dt>Review Auto-Succeeded at Cap</dt>
-                        <dd>{reviewAutoSucceededCount}</dd>
-                      </div>
-                    )}
-                    {validationAutoSucceededCount > 0 && (
-                      <div>
-                        <dt>Validation Auto-Succeeded at Cap</dt>
-                        <dd>{validationAutoSucceededCount}</dd>
-                      </div>
-                    )}
-                  </dl>
-                )}
-              </div>
-            </div>
+            <WorkOrderPanel run={run} roles={roles?.items ?? []} />
           )}
 
           {timelineVisible && (
