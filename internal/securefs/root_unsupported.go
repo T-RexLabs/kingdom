@@ -50,6 +50,6 @@ func syncOSRootDirectory(*os.Root) error                { return unsupportedRoot
 func openedFileIdentity(*os.File) (FileIdentity, error) { return FileIdentity{}, unsupportedRoot() }
 func openDirectoryFile(*Root, string) (*os.File, error) { return nil, unsupportedRoot() }
 func directoryEntry(*os.File, string) (Entry, error)    { return Entry{}, unsupportedRoot() }
-func replaceRootRegularFrom(context.Context, *Root, string, func(io.Writer) error, fs.FileMode, fs.FileMode, time.Time) error {
+func replaceRootRegularFrom(context.Context, *Root, string, func(io.Writer) error, fs.FileMode, fs.FileMode, time.Time, bool) error {
 	return unsupportedRoot()
 }

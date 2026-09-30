@@ -305,16 +305,19 @@ func syncRootDir(root *Root, path string) error {
 }
 
 func replaceRootRegular(root *Root, path string, data []byte, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
-	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modifiedAt)
+	return replaceRootRegularFrom(context.Background(), root, path, func(w io.Writer) error { _, err := w.Write(data); return err }, mode, dirMode, modifiedAt, true)
 }
 
-func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
+func replaceRootRegularFrom(ctx context.Context, root *Root, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time, durable bool) error {
 	stagingFD, relativePath, err := openStagingParent(root, path)
 	if err != nil {
 		return err
 	}
 	defer unix.Close(stagingFD)
-	return replaceRegularFromAt(ctx, stagingFD, relativePath, path, produce, mode, dirMode, modifiedAt)
+	if durable {
+		return replaceRegularFromAt(ctx, stagingFD, relativePath, path, produce, mode, dirMode, modifiedAt)
+	}
+	return replaceRegularFromAtWithSync(ctx, stagingFD, relativePath, path, produce, mode, dirMode, modifiedAt, nil, nil)
 }
 
 // Pin the longest existing directory prefix without creating or repairing any
@@ -429,6 +432,10 @@ func readExactRegularAt(parentFD int, leaf, path string, expected []byte, mode f
 }
 
 func replaceRegularFromAt(ctx context.Context, stagingFD int, relativePath, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time) error {
+	return replaceRegularFromAtWithSync(ctx, stagingFD, relativePath, path, produce, mode, dirMode, modifiedAt, (*os.File).Sync, unix.Fsync)
+}
+
+func replaceRegularFromAtWithSync(ctx context.Context, stagingFD int, relativePath, path string, produce func(io.Writer) error, mode, dirMode fs.FileMode, modifiedAt time.Time, syncFile func(*os.File) error, syncDirectory func(int) error) error {
 	tempName, tempFile, err := createTempAt(stagingFD)
 	if err != nil {
 		return fmt.Errorf("create secure temporary file for %q: %w", path, err)
@@ -450,8 +457,10 @@ func replaceRegularFromAt(ctx context.Context, stagingFD int, relativePath, path
 	if err := unix.Futimes(int(tempFile.Fd()), tv); err != nil {
 		return fmt.Errorf("set restored time for %q: %w", path, err)
 	}
-	if err := tempFile.Sync(); err != nil {
-		return fmt.Errorf("sync restored file %q: %w", path, err)
+	if syncFile != nil {
+		if err := syncFile(tempFile); err != nil {
+			return fmt.Errorf("sync restored file %q: %w", path, err)
+		}
 	}
 	if err := tempFile.Close(); err != nil {
 		return fmt.Errorf("close restored file %q: %w", path, err)
@@ -461,7 +470,11 @@ func replaceRegularFromAt(ctx context.Context, stagingFD int, relativePath, path
 	}
 	// All stream verification and staging I/O must succeed before this call:
 	// openParent(create=true) may unlink conflicting ancestor files or links.
-	parentFD, leaf, err := openParent(&Root{fd: stagingFD}, relativePath, true, dirMode)
+	parentSync := syncDirectory
+	if parentSync == nil {
+		parentSync = func(int) error { return nil }
+	}
+	parentFD, leaf, err := openParentWithSync(&Root{fd: stagingFD}, relativePath, true, dirMode, parentSync)
 	if err != nil {
 		return err
 	}
@@ -486,12 +499,14 @@ func replaceRegularFromAt(ctx context.Context, stagingFD int, relativePath, path
 		return fmt.Errorf("commit restored file %q: %w", path, err)
 	}
 	committed = true
-	if err := unix.Fsync(parentFD); err != nil {
-		return fmt.Errorf("sync secure parent after publishing %q: %w", path, err)
-	}
-	if relativePath != leaf {
-		if err := unix.Fsync(stagingFD); err != nil {
-			return fmt.Errorf("sync secure staging parent after publishing %q: %w", path, err)
+	if syncDirectory != nil {
+		if err := syncDirectory(parentFD); err != nil {
+			return fmt.Errorf("sync secure parent after publishing %q: %w", path, err)
+		}
+		if relativePath != leaf {
+			if err := syncDirectory(stagingFD); err != nil {
+				return fmt.Errorf("sync secure staging parent after publishing %q: %w", path, err)
+			}
 		}
 	}
 	return nil
