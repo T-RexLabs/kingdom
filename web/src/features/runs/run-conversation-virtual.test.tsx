@@ -1,5 +1,5 @@
 import { useState, type PropsWithChildren } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VirtuosoMockContext } from "react-virtuoso";
@@ -37,14 +37,21 @@ const data = vi.hoisted(() => {
         invocation_id: "inv",
         kind: "message",
         label: "Provider Message",
-        message: { availability: "available", preview: text, byte_length: text.length },
+        message: {
+          availability: "available",
+          preview: text,
+          byte_length: text.length,
+        },
       },
     ],
   };
 });
 vi.mock("@/api/hooks-runs", () => ({
-  useRunExecutionActivity: () => ({
-    data: { items: data.items, snapshotThrough: 101 },
+  useRunExecutionActivity: (_runId: string, attemptId: string) => ({
+    data: {
+      items: attemptId === "attempt-a" ? data.items : [],
+      snapshotThrough: 101,
+    },
     gaps: [],
     loadMore: vi.fn(),
     isLoadingMore: false,
@@ -75,7 +82,7 @@ beforeEach(() => {
 });
 afterEach(() => restoreGeometry());
 
-it("retains final response and exact source disclosures across virtual unmounts and resets on attempt change", async () => {
+it("keeps the inline settled response outside virtual activity and resets its source on attempt change", async () => {
   const detail = {
     attempt_id: "attempt-a",
     provider_invocation_id: "inv",
@@ -93,35 +100,58 @@ it("retains final response and exact source disclosures across virtual unmounts 
     />,
     { wrapper: Wrapper },
   );
-  await waitFor(() => expect(screen.getByText("Final Response")).toBeVisible());
-  expect(screen.getByText("Final Response").tagName).toBe("SUMMARY");
-  await user.click(screen.getByText("Final Response"));
-  await user.click(await screen.findByText("Response Details"));
+  const response = screen.getByRole("region", { name: "Final response" });
+  expect(
+    within(response).getByRole("heading", { name: "Canonical Result" }),
+  ).toBeVisible();
+  await user.click(within(response).getByText("Response Details"));
+  expect(response.querySelector("pre")).toBeVisible();
+  expect(response.querySelector("pre")?.textContent).toBe(data.text);
+  await user.click(screen.getByRole("button", { name: "Show Activity" }));
+  const scroller = await screen.findByTestId("virtuoso-scroller");
   await waitFor(() =>
-    expect(document.querySelector("pre")?.textContent).toBe(data.text),
+    expect(within(scroller).getByText("Tool 100")).toBeVisible(),
   );
-  const scroller = screen.getByTestId("virtuoso-scroller");
+  expect(scroller.querySelectorAll("[data-item-index]").length).toBeLessThan(
+    data.items.length,
+  );
   act(() => scroller.scrollTo({ top: 0 }));
   await waitFor(() =>
-    expect(screen.queryByText("Final Response")).not.toBeInTheDocument(),
+    expect(within(scroller).getByText("Tool 1")).toBeVisible(),
   );
+  expect(within(scroller).queryByText("Tool 100")).not.toBeInTheDocument();
+  expect(screen.getByRole("region", { name: "Final response" })).toBe(response);
+  expect(response.querySelector("pre")).toBeVisible();
+  expect(response.querySelector("pre")?.textContent).toBe(data.text);
   act(() => scroller.scrollTo({ top: scroller.scrollHeight }));
-  await waitFor(() => expect(screen.getByText("Final Response")).toBeVisible());
-  expect(screen.getByText("Final Response").closest("details")).toHaveAttribute(
-    "open",
+  await waitFor(() =>
+    expect(within(scroller).getByText("Tool 100")).toBeVisible(),
   );
-  expect(document.querySelector("pre")?.textContent).toBe(data.text);
+  await user.click(screen.getByRole("button", { name: "Hide Activity" }));
+  expect(
+    within(response).getByRole("heading", { name: "Canonical Result" }),
+  ).toBeVisible();
+  expect(
+    within(response).getByText("Response Details").closest("details"),
+  ).toHaveAttribute("open");
   view.rerender(
     <RunExecutionActivity
       runId="run"
       attemptId="attempt-b"
       status="succeeded"
-      detail={{ ...detail, attempt_id: "attempt-b" }}
+      detail={{
+        ...detail,
+        attempt_id: "attempt-b",
+        output_text: "## New Attempt\nNew result.",
+      }}
     />,
   );
-  await waitFor(() => expect(screen.getByText("Final Response")).toBeVisible());
+  expect(screen.getByRole("heading", { name: "New Attempt" })).toBeVisible();
   expect(
-    screen.getByText("Final Response").closest("details"),
+    screen.queryByRole("heading", { name: "Canonical Result" }),
+  ).not.toBeInTheDocument();
+  expect(
+    screen.getByText("Response Details").closest("details"),
   ).not.toHaveAttribute("open");
   expect(document.querySelector("pre")).toBeNull();
 });
