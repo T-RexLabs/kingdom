@@ -504,6 +504,9 @@ WHERE launch_started_at IS NOT NULL;
 CREATE INDEX idx_attempt_executions_node_run
 ON attempt_executions (node_run_id);
 
+CREATE INDEX idx_attempt_executions_run_start
+ON attempt_executions (run_id, execution_mode, started_at);
+
 CREATE INDEX idx_attempt_executions_active_provider_invocation
 ON attempt_executions (active_provider_invocation_id);
 

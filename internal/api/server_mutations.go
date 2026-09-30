@@ -368,6 +368,7 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		DisplayState:              gen.RunDisplayStatePending,
 		PlanState:                 "draft",
 		CreatedAt:                 mustParseRFC3339(now),
+		StartState:                gen.RunStartStateNotStarted,
 		LastActivityAt:            mustParseRFC3339(now),
 		UpdatedAt:                 mustParseRFC3339(now),
 		RunUntilAllApprove:        &runUntilAllApprove,

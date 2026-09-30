@@ -94,6 +94,7 @@ describe("useRunsCollectionEventStream", () => {
         created_at: "2026-03-01T10:00:00Z",
         updated_at: "2026-03-01T10:00:00Z",
         last_activity_at: "2026-03-01T10:00:00Z",
+        start_state: "not_started",
         autonomous_approvals: false,
         publish_mode: "direct",
       }],
@@ -111,6 +112,7 @@ describe("useRunsCollectionEventStream", () => {
         created_at: "2026-03-01T10:00:00Z",
         updated_at: "2026-03-01T10:00:00Z",
         last_activity_at: "2026-03-01T10:00:00Z",
+        start_state: "not_started",
         autonomous_approvals: false,
         publish_mode: "direct",
 	      }] }],
@@ -127,6 +129,7 @@ describe("useRunsCollectionEventStream", () => {
 	        created_at: "2026-03-01T10:00:00Z",
 	        updated_at: "2026-03-01T10:00:00Z",
 	        last_activity_at: "2026-03-01T10:00:00Z",
+	        start_state: "not_started",
 	      }],
 	    });
 	    queryClient.setQueryData(["unrelated"], { ok: true });
@@ -153,6 +156,7 @@ describe("useRunsCollectionEventStream", () => {
           created_at: "2026-03-01T10:05:00Z",
           updated_at: "2026-03-01T10:05:00Z",
           last_activity_at: "2026-03-01T10:05:00Z",
+          start_state: "not_started",
           autonomous_approvals: false,
           publish_mode: "direct",
         }),
@@ -207,6 +211,7 @@ describe("useRunsCollectionEventStream", () => {
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:00:00Z",
 				last_activity_at: "2026-03-01T10:00:00Z",
+				start_state: "not_started",
 			}],
 		});
 
@@ -225,6 +230,7 @@ describe("useRunsCollectionEventStream", () => {
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:05:00Z",
 				last_activity_at: "2026-03-01T10:05:00Z",
+				start_state: "not_started",
 			}),
 		})).resolves.toBe(true);
 
@@ -247,6 +253,7 @@ describe("useRunsCollectionEventStream", () => {
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:06:00Z",
 				last_activity_at: "2026-03-01T10:06:00Z",
+				start_state: "not_started",
 			}),
 		})).resolves.toBe(true);
 
@@ -268,6 +275,7 @@ describe("useRunsCollectionEventStream", () => {
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:00:00Z",
 				last_activity_at: "2026-03-01T10:00:00Z",
+				start_state: "not_started",
 				autonomous_approvals: false,
 			}],
 		});
@@ -287,6 +295,7 @@ describe("useRunsCollectionEventStream", () => {
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:05:00Z",
 				last_activity_at: "2026-03-01T10:05:00Z",
+				start_state: "not_started",
 				autonomous_approvals: false,
 				pending_approval_key: "plan:planrev-2",
 			}),
@@ -323,6 +332,7 @@ describe("useRunsCollectionEventStream", () => {
 						created_at: "2026-03-01T10:01:00Z",
 						updated_at: "2026-03-01T10:01:00Z",
 						last_activity_at: "2026-03-01T10:01:00Z",
+						start_state: "not_started",
 					}],
 					next_cursor: "cursor-2",
 				},
@@ -338,6 +348,7 @@ describe("useRunsCollectionEventStream", () => {
 						created_at: "2026-03-01T10:00:00Z",
 						updated_at: "2026-03-01T10:00:00Z",
 						last_activity_at: "2026-03-01T10:00:00Z",
+						start_state: "not_started",
 					}],
 				},
 			],
@@ -364,6 +375,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:02:00Z",
 					updated_at: "2026-03-01T10:02:00Z",
 					last_activity_at: "2026-03-01T10:02:00Z",
+					start_state: "not_started",
 				}),
 			}),
 		).resolves.toBe(true);
@@ -398,6 +410,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:00:00Z",
 					last_activity_at: "2026-03-01T10:00:00Z",
+					start_state: "not_started",
 					autonomous_approvals: false,
 					publish_mode: "direct",
 				}],
@@ -420,6 +433,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:05:00Z",
 					last_activity_at: "2026-03-01T10:05:00Z",
+					start_state: "not_started",
 					autonomous_approvals: false,
 					publish_mode: "direct",
 				}),
@@ -451,6 +465,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:00:00Z",
 					last_activity_at: "2026-03-01T10:00:00Z",
+					start_state: "not_started",
 					autonomous_approvals: false,
 					publish_mode: "direct",
 			}],
@@ -472,6 +487,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:05:00Z",
 					last_activity_at: "2026-03-01T10:05:00Z",
+					start_state: "not_started",
 					autonomous_approvals: false,
 					publish_mode: "direct",
 				}),
@@ -500,6 +516,7 @@ describe("useRunsCollectionEventStream", () => {
 			created_at: "2026-03-01T10:00:00Z",
 			updated_at: "2026-03-01T10:05:00Z",
 			last_activity_at: "2026-03-01T10:05:00Z",
+			start_state: "not_started",
 			autonomous_approvals: false,
 			publish_mode: "direct",
 		};
@@ -536,6 +553,7 @@ describe("useRunsCollectionEventStream", () => {
 			created_at: "2026-03-01T10:00:00Z",
 			updated_at: "2026-03-01T10:05:00Z",
 			last_activity_at: "2026-03-01T10:05:00Z",
+			start_state: "not_started",
 			autonomous_approvals: false,
 			publish_mode: "direct",
 			model_selection: {
@@ -601,6 +619,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:00:00Z",
 					last_activity_at: "2026-03-01T10:00:00Z",
+					start_state: "not_started",
 				}],
 			});
 
@@ -667,6 +686,7 @@ describe("useRunsCollectionEventStream", () => {
 					created_at: "2026-03-01T10:05:00Z",
 					updated_at: "2026-03-01T10:05:00Z",
 					last_activity_at: "2026-03-01T10:05:00Z",
+					start_state: "not_started",
 					autonomous_approvals: false,
 					publish_mode: "direct",
 				}),

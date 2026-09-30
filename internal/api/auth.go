@@ -273,6 +273,7 @@ func (s *Server) writeUnauthorized(w http.ResponseWriter) {
 }
 
 type authSessionResponse struct {
+	SessionID string    `json:"session_id"`
 	ActorID   string    `json:"actor_id"`
 	RoleID    string    `json:"role_id"`
 	CSRFToken string    `json:"csrf_token"`
@@ -340,7 +341,7 @@ func (s *Server) handleCreateAuthSession(w http.ResponseWriter, r *http.Request)
 	if lease.Created {
 		status = http.StatusCreated
 	}
-	writeJSON(w, status, authSessionResponse{ActorID: operatorActorID, RoleID: operatorRoleID, CSRFToken: lease.Session.CSRFToken, ExpiresAt: lease.Session.ExpiresAt})
+	writeJSON(w, status, authSessionResponse{SessionID: lease.SessionID, ActorID: operatorActorID, RoleID: operatorRoleID, CSRFToken: lease.Session.CSRFToken, ExpiresAt: lease.Session.ExpiresAt})
 }
 
 func browserSessionCookieMaxAge(now, expiresAt time.Time) int {

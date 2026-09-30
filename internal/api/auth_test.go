@@ -215,7 +215,7 @@ func TestBrowserSessionBootstrapAndRestart(t *testing.T) {
 	if err := json.Unmarshal(reused.Body.Bytes(), &second); err != nil {
 		t.Fatal(err)
 	}
-	if second.CSRFToken != first.CSRFToken || !second.ExpiresAt.Equal(first.ExpiresAt) {
+	if first.SessionID == "" || first.SessionID == cookies[0].Value || second.SessionID != first.SessionID || second.CSRFToken != first.CSRFToken || !second.ExpiresAt.Equal(first.ExpiresAt) {
 		t.Fatal("bootstrap rotated a valid session")
 	}
 

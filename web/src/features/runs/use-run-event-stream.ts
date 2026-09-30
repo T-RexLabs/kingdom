@@ -19,6 +19,7 @@ import {
 	incrementRunTabCount,
 	patchRunDetailFields,
 	readRunStreamBootstrapState,
+	readRunStartProjection,
 	writeRunStreamResumeCursor,
 } from "./run-cache-updates";
 import { markRunQuerySurfacesDirty } from "./run-surface-freshness";
@@ -476,6 +477,7 @@ function patchRunStateChange(
   event: NormalizedRunStreamData,
 ) {
   const detailFields: Partial<RunDetailSummary> = {};
+	Object.assign(detailFields, readRunStartProjection(event.payload));
 
 	for (const [payloadKey, detailKey] of [["status", "status"], ["display_state", "display_state"], ["plan_state", "plan_state"]] as const) {
 		const value = readString(event.payload[payloadKey]);

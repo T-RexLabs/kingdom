@@ -189,6 +189,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -212,6 +213,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -234,6 +236,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -258,6 +261,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -282,6 +286,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -307,6 +312,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -338,6 +344,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -370,6 +377,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -398,6 +406,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -424,6 +433,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -450,6 +460,7 @@ describe("current plan panel", () => {
           created_at: "2026-03-06T10:00:00.000Z",
 			updated_at: "2026-03-06T10:00:00.000Z",
 			last_activity_at: "2026-03-06T10:00:00.000Z",
+			start_state: "not_started",
         }}
       />,
     );
@@ -483,6 +494,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -512,6 +524,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -543,6 +556,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);
@@ -592,6 +606,7 @@ describe("current plan panel", () => {
 					created_at: "2026-03-06T10:00:00.000Z",
 					updated_at: "2026-03-06T10:00:00.000Z",
 					last_activity_at: "2026-03-06T10:00:00.000Z",
+					start_state: "not_started",
 				}}
 			/>,
 		);

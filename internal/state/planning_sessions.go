@@ -262,13 +262,43 @@ func (s *PlanningStore) GetSession(ctx context.Context, planningSessionID string
 }
 
 func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]PlanningSession, error) {
-	return s.ListSessionsPage(ctx, limit, "", "")
+	return s.ListSessionsPage(ctx, limit, "", "", "")
 }
 
-func (s *PlanningStore) ListSessionsPage(ctx context.Context, limit int, beforeUpdatedAt, beforeID string) ([]PlanningSession, error) {
+func (s *PlanningStore) ListSessionsPage(ctx context.Context, limit int, beforeUpdatedAt, beforeID, search string) ([]PlanningSession, error) {
 	if limit <= 0 {
 		limit = 100
 	}
+	search = strings.ToLower(strings.TrimSpace(search))
+	if search == "" {
+		return s.listSessionsPage(ctx, limit, beforeUpdatedAt, beforeID)
+	}
+	// Titles can be chunk-backed content. Match the canonical text rather than
+	// the inline column, scanning bounded pages without limiting searchable history.
+	const scanSize = 64
+	matches := make([]PlanningSession, 0)
+	for {
+		items, err := s.listSessionsPage(ctx, scanSize, beforeUpdatedAt, beforeID)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if strings.Contains(strings.ToLower(item.Title), search) {
+				matches = append(matches, item)
+				if len(matches) == limit {
+					return matches, nil
+				}
+			}
+		}
+		if len(items) < scanSize {
+			return matches, nil
+		}
+		last := items[len(items)-1]
+		beforeUpdatedAt, beforeID = last.UpdatedAt, last.PlanningSessionID
+	}
+}
+
+func (s *PlanningStore) listSessionsPage(ctx context.Context, limit int, beforeUpdatedAt, beforeID string) ([]PlanningSession, error) {
 	query := `SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
 		        active_leaf_message_id, current_operation_id, current_title_operation_id,
 		        current_draft_id, context_snapshot_id,

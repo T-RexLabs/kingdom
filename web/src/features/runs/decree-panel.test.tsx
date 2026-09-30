@@ -28,6 +28,7 @@ const baseRun = {
   created_at: "2026-03-06T10:00:00.000Z",
   updated_at: "2026-03-06T10:01:00.000Z",
   last_activity_at: "2026-03-06T10:01:00.000Z",
+  start_state: "not_started",
   run_until_all_approve: false,
   autonomous_approvals: true,
   publish_mode: "git_worktree",

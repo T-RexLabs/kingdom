@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mutation-outcomes/{key}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the retained outcome of an allowlisted operator mutation.
+         * @description Authenticated readback of the original local operator's nonsecret result, including after browser-session replacement. This does not authorize replay under another authentication binding. Unknown means no authoritative result is retained and does not make a fresh retry safe. Credentials and response headers are never returned.
+         */
+        get: operations["getMutationOutcome"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/connections": {
         parameters: {
             query?: never;
@@ -1560,11 +1580,26 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         AuthSession: {
+            /** @description Nonsecret fingerprint of the current browser authentication binding. It confers no authority. */
+            session_id: string;
             actor_id: string;
             role_id: string;
             csrf_token: string;
             /** Format: date-time */
             expires_at: string;
+        };
+        MutationOutcome: {
+            /**
+             * @description Unknown never implies that a replacement-key retry is safe.
+             * @enum {string}
+             */
+            state: "unknown" | "pending" | "completed";
+            /** @description Original response status, present only for completed outcomes. */
+            response_status?: number;
+            /** @description Original allowlisted nonsecret result body, present only for completed outcomes. No credentials or response headers. */
+            response_body?: {
+                [key: string]: unknown;
+            };
         };
         HealthResponse: {
             /** @enum {string} */
@@ -2474,6 +2509,8 @@ export interface components {
          *       "created_at": "2026-04-30T12:10:00Z",
          *       "updated_at": "2026-04-30T12:25:00Z",
          *       "last_activity_at": "2026-04-30T12:29:00Z",
+         *       "start_state": "observed",
+         *       "started_at": "2026-04-30T12:11:00Z",
          *       "run_until_all_approve": true,
          *       "max_execution_review_cycles": 2,
          *       "max_validation_rework_cycles": 2,
@@ -2496,8 +2533,17 @@ export interface components {
             created_at: string;
             /** Format: date-time */
             updated_at: string;
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Latest meaningful run activity, distinct from record mutation time.
+             */
             last_activity_at: string;
+            /**
+             * Format: date-time
+             * @description First observed provider-backed execution across all attempts, including advisory work and superseded attempts. Absent unless start_state is observed; creation and launch handoff never substitute for this timestamp.
+             */
+            started_at?: string;
+            start_state: components["schemas"]["RunStartState"];
             run_until_all_approve?: boolean;
             /** @description Stored review-cycle cap. Workflows without execution-review nodes report `0`. */
             max_execution_review_cycles?: number;
@@ -2509,6 +2555,11 @@ export interface components {
             publish_mode?: components["schemas"]["RunPublishMode"];
             model_selection?: components["schemas"]["RunModelSelection"];
         };
+        /**
+         * @description Observed means started_at is recorded. Unrecorded means canonical stream settlement proves provider execution but its running observation was not recorded. Not_started means neither observation exists; queued work, launch handoff, setup failure and cancellation before launch do not establish execution.
+         * @enum {string}
+         */
+        RunStartState: "not_started" | "observed" | "unrecorded";
         /**
          * @example {
          *       "dag_nodes": 6,
@@ -2541,6 +2592,8 @@ export interface components {
          *       "created_at": "2026-04-30T12:10:00Z",
          *       "updated_at": "2026-04-30T12:25:00Z",
          *       "last_activity_at": "2026-04-30T12:29:00Z",
+         *       "start_state": "observed",
+         *       "started_at": "2026-04-30T12:11:00Z",
          *       "run_until_all_approve": true,
          *       "max_execution_review_cycles": 2,
          *       "max_validation_rework_cycles": 2,
@@ -2906,6 +2959,30 @@ export interface components {
             output_verdict?: "PASS" | "REWORK";
             /** @enum {string} */
             output_verdict_status?: "observed" | "settled";
+            publication?: components["schemas"]["RunExecutionPublication"];
+        };
+        /** @description Latest durable publication batch for this attempt. Publication is distinct from provider settlement and run approval. */
+        RunExecutionPublication: {
+            batch_id: string;
+            target_mode: components["schemas"]["RunPublishMode"];
+            /** @enum {string} */
+            status: "succeeded" | "partial_conflict" | "partial_failure" | "failed";
+            published_count: number;
+            conflicted_count: number;
+            failed_count: number;
+            /** Format: date-time */
+            created_at: string;
+            entries: components["schemas"]["RunExecutionPublicationEntry"][];
+        };
+        RunExecutionPublicationEntry: {
+            entry_id: string;
+            path: string;
+            /** @enum {string} */
+            action: "write" | "delete";
+            /** @enum {string} */
+            status: "published" | "conflicted" | "failed";
+            reason_code?: string;
+            reason_text?: string;
         };
         RunExecutionSettlementDetail: {
             reason?: string;
@@ -3120,6 +3197,17 @@ export interface components {
             items: components["schemas"]["RunArtifactItem"][];
         };
         RunArtifactItem: {
+            node_id: string;
+            node_run_id: string;
+            attempt_id: string;
+            attempt: number;
+            producer_role: string;
+            producer_agent_id: string;
+            /**
+             * @description Canonical deliverables belong to the latest non-superseded successfully settled builder attempt per node. Other artifacts remain audit evidence. This classification does not imply publication or final run approval.
+             * @enum {string}
+             */
+            lineage: "canonical_deliverable" | "audit";
             artifact_id: string;
             /** @enum {string} */
             artifact_kind: "deliverable" | "verification" | "orchestration_meta";
@@ -3381,6 +3469,33 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             403: components["responses"]["ForbiddenError"];
             429: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getMutationOutcome: {
+        parameters: {
+            query: {
+                operation: "planning-session-create" | "planning-operation-create" | "work-order-create" | "run-create";
+            };
+            header?: never;
+            path: {
+                key: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Retained mutation outcome, or an explicit unknown result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MutationOutcome"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4590,6 +4705,8 @@ export interface operations {
             query?: {
                 limit?: components["parameters"]["Limit"];
                 cursor?: components["parameters"]["Cursor"];
+                /** @description Case-insensitive session title substring search. The query is bound to pagination cursor scope; this does not search message contents. */
+                q?: string;
             };
             header?: never;
             path?: never;

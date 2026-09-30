@@ -96,6 +96,7 @@ func projectRunCollectionPayloadTx(ctx context.Context, tx *sql.Tx, req RunColle
 	payload["created_at"] = projection.CreatedAt
 	payload["updated_at"] = projection.UpdatedAt
 	payload["last_activity_at"] = projection.LastActivityAt
+	projectRunStartPayload(payload, projection)
 	payload["autonomous_approvals"] = projection.AutonomousApprovals
 	if projection.PendingApprovalKey != "" {
 		payload["pending_approval_key"] = projection.PendingApprovalKey

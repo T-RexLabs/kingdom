@@ -613,6 +613,7 @@ func (s *Server) RecoverPlanningOperations(ctx context.Context) error {
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/session", s.handleCreateAuthSession)
+	mux.HandleFunc("GET /mutation-outcomes/{key}", s.handleGetMutationOutcome)
 	mux.HandleFunc("GET /health", s.handleGetHealth)
 	mux.HandleFunc("GET /roles", s.handleListRoles)
 	mux.HandleFunc("GET /agents", s.handleListAgents)
@@ -796,26 +797,16 @@ type runExecutionSettlementDetailItem struct {
 
 type runExecutionDetailItem struct {
 	runExecutionItem
-	ProviderInvocationID *string                            `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt *time.Time                         `json:"provider_invocation_at,omitempty"`
-	SettlementStatus     string                             `json:"settlement_status"`
-	SettlementDetail     *runExecutionSettlementDetailItem  `json:"settlement_detail,omitempty"`
-	SettledAt            *time.Time                         `json:"settled_at,omitempty"`
-	OutputStatus         string                             `json:"output_status"`
-	OutputText           *string                            `json:"output_text,omitempty"`
-	OutputVerdict        *string                            `json:"output_verdict,omitempty"`
-	OutputVerdictStatus  *string                            `json:"output_verdict_status,omitempty"`
-	PublicationStatus    *string                            `json:"publication_status,omitempty"`
-	PublicationSummary   *string                            `json:"publication_summary,omitempty"`
-	PublicationEntries   []runExecutionPublicationEntryItem `json:"publication_entries,omitempty"`
-}
-
-type runExecutionPublicationEntryItem struct {
-	Path       string `json:"path"`
-	Action     string `json:"action"`
-	Status     string `json:"status"`
-	ReasonCode string `json:"reason_code,omitempty"`
-	ReasonText string `json:"reason_text,omitempty"`
+	ProviderInvocationID *string                           `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt *time.Time                        `json:"provider_invocation_at,omitempty"`
+	SettlementStatus     string                            `json:"settlement_status"`
+	SettlementDetail     *runExecutionSettlementDetailItem `json:"settlement_detail,omitempty"`
+	SettledAt            *time.Time                        `json:"settled_at,omitempty"`
+	OutputStatus         string                            `json:"output_status"`
+	OutputText           *string                           `json:"output_text,omitempty"`
+	OutputVerdict        *string                           `json:"output_verdict,omitempty"`
+	OutputVerdictStatus  *string                           `json:"output_verdict_status,omitempty"`
+	Publication          *gen.RunExecutionPublication      `json:"publication,omitempty"`
 }
 
 func (s *Server) handleGetHealth(w http.ResponseWriter, _ *http.Request) {

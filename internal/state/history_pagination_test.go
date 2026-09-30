@@ -24,7 +24,7 @@ func TestHistoryStoreKeysetsCrossTimestampTiesAndOldLimits(t *testing.T) {
 	}
 	beforeAt, beforeID, count := "", "", 0
 	for {
-		page, err := sessions.ListSessionsPage(ctx, 37, beforeAt, beforeID)
+		page, err := sessions.ListSessionsPage(ctx, 37, beforeAt, beforeID, "")
 		if err != nil {
 			t.Fatal(err)
 		}

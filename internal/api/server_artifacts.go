@@ -30,16 +30,23 @@ type runArtifactsResponse struct {
 }
 
 type runArtifactItem struct {
-	ArtifactID     string `json:"artifact_id"`
-	ArtifactKind   string `json:"artifact_kind"`
-	ArtifactAction string `json:"artifact_action"`
-	Name           string `json:"name"`
-	MIME           string `json:"mime"`
-	Path           string `json:"path"`
-	SizeBytes      int64  `json:"size_bytes"`
-	SHA256         string `json:"sha256,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	DownloadURL    string `json:"download_url,omitempty"`
+	NodeID          string `json:"node_id"`
+	NodeRunID       string `json:"node_run_id"`
+	AttemptID       string `json:"attempt_id"`
+	Attempt         int    `json:"attempt"`
+	ProducerRole    string `json:"producer_role"`
+	ProducerAgentID string `json:"producer_agent_id"`
+	Lineage         string `json:"lineage"`
+	ArtifactID      string `json:"artifact_id"`
+	ArtifactKind    string `json:"artifact_kind"`
+	ArtifactAction  string `json:"artifact_action"`
+	Name            string `json:"name"`
+	MIME            string `json:"mime"`
+	Path            string `json:"path"`
+	SizeBytes       int64  `json:"size_bytes"`
+	SHA256          string `json:"sha256,omitempty"`
+	CreatedAt       string `json:"created_at"`
+	DownloadURL     string `json:"download_url,omitempty"`
 }
 
 type artifactDeletionArchiveEntry struct {
@@ -62,7 +69,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	records, err := s.artifactService.ListRunArtifacts(r.Context(), runID)
+	records, err := s.artifactService.ListRunArtifactProvenance(r.Context(), runID)
 	if err != nil {
 		s.writeInternalError(w, "list run artifacts failed")
 		return
@@ -75,16 +82,23 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 			downloadURL = s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
 		}
 		items = append(items, runArtifactItem{
-			ArtifactID:     record.ArtifactID,
-			ArtifactKind:   record.ArtifactKind,
-			ArtifactAction: record.ArtifactAction,
-			Name:           record.Name,
-			MIME:           record.MIME,
-			Path:           record.Path,
-			SizeBytes:      record.SizeBytes,
-			SHA256:         record.SHA256,
-			CreatedAt:      record.CreatedAt,
-			DownloadURL:    downloadURL,
+			NodeID:          record.NodeID,
+			NodeRunID:       record.NodeRunID,
+			AttemptID:       record.AttemptID,
+			Attempt:         record.Attempt,
+			ProducerRole:    record.ProducerRole,
+			ProducerAgentID: record.ProducerAgentID,
+			Lineage:         record.Lineage,
+			ArtifactID:      record.ArtifactID,
+			ArtifactKind:    record.ArtifactKind,
+			ArtifactAction:  record.ArtifactAction,
+			Name:            record.Name,
+			MIME:            record.MIME,
+			Path:            record.Path,
+			SizeBytes:       record.SizeBytes,
+			SHA256:          record.SHA256,
+			CreatedAt:       record.CreatedAt,
+			DownloadURL:     downloadURL,
 		})
 	}
 

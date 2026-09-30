@@ -53,6 +53,39 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /mutation-outcomes/{key}:
+    get:
+      tags: [auth]
+      operationId: getMutationOutcome
+      summary: Read the retained outcome of an allowlisted operator mutation.
+      description: Authenticated readback of the original local operator's nonsecret result, including after browser-session replacement. This does not authorize replay under another authentication binding. Unknown means no authoritative result is retained and does not make a fresh retry safe. Credentials and response headers are never returned.
+      parameters:
+        - name: key
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: operation
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [planning-session-create, planning-operation-create, work-order-create, run-create]
+      responses:
+        "200":
+          description: Retained mutation outcome, or an explicit unknown result.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MutationOutcome"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /connections:
     get:
       tags: [connections]
@@ -725,6 +758,12 @@ paths:
       parameters:
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive session title substring search. The query is bound to pagination cursor scope; this does not search message contents.
+          schema:
+            type: string
       responses:
         "200":
           description: Planning sessions ordered by updated time.
@@ -2533,8 +2572,12 @@ components:
     AuthSession:
       type: object
       additionalProperties: false
-      required: [actor_id, role_id, csrf_token, expires_at]
+      required: [actor_id, role_id, csrf_token, expires_at, session_id]
       properties:
+        session_id:
+          type: string
+          minLength: 1
+          description: Nonsecret fingerprint of the current browser authentication binding. It confers no authority.
         actor_id:
           type: string
         role_id:
@@ -2544,6 +2587,24 @@ components:
         expires_at:
           type: string
           format: date-time
+    MutationOutcome:
+      type: object
+      additionalProperties: false
+      required: [state]
+      properties:
+        state:
+          type: string
+          enum: [unknown, pending, completed]
+          description: Unknown never implies that a replacement-key retry is safe.
+        response_status:
+          type: integer
+          minimum: 100
+          maximum: 599
+          description: Original response status, present only for completed outcomes.
+        response_body:
+          type: object
+          additionalProperties: true
+          description: Original allowlisted nonsecret result body, present only for completed outcomes. No credentials or response headers.
     HealthResponse:
       type: object
       additionalProperties: false
@@ -4261,7 +4322,7 @@ components:
     RunSummary:
       type: object
       additionalProperties: false
-      required: [run_id, workflow_id, decree_id, decree_title, status, display_state, plan_state, created_at, updated_at, last_activity_at]
+      required: [run_id, workflow_id, decree_id, decree_title, status, display_state, plan_state, created_at, updated_at, last_activity_at, start_state]
       properties:
         run_id:
           type: string
@@ -4292,6 +4353,13 @@ components:
         last_activity_at:
           type: string
           format: date-time
+          description: Latest meaningful run activity, distinct from record mutation time.
+        started_at:
+          type: string
+          format: date-time
+          description: First observed provider-backed execution across all attempts, including advisory work and superseded attempts. Absent unless start_state is observed; creation and launch handoff never substitute for this timestamp.
+        start_state:
+          $ref: "#/components/schemas/RunStartState"
         run_until_all_approve:
           type: boolean
         max_execution_review_cycles:
@@ -4323,12 +4391,19 @@ components:
         created_at: "2026-04-30T12:10:00Z"
         updated_at: "2026-04-30T12:25:00Z"
         last_activity_at: "2026-04-30T12:29:00Z"
+        start_state: observed
+        started_at: "2026-04-30T12:11:00Z"
         run_until_all_approve: true
         max_execution_review_cycles: 2
         max_validation_rework_cycles: 2
         autonomous_approvals: false
         pending_approval_key: final:gate_7
         publish_mode: direct
+
+    RunStartState:
+      type: string
+      enum: [not_started, observed, unrecorded]
+      description: Observed means started_at is recorded. Unrecorded means canonical stream settlement proves provider execution but its running observation was not recorded. Not_started means neither observation exists; queued work, launch handoff, setup failure and cancellation before launch do not establish execution.
 
     RunTabCounts:
       type: object
@@ -4423,6 +4498,8 @@ components:
         created_at: "2026-04-30T12:10:00Z"
         updated_at: "2026-04-30T12:25:00Z"
         last_activity_at: "2026-04-30T12:29:00Z"
+        start_state: observed
+        started_at: "2026-04-30T12:11:00Z"
         run_until_all_approve: true
         max_execution_review_cycles: 2
         max_validation_rework_cycles: 2
@@ -5137,6 +5214,61 @@ components:
             output_verdict_status:
               type: string
               enum: [observed, settled]
+            publication:
+              $ref: "#/components/schemas/RunExecutionPublication"
+
+    RunExecutionPublication:
+      type: object
+      additionalProperties: false
+      description: Latest durable publication batch for this attempt. Publication is distinct from provider settlement and run approval.
+      required: [batch_id, target_mode, status, published_count, conflicted_count, failed_count, created_at, entries]
+      properties:
+        batch_id:
+          type: string
+          minLength: 1
+        target_mode:
+          $ref: "#/components/schemas/RunPublishMode"
+        status:
+          type: string
+          enum: [succeeded, partial_conflict, partial_failure, failed]
+        published_count:
+          type: integer
+          minimum: 0
+        conflicted_count:
+          type: integer
+          minimum: 0
+        failed_count:
+          type: integer
+          minimum: 0
+        created_at:
+          type: string
+          format: date-time
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/RunExecutionPublicationEntry"
+
+    RunExecutionPublicationEntry:
+      type: object
+      additionalProperties: false
+      required: [entry_id, path, action, status]
+      properties:
+        entry_id:
+          type: string
+          minLength: 1
+        path:
+          type: string
+          minLength: 1
+        action:
+          type: string
+          enum: [write, delete]
+        status:
+          type: string
+          enum: [published, conflicted, failed]
+        reason_code:
+          type: string
+        reason_text:
+          type: string
 
     RunExecutionSettlementDetail:
       type: object
@@ -5663,8 +5795,30 @@ components:
     RunArtifactItem:
       type: object
       additionalProperties: false
-      required: [artifact_id, artifact_kind, artifact_action, name, mime, path, size_bytes, created_at]
+      required: [artifact_id, artifact_kind, artifact_action, name, mime, path, size_bytes, created_at, node_id, node_run_id, attempt_id, attempt, producer_role, producer_agent_id, lineage]
       properties:
+        node_id:
+          type: string
+          minLength: 1
+        node_run_id:
+          type: string
+          minLength: 1
+        attempt_id:
+          type: string
+          minLength: 1
+        attempt:
+          type: integer
+          minimum: 1
+        producer_role:
+          type: string
+          minLength: 1
+        producer_agent_id:
+          type: string
+          minLength: 1
+        lineage:
+          type: string
+          enum: [canonical_deliverable, audit]
+          description: Canonical deliverables belong to the latest non-superseded successfully settled builder attempt per node. Other artifacts remain audit evidence. This classification does not imply publication or final run approval.
         artifact_id:
           type: string
           minLength: 1

@@ -597,7 +597,7 @@ func loadDashboardRecentRuns(ctx context.Context, q sqlReadQuerier, since string
 		        wr.created_at,
 		        wr.updated_at,
 		        ra.last_activity_at,
-		        COALESCE(wr.autonomous_approvals, 1)
+		        COALESCE(wr.autonomous_approvals, 1), `+state.RunStartedAtSelectExpr("wr")+`, `+state.RunStartStateSelectExpr("wr")+`
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
@@ -627,6 +627,7 @@ func scanRunSummaryRows(rows *sql.Rows, limit int) ([]gen.RunSummary, error) {
 		var createdAt string
 		var updatedAt string
 		var lastActivityAt string
+		var startedAt sql.NullString
 		var autonomousApprovalsInt int
 		if err := rows.Scan(
 			&summary.RunId,
@@ -639,12 +640,18 @@ func scanRunSummaryRows(rows *sql.Rows, limit int) ([]gen.RunSummary, error) {
 			&updatedAt,
 			&lastActivityAt,
 			&autonomousApprovalsInt,
+			&startedAt,
+			&summary.StartState,
 		); err != nil {
 			return nil, err
 		}
 		summary.CreatedAt = mustParseRFC3339(createdAt)
 		summary.UpdatedAt = mustParseRFC3339(updatedAt)
 		summary.LastActivityAt = mustParseRFC3339(lastActivityAt)
+		if startedAt.Valid {
+			parsed := mustParseRFC3339(startedAt.String)
+			summary.StartedAt = &parsed
+		}
 		autonomousApprovals := autonomousApprovalsInt != 0
 		summary.AutonomousApprovals = &autonomousApprovals
 		summary.DisplayState = gen.RunDisplayState(state.DeriveRunDisplayState(string(summary.Status), string(summary.PlanState)))
@@ -855,7 +862,7 @@ func loadRealmAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since s
 		        wr.created_at,
 		        wr.updated_at,
 		        ra.last_activity_at,
-		        COALESCE(wr.autonomous_approvals, 1)
+		        COALESCE(wr.autonomous_approvals, 1), `+state.RunStartedAtSelectExpr("wr")+`, `+state.RunStartStateSelectExpr("wr")+`
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id

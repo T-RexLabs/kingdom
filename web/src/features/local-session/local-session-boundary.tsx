@@ -2,14 +2,10 @@ import { type ReactNode, useEffect, useLayoutEffect, useRef, useState } from "re
 import { Laptop, RefreshCw, ShieldCheck, WifiOff } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, setCSRFToken, subscribeToUnauthorized } from "@/api/client";
+import type { components } from "@/api/schema";
 import { useNotifications } from "@/components/notifications";
 
-type AuthSession = {
-  actor_id: string;
-  role_id: string;
-  csrf_token: string;
-  expires_at: string;
-};
+type AuthSession = components["schemas"]["AuthSession"];
 
 type BoundaryState =
   | { status: "bootstrapping"; recovery: boolean }
@@ -89,7 +85,7 @@ export function LocalSessionBoundary({ children }: { children: ReactNode }) {
         try {
           const session = await bootstrapSession();
           if (!current) return;
-          setCSRFToken(session.csrf_token);
+          setCSRFToken(session.csrf_token, session.session_id);
           await queryClient.invalidateQueries();
           if (!current) return;
           if (pendingMutationFailure.current) {
