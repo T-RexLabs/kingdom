@@ -75,7 +75,7 @@ Capabilities:
 
 Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
 
-Planner user messages align to the right. While a reply is running, activity appears automatically above it: the current observed action, muted provider thinking, tool calls, reported checklists, and sources. After the canonical reply arrives, activity collapses behind **Show Activity**. Short trails fit their content, while long histories retain bounded scrolling and earlier-page access. Conversation activity has no per-event metadata panels.
+Planner user messages align to the right. While a reply is running, a compact unframed activity view appears within the conversation: softly revealed provider reasoning, one current observed action, the latest reported checklist, and sources. The primary view does not mount a historical event list or an inner activity scroller. After the canonical reply arrives, this preview collapses. **Show Activity** opens the complete recorded trail on demand; long histories retain bounded scrolling and earlier-page access. Conversation activity has no per-event metadata panels.
 
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
@@ -111,7 +111,7 @@ The run surface is also where operators handle manual approvals when approvals a
 Activity semantics:
 
 - Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
-- Agent Activity shares the planner’s presentation for actual reasoning, tools, reported checklists, and observed messages, but activity remains open after a final response arrives; it has no user composer or display filters
+- Agent Activity shares the planner’s presentation for actual reasoning, tools, reported checklists, and observed messages, but its primary activity remains visible after a final response arrives; it has no user composer or display filters. Detailed history opens only on request and stays open if the operator has opened it
 - provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
