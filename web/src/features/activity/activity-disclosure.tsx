@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { ChevronDown } from "lucide-react";
 import {
   ActivityHistory,
@@ -27,8 +27,13 @@ function ScopedActivityDisclosure({
   const [open, setOpen] = useState(false);
   const [hasOpened, setHasOpened] = useState(false);
   const panelId = useId();
-  const hasHistory = history.items.length > 0 || history.gaps.length > 0;
-  if (!hasHistory && !isLoading && !error) return null;
+  const visibleItems = useMemo(
+    () => history.items.filter((item) => item.kind !== "progress"),
+    [history.items],
+  );
+  const hasHistory = visibleItems.length > 0 || history.gaps.length > 0;
+  const readError = error ?? (!hasHistory ? history.loadError : null);
+  if (!hasHistory && !isLoading && !readError) return null;
 
   return (
     <div className="space-y-2">
@@ -48,7 +53,7 @@ function ScopedActivityDisclosure({
         />
         {open ? "Hide Activity" : "Show Activity"}
       </button>
-      {error && (
+      {readError && (
         <p role="alert" className="text-xs text-status-failed">
           Activity could not be loaded.{" "}
           {retry && (
@@ -74,8 +79,16 @@ function ScopedActivityDisclosure({
                 Loading activity…
               </p>
             )}
-            {hasHistory || (!isLoading && !error) ? (
-              <ActivityHistory {...history} />
+            {!visibleItems.length &&
+              history.gaps.length > 0 &&
+              !isLoading &&
+              !readError && (
+                <p className="py-2 text-xs text-foreground-muted">
+                  No thinking, tool calls, or messages in the loaded activity.
+                </p>
+              )}
+            {hasHistory ? (
+              <ActivityHistory {...history} items={visibleItems} />
             ) : null}
           </>
         )}

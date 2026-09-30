@@ -84,10 +84,8 @@ describe("focused provider activity", () => {
     expect(screen.queryByText("View Options")).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
     expect(state.historyProps).not.toHaveBeenCalled();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Show Activity" }),
-    );
-    expect(screen.getByText("Processing")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Final answer" })).toBeVisible();
   });
   it("passes complete canonical descriptors when activity is opened", async () => {

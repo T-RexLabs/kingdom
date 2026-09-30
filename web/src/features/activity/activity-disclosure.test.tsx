@@ -37,6 +37,133 @@ describe("shared activity disclosure", () => {
   });
   afterEach(() => restoreGeometry());
 
+  it("shows the real read and observed message without surrounding provider lifecycle rows", async () => {
+    const labels = [
+      "Launching Provider",
+      "Opening Session",
+      "Processing",
+      "Read app.tsx",
+      "Provider Step Completed",
+      "Processing",
+      "Provider Message",
+      "Provider Step Completed",
+      "Finalizing",
+    ];
+    const items = labels.map((label, index) => ({
+      id: `part-${index}`,
+      eventId: `event-${index}`,
+      sequence: index + 1,
+      label,
+      kind:
+        index === 3
+          ? ("tool" as const)
+          : index === 6
+            ? ("message" as const)
+            : ("progress" as const),
+    }));
+    render(
+      <ActivityDisclosure
+        scopeKey="one-read"
+        items={items}
+        gaps={[]}
+        isLoadingMore={false}
+        loadError={null}
+        loadMore={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show Activity" }),
+    );
+    await waitFor(() => expect(screen.getByText("Read app.tsx")).toBeVisible());
+    expect(screen.getByText("Provider Message")).toBeVisible();
+    for (const label of [
+      "Launching Provider",
+      "Opening Session",
+      "Processing",
+      "Provider Step Completed",
+      "Finalizing",
+    ]) {
+      expect(screen.queryByText(label)).not.toBeInTheDocument();
+    }
+    expect(document.querySelectorAll("[data-activity-event]")).toHaveLength(2);
+  });
+
+  it("omits the activity disclosure when the complete loaded history only contains routine progress", () => {
+    render(
+      <ActivityDisclosure
+        scopeKey="routine-only"
+        items={[
+          {
+            id: "p",
+            eventId: "e",
+            sequence: 1,
+            kind: "progress",
+            label: "Processing",
+          },
+        ]}
+        gaps={[]}
+        isLoadingMore={false}
+        loadError={null}
+        loadMore={vi.fn()}
+      />,
+      { wrapper: Wrapper },
+    );
+    expect(
+      screen.queryByRole("button", { name: "Show Activity" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("No provider activity has been recorded."),
+    ).not.toBeInTheDocument();
+  });
+
+  it("preserves exact gap paging when the loaded window only contains routine progress", async () => {
+    const loadMore = vi.fn(async () => undefined);
+    render(
+      <ActivityDisclosure
+        scopeKey="routine-window"
+        items={[
+          {
+            id: "p",
+            eventId: "e",
+            sequence: 81,
+            kind: "progress",
+            label: "Processing",
+          },
+        ]}
+        gaps={[
+          {
+            after: 0,
+            through: 80,
+            count: 80,
+            cursor: "earlier-window",
+            direction: "earlier",
+          },
+        ]}
+        isLoadingMore={false}
+        loadError={null}
+        loadMore={loadMore}
+      />,
+      { wrapper: Wrapper },
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show Activity" }),
+    );
+    expect(
+      screen.getByText(
+        "No thinking, tool calls, or messages in the loaded activity.",
+      ),
+    ).toBeVisible();
+    await waitFor(() =>
+      expect(
+        screen.getByText("80 earlier events are not loaded."),
+      ).toBeVisible(),
+    );
+    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Load Events" }));
+    expect(loadMore).toHaveBeenCalledWith("earlier-window");
+  });
+
   it("does not claim that history is empty when its initial read failed", async () => {
     const retry = vi.fn(async () => undefined);
     render(
@@ -126,7 +253,7 @@ describe("shared activity disclosure", () => {
       id: `part-${index}`,
       eventId: `event-${index}`,
       sequence: index + 1,
-      kind: "progress" as const,
+      kind: "tool" as const,
       label: `Event ${index + 1}`,
     }));
     render(
@@ -151,8 +278,12 @@ describe("shared activity disclosure", () => {
     const scroller = screen.getByTestId("virtuoso-scroller");
     act(() => scroller.scrollTo({ top: 20 * 52 }));
     await waitFor(() => expect(screen.getByText("Event 21")).toBeVisible());
-    await userEvent.click(screen.getByRole("button", { name: "Hide Activity" }));
-    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
+    await userEvent.click(
+      screen.getByRole("button", { name: "Hide Activity" }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show Activity" }),
+    );
     expect(screen.getByTestId("virtuoso-scroller")).toBe(scroller);
     expect(scroller.scrollTop).toBe(20 * 52);
     expect(screen.getByText("Event 21")).toBeVisible();

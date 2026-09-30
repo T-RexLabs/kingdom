@@ -143,7 +143,7 @@ describe("PlannerMessageCard", () => {
     expect(
       screen.queryByText("Provider Session Started"),
     ).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show Activity" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
   });
 
   it("keeps routine events and provider message copies behind explicit inspection", async () => {
@@ -201,9 +201,7 @@ describe("PlannerMessageCard", () => {
       screen.queryByText("Provider observed reply"),
     ).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Show Activity" }));
-    await waitFor(() =>
-      expect(screen.getByText("Provider Session Started")).toBeVisible(),
-    );
+    expect(screen.queryByText("Provider Session Started")).not.toBeInTheDocument();
     expect(
       screen.queryByText("raw provider lifecycle detail"),
     ).not.toBeInTheDocument();
@@ -479,7 +477,7 @@ describe("PlannerMessageCard", () => {
     expect(question.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("shows real live tools and progress inside the activity disclosure", async () => {
+  it("shows real live tools without routine progress inside the activity disclosure", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -501,7 +499,7 @@ describe("PlannerMessageCard", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText("Read Page")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("Processing")).toBeVisible());
+    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
     expect(
       await screen.findByText("Searching ACP activity handlers"),
     ).toBeInTheDocument();
@@ -533,6 +531,6 @@ describe("PlannerMessageCard", () => {
       expect(screen.getAllByText("Read Page")).toHaveLength(3),
     );
     expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText("Processing")).toBeVisible());
+    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
   });
 });
