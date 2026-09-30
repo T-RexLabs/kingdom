@@ -37,6 +37,7 @@ import { usePlannerSessionUI } from "./use-planner-workspace-state";
 import { PlanningContextPanel } from "./planning-context-panel";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { useThemeCopy } from "@/theme";
 import { normalizeThinkingEffortSelection } from "./provider-model-selection";
 
@@ -679,7 +680,7 @@ export function PlanningSessionPage() {
 
       </div>
       {tab === "plan" && <section role="tabpanel" id="planning-panel-plan" aria-labelledby="planning-tab-plan" className="min-h-0 flex-1 overflow-y-auto px-4 py-8 sm:px-8"><div className="mx-auto max-w-3xl space-y-6">
-        <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="font-display text-3xl">{formalizePending ? "New Plan in Progress" : draftQuery.data?.work_order_title || "Your Plan"}</h2><p className="mt-2 text-sm text-foreground-muted">{formalizePending ? "The plan is taking shape. You can switch sessions while it runs." : "Review the settled plan before moving into execution."}</p></div>{draftQuery.data && !formalizePending && <Link to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}><Button>Review &amp; Issue {workName}</Button></Link>}</div>
+        <div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="font-display text-3xl">{formalizePending ? "New Plan in Progress" : draftQuery.data?.work_order_title || "Your Plan"}</h2><p className="mt-2 text-sm text-foreground-muted">{formalizePending ? "The plan is taking shape. You can switch sessions while it runs." : "Review the settled plan before moving into execution."}</p></div>{draftQuery.data && !formalizePending && <Link className={buttonVariants()} to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}>Review &amp; Issue {workName}</Link>}</div>
         {activeOperation?.kind === "formalize" && activeOperation.error ? <p role="alert" className="text-sm text-status-failed">{activeOperation.error}</p> : null}
         {formalizePending && activeOperation?.formalizeText ? <MarkdownBlock content={activeOperation.formalizeText} /> : !formalizePending && draftQuery.data ? <MarkdownBlock content={draftQuery.data.work_order_text} /> : <div className="rounded-2xl border border-dashed border-border p-8 text-sm text-foreground-muted">{draftQuery.isLoading ? "Loading the saved plan..." : formalizePending ? "Generating your plan..." : "When the direction feels right, generate a plan from this conversation."}</div>}
         {draftQuery.error && <div role="alert" className="text-sm text-status-failed">The saved plan could not be loaded.<Button variant="ghost" size="sm" onClick={() => void draftQuery.refetch()}>Retry</Button></div>}
@@ -690,8 +691,8 @@ export function PlanningSessionPage() {
             <div className="mt-4 space-y-4">
               <h3 className="font-display text-2xl">{draftQuery.data.work_order_title}</h3>
               <MarkdownBlock content={draftQuery.data.work_order_text} />
-              <Link to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}>
-                <Button variant="outline">Review &amp; Issue Saved {workName}</Button>
+              <Link className={buttonVariants({ variant: "outline" })} to="/work-orders/new" search={{ planning_session_id: sessionId, planning_draft_id: draftQuery.data.planning_draft_id }}>
+                Review &amp; Issue Saved {workName}
               </Link>
             </div>
           </details>

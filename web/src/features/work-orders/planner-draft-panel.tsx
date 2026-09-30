@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import {
   MODAL_BODY_TEXT_CLASS,
   MODAL_SUPPORTING_TEXT_CLASS,
@@ -47,11 +48,9 @@ export function PlanResultModal({
 							Close
 						</Button>
 						{draft && planningLineage ? (
-							<Link to="/work-orders/new" search={planningLineage}>
-								<Button>
+							<Link className={buttonVariants()} to="/work-orders/new" search={planningLineage}>
 									Issue Work Order from Plan
 									<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
-								</Button>
 							</Link>
 						) : (
 							<Button disabled>

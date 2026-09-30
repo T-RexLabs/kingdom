@@ -84,5 +84,7 @@ describe("plan result modal", () => {
       planning_session_id: "session-1",
       planning_draft_id: "draft-1",
     }));
+    expect(screen.getAllByRole("link", { name: /issue work order from plan/i })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /issue work order from plan/i })).not.toBeInTheDocument();
   });
 });

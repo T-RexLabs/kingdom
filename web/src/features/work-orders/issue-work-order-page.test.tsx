@@ -546,6 +546,10 @@ describe("issue work order page", () => {
     expect(screen.getByText("Work Order Dispatched")).not.toHaveFocus();
     expect(scrollTarget).toBe(confirmationRegion);
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
+    const viewRun = screen.getAllByRole("link", { name: "View Run" });
+    expect(viewRun).toHaveLength(1);
+    expect(viewRun[0].querySelector("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: "View Run" })).not.toBeInTheDocument();
   });
 
   it("renders the dispatch confirmation before recent runs", async () => {

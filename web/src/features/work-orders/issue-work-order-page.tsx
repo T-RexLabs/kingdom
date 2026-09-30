@@ -4,7 +4,7 @@ import { ArrowRight, CheckCircle2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useThemeCopy } from "@/theme";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { runDisplayBadgeStatus, runDisplayStateLabel } from "@/features/runs/run-display-state";
 import { WorkOrderForm, type WorkOrderDispatchResult } from "./work-order-form";
@@ -81,11 +81,9 @@ export function IssueWorkOrderPage() {
                   </Badge>
                 </div>
 
-                <Link to="/runs/$runId" params={{ runId: dispatchResult.run.run_id }}>
-                  <Button size="sm" className="w-full">
-                    <ArrowRight className="h-3.5 w-3.5" />
-                    View Run
-                  </Button>
+                <Link className={buttonVariants({ size: "sm", className: "w-full" })} to="/runs/$runId" params={{ runId: dispatchResult.run.run_id }}>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                  View Run
                 </Link>
               </CardContent>
             </Card>

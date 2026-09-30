@@ -982,7 +982,21 @@ describe("PlanningSessionPage", () => {
     expect(screen.getByText("drafting")).toBeInTheDocument();
     await user.click(screen.getByText("Previous Saved Plan"));
     expect(screen.getByText("Previously settled plan text.")).toBeVisible();
-    expect(screen.getByRole("link", { name: /Review & Issue Saved/ })).toHaveAttribute("href", "#?planning_session_id=planning-session-1&planning_draft_id=saved-draft");
+    const issueSavedPlan = screen.getByRole("link", { name: /Review & Issue Saved/ });
+    expect(issueSavedPlan).toHaveAttribute("href", "#?planning_session_id=planning-session-1&planning_draft_id=saved-draft");
+    expect(issueSavedPlan.querySelector("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Review & Issue Saved/ })).not.toBeInTheDocument();
+  });
+
+  it("exposes one navigation action for reviewing and issuing the settled plan", async () => {
+    mockUsePlanningSessionDraft.mockReturnValue({ data: { planning_draft_id: "saved-draft", work_order_title: "Saved Plan Title", work_order_text: "Previously settled plan text." } });
+    render(<PlanningSessionPage />);
+    await userEvent.click(screen.getByRole("tab", { name: /Plan/ }));
+    const actions = screen.getAllByRole("link", { name: /Review & Issue/ });
+    expect(actions).toHaveLength(1);
+    expect(actions[0]).toHaveAttribute("href", "#?planning_session_id=planning-session-1&planning_draft_id=saved-draft");
+    expect(actions[0].querySelector("button")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Review & Issue/ })).not.toBeInTheDocument();
   });
 
   it("re-enables Generate Plan when an active formalize operation finalises as cancelled", () => {
