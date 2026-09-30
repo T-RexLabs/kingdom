@@ -315,6 +315,38 @@ func TestInspectSessionActivityFallbackStillHonorsInvocationStartedAt(t *testing
 	}
 }
 
+func TestInspectSessionActivityKeepsExplicitInvocationBoundariesWhenTargetIsEmpty(t *testing.T) {
+	const currentBoundary = `{"info":{"role":"user"},"parts":[{"type":"text","text":"Runtime Invocation Metadata:\nAttemptID: op_current\nKingdomProviderInvocationID: inv_current"}]}`
+	const laterBoundary = `{"info":{"role":"user"},"parts":[{"type":"text","text":"Runtime Invocation Metadata:\nAttemptID: op_later\nKingdomProviderInvocationID: inv_later"}]}`
+	const laterMessage = `{"info":{"role":"assistant","time":{"completed":"2026-06-12T10:00:03Z"}},"parts":[{"type":"text","id":"later_message","text":"Response belonging to a later invocation."}]}`
+	const currentMessage = `{"info":{"role":"assistant","time":{"completed":"2026-06-12T10:00:01Z"}},"parts":[{"type":"text","id":"current_message","text":"Response belonging to the current invocation."}]}`
+	for _, tc := range []struct {
+		name, raw, sanitized, wantPart string
+	}{
+		{name: "empty target", raw: `{"messages":[` + currentBoundary + `,` + laterBoundary + `,` + laterMessage + `]}`},
+		{name: "absent target", raw: `{"messages":[` + laterBoundary + `,` + laterMessage + `]}`},
+		{name: "sanitized export cannot discard raw boundaries", raw: `{"messages":[` + currentBoundary + `,` + laterBoundary + `,` + laterMessage + `]}`, sanitized: `{"messages":[` + laterMessage + `]}`},
+		{name: "sanitized exact target remains accessible", raw: `{"messages":[` + currentBoundary + `]}`, sanitized: `{"messages":[` + currentBoundary + `,` + currentMessage + `,` + laterBoundary + `,` + laterMessage + `]}`, wantPart: "current_message"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			items, err := collectSessionActivityWithExporter(context.Background(), SessionActivityRequest{
+				ProviderSessionID: "session_1", AttemptID: "op_current", InvocationID: "inv_current",
+				InvocationStartedAt: time.Date(2026, 6, 12, 10, 0, 0, 0, time.UTC),
+			}, &sessionActivityTestExporter{raw: []byte(tc.raw), sanitized: []byte(tc.sanitized)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantPart == "" {
+				if len(items) != 0 {
+					t.Fatalf("target gained another invocation's activity: part=%s invocation=%s", items[0].ProviderPartID, items[0].InvocationID)
+				}
+			} else if len(items) != 1 || items[0].ProviderPartID != tc.wantPart || items[0].InvocationID != "inv_current" {
+				t.Fatalf("exact sanitized target was lost or mixed with another invocation: %+v", items)
+			}
+		})
+	}
+}
+
 type sessionActivityTestExporter struct {
 	raw       []byte
 	sanitized []byte
@@ -384,7 +416,7 @@ func snapshotActivityForTest(item providerexecution.ActivityObservation) provide
 }
 func parseSessionActivityExport(raw []byte, scope sessionActivityScope) []providerexecution.ActivityObservation {
 	var items []providerexecution.ActivityObservation
-	_, err := visitSessionActivityReader(context.Background(), bytes.NewReader(raw), scope, scope.InvocationID, func(item providerexecution.ActivityObservation) error {
+	_, _, err := visitSessionActivityReader(context.Background(), bytes.NewReader(raw), scope, scope.InvocationID, func(item providerexecution.ActivityObservation) error {
 		items = append(items, snapshotActivityForTest(item))
 		return nil
 	})

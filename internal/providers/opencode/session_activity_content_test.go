@@ -32,7 +32,7 @@ func TestDiagnosticActivityPreservesExactContentBeyondPreview(t *testing.T) {
 	output := "\n  " + strings.Repeat("result 🌍", 20000) + "\n"
 	encoded, _ := json.Marshal(output)
 	raw := `{"messages":[{"parts":[{"type":"tool","id":"large-part","callID":"large-call","tool":"read","state":{"status":"error","input":` + input + `,"output":` + string(encoded) + `}}],"info":{"role":"assistant"}}]}`
-	count, err := visitSessionActivityReader(context.Background(), strings.NewReader(raw), sessionActivityScope{}, "inv-exact", func(item providerexecution.ActivityObservation) error {
+	count, _, err := visitSessionActivityReader(context.Background(), strings.NewReader(raw), sessionActivityScope{}, "inv-exact", func(item providerexecution.ActivityObservation) error {
 		if item.ProviderPartID != "large-part" || item.ToolCallID != "large-call" || item.ToolStatus != "error" || item.InvocationID != "inv-exact" {
 			t.Fatalf("identity changed: %+v", item)
 		}
@@ -129,7 +129,7 @@ func TestDiagnosticActivityVisitorFailureStopsWithoutFallback(t *testing.T) {
 func TestDiagnosticActivityRejectsMalformedExportBeforeVisiting(t *testing.T) {
 	raw := `{"messages":[{"info":{"role":"assistant"},"parts":[{"type":"reasoning","text":"must not publish partial export"}]}],"invalid":1e+}`
 	visited := false
-	_, err := visitSessionActivityReader(context.Background(), strings.NewReader(raw), sessionActivityScope{}, "inv-1", func(providerexecution.ActivityObservation) error { visited = true; return nil })
+	_, _, err := visitSessionActivityReader(context.Background(), strings.NewReader(raw), sessionActivityScope{}, "inv-1", func(providerexecution.ActivityObservation) error { visited = true; return nil })
 	if err == nil || visited {
 		t.Fatalf("invalid export published activity: err=%v visited=%v", err, visited)
 	}
