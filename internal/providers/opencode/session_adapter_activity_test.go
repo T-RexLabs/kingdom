@@ -37,8 +37,8 @@ func TestEmitActivityObservationStreamsReasoningText(t *testing.T) {
 	if observed.Kind != ExecuteActivityKindReasoning {
 		t.Fatalf("expected reasoning activity kind, got %q", observed.Kind)
 	}
-	if observed.RawText != "**Structuring the landing page request**" {
-		t.Fatalf("expected raw reasoning text from part.text, got %q", observed.RawText)
+	if observed.Reasoning.PreviewText() != "**Structuring the landing page request**" {
+		t.Fatalf("expected raw reasoning text from part.text, got %q", observed.Reasoning.PreviewText())
 	}
 	if observed.Summary != "" {
 		t.Fatalf("expected summary to remain empty, got %q", observed.Summary)
@@ -59,8 +59,8 @@ func TestEmitActivityObservationFallsBackToReasoningMetadataPlaceholder(t *testi
 	if observed.Kind != ExecuteActivityKindReasoning {
 		t.Fatalf("expected reasoning activity kind, got %q", observed.Kind)
 	}
-	if observed.RawText != "" {
-		t.Fatalf("expected raw reasoning text to stay empty, got %q", observed.RawText)
+	if observed.Reasoning.PreviewText() != "" {
+		t.Fatalf("expected raw reasoning text to stay empty, got %q", observed.Reasoning.PreviewText())
 	}
 	if observed.Summary != "The provider emitted a reasoning step here, but only encrypted reasoning metadata is available." {
 		t.Fatalf("expected encrypted reasoning summary placeholder, got %q", observed.Summary)
@@ -84,8 +84,8 @@ func TestEmitActivityObservationStreamsToolUse(t *testing.T) {
 	if observed.ToolTitle != "https://example.com (text/html)" {
 		t.Fatalf("expected tool title from part.state.title, got %q", observed.ToolTitle)
 	}
-	if observed.ToolInput != "{\n  \"url\": \"https://example.com\"\n}" {
-		t.Fatalf("expected formatted tool input from part.state.input, got %q", observed.ToolInput)
+	if observed.Input.PreviewText() != "{\"url\":\"https://example.com\"}" {
+		t.Fatalf("expected formatted tool input from part.state.input, got %q", observed.Input.PreviewText())
 	}
 	if observed.ProviderPartID != "prt_tool_1" {
 		t.Fatalf("expected provider part id from part.id, got %q", observed.ProviderPartID)
@@ -122,7 +122,7 @@ func TestEmitActivityObservationEmitsProgressForTokenBearingStepFinish(t *testin
 	if observed.OccurredAt != "2026-06-12T14:38:02Z" {
 		t.Fatalf("expected occurred-at from the observed part timestamp, got %q", observed.OccurredAt)
 	}
-	if observed.RawText != "" || observed.Summary != "" || observed.ToolName != "" {
+	if observed.Reasoning.PreviewText() != "" || observed.Summary != "" || observed.ToolName != "" {
 		t.Fatalf("token-only progress unexpectedly included text or tool activity: %+v", observed)
 	}
 	raw, err := json.Marshal(observed)
@@ -134,15 +134,11 @@ func TestEmitActivityObservationEmitsProgressForTokenBearingStepFinish(t *testin
 	}
 }
 
-func TestEmitActivityObservationIgnoresTextAndStepFinishWithoutTokenUsage(t *testing.T) {
+func TestEmitActivityObservationIgnoresStepFinishWithoutTokenUsage(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		line string
 	}{
-		{
-			name: "text",
-			line: `{"type":"text","sessionID":"ses_1","part":{"type":"text","id":"prt_text_1","text":"final answer"}}`,
-		},
 		{
 			name: "step finish without token data",
 			line: `{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","id":"prt_step_3","reason":"stop"}}`,
@@ -157,5 +153,21 @@ func TestEmitActivityObservationIgnoresTextAndStepFinishWithoutTokenUsage(t *tes
 				t.Fatalf("expected no activity for line %q", tc.line)
 			}
 		})
+	}
+}
+
+func TestEmitActivityObservationPreservesUnnamedToolCall(t *testing.T) {
+	observed, emitted := observeActivityFromWire(t, `{"type":"tool_use","part":{"type":"tool","id":"part-without-name","callID":"call-without-name","state":{"input":{"attempt":9007199254740993},"output":"exact result"}}}`)
+	if !emitted {
+		t.Fatal("structured unnamed tool call was dropped")
+	}
+	if observed.Kind != ExecuteActivityKindTool || observed.ProviderPartID != "part-without-name" || observed.ToolCallID != "call-without-name" {
+		t.Fatalf("tool identity lost: %#v", observed)
+	}
+	if observed.ToolName != "" || observed.ToolStatus != "" {
+		t.Fatalf("missing metadata was fabricated: %#v", observed)
+	}
+	if observed.Input.PreviewText() != `{"attempt":9007199254740993}` || observed.Output.PreviewText() != "exact result" {
+		t.Fatalf("tool content lost: %#v", observed)
 	}
 }

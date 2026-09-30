@@ -220,7 +220,7 @@ export const StackedBarChart = memo(function StackedBarChart({
                   width={8}
                   height={8}
                   rx={2}
-                  fill={colorMap.get(entry.key) ?? "var(--color-gold)"}
+                  fill={colorMap.get(entry.key) ?? "var(--color-accent)"}
                   opacity={0.85}
                 />
                 <text
@@ -262,7 +262,7 @@ export const StackedBarChart = memo(function StackedBarChart({
                 width={segment.width}
                 height={segment.height}
                 rx={2}
-                fill={colorMap.get(segment.seriesKey) ?? "var(--color-gold)"}
+                fill={colorMap.get(segment.seriesKey) ?? "var(--color-accent)"}
                 opacity={0.85}
               />
             ))}

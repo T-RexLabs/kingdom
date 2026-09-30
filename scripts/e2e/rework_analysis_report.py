@@ -431,30 +431,30 @@ def build_rework_analysis(
                         "scoped_instruction_count": text.count("Scoped Delegator Instruction:"),
                     }
                 )
-                if "council" not in str(row["from_agent_id"] or ""):
+                if "plan-author" not in str(row["from_agent_id"] or ""):
                     authority_violations.append(
                         {
                             "message_id": row["message_id"],
                             "node_id": node_id,
-                            "expected_from_contains": "council",
+                            "expected_from_contains": "plan-author",
                             "actual_from": row["from_agent_id"],
                         }
                     )
-            if node_id.startswith("execution_review") and "council" not in str(row["from_agent_id"] or ""):
+            if node_id.startswith("execution_review") and "plan-author" not in str(row["from_agent_id"] or ""):
                 authority_violations.append(
                     {
                         "message_id": row["message_id"],
                         "node_id": node_id,
-                        "expected_from_contains": "council",
+                        "expected_from_contains": "plan-author",
                         "actual_from": row["from_agent_id"],
                     }
                 )
-            if node_id.startswith("validation_gates") and "council" not in str(row["from_agent_id"] or ""):
+            if node_id.startswith("validation_gates") and "plan-author" not in str(row["from_agent_id"] or ""):
                 authority_violations.append(
                     {
                         "message_id": row["message_id"],
                         "node_id": node_id,
-                        "expected_from_contains": "council",
+                        "expected_from_contains": "plan-author",
                         "actual_from": row["from_agent_id"],
                     }
                 )

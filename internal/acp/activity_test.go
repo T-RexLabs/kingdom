@@ -1,6 +1,9 @@
 package acp
 
-import "testing"
+import (
+	"kingdom/internal/core/providerexecution"
+	"testing"
+)
 
 func TestActivityPayloadToolCopiesBaseAndMapsFields(t *testing.T) {
 	payload := ActivityPayload(map[string]any{"run_id": "r1", "attempt_id": "a1"}, "part-1", ActivityInput{
@@ -31,11 +34,11 @@ func TestActivityPayloadToolCopiesBaseAndMapsFields(t *testing.T) {
 }
 
 func TestActivityPayloadReasoningUsesSummaryAsDetail(t *testing.T) {
-	payload := ActivityPayload(nil, "p", ActivityInput{Kind: "reasoning", Summary: "thinking hard"})
+	payload := ActivityPayload(nil, "p", ActivityInput{Kind: "reasoning", Reasoning: providerexecution.ActivityText("thinking hard")})
 	if payload["kind"] != KingdomReasoningKind {
 		t.Fatalf("kind = %v", payload["kind"])
 	}
-	if payload["detail"] != "thinking hard" {
+	if payload["reasoning"].(providerexecution.ActivityContent).PreviewText() != "thinking hard" {
 		t.Fatalf("detail = %v", payload["detail"])
 	}
 }
@@ -49,5 +52,12 @@ func TestActivityPayloadSkipsEmptyAndUnknown(t *testing.T) {
 	}
 	if ActivityPayload(nil, "p", ActivityInput{Kind: "mystery"}) != nil {
 		t.Fatal("expected nil for an unknown activity kind")
+	}
+}
+
+func TestActivityPayloadKeepsUnnamedObservedToolCall(t *testing.T) {
+	payload := ActivityPayload(nil, "call", ActivityInput{Kind: "tool", ToolCallID: "provider-call", Output: providerexecution.ActivityText("")})
+	if payload == nil || payload["label"] != "Tool Call" || payload["tool_name"] != nil || payload["tool_status"] != nil {
+		t.Fatalf("unnamed observed call was lost or invented metadata: %#v", payload)
 	}
 }

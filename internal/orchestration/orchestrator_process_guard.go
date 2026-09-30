@@ -191,7 +191,7 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 		AND (
 		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
 		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
-		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'decree_attempt')
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt')
 		)
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
 		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
@@ -287,7 +287,7 @@ func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context)
 		AND (
 		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
 		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
-		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'decree_attempt')
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt')
 		)
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
 		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)

@@ -38,32 +38,32 @@ func TestVersionFieldsAreRequiredAndValidated(t *testing.T) {
 		{
 			name:       "workflow_missing_version",
 			schemaName: "workflow",
-			json:       `{"workflow_id":"royal-decree-v1","nodes":[{"node_id":"decree_intake","required_role":"king","node_class":"decree_intake"}],"edges":[]}`,
+			json:       `{"workflow_id":"work-order-v1","nodes":[{"node_id":"work_intake","required_role":"governance","node_class":"work_intake"}],"edges":[]}`,
 		},
 		{
 			name:       "workflow_wrong_version",
 			schemaName: "workflow",
-			json:       `{"version":"v2","workflow_id":"royal-decree-v1","nodes":[{"node_id":"decree_intake","required_role":"king","node_class":"decree_intake"}],"edges":[]}`,
+			json:       `{"version":"v2","workflow_id":"work-order-v1","nodes":[{"node_id":"work_intake","required_role":"governance","node_class":"work_intake"}],"edges":[]}`,
 		},
 		{
 			name:       "event_missing_version",
 			schemaName: "event_v1",
-			json:       `{"event_id":"evt_1","run_id":"run_1","run_event_seq":1,"node_run_id":"nr_1","attempt_id":"att_1","seq":1,"created_at":"2026-03-01T12:00:00Z","event_type":"attempt.progress","payload_json":{},"actor_id":"actor_1","role_id":"king","authority_source":"runtime.event_bridge","reason_code":"stream_event","reason_text":"stream event ingested","correlation_id":"corr_1","causation_id":"caus_1"}`,
+			json:       `{"event_id":"evt_1","run_id":"run_1","run_event_seq":1,"node_run_id":"nr_1","attempt_id":"att_1","seq":1,"created_at":"2026-03-01T12:00:00Z","event_type":"attempt.progress","payload_json":{},"actor_id":"actor_1","role_id":"governance","authority_source":"runtime.event_bridge","reason_code":"stream_event","reason_text":"stream event ingested","correlation_id":"corr_1","causation_id":"caus_1"}`,
 		},
 		{
 			name:       "event_wrong_version",
 			schemaName: "event_v1",
-			json:       `{"event_id":"evt_1","schema_version":"v2","run_id":"run_1","run_event_seq":1,"node_run_id":"nr_1","attempt_id":"att_1","seq":1,"created_at":"2026-03-01T12:00:00Z","event_type":"attempt.progress","payload_json":{},"actor_id":"actor_1","role_id":"king","authority_source":"runtime.event_bridge","reason_code":"stream_event","reason_text":"stream event ingested","correlation_id":"corr_1","causation_id":"caus_1"}`,
+			json:       `{"event_id":"evt_1","schema_version":"v2","run_id":"run_1","run_event_seq":1,"node_run_id":"nr_1","attempt_id":"att_1","seq":1,"created_at":"2026-03-01T12:00:00Z","event_type":"attempt.progress","payload_json":{},"actor_id":"actor_1","role_id":"governance","authority_source":"runtime.event_bridge","reason_code":"stream_event","reason_text":"stream event ingested","correlation_id":"corr_1","causation_id":"caus_1"}`,
 		},
 		{
 			name:       "retry_policy_missing_version",
 			schemaName: "retry_policy",
-			json:       `{"policy_id":"retry-policy-mvp-v1","defaults":{"jitter_mode":"full"},"classes":{"non_retryable":{"max_retries":0,"escalation":{"target_role":"chancellor"}}},"error_code_map":{"invalid_output_schema":"non_retryable"}}`,
+			json:       `{"policy_id":"retry-policy-mvp-v1","defaults":{"jitter_mode":"full"},"classes":{"non_retryable":{"max_retries":0,"escalation":{"target_role":"coordinator"}}},"error_code_map":{"invalid_output_schema":"non_retryable"}}`,
 		},
 		{
 			name:       "retry_policy_wrong_version",
 			schemaName: "retry_policy",
-			json:       `{"version":"v2","policy_id":"retry-policy-mvp-v1","defaults":{"jitter_mode":"full"},"classes":{"non_retryable":{"max_retries":0,"escalation":{"target_role":"chancellor"}}},"error_code_map":{"invalid_output_schema":"non_retryable"}}`,
+			json:       `{"version":"v2","policy_id":"retry-policy-mvp-v1","defaults":{"jitter_mode":"full"},"classes":{"non_retryable":{"max_retries":0,"escalation":{"target_role":"coordinator"}}},"error_code_map":{"invalid_output_schema":"non_retryable"}}`,
 		},
 		{
 			name:       "worker_output_missing_version",

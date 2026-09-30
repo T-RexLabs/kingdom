@@ -28,6 +28,7 @@ import (
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
+	"kingdom/internal/theme"
 	webui "kingdom/web"
 )
 
@@ -128,6 +129,13 @@ func run() (exitCode int) {
 	}
 	defer db.Close()
 
+	themeStore, err := theme.OpenStore(filepath.Dir(dbPath))
+	if err != nil {
+		log.Printf("open theme storage: %v", err)
+		return exitFatalStartup
+	}
+	defer themeStore.Close()
+
 	if err := ensureSchema(db); err != nil {
 		log.Printf("ensure schema: %v", err)
 		return exitFatalStartup
@@ -165,6 +173,7 @@ func run() (exitCode int) {
 
 	apiServer, err := api.NewHandler(api.ServerConfig{
 		DB:                         db,
+		ThemeStore:                 themeStore,
 		StartupContext:             ctx,
 		BasePath:                   basePath,
 		AutonomousApprovalsDefault: &autonomousApprovals,

@@ -8,19 +8,19 @@ model_policy:
 agent_policy:
   default_agent: advisor
   role_agents:
-    allfather: king
-    king: king
-    chancellor: chancellor
-    council-member: council
-    noble-delegate: advisor
-    clergy-delegate: advisor
-    burgher-delegate: advisor
-    peasant-delegate: advisor
-    intelligence-qa-scout: qa_scout
-    intelligence-nightraven: nightraven
-    intelligence-loki-chaos: tester
-    builder-berserker: builder
-    reviewer-shieldmaiden: reviewer
+    operator: governance
+    governance: governance
+    coordinator: coordinator
+    plan-author: plan-author
+    architecture-advisor: advisor
+    risk-advisor: advisor
+    systems-advisor: advisor
+    usability-advisor: advisor
+    qa-validator: qa-validator
+    security-validator: security-validator
+    resilience-validator: resilience-validator
+    builder: builder
+    reviewer: reviewer
 
 timeouts:
   strict_startup_total_timeout: 90s
@@ -36,6 +36,6 @@ timeouts:
     validation_gates: 20m
 
 escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
+  retry_exhausted_target_role: coordinator
+  unresolved_strategic_target_role: governance
   dead_letter_required: true

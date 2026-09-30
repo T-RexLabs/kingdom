@@ -165,8 +165,8 @@ func TestPlanEmitsDeadLetterEscalationOnExhaustion(t *testing.T) {
 	if result.EscalationReason != "dead_letter" {
 		t.Fatalf("unexpected escalation reason: got %q want %q", result.EscalationReason, "dead_letter")
 	}
-	if result.EscalationTarget != "chancellor" {
-		t.Fatalf("unexpected escalation target: got %q want %q", result.EscalationTarget, "chancellor")
+	if result.EscalationTarget != "coordinator" {
+		t.Fatalf("unexpected escalation target: got %q want %q", result.EscalationTarget, "coordinator")
 	}
 }
 

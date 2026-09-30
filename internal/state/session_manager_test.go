@@ -23,7 +23,7 @@ func TestSessionManagerLeaseLifecycle(t *testing.T) {
 
 	created, err := manager.CreateLease(ctx, CreateSessionLeaseRequest{
 		SessionID:       "session_1",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:01:00Z",
 		LastHeartbeatAt: "2026-03-01T12:00:30Z",
 		CreatedAt:       "2026-03-01T12:00:00Z",
@@ -84,7 +84,7 @@ func TestSessionManagerRenewReportsStateConflictWhenLeaseNotActive(t *testing.T)
 
 	_, err := manager.CreateLease(ctx, CreateSessionLeaseRequest{
 		SessionID:       "session_conflict",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:05:00Z",
 		LastHeartbeatAt: "2026-03-01T12:00:30Z",
 		CreatedAt:       "2026-03-01T12:00:00Z",
@@ -133,7 +133,7 @@ func TestSessionManagerReactivateLeaseReopensClosedLease(t *testing.T) {
 
 	_, err := manager.CreateLease(ctx, CreateSessionLeaseRequest{
 		SessionID:       "session_reactivate",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:05:00Z",
 		LastHeartbeatAt: "2026-03-01T12:00:30Z",
 		CreatedAt:       "2026-03-01T12:00:00Z",
@@ -153,7 +153,7 @@ func TestSessionManagerReactivateLeaseReopensClosedLease(t *testing.T) {
 
 	reactivated, err := manager.ReactivateLease(ctx, ReactivateSessionLeaseRequest{
 		SessionID:       "session_reactivate",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:06:00Z",
 		LastHeartbeatAt: "2026-03-01T12:02:00Z",
 		UpdatedAt:       "2026-03-01T12:02:00Z",
@@ -182,7 +182,7 @@ func TestSessionManagerReconcileStaleLeasesExpiresAndRecordsRecoveryMetrics(t *t
 
 	_, err := manager.CreateLease(ctx, CreateSessionLeaseRequest{
 		SessionID:       "session_stale",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:30:00Z",
 		LastHeartbeatAt: "2026-03-01T12:00:00Z",
 		CreatedAt:       "2026-03-01T12:00:00Z",
@@ -194,7 +194,7 @@ func TestSessionManagerReconcileStaleLeasesExpiresAndRecordsRecoveryMetrics(t *t
 
 	_, err = manager.CreateLease(ctx, CreateSessionLeaseRequest{
 		SessionID:       "session_healthy",
-		AgentID:         "agent_king",
+		AgentID:         "agent_governance",
 		LeaseExpiresAt:  "2026-03-01T12:30:00Z",
 		LastHeartbeatAt: "2026-03-01T12:00:20Z",
 		CreatedAt:       "2026-03-01T12:00:00Z",
@@ -266,7 +266,7 @@ func TestSessionManagerFindStaleLeasesUsesRFC3339NanoChronology(t *testing.T) {
 			manager := NewSessionManager(db, NewSessionLifecycleMetrics())
 			if _, err := manager.CreateLease(context.Background(), CreateSessionLeaseRequest{
 				SessionID:       "session_variable_precision",
-				AgentID:         "agent_king",
+				AgentID:         "agent_governance",
 				LeaseExpiresAt:  tc.leaseExpires,
 				LastHeartbeatAt: now,
 				CreatedAt:       now,
@@ -307,6 +307,6 @@ func TestNormalizeStaleLeaseInputsAppliesDefaultThreshold(t *testing.T) {
 func seedSessionTestAgent(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king', 'king', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance', 'governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 }

@@ -88,8 +88,8 @@ func projectRunCollectionPayloadTx(ctx context.Context, tx *sql.Tx, req RunColle
 
 	payload["run_id"] = projection.RunID
 	payload["workflow_id"] = projection.WorkflowID
-	payload["decree_id"] = projection.DecreeID
-	payload["decree_title"] = projection.DecreeTitle
+	payload["work_order_id"] = projection.WorkOrderID
+	payload["work_order_title"] = projection.WorkOrderTitle
 	payload["status"] = projection.Status
 	payload["plan_state"] = projection.PlanState
 	payload["display_state"] = projection.DisplayState

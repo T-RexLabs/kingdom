@@ -39,6 +39,7 @@ import (
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
+	"kingdom/internal/theme"
 	"kingdom/internal/workspace"
 )
 
@@ -54,6 +55,8 @@ const (
 var generatedIDCounter uint64
 
 type ServerConfig struct {
+	// ThemeStore is owned by the runtime that constructs the API server.
+	ThemeStore                 *theme.Store
 	DB                         *sql.DB
 	StartupContext             context.Context
 	BasePath                   string
@@ -87,6 +90,7 @@ type ServerConfig struct {
 }
 
 type Server struct {
+	themes                     *theme.Store
 	db                         *sql.DB
 	now                        func() time.Time
 	idGenerator                func(prefix string) string
@@ -410,6 +414,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	s := &Server{
+		themes:                     cfg.ThemeStore,
 		db:                         cfg.DB,
 		now:                        now,
 		idGenerator:                idGenerator,
@@ -531,7 +536,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			ConfigDir:               bootstrapassets.ManagedOpenCodeRoot(cfg.ProjectRoot),
 			DatabasePath:            bootstrapassets.ManagedOpenCodeDatabasePath(cfg.ProjectRoot),
 			InlineConfigContent:     plannerInlineConfig,
-			Agent:                   "planner",
+			Agent:                   "planning-assistant",
 			SkipPermissions:         true,
 			FirstEventTimeout:       firstEventTimeout,
 			StreamInactivityTimeout: streamInactivityTimeout,
@@ -582,7 +587,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	idempotency := NewIdempotencyMiddleware(state.NewIdempotencyStore(cfg.DB), now)
-	wrapped := s.authenticationMiddleware(validator(idempotency(inner)))
+	wrapped := s.authenticationMiddleware(limitThemeRequestBody(validator(idempotency(inner))))
 
 	// SSE streaming endpoints bypass idempotency middleware (which buffers the full response)
 	// but still go through OpenAPI validation.
@@ -614,6 +619,7 @@ func (s *Server) RecoverPlanningOperations(ctx context.Context) error {
 func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/session", s.handleCreateAuthSession)
 	mux.HandleFunc("GET /mutation-outcomes/{key}", s.handleGetMutationOutcome)
+	s.registerThemeRoutes(mux)
 	mux.HandleFunc("GET /health", s.handleGetHealth)
 	mux.HandleFunc("GET /roles", s.handleListRoles)
 	mux.HandleFunc("GET /agents", s.handleListAgents)
@@ -652,13 +658,13 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /external-source-captures", s.handleCaptureExternalSource)
 	mux.HandleFunc("GET /external-source-snapshots/{id}", s.handleGetExternalSourceSnapshot)
 	mux.HandleFunc("GET /external-source-snapshots/{id}/comments", s.handleGetExternalSourceSnapshotComments)
-	mux.HandleFunc("GET /external-source-snapshots/{id}/decree-text", s.handleGetExternalSourceDecreeText)
+	mux.HandleFunc("GET /external-source-snapshots/{id}/work-order-text", s.handleGetExternalSourceWorkOrderText)
 	mux.HandleFunc("GET /external-source-links/{id}/history", s.handleGetExternalSourceLinkHistory)
 	mux.HandleFunc("POST /external-source-links/{id}/refreshes", s.handleRefreshExternalSourceLink)
 	mux.HandleFunc("POST /external-source-links/{id}/adoptions", s.handleAdoptExternalSourceLink)
 	mux.HandleFunc("POST /external-source-links/{id}/detachments", s.handleDetachExternalSourceLink)
-	mux.HandleFunc("POST /decrees", s.handleCreateDecree)
-	mux.HandleFunc("GET /decrees/{id}", s.handleGetDecree)
+	mux.HandleFunc("POST /work-orders", s.handleCreateWorkOrder)
+	mux.HandleFunc("GET /work-orders/{id}", s.handleGetWorkOrder)
 	mux.HandleFunc("POST /planning-sessions", s.handleCreatePlanningSession)
 	mux.HandleFunc("GET /planning-sessions", s.handleListPlanningSessions)
 	mux.HandleFunc("GET /planning-sessions/{id}", s.handleGetPlanningSession)
@@ -670,7 +676,7 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /acp/runs", s.handleCreateAcpRun)
 	mux.HandleFunc("GET /acp/runs/{runId}", s.handleGetAcpRun)
 	mux.HandleFunc("GET /acp/runs/{runId}/events", s.handleStreamAcpRunEvents)
-	mux.HandleFunc("GET /acp/runs/{runId}/activity", s.handleGetAcpRunActivity)
+	mux.HandleFunc("GET /acp/runs/{runId}/activity", s.handleGetActivity)
 	mux.HandleFunc("POST /acp/runs/{runId}/cancel", s.handleCancelAcpRun)
 	mux.HandleFunc("GET /planning-sessions/{id}/messages", s.handleListPlanningSessionMessages)
 	mux.HandleFunc("PUT /planning-sessions/{id}/messages/{messageId}/activate", s.handleActivatePlanningMessageVariant)
@@ -691,7 +697,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/artifacts", s.handleListRunArtifacts)
 	mux.HandleFunc("GET /runs/{id}/artifacts/archive", s.handleGetRunArtifactsArchive)
 	mux.HandleFunc("GET /runs/{id}/graph", s.handleGetRunGraph)
-	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetRunExecutionActivity)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetActivity)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}", s.handleGetActivityContent)
+	mux.HandleFunc("GET /acp/runs/{runId}/activity/{eventId}/content/{field}", s.handleGetActivityContent)
+	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/publication/{batchId}/entries", s.handleListRunPublicationEntries)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}", s.handleGetRunExecution)
 	mux.HandleFunc("GET /runs/{id}/executions", s.handleListRunExecutions)
 	mux.HandleFunc("GET /runs/{id}/nodes/{nodeId}/attempts", s.handleListRunNodeAttempts)
@@ -710,8 +719,8 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /events/stream", s.handleStreamEvents)
 	mux.HandleFunc("GET /metrics/runtime", s.handleGetMetricsRuntime)
 	mux.HandleFunc("GET /dashboard/snapshot", s.handleGetDashboardSnapshot)
-	mux.HandleFunc("GET /realm-analytics/snapshot", s.handleGetRealmAnalyticsSnapshot)
-	mux.HandleFunc("GET /realm-analytics/execution-detail", s.handleGetRealmAnalyticsExecutionDetailSnapshot)
+	mux.HandleFunc("GET /analytics/snapshot", s.handleGetAnalyticsSnapshot)
+	mux.HandleFunc("GET /analytics/execution-detail", s.handleGetAnalyticsExecutionDetailSnapshot)
 }
 
 type runListResponse struct {
@@ -813,27 +822,27 @@ func (s *Server) handleGetHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, gen.HealthResponse{Status: gen.HealthResponseStatusOk})
 }
 
-func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
-	decreeID := strings.TrimSpace(r.PathValue("id"))
-	if decreeID == "" {
-		s.writeBadRequest(w, "decree id is required")
+func (s *Server) handleGetWorkOrder(w http.ResponseWriter, r *http.Request) {
+	workOrderID := strings.TrimSpace(r.PathValue("id"))
+	if workOrderID == "" {
+		s.writeBadRequest(w, "work order id is required")
 		return
 	}
 
-	var detail gen.DecreeDetail
+	var detail gen.WorkOrderDetail
 	var createdAt string
 	var metadataJSON string
 	err := s.db.QueryRowContext(
 		r.Context(),
-		`SELECT decree_id, decree_title, metadata_json, created_at FROM decrees WHERE decree_id = ?`,
-		decreeID,
-	).Scan(&detail.DecreeId, &detail.DecreeTitle, &metadataJSON, &createdAt)
+		`SELECT work_order_id, work_order_title, metadata_json, created_at FROM work_orders WHERE work_order_id = ?`,
+		workOrderID,
+	).Scan(&detail.WorkOrderId, &detail.WorkOrderTitle, &metadataJSON, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "decree not found", "api.get_decree", map[string]any{"decree_id": decreeID})
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "work order not found", "api.get_work_order", map[string]any{"work_order_id": workOrderID})
 		return
 	}
 	if err != nil {
-		s.writeInternalError(w, "fetch decree failed")
+		s.writeInternalError(w, "fetch work order failed")
 		return
 	}
 
@@ -844,33 +853,33 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 			detail.Metadata = &metadata
 		}
 	}
-	links, linkErr := s.externalStore.GetLinksForTarget(r.Context(), "decree", decreeID)
+	links, linkErr := s.externalStore.GetLinksForTarget(r.Context(), "work_order", workOrderID)
 	if linkErr != nil {
-		s.writeInternalError(w, "fetch decree provenance failed")
+		s.writeInternalError(w, "fetch work order provenance failed")
 		return
 	}
 	detail.ExternalSources = externalProvenanceListFromState(links, false)
 
-	text, err := state.OpenDecreeText(r.Context(), s.db, decreeID)
+	text, err := state.OpenWorkOrderText(r.Context(), s.db, workOrderID)
 	if err != nil {
-		s.writeInternalError(w, "fetch decree text failed")
+		s.writeInternalError(w, "fetch work order text failed")
 		return
 	}
 	defer text.Close()
 	metadata, err := json.Marshal(detail)
 	if err != nil {
-		s.writeInternalError(w, "encode decree metadata failed")
+		s.writeInternalError(w, "encode work order metadata failed")
 		return
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(metadata, &fields); err != nil {
-		s.writeInternalError(w, "encode decree metadata failed")
+		s.writeInternalError(w, "encode work order metadata failed")
 		return
 	}
-	delete(fields, "decree_text")
+	delete(fields, "work_order_text")
 	prefix, err := json.Marshal(fields)
 	if err != nil {
-		s.writeInternalError(w, "encode decree metadata failed")
+		s.writeInternalError(w, "encode work order metadata failed")
 		return
 	}
 	w.Header().Set("Cache-Control", "no-store")
@@ -878,7 +887,7 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 		if _, err := out.Write(prefix[:len(prefix)-1]); err != nil {
 			return err
 		}
-		if _, err := io.WriteString(out, `,"decree_text":`); err != nil {
+		if _, err := io.WriteString(out, `,"work_order_text":`); err != nil {
 			return err
 		}
 		if err := providerexecution.WriteJSONString(r.Context(), out, text); err != nil {
@@ -888,7 +897,7 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 		return err
 	})
 	if err != nil {
-		s.writeInternalError(w, "stream decree failed")
+		s.writeInternalError(w, "stream work order failed")
 	}
 }
 

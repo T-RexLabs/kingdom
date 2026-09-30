@@ -112,12 +112,12 @@ func (o *orchestrationLoop) advisorSynthesisDocument(ctx context.Context, runID 
 		return promptDocument{}, nil
 	}
 	prefix := strings.Join([]string{
-		"Synthesize all advisor counsel into a single decision-ready brief for council deliberation.", "", "Synthesis requirements:",
+		"Synthesize all advisor counsel into a single decision-ready brief for plan development.", "", "Synthesis requirements:",
 		"- Treat advisor responses as counsel and evidence, not decisions or approval authority.",
-		"- Preserve explicit decree requirements and accepted architecture while using counsel to fill unspecified details and state material assumptions.",
+		"- Preserve explicit work order requirements and accepted architecture while using counsel to fill unspecified details and state material assumptions.",
 		"- Merge aligned advice into one coherent direction.", "- Call out major tradeoffs and conflicts among advisors.",
 		"- Separate executable investigation, safeguards, and verification from genuinely unavailable external dependencies; do not invent approval gates.",
-		"- Keep output strategic, concrete, and ready for council planning."}, "\n")
+		"- Keep output strategic, concrete, and ready for plan drafting."}, "\n")
 	return promptJoin("\n\n", promptLiteral(prefix), promptSection("Advisor Responses", promptInstructions(responses...))), nil
 }
 
@@ -196,7 +196,7 @@ func (o *orchestrationLoop) builderInstructionDocument(ctx context.Context, runI
 	baseline := firstPromptFile(previousFile, approvedFile, currentFile)
 	primaryDoc := promptPrepared(primary)
 	primaryDoc.fallback = "none"
-	plans := []promptDocument{promptSection("Primary Council Rework Plan", primaryDoc)}
+	plans := []promptDocument{promptSection("Primary Rework Plan", primaryDoc)}
 	if baseline != nil && (primary == nil || primary.size != baseline.size || primary.sha != baseline.sha) {
 		plans = append(plans, promptSection("Approved Plan Baseline", promptPrepared(baseline)))
 	}
@@ -214,7 +214,7 @@ func (o *orchestrationLoop) builderInstructionDocument(ctx context.Context, runI
 	if err != nil {
 		return promptDocument{}, err
 	}
-	groups := []promptDocument{promptLiteral("Execution directive: prioritize the latest council rework plan for implementation updates."), promptJoin("\n\n", plans...)}
+	groups := []promptDocument{promptLiteral("Execution directive: prioritize the latest rework plan for implementation updates."), promptJoin("\n\n", plans...)}
 	if failureFile.size > 0 || scopedFile.size > 0 {
 		groups = append(groups, promptJoin("\n\n", promptLiteral("Address all Failure Context items first."), promptSection("Failure Context", promptPrepared(failureFile)), promptSection("Scoped Delegator Instruction", promptPrepared(scopedFile))))
 	}
@@ -236,9 +236,9 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 		if err != nil {
 			return promptDocument{}, "", err
 		}
-		return promptInstructions(promptLiteral(scoped), promptLiteral(o.allfatherReworkFeedbackForAdvisoryAttempt(ctx, runID, attempt)), advisors), scoped, nil
+		return promptInstructions(promptLiteral(scoped), promptLiteral(o.operatorReworkFeedbackForAdvisoryAttempt(ctx, runID, attempt)), advisors), scoped, nil
 	case workflow.NodeClassPlanDrafting:
-		feedback := []promptDocument{promptLiteral(o.allfatherPlanReworkFeedbackForPlanAttempt(ctx, runID, attempt)), promptLiteral(o.allfatherFinalReworkFeedbackForPlanAttempt(ctx, runID, attempt))}
+		feedback := []promptDocument{promptLiteral(o.operatorPlanReworkFeedbackForPlanAttempt(ctx, runID, attempt)), promptLiteral(o.operatorFinalReworkFeedbackForPlanAttempt(ctx, runID, attempt))}
 		output, found, err := o.planningOutputStore().LatestRunPlanningOutput(ctx, runID, state.RunPlanningOutputKindAdvisoryGuidance)
 		if err != nil {
 			return promptDocument{}, "", err
@@ -254,7 +254,7 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 				return promptInstructions(append(feedback, promptPrepared(guidance))...), scoped, nil
 			}
 		}
-		upstream := stripControlCommandLines(o.latestScopedInstructionForNode(ctx, runID, "advisory_synthesis", deterministicAgentIDForRole("king"), delegator))
+		upstream := stripControlCommandLines(o.latestScopedInstructionForNode(ctx, runID, "advisory_synthesis", deterministicAgentIDForRole("governance"), delegator))
 		return promptInstructions(append(feedback, promptLiteral(firstNonEmptyString(upstream, planningSafeInstructionFallback(class))))...), scoped, nil
 	case workflow.NodeClassDelegatedExecution:
 		doc, err := o.builderInstructionDocument(ctx, runID, promptLiteral(scoped), approved, a)
@@ -267,7 +267,7 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, delegator string) (*promptFile, string, error) {
 	a := &promptAssembly{ctx: ctx}
 	defer a.close()
-	decree, err := o.decreeTextForRun(ctx, run.RunID)
+	workOrder, err := o.workOrderTextForRun(ctx, run.RunID)
 	if err != nil {
 		return nil, "", err
 	}
@@ -292,7 +292,7 @@ func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSn
 	} else {
 		guidance = promptPrepared(prepared)
 	}
-	doc := o.buildNodePromptDocument(ctx, run.RunID, node.NodeID, attempt.NodeRunID, node.RequiredRole, node.NodeClass, o.roleIDForAgent(ctx, delegator), promptSource(decree), approved, guidance)
+	doc := o.buildNodePromptDocument(ctx, run.RunID, node.NodeID, attempt.NodeRunID, node.RequiredRole, node.NodeClass, o.roleIDForAgent(ctx, delegator), promptSource(workOrder), approved, guidance)
 	file, err := preparePromptDocument(ctx, doc)
 	if err != nil {
 		return nil, "", err

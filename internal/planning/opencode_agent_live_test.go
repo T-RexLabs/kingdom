@@ -166,7 +166,7 @@ func newLiveGuardedPlannerAgent(t *testing.T, binary, projectRoot, operationID s
 	}
 	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
 		BinaryPath: binary, WorkDir: projectRoot, ConfigDir: bootstrapassets.ManagedOpenCodeRoot(projectRoot), DatabasePath: bootstrapassets.ManagedOpenCodeDatabasePath(projectRoot),
-		InlineConfigContent: plannerInlineConfig, Agent: "planner", SkipPermissions: true, FirstEventTimeout: 90 * time.Second, StreamInactivityTimeout: 90 * time.Second, Runner: runner,
+		InlineConfigContent: plannerInlineConfig, Agent: "planning-assistant", SkipPermissions: true, FirstEventTimeout: 90 * time.Second, StreamInactivityTimeout: 90 * time.Second, Runner: runner,
 	})
 	if err != nil {
 		t.Fatalf("create planner adapter: %v", err)
@@ -228,7 +228,7 @@ func (a *livePlannerToolActivities) ObservedRootListOrGlob() bool {
 		var input struct {
 			Path string `json:"path"`
 		}
-		if json.Unmarshal([]byte(activity.ToolInput), &input) == nil && input.Path == "." {
+		if json.Unmarshal([]byte(activity.Input.PreviewText()), &input) == nil && input.Path == "." {
 			return true
 		}
 	}

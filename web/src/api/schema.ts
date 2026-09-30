@@ -471,7 +471,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Capture an immutable issue snapshot for decree prefill. */
+        /** Capture an immutable issue snapshot for work order prefill. */
         post: operations["captureExternalSource"];
         delete?: never;
         options?: never;
@@ -496,15 +496,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/external-source-snapshots/{id}/decree-text": {
+    "/external-source-snapshots/{id}/work-order-text": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Render a captured issue as decree text, including retained comments when the import selected them. */
-        get: operations["getExternalSourceDecreeText"];
+        /** Render a captured issue as work order text, including retained comments when the import selected them. */
+        get: operations["getExternalSourceWorkOrderText"];
         put?: never;
         post?: never;
         delete?: never;
@@ -621,7 +621,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/decrees": {
+    "/work-orders": {
         parameters: {
             query?: never;
             header?: never;
@@ -630,23 +630,23 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Create a decree entry. */
-        post: operations["createDecree"];
+        /** Create a work order entry. */
+        post: operations["createWorkOrder"];
         delete?: never;
         options?: never;
         head?: never;
         patch?: never;
         trace?: never;
     };
-    "/decrees/{id}": {
+    "/work-orders/{id}": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Get a decree by ID. */
-        get: operations["getDecree"];
+        /** Get a work order by ID. */
+        get: operations["getWorkOrder"];
         put?: never;
         post?: never;
         delete?: never;
@@ -857,6 +857,23 @@ export interface paths {
         };
         /** Get planner ACP run activity history for display. */
         get: operations["getAcpRunActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/acp/runs/{runId}/activity/{eventId}/content/{field}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded page of exact provider activity content. */
+        get: operations["getAcpActivityContent"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1131,7 +1148,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List durable allfather plan review history for a run. */
+        /** List durable operator plan review history for a run. */
         get: operations["listRunPlanReviews"];
         put?: never;
         post?: never;
@@ -1148,7 +1165,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List durable allfather governance decision history for a run. */
+        /** List durable operator governance decision history for a run. */
         get: operations["listRunGovernanceDecisions"];
         put?: never;
         post?: never;
@@ -1165,7 +1182,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List artifacts produced for a run. */
+        /**
+         * Page artifacts with canonical deliverable and audit lineage.
+         * @description Cursors pin an artifact insertion window and canonical lineage. A 409 with refresh_required means lineage changed; restart from the first page without appending mixed snapshots.
+         */
         get: operations["listRunArtifacts"];
         put?: never;
         post?: never;
@@ -1243,6 +1263,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/publication/{batchId}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Page the durable publication results for an exact run, attempt, and batch.
+         * @description Each cursor pins entries_revision. A 409 with refresh_required means the batch changed; restart from the first page without appending mixed revisions.
+         */
+        get: operations["listRunPublicationEntries"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/executions/{attemptId}": {
         parameters: {
             query?: never;
@@ -1269,6 +1309,23 @@ export interface paths {
         };
         /** Fetch fine-grained provider activity (reasoning + tool calls) for one attempt. */
         get: operations["getRunExecutionActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read a bounded page of exact provider activity content for one attempt. */
+        get: operations["getRunActivityContent"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1431,7 +1488,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record allfather final decree confirmation or rework decision. */
+        /** Record operator final work order confirmation or rework decision. */
         post: operations["createFinalApproval"];
         delete?: never;
         options?: never;
@@ -1448,7 +1505,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Record allfather plan approval or rework decision. */
+        /** Record operator plan approval or rework decision. */
         post: operations["createPlanApproval"];
         delete?: never;
         options?: never;
@@ -1531,7 +1588,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fetch the Throne Room dashboard snapshot. */
+        /** Fetch the Overview dashboard snapshot. */
         get: operations["getDashboardSnapshot"];
         put?: never;
         post?: never;
@@ -1541,15 +1598,15 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/realm-analytics/snapshot": {
+    "/analytics/snapshot": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Fetch the Realm Analytics page snapshot. */
-        get: operations["getRealmAnalyticsSnapshot"];
+        /** Fetch the Analytics page snapshot. */
+        get: operations["getAnalyticsSnapshot"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1558,15 +1615,232 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/realm-analytics/execution-detail": {
+    "/analytics/execution-detail": {
         parameters: {
             query?: never;
             header?: never;
             path?: never;
             cookie?: never;
         };
-        /** Fetch aggregate execution detail or an exact selected-run snapshot for Realm Analytics. */
-        get: operations["getRealmAnalyticsExecutionDetailSnapshot"];
+        /** Fetch aggregate execution detail or an exact selected-run snapshot for Analytics. */
+        get: operations["getAnalyticsExecutionDetailSnapshot"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Shared Theme Revisions */
+        get: operations["listThemes"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/schema": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read the Canonical Theme Schema */
+        get: operations["getThemeSchema"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/validate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate a Private Theme Preview
+         * @description Resolves presentation data without saving or applying it.
+         */
+        post: operations["validateTheme"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/validate-archive": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Validate a Private Theme Archive
+         * @description Uses the canonical bounded archive resolver without saving sources, publishing a package, or applying an appearance.
+         */
+        post: operations["validateThemeArchive"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import a Theme Package */
+        post: operations["importTheme"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Remove a Shared Theme
+         * @description Unpublishes the theme; preserves editable source files. Personal selections fall back when their pinned revision is unavailable.
+         */
+        delete: operations["removeTheme"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        /** Read Editable Theme Files */
+        get: operations["getThemeSource"];
+        /** Save Editable Theme Files */
+        put: operations["saveThemeSource"];
+        post?: never;
+        /**
+         * Delete Editable Theme Files
+         * @description Deletes the editable source without unpublishing immutable revisions.
+         */
+        delete: operations["deleteThemeSource"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}/publish": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Publish a Shared Theme Revision */
+        post: operations["publishTheme"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}/revisions/{digest}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+            };
+            cookie?: never;
+        };
+        /** Read a Pinned Theme Revision */
+        get: operations["getThemeRevision"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}/revisions/{digest}/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+            };
+            cookie?: never;
+        };
+        /** Export a Theme Package */
+        get: operations["exportTheme"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/themes/{id}/revisions/{digest}/assets/{assetId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+                assetId: string;
+            };
+            cookie?: never;
+        };
+        /** Read a Declared Theme Asset */
+        get: operations["getThemeAsset"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1579,6 +1853,53 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        ThemePackage: {
+            manifest: components["schemas"]["ThemeManifest"];
+            sourceDigest: string;
+            resolvedDigest: string;
+        };
+        ThemeDiagnostic: {
+            path: string;
+            code: string;
+            message: string;
+        };
+        ThemeCatalog: {
+            /** @description Editable source IDs discovered on explicit refresh, including invalid drafts. */
+            sources: string[];
+            workspaceID: string;
+            items: {
+                id: string;
+                version: string;
+                name: string;
+                description?: string;
+                resolvedDigest: string;
+                builtin: boolean;
+            }[];
+            diagnostics?: components["schemas"]["ThemeDiagnostic"][];
+        };
+        ThemeDraftRequest: {
+            /** @description Canonical theme.json text; parsing and diagnostics use the theme schema. */
+            source: string;
+            assets: {
+                [key: string]: string;
+            };
+        };
+        ThemeSaveRequest: {
+            source: string;
+            assets: {
+                [key: string]: string;
+            };
+            /** @description Empty only when creating a source that does not exist yet. */
+            expected_source_digest: string;
+        };
+        ThemeSource: {
+            source: string;
+            sourceDigest: string;
+            assets: {
+                [key: string]: string;
+            };
+            diagnostics?: components["schemas"]["ThemeDiagnostic"][];
+        };
         AuthSession: {
             /** @description Nonsecret fingerprint of the current browser authentication binding. It confers no authority. */
             session_id: string;
@@ -1683,7 +2004,7 @@ export interface components {
             window_minutes: number;
             all_time_run_count: number;
             runtime: components["schemas"]["RuntimeMetrics"];
-            overview: components["schemas"]["RealmAnalyticsOverview"];
+            overview: components["schemas"]["AnalyticsOverview"];
             tokens: components["schemas"]["DashboardTokenSummary"];
             /** @description Runs created within the dashboard window, ordered by most recent activity. */
             recent_runs: components["schemas"]["RunSummary"][];
@@ -1699,7 +2020,7 @@ export interface components {
             role: string;
             avg_duration_seconds: number;
         };
-        RealmAnalyticsOverview: {
+        AnalyticsOverview: {
             total_runs: number;
             succeeded_runs: number;
             failed_runs: number;
@@ -1709,7 +2030,7 @@ export interface components {
             review_rework_rate: number;
             validation_rework_rate: number;
         };
-        RealmAnalyticsRunAnalytics: {
+        AnalyticsRunAnalytics: {
             /** @enum {string} */
             bucket_type: "hour" | "day";
             outcome_series: components["schemas"]["AnalyticsOutcomeBucket"][];
@@ -1745,7 +2066,7 @@ export interface components {
             record_count: number;
             by_model: components["schemas"]["TokenUsageByRoleModel"][];
         };
-        RealmAnalyticsTokenSummary: {
+        AnalyticsTokenSummary: {
             provider_total_tokens: number;
             derived_total_tokens: number;
             input: number;
@@ -1755,40 +2076,40 @@ export interface components {
             cache_write: number;
             by_role: components["schemas"]["TokenUsageByRole"][];
         };
-        RealmAnalyticsArtifactSummary: {
+        AnalyticsArtifactSummary: {
             total_count: number;
             total_size_bytes: number;
         };
-        RealmAnalyticsNodeSummary: {
+        AnalyticsNodeSummary: {
             total_executed: number;
         };
-        RealmAnalyticsSelectedRun: {
+        AnalyticsSelectedRun: {
             run_id: string;
-            decree_title: string;
+            work_order_title: string;
             /** @enum {string} */
             status: "pending" | "running" | "awaiting_human_confirmation" | "succeeded" | "failed" | "cancelled";
             /** Format: date-time */
             created_at: string;
         };
-        RealmAnalyticsExecutionDetail: {
-            selected_run?: components["schemas"]["RealmAnalyticsSelectedRun"];
-            tokens: components["schemas"]["RealmAnalyticsTokenSummary"];
-            artifacts: components["schemas"]["RealmAnalyticsArtifactSummary"];
-            nodes: components["schemas"]["RealmAnalyticsNodeSummary"];
+        AnalyticsExecutionDetail: {
+            selected_run?: components["schemas"]["AnalyticsSelectedRun"];
+            tokens: components["schemas"]["AnalyticsTokenSummary"];
+            artifacts: components["schemas"]["AnalyticsArtifactSummary"];
+            nodes: components["schemas"]["AnalyticsNodeSummary"];
         };
-        RealmAnalyticsExecutionDetailSnapshot: {
+        AnalyticsExecutionDetailSnapshot: {
             /** Format: date-time */
             snapshot_at: string;
             window_minutes: number;
-            execution_detail: components["schemas"]["RealmAnalyticsExecutionDetail"];
+            execution_detail: components["schemas"]["AnalyticsExecutionDetail"];
         };
-        RealmAnalyticsSnapshot: {
+        AnalyticsSnapshot: {
             /** Format: date-time */
             snapshot_at: string;
             window_minutes: number;
             all_time_run_count: number;
-            overview: components["schemas"]["RealmAnalyticsOverview"];
-            run_analytics: components["schemas"]["RealmAnalyticsRunAnalytics"];
+            overview: components["schemas"]["AnalyticsOverview"];
+            run_analytics: components["schemas"]["AnalyticsRunAnalytics"];
         };
         /**
          * @example {
@@ -2042,7 +2363,7 @@ export interface components {
             snapshot_id: string;
         };
         /** @description The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence. */
-        ExternalDecreeText: {
+        ExternalWorkOrderText: {
             markdown: string;
         };
         /** @description Immutable normalized snapshot metadata. Comment bodies are available only through the paginated comments route. */
@@ -2067,7 +2388,7 @@ export interface components {
         ExternalLink: {
             link_id: string;
             /** @enum {string} */
-            target_kind: "planning_session" | "decree";
+            target_kind: "planning_session" | "work_order";
             target_id: string;
             source_id: string;
             used_snapshot_id: string;
@@ -2154,39 +2475,39 @@ export interface components {
         };
         /**
          * @example {
-         *       "decree_title": "Stabilize decree issuance flow",
-         *       "decree_text": "Audit the decree issuance path, remove drift, and ship the clean contract.",
+         *       "work_order_title": "Stabilize work order issuance flow",
+         *       "work_order_text": "Audit the work order issuance path, remove drift, and ship the clean contract.",
          *       "metadata": {
          *         "source": "remediation",
          *         "priority": "high"
          *       }
          *     }
          */
-        CreateDecreeRequest: {
-            decree_title: string;
-            decree_text: string;
+        CreateWorkOrderRequest: {
+            work_order_title: string;
+            work_order_text: string;
             metadata?: {
                 [key: string]: unknown;
             };
             planning_lineage?: components["schemas"]["PlanningLineage"];
-            /** @description Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field. */
+            /** @description Immutable snapshot selected through direct GitHub intake. Planned work order provenance is derived server-side and must not use this field. */
             external_source_snapshot_id?: string;
         };
         /**
          * @example {
-         *       "decree_id": "decree_123",
+         *       "work_order_id": "work_order_123",
          *       "created_at": "2026-04-30T12:00:00Z"
          *     }
          */
-        CreateDecreeResult: {
-            decree_id: string;
+        CreateWorkOrderResult: {
+            work_order_id: string;
             /** Format: date-time */
             created_at: string;
         };
-        DecreeDetail: {
-            decree_id: string;
-            decree_title: string;
-            decree_text: string;
+        WorkOrderDetail: {
+            work_order_id: string;
+            work_order_title: string;
+            work_order_text: string;
             metadata?: {
                 [key: string]: unknown;
             };
@@ -2395,17 +2716,63 @@ export interface components {
             created_at: string;
         };
         AcpRunActivityItem: {
+            /** @description Stable identity for one observed activity within its invocation; repeated observations have higher sequences. */
             id: string;
-            /** @enum {string} */
-            kind: "thinking" | "tool" | "progress";
+            event_id: string;
+            sequence: number;
+            provider_part_id?: string;
+            tool_call_id?: string;
+            invocation_id?: string;
+            tool_name?: string;
+            /** @description Exact provider-reported tool status. Omitted when not supplied; never inferred from labels. */
+            tool_status?: string;
+            tool_title?: string;
+            /**
+             * @description Message entries are provider-observed text, never canonical terminal settlement.
+             * @enum {string}
+             */
+            kind: "thinking" | "tool" | "progress" | "message";
             label: string;
             detail?: string;
-            input?: string;
-            output?: string;
+            input: components["schemas"]["ActivityContent"];
+            output: components["schemas"]["ActivityContent"];
+            reasoning: components["schemas"]["ActivityContent"];
+            message: components["schemas"]["ActivityContent"];
             /** Format: date-time */
             occurred_at: string;
+            /** Format: date-time */
+            recorded_at: string;
         };
+        /** @description Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL. */
+        ActivityContent: {
+            /** @enum {string} */
+            availability: "available" | "not_provided" | "unavailable";
+            preview?: string;
+            /** Format: int64 */
+            byte_length?: number;
+            sha256?: string;
+            /** @description Authenticated API-relative scoped URL for bounded text reads; prefix the configured API base path. */
+            content_url?: string;
+        };
+        ActivityContentPage: {
+            text: string;
+            /** Format: int64 */
+            offset: number;
+            /** Format: int64 */
+            byte_length: number;
+            sha256: string;
+            next_cursor?: string;
+        };
+        /** @description Immutable observations sorted ascending within each page. An initial read returns the latest bounded window. next_cursor walks earlier pages in that pinned snapshot, or continues a forward delta page. resume_cursor independently reads later deltas after the snapshot high-water mark. The covered range is (range_after_sequence, range_through_sequence]. Preserve unloaded ranges explicitly when merging concurrent history and delta pages; a resume cursor does not imply earlier events were loaded. */
         AcpRunActivityResponse: {
+            /** @enum {string} */
+            direction: "earlier" | "later";
+            remaining_count: number;
+            range_after_sequence: number;
+            range_through_sequence: number;
+            snapshot_through_sequence: number;
+            next_cursor?: string;
+            resume_cursor: string;
             items: components["schemas"]["AcpRunActivityItem"][];
         };
         PlanningMessagesPage: {
@@ -2421,8 +2788,8 @@ export interface components {
         PlanningDraft: {
             planning_draft_id: string;
             planning_session_id: string;
-            decree_title: string;
-            decree_text: string;
+            work_order_title: string;
+            work_order_text: string;
             summary?: {
                 [key: string]: unknown;
             };
@@ -2465,7 +2832,7 @@ export interface components {
         };
         /**
          * @example {
-         *       "decree_id": "decree_123",
+         *       "work_order_id": "work_order_123",
          *       "skip_reviews_and_validations": true,
          *       "run_until_all_approve": true,
          *       "max_execution_review_cycles": 2,
@@ -2481,7 +2848,7 @@ export interface components {
          *     }
          */
         CreateRunRequest: {
-            decree_id: string;
+            work_order_id: string;
             /** @description When true, Kingdom uses the built-in alternate workflow that routes builder output directly to royal closure. */
             skip_reviews_and_validations?: boolean;
             /** @description When true, review and validation loops continue until approval. Workflows without execution review or validation nodes normalize this to false. */
@@ -2500,9 +2867,9 @@ export interface components {
         /**
          * @example {
          *       "run_id": "run_123",
-         *       "workflow_id": "royal-decree-v1",
-         *       "decree_id": "decree_123",
-         *       "decree_title": "Stabilize decree issuance flow",
+         *       "workflow_id": "work-order-v1",
+         *       "work_order_id": "work_order_123",
+         *       "work_order_title": "Stabilize work order issuance flow",
          *       "status": "awaiting_human_confirmation",
          *       "display_state": "awaiting_final_decision",
          *       "plan_state": "approved",
@@ -2522,13 +2889,13 @@ export interface components {
         RunSummary: {
             run_id: string;
             workflow_id: string;
-            decree_id: string;
-            decree_title: string;
+            work_order_id: string;
+            work_order_title: string;
             /** @enum {string} */
             status: "pending" | "running" | "awaiting_human_confirmation" | "succeeded" | "failed" | "cancelled";
             display_state: components["schemas"]["RunDisplayState"];
             /** @enum {string} */
-            plan_state: "draft" | "in_council_review" | "awaiting_king_decision" | "approved" | "needs_rework";
+            plan_state: "draft" | "in_plan_review" | "awaiting_plan_decision" | "approved" | "needs_rework";
             /** Format: date-time */
             created_at: string;
             /** Format: date-time */
@@ -2583,9 +2950,9 @@ export interface components {
         /**
          * @example {
          *       "run_id": "run_123",
-         *       "workflow_id": "royal-decree-v1",
-         *       "decree_id": "decree_123",
-         *       "decree_title": "Stabilize decree issuance flow",
+         *       "workflow_id": "work-order-v1",
+         *       "work_order_id": "work_order_123",
+         *       "work_order_title": "Stabilize work order issuance flow",
          *       "status": "awaiting_human_confirmation",
          *       "display_state": "awaiting_final_decision",
          *       "plan_state": "approved",
@@ -2657,11 +3024,11 @@ export interface components {
          *         "thinking_effort": "low"
          *       },
          *       "role_overrides": {
-         *         "chancellor": {
+         *         "coordinator": {
          *           "model": "provider/model-id",
          *           "thinking_effort": "low"
          *         },
-         *         "builder-berserker": {
+         *         "builder": {
          *           "model": "provider/model-id",
          *           "thinking_effort": "low"
          *         }
@@ -2710,7 +3077,7 @@ export interface components {
          * @description Latest canonical run-level plan revision currently eligible for operator approval and prompt hydration.
          * @example {
          *       "run_id": "run_123",
-         *       "plan_state": "awaiting_king_decision",
+         *       "plan_state": "awaiting_plan_decision",
          *       "revision_status": "ready",
          *       "plan_revision_id": "planrev_123",
          *       "components": [
@@ -2735,7 +3102,7 @@ export interface components {
         RunPlanSnapshot: {
             run_id: string;
             /** @enum {string} */
-            plan_state: "draft" | "in_council_review" | "awaiting_king_decision" | "approved" | "needs_rework";
+            plan_state: "draft" | "in_plan_review" | "awaiting_plan_decision" | "approved" | "needs_rework";
             /** @enum {string} */
             revision_status: "pending" | "ready";
             plan_revision_id?: string;
@@ -2972,7 +3339,20 @@ export interface components {
             failed_count: number;
             /** Format: date-time */
             created_at: string;
-            entries: components["schemas"]["RunExecutionPublicationEntry"][];
+            /**
+             * Format: int64
+             * @description Monotonic revision advanced atomically with each entry write. Entries are available from the scoped paginated endpoint.
+             */
+            entries_revision: number;
+        };
+        RunPublicationEntriesResponse: {
+            run_id: string;
+            attempt_id: string;
+            batch_id: string;
+            /** Format: int64 */
+            entries_revision: number;
+            items: components["schemas"]["RunExecutionPublicationEntry"][];
+            next_cursor?: string;
         };
         RunExecutionPublicationEntry: {
             entry_id: string;
@@ -3194,6 +3574,9 @@ export interface components {
         };
         RunArtifactsResponse: {
             run_id: string;
+            /** @description Identity of the run/filter insertion window and canonical lineage. Pages from different snapshots must not be merged. */
+            snapshot_id: string;
+            next_cursor?: string;
             items: components["schemas"]["RunArtifactItem"][];
         };
         RunArtifactItem: {
@@ -3222,8 +3605,218 @@ export interface components {
             created_at: string;
             download_url?: string;
         };
+        /**
+         * Kingdom Theme Package
+         * @description Version 1 presentation-only theme package. Structural validation is followed by asset, catalog and resolved accessibility validation.
+         */
+        ThemeManifest: {
+            /** @description Editor hint only. Runtime never fetches arbitrary schema URLs. */
+            $schema?: string;
+            /** @enum {integer} */
+            schemaVersion: 1;
+            /** @enum {integer} */
+            resolverVersion: 1;
+            id: string;
+            version: string;
+            name: string;
+            description?: string;
+            base?: {
+                /** @enum {string} */
+                id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab";
+                version: string;
+            };
+            palette?: {
+                accent?: components["schemas"]["ThemeColor"];
+                canvas?: components["schemas"]["ThemeColor"];
+                surface?: components["schemas"]["ThemeColor"];
+                text?: components["schemas"]["ThemeColor"];
+            };
+            tokens?: {
+                canvas?: components["schemas"]["ThemeColor"];
+                "surface.base"?: components["schemas"]["ThemeColor"];
+                "surface.inset"?: components["schemas"]["ThemeColor"];
+                "surface.elevated"?: components["schemas"]["ThemeColor"];
+                "surface.overlay"?: components["schemas"]["ThemeColor"];
+                "text.primary"?: components["schemas"]["ThemeColor"];
+                "text.secondary"?: components["schemas"]["ThemeColor"];
+                "text.subtle"?: components["schemas"]["ThemeColor"];
+                "text.inverse"?: components["schemas"]["ThemeColor"];
+                "border.default"?: components["schemas"]["ThemeColor"];
+                "border.strong"?: components["schemas"]["ThemeColor"];
+                "accent.base"?: components["schemas"]["ThemeColor"];
+                "accent.hover"?: components["schemas"]["ThemeColor"];
+                "accent.pressed"?: components["schemas"]["ThemeColor"];
+                "accent.foreground"?: components["schemas"]["ThemeColor"];
+                "accent.subtle"?: components["schemas"]["ThemeColor"];
+                "focus.ring"?: components["schemas"]["ThemeColor"];
+                "focus.offset"?: components["schemas"]["ThemeColor"];
+                "selection.background"?: components["schemas"]["ThemeColor"];
+                "selection.foreground"?: components["schemas"]["ThemeColor"];
+                "control.disabledBackground"?: components["schemas"]["ThemeColor"];
+                "control.disabledForeground"?: components["schemas"]["ThemeColor"];
+                "code.background"?: components["schemas"]["ThemeColor"];
+                "code.foreground"?: components["schemas"]["ThemeColor"];
+                "tool.background"?: components["schemas"]["ThemeColor"];
+                "tool.border"?: components["schemas"]["ThemeColor"];
+                "chart.axis"?: components["schemas"]["ThemeColor"];
+                "chart.grid"?: components["schemas"]["ThemeColor"];
+                "dag.edge"?: components["schemas"]["ThemeColor"];
+                "dag.edgeCompleted"?: components["schemas"]["ThemeColor"];
+                "dag.edgeActive"?: components["schemas"]["ThemeColor"];
+                "dag.nodeActiveBackground"?: components["schemas"]["ThemeColor"];
+                "status.neutral.foreground"?: components["schemas"]["ThemeColor"];
+                "status.neutral.background"?: components["schemas"]["ThemeColor"];
+                "status.neutral.border"?: components["schemas"]["ThemeColor"];
+                "status.running.foreground"?: components["schemas"]["ThemeColor"];
+                "status.running.background"?: components["schemas"]["ThemeColor"];
+                "status.running.border"?: components["schemas"]["ThemeColor"];
+                "status.attention.foreground"?: components["schemas"]["ThemeColor"];
+                "status.attention.background"?: components["schemas"]["ThemeColor"];
+                "status.attention.border"?: components["schemas"]["ThemeColor"];
+                "status.succeeded.foreground"?: components["schemas"]["ThemeColor"];
+                "status.succeeded.background"?: components["schemas"]["ThemeColor"];
+                "status.succeeded.border"?: components["schemas"]["ThemeColor"];
+                "status.failed.foreground"?: components["schemas"]["ThemeColor"];
+                "status.failed.background"?: components["schemas"]["ThemeColor"];
+                "status.failed.border"?: components["schemas"]["ThemeColor"];
+                "status.cancelled.foreground"?: components["schemas"]["ThemeColor"];
+                "status.cancelled.background"?: components["schemas"]["ThemeColor"];
+                "status.cancelled.border"?: components["schemas"]["ThemeColor"];
+                "status.rework.foreground"?: components["schemas"]["ThemeColor"];
+                "status.rework.background"?: components["schemas"]["ThemeColor"];
+                "status.rework.border"?: components["schemas"]["ThemeColor"];
+                "chart.category1"?: components["schemas"]["ThemeColor"];
+                "chart.category2"?: components["schemas"]["ThemeColor"];
+                "chart.category3"?: components["schemas"]["ThemeColor"];
+                "chart.category4"?: components["schemas"]["ThemeColor"];
+                "chart.category5"?: components["schemas"]["ThemeColor"];
+                "chart.category6"?: components["schemas"]["ThemeColor"];
+                "chart.category7"?: components["schemas"]["ThemeColor"];
+                "chart.category8"?: components["schemas"]["ThemeColor"];
+            };
+            typography?: {
+                body?: components["schemas"]["ThemeFont"];
+                display?: components["schemas"]["ThemeFont"];
+                mono?: components["schemas"]["ThemeFont"];
+                /** @enum {integer} */
+                bodyWeight?: 400 | 500;
+                /** @enum {integer} */
+                headingWeight?: 400 | 500 | 600 | 700;
+            };
+            surfaces?: {
+                radius?: number;
+                /** @enum {integer} */
+                borderWidth?: 1 | 2;
+                /** @enum {string} */
+                elevation?: "flat" | "soft";
+                /** @enum {string} */
+                ornamentation?: "minimal" | "balanced";
+            };
+            icons?: {
+                brand?: components["schemas"]["ThemeIcon"];
+                "work-order"?: components["schemas"]["ThemeIcon"];
+                "nav.overview"?: components["schemas"]["ThemeIcon"];
+                "nav.planning"?: components["schemas"]["ThemeIcon"];
+                "nav.runs"?: components["schemas"]["ThemeIcon"];
+                "nav.agents"?: components["schemas"]["ThemeIcon"];
+                "nav.analytics"?: components["schemas"]["ThemeIcon"];
+                "nav.connections"?: components["schemas"]["ThemeIcon"];
+                "nav.appearance"?: components["schemas"]["ThemeIcon"];
+                "role.operator"?: components["schemas"]["ThemeIcon"];
+                "role.governance"?: components["schemas"]["ThemeIcon"];
+                "role.coordinator"?: components["schemas"]["ThemeIcon"];
+                "role.plan-author"?: components["schemas"]["ThemeIcon"];
+                "role.architecture-advisor"?: components["schemas"]["ThemeIcon"];
+                "role.risk-advisor"?: components["schemas"]["ThemeIcon"];
+                "role.systems-advisor"?: components["schemas"]["ThemeIcon"];
+                "role.usability-advisor"?: components["schemas"]["ThemeIcon"];
+                "role.builder"?: components["schemas"]["ThemeIcon"];
+                "role.reviewer"?: components["schemas"]["ThemeIcon"];
+                "role.qa-validator"?: components["schemas"]["ThemeIcon"];
+                "role.security-validator"?: components["schemas"]["ThemeIcon"];
+                "role.resilience-validator"?: components["schemas"]["ThemeIcon"];
+                "role.planning-assistant"?: components["schemas"]["ThemeIcon"];
+                "node.work-intake"?: components["schemas"]["ThemeIcon"];
+                "node.advisor-consultation"?: components["schemas"]["ThemeIcon"];
+                "node.advisory-synthesis"?: components["schemas"]["ThemeIcon"];
+                "node.plan-drafting"?: components["schemas"]["ThemeIcon"];
+                "node.plan-decision"?: components["schemas"]["ThemeIcon"];
+                "node.execution-kickoff"?: components["schemas"]["ThemeIcon"];
+                "node.implementation"?: components["schemas"]["ThemeIcon"];
+                "node.execution-review"?: components["schemas"]["ThemeIcon"];
+                "node.quality-validation"?: components["schemas"]["ThemeIcon"];
+                "node.security-validation"?: components["schemas"]["ThemeIcon"];
+                "node.completion"?: components["schemas"]["ThemeIcon"];
+            };
+            identities?: {
+                operator?: components["schemas"]["ThemeIdentity"];
+                governance?: components["schemas"]["ThemeIdentity"];
+                coordinator?: components["schemas"]["ThemeIdentity"];
+                "plan-author"?: components["schemas"]["ThemeIdentity"];
+                "architecture-advisor"?: components["schemas"]["ThemeIdentity"];
+                "risk-advisor"?: components["schemas"]["ThemeIdentity"];
+                "systems-advisor"?: components["schemas"]["ThemeIdentity"];
+                "usability-advisor"?: components["schemas"]["ThemeIdentity"];
+                builder?: components["schemas"]["ThemeIdentity"];
+                reviewer?: components["schemas"]["ThemeIdentity"];
+                "qa-validator"?: components["schemas"]["ThemeIdentity"];
+                "security-validator"?: components["schemas"]["ThemeIdentity"];
+                "resilience-validator"?: components["schemas"]["ThemeIdentity"];
+                "planning-assistant"?: components["schemas"]["ThemeIdentity"];
+            };
+            copy?: {
+                "overview.welcome"?: string;
+                "planning.emptyTitle"?: string;
+                "planning.emptyDescription"?: string;
+                "agents.heading"?: string;
+                "appearance.description"?: string;
+                "workOrder.singular"?: string;
+                "workOrder.plural"?: string;
+                "brand.tagline"?: string;
+            };
+            artwork?: {
+                overview?: components["schemas"]["ThemeAssetReference"];
+                planningEmpty?: components["schemas"]["ThemeAssetReference"];
+                agentBackdrop?: components["schemas"]["ThemeAssetReference"];
+            };
+            assets?: {
+                [key: string]: components["schemas"]["ThemeAsset"];
+            };
+            /**
+             * @description Inherited from base when omitted; required for a complete resolved package.
+             * @enum {string}
+             */
+            colorScheme?: "light" | "dark";
+        };
+        ThemeColor: string;
+        /** @description Semantic validation verifies symbol existence or an allowed SVG asset. */
+        ThemeIcon: string;
+        /** @description An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks. */
+        ThemeFont: string;
+        ThemeAssetReference: string;
+        ThemeIdentity: {
+            name?: string;
+            description?: string;
+            lore?: string;
+            portrait?: components["schemas"]["ThemeAssetReference"];
+        };
+        ThemeAsset: {
+            path: string;
+            /** @enum {string} */
+            mediaType: "image/svg+xml" | "image/png" | "image/jpeg" | "image/webp" | "image/avif" | "font/woff2";
+            license?: string;
+        };
     };
     responses: {
+        /** @description Complete resolved presentation package and separate source and resolved identities. */
+        ResolvedTheme: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/json": components["schemas"]["ThemePackage"];
+            };
+        };
         /** @description Service health. */
         HealthResponse: {
             headers: {
@@ -3393,6 +3986,8 @@ export interface components {
         };
     };
     parameters: {
+        ThemeId: string;
+        ThemeDigest: string;
         /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
         IdempotencyKey: string;
         /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
@@ -3401,7 +3996,7 @@ export interface components {
         Origin: string;
         RunId: string;
         AttemptId: string;
-        DecreeId: string;
+        WorkOrderId: string;
         ConnectionId: string;
         ManifestFlowId: string;
         DeviceFlowId: string;
@@ -3415,14 +4010,16 @@ export interface components {
         RunIdQuery: string;
         WindowMinutes: number;
         Cursor: string;
+        ActivityEventId: string;
+        ActivityContentField: "input" | "output" | "reasoning" | "message";
+        ActivityContentLimit: number;
         Limit: number;
         RunStateFilter: "pending" | "running" | "awaiting_human_decision" | "succeeded" | "failed" | "cancelled";
-        /** @description Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms. */
+        /** @description Case-insensitive run search. Matches exact or prefix run ids and token-prefix work order title terms; multi-term queries require all terms. */
         RunSearch: string;
         Follow: boolean;
         PollMs: number;
         PlanningSessionId: string;
-        PlanningOperationId: string;
         AcpAgentName: "planner-reply" | "planner-regenerate" | "planner-formalize" | "planner-generate-title";
         AcpRunId: string;
         PlanningMessagesBefore: string;
@@ -4452,7 +5049,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    getExternalSourceDecreeText: {
+    getExternalSourceWorkOrderText: {
         parameters: {
             query?: never;
             header?: never;
@@ -4463,13 +5060,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Decree text for the snapshot. */
+            /** @description WorkOrder text for the snapshot. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ExternalDecreeText"];
+                    "application/json": components["schemas"]["ExternalWorkOrderText"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -4640,7 +5237,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    createDecree: {
+    createWorkOrder: {
         parameters: {
             query?: never;
             header: {
@@ -4654,17 +5251,17 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["CreateDecreeRequest"];
+                "application/json": components["schemas"]["CreateWorkOrderRequest"];
             };
         };
         responses: {
-            /** @description Decree accepted. */
+            /** @description WorkOrder accepted. */
             201: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["CreateDecreeResult"];
+                    "application/json": components["schemas"]["CreateWorkOrderResult"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -4674,24 +5271,24 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    getDecree: {
+    getWorkOrder: {
         parameters: {
             query?: never;
             header?: never;
             path: {
-                id: components["parameters"]["DecreeId"];
+                id: components["parameters"]["WorkOrderId"];
             };
             cookie?: never;
         };
         requestBody?: never;
         responses: {
-            /** @description Decree details. */
+            /** @description WorkOrder details. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["DecreeDetail"];
+                    "application/json": components["schemas"]["WorkOrderDetail"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -5111,7 +5708,10 @@ export interface operations {
     };
     getAcpRunActivity: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
             header?: never;
             path: {
                 runId: components["parameters"]["AcpRunId"];
@@ -5132,6 +5732,36 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getAcpActivityContent: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["ActivityContentLimit"];
+            };
+            header?: never;
+            path: {
+                runId: components["parameters"]["AcpRunId"];
+                eventId: components["parameters"]["ActivityEventId"];
+                field: components["parameters"]["ActivityContentField"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact UTF-8 content page; empty observed content is an empty successful page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityContentPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -5373,7 +6003,7 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Workspace capabilities for decree issuance and run creation. */
+            /** @description Workspace capabilities for work order issuance and run creation. */
             200: {
                 headers: {
                     [name: string]: unknown;
@@ -5393,7 +6023,7 @@ export interface operations {
                 limit?: components["parameters"]["Limit"];
                 cursor?: components["parameters"]["Cursor"];
                 state_filter?: components["parameters"]["RunStateFilter"];
-                /** @description Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms. */
+                /** @description Case-insensitive run search. Matches exact or prefix run ids and token-prefix work order title terms; multi-term queries require all terms. */
                 search?: components["parameters"]["RunSearch"];
             };
             header?: never;
@@ -5653,7 +6283,11 @@ export interface operations {
     };
     listRunArtifacts: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+                attempt_id?: string;
+            };
             header?: never;
             path: {
                 id: components["parameters"]["RunId"];
@@ -5673,6 +6307,8 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -5783,6 +6419,38 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
+    listRunPublicationEntries: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+                batchId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description A bounded publication entry page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunPublicationEntriesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
     getRunExecution: {
         parameters: {
             query?: never;
@@ -5812,7 +6480,10 @@ export interface operations {
     };
     getRunExecutionActivity: {
         parameters: {
-            query?: never;
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["RunId"];
@@ -5834,6 +6505,37 @@ export interface operations {
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getRunActivityContent: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["ActivityContentLimit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+                eventId: components["parameters"]["ActivityEventId"];
+                field: components["parameters"]["ActivityContentField"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact UTF-8 content page scoped to the run, attempt and event. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ActivityContentPage"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -6280,7 +6982,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    getRealmAnalyticsSnapshot: {
+    getAnalyticsSnapshot: {
         parameters: {
             query?: {
                 window_minutes?: components["parameters"]["WindowMinutes"];
@@ -6291,13 +6993,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Realm Analytics snapshot payload. */
+            /** @description Analytics snapshot payload. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RealmAnalyticsSnapshot"];
+                    "application/json": components["schemas"]["AnalyticsSnapshot"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -6305,7 +7007,7 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
-    getRealmAnalyticsExecutionDetailSnapshot: {
+    getAnalyticsExecutionDetailSnapshot: {
         parameters: {
             query?: {
                 window_minutes?: components["parameters"]["WindowMinutes"];
@@ -6318,18 +7020,373 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Realm Analytics execution detail snapshot payload. */
+            /** @description Analytics execution detail snapshot payload. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["RealmAnalyticsExecutionDetailSnapshot"];
+                    "application/json": components["schemas"]["AnalyticsExecutionDetailSnapshot"];
                 };
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
             404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listThemes: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Available themes and the nonsecret workspace preference identity. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeCatalog"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getThemeSchema: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Draft 07 schema used by the resolver and file editor. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    validateTheme: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemeDraftRequest"];
+            };
+        };
+        responses: {
+            200: components["responses"]["ResolvedTheme"];
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    validateThemeArchive: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: byte */
+                    archive: string;
+                };
+            };
+        };
+        responses: {
+            200: components["responses"]["ResolvedTheme"];
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    importTheme: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: byte */
+                    archive: string;
+                };
+            };
+        };
+        responses: {
+            201: components["responses"]["ResolvedTheme"];
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    removeTheme: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Theme removed. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getThemeSource: {
+        parameters: {
+            query?: {
+                /** @description Read the original editable source and assets of this immutable revision. */
+                revision?: string;
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Source text and local assets, including diagnostics for invalid external edits. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeSource"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    saveThemeSource: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ThemeSaveRequest"];
+            };
+        };
+        responses: {
+            /** @description Saved source; saving does not publish or change personal appearance. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ThemeSource"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    deleteThemeSource: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expected_source_digest: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Editable source deleted. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    publishTheme: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["ThemeId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    expected_source_digest: string;
+                };
+            };
+        };
+        responses: {
+            201: components["responses"]["ResolvedTheme"];
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            413: components["responses"]["ErrorResponse"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getThemeRevision: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: components["responses"]["ResolvedTheme"];
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    exportTheme: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated source and declared local assets. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/zip": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getThemeAsset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["ThemeId"];
+                digest: components["parameters"]["ThemeDigest"];
+                assetId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated asset bytes with a restrictive content security policy. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

@@ -6,7 +6,7 @@ func DeriveRunDisplayState(status, planState string) string {
 	switch {
 	case status == "awaiting_human_confirmation":
 		return "awaiting_final_decision"
-	case status == "running" && planState == "awaiting_king_decision":
+	case status == "running" && planState == "awaiting_plan_decision":
 		return "awaiting_plan_decision"
 	case status == "pending":
 		return "pending"

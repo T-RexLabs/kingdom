@@ -1,4 +1,12 @@
-export const RUN_DETAIL_TABS = ["graph", "execution", "agents", "mailbox"] as const;
+export const RUN_DETAIL_TABS = [
+  "workflow",
+  "execution",
+  "output",
+  "plan",
+  "context",
+  "mailbox",
+  "audit",
+] as const;
 
 export type RunDetailTab = (typeof RUN_DETAIL_TABS)[number];
 

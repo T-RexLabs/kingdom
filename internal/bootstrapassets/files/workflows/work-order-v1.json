@@ -1,0 +1,168 @@
+{
+  "version": "v1",
+  "workflow_id": "work-order-v1",
+  "name": "Work Order",
+  "nodes": [
+    {
+      "node_id": "work_intake",
+      "required_role": "governance",
+      "node_class": "work_intake"
+    },
+    {
+      "node_id": "architecture_consultation",
+      "required_role": "architecture-advisor",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "risk_consultation",
+      "required_role": "risk-advisor",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "systems_consultation",
+      "required_role": "systems-advisor",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "usability_consultation",
+      "required_role": "usability-advisor",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "advisory_synthesis",
+      "required_role": "coordinator",
+      "node_class": "advisory_synthesis"
+    },
+    {
+      "node_id": "plan_drafting",
+      "required_role": "plan-author",
+      "node_class": "plan_drafting"
+    },
+    {
+      "node_id": "plan_decision",
+      "required_role": "governance",
+      "node_class": "plan_decision"
+    },
+    {
+      "node_id": "execution_kickoff",
+      "required_role": "plan-author",
+      "node_class": "execution_kickoff"
+    },
+    {
+      "node_id": "implementation",
+      "required_role": "builder",
+      "node_class": "delegated_execution"
+    },
+    {
+      "node_id": "execution_review",
+      "required_role": "reviewer",
+      "node_class": "execution_review"
+    },
+    {
+      "node_id": "quality_validation",
+      "required_role": "qa-validator",
+      "node_class": "validation_gates"
+    },
+    {
+      "node_id": "security_validation",
+      "required_role": "security-validator",
+      "node_class": "validation_gates"
+    },
+    {
+      "node_id": "completion",
+      "required_role": "governance",
+      "node_class": "completion"
+    }
+  ],
+  "edges": [
+    {
+      "from": "work_intake",
+      "to": "architecture_consultation",
+      "on": "success"
+    },
+    {
+      "from": "work_intake",
+      "to": "risk_consultation",
+      "on": "success"
+    },
+    {
+      "from": "work_intake",
+      "to": "systems_consultation",
+      "on": "success"
+    },
+    {
+      "from": "work_intake",
+      "to": "usability_consultation",
+      "on": "success"
+    },
+    {
+      "from": "architecture_consultation",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "risk_consultation",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "systems_consultation",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "usability_consultation",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "advisory_synthesis",
+      "to": "plan_drafting",
+      "on": "success"
+    },
+    {
+      "from": "plan_drafting",
+      "to": "plan_decision",
+      "on": "success"
+    },
+    {
+      "from": "plan_decision",
+      "to": "execution_kickoff",
+      "on": "approved"
+    },
+    {
+      "from": "execution_kickoff",
+      "to": "implementation",
+      "on": "success"
+    },
+    {
+      "from": "implementation",
+      "to": "execution_review",
+      "on": "success"
+    },
+    {
+      "from": "execution_review",
+      "to": "quality_validation",
+      "on": "success"
+    },
+    {
+      "from": "execution_review",
+      "to": "security_validation",
+      "on": "success"
+    },
+    {
+      "from": "quality_validation",
+      "to": "completion",
+      "on": "success"
+    },
+    {
+      "from": "security_validation",
+      "to": "completion",
+      "on": "success"
+    }
+  ],
+  "metadata": {
+    "max_execution_review_cycles": 5,
+    "max_validation_rework_cycles": 5
+  }
+}

@@ -228,7 +228,7 @@ func TestHasRecentExecutionLivenessTreatsRuntimeObservationWithLiveDiagnosticsAs
 		EventID:    "evt_liveness_runtime_observation",
 		EventType:  "attempt.progress",
 		ReasonCode: "runtime_observation",
-		Payload:    `{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:1","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:00:20Z","step_finish_seen":true}}}`,
+		Payload:    `{"execution_diagnostics":{"attempt_id":"run_1:work_intake:1","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:00:20Z","step_finish_seen":true}}}`,
 		CreatedAt:  "2026-03-01T12:00:20Z",
 	})
 
@@ -252,7 +252,7 @@ func TestHasRecentExecutionLivenessIgnoresRuntimeObservationWithoutLiveDiagnosti
 		EventID:    "evt_liveness_runtime_observation_quiet",
 		EventType:  "attempt.progress",
 		ReasonCode: "runtime_observation",
-		Payload:    `{"execution_diagnostics":{"event_count":0,"stream_error":"attempt not found: \"run_1:decree_intake:1\""}}`,
+		Payload:    `{"execution_diagnostics":{"event_count":0,"stream_error":"attempt not found: \"run_1:work_intake:1\""}}`,
 		CreatedAt:  "2026-03-01T12:00:20Z",
 	})
 
@@ -286,5 +286,5 @@ func insertExecutionActivityEvent(t *testing.T, db *sql.DB, seed executionActivi
 	if authority == "" {
 		authority = "runtime.orchestrator"
 	}
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('%s', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'run_1:decree_intake:1', 'v1', '%s', COALESCE((SELECT MAX(seq) FROM events WHERE attempt_id = 'run_1:decree_intake:1'), 0) + 1, '%s', '%s', 'king', '%s', '%s', 'seed activity', 'corr_%s', 'caus_%s', 'prev_%s', 'entry_%s', '%s')`, seed.EventID, seed.EventType, seed.Payload, actorID, authority, seed.ReasonCode, seed.EventID, seed.EventID, seed.EventID, seed.EventID, seed.CreatedAt))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('%s', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'run_1:work_intake:1', 'v1', '%s', COALESCE((SELECT MAX(seq) FROM events WHERE attempt_id = 'run_1:work_intake:1'), 0) + 1, '%s', '%s', 'governance', '%s', '%s', 'seed activity', 'corr_%s', 'caus_%s', 'prev_%s', 'entry_%s', '%s')`, seed.EventID, seed.EventType, seed.Payload, actorID, authority, seed.ReasonCode, seed.EventID, seed.EventID, seed.EventID, seed.EventID, seed.CreatedAt))
 }

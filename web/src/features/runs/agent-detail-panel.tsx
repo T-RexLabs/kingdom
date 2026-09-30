@@ -1,11 +1,7 @@
-import { createElement, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
-  getRoleColor,
-  getRoleGlowStyle,
-  getRoleIcon,
   isAgentRole,
-  roleTitle,
   ROLE_HIERARCHY_ORDER,
   AGENT_STATUS_ORDER,
   cn,
@@ -13,6 +9,7 @@ import {
 import type { AgentStatus } from "@/lib/utils";
 import { statusLabel } from "@/lib/status-system";
 import { Users } from "lucide-react";
+import { RoleIdentity } from "@/theme";
 import type { RunParticipant } from "@/api/hooks";
 
 /* ── Types ── */
@@ -110,8 +107,6 @@ function RoleGroupSection({
   isExpanded: boolean;
   onToggle: () => void;
 }) {
-  const roleColorClass = getRoleColor(group.roleId);
-  const hasBusyAgent = group.agents.some((a) => a.status === "busy");
   const statusCounts = group.agents.reduce<Record<string, number>>((acc, agent) => {
     acc[agent.status] = (acc[agent.status] ?? 0) + 1;
     return acc;
@@ -121,21 +116,14 @@ function RoleGroupSection({
     <div
       className={cn(
         "rounded-lg border border-border bg-surface",
-        hasBusyAgent && "animate-glow-pulse-subtle",
       )}
-      style={hasBusyAgent ? getRoleGlowStyle(group.roleId) : undefined}
     >
       <button
         type="button"
         onClick={onToggle}
         className="flex w-full flex-wrap items-center gap-x-2.5 gap-y-1.5 px-3 py-2 text-left"
       >
-        {createElement(getRoleIcon(group.roleId), {
-          className: cn("h-4 w-4 shrink-0", roleColorClass, hasBusyAgent && "animate-glow-pulse"),
-        })}
-        <span className={cn("text-sm font-semibold text-wrap-anywhere", roleColorClass)}>
-          {roleTitle(group.roleId)}
-        </span>
+        <RoleIdentity role={group.roleId} className="text-accent" />
         <span className="text-xs text-foreground-subtle">
           {group.agents.length} {group.agents.length === 1 ? "agent" : "agents"}
         </span>

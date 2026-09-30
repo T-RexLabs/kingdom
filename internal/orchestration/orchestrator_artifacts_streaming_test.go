@@ -40,12 +40,12 @@ func trackedProjectionFixture(t *testing.T) (*orchestrationLoop, *sql.DB, string
 	loop := &orchestrationLoop{db: db, fsStore: fsStore, yoloRoot: root, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	const attempt = "audit-attempt"
 	mustExec(t, db, `INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,completion_mode,created_at,updated_at) VALUES ('audit-attempt','run_1','nr_1','committed_success','server_response','2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`)
-	if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES ('audit-attempt_artifact_1','run_1','nr_1','audit-attempt','deliverable','output.txt','text/plain','output.txt',?,7,'king',?)`, sha256Hex([]byte("content")), at); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES ('audit-attempt_artifact_1','run_1','nr_1','audit-attempt','deliverable','output.txt','text/plain','output.txt',?,7,'governance',?)`, sha256Hex([]byte("content")), at); err != nil {
 		t.Fatal(err)
 	}
 	mustExec(t, db, `INSERT INTO artifact_contents(artifact_id,sha256,size_bytes,created_at) SELECT artifact_id,sha256,size_bytes,created_at FROM artifacts`)
 	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('audit-attempt_artifact_1',0,x'636f6e74656e74')`)
-	return loop, db, root, []artifactOutputRecord{{ArtifactID: attempt + "_artifact_1", ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder-berserker", NodeID: "builder", Attempt: 1}}
+	return loop, db, root, []artifactOutputRecord{{ArtifactID: attempt + "_artifact_1", ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder", NodeID: "builder", Attempt: 1}}
 }
 
 func TestArtifactPublicationReplayRepairsFilesystemBeforeAuditCommitFailure(t *testing.T) {
@@ -110,7 +110,7 @@ func TestBuilderArtifactSourceStagesReplayableMetadataAndCanonicalContent(t *tes
 		t.Fatal(err)
 	}
 	loop := &orchestrationLoop{db: db, fsStore: fsStore}
-	source := loop.builderArtifactSource(nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker"}, root, base.SnapshotID, result.SnapshotID)
+	source := loop.builderArtifactSource(nodeDefinition{NodeID: "implementation", RequiredRole: "builder"}, root, base.SnapshotID, result.SnapshotID)
 	for replay := 0; replay < 2; replay++ {
 		iterator, err := source(ctx)
 		if err != nil {
@@ -154,7 +154,7 @@ func TestBuilderArtifactSourceStagesReplayableMetadataAndCanonicalContent(t *tes
 		t.Fatal(err)
 	}
 	validator := state.NewWorkerOutputValidator(db, schemaSet)
-	resultOutput, err := validator.ValidateAndPersist(ctx, state.WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_builder_1", AttemptID: "source-attempt", ProducerRole: "builder-berserker", WorkspacePath: root, Artifacts: source, OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"builder","payload_json":{},"artifacts":[],"error_reason":null}`), CreatedAt: "2026-03-01T12:00:02Z"})
+	resultOutput, err := validator.ValidateAndPersist(ctx, state.WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_builder_1", AttemptID: "source-attempt", ProducerRole: "builder", WorkspacePath: root, Artifacts: source, OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"builder","payload_json":{},"artifacts":[],"error_reason":null}`), CreatedAt: "2026-03-01T12:00:02Z"})
 	if err != nil || resultOutput.ArtifactCount != 1100 {
 		t.Fatalf("persisted metadata=%+v err=%v", resultOutput, err)
 	}
@@ -191,7 +191,7 @@ func TestArtifactPublicationIdentitySurvivesSameClockReplay(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,completion_mode,created_at,updated_at) VALUES (?,'run_1','nr_1','committed_success','server_response',?,?)`, attemptID, at, at); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (?,'run_1','nr_1',?,'deliverable','output.txt','text/plain','output.txt',?,?,'king',?)`, artifactID, attemptID, sha256Hex([]byte(body)), len(body), at); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts(artifact_id,run_id,node_run_id,attempt_id,artifact_kind,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (?,'run_1','nr_1',?,'deliverable','output.txt','text/plain','output.txt',?,?,'governance',?)`, artifactID, attemptID, sha256Hex([]byte(body)), len(body), at); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifact_contents(artifact_id,sha256,size_bytes,created_at) SELECT artifact_id,sha256,size_bytes,created_at FROM artifacts WHERE artifact_id=?`, artifactID); err != nil {
@@ -200,7 +200,7 @@ func TestArtifactPublicationIdentitySurvivesSameClockReplay(t *testing.T) {
 		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?,0,?)`, artifactID, []byte(body)); err != nil {
 			t.Fatal(err)
 		}
-		artifacts := []artifactOutputRecord{{ArtifactID: artifactID, ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder-berserker", NodeID: "builder", Attempt: i + 1}}
+		artifacts := []artifactOutputRecord{{ArtifactID: artifactID, ArtifactKind: "deliverable", ArtifactAction: "write", RelativePath: "output.txt", ProducerRole: "builder", NodeID: "builder", Attempt: i + 1}}
 		if i == 0 {
 			first = artifacts
 		}
@@ -232,7 +232,7 @@ func TestArtifactProjectionStreamsCanonicalContentAndRejectsCorruptionAtomically
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('large', 'run_1', 'nr_1', 'att_1', 'deliverable', 'large.bin', 'application/octet-stream', 'large.bin', '', 0, 'king', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('large', 'run_1', 'nr_1', 'att_1', 'deliverable', 'large.bin', 'application/octet-stream', 'large.bin', '', 0, 'governance', '2026-03-01T12:00:00Z')`)
 	chunk := bytes.Repeat([]byte("x"), 1<<20)
 	hash := sha256.New()
 	tx, err := db.Begin()

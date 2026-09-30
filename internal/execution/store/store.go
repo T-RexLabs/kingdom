@@ -595,7 +595,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 	           SELECT 1 FROM attempt_cancel_outbox aco
-	           JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
+	           JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
 	           WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
 	             AND aco.reason_code = 'agent_unresponsive'
 	             AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')

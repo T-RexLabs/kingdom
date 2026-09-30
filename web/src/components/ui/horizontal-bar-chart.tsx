@@ -49,7 +49,7 @@ function measureLabelWidth(label: string): number {
 
 /**
  * Horizontal bar chart for role-based breakdowns.
- * Dark theme with gold accent, JetBrains Mono for numbers.
+ * Dark theme with accent accent, JetBrains Mono for numbers.
  */
 export const HorizontalBarChart = memo(function HorizontalBarChart({
   data,
@@ -125,7 +125,7 @@ export const HorizontalBarChart = memo(function HorizontalBarChart({
               width={datum.value > 0 ? Math.max(x(datum.value), 2) : 0}
               height={y.bandwidth()}
               rx={3}
-              fill={datum.color ?? "var(--color-gold)"}
+              fill={datum.color ?? "var(--color-accent)"}
               opacity={0.8}
             />
           ))}

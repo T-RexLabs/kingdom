@@ -21,18 +21,18 @@ vi.mock("@/api/hooks", () => ({
 
 describe("governance actions visibility", () => {
   const failedNode: RunGraphNode = {
-    node_id: "execution_review_shieldmaiden",
+    node_id: "execution_review",
     state: "failed",
-    required_role: "reviewer-shieldmaiden",
+    required_role: "reviewer",
     execution_ownership: "provider_backed",
     failure_reason: "Reviewer rejected missing evidence.",
   };
 
   const runningRun: RunSummary = {
     run_id: "run-1",
-    decree_id: "decree-1",
-    decree_title: "Title",
-    workflow_id: "royal-decree-v1",
+    work_order_id: "work order-1",
+    work_order_title: "Title",
+    workflow_id: "work-order-v1",
     autonomous_approvals: false,
     status: "running",
     display_state: "running",
@@ -89,8 +89,8 @@ describe("governance actions visibility", () => {
     expect(screen.getByText(/Nodes to Recover/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
-    expect(screen.getByText("Agent-executed")).toBeInTheDocument();
-    expect(screen.getByText("Reviewer Shieldmaiden")).toBeInTheDocument();
+    expect(screen.getByText("Agent-Executed")).toBeInTheDocument();
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
     expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
     expect(screen.getByText("Reviewer rejected missing evidence.")).toHaveClass("text-wrap-anywhere");
   });
@@ -104,7 +104,7 @@ describe("governance actions visibility", () => {
     );
 
     expect(screen.getByText("Cancelled Run Nodes (1)")).toBeInTheDocument();
-    expect(screen.getByText("execution_review_shieldmaiden")).toBeInTheDocument();
+    expect(screen.getByText("execution_review")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
     expect(screen.queryByText("Failure reason unavailable.")).not.toBeInTheDocument();
@@ -198,12 +198,12 @@ describe("governance actions visibility", () => {
 				failedNodes={[
 					{
 						...failedNode,
-						node_id: "delegated_execution_berserker_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly",
+						node_id: "implementation_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly",
 					},
 				]}
 			/>,
 		);
 
-		expect(screen.getByText(/delegated_execution_berserker_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly/i)).toHaveClass("text-wrap-anywhere");
+		expect(screen.getByText(/implementation_with_an_extremely_long_failure_identifier_that_should_wrap_cleanly/i)).toHaveClass("text-wrap-anywhere");
 	});
 });

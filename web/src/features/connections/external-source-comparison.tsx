@@ -110,7 +110,7 @@ function ComparisonRow({ label, before, after }: { label: string; before: string
     <div className="grid min-w-0 gap-2 border-t border-border/60 pt-3 sm:grid-cols-[5rem_minmax(0,1fr)_minmax(0,1fr)]">
       <p className="font-medium uppercase tracking-wide text-foreground-subtle">{label}</p>
       <div className="min-w-0 rounded-md border border-border/60 bg-surface/70 p-2 text-foreground-muted"><span className="mb-1 block text-[10px] uppercase tracking-wide text-foreground-subtle">Selected</span><p className="break-words">{before}</p></div>
-      <div className="min-w-0 rounded-md border border-gold/25 bg-gold/5 p-2 text-foreground"><span className="mb-1 block text-[10px] uppercase tracking-wide text-gold/80">Latest</span><p className="break-words">{after}</p></div>
+      <div className="min-w-0 rounded-md border border-accent/25 bg-accent/5 p-2 text-foreground"><span className="mb-1 block text-[10px] uppercase tracking-wide text-accent/80">Latest</span><p className="break-words">{after}</p></div>
     </div>
   );
 }

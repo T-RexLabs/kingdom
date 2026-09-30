@@ -562,7 +562,7 @@ paths:
     post:
       tags: [external-sources]
       operationId: captureExternalSource
-      summary: Capture an immutable issue snapshot for decree prefill.
+      summary: Capture an immutable issue snapshot for work order prefill.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -588,15 +588,15 @@ paths:
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
 
-  /external-source-snapshots/{id}/decree-text:
+  /external-source-snapshots/{id}/work-order-text:
     get:
       tags: [external-sources]
-      operationId: getExternalSourceDecreeText
-      summary: Render a captured issue as decree text, including retained comments when the import selected them.
+      operationId: getExternalSourceWorkOrderText
+      summary: Render a captured issue as work order text, including retained comments when the import selected them.
       parameters:
         - $ref: "#/components/parameters/SnapshotId"
       responses:
-        "200": { description: Decree text for the snapshot., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalDecreeText" } } } }
+        "200": { description: WorkOrder text for the snapshot., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalWorkOrderText" } } } }
         "400": { $ref: "#/components/responses/BadRequestError" }
         "401": { $ref: "#/components/responses/UnauthorizedError" }
         default: { $ref: "#/components/responses/ErrorResponse" }
@@ -695,11 +695,11 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /decrees:
+  /work-orders:
     post:
-      tags: [decrees]
-      operationId: createDecree
-      summary: Create a decree entry.
+      tags: [work-orders]
+      operationId: createWorkOrder
+      summary: Create a work order entry.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -708,14 +708,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: "#/components/schemas/CreateDecreeRequest"
+              $ref: "#/components/schemas/CreateWorkOrderRequest"
       responses:
         "201":
-          description: Decree accepted.
+          description: WorkOrder accepted.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/CreateDecreeResult"
+                $ref: "#/components/schemas/CreateWorkOrderResult"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -727,20 +727,20 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /decrees/{id}:
+  /work-orders/{id}:
     get:
-      tags: [decrees]
-      operationId: getDecree
-      summary: Get a decree by ID.
+      tags: [work-orders]
+      operationId: getWorkOrder
+      summary: Get a work order by ID.
       parameters:
-        - $ref: "#/components/parameters/DecreeId"
+        - $ref: "#/components/parameters/WorkOrderId"
       responses:
         "200":
-          description: Decree details.
+          description: WorkOrder details.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DecreeDetail"
+                $ref: "#/components/schemas/WorkOrderDetail"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -1116,6 +1116,8 @@ paths:
       summary: Get planner ACP run activity history for display.
       parameters:
         - $ref: "#/components/parameters/AcpRunId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
       responses:
         "200":
           description: ACP run activity history.
@@ -1129,6 +1131,29 @@ paths:
           $ref: "#/components/responses/UnauthorizedError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /acp/runs/{runId}/activity/{eventId}/content/{field}:
+    get:
+      tags: [acp]
+      operationId: getAcpActivityContent
+      summary: Read a bounded page of exact provider activity content.
+      parameters:
+        - $ref: "#/components/parameters/AcpRunId"
+        - $ref: "#/components/parameters/ActivityEventId"
+        - $ref: "#/components/parameters/ActivityContentField"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ActivityContentLimit"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Exact UTF-8 content page; empty observed content is an empty successful page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityContentPage"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1348,7 +1373,7 @@ paths:
       summary: Read publish-mode capabilities for the configured project root.
       responses:
         "200":
-          description: Workspace capabilities for decree issuance and run creation.
+          description: Workspace capabilities for work order issuance and run creation.
           content:
             application/json:
               schema:
@@ -1539,7 +1564,7 @@ paths:
     get:
       tags: [runs]
       operationId: listRunPlanReviews
-      summary: List durable allfather plan review history for a run.
+      summary: List durable operator plan review history for a run.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Limit"
@@ -1562,7 +1587,7 @@ paths:
     get:
       tags: [runs]
       operationId: listRunGovernanceDecisions
-      summary: List durable allfather governance decision history for a run.
+      summary: List durable operator governance decision history for a run.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Cursor"
@@ -1587,9 +1612,17 @@ paths:
     get:
       tags: [runs]
       operationId: listRunArtifacts
-      summary: List artifacts produced for a run.
+      summary: Page artifacts with canonical deliverable and audit lineage.
+      description: Cursors pin an artifact insertion window and canonical lineage. A 409 with refresh_required means lineage changed; restart from the first page without appending mixed snapshots.
       parameters:
         - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: attempt_id
+          in: query
+          schema:
+            type: string
+            minLength: 1
       responses:
         "200":
           description: Run artifact list.
@@ -1601,6 +1634,10 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1703,6 +1740,41 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /runs/{id}/executions/{attemptId}/publication/{batchId}/entries:
+    get:
+      tags: [runs]
+      operationId: listRunPublicationEntries
+      summary: Page the durable publication results for an exact run, attempt, and batch.
+      description: Each cursor pins entries_revision. A 409 with refresh_required means the batch changed; restart from the first page without appending mixed revisions.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+        - name: batchId
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: A bounded publication entry page.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunPublicationEntriesResponse"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /runs/{id}/executions/{attemptId}:
     get:
       tags: [runs]
@@ -1735,6 +1807,8 @@ paths:
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/AttemptId"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
       responses:
         "200":
           description: Durable provider activity history for one attempt.
@@ -1748,6 +1822,30 @@ paths:
           $ref: "#/components/responses/UnauthorizedError"
         "404":
           $ref: "#/components/responses/NotFoundError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /runs/{id}/executions/{attemptId}/activity/{eventId}/content/{field}:
+    get:
+      tags: [runs]
+      operationId: getRunActivityContent
+      summary: Read a bounded page of exact provider activity content for one attempt.
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+        - $ref: "#/components/parameters/AttemptId"
+        - $ref: "#/components/parameters/ActivityEventId"
+        - $ref: "#/components/parameters/ActivityContentField"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/ActivityContentLimit"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Exact UTF-8 content page scoped to the run, attempt and event.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityContentPage"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1985,7 +2083,7 @@ paths:
     post:
       tags: [governance]
       operationId: createFinalApproval
-      summary: Record allfather final decree confirmation or rework decision.
+      summary: Record operator final work order confirmation or rework decision.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -2020,7 +2118,7 @@ paths:
     post:
       tags: [governance]
       operationId: createPlanApproval
-      summary: Record allfather plan approval or rework decision.
+      summary: Record operator plan approval or rework decision.
       parameters:
         - $ref: "#/components/parameters/IdempotencyKey"
         - $ref: "#/components/parameters/CSRFToken"
@@ -2141,7 +2239,7 @@ paths:
     get:
       tags: [metrics]
       operationId: getDashboardSnapshot
-      summary: Fetch the Throne Room dashboard snapshot.
+      summary: Fetch the Overview dashboard snapshot.
       responses:
         "200":
           description: Dashboard snapshot payload.
@@ -2156,20 +2254,20 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /realm-analytics/snapshot:
+  /analytics/snapshot:
     get:
       tags: [metrics]
-      operationId: getRealmAnalyticsSnapshot
-      summary: Fetch the Realm Analytics page snapshot.
+      operationId: getAnalyticsSnapshot
+      summary: Fetch the Analytics page snapshot.
       parameters:
         - $ref: "#/components/parameters/WindowMinutes"
       responses:
         "200":
-          description: Realm Analytics snapshot payload.
+          description: Analytics snapshot payload.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RealmAnalyticsSnapshot"
+                $ref: "#/components/schemas/AnalyticsSnapshot"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "401":
@@ -2177,11 +2275,11 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
-  /realm-analytics/execution-detail:
+  /analytics/execution-detail:
     get:
       tags: [metrics]
-      operationId: getRealmAnalyticsExecutionDetailSnapshot
-      summary: Fetch aggregate execution detail or an exact selected-run snapshot for Realm Analytics.
+      operationId: getAnalyticsExecutionDetailSnapshot
+      summary: Fetch aggregate execution detail or an exact selected-run snapshot for Analytics.
       parameters:
         - $ref: "#/components/parameters/WindowMinutes"
         - name: run_id
@@ -2193,11 +2291,11 @@ paths:
             minLength: 1
       responses:
         "200":
-          description: Realm Analytics execution detail snapshot payload.
+          description: Analytics execution detail snapshot payload.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/RealmAnalyticsExecutionDetailSnapshot"
+                $ref: "#/components/schemas/AnalyticsExecutionDetailSnapshot"
         "400":
           $ref: "#/components/responses/BadRequestError"
         "404":
@@ -2207,6 +2305,299 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /themes:
+    get:
+      operationId: listThemes
+      summary: List Shared Theme Revisions
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Available themes and the nonsecret workspace preference identity.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThemeCatalog"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/schema:
+    get:
+      operationId: getThemeSchema
+      summary: Read the Canonical Theme Schema
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Draft 07 schema used by the resolver and file editor.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/validate:
+    post:
+      operationId: validateTheme
+      summary: Validate a Private Theme Preview
+      description: Resolves presentation data without saving or applying it.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ThemeDraftRequest"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          $ref: "#/components/responses/ResolvedTheme"
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/validate-archive:
+    post:
+      operationId: validateThemeArchive
+      summary: Validate a Private Theme Archive
+      description: Uses the canonical bounded archive resolver without saving sources, publishing a package, or applying an appearance.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [archive]
+              properties:
+                archive:
+                  type: string
+                  format: byte
+                  maxLength: 45088768
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          $ref: "#/components/responses/ResolvedTheme"
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/import:
+    post:
+      operationId: importTheme
+      summary: Import a Theme Package
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [archive]
+              properties:
+                archive:
+                  type: string
+                  format: byte
+                  maxLength: 45088768
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "201":
+          $ref: "#/components/responses/ResolvedTheme"
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+    delete:
+      operationId: removeTheme
+      summary: Remove a Shared Theme
+      description: Unpublishes the theme; preserves editable source files. Personal selections fall back when their pinned revision is unavailable.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "204":
+          description: Theme removed.
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}/source:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+    get:
+      operationId: getThemeSource
+      summary: Read Editable Theme Files
+      parameters:
+        - name: revision
+          in: query
+          description: Read the original editable source and assets of this immutable revision.
+          schema:
+            type: string
+            pattern: "^[a-f0-9]{64}$"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Source text and local assets, including diagnostics for invalid external edits.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThemeSource"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    put:
+      operationId: saveThemeSource
+      summary: Save Editable Theme Files
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ThemeSaveRequest"
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Saved source; saving does not publish or change personal appearance.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ThemeSource"
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+    delete:
+      operationId: deleteThemeSource
+      summary: Delete Editable Theme Files
+      description: Deletes the editable source without unpublishing immutable revisions.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_source_digest]
+              properties:
+                expected_source_digest:
+                  type: string
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "204":
+          description: Editable source deleted.
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}/publish:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+    post:
+      operationId: publishTheme
+      summary: Publish a Shared Theme Revision
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [expected_source_digest]
+              properties:
+                expected_source_digest:
+                  type: string
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "201":
+          $ref: "#/components/responses/ResolvedTheme"
+        "413":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}/revisions/{digest}:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+      - $ref: "#/components/parameters/ThemeDigest"
+    get:
+      operationId: getThemeRevision
+      summary: Read a Pinned Theme Revision
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          $ref: "#/components/responses/ResolvedTheme"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}/revisions/{digest}/export:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+      - $ref: "#/components/parameters/ThemeDigest"
+    get:
+      operationId: exportTheme
+      summary: Export a Theme Package
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Validated source and declared local assets.
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+  /themes/{id}/revisions/{digest}/assets/{assetId}:
+    parameters:
+      - $ref: "#/components/parameters/ThemeId"
+      - $ref: "#/components/parameters/ThemeDigest"
+      - name: assetId
+        in: path
+        required: true
+        schema:
+          type: string
+          pattern: '^[a-z][a-z0-9-]{0,63}$'
+    get:
+      operationId: getThemeAsset
+      summary: Read a Declared Theme Asset
+      responses:
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "200":
+          description: Validated asset bytes with a restrictive content security policy.
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        default:
+          $ref: "#/components/responses/ErrorResponse"
 components:
   securitySchemes:
     BearerAuth:
@@ -2222,6 +2613,20 @@ components:
       x-kingdom-cookie-name-prefix: kingdom_session_
 
   parameters:
+    ThemeId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[a-z][a-z0-9-]{0,63}$'
+    ThemeDigest:
+      name: digest
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
     IdempotencyKey:
       name: Idempotency-Key
       in: header
@@ -2267,7 +2672,7 @@ components:
       schema:
         type: string
         minLength: 1
-    DecreeId:
+    WorkOrderId:
       name: id
       in: path
       required: true
@@ -2363,6 +2768,20 @@ components:
       schema:
         type: string
         minLength: 1
+    ActivityEventId:
+      name: eventId
+      in: path
+      required: true
+      schema: { type: string, minLength: 1 }
+    ActivityContentField:
+      name: field
+      in: path
+      required: true
+      schema: { type: string, enum: [input, output, reasoning, message] }
+    ActivityContentLimit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 4, maximum: 65536, default: 16384 }
     Limit:
       name: limit
       in: query
@@ -2383,7 +2802,7 @@ components:
       name: search
       in: query
       required: false
-      description: Case-insensitive run search. Matches exact or prefix run ids and token-prefix decree title terms; multi-term queries require all terms.
+      description: Case-insensitive run search. Matches exact or prefix run ids and token-prefix work order title terms; multi-term queries require all terms.
       schema:
         type: string
         minLength: 1
@@ -2405,14 +2824,6 @@ components:
         default: 2000
 
     PlanningSessionId:
-      name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        minLength: 1
-
-    PlanningOperationId:
       name: id
       in: path
       required: true
@@ -2454,6 +2865,12 @@ components:
         minLength: 1
 
   responses:
+    ResolvedTheme:
+      description: Complete resolved presentation package and separate source and resolved identities.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ThemePackage"
     HealthResponse:
       description: Service health.
       content:
@@ -2569,6 +2986,115 @@ components:
               occurred_at: "2026-04-30T12:00:00Z"
 
   schemas:
+    ThemePackage:
+      type: object
+      additionalProperties: false
+      required: [manifest, sourceDigest, resolvedDigest]
+      properties:
+        manifest:
+          $ref: "#/components/schemas/ThemeManifest"
+        sourceDigest:
+          type: string
+        resolvedDigest:
+          type: string
+    ThemeDiagnostic:
+      type: object
+      additionalProperties: false
+      required: [path, code, message]
+      properties:
+        path:
+          type: string
+        code:
+          type: string
+        message:
+          type: string
+    ThemeCatalog:
+      type: object
+      additionalProperties: false
+      required: [workspaceID, items, sources]
+      properties:
+        sources:
+          type: array
+          description: Editable source IDs discovered on explicit refresh, including invalid drafts.
+          items:
+            type: string
+        workspaceID:
+          type: string
+        items:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required: [id, version, name, resolvedDigest, builtin]
+            properties:
+              id:
+                type: string
+              version:
+                type: string
+              name:
+                type: string
+              description:
+                type: string
+              resolvedDigest:
+                type: string
+              builtin:
+                type: boolean
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThemeDiagnostic"
+    ThemeDraftRequest:
+      type: object
+      additionalProperties: false
+      required: [source, assets]
+      properties:
+        source:
+          type: string
+          maxLength: 262144
+          description: Canonical theme.json text; parsing and diagnostics use the theme schema.
+        assets:
+          type: object
+          maxProperties: 64
+          additionalProperties:
+            type: string
+            format: byte
+            maxLength: 11184812
+    ThemeSaveRequest:
+      type: object
+      additionalProperties: false
+      required: [source, assets, expected_source_digest]
+      properties:
+        source:
+          type: string
+          maxLength: 262144
+        assets:
+          type: object
+          maxProperties: 64
+          additionalProperties:
+            type: string
+            format: byte
+            maxLength: 11184812
+        expected_source_digest:
+          type: string
+          description: Empty only when creating a source that does not exist yet.
+    ThemeSource:
+      type: object
+      additionalProperties: false
+      required: [source, sourceDigest, assets]
+      properties:
+        source:
+          type: string
+        sourceDigest:
+          type: string
+        assets:
+          type: object
+          additionalProperties:
+            type: string
+            format: byte
+        diagnostics:
+          type: array
+          items:
+            $ref: "#/components/schemas/ThemeDiagnostic"
     AuthSession:
       type: object
       additionalProperties: false
@@ -2827,7 +3353,7 @@ components:
         runtime:
           $ref: "#/components/schemas/RuntimeMetrics"
         overview:
-          $ref: "#/components/schemas/RealmAnalyticsOverview"
+          $ref: "#/components/schemas/AnalyticsOverview"
         tokens:
           $ref: "#/components/schemas/DashboardTokenSummary"
         recent_runs:
@@ -2870,7 +3396,7 @@ components:
           type: number
           minimum: 0
 
-    RealmAnalyticsOverview:
+    AnalyticsOverview:
       type: object
       additionalProperties: false
       required:
@@ -2910,7 +3436,7 @@ components:
           type: number
           minimum: 0
 
-    RealmAnalyticsRunAnalytics:
+    AnalyticsRunAnalytics:
       type: object
       additionalProperties: false
       required: [bucket_type, outcome_series, duration_by_role, recent_runs]
@@ -3034,7 +3560,7 @@ components:
           items:
             $ref: "#/components/schemas/TokenUsageByRoleModel"
 
-    RealmAnalyticsTokenSummary:
+    AnalyticsTokenSummary:
       type: object
       additionalProperties: false
       required:
@@ -3075,7 +3601,7 @@ components:
           items:
             $ref: "#/components/schemas/TokenUsageByRole"
 
-    RealmAnalyticsArtifactSummary:
+    AnalyticsArtifactSummary:
       type: object
       additionalProperties: false
       required: [total_count, total_size_bytes]
@@ -3087,7 +3613,7 @@ components:
           type: integer
           minimum: 0
 
-    RealmAnalyticsNodeSummary:
+    AnalyticsNodeSummary:
       type: object
       additionalProperties: false
       required: [total_executed]
@@ -3096,15 +3622,15 @@ components:
           type: integer
           minimum: 0
 
-    RealmAnalyticsSelectedRun:
+    AnalyticsSelectedRun:
       type: object
       additionalProperties: false
-      required: [run_id, decree_title, status, created_at]
+      required: [run_id, work_order_title, status, created_at]
       properties:
         run_id:
           type: string
           minLength: 1
-        decree_title:
+        work_order_title:
           type: string
           minLength: 1
         status:
@@ -3114,21 +3640,21 @@ components:
           type: string
           format: date-time
 
-    RealmAnalyticsExecutionDetail:
+    AnalyticsExecutionDetail:
       type: object
       additionalProperties: false
       required: [tokens, artifacts, nodes]
       properties:
         selected_run:
-          $ref: "#/components/schemas/RealmAnalyticsSelectedRun"
+          $ref: "#/components/schemas/AnalyticsSelectedRun"
         tokens:
-          $ref: "#/components/schemas/RealmAnalyticsTokenSummary"
+          $ref: "#/components/schemas/AnalyticsTokenSummary"
         artifacts:
-          $ref: "#/components/schemas/RealmAnalyticsArtifactSummary"
+          $ref: "#/components/schemas/AnalyticsArtifactSummary"
         nodes:
-          $ref: "#/components/schemas/RealmAnalyticsNodeSummary"
+          $ref: "#/components/schemas/AnalyticsNodeSummary"
 
-    RealmAnalyticsExecutionDetailSnapshot:
+    AnalyticsExecutionDetailSnapshot:
       type: object
       additionalProperties: false
       required: [snapshot_at, window_minutes, execution_detail]
@@ -3140,9 +3666,9 @@ components:
           type: integer
           minimum: 1
         execution_detail:
-          $ref: "#/components/schemas/RealmAnalyticsExecutionDetail"
+          $ref: "#/components/schemas/AnalyticsExecutionDetail"
 
-    RealmAnalyticsSnapshot:
+    AnalyticsSnapshot:
       type: object
       additionalProperties: false
       required: [snapshot_at, window_minutes, all_time_run_count, overview, run_analytics]
@@ -3157,9 +3683,9 @@ components:
           type: integer
           minimum: 0
         overview:
-          $ref: "#/components/schemas/RealmAnalyticsOverview"
+          $ref: "#/components/schemas/AnalyticsOverview"
         run_analytics:
-          $ref: "#/components/schemas/RealmAnalyticsRunAnalytics"
+          $ref: "#/components/schemas/AnalyticsRunAnalytics"
 
     ErrorEnvelope:
       type: object
@@ -3497,7 +4023,7 @@ components:
       properties:
         source_id: { type: string, minLength: 1 }
         snapshot_id: { type: string, minLength: 1 }
-    ExternalDecreeText:
+    ExternalWorkOrderText:
       type: object
       additionalProperties: false
       description: The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence.
@@ -3531,7 +4057,7 @@ components:
       required: [link_id, target_kind, target_id, source_id, used_snapshot_id, latest_snapshot_id, status, row_version, provider, repository, canonical_url, issue_number, created_at]
       properties:
         link_id: { type: string, minLength: 1 }
-        target_kind: { type: string, enum: [planning_session, decree] }
+        target_kind: { type: string, enum: [planning_session, work_order] }
         target_id: { type: string, minLength: 1 }
         source_id: { type: string, minLength: 1 }
         used_snapshot_id: { type: string, minLength: 1 }
@@ -3638,17 +4164,17 @@ components:
           type: string
           minLength: 1
 
-    CreateDecreeRequest:
+    CreateWorkOrderRequest:
       type: object
       additionalProperties: false
-      required: [decree_title, decree_text]
+      required: [work_order_title, work_order_text]
       not:
         required: [planning_lineage, external_source_snapshot_id]
       properties:
-        decree_title:
+        work_order_title:
           type: string
           minLength: 1
-        decree_text:
+        work_order_text:
           type: string
           minLength: 1
         metadata:
@@ -3659,41 +4185,41 @@ components:
         external_source_snapshot_id:
           type: string
           minLength: 1
-          description: Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field.
+          description: Immutable snapshot selected through direct GitHub intake. Planned work order provenance is derived server-side and must not use this field.
       example:
-        decree_title: Stabilize decree issuance flow
-        decree_text: Audit the decree issuance path, remove drift, and ship the clean contract.
+        work_order_title: Stabilize work order issuance flow
+        work_order_text: Audit the work order issuance path, remove drift, and ship the clean contract.
         metadata:
           source: remediation
           priority: high
 
-    CreateDecreeResult:
+    CreateWorkOrderResult:
       type: object
       additionalProperties: false
-      required: [decree_id, created_at]
+      required: [work_order_id, created_at]
       properties:
-        decree_id:
+        work_order_id:
           type: string
           minLength: 1
         created_at:
           type: string
           format: date-time
       example:
-        decree_id: decree_123
+        work_order_id: work_order_123
         created_at: "2026-04-30T12:00:00Z"
 
-    DecreeDetail:
+    WorkOrderDetail:
       type: object
       additionalProperties: false
-      required: [decree_id, decree_title, decree_text, created_at, external_sources]
+      required: [work_order_id, work_order_title, work_order_text, created_at, external_sources]
       properties:
-        decree_id:
+        work_order_id:
           type: string
           minLength: 1
-        decree_title:
+        work_order_title:
           type: string
           minLength: 1
-        decree_text:
+        work_order_text:
           type: string
           minLength: 1
         metadata:
@@ -4100,32 +4626,91 @@ components:
     AcpRunActivityItem:
       type: object
       additionalProperties: false
-      required: [id, kind, label, occurred_at]
+      required: [id, event_id, sequence, kind, label, occurred_at, recorded_at, input, output, reasoning, message]
       properties:
         id:
           type: string
           minLength: 1
+          description: Stable identity for one observed activity within its invocation; repeated observations have higher sequences.
+        event_id: { type: string, minLength: 1 }
+        sequence: { type: integer, minimum: 1 }
+        provider_part_id: { type: string }
+        tool_call_id: { type: string }
+        invocation_id: { type: string }
+        tool_name: { type: string }
+        tool_status:
+          type: string
+          description: Exact provider-reported tool status. Omitted when not supplied; never inferred from labels.
+        tool_title: { type: string }
         kind:
           type: string
-          enum: [thinking, tool, progress]
+          enum: [thinking, tool, progress, message]
+          description: Message entries are provider-observed text, never canonical terminal settlement.
         label:
           type: string
           minLength: 1
         detail:
           type: string
         input:
-          type: string
+          $ref: "#/components/schemas/ActivityContent"
         output:
-          type: string
+          $ref: "#/components/schemas/ActivityContent"
+        reasoning:
+          $ref: "#/components/schemas/ActivityContent"
+        message:
+          $ref: "#/components/schemas/ActivityContent"
         occurred_at:
           type: string
           format: date-time
+        recorded_at:
+          type: string
+          format: date-time
+
+    ActivityContent:
+      type: object
+      additionalProperties: false
+      required: [availability]
+      description: Bounded preview of exact provider-exposed content. Available empty content has byte_length 0; absent or unavailable content never claims a byte length or content URL.
+      properties:
+        availability: { type: string, enum: [available, not_provided, unavailable] }
+        preview: { type: string }
+        byte_length: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        content_url:
+          type: string
+          description: Authenticated API-relative scoped URL for bounded text reads; prefix the configured API base path.
+
+    ActivityContentPage:
+      type: object
+      additionalProperties: false
+      required: [text, offset, byte_length, sha256]
+      properties:
+        text: { type: string }
+        offset: { type: integer, format: int64, minimum: 0 }
+        byte_length: { type: integer, format: int64, minimum: 0 }
+        sha256: { type: string, pattern: '^[0-9a-f]{64}$' }
+        next_cursor: { type: string, minLength: 1 }
 
     AcpRunActivityResponse:
       type: object
       additionalProperties: false
-      required: [items]
+      required: [items, resume_cursor, direction, remaining_count, range_after_sequence, range_through_sequence, snapshot_through_sequence]
+      description: >-
+        Immutable observations sorted ascending within each page. An initial read
+        returns the latest bounded window. next_cursor walks earlier pages in
+        that pinned snapshot, or continues a forward delta page. resume_cursor
+        independently reads later deltas after the snapshot high-water mark.
+        The covered range is (range_after_sequence, range_through_sequence].
+        Preserve unloaded ranges explicitly when merging concurrent history and
+        delta pages; a resume cursor does not imply earlier events were loaded.
       properties:
+        direction: { type: string, enum: [earlier, later] }
+        remaining_count: { type: integer, minimum: 0 }
+        range_after_sequence: { type: integer, minimum: 0 }
+        range_through_sequence: { type: integer, minimum: 0 }
+        snapshot_through_sequence: { type: integer, minimum: 0 }
+        next_cursor: { type: string, minLength: 1 }
+        resume_cursor: { type: string, minLength: 1 }
         items:
           type: array
           items:
@@ -4166,7 +4751,7 @@ components:
     PlanningDraft:
       type: object
       additionalProperties: false
-      required: [planning_draft_id, planning_session_id, decree_title, decree_text, created_at]
+      required: [planning_draft_id, planning_session_id, work_order_title, work_order_text, created_at]
       properties:
         planning_draft_id:
           type: string
@@ -4174,10 +4759,10 @@ components:
         planning_session_id:
           type: string
           minLength: 1
-        decree_title:
+        work_order_title:
           type: string
           minLength: 1
-        decree_text:
+        work_order_text:
           type: string
           minLength: 1
         summary:
@@ -4273,9 +4858,9 @@ components:
     CreateRunRequest:
       type: object
       additionalProperties: false
-      required: [decree_id, model_selection, publish_mode]
+      required: [work_order_id, model_selection, publish_mode]
       properties:
-        decree_id:
+        work_order_id:
           type: string
           minLength: 1
         skip_reviews_and_validations:
@@ -4299,7 +4884,7 @@ components:
         model_selection:
           $ref: "#/components/schemas/RunModelSelection"
       example:
-        decree_id: decree_123
+        work_order_id: work_order_123
         skip_reviews_and_validations: true
         run_until_all_approve: true
         max_execution_review_cycles: 2
@@ -4322,7 +4907,7 @@ components:
     RunSummary:
       type: object
       additionalProperties: false
-      required: [run_id, workflow_id, decree_id, decree_title, status, display_state, plan_state, created_at, updated_at, last_activity_at, start_state]
+      required: [run_id, workflow_id, work_order_id, work_order_title, status, display_state, plan_state, created_at, updated_at, last_activity_at, start_state]
       properties:
         run_id:
           type: string
@@ -4330,10 +4915,10 @@ components:
         workflow_id:
           type: string
           minLength: 1
-        decree_id:
+        work_order_id:
           type: string
           minLength: 1
-        decree_title:
+        work_order_title:
           type: string
           minLength: 1
         status:
@@ -4343,7 +4928,7 @@ components:
           $ref: "#/components/schemas/RunDisplayState"
         plan_state:
           type: string
-          enum: [draft, in_council_review, awaiting_king_decision, approved, needs_rework]
+          enum: [draft, in_plan_review, awaiting_plan_decision, approved, needs_rework]
         created_at:
           type: string
           format: date-time
@@ -4382,9 +4967,9 @@ components:
           $ref: "#/components/schemas/RunModelSelection"
       example:
         run_id: run_123
-        workflow_id: royal-decree-v1
-        decree_id: decree_123
-        decree_title: Stabilize decree issuance flow
+        workflow_id: work-order-v1
+        work_order_id: work_order_123
+        work_order_title: Stabilize work order issuance flow
         status: awaiting_human_confirmation
         display_state: awaiting_final_decision
         plan_state: approved
@@ -4489,9 +5074,9 @@ components:
               $ref: "#/components/schemas/RunStreamCursor"
       example:
         run_id: run_123
-        workflow_id: royal-decree-v1
-        decree_id: decree_123
-        decree_title: Stabilize decree issuance flow
+        workflow_id: work-order-v1
+        work_order_id: work_order_123
+        work_order_title: Stabilize work order issuance flow
         status: awaiting_human_confirmation
         display_state: awaiting_final_decision
         plan_state: approved
@@ -4583,10 +5168,10 @@ components:
           model: provider/model-id
           thinking_effort: low
         role_overrides:
-          chancellor:
+          coordinator:
             model: provider/model-id
             thinking_effort: low
-          builder-berserker:
+          builder:
             model: provider/model-id
             thinking_effort: low
 
@@ -4685,7 +5270,7 @@ components:
           minLength: 1
         plan_state:
           type: string
-          enum: [draft, in_council_review, awaiting_king_decision, approved, needs_rework]
+          enum: [draft, in_plan_review, awaiting_plan_decision, approved, needs_rework]
         revision_status:
           type: string
           enum: [pending, ready]
@@ -4706,7 +5291,7 @@ components:
           type: string
       example:
         run_id: run_123
-        plan_state: awaiting_king_decision
+        plan_state: awaiting_plan_decision
         revision_status: ready
         plan_revision_id: planrev_123
         components:
@@ -5221,7 +5806,7 @@ components:
       type: object
       additionalProperties: false
       description: Latest durable publication batch for this attempt. Publication is distinct from provider settlement and run approval.
-      required: [batch_id, target_mode, status, published_count, conflicted_count, failed_count, created_at, entries]
+      required: [batch_id, target_mode, status, published_count, conflicted_count, failed_count, created_at, entries_revision]
       properties:
         batch_id:
           type: string
@@ -5243,10 +5828,38 @@ components:
         created_at:
           type: string
           format: date-time
-        entries:
+        entries_revision:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Monotonic revision advanced atomically with each entry write. Entries are available from the scoped paginated endpoint.
+
+    RunPublicationEntriesResponse:
+      type: object
+      additionalProperties: false
+      required: [run_id, attempt_id, batch_id, entries_revision, items]
+      properties:
+        run_id:
+          type: string
+          minLength: 1
+        attempt_id:
+          type: string
+          minLength: 1
+        batch_id:
+          type: string
+          minLength: 1
+        entries_revision:
+          type: integer
+          format: int64
+          minimum: 0
+        items:
           type: array
+          maxItems: 200
           items:
             $ref: "#/components/schemas/RunExecutionPublicationEntry"
+        next_cursor:
+          type: string
+          minLength: 1
 
     RunExecutionPublicationEntry:
       type: object
@@ -5782,13 +6395,21 @@ components:
     RunArtifactsResponse:
       type: object
       additionalProperties: false
-      required: [run_id, items]
+      required: [run_id, snapshot_id, items]
       properties:
         run_id:
           type: string
           minLength: 1
+        snapshot_id:
+          type: string
+          minLength: 1
+          description: Identity of the run/filter insertion window and canonical lineage. Pages from different snapshots must not be merged.
+        next_cursor:
+          type: string
+          minLength: 1
         items:
           type: array
+          maxItems: 200
           items:
             $ref: "#/components/schemas/RunArtifactItem"
 
@@ -5849,3 +6470,657 @@ components:
         download_url:
           type: string
           minLength: 1
+    # BEGIN GENERATED THEME CONTRACT
+    ThemeManifest:
+      {
+        "title": "Kingdom Theme Package",
+        "description": "Version 1 presentation-only theme package. Structural validation is followed by asset, catalog and resolved accessibility validation.",
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "$schema": {
+            "type": "string",
+            "description": "Editor hint only. Runtime never fetches arbitrary schema URLs."
+          },
+          "schemaVersion": {
+            "enum": [
+              1
+            ],
+            "type": "integer"
+          },
+          "resolverVersion": {
+            "enum": [
+              1
+            ],
+            "type": "integer"
+          },
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]{0,63}$"
+          },
+          "version": {
+            "type": "string",
+            "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "base": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "enum": [
+                  "obsidian-court",
+                  "nautilus",
+                  "astral-council",
+                  "software-lab"
+                ],
+                "type": "string"
+              },
+              "version": {
+                "type": "string",
+                "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+              }
+            },
+            "required": [
+              "id",
+              "version"
+            ]
+          },
+          "palette": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "accent": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "canvas": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "surface": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "text": {
+                "$ref": "#/components/schemas/ThemeColor"
+              }
+            }
+          },
+          "tokens": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "canvas": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "surface.base": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "surface.inset": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "surface.elevated": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "surface.overlay": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "text.primary": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "text.secondary": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "text.subtle": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "text.inverse": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "border.default": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "border.strong": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "accent.base": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "accent.hover": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "accent.pressed": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "accent.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "accent.subtle": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "focus.ring": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "focus.offset": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "selection.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "selection.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "control.disabledBackground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "control.disabledForeground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "code.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "code.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "tool.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "tool.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.axis": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.grid": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "dag.edge": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "dag.edgeCompleted": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "dag.edgeActive": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "dag.nodeActiveBackground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.neutral.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.neutral.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.neutral.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.running.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.running.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.running.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.attention.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.attention.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.attention.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.succeeded.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.succeeded.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.succeeded.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.failed.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.failed.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.failed.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.cancelled.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.cancelled.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.cancelled.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.rework.foreground": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.rework.background": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "status.rework.border": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category1": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category2": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category3": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category4": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category5": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category6": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category7": {
+                "$ref": "#/components/schemas/ThemeColor"
+              },
+              "chart.category8": {
+                "$ref": "#/components/schemas/ThemeColor"
+              }
+            }
+          },
+          "typography": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "body": {
+                "$ref": "#/components/schemas/ThemeFont"
+              },
+              "display": {
+                "$ref": "#/components/schemas/ThemeFont"
+              },
+              "mono": {
+                "$ref": "#/components/schemas/ThemeFont"
+              },
+              "bodyWeight": {
+                "enum": [
+                  400,
+                  500
+                ],
+                "type": "integer"
+              },
+              "headingWeight": {
+                "enum": [
+                  400,
+                  500,
+                  600,
+                  700
+                ],
+                "type": "integer"
+              }
+            }
+          },
+          "surfaces": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "radius": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 20
+              },
+              "borderWidth": {
+                "enum": [
+                  1,
+                  2
+                ],
+                "type": "integer"
+              },
+              "elevation": {
+                "enum": [
+                  "flat",
+                  "soft"
+                ],
+                "type": "string"
+              },
+              "ornamentation": {
+                "enum": [
+                  "minimal",
+                  "balanced"
+                ],
+                "type": "string"
+              }
+            }
+          },
+          "icons": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "brand": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "work-order": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.overview": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.planning": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.runs": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.agents": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.analytics": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.connections": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "nav.appearance": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.operator": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.governance": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.coordinator": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.plan-author": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.architecture-advisor": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.risk-advisor": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.systems-advisor": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.usability-advisor": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.builder": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.reviewer": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.qa-validator": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.security-validator": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.resilience-validator": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "role.planning-assistant": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.work-intake": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.advisor-consultation": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.advisory-synthesis": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.plan-drafting": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.plan-decision": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.execution-kickoff": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.implementation": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.execution-review": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.quality-validation": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.security-validation": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              },
+              "node.completion": {
+                "$ref": "#/components/schemas/ThemeIcon"
+              }
+            }
+          },
+          "identities": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "operator": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "governance": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "coordinator": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "plan-author": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "architecture-advisor": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "risk-advisor": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "systems-advisor": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "usability-advisor": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "builder": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "reviewer": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "qa-validator": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "security-validator": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "resilience-validator": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              },
+              "planning-assistant": {
+                "$ref": "#/components/schemas/ThemeIdentity"
+              }
+            }
+          },
+          "copy": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "overview.welcome": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "planning.emptyTitle": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "planning.emptyDescription": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "agents.heading": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "appearance.description": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "workOrder.singular": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "workOrder.plural": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              },
+              "brand.tagline": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 600
+              }
+            }
+          },
+          "artwork": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "overview": {
+                "$ref": "#/components/schemas/ThemeAssetReference"
+              },
+              "planningEmpty": {
+                "$ref": "#/components/schemas/ThemeAssetReference"
+              },
+              "agentBackdrop": {
+                "$ref": "#/components/schemas/ThemeAssetReference"
+              }
+            }
+          },
+          "assets": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/ThemeAsset"
+            },
+            "maxProperties": 64
+          },
+          "colorScheme": {
+            "enum": [
+              "light",
+              "dark"
+            ],
+            "description": "Inherited from base when omitted; required for a complete resolved package.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "schemaVersion",
+          "resolverVersion",
+          "id",
+          "version",
+          "name"
+        ]
+      }
+    ThemeColor:
+      {
+        "type": "string",
+        "pattern": "^#[0-9a-fA-F]{6}$"
+      }
+    ThemeIcon:
+      {
+        "type": "string",
+        "pattern": "^(lucide:[a-z][a-z0-9-]*|asset:[a-z][a-z0-9-]{0,63})$",
+        "description": "Semantic validation verifies symbol existence or an allowed SVG asset."
+      }
+    ThemeFont:
+      {
+        "type": "string",
+        "description": "An offline bundled family or a declared local WOFF2 font asset; the application provides fixed readable fallback stacks."
+      }
+    ThemeAssetReference:
+      {
+        "type": "string",
+        "pattern": "^asset:[a-z][a-z0-9-]{0,63}$"
+      }
+    ThemeIdentity:
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 400
+          },
+          "lore": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1600
+          },
+          "portrait": {
+            "$ref": "#/components/schemas/ThemeAssetReference"
+          }
+        }
+      }
+    ThemeAsset:
+      {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "path": {
+            "type": "string",
+            "pattern": "^assets/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.(?:svg|png|jpg|jpeg|webp|avif|woff2)$"
+          },
+          "mediaType": {
+            "enum": [
+              "image/svg+xml",
+              "image/png",
+              "image/jpeg",
+              "image/webp",
+              "image/avif",
+              "font/woff2"
+            ],
+            "type": "string"
+          },
+          "license": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000
+          }
+        },
+        "required": [
+          "path",
+          "mediaType"
+        ]
+      }
+    # END GENERATED THEME CONTRACT

@@ -475,7 +475,7 @@ func requestPropertySchema(schema *openapi3.Schema, key string, visiting map[*op
 	return &openapi3.Schema{AllOf: constraints}
 }
 
-// A negated required-set (the decree provenance exclusivity rule) observes only
+// A negated required-set (the work order provenance exclusivity rule) observes only
 // property presence. Compacting string values cannot change its result. Other
 // negations remain value-sensitive and keep exact values conservatively.
 func requiredOnlyConstraint(schema *openapi3.Schema) bool {

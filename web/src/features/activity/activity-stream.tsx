@@ -31,7 +31,7 @@ export function ActivityLiveStream({
       {state.currentEvent ? (
         <div className="flex items-center justify-between gap-3 text-xs font-medium text-foreground-subtle/90">
           <span className="truncate">{state.currentEvent.label}</span>
-          <Feather className="h-3.5 w-3.5 shrink-0 animate-quill-write text-gold/75" />
+          <Feather className="h-3.5 w-3.5 shrink-0 animate-quill-write text-accent/75" />
         </div>
       ) : null}
     </div>
@@ -84,9 +84,9 @@ function TodoStatusIcon({ status }: { status: TodoStatus }) {
   const base = "mt-0.5 h-3.5 w-3.5 shrink-0";
   switch (status) {
     case "completed":
-      return <CheckCircle2 className={cn(base, "text-gold")} aria-label="completed" />;
+      return <CheckCircle2 className={cn(base, "text-accent")} aria-label="completed" />;
     case "in_progress":
-      return <CircleDot className={cn(base, "animate-pulse text-gold/80")} aria-label="in progress" />;
+      return <CircleDot className={cn(base, "animate-pulse text-accent/80")} aria-label="in progress" />;
     case "cancelled":
       return <CircleSlash className={cn(base, "text-foreground-subtle/50")} aria-label="cancelled" />;
     default:
@@ -108,7 +108,7 @@ export function ActivitySources({ sources }: { sources: ActivitySourceEntry[] })
       target="_blank"
       rel="noreferrer"
       title={source.url}
-      className="inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-border/40 bg-background/10 px-2.5 py-1 text-[11px] text-foreground-subtle/85 transition-colors hover:border-gold/40 hover:text-foreground"
+      className="inline-flex max-w-[14rem] items-center gap-1 rounded-full border border-border/40 bg-background/10 px-2.5 py-1 text-[11px] text-foreground-subtle/85 transition-colors hover:border-accent/40 hover:text-foreground"
     >
       <ExternalLink className="h-3 w-3 shrink-0 opacity-70" />
       <span className="truncate">{sourceHostLabel(source.url)}</span>

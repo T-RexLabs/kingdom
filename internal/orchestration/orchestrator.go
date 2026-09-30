@@ -34,7 +34,7 @@ var nonAlphaNumPattern = sync.OnceValue(func() *regexp.Regexp {
 })
 
 var implementationRoles = map[string]struct{}{
-	"builder-berserker": {},
+	"builder": {},
 }
 
 func isImplementationRole(roleID string) bool {
@@ -446,7 +446,7 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 			FromState:       "pending",
 			ToState:         "running",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "chancellor",
+			RoleID:          "coordinator",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "orchestration_progress",
 			ReasonText:      "runtime dispatch started",
@@ -478,7 +478,7 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.advancePlanProjection(ctx, &run, now, nodes); err != nil {
 		return err
 	}
-	if err := o.autoAdvanceKingDecision(ctx, &run, now); err != nil {
+	if err := o.autoAdvanceGovernanceDecision(ctx, &run, now); err != nil {
 		return err
 	}
 
@@ -496,7 +496,7 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.enforceRunningAttemptTimeouts(ctx, run, latestAttempts, now); err != nil {
 		return err
 	}
-	if _, err := o.transitionService().ReleaseDueDecreeRetries(ctx, run.RunID, now); err != nil {
+	if _, err := o.transitionService().ReleaseDueWorkOrderRetries(ctx, run.RunID, now); err != nil {
 		return err
 	}
 	latestAttempts, err = o.loadLatestAttempts(ctx, run.RunID)
@@ -511,7 +511,7 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.advancePlanProjection(ctx, &run, now, nodes); err != nil {
 		return err
 	}
-	if err := o.autoAdvanceKingDecision(ctx, &run, now); err != nil {
+	if err := o.autoAdvanceGovernanceDecision(ctx, &run, now); err != nil {
 		return err
 	}
 	if err := o.ensureDecisionNodeAttempts(ctx, run, nodes, now); err != nil {
@@ -648,27 +648,27 @@ func roleDisplayNameForRoleID(roleID string) string {
 
 func delegationPathForNode(nodeID, roleID string) (string, string) {
 	switch roleID {
-	case "king":
+	case "governance":
 		return "", ""
-	case "chancellor", "noble-delegate", "clergy-delegate", "burgher-delegate", "peasant-delegate":
-		return deterministicAgentIDForRole("king"), roleID
-	case "council-member":
-		return deterministicAgentIDForRole("chancellor"), roleID
+	case "coordinator", "architecture-advisor", "risk-advisor", "systems-advisor", "usability-advisor":
+		return deterministicAgentIDForRole("governance"), roleID
+	case "plan-author":
+		return deterministicAgentIDForRole("coordinator"), roleID
 	default:
-		return deterministicAgentIDForRole("council-member"), roleID
+		return deterministicAgentIDForRole("plan-author"), roleID
 	}
 }
 
 func delegatorRoleForNode(nodeID, roleID string) string {
 	switch roleID {
-	case "king":
+	case "governance":
 		return ""
-	case "chancellor", "noble-delegate", "clergy-delegate", "burgher-delegate", "peasant-delegate":
-		return "king"
-	case "council-member":
-		return "chancellor"
+	case "coordinator", "architecture-advisor", "risk-advisor", "systems-advisor", "usability-advisor":
+		return "governance"
+	case "plan-author":
+		return "coordinator"
 	default:
-		return "council-member"
+		return "plan-author"
 	}
 }
 
@@ -979,7 +979,7 @@ func (o *orchestrationLoop) emitCommunicationMessage(ctx context.Context, req co
 	}
 	senderRoleID := o.roleIDForAgent(ctx, req.FromAgentID)
 	if strings.TrimSpace(senderRoleID) == "" {
-		senderRoleID = "chancellor"
+		senderRoleID = "coordinator"
 	}
 	body := renderRoleTemplateOrFallback(
 		o.roleComm,

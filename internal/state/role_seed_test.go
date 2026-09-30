@@ -33,13 +33,13 @@ func TestEnsureCanonicalRolesSeedsAndUpdates(t *testing.T) {
 		t.Fatalf("expected %d roles, got %d", len(canonicalRoles), count)
 	}
 
-	if _, err := db.Exec(`UPDATE roles SET display_name = 'Wrong' WHERE role_id = 'king'`); err != nil {
+	if _, err := db.Exec(`UPDATE roles SET display_name = 'Wrong' WHERE role_id = 'governance'`); err != nil {
 		t.Fatalf("mutate role: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE roles SET description = 'Wrong description' WHERE role_id = 'king'`); err != nil {
+	if _, err := db.Exec(`UPDATE roles SET description = 'Wrong description' WHERE role_id = 'governance'`); err != nil {
 		t.Fatalf("mutate role description: %v", err)
 	}
-	if _, err := db.Exec(`UPDATE roles SET agent_model_selector_section_id = '', agent_model_selector_section_label = '', agent_model_selector_section_order = 0, agent_model_selector_role_order = 0 WHERE role_id = 'king'`); err != nil {
+	if _, err := db.Exec(`UPDATE roles SET agent_model_selector_section_id = '', agent_model_selector_section_label = '', agent_model_selector_section_order = 0, agent_model_selector_role_order = 0 WHERE role_id = 'governance'`); err != nil {
 		t.Fatalf("mutate role model override metadata: %v", err)
 	}
 
@@ -49,33 +49,33 @@ func TestEnsureCanonicalRolesSeedsAndUpdates(t *testing.T) {
 
 	var display string
 	var description string
-	if err := db.QueryRow(`SELECT display_name FROM roles WHERE role_id = 'king'`).Scan(&display); err != nil {
-		t.Fatalf("read king role: %v", err)
+	if err := db.QueryRow(`SELECT display_name FROM roles WHERE role_id = 'governance'`).Scan(&display); err != nil {
+		t.Fatalf("read governance role: %v", err)
 	}
-	if display != "King" {
-		t.Fatalf("expected king display name to be restored, got %q", display)
+	if display != "Governance" {
+		t.Fatalf("expected governance display name to be restored, got %q", display)
 	}
-	if err := db.QueryRow(`SELECT description FROM roles WHERE role_id = 'king'`).Scan(&description); err != nil {
-		t.Fatalf("read king role description: %v", err)
+	if err := db.QueryRow(`SELECT description FROM roles WHERE role_id = 'governance'`).Scan(&description); err != nil {
+		t.Fatalf("read governance role description: %v", err)
 	}
-	if description != "Supreme governance authority that approves plans, requests rework when needed, and closes decrees." {
-		t.Fatalf("expected king description to be restored, got %q", description)
+	if description != "Supreme governance authority that approves plans, requests rework when needed, and closes work orders." {
+		t.Fatalf("expected governance description to be restored, got %q", description)
 	}
 
 	var groupID, groupLabel string
 	var groupOrder, roleOrder, overrideEligible int
-	if err := db.QueryRow(`SELECT agent_model_selector_section_id, agent_model_selector_section_label, agent_model_selector_section_order, agent_model_selector_role_order, agent_model_selector_visible FROM roles WHERE role_id = 'king'`).Scan(&groupID, &groupLabel, &groupOrder, &roleOrder, &overrideEligible); err != nil {
-		t.Fatalf("read king override metadata: %v", err)
+	if err := db.QueryRow(`SELECT agent_model_selector_section_id, agent_model_selector_section_label, agent_model_selector_section_order, agent_model_selector_role_order, agent_model_selector_visible FROM roles WHERE role_id = 'governance'`).Scan(&groupID, &groupLabel, &groupOrder, &roleOrder, &overrideEligible); err != nil {
+		t.Fatalf("read governance override metadata: %v", err)
 	}
-	if groupID != "king" || groupLabel != "King" || groupOrder != 10 || roleOrder != 10 || overrideEligible != 1 {
-		t.Fatalf("expected king override metadata restored, got group=%q label=%q group_order=%d role_order=%d eligible=%d", groupID, groupLabel, groupOrder, roleOrder, overrideEligible)
+	if groupID != "governance" || groupLabel != "Governance" || groupOrder != 10 || roleOrder != 10 || overrideEligible != 1 {
+		t.Fatalf("expected governance override metadata restored, got group=%q label=%q group_order=%d role_order=%d eligible=%d", groupID, groupLabel, groupOrder, roleOrder, overrideEligible)
 	}
 
-	if err := db.QueryRow(`SELECT display_name FROM roles WHERE role_id = 'clergy-delegate'`).Scan(&display); err != nil {
+	if err := db.QueryRow(`SELECT display_name FROM roles WHERE role_id = 'risk-advisor'`).Scan(&display); err != nil {
 		t.Fatalf("read clergy role: %v", err)
 	}
-	if display != "Clergy Delegate" {
-		t.Fatalf("expected clergy display name %q, got %q", "Clergy Delegate", display)
+	if display != "Risk Advisor" {
+		t.Fatalf("expected clergy display name %q, got %q", "Risk Advisor", display)
 	}
 }
 

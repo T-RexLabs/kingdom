@@ -257,37 +257,37 @@ func TestMigrationRunSearchProjectionMaintainedByTriggers(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_search', 'Older Historical Run', 'text', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_search', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_search', NULL, 'decree_search', 'wfdef_search', 'running', 'draft', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_search', 'Older Historical Run', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_search', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run_search', NULL, 'work_order_search', 'wfdef_search', 'running', 'draft', 0, 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	var runID string
 	var runIDSearch string
-	var decreeTitleSearch string
-	if err := db.QueryRow(`SELECT run_id, run_id_search, decree_title_search FROM run_search_documents WHERE run_id = 'run_search'`).Scan(&runID, &runIDSearch, &decreeTitleSearch); err != nil {
+	var workOrderTitleSearch string
+	if err := db.QueryRow(`SELECT run_id, run_id_search, work_order_title_search FROM run_search_documents WHERE run_id = 'run_search'`).Scan(&runID, &runIDSearch, &workOrderTitleSearch); err != nil {
 		t.Fatalf("select run search projection: %v", err)
 	}
-	if runID != "run_search" || runIDSearch != "run_search" || decreeTitleSearch != "older historical run" {
-		t.Fatalf("unexpected run search projection row: run_id=%q run_id_search=%q decree_title_search=%q", runID, runIDSearch, decreeTitleSearch)
+	if runID != "run_search" || runIDSearch != "run_search" || workOrderTitleSearch != "older historical run" {
+		t.Fatalf("unexpected run search projection row: run_id=%q run_id_search=%q work_order_title_search=%q", runID, runIDSearch, workOrderTitleSearch)
 	}
 
 	var matchedRunID string
 	if err := db.QueryRow(`SELECT rsd.run_id
 	FROM run_search_fts
 	JOIN run_search_documents rsd ON rsd.rowid = run_search_fts.rowid
-	WHERE run_search_fts MATCH ?`, `decree_title_search : "histor"*`).Scan(&matchedRunID); err != nil {
+	WHERE run_search_fts MATCH ?`, `work_order_title_search : "histor"*`).Scan(&matchedRunID); err != nil {
 		t.Fatalf("query run search fts by title prefix: %v", err)
 	}
 	if matchedRunID != "run_search" {
 		t.Fatalf("expected title prefix search to resolve run_search, got %q", matchedRunID)
 	}
 
-	mustExec(t, db, `UPDATE decrees SET decree_title = 'Royal Archive Review' WHERE decree_id = 'decree_search'`)
+	mustExec(t, db, `UPDATE work_orders SET work_order_title = 'Royal Archive Review' WHERE work_order_id = 'work_order_search'`)
 
 	var oldMatchCount int
 	if err := db.QueryRow(`SELECT COUNT(1)
 	FROM run_search_fts
-	WHERE run_search_fts MATCH ?`, `decree_title_search : "histor"*`).Scan(&oldMatchCount); err != nil {
+	WHERE run_search_fts MATCH ?`, `work_order_title_search : "histor"*`).Scan(&oldMatchCount); err != nil {
 		t.Fatalf("count old title prefix matches: %v", err)
 	}
 	if oldMatchCount != 0 {
@@ -297,7 +297,7 @@ func TestMigrationRunSearchProjectionMaintainedByTriggers(t *testing.T) {
 	if err := db.QueryRow(`SELECT rsd.run_id
 	FROM run_search_fts
 	JOIN run_search_documents rsd ON rsd.rowid = run_search_fts.rowid
-	WHERE run_search_fts MATCH ?`, `decree_title_search : "arch"*`).Scan(&matchedRunID); err != nil {
+	WHERE run_search_fts MATCH ?`, `work_order_title_search : "arch"*`).Scan(&matchedRunID); err != nil {
 		t.Fatalf("query run search fts by updated title prefix: %v", err)
 	}
 	if matchedRunID != "run_search" {
@@ -305,7 +305,7 @@ func TestMigrationRunSearchProjectionMaintainedByTriggers(t *testing.T) {
 	}
 
 	assertPlanUsesIndex(t, db, `SELECT run_id FROM run_search_documents WHERE run_id_search = ?`, []any{"run_search"}, "idx_run_search_documents_run_id_search")
-	assertPlanUsesVirtualTableIndex(t, db, `SELECT rsd.run_id FROM run_search_fts JOIN run_search_documents rsd ON rsd.rowid = run_search_fts.rowid WHERE run_search_fts MATCH ?`, []any{`decree_title_search : "arch"*`}, "run_search_fts")
+	assertPlanUsesVirtualTableIndex(t, db, `SELECT rsd.run_id FROM run_search_fts JOIN run_search_documents rsd ON rsd.rowid = run_search_fts.rowid WHERE run_search_fts MATCH ?`, []any{`work_order_title_search : "arch"*`}, "run_search_fts")
 }
 
 func TestMigrationConstraints(t *testing.T) {
@@ -323,35 +323,35 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("check_constraint_enforced", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_invalid', NULL, 'decree_1', 'wfdef_1', 'not-a-status', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_invalid', NULL, 'work_order_1', 'wfdef_1', 'not-a-status', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for run_status")
 		}
 	})
 
 	t.Run("awaiting_human_confirmation_status_allowed", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_awaiting_human', NULL, 'decree_1', 'wfdef_1', 'awaiting_human_confirmation', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_awaiting_human', NULL, 'work_order_1', 'wfdef_1', 'awaiting_human_confirmation', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("expected awaiting_human_confirmation to be valid run_status: %v", err)
 		}
 	})
 
 	t.Run("unique_workflow_version", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_dup', 'royal-decree', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_dup', 'work-order', 'v1', '{}', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected unique constraint failure for workflow name+version")
 		}
 	})
 
 	t.Run("unique_node_attempt", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dup', 'run_1', 'decree_intake', 1,1, 'running', 'king', 'agent_king', 1, NULL, NULL)`)
+		_, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_dup', 'run_1', 'work_intake', 1,1, 'running', 'governance', 'agent_governance', 1, NULL, NULL)`)
 		if err == nil {
 			t.Fatal("expected unique constraint failure for run_id+node_id+attempt")
 		}
 	})
 
 	t.Run("edge_uniqueness", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_dup', 'wfdef_1', 'decree_intake', 'royal_closure', 'always', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_dup', 'wfdef_1', 'work_intake', 'completion', 'always', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected unique edge constraint failure")
 		}
@@ -365,7 +365,7 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("event_dedupe_uniqueness", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_dup', 'run_1', 2, 'nr_1', 'att_1', 'v1', 'attempt.progress', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'dup', 'corr_2', 'caus_2', 'p', 'e', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_dup', 'run_1', 2, 'nr_1', 'att_1', 'v1', 'attempt.progress', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'dup', 'corr_2', 'caus_2', 'p', 'e', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected event dedupe unique constraint failure")
 		}
@@ -379,23 +379,23 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("run_planning_outputs_lineage_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert attempt execution seed row for lineage constraint: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_bad_lineage', 'run_1', 'decree_intake', 'nr_1', 'run_1:decree_intake:1', 'agent_king', '', 'plan_revision', 'constraint', '2026-03-01T12:00:00Z')`)
+		_, err = db.Exec(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_bad_lineage', 'run_1', 'work_intake', 'nr_1', 'run_1:work_intake:1', 'agent_governance', '', 'plan_revision', 'constraint', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected trigger failure for invalid run_planning_outputs lineage")
 		}
 	})
 
 	t.Run("run_planning_outputs_attempt_lineage_constraint", func(t *testing.T) {
-		mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_constraint', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+		mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_constraint', 'wfdef_1', 'plan_drafting', 'plan-author', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'plan-author', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'plan-author', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_constraint_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 
 		_, err := db.Exec(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_bad_attempt_lineage', 'run_1', 'plan_drafting', 'nr_plan_constraint_1', 'run_1:plan_drafting:2', 'agent_council', '', 'plan_revision', 'constraint', '2026-03-01T12:00:00Z')`)
@@ -405,10 +405,10 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("run_planning_outputs_append_only", func(t *testing.T) {
-		mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_append_only', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_append_only', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_append_only', 'run_1', 'plan_drafting', 3,3, 'succeeded', 'council-member', 'agent_council_append_only', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_append_only', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_append_only', 'wfdef_1', 'plan_drafting', 'plan-author', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_append_only', 'run_1', 'plan_drafting', 3,3, 'succeeded', 'plan-author', 'agent_council_append_only', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:append_only', 'run_1', 'nr_plan_append_only', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_append_only', 'run_1', 'plan_drafting', 'nr_plan_append_only', 'run_1:plan_drafting:append_only', 'agent_council_append_only', '', 'plan_revision', 'append only', '2026-03-01T12:00:00Z')`)
 
@@ -421,18 +421,18 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("run_plan_reviews_decision_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO run_plan_revisions (plan_revision_id, run_id, content_markdown, components_json, created_at) VALUES ('planrev_constraint', 'run_1', 'constraint', '[{"node_id":"plan_drafting","planning_output_id":"planout_constraint","node_run_id":"nr_1","attempt_id":"run_1:plan_drafting:1","agent_id":"agent_king","created_at":"2026-03-01T12:00:00Z","content_markdown":"constraint"}]', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO run_plan_revisions (plan_revision_id, run_id, content_markdown, components_json, created_at) VALUES ('planrev_constraint', 'run_1', 'constraint', '[{"node_id":"plan_drafting","planning_output_id":"planout_constraint","node_run_id":"nr_1","attempt_id":"run_1:plan_drafting:1","agent_id":"agent_governance","created_at":"2026-03-01T12:00:00Z","content_markdown":"constraint"}]', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert run plan revision seed for run_plan_reviews: %v", err)
 		}
-		_, err = db.Exec(`INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_bad', 'run_1', 'planrev_constraint', 'bad', 'feedback', 'actor_1', 'king', NULL, NULL, '2026-03-01T12:00:00Z')`)
+		_, err = db.Exec(`INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_bad', 'run_1', 'planrev_constraint', 'bad', 'feedback', 'actor_1', 'governance', NULL, NULL, '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for run_plan_reviews.decision")
 		}
 	})
 
 	t.Run("run_plan_revisions_append_only", func(t *testing.T) {
-		mustExec(t, db, `INSERT INTO run_plan_revisions (plan_revision_id, run_id, content_markdown, components_json, created_at) VALUES ('planrev_append_only', 'run_1', 'append only', '[{"node_id":"plan_drafting","planning_output_id":"planout_append_only_projection","node_run_id":"nr_1","attempt_id":"run_1:plan_drafting:append_only_projection","agent_id":"agent_king","created_at":"2026-03-01T12:00:00Z","content_markdown":"append only"}]', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO run_plan_revisions (plan_revision_id, run_id, content_markdown, components_json, created_at) VALUES ('planrev_append_only', 'run_1', 'append only', '[{"node_id":"plan_drafting","planning_output_id":"planout_append_only_projection","node_run_id":"nr_1","attempt_id":"run_1:plan_drafting:append_only_projection","agent_id":"agent_governance","created_at":"2026-03-01T12:00:00Z","content_markdown":"append only"}]', '2026-03-01T12:00:00Z')`)
 
 		if _, err := db.Exec(`UPDATE run_plan_revisions SET content_markdown = 'mutated' WHERE plan_revision_id = 'planrev_append_only'`); err == nil {
 			t.Fatal("expected update failure for append-only run_plan_revisions")
@@ -567,21 +567,21 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("node_attempt_requires_responsible_agent", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_missing_agent', 'run_1', 'royal_closure', 1,1, 'pending', 'king', NULL, 1, NULL, NULL)`)
+		_, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_missing_agent', 'run_1', 'completion', 1,1, 'pending', 'governance', NULL, 1, NULL, NULL)`)
 		if err == nil {
 			t.Fatal("expected NOT NULL failure for node_runs.agent_id")
 		}
 	})
 
 	t.Run("hash_chain_non_null", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_bad', 'run_1', 'nr_1', 'node', 'ready', 'running', 'actor_1', 'king', 'system', 'internal_error', 'missing hashes', 'corr_3', 'caus_3', NULL, NULL, '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_bad', 'run_1', 'nr_1', 'node', 'ready', 'running', 'actor_1', 'governance', 'system', 'internal_error', 'missing hashes', 'corr_3', 'caus_3', NULL, NULL, '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected NOT NULL failure for prev_hash/entry_hash")
 		}
 	})
 
 	t.Run("transitions_append_only", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_append_1', 'run_1', 'nr_1', 'node', 'running', 'succeeded', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_append', 'caus_append', 'prev', 'entry', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_append_1', 'run_1', 'nr_1', 'node', 'running', 'succeeded', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_append', 'caus_append', 'prev', 'entry', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert transition seed row: %v", err)
 		}
@@ -610,21 +610,21 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("mailbox_message_type_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES ('msg_bad_type', 'run_1', 'agent_king', 'agent_king', 'thread_1', 'mutation_request', 'normal', '{}', '2026-03-01T12:00:00Z', NULL)`)
+		_, err := db.Exec(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES ('msg_bad_type', 'run_1', 'agent_governance', 'agent_governance', 'thread_1', 'mutation_request', 'normal', '{}', '2026-03-01T12:00:00Z', NULL)`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for mailbox message_type")
 		}
 	})
 
 	t.Run("mailbox_priority_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES ('msg_bad_priority', 'run_1', 'agent_king', 'agent_king', 'thread_1', 'status_update', 'urgent', '{}', '2026-03-01T12:00:00Z', NULL)`)
+		_, err := db.Exec(`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES ('msg_bad_priority', 'run_1', 'agent_governance', 'agent_governance', 'thread_1', 'status_update', 'urgent', '{}', '2026-03-01T12:00:00Z', NULL)`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for mailbox priority")
 		}
 	})
 
 	t.Run("artifact_attempt_provenance_required", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'king', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'governance', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected NOT NULL failure for artifacts.attempt_id")
 		}
@@ -738,12 +738,12 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("planning_draft_ids_remain_unique", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at) VALUES ('pd_1', 'ps_1', 'title', 'text', '{}', '2026-03-01T12:03:00Z')`)
+		_, err := db.Exec(`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, work_order_title, work_order_text, summary_json, created_at) VALUES ('pd_1', 'ps_1', 'title', 'text', '{}', '2026-03-01T12:03:00Z')`)
 		if err != nil {
 			t.Fatalf("insert planning draft seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at) VALUES ('pd_1', 'ps_1', 'title 2', 'text 2', '{}', '2026-03-01T12:04:00Z')`)
+		_, err = db.Exec(`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, work_order_title, work_order_text, summary_json, created_at) VALUES ('pd_1', 'ps_1', 'title 2', 'text 2', '{}', '2026-03-01T12:04:00Z')`)
 		if err == nil {
 			t.Fatal("expected unique constraint failure for planning_drafts.planning_draft_id")
 		}
@@ -757,20 +757,20 @@ func TestMigrationStatusQueryIndexes(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:30:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_3', 'wfdef_1', 'delegated_execution_1', 'king', 'delegated_execution', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_4', 'wfdef_1', 'execution_review_1', 'king', 'execution_review', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_5', 'wfdef_1', 'validation_gates_1', 'king', 'validation_gates', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_pending', NULL, 'decree_1', 'wfdef_1', 'pending', 'draft', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_success', NULL, 'decree_1', 'wfdef_1', 'succeeded', 'approved', 1, '2026-03-01T12:02:00Z', '2026-03-01T12:05:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_failed', NULL, 'decree_1', 'wfdef_1', 'failed', 'approved', 1, '2026-03-01T12:03:00Z', '2026-03-01T12:06:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_cancelled', NULL, 'decree_1', 'wfdef_1', 'cancelled', 'approved', 1, '2026-03-01T12:04:00Z', '2026-03-01T12:07:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, row_version, created_at, updated_at) VALUES ('run_manual_plan', NULL, 'decree_1', 'wfdef_1', 'running', 'awaiting_king_decision', 0, 1, '2026-03-01T12:08:00Z', '2026-03-01T12:10:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, row_version, created_at, updated_at) VALUES ('run_manual_final', NULL, 'decree_1', 'wfdef_1', 'awaiting_human_confirmation', 'approved', 0, 1, '2026-03-01T12:09:00Z', '2026-03-01T12:11:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'delegated_execution_1', 1,1, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_3', 'run_1', 'execution_review_1', 1,1, 'failed', 'king', 'agent_king', 1, '2026-03-01T11:40:00Z', '2026-03-01T11:45:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_4', 'run_1', 'validation_gates_1', 2,2, 'succeeded', 'king', 'agent_king', 1, '2026-03-01T11:46:00Z', '2026-03-01T11:50:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_3', 'wfdef_1', 'delegated_execution_1', 'governance', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_4', 'wfdef_1', 'execution_review_1', 'governance', 'execution_review', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_5', 'wfdef_1', 'validation_gates_1', 'governance', 'validation_gates', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_pending', NULL, 'work_order_1', 'wfdef_1', 'pending', 'draft', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_success', NULL, 'work_order_1', 'wfdef_1', 'succeeded', 'approved', 1, '2026-03-01T12:02:00Z', '2026-03-01T12:05:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_failed', NULL, 'work_order_1', 'wfdef_1', 'failed', 'approved', 1, '2026-03-01T12:03:00Z', '2026-03-01T12:06:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_cancelled', NULL, 'work_order_1', 'wfdef_1', 'cancelled', 'approved', 1, '2026-03-01T12:04:00Z', '2026-03-01T12:07:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, row_version, created_at, updated_at) VALUES ('run_manual_plan', NULL, 'work_order_1', 'wfdef_1', 'running', 'awaiting_plan_decision', 0, 1, '2026-03-01T12:08:00Z', '2026-03-01T12:10:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, row_version, created_at, updated_at) VALUES ('run_manual_final', NULL, 'work_order_1', 'wfdef_1', 'awaiting_human_confirmation', 'approved', 0, 1, '2026-03-01T12:09:00Z', '2026-03-01T12:11:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'delegated_execution_1', 1,1, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_3', 'run_1', 'execution_review_1', 1,1, 'failed', 'governance', 'agent_governance', 1, '2026-03-01T11:40:00Z', '2026-03-01T11:45:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_4', 'run_1', 'validation_gates_1', 2,2, 'succeeded', 'governance', 'agent_governance', 1, '2026-03-01T11:46:00Z', '2026-03-01T11:50:00Z')`)
 
 	for _, indexName := range []string{
 		"idx_workflow_runs_active_created",
@@ -818,7 +818,7 @@ func TestMigrationStatusQueryIndexes(t *testing.T) {
 		`SELECT wr.run_id
 		 FROM workflow_runs wr
 		 WHERE wr.autonomous_approvals = 0
-		   AND ((wr.run_status = 'running' AND wr.plan_state = 'awaiting_king_decision')
+		   AND ((wr.run_status = 'running' AND wr.plan_state = 'awaiting_plan_decision')
 		    OR wr.run_status = 'awaiting_human_confirmation')
 		 ORDER BY wr.updated_at DESC, wr.run_id DESC
 		 LIMIT 20`,
@@ -1020,7 +1020,7 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 			t.Fatalf("iterate foreign keys for %s: %v", table, err)
 		}
 	}
-	assertNoForeignKeyTo("external_source_links", "planning_sessions", "decrees")
+	assertNoForeignKeyTo("external_source_links", "planning_sessions", "work_orders")
 	assertNoForeignKeyTo("planning_external_source_adoptions", "planning_sessions")
 	assertNoForeignKeyTo("planning_operation_external_snapshots", "planning_operations")
 }
@@ -1265,7 +1265,7 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 			t.Fatalf("apply baseline migration: %v", err)
 		}
 		seedMinimumGraph(t, db)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
 			Name: "0002_broken_fk_rebuild.up.sql",
@@ -1356,16 +1356,16 @@ func migrationDirFileNames(t *testing.T, dir string) []string {
 func seedMinimumGraph(t *testing.T, db *sql.DB) {
 	t.Helper()
 
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('king', 'King', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king', 'king', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'royal-decree', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_1', 'wfdef_1', 'decree_intake', 'king', 'decree_intake', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_2', 'wfdef_1', 'royal_closure', 'king', 'royal_closure', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_1', 'wfdef_1', 'decree_intake', 'royal_closure', 'always', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'decree_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_1', 'run_1', 'decree_intake', 1,1, 'running', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_1', 'agent_king', 'king', 'King', NULL, 0, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance', 'governance', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_1', 'D1', 'text', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'work-order', 'v1', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_1', 'wfdef_1', 'work_intake', 'governance', 'work_intake', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_2', 'wfdef_1', 'completion', 'governance', 'completion', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_edges (workflow_edge_id, workflow_definition_id, from_node_id, to_node_id, on_condition, created_at) VALUES ('edge_1', 'wfdef_1', 'work_intake', 'completion', 'always', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'work_order_1', 'wfdef_1', 'running', 'draft', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_1', 'run_1', 'work_intake', 1,1, 'running', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_1', 'agent_governance', 'governance', 'Governance', NULL, 0, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO idempotency_keys (idempotency_key_id, route, actor_id, client_key, request_hash, response_status, response_headers_json, response_body_json, created_at, expires_at) VALUES ('idem_1', '/runs', 'actor_1', 'key_1', 'hash_1', 201, '{}', '{}', '2026-03-01T12:00:00Z', NULL)`)
 
 	seedEvent := eventAuditRecord{
@@ -1379,7 +1379,7 @@ func seedMinimumGraph(t *testing.T, db *sql.DB) {
 		Seq:             1,
 		PayloadJSON:     "{}",
 		ActorID:         "actor_1",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "system",
 		ReasonCode:      "internal_error",
 		ReasonText:      "seed",
@@ -1395,7 +1395,7 @@ func seedMinimumGraph(t *testing.T, db *sql.DB) {
 	prevHash := AuditGenesisPrevHash
 	entryHash := entryHashFromCanonical(prevHash, canonical)
 
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_1', 'run_1', 1, 'nr_1', 'att_1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_1', 'caus_1', '%s', '%s', '2026-03-01T12:00:00Z')`, prevHash, entryHash))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_1', 'run_1', 1, 'nr_1', 'att_1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_1', 'caus_1', '%s', '%s', '2026-03-01T12:00:00Z')`, prevHash, entryHash))
 }
 
 // applyMigration applies the named migration and every later canonical

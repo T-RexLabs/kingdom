@@ -173,10 +173,10 @@ func TestResponseOnlyDirectWorkspaceIsIsolatedWithoutPersistentTarget(t *testing
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_drafting', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_drafting', 'run_1', 'plan_drafting', 1, 1, 'ready', 'council-member', 'agent_council', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_drafting', 'wfdef_1', 'plan_drafting', 'plan-author', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_drafting', 'run_1', 'plan_drafting', 1, 1, 'ready', 'plan-author', 'agent_council', 1, NULL, NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, created_at, updated_at) VALUES ('run_1:plan_drafting:1', 'run_1', 'nr_plan_drafting', 'queued', 'provider_backed', 'server_response', 'session_plan_drafting', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	checkoutRoot := t.TempDir()
 	if err := os.Mkdir(filepath.Join(checkoutRoot, ".git"), 0o755); err != nil {
@@ -642,7 +642,7 @@ func TestEnsureRunWorktreePrunesStaleRegistrationBeforePinnedRecreate(t *testing
 	if err := store.UpsertActive(context.Background(), "run_1", filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, pinnedSeed, createdAt); err != nil {
 		t.Fatalf("upsert active run worktree: %v", err)
 	}
-	mustExec(t, db, `UPDATE decrees SET decree_title = 'renamed decree title' WHERE decree_id = 'decree_1'`)
+	mustExec(t, db, `UPDATE work_orders SET work_order_title = 'renamed work order title' WHERE work_order_id = 'work_order_1'`)
 
 	loop := orchestrationLoop{db: db, yoloRoot: mainWorktreeRoot, publishMode: PublishModeGitWorktree, gitRunner: fakeRunner, runWorktrees: store, now: time.Now}
 	ctxInfo, err := loop.resolveExecutionWorkspaceContextForMode(context.Background(), "run_1", PublishModeGitWorktree)
@@ -774,7 +774,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 		t.Fatalf("persist managed worktree: %v", err)
 	}
 	execStore := executionstore.New(db)
-	pendingAttemptID := "run_1:decree_intake:99"
+	pendingAttemptID := "run_1:work_intake:99"
 	if err := execStore.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_worktree_quiescence", CreatedAt: quarantinedAt.Format(time.RFC3339Nano)}); err != nil {
 		t.Fatalf("enqueue pending provider attempt: %v", err)
 	}
@@ -801,10 +801,10 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if prunes != 0 || adds != 0 {
 		t.Fatalf("automatic recovery touched managed worktree: prunes=%d adds=%d", prunes, adds)
 	}
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'king', 'api.retry', 'manual_retry_requested', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'king', 'api.retry', 'internal_error', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_worktree_automatic_recovery', 'run_1', 'decree_intake', 100, 100, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_worktree_automatic_recovery', 'run_1', 'nr_worktree_automatic_recovery', 'node', 'pending', 'ready', 'runtime_orchestrator', 'king', 'runtime.retry', 'automatic_retry', 'automatic retry due', 'corr_worktree_automatic_recovery', 'caus_worktree_automatic_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.retry', 'manual_retry_requested', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.retry', 'internal_error', 'operator confirmed recovery', 'corr_worktree_recovery', 'caus_worktree_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_worktree_automatic_recovery', 'run_1', 'work_intake', 100, 100, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_worktree_automatic_recovery', 'run_1', 'nr_worktree_automatic_recovery', 'node', 'pending', 'ready', 'runtime_orchestrator', 'governance', 'runtime.retry', 'automatic_retry', 'automatic retry due', 'corr_worktree_automatic_recovery', 'caus_worktree_automatic_recovery', '', '', '`+quarantinedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
 	if _, err := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_worktree_automatic_recovery", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
 		t.Fatalf("automatic recovery after explicit retry err=%v, want explicit-replay rejection", err)
 	}
@@ -874,8 +874,8 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err := fsStore.UpdateExecutionTargetState(context.Background(), runID, "unknown", "", "", prunedAt.Format(time.RFC3339Nano)); err != nil {
 		t.Fatalf("quarantine externally pruned worktree target: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'king', 'api.rerun', 'manual_rerun_requested', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
-	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'king', 'api.rerun', 'internal_error', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery', 'run_1', NULL, 'run', 'failed', 'running', 'local-operator', 'governance', 'api.rerun', 'manual_rerun_requested', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
+	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_manual_pruned_worktree_recovery_node', 'run_1', 'nr_1', 'node', 'pending', 'ready', 'local-operator', 'governance', 'api.rerun', 'internal_error', 'operator confirmed pruned worktree recovery', 'corr_pruned_worktree_recovery', 'caus_pruned_worktree_recovery', '', '', '`+prunedAt.Add(time.Second).Format(time.RFC3339Nano)+`')`)
 	target, err = fsStore.GetExecutionTarget(context.Background(), runID)
 	if err != nil {
 		t.Fatalf("load externally pruned target: %v", err)
@@ -993,7 +993,7 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 	if !ctxInfo.UseGitWorktree {
 		t.Fatal("expected git worktree execution context")
 	}
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_worktree', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:implementation:1', 'run_1', 'nr_builder_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_worktree', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	workspaceRoot = t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspaceRoot, ".git"), []byte("gitdir: "+filepath.Join(projectRoot, ".git", "worktrees", worktreeName)+"\n"), 0o600); err != nil {
 		t.Fatalf("create linked-worktree marker for artifact workspace: %v", err)
@@ -1024,14 +1024,14 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 	}); err != nil {
 		t.Fatalf("capture result snapshot: %v", err)
 	}
-	mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_builder_worktree_base', result_snapshot_id = 'snap_builder_worktree_result' WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`)
+	mustExec(t, db, `UPDATE attempt_executions SET base_snapshot_id = 'snap_builder_worktree_base', result_snapshot_id = 'snap_builder_worktree_result' WHERE attempt_id = 'run_1:implementation:1'`)
 
 	err = rt.orchestrator.persistExecutionArtifact(
 		context.Background(),
 		runSnapshot{RunID: "run_1"},
-		nodeDefinition{NodeID: "delegated_execution_berserker", RequiredRole: "builder-berserker"},
-		nodeAttempt{NodeID: "delegated_execution_berserker", NodeRunID: "nr_builder_1", Attempt: 1},
-		"run_1:delegated_execution_berserker:1",
+		nodeDefinition{NodeID: "implementation", RequiredRole: "builder"},
+		nodeAttempt{NodeID: "implementation", NodeRunID: "nr_builder_1", Attempt: 1},
+		"run_1:implementation:1",
 		workspaceRoot,
 		"2026-03-01T12:00:00Z",
 		"Builder completion summary.",
@@ -1041,7 +1041,7 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeM
 		t.Fatalf("persist execution artifact: %v", err)
 	}
 
-	paths := persistedArtifactPathsForAttempt(t, db, "run_1:delegated_execution_berserker:1")
+	paths := persistedArtifactPathsForAttempt(t, db, "run_1:implementation:1")
 	if len(paths) != 1 || paths[0] != "docs/upgrade-notes.md" {
 		t.Fatalf("expected only changed worktree file to persist, got %v", paths)
 	}
@@ -1108,10 +1108,10 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 	}
 
 	loop := orchestrationLoop{db: db, yoloRoot: projectRoot, publishMode: PublishModeGitWorktree, gitRunner: fakeRunner, runWorktrees: workspace.NewRunWorktreeStore(db), now: time.Now}
-	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'deliverables/index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'king', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'deliverables/index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts WHERE artifact_id = 'artifact-1'`)
 	mustExec(t, db, `INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, x'68656c6c6f')`)
-	if err := loop.publishArtifactsToProjectRoot(context.Background(), workspaceRoot, runID, []artifactOutputRecord{{ArtifactID: "artifact-1", ArtifactKind: "deliverable", RelativePath: "deliverables/index.html", ProducerRole: "builder-berserker", NodeID: "delegated_execution_berserker", Attempt: 1}}); err != nil {
+	if err := loop.publishArtifactsToProjectRoot(context.Background(), workspaceRoot, runID, []artifactOutputRecord{{ArtifactID: "artifact-1", ArtifactKind: "deliverable", RelativePath: "deliverables/index.html", ProducerRole: "builder", NodeID: "implementation", Attempt: 1}}); err != nil {
 		t.Fatalf("publish to git worktree: %v", err)
 	}
 
@@ -1225,7 +1225,7 @@ func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('`+attemptID+`', 'run_1', 'nr_1', 'committed_success', 'runtime_owned', 'not_applicable', '2026-05-03T10:00:00Z', '2026-05-03T10:00:00Z')`)
 	mustExec(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, created_at, updated_at) VALUES ('outbox_run_worktree_cleanup_pending', '`+attemptID+`', 'run_1', 'nr_1', 1, 'committed_success', '{}', 'pending', '2026-05-03T10:00:00Z', '2026-05-03T10:00:00Z')`)
 
@@ -1478,8 +1478,8 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 
 			var generated int
 			replayReq := state.ReplayTerminalRunRequest{
-				RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"},
-				Reason: "reopen after managed cleanup", ActorID: "local-operator", RoleID: "king",
+				RunID: "run_1", AnchorNodeID: "work_intake", TargetNodeIDs: []string{"work_intake"},
+				Reason: "reopen after managed cleanup", ActorID: "local-operator", RoleID: "governance",
 				AuthoritySource: tc.authoritySource, RunEventType: tc.runEventType, RunReasonCode: tc.runReasonCode,
 				NodeEventType: tc.nodeEventType, EventPrefix: tc.eventPrefix, OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
 				GenerateID: func(prefix string) string {
@@ -1617,8 +1617,8 @@ func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing
 
 	var generated int
 	_, err = state.NewTransitionService(db, nil).ReplayTerminalRun(context.Background(), state.ReplayTerminalRunRequest{
-		RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"},
-		Reason: "retry before worktree deletion starts", ActorID: "local-operator", RoleID: "king",
+		RunID: "run_1", AnchorNodeID: "work_intake", TargetNodeIDs: []string{"work_intake"},
+		Reason: "retry before worktree deletion starts", ActorID: "local-operator", RoleID: "governance",
 		AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened", RunReasonCode: "manual_retry_requested",
 		NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now.Add(time.Second).Format(time.RFC3339Nano),
 		GenerateID: func(prefix string) string {

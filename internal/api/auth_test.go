@@ -32,7 +32,7 @@ func TestAuthenticationMiddlewareRejectsForgedAttribution(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodGet, "/roles", nil)
 	req.Header.Set("X-Actor-Id", "forged-admin")
-	req.Header.Set("X-Role-Id", "allfather")
+	req.Header.Set("X-Role-Id", "operator")
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if called || res.Code != http.StatusUnauthorized {

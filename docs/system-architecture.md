@@ -11,10 +11,10 @@ It is intentionally not aspirational. If the code does not do it, this document 
 
 Kingdom is a single-host, role-governed orchestration runtime.
 
-- Operators can plan work in durable planning sessions before issuing a decree.
-- Decrees execute through a deterministic workflow DAG with fixed role authority.
+- Operators can plan work in durable planning sessions before issuing a work order.
+- Work Orders execute through a deterministic workflow DAG with fixed role authority.
 - Runtime execution uses host-launched OpenCode sessions against prepared workspaces.
-- The ceremonial and governance-transition `decree_intake`, `king_plan_decision`, `execution_kickoff`, and `royal_closure` nodes are runtime-owned and deterministic; they do not invoke OpenCode.
+- The ceremonial and governance-transition `work_intake`, `plan_decision`, `execution_kickoff`, and `completion` nodes are runtime-owned and deterministic; they do not invoke OpenCode.
 - State transitions, approvals, artifacts, mailbox traffic, and execution events are stored durably for audit and recovery.
 - The primary operator surfaces are the embedded web UI, the `kd` CLI, and the authenticated `/api/v1` API.
 
@@ -26,30 +26,30 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - OpenCode provider fallback is disabled.
 - New run creation requires an explicit global model selection.
 - Optional per-role model overrides are allowed, and `/roles` is the source of truth for selector visibility, grouping, and ordering.
-- Runtime execution is host-launched and session-based via `opencode run --format json`; complete first-party decree and planner content is sent to OpenCode over stdin, not as a command-line prompt argument, and Kingdom imposes no fixed aggregate provider-prompt byte maximum. Kingdom does not currently execute attempts inside containers. Darwin and Linux guardians own one dedicated managed provider process group per command. This is lifecycle containment for Kingdom-managed processes, not a security boundary against a deliberately detached hostile subprocess; hard isolation remains future container or VM work.
-- Every OpenCode command runs behind a one-command guardian. Darwin and Linux use a dedicated managed process group; Windows assigns a suspended process to a kill-on-close Job Object before resuming it. Durable decree and planning launches persist invocation, lease, process identity, and quiescence capability lineage before the provider launch gate opens. Guardian evidence is atomically file-backed under the runtime root and ingested before settlement, cancellation, or stale recovery can claim quiescence.
-- Every provider-backed decree execution attempt gets a runtime-owned invocation identity before provider dispatch.
-- Every new provider-backed decree execution dispatch first acquires a unique, nonempty execution lease owner and positive monotonic lease version while the attempt remains queued. While provider execution is active, the owning worker renews only that exact unexpired lease generation and cancels itself if renewal loses authority; normal worker settlement requires a final renewal of that same lineage, while a timeout that already claimed settlement remains the sole owner of its terminal path. Atomic settlement clears the owner and expiry while retaining the version. Runtime-owned attempts never acquire execution lease lineage.
-- Completion mode is runtime-owned by canonical node class, not workflow-authored: runtime-owned nodes are `not_applicable`, and every provider-backed decree node—including builder delegated execution—is `server_response`.
-- Every provider-backed decree terminal observation first commits a lease-fenced SQLite handoff-pending marker, then enters an invocation-hashed, orchestration-written trusted handoff file under `<runtime workspace root>/provider-completion/handoffs/`, then crosses a durable lease-fenced SQLite handoff before settlement. If pending or file publication fails, a recovery-required marker records the exact active lease generation and is written only after guardian quiescence, provider-reported quiescence, or an unlaunched starting state proves there is no live process to preserve. Startup replays file-only and SQLite handoffs after guardian evidence and before lost-handoff recovery, completion projection, or stale reconciliation. A handoff preserves terminal evidence for replay but does not authorize success by itself.
+- Runtime execution is host-launched and session-based via `opencode run --format json`; complete first-party work order and planner content is sent to OpenCode over stdin, not as a command-line prompt argument, and Kingdom imposes no fixed aggregate provider-prompt byte maximum. Kingdom does not currently execute attempts inside containers. Darwin and Linux guardians own one dedicated managed provider process group per command. This is lifecycle containment for Kingdom-managed processes, not a security boundary against a deliberately detached hostile subprocess; hard isolation remains future container or VM work.
+- Every OpenCode command runs behind a one-command guardian. Darwin and Linux use a dedicated managed process group; Windows assigns a suspended process to a kill-on-close Job Object before resuming it. Durable work order and planning launches persist invocation, lease, process identity, and quiescence capability lineage before the provider launch gate opens. Guardian evidence is atomically file-backed under the runtime root and ingested before settlement, cancellation, or stale recovery can claim quiescence.
+- Every provider-backed work order execution attempt gets a runtime-owned invocation identity before provider dispatch.
+- Every new provider-backed work order execution dispatch first acquires a unique, nonempty execution lease owner and positive monotonic lease version while the attempt remains queued. While provider execution is active, the owning worker renews only that exact unexpired lease generation and cancels itself if renewal loses authority; normal worker settlement requires a final renewal of that same lineage, while a timeout that already claimed settlement remains the sole owner of its terminal path. Atomic settlement clears the owner and expiry while retaining the version. Runtime-owned attempts never acquire execution lease lineage.
+- Completion mode is runtime-owned by canonical node class, not workflow-authored: runtime-owned nodes are `not_applicable`, and every provider-backed work order node—including builder delegated execution—is `server_response`.
+- Every provider-backed work order terminal observation first commits a lease-fenced SQLite handoff-pending marker, then enters an invocation-hashed, orchestration-written trusted handoff file under `<runtime workspace root>/provider-completion/handoffs/`, then crosses a durable lease-fenced SQLite handoff before settlement. If pending or file publication fails, a recovery-required marker records the exact active lease generation and is written only after guardian quiescence, provider-reported quiescence, or an unlaunched starting state proves there is no live process to preserve. Startup replays file-only and SQLite handoffs after guardian evidence and before lost-handoff recovery, completion projection, or stale reconciliation. A handoff preserves terminal evidence for replay but does not authorize success by itself.
 - Response-first success requires a normalized `stop` finish, final turn/step identity and positive sequence, non-empty canonical terminal text, no unresolved or nonterminal tool call, no later stream event, clean process exit with stdout and stderr drained, and no timeout, cancellation, provider error, malformed protocol, or conflicting terminal evidence; node-specific output validation still applies.
 - Canonical provider settlement atomically records evidence, settlement, terminal attempt state, token usage, and the completion outbox handoff. Guardian quiescence is required before that boundary; outbox replay projects the settled result but cannot create it.
-- `opencode export` is diagnostic only for provider-backed decree execution; it cannot authorize or repair completion.
+- `opencode export` is diagnostic only for provider-backed work order execution; it cannot authorize or repair completion.
 - `kd init` installs Kingdom-managed OpenCode role profiles into project `.kingdom/opencode/agents/`; runtime/API startup validates those managed assets read-only and fails fast on drift, and Kingdom launches OpenCode with that overlay plus a Kingdom-owned OpenCode database under `.kingdom/opencode/` so agent resolution remains deterministic without leaking Kingdom-managed sessions or assets into normal user-run `opencode` sessions.
 - Runtime defaults to headless OpenCode execution with skip-permissions enabled so provider prompts do not block autonomous runs.
 - Kingdom launches OpenCode with session-scoped inline OpenCode config that disables conversation sharing (`share=disabled`) and mDNS discovery (`server.mdns=false`) for all Kingdom-managed planner and execution sessions, while permissions deny `external_directory` access outside the active workdir for both session types and additionally deny the `question` tool for execution sessions. Workspace-backed execution sessions establish an exact-root `.git` project boundary because OpenCode discovers project roots by walking the filesystem before invoking Git; direct targets use an inert marker, nested scopes in managed Git worktrees use a `.git` file pointing to the linked worktree's existing Git metadata, and worktree-root scopes retain their linked-worktree marker. The nested marker preserves parent-worktree Git status and diff behavior. `GIT_CEILING_DIRECTORIES` above that root is defense in depth. OpenCode's built-in file-tool boundary uses lexical path checks and does not confine symlink targets or arbitrary shell commands; this is not OS-level confinement.
-- Provider-backed decree execution node wall-clock budgets are activity-gated: exceeding `node_wall_clock` is terminal only after real execution activity or active completion-settlement observation has been absent for at least `stream_inactivity_timeout`, and active nodes may continue indefinitely.
-- `decree_intake` is a runtime-owned deterministic node that records ceremonial intake and opens advisory consultation without a provider call.
-- `king_plan_decision` is a runtime-owned deterministic governance node; it waits at the plan approval gate and completes only after approval or rework is recorded.
+- Provider-backed work order execution node wall-clock budgets are activity-gated: exceeding `node_wall_clock` is terminal only after real execution activity or active completion-settlement observation has been absent for at least `stream_inactivity_timeout`, and active nodes may continue indefinitely.
+- `work_intake` is a runtime-owned deterministic node that records ceremonial intake and opens advisory consultation without a provider call.
+- `plan_decision` is a runtime-owned deterministic governance node; it waits at the plan approval gate and completes only after approval or rework is recorded.
 - `execution_kickoff` is a runtime-owned deterministic execution-handoff node; it records the post-approval handoff into implementation without invoking OpenCode.
-- `royal_closure` is a runtime-owned deterministic ceremonial node; final authority still comes from the autonomous or allfather run-level decision path.
+- `completion` is a runtime-owned deterministic ceremonial node; final authority still comes from the autonomous or operator run-level decision path.
 - Workflow definitions are schema-validated and stored as canonical JSON.
-- The seeded default workflow is `royal-decree-v1`.
-- Kingdom also ships the built-in alternate workflow `royal-decree-skip-review-validation-v1`, which omits execution review and validation and routes builder output directly to royal closure.
+- The seeded default workflow is `work-order-v1`.
+- Kingdom also ships the built-in alternate workflow `work-order-skip-review-validation-v1`, which omits execution review and validation and routes builder output directly to royal closure.
 - `TransitionService` is the sole write path for run and node state mutations.
 - Mutating APIs require versioned, cryptographically random idempotency keys scoped to `(route, actor, client_key)` and hash the concrete request target, body, and authentication binding; cookie mutations cannot replay across browser sessions or origins. Bundled clients issue 24-hour keys, the protocol caps TTL at seven days, and a durable high-water clock prevents wall-clock rollback from making expired keys admissible again.
 - `kd init` creates a random local operator bearer credential at `.kingdom/secrets/operator-token`; the secrets directory is mode `0700`, the credential is mode `0600`, and the credential value is never stored in config, SQLite, logs, URLs, or browser storage.
-- API authority comes only from the verified local operator principal (`local-operator`, fixed `allfather` authority). Caller-supplied actor and role headers are ignored and cannot grant authority.
+- API authority comes only from the verified local operator principal (`local-operator`, fixed `operator` authority). Caller-supplied actor and role headers are ignored and cannot grant authority.
 - A direct loopback browser creates or reuses a bounded, restart-scoped eight-hour session through `POST /api/v1/auth/session` without user ceremony. Bootstrap requires a loopback TCP peer, an exact `localhost` or loopback-literal Host, exact Origin, no forwarding headers, and a browser bootstrap header; loopback never grants ambient authority to ordinary API routes. Sessions are bound to the exact origin, use deterministic origin/base-path-scoped `HttpOnly`, `SameSite=Strict` cookie names whose lifetime never exceeds absolute session expiry, and retain CSRF only in server and browser memory. Same-origin tabs coordinate bootstrap, and a canonical CSRF rejection triggers session recovery without replaying the failed mutation. Cookie-authenticated request contexts, including SSE streams, end at session expiry without shortening bearer calls.
 - The local host is the browser trust boundary: any process that can connect through loopback can emulate browser bootstrap. Non-loopback browsers are denied, direct remote bearer authentication requires TLS, and `kd` permits a non-loopback server only over HTTPS with an explicitly supplied credential file. CLI bearer credentials are bound to the configured API origin and are never forwarded across an origin change or HTTPS downgrade.
 - Installed `kd summon` binds loopback only. Non-loopback serving is rejected until Kingdom has a direct TLS listener and certificate lifecycle; it never exposes the local bearer surface over plaintext.
@@ -70,54 +70,57 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Shared finalization re-fetches eligible `/user/installations`, accepts an exact selected set for a new connection, durably stages its token generation, and publishes the healthy generation-validated connection in the DB transaction. Reconnect derives the complete saved installation set, rejects client subsets or additions, and requires every saved installation to remain visible with its pinned numeric account identity before a replacement token generation is installed; only **Change** edits the saved set. Provider access is always the intersection of the App installation and the authorizing user's access. The shared App owner can centrally revoke or delete the App; GitHub refresh tokens generally require reconnect after six months of disuse.
 - External sources deduplicate by immutable provider issue identity within a connection. Normalized snapshots, comments, target links, link attachment changes, refresh observations, planning adoptions, operation bindings, and integration audit events are immutable or append-only.
 - Manual connection creation, installation-set changes, planning-source attachment, and planning-source detachment recover a reported commit error only from exact generated-ID durable readback and matching audit; confirmed absence is a definitive server failure, while mismatched or unreadable state leaves the idempotency reservation pending and returns `idempotency_pending`. Unique installation and target/source constraints reject duplicate inserts but do not prove that an earlier operation committed.
-- External links distinguish immutable **used**, explicitly adopted planning **active**, and refreshable **latest observed** snapshots. Public decree coordinates are decoded from the used snapshot, and public planning coordinates are decoded from the active snapshot; the mutable source locator is internal refresh state only. Refresh never changes transcript messages, generated drafts, filesystem context, or issued decree text. Removing a planning source is an append-only participation change, not a deletion: it stops the source feeding future planner operations while its provenance, history, and already-bound operations stay exactly as they were, and re-adding the same issue reuses its immutable link and adopts freshly captured content. Only planning sources are removable; an issued decree keeps its exact source.
+- External links distinguish immutable **used**, explicitly adopted planning **active**, and refreshable **latest observed** snapshots. Public work order coordinates are decoded from the used snapshot, and public planning coordinates are decoded from the active snapshot; the mutable source locator is internal refresh state only. Refresh never changes transcript messages, generated drafts, filesystem context, or issued work order text. Removing a planning source is an append-only participation change, not a deletion: it stops the source feeding future planner operations while its provenance, history, and already-bound operations stay exactly as they were, and re-adding the same issue reuses its immutable link and adopts freshly captured content. Only planning sources are removable; an issued work order keeps its exact source.
 - Provider-backed planning operations bind the exact active planning context snapshot and every active external-source snapshot atomically with enqueue, in deterministic snapshot order. Execution and recovery only load those immutable bindings. `external-context-v3` length-frames the selected snapshots as explicitly untrusted evidence; planner assembly has no separate external-evidence byte budget, and the assembled evidence is absent from transcript rows. Queued operations bound with an older assembler version fail before provider invocation and cancel any pending retry; stale running operations first pass normal provider-quiescence recovery. Neither path rebinds historical inputs or uses legacy assembly, so the operator submits a new operation. A linked issue is the subject the operator wants to work through, not a hostile payload, so a turn carrying one keeps the workspace-inspection and research tools that understanding it requires. Containment comes from the planner agent profile — which grants no shell, no writes, and no subagents in any session — and from the framing that tells the model never to follow instructions inside external text or use tools because it asks.
 - The provider model catalog is served stale-while-revalidate: a populated cache answers immediately and an aged one revalidates in the background, so only a process's first read can block. A failed revalidation is reported as a stale snapshot on the next read. An explicit refresh is synchronous.
 - Live updates use SSE with event ids and `Last-Event-ID` replay/resume semantics.
 - SQLite is the authoritative persistence layer for control-plane state, planner state, durable execution tables, mailbox records, and artifacts.
-- Artifact metadata is stored in `artifacts`, content manifests in `artifact_contents`, and canonical bytes in ordered `artifact_content_chunks`. Downloads, archive export, and publication read those chunks.
+- Artifact metadata and stable insertion identity are stored in `artifacts`, content manifests in `artifact_contents`, and canonical bytes in ordered `artifact_content_chunks`. Downloads, archive export, and publication read those chunks.
 - Artifact write bytes are served only as authenticated downloads with attachment disposition and MIME sniffing disabled; provider-produced active content never executes under Kingdom's control-plane origin. All artifact actions use portable workspace-relative paths, and archive entries reject absolute, traversal, drive-qualified, and backslash forms. Deletion artifacts expose their action and path as metadata but never advertise checksum or download content that does not exist.
 - Artifact publication into the project root or a git worktree is a projection step, not the system of record.
 - Governance mode is `autonomous` only.
 - `governance.autonomous_approvals=true` auto-approves plan and final closure.
-- `governance.autonomous_approvals=false` pauses for explicit allfather plan and final decisions.
-- Allfather plan rework is uncapped and reopens the planning wave from `advisory_synthesis` through `plan_drafting`.
-- Final allfather rework is uncapped and reopens the decree from `plan_drafting`; the revised plan must return to allfather plan approval before execution resumes.
+- `governance.autonomous_approvals=false` pauses for explicit operator plan and final decisions.
+- Operator plan rework is uncapped and reopens the planning wave from `advisory_synthesis` through `plan_drafting`.
+- Final operator rework is uncapped and reopens the work order from `plan_drafting`; the revised plan must return to operator plan approval before execution resumes.
 - Node attempt numbers are durable lineage, not a retry budget, and have no generic ceiling. Automatic stale-attempt recovery and review/validation rework remain governed by their configured retry policies and loop limits.
 - Automatic provider retry decisions are durable, canonical records that retain the canonical error code, operator-safe reason, meaningful-progress result, retry index, policy/provider delay, absolute due time, source and target lineage, dispatch state, and final resolution. Restart recovery and planning's bounded service-owned due-time wake both use the persisted due time; lease-fenced claims remain the only launch authority.
-- Meaningful provider progress disables automatic retry. A failed dispatched retry target resolves its predecessor as `failed` in the same transaction that records its successor or terminal policy decision. Cancellation resolves a pending retry decision as `cancelled`; retry exhaustion resolves it as `escalated` and delivers exactly one durable escalation to the configured target role. Decree delivery uses the run mailbox; planning delivery uses the durable ACP operation event stream because planning sessions are independent of decree runs.
+- Meaningful provider progress disables automatic retry. A failed dispatched retry target resolves its predecessor as `failed` in the same transaction that records its successor or terminal policy decision. Cancellation resolves a pending retry decision as `cancelled`; retry exhaustion resolves it as `escalated` and delivers exactly one durable escalation to the configured target role. Work Order delivery uses the run mailbox; planning delivery uses the durable ACP operation event stream because planning sessions are independent of work order runs.
 - Provider content and workspace processing use disk-backed staging, chunked content, and incremental traversal rather than fixed output-byte, file-size, aggregate-size, entry-count, or directory-depth ceilings. Complete invocation stdout/stderr diagnostics are retained separately from bounded display previews. Guardian metadata, compact terminal-handoff envelopes, snapshot lineage depth, and startup/recovery batches retain their control-plane bounds.
-- Automatic decree successor creation has no run-wide attempt-count budget. Per-error retry policies, meaningful-progress rules, and review/validation loop controls still govern whether a successor is eligible.
+- Automatic work order successor creation has no run-wide attempt-count budget. Per-error retry policies, meaningful-progress rules, and review/validation loop controls still govern whether a successor is eligible.
 - Explicit Retry and Rerun actions reopen failed or cancelled runs in the same durable lineage. Cancelled runs may reopen only after provider cancellation, completion projection, attempt settlement, and session leases are quiescent.
 - Execution review and validation rework are governed separately by `max_execution_review_cycles` and `max_validation_rework_cycles`.
 - `run_until_all_approve=true` disables the practical cap on review and validation loops for that run.
 - Delegation policy is fixed:
-  - `king -> chancellor + council-member + advisors`
-  - `chancellor -> council-member`
-  - `council-member -> builder + reviewer + validators`
+  - `governance -> coordinator + plan-author + advisors`
+  - `coordinator -> plan-author`
+  - `plan-author -> builder + reviewer + validators`
   - advisors, reviewer, builder, and validators do not spawn
-- Advisory and execution escalation targets route first to `chancellor`.
+- Advisory and execution escalation targets route first to `coordinator`.
 - Workspace execution is runtime-resolved before dispatch from the run's selected publish mode:
   - `publish_mode=direct` captures the configured project root into one runtime-owned run-scoped execution target at the first workspace-owning attempt and publishes changes back to the configured project root as a projection step; response-only provider nodes use attempt-scoped isolated copies without registering execution-target or snapshot rows
-  - `publish_mode=git_worktree` requires a valid non-bare git working tree, creates a per-run sibling worktree named from the decree title slug plus `run_id` next to the repository's main worktree root, and uses that scoped worktree project root as the shared execution/publication target for the run
+  - `publish_mode=git_worktree` requires a valid non-bare git working tree, creates a per-run sibling worktree named from the work order title slug plus `run_id` next to the repository's main worktree root, and uses that scoped worktree project root as the shared execution/publication target for the run
 - Runtime-owned filesystem snapshots live under `.kingdom/runtime`, identify regular-file content only by digest, load only canonical bytes that match that digest, and ignore VCS metadata, Kingdom/tool state, package dependencies, sandbox/temp output, symlinks, and other non-regular files. Restoration verifies destination content and uses descriptor/root-relative no-follow traversal to replace provider-created symlink and non-directory conflicts safely without touching their targets or recursively deleting real directories. Windows captures identities for symlink reparse points and claims, verifies, and removes only the link. Quarantined execution targets and managed Git worktrees are deleted through bounded, resumable batches with durable cursors; targets remain unknown until full removal and trusted snapshot restoration, and worktree records remain uncleaned until provider content is removed and Git registration is pruned. Terminal worktree cleanup records a durable deletion-start boundary and persists its owner process identity with the owner/fence for every batch; startup reclaims a claim only after that exact process generation is absent. Retry/Rerun cancels only before deletion starts and conflicts after start until cleanup completes, after which dispatch recreates a clean checkout. Explicit quarantined-worktree recovery remains a pre-dispatch restoration path.
 - Builder deliverables are delta-based: only files created, changed, or deleted relative to the trusted runtime-owned snapshot are persisted as canonical builder artifacts.
-- Every provider-backed decree node is response-first; builder deliverables still come from workspace snapshot deltas, while non-builder responses are materialized as markdown snapshots.
-- Durable decree execution completion flows through `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_event_log`, `attempt_executions`, and `attempt_outbox`.
-- Planning is a first-class subsystem under `/planning-sessions` for domain resources and `/api/v1/acp` for planner activity, separate from decree execution runs.
+- Every provider-backed work order node is response-first; builder deliverables still come from workspace snapshot deltas, while non-builder responses are materialized as markdown snapshots.
+- Durable work order execution completion flows through `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_event_log`, `attempt_executions`, and `attempt_outbox`.
+- Planning is a first-class subsystem under `/planning-sessions` for domain resources and `/api/v1/acp` for planner activity, separate from work order execution runs.
 - Provider-backed planning operations (`reply`, `regenerate`, `formalize`, and generated title work) get runtime-owned invocation identity before provider dispatch.
-- Provider-backed planning success is settled server-side from the provider's adjudicated terminal outcome plus runtime-assembled text from the terminal-success assistant step; earlier nonterminal-step prose remains provisional and cannot become canonical fallback. A planner turn that exits success with no terminal-step output text is terminal planner-operation failure. Planning keeps its separate operation lifecycle and does not share decree terminal handoff storage.
-- Provider-backed planning settlement is runtime-owned and invocation-scoped, recorded as a `stream_observation` evidence row and a settlement row written atomically when the operation finalizes; `opencode export` is diagnostic only for planning just as it is for decree execution.
+- Provider-backed planning success is settled server-side from the provider's adjudicated terminal outcome plus runtime-assembled text from the terminal-success assistant step; earlier nonterminal-step prose remains provisional and cannot become canonical fallback. A planner turn that exits success with no terminal-step output text is terminal planner-operation failure. Planning keeps its separate operation lifecycle and does not share work order terminal handoff storage.
+- Provider-backed planning settlement is runtime-owned and invocation-scoped, recorded as a `stream_observation` evidence row and a settlement row written atomically when the operation finalizes; `opencode export` is diagnostic only for planning just as it is for work order execution.
 - Planner `message.completed` events commit atomically with the canonical message, draft, or title, provider settlement, and `run.completed`; streamed `message.part` events are provisional and cannot stand in for that finalization.
 - Planning stale recovery derives retry meaningful-progress from durable operation events as well as provider metadata. Progress prevents automatic provider re-execution but never authorizes canonical success without the provider settlement transaction.
 - Successful provider-backed planning settlement atomically records a pending, independently lease-fenced diagnostic-activity reconciliation with `run.completed`. Startup admits one 750 ms-bounded inspection before listener and dispatch readiness; the planning-service lifecycle serially continues eligible pending or expired reconciliations in the background. Reconciliation can append only validated and de-duplicated real provider activity, and atomically finishes by writing `run.activity.reconciled`; export timeout or failure writes the marker without activity and cannot affect canonical settlement.
 - Planning operations are durable and recoverable, and support reply, regenerate, formalize, generated-title, and branch-navigation (active-leaf selection) flows.
-- Clients identify planned decree lineage with `planning_session_id` and `planning_draft_id`; decree issuance derives and persists `planning_context_snapshot_id` from the draft's unique successful formalize operation.
+- Clients identify planned work order lineage with `planning_session_id` and `planning_draft_id`; work order issuance derives and persists `planning_context_snapshot_id` from the draft's unique successful formalize operation.
 - ACP is the single canonical protocol for planner execution and activity semantics: planner runs, statuses, event streams, cancellation, message parts, and provider activity all flow through `/api/v1/acp`.
-- Kingdom REST remains the single canonical API for planner domain resources: planning sessions, planning messages, drafts, context snapshots, and decree issuance remain under the Kingdom resource model.
+- Kingdom REST remains the single canonical API for planner domain resources: planning sessions, planning messages, drafts, context snapshots, and work order issuance remain under the Kingdom resource model.
 - Planning-session, run-mailbox, and plan-review lists expose bounded pages with signed continuation cursors, not retention ceilings. Session and review pages retain timestamp/ID order; mailbox pages retain sequence order and bind every filter into the cursor scope. Context snapshot summaries omit file arrays; immutable context entries are read in ordinal order through a session-, snapshot-, and kind-scoped paginated endpoint. Loaded item counts are not presented as complete totals while continuation remains available.
 - Provider-backed planner ACP runs cover `reply`, `regenerate`, `formalize`, and `generate_title`. These are the only planner operation types; context capture is not an operation.
 - Planner activity must not expose a second public lifecycle protocol beside ACP, and the planner must not fabricate tool, reasoning, or progress activity that the provider did not actually emit.
+- Provider activity observations retain invocation, provider part/tool-call identity, immutable event identity, and monotonic sequence. Exact input, output, provider-exposed reasoning, and provider message bytes commit atomically with bounded descriptors; available empty content is distinct from content not supplied or unavailable. Scoped content pages preserve UTF-8 boundaries and verify immutable chunk digests. Activity never supplies terminal settlement authority. Provider-emitted message parts share the same invocation/part identity, immutable content pages, and replay sequence as tools and reasoning. They are conversational observations; the single canonical settled response remains in the selected attempt’s Output. Planner messages remain authoritative from the persisted message tree, with matching provider message observations available only through explicit activity inspection. Routine progress stays available through View Options while the default run conversation emphasizes messages, reasoning, and tools.
+- Run-attempt and planner activity initially return the latest bounded window in ascending sequence order. Signed history cursors traverse earlier pages inside a pinned snapshot; independent resume cursors read forward deltas after its high-water mark. Covered sequence ranges and remaining event counts expose unloaded gaps while history and live deltas merge. SSE replay remains bounded per read, and later revisions cannot be replaced by an older replay.
+- Provider occurrence time and server recording time remain separate. Meaningful run activity advances from the observed occurrence time when supplied, otherwise recording time; later ingestion of older diagnostic activity does not make the run appear freshly active.
 
 ## Non-Goals
 
@@ -126,16 +129,25 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - OS-user identity, physical-presence authentication, and protection from hostile processes already running on the trusted local host.
 - Provider-engine abstraction beyond OpenCode for current production use.
 - Container isolation guarantees in the current runtime.
-- Artifact presence as a gate for decree success.
+- Artifact presence as a gate for work order success.
 
 ## Architectural Shape
 
 ### Operator Surfaces
 
-- Web UI for overview, planning, decree issuance, run inspection, approvals, agent inspection, and analytics.
-- `kd` CLI for workspace bootstrap, runtime lifecycle, decree/run control, artifact export, timeline streaming, and approvals.
+- Web UI for overview, planning, work order issuance, run inspection, approvals, agent inspection, and analytics.
+- `kd` CLI for workspace bootstrap, runtime lifecycle, work order/run control, artifact export, timeline streaming, and approvals.
 - REST API under `/api/v1` for all product capabilities.
 - Unauthenticated liveness probe at `/healthz`.
+
+### Presentation and Theme Packages
+
+- Presentation is a shared React layer backed by the data-only versioned schema in `contracts/theme/theme.schema.json` and the canonical Go resolver in `internal/theme`. OpenAPI and browser types are generated from that contract; the browser does not duplicate palette derivation.
+- A validated package supplies semantic color/status/DAG tokens, typography, surfaces, fixed plain-text UI copy, icons, and role names/descriptions/lore. Canonical role IDs and responsibilities, status meanings, routes, permissions, model selection, and execution behavior remain application-owned. Each role icon is resolved from the single `role.<canonical-role-id>` slot.
+- Generated replies remain neutral. Theme packages accept no prompt fragments, provider settings, executable code, or generated-voice configuration. A future voice feature requires its own versioned execution contract and explicit run/session snapshot; presentation selection cannot mutate live or historical execution inputs.
+- Shared editable files live under `.kingdom/themes/<id>/`. Validated publication stores immutable authored and resolved snapshots, with separate source and resolved digests. ID/version ownership survives unpublishing. Invalid source edits leave known-good revisions usable; save and delete use source digest preconditions and publication never silently changes personal selection.
+- Personal selection pins a package ID and resolved digest in browser storage scoped by the stable workspace presentation ID. Startup validates the selected revision behind a loading boundary; missing or invalid revisions produce a visible fallback without deleting the preference. Private preview is reversible and does not publish or persist a new selection.
+- Assets are validated package-relative files served by immutable revision and asset identity. No remote imports, arbitrary CSS, HTML, scripts, path traversal, or symlinks are allowed. ZIP expansion, asset count/size, image dimensions, static SVG complexity, and font container budgets are bounded; browser decoding remains a second boundary. Built-in fonts are self-hosted. Reduced-motion presentation retains visible state without animation.
 
 ### Control Plane
 
@@ -146,7 +158,7 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 ### Planning Surface
 
-- Planning sessions persist independently from decrees and runs.
+- Planning sessions persist independently from work orders and runs.
 - Planning state has explicit lifecycle and conversation fields.
 - Planning messages form a persistent tree: each message has a `parent_message_id` (null at the conversation root), and the session's `active_leaf_message_id` selects the visible root-to-leaf path that is the canonical transcript.
 - Provider-backed planner activity is exposed as ACP runs and ACP events, not as a parallel planner-specific lifecycle surface.
@@ -164,30 +176,30 @@ Kingdom is a single-host, role-governed orchestration runtime.
 - Connections management stores non-secret App and installation metadata, reports redacted credential health, and supports validate, disable, and tombstone/remove operations. Removal tombstones are retained durably for provenance and installation re-use, but they are not listed on the operator connections surface; a connection whose removal did not finish stays listed until reconciliation completes it.
 - Repository and issue discovery starts from the union of the connection's installation-granted repository IDs, paged in a stable installation order so a walk never repeats or skips a grant. One request returns an aggregated Kingdom page rather than one provider page: accumulation crosses installations until it reaches a page size or a provider-request budget, so a connection covering several accounts that each grant a few repositories returns them together and a search filter applies across the whole accumulated page. Each repository is authenticated for through the installation that grants it. Health requires every covered installation to validate, and the account-ownership assertion stays per installation so one installation can never vouch for another's repositories. An actual saved-set change atomically invalidates health, and discovery and intake remain blocked until **Check** validates the complete updated set; submitting the same normalized set does not advance connection state or audit. GitHub issue-list pull-request objects are filtered before presentation.
 - The normalized issue core has exactly title, body, state, repository, issue number, canonical URL, created timestamp, and updated timestamp. Issue title/body capture has no Kingdom byte ceiling; text and identity validation still apply, and null bodies normalize to empty text.
-- The comment count is always captured; it arrives on the provider's issue payload and costs no extra request. Comment bodies are the only import choice and default off. When enabled, intake walks every comment page and retains complete bodies without a count, per-comment, or aggregate-byte cap. Pages are spooled and replayed into immutable comment rows, and public comment reads remain paginated. Decree text prefilled from a snapshot is the issue body plus all captured comment bodies when selected, rendered runtime-side, attributed and blockquoted as external evidence; the operator reviews and may edit that text before issuing, and the issued decree text is what execution reads.
-- Planning intake fetches before a short transaction. Intake validates the active target and connection row version while atomically capturing/deduplicating the snapshot and creating or re-activating its unique link, head, adoption, and audit event. It never fabricates transcript content or moves the planning context snapshot. Decree issuance atomically inserts the immutable decree and exact selected snapshot link.
+- The comment count is always captured; it arrives on the provider's issue payload and costs no extra request. Comment bodies are the only import choice and default off. When enabled, intake walks every comment page and retains complete bodies without a count, per-comment, or aggregate-byte cap. Pages are spooled and replayed into immutable comment rows, and public comment reads remain paginated. Work Order text prefilled from a snapshot is the issue body plus all captured comment bodies when selected, rendered runtime-side, attributed and blockquoted as external evidence; the operator reviews and may edit that text before issuing, and the issued work order text is what execution reads.
+- Planning intake fetches before a short transaction. Intake validates the active target and connection row version while atomically capturing/deduplicating the snapshot and creating or re-activating its unique link, head, adoption, and audit event. It never fabricates transcript content or moves the planning context snapshot. Work Order issuance atomically inserts the immutable work order and exact selected snapshot link.
 - Issue and comment validators are independent. A conditionally unchanged issue still checks comments for comment-enabled profiles. Comment-page validators may reuse immutable snapshot comments only when their complete page set matches the current full comment-page window; boundary changes rebuild the capture without validators. Transfer is accepted only when immutable issue identity matches and the destination repository is still granted by one of the connection's installations, so an issue may move between connected accounts but never outside the connection's own grant.
 - Content intake does not relax GitHub setup/discovery controls: installation selections allow at most 500 IDs, installation discovery remains limited to ten 100-item pages, and issue search retains its 1,000-result/ten-page boundary. Provider deadlines and safe-GET retry policies remain in force.
 
 ### Workflow and Orchestration Plane
 
 - Workflow progression is driven by stored workflow definitions and legal edge transitions.
-- The canonical seeded workflow is `royal-decree-v1`.
-- Bundled alternate workflows may omit review and validation node classes entirely; the current built-in alternate is `royal-decree-skip-review-validation-v1`.
+- The canonical seeded workflow is `work-order-v1`.
+- Bundled alternate workflows may omit review and validation node classes entirely; the current built-in alternate is `work-order-skip-review-validation-v1`.
 - Governance is enforced through fixed role authority, not prompt convention alone.
 - Mailbox records handoff communication and observability context but does not mutate run state.
 
 ### Execution Plane
 
 - Runtime resolves one shared execution target per run and restores trusted runtime-owned snapshot state before mutating attempts.
-- OpenCode sessions run on the host against that workspace for provider-backed decree execution nodes.
+- OpenCode sessions run on the host against that workspace for provider-backed work order execution nodes.
 - Session identity is stable per run/node lineage and reused where the runtime contract requires it.
 - Runtime binds every provider response to its invocation, attempt, lease, process guardian, and node contract before settlement.
 - Strict startup validates managed OpenCode assets, binary availability, and agent resolution when `provider.strict=true`. Agent validation runs against an isolated database copy so it can never write to Kingdom's own.
 - After the listener is up, `kd summon` warms the provider surfaces an operator would otherwise wait on: the OpenCode model catalog, and the planner agent resolved against the real managed OpenCode database so that database is created and migrated before the first planner turn. Warming never gates readiness and never fails startup; a failure leaves the cost to be paid lazily and is reported through the model catalog notice.
 - Runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown` until terminal success or failure.
-- Provider-backed decree execution wall-clock budgets gate silence recovery, not active work: real provider activity and active completion-settlement observation suppress terminal timeout until the inactivity window is exceeded.
-- Canonical provider settlement is runtime-owned and invocation-scoped: every provider-backed decree node requires the strict server-observed terminal response and then applies its node-specific output contract. Runtime must not merge competing outputs into one settled response.
+- Provider-backed work order execution wall-clock budgets gate silence recovery, not active work: real provider activity and active completion-settlement observation suppress terminal timeout until the inactivity window is exceeded.
+- Canonical provider settlement is runtime-owned and invocation-scoped: every provider-backed work order node requires the strict server-observed terminal response and then applies its node-specific output contract. Runtime must not merge competing outputs into one settled response.
 - Stream output and `step_finish.reason` are authoritative only through the strict server-response predicate; mailbox projections, artifact presence, and provider export reads remain diagnostic and cannot repair settlement.
 
 ### State and Audit Plane
@@ -199,41 +211,41 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 ### Content Storage and Transport
 
-- SQLite is canonical for provider terminal text and invocation diagnostics, decree/planning text, persisted execution prompts, artifact content, and filesystem snapshot manifests. Content manifests identify ordered chunks by size and digest; transient spool paths are transport, never durable authority.
-- Decree terminal handoffs use a compact `v2` envelope with invocation-scoped SHA-256/size references. Referenced content is published under the runtime-owned `provider-completion/content/` tree before the envelope, verified during lease-fenced SQLite ingestion, and retained in canonical chunk tables. File cleanup follows ingestion; envelope presence or a content hash alone cannot authorize settlement. Planning retains its separate invocation and settlement lifecycle.
+- SQLite is canonical for provider terminal text and invocation diagnostics, work order/planning text, persisted execution prompts, artifact content, and filesystem snapshot manifests. Content manifests identify ordered chunks by size and digest; transient spool paths are transport, never durable authority.
+- Work Order terminal handoffs use a compact `v2` envelope with invocation-scoped SHA-256/size references. Referenced content is published under the runtime-owned `provider-completion/content/` tree before the envelope, verified during lease-fenced SQLite ingestion, and retained in canonical chunk tables. File cleanup follows ingestion; envelope presence or a content hash alone cannot authorize settlement. Planning retains its separate invocation and settlement lifecycle.
 - Provider streams and helper-command diagnostics are captured in full on disk. Activity text, tool input, stderr tails, and settlement previews are display projections, not canonical content limits or success evidence. `opencode export` remains time-bounded and diagnostic only.
-- Request bodies are privately spooled for schema validation, exact-byte idempotency hashing, and handler replay without a route-level aggregate byte ceiling. Designated decree/planning text fields stream into canonical content storage. Existing authentication, schema constraints, HTTP read deadlines, and guardian metadata boundaries remain enforced.
+- Request bodies are privately spooled for schema validation, exact-byte idempotency hashing, and handler replay without a route-level aggregate byte ceiling. Designated work order/planning text fields stream into canonical content storage. Existing authentication, schema constraints, HTTP read deadlines, and guardian metadata boundaries remain enforced.
 - Streaming and pagination avoid whole-workload accumulation on the refactored paths, but do not guarantee bounded memory for every projection: individual scalar values, metadata collections, and some read responses still materialize data. Host resources and provider context windows remain practical constraints.
 
-## Canonical Workflow: `royal-decree-v1`
+## Canonical Workflow: `work-order-v1`
 
 The default workflow executes in this order:
 
-1. `decree_intake` (`king`)
-2. `advisor_consultation_noble` (`noble-delegate`)
-3. `advisor_consultation_clergy` (`clergy-delegate`)
-4. `advisor_consultation_burgher` (`burgher-delegate`)
-5. `advisor_consultation_peasant` (`peasant-delegate`)
-6. `advisory_synthesis` (`chancellor`)
-7. `plan_drafting` (`council-member`)
-8. `king_plan_decision` (`king`)
-9. `execution_kickoff` (`council-member`) on approval
-10. `delegated_execution_berserker` (`builder-berserker`)
-11. `execution_review_shieldmaiden` (`reviewer-shieldmaiden`)
-12. `validation_gates_qa_scout` (`intelligence-qa-scout`)
-13. `validation_gates_nightraven` (`intelligence-nightraven`)
-14. `royal_closure` (`king`)
+1. `work_intake` (`governance`)
+2. `architecture_consultation` (`architecture-advisor`)
+3. `risk_consultation` (`risk-advisor`)
+4. `systems_consultation` (`systems-advisor`)
+5. `usability_consultation` (`usability-advisor`)
+6. `advisory_synthesis` (`coordinator`)
+7. `plan_drafting` (`plan-author`)
+8. `plan_decision` (`governance`)
+9. `execution_kickoff` (`plan-author`) on approval
+10. `implementation` (`builder`)
+11. `execution_review` (`reviewer`)
+12. `quality_validation` (`qa-validator`)
+13. `security_validation` (`security-validator`)
+14. `completion` (`governance`)
 
 Important clarifications:
 
-- The canonical role catalog also includes `intelligence-loki-chaos`, but the seeded `royal-decree-v1` workflow does not currently place a Loki node in the DAG.
-- Plan rework persists allfather feedback in review records and reopens `advisory_synthesis` through `plan_drafting`; it does not route through a dedicated feedback node.
+- The canonical role catalog also includes `resilience-validator`, but the seeded `work-order-v1` workflow does not currently place a Loki node in the DAG.
+- Plan rework persists operator feedback in review records and reopens `advisory_synthesis` through `plan_drafting`; it does not route through a dedicated feedback node.
 - Review and validation can drive execution rework.
 - Final success requires legal workflow progression plus final authority acceptance.
 
-## Bundled Alternate Workflow: `royal-decree-skip-review-validation-v1`
+## Bundled Alternate Workflow: `work-order-skip-review-validation-v1`
 
-The built-in alternate workflow preserves the same plan and execution kickoff phases, runs `delegated_execution_berserker`, and then transitions directly to `royal_closure`.
+The built-in alternate workflow preserves the same plan and execution kickoff phases, runs `implementation`, and then transitions directly to `completion`.
 
 Important clarifications:
 
@@ -263,7 +275,8 @@ Important clarifications:
 - A queued execution lease claim does not imply provider launch and must not populate `launch_started_at` or `started_at`; those remain provider-handoff and provider-observation timestamps respectively.
 - `attempt_executions.launch_started_at` records the durable start of the provider launch handoff, while `started_at` records only observed `running` execution.
 - Run summaries project `started_at` from the first observed provider-backed attempt, including advisory and superseded attempts, so retry/rework cannot reset it. `start_state` distinguishes `observed`, `not_started`, and `unrecorded`: the last requires canonical stream settlement plus process evidence without a persisted running observation. Creation, lease claim, launch handoff, terminal status, and reused provider-session identity cannot substitute for a start observation. `last_activity_at` remains the separate meaningful-activity timestamp.
-- Run artifact listings expose node/attempt/producer lineage. Only deliverables from the latest non-superseded successfully settled builder attempt per node are classified as canonical; other artifacts remain audit evidence. Execution detail exposes the latest durable publication batch with path actions, results, counts, and conflict reasons independently of provider settlement or final run approval. Publication read failures are errors, never an absent-successful projection.
+- Run artifact listings expose node/attempt/producer lineage in bounded signed-cursor pages. Only deliverables from the latest non-superseded successfully settled builder attempt per node are canonical; other artifacts remain audit evidence. A cursor binds the exact run and optional attempt filter, pins the immutable artifact insertion sequence, and fingerprints canonical winners. Concurrent inserts remain outside that window; changed lineage returns a refresh-required conflict instead of mixing classifications. Complete artifact bytes remain available through authenticated downloads and full archive export.
+- Execution detail exposes the latest durable publication batch summary independently of provider settlement or final run approval. Its path actions, results, and conflict reasons use a separate bounded run/attempt/batch-scoped endpoint. Each entry write advances the batch revision in the same transaction; continuation rejects a changed revision. Read failures are errors, never an absent-successful projection, and a page size is never a complete collection count.
 - Worker outputs must satisfy the runtime output schema before persistence.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles remain response-first and publish markdown snapshots rather than arbitrary deliverables.
@@ -275,9 +288,9 @@ Important clarifications:
 - Review attempts and settled validation-wave outcomes remain as executed; review and validation rework are keyed by explicit persisted wave lineage across the relevant node class, and loop-cap auto-success applies only to queued ready review/validation nodes that are skipped instead of dispatching another provider-backed loop, never by rewriting the current executed outcome.
 - Validation rework accounting is wave-based: a settled validation attempt counts as one rework wave only when at least one validator returns `VERDICT: REWORK` and no validator in that wave fails for a harder reason.
 - Review and validation nodes require exactly one valid `VERDICT:` control line as the first non-empty line of the response; duplicate, conflicting, or too-late verdict lines are invalid.
-- Provider-backed decree execution success requires a valid server-observed terminal response plus active attempt, invocation, lease, guardian, and node-specific output validation; process exit, finish reason, or handoff presence alone is not sufficient.
+- Provider-backed work order execution success requires a valid server-observed terminal response plus active attempt, invocation, lease, guardian, and node-specific output validation; process exit, finish reason, or handoff presence alone is not sufficient.
 - Terminal process handoffs are durably file-backed before SQLite ingestion. Replay authority retains the exact active invocation, attempt, stream/session, lease owner/version, and execution payload lineage, and is valid only when its fixed observation time precedes the durable lease expiry; replay wall-clock expiry alone cannot erase already-durable process evidence.
-- Provider-backed decree execution success must never be inferred from process exit, `step_finish.reason`, non-empty output text, mailbox projections, artifact presence, or export output.
+- Provider-backed work order execution success must never be inferred from process exit, `step_finish.reason`, non-empty output text, mailbox projections, artifact presence, or export output.
 - Provider-backed planning success must never be inferred from process exit, provisional stream text, or export output. It requires server-owned settlement for the active planner invocation from the provider's adjudicated terminal success plus non-empty output from the terminal-success assistant step; no earlier nonterminal step may supply fallback output.
 - Empty terminal provider output is `provider_empty_output`; an unclassified provider failure is `provider_unknown_failure`. Both are canonical fail-fast codes, not text-derived retry signals.
 - Latest node state must converge to durable `attempt_executions` terminal truth; a durably terminal attempt cannot leave its latest node run live.
@@ -288,7 +301,7 @@ Important clarifications:
 - Graceful shutdown must wait for durable async completion handoff and drain pending execution outbox projection before returning.
 - `run_status=succeeded` requires final authority acceptance:
   - automatically when `governance.autonomous_approvals=true`
-  - explicit allfather confirmation when `governance.autonomous_approvals=false`
+  - explicit operator confirmation when `governance.autonomous_approvals=false`
 - Artifact presence supports auditability and observability but does not determine terminal success.
 - Run and planning SSE streams must preserve replay semantics through stable event ids and `Last-Event-ID`.
 - Successful planning SSE streams remain open after `run.completed` until the durable `run.activity.reconciled` marker; failed and cancelled planning streams close at their terminal event.
@@ -304,5 +317,3 @@ Important clarifications:
 - Alternative provider engines remain unsupported for real runtime use.
 - Distributed scheduling remains out of scope.
 - DB backends beyond SQLite remain deferred.
-- The web UI does not yet expose a dedicated artifact browser; artifact access is currently CLI/API-first.
-- The API supports planning context refresh, but the web planner does not yet expose a dedicated refresh control.

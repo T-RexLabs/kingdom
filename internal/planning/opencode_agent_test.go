@@ -501,8 +501,8 @@ func TestPlannerPromptsDeclareModeSpecificOutputContracts(t *testing.T) {
 	formalizePrompt := buildFormalizePrompt(input)
 	for _, required := range []string{
 		"Output mode: formalize",
-		"titled Markdown decree plan",
-		"first non-empty line must be `# <decree title>`",
+		"titled Markdown work order plan",
+		"first non-empty line must be `# <work order title>`",
 		"## Open Questions",
 		"Do not include conversational prose or a `structured_question` block",
 	} {
@@ -598,8 +598,8 @@ func TestFormalizeRejectsLiveChatStyleCompletionAndPreservesProviderMetadata(t *
 		!metadata.StreamObservation.MeaningfulProgress {
 		t.Fatalf("provider metadata stream observation was not preserved: %+v", metadata.StreamObservation)
 	}
-	if plan.DecreeTitle != "" {
-		t.Fatalf("chat-style completion fell back to session title %q", plan.DecreeTitle)
+	if plan.WorkOrderTitle != "" {
+		t.Fatalf("chat-style completion fell back to session title %q", plan.WorkOrderTitle)
 	}
 }
 

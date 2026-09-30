@@ -563,8 +563,8 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	_, err = store.CreateDraft(context.Background(), CreatePlanningDraftRequest{
 		PlanningDraftID:   "pd_1",
 		PlanningSessionID: "ps_flow",
-		DecreeTitle:       "Planner title",
-		DecreeText:        "Planner text",
+		WorkOrderTitle:    "Planner title",
+		WorkOrderText:     "Planner text",
 		SummaryJSON:       `{"ready":false}`,
 		CreatedAt:         "2026-04-21T16:13:00Z",
 	})
@@ -945,7 +945,7 @@ func TestPlanningStoreOperationEventPagingUsesLimitAndCursor(t *testing.T) {
 		Type:               PlanningOperationTypeReply,
 		Status:             PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{}`,
-		LeaseOwner:         "planner",
+		LeaseOwner:         "planning-assistant",
 		LeaseExpiresAt:     "2026-04-27T09:35:00Z",
 		LeaseVersion:       1,
 		CreatedAt:          "2026-04-27T09:30:01Z",

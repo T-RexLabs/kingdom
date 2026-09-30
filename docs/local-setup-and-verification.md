@@ -57,13 +57,13 @@ kd clean
 kd init
 ```
 
-Then open `http://127.0.0.1:8080` and walk the product through a real decree flow.
+Then open `http://127.0.0.1:8080` and walk the product through a real work order flow.
 
 Recommended manual verification:
 
-1. Open `Decrees`.
+1. Open `Work Orders`.
 2. Choose a global model.
-3. Create a planning session or issue a decree directly.
+3. Create a planning session or issue a work order directly.
 4. Follow the run under `Runs`.
 5. Inspect graph, timeline, agents, and mailbox.
 6. If manual approvals are enabled, confirm the plan and final gate.
@@ -113,9 +113,9 @@ Expected behavior:
 ## Installed-Mode Notes
 
 - `publish.mode=direct` publishes builder deliverables into the project root.
-- `publish.mode=git_worktree` publishes into a detached linked worktree under `../kingdom-worktrees/<repo>/<decree-title-slug>-<run_id>/` next to the repository's main worktree root, then scopes back to the configured project root inside that checkout.
+- `publish.mode=git_worktree` publishes into a detached linked worktree under `../kingdom-worktrees/<repo>/<work-order-title-slug>-<run_id>/` next to the repository's main worktree root, then scopes back to the configured project root inside that checkout.
 - `governance.autonomous_approvals=true` auto-approves plan and final closure.
-- `governance.autonomous_approvals=false` pauses at both approval gates for allfather decisions.
+- `governance.autonomous_approvals=false` pauses at both approval gates for operator decisions.
 - OpenCode runs still require an explicit per-run global model selection even if summon config contains provider defaults.
 
 ## Troubleshooting

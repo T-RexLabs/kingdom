@@ -13,10 +13,10 @@ function makeMessage(partial: Partial<MailboxMessage> & { message_id: string }):
     message_id: partial.message_id,
     run_id: partial.run_id ?? "run-1",
     node_id: partial.node_id ?? "",
-    from_agent_id: partial.from_agent_id ?? "king",
-    from_agent_name: partial.from_agent_name ?? "King",
-    to_agent_id: partial.to_agent_id ?? "chancellor",
-    to_agent_name: partial.to_agent_name ?? "Chancellor",
+    from_agent_id: partial.from_agent_id ?? "governance",
+    from_agent_name: partial.from_agent_name ?? "Governance",
+    to_agent_id: partial.to_agent_id ?? "coordinator",
+    to_agent_name: partial.to_agent_name ?? "Coordinator",
     thread_id: partial.thread_id ?? "thread-1",
     message_type: partial.message_type ?? "status_update",
     communication_type: partial.communication_type ?? "instruction_dispatched",
@@ -162,31 +162,31 @@ describe("mailbox panel", () => {
     const { lanes } = buildMailboxPresentation([
       makeMessage({
         message_id: "m-1",
-        from_agent_id: "king",
-        from_agent_name: "King",
-        to_agent_id: "chancellor",
-        to_agent_name: "Chancellor",
+        from_agent_id: "governance",
+        from_agent_name: "Governance",
+        to_agent_id: "coordinator",
+        to_agent_name: "Coordinator",
         created_at: "2026-03-06T10:00:00.000Z",
       }),
       makeMessage({
         message_id: "m-2",
-        from_agent_id: "chancellor",
-        from_agent_name: "Chancellor",
-        to_agent_id: "king",
-        to_agent_name: "King",
+        from_agent_id: "coordinator",
+        from_agent_name: "Coordinator",
+        to_agent_id: "governance",
+        to_agent_name: "Governance",
         communication_type: "response_received",
         created_at: "2026-03-06T10:03:00.000Z",
       }),
     ]);
 
     expect(lanes).toHaveLength(1);
-    expect(lanes[0]?.laneLabel).toBe("King -> Chancellor");
+    expect(lanes[0]?.laneLabel).toBe("Governance -> Coordinator");
   });
 
   it("builds lanes from every message it is given", () => {
     const presentation = buildMailboxPresentation([
-      makeMessage({ message_id: "self-1", from_agent_id: "king", to_agent_id: "king", to_agent_name: "King" }),
-      makeMessage({ message_id: "m-2", from_agent_id: "king", to_agent_id: "chancellor" }),
+      makeMessage({ message_id: "self-1", from_agent_id: "governance", to_agent_id: "governance", to_agent_name: "Governance" }),
+      makeMessage({ message_id: "m-2", from_agent_id: "governance", to_agent_id: "coordinator" }),
     ]);
 
     expect(presentation.visibleMessageCount).toBe(2);
@@ -247,19 +247,19 @@ describe("mailbox panel", () => {
     const user = userEvent.setup();
     const laneOne = makeMessage({
       message_id: "m-lane-1",
-      from_agent_id: "king",
-      from_agent_name: "King",
-      to_agent_id: "chancellor",
-      to_agent_name: "Chancellor",
+      from_agent_id: "governance",
+      from_agent_name: "Governance",
+      to_agent_id: "coordinator",
+      to_agent_name: "Coordinator",
       created_at: "2026-03-06T10:00:00.000Z",
       preview: "Lane one",
     });
     const laneTwo = makeMessage({
       message_id: "m-lane-2",
-      from_agent_id: "chancellor",
-      from_agent_name: "Chancellor",
-      to_agent_id: "council",
-      to_agent_name: "Council Member",
+      from_agent_id: "coordinator",
+      from_agent_name: "Coordinator",
+      to_agent_id: "plan-author",
+      to_agent_name: "Plan Author",
       created_at: "2026-03-06T10:01:00.000Z",
       preview: "Lane two",
     });
@@ -276,7 +276,7 @@ describe("mailbox panel", () => {
 
     expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Chancellor -> Council Member/i }));
+    await user.click(screen.getByRole("button", { name: /Coordinator -> Plan Author/i }));
     expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
   });
 
@@ -313,8 +313,8 @@ describe("mailbox panel", () => {
     expect(dialog).toBeInTheDocument();
     expect(contentCard).toHaveClass("border-border");
     expect(contentCard).toHaveClass("bg-background");
-    expect(contentCard).not.toHaveClass("border-gold/25");
-    expect(within(dialog).getByText("King -> Chancellor")).toBeInTheDocument();
+    expect(contentCard).not.toHaveClass("border-accent/25");
+    expect(within(dialog).getByText("Governance -> Coordinator")).toBeInTheDocument();
     expect(screen.getByText("Full instruction body")).toBeInTheDocument();
     expect(screen.queryByText("Full response body")).not.toBeInTheDocument();
     expect(within(dialog).queryByText(/^Instruction$/)).not.toBeInTheDocument();
@@ -380,19 +380,19 @@ describe("mailbox panel", () => {
   it("keeps the initially selected lane stable when fresher lanes arrive later", () => {
     const laneAlpha = makeMessage({
       message_id: "m-alpha",
-      from_agent_id: "king",
-      from_agent_name: "King",
-      to_agent_id: "chancellor",
-      to_agent_name: "Chancellor",
+      from_agent_id: "governance",
+      from_agent_name: "Governance",
+      to_agent_id: "coordinator",
+      to_agent_name: "Coordinator",
       created_at: "2026-03-06T10:00:00.000Z",
       preview: "Alpha",
     });
     const laneBeta = makeMessage({
       message_id: "m-beta",
-      from_agent_id: "council",
-      from_agent_name: "Council Member",
+      from_agent_id: "plan-author",
+      from_agent_name: "Plan Author",
       to_agent_id: "reviewer",
-      to_agent_name: "Reviewer Shieldmaiden",
+      to_agent_name: "Reviewer Reviewer",
       created_at: "2026-03-06T10:01:00.000Z",
       preview: "Beta",
     });
@@ -402,15 +402,15 @@ describe("mailbox panel", () => {
     );
 
     expect(screen.getByText("Conversation").parentElement).toHaveTextContent(
-      "Council Member -> Reviewer Shieldmaiden",
+      "Plan Author -> Reviewer Reviewer",
     );
 
     const laneGamma = makeMessage({
       message_id: "m-gamma",
       from_agent_id: "builder",
-      from_agent_name: "Builder Berserker",
+      from_agent_name: "Builder Builder",
       to_agent_id: "reviewer",
-      to_agent_name: "Reviewer Shieldmaiden",
+      to_agent_name: "Reviewer Reviewer",
       created_at: "2026-03-06T10:02:00.000Z",
       preview: "Gamma",
     });
@@ -418,10 +418,10 @@ describe("mailbox panel", () => {
     rerender(<MailboxHarness messages={[laneAlpha, laneBeta, laneGamma]} detailById={{}} />);
 
     expect(screen.getByText("Conversation").parentElement).toHaveTextContent(
-      "Council Member -> Reviewer Shieldmaiden",
+      "Plan Author -> Reviewer Reviewer",
     );
     expect(screen.getByText("Conversation").parentElement).not.toHaveTextContent(
-      "Builder Berserker -> Reviewer Shieldmaiden",
+      "Builder Builder -> Reviewer Reviewer",
     );
   });
 
@@ -510,7 +510,7 @@ describe("mailbox panel", () => {
   it("surfaces review and validation verdict badges on thread cards from structured summary fields", () => {
     const review = makeMessage({
       message_id: "m-review",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review",
       communication_type: "response_received",
       preview: "Reviewer requested another pass.",
@@ -520,14 +520,14 @@ describe("mailbox panel", () => {
     });
     const validation = makeMessage({
       message_id: "m-validation",
-      node_id: "validation_gates_nightraven",
+      node_id: "security_validation",
       thread_id: "thread-validation",
       communication_type: "response_received",
-      preview: "Nightraven found unresolved issues.",
+      preview: "Security Validator found unresolved issues.",
       verdict_type: "validation",
       verdict_status: "rework",
-      from_agent_id: "intelligence-nightraven",
-      from_agent_name: "Nightraven",
+      from_agent_id: "security-validator",
+      from_agent_name: "Security Validator",
       created_at: "2026-03-06T10:01:00.000Z",
     });
 
@@ -541,7 +541,7 @@ describe("mailbox panel", () => {
   it("shows invalid response when latest owner response is malformed", () => {
     const reviewVerdict = makeMessage({
       message_id: "m-review-verdict",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       communication_type: "response_received",
       preview: "VERDICT: REWORK",
       verdict_type: "review",
@@ -550,7 +550,7 @@ describe("mailbox panel", () => {
     });
     const newerWithoutVerdict = makeMessage({
       message_id: "m-review-followup",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       communication_type: "response_received",
       preview: "Follow-up planning note without verdict",
       reason_code: "llm_invalid_response",
@@ -569,7 +569,7 @@ describe("mailbox panel", () => {
   it("shows auto-succeeded at cap instead of stale rework on thread cards", () => {
     const reviewRework = makeMessage({
       message_id: "m-review-rework",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review",
       communication_type: "response_received",
       preview: "VERDICT: REWORK",
@@ -579,7 +579,7 @@ describe("mailbox panel", () => {
     });
     const capReached = makeMessage({
       message_id: "m-review-cap",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review",
       communication_type: "response_received",
       preview: "Review cycle cap reached; auto-succeeded.",
@@ -599,7 +599,7 @@ describe("mailbox panel", () => {
   it("shows mixed outcomes on a lane when thread-level latest verdicts disagree", () => {
     const reworkThread = makeMessage({
       message_id: "m-review-mixed-rework",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review-a",
       communication_type: "response_received",
       preview: "VERDICT: REWORK",
@@ -609,7 +609,7 @@ describe("mailbox panel", () => {
     });
     const autoSucceededThread = makeMessage({
       message_id: "m-review-mixed-cap",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review-b",
       communication_type: "response_received",
       preview: "Review cycle cap reached; auto-succeeded.",
@@ -627,7 +627,7 @@ describe("mailbox panel", () => {
   it("shows per-message verdict badges for operator-visible history", () => {
     const reviewRework = makeMessage({
       message_id: "m-review-history-rework",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review-history-a",
       communication_type: "response_received",
       preview: "VERDICT: REWORK",
@@ -637,7 +637,7 @@ describe("mailbox panel", () => {
     });
     const autoSucceeded = makeMessage({
       message_id: "m-review-history-cap",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review-history-b",
       communication_type: "response_received",
       preview: "Review cycle cap reached; auto-succeeded.",
@@ -658,7 +658,7 @@ describe("mailbox panel", () => {
     const user = userEvent.setup();
     const invalidMessage = makeMessage({
       message_id: "m-review-invalid-detail",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       communication_type: "response_received",
       preview: "Malformed review response",
       verdict_type: "review",
@@ -685,7 +685,7 @@ describe("mailbox panel", () => {
     const user = userEvent.setup();
     const autoSucceededMessage = makeMessage({
       message_id: "m-review-auto-detail",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       communication_type: "response_received",
       preview: "Review cycle cap reached; auto-succeeded.",
       verdict_type: "review",
@@ -711,7 +711,7 @@ describe("mailbox panel", () => {
   it("does not surface validation verdict badge for builder node responses", () => {
     const builderResponse = makeMessage({
       message_id: "m-builder-response",
-      node_id: "delegated_execution_berserker",
+      node_id: "implementation",
       communication_type: "response_received",
       preview: "VERDICT: PASS\nBuilder completed implementation.",
       created_at: "2026-03-06T10:00:00.000Z",
@@ -726,7 +726,7 @@ describe("mailbox panel", () => {
   it("does not infer thread verdict badges from preview text alone", () => {
     const reviewVerdict = makeMessage({
       message_id: "m-review-mixed-case",
-      node_id: "execution_review_shieldmaiden",
+      node_id: "execution_review",
       thread_id: "thread-review",
       communication_type: "response_received",
       preview: "verdict: pass",
@@ -832,7 +832,7 @@ describe("mailbox panel", () => {
 
     expect(screen.getAllByRole("list").length).toBeGreaterThan(0);
 
-    const laneButton = screen.getByRole("button", { name: /King -> Chancellor/i });
+    const laneButton = screen.getByRole("button", { name: /Governance -> Coordinator/i });
     expect(within(laneButton).getByRole("list")).toBeInTheDocument();
     expect(laneButton).toHaveTextContent("First item");
     expect(laneButton).toHaveTextContent("Second item");

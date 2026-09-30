@@ -32,7 +32,7 @@ type runtimeDeps struct {
 	retryWake                             func(time.Time)
 	retryWakeProgress                     func()
 	newLeaseTicker                        func(time.Duration) planningOperationLeaseTicker
-	inspectPlannerProviderSessionActivity func(context.Context, string, string, string, string, *string, string) ([]sessionActivityItem, error)
+	inspectPlannerProviderSessionActivity func(context.Context, string, string, string, string, *string, string, func(ProviderActivity) error) error
 	reconcileActivity                     func(context.Context, string) error
 }
 

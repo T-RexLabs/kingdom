@@ -13,8 +13,8 @@ export function ModalContentSection({ className, ...props }: HTMLAttributes<HTML
 }
 
 /**
- * `caption` names the surface the dialog belongs to — "Mailbox", "Royal
- * Decree", "Remove Connection". It is an orientation label, so it must never
+ * `caption` names the surface the dialog belongs to — "Mailbox", "Work
+ * Order", "Remove Connection". It is an orientation label, so it must never
  * rank or editorialise the choice inside ("Recommended", "Secondary Setup
  * Path"): the operator reads it before the title, and a ranking there argues
  * with them instead of telling them where they are. Omit it when the title is

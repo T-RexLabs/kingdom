@@ -4,8 +4,8 @@ import { pollingRefetchQueryOptions } from "./query-freshness";
 import type {
   DashboardSnapshot,
   HealthResponse,
-  RealmAnalyticsExecutionDetailSnapshot,
-  RealmAnalyticsSnapshot,
+  AnalyticsExecutionDetailSnapshot,
+  AnalyticsSnapshot,
   RuntimeMetrics,
 } from "./hooks-types";
 
@@ -15,14 +15,14 @@ const DASHBOARD_SNAPSHOT_REFETCH_INTERVAL_MS = 5_000;
 const REALM_ANALYTICS_SNAPSHOT_REFETCH_INTERVAL_MS = 5_000;
 
 export const dashboardSnapshotQueryKey = ["dashboard", "snapshot"] as const;
-export const realmAnalyticsQueryKey = ["realm-analytics"] as const;
+export const analyticsQueryKey = ["analytics"] as const;
 export const runtimeMetricsQueryKey = ["metrics", "runtime"] as const;
-export const realmAnalyticsSnapshotQueryKey = (windowMinutes: number) =>
-  ["realm-analytics", "snapshot", windowMinutes] as const;
-export const realmAnalyticsExecutionDetailQueryKey = (windowMinutes: number, runId: string | null) =>
+export const analyticsSnapshotQueryKey = (windowMinutes: number) =>
+  ["analytics", "snapshot", windowMinutes] as const;
+export const analyticsExecutionDetailQueryKey = (windowMinutes: number, runId: string | null) =>
   runId
-    ? ["realm-analytics", "execution-detail", "run", runId] as const
-    : ["realm-analytics", "execution-detail", "window", windowMinutes] as const;
+    ? ["analytics", "execution-detail", "run", runId] as const
+    : ["analytics", "execution-detail", "window", windowMinutes] as const;
 
 export function useHealth() {
   return useQuery({
@@ -54,10 +54,10 @@ export function useRuntimeMetrics() {
   });
 }
 
-export function useRealmAnalyticsSnapshot(windowMinutes = 1440) {
+export function useAnalyticsSnapshot(windowMinutes = 1440) {
   return useQuery({
-    queryKey: realmAnalyticsSnapshotQueryKey(windowMinutes),
-    queryFn: ({ signal }) => apiFetch<RealmAnalyticsSnapshot>("/realm-analytics/snapshot", {
+    queryKey: analyticsSnapshotQueryKey(windowMinutes),
+    queryFn: ({ signal }) => apiFetch<AnalyticsSnapshot>("/analytics/snapshot", {
       params: {
         window_minutes: windowMinutes,
       },
@@ -69,10 +69,10 @@ export function useRealmAnalyticsSnapshot(windowMinutes = 1440) {
   });
 }
 
-export function useRealmAnalyticsExecutionDetailSnapshot(windowMinutes = 1440, runId: string | null = null) {
+export function useAnalyticsExecutionDetailSnapshot(windowMinutes = 1440, runId: string | null = null) {
   return useQuery({
-    queryKey: realmAnalyticsExecutionDetailQueryKey(windowMinutes, runId),
-    queryFn: ({ signal }) => apiFetch<RealmAnalyticsExecutionDetailSnapshot>("/realm-analytics/execution-detail", {
+    queryKey: analyticsExecutionDetailQueryKey(windowMinutes, runId),
+    queryFn: ({ signal }) => apiFetch<AnalyticsExecutionDetailSnapshot>("/analytics/execution-detail", {
 			params: runId
 				? { run_id: runId }
 				: { window_minutes: windowMinutes },
@@ -86,11 +86,11 @@ export function useRealmAnalyticsExecutionDetailSnapshot(windowMinutes = 1440, r
       return REALM_ANALYTICS_SNAPSHOT_REFETCH_INTERVAL_MS;
     },
     staleTime: REALM_ANALYTICS_SNAPSHOT_REFETCH_INTERVAL_MS,
-    retry: retryRealmAnalyticsExecutionDetailQuery,
+    retry: retryAnalyticsExecutionDetailQuery,
   });
 }
 
-function retryRealmAnalyticsExecutionDetailQuery(failureCount: number, error: unknown): boolean {
+function retryAnalyticsExecutionDetailQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof ApiError && error.status === 404) {
     return false;
   }

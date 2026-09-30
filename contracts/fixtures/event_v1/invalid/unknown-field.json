@@ -9,7 +9,7 @@
   "created_at": "2026-03-01T12:02:00Z",
   "event_type": "attempt.progress",
   "actor_id": "runtime",
-  "role_id": "builder-berserker",
+  "role_id": "builder",
   "authority_source": "runtime.event_bridge",
   "reason_code": "stream_event",
   "reason_text": "stream event ingested",

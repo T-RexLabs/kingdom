@@ -29,7 +29,7 @@ func (p fixedDelayRetryPlanner) Plan(errorcatalog.Code, int) (retryengine.PlanRe
 	return retryengine.PlanResult{
 		ShouldRetry:      true,
 		RetryClass:       "conditional_limited",
-		EscalationTarget: "chancellor",
+		EscalationTarget: "coordinator",
 		MaxRetries:       1,
 		NextDelay:        p.delay,
 	}, nil
@@ -43,11 +43,11 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_idle', 'agent_king_backup', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_governance', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_idle', 'agent_governance_backup', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), fixedDelayRetryPlanner{delay: 2 * time.Second}, nil)
 	if reconciler.db != db {
@@ -84,7 +84,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 		t.Fatalf("expected retry node started_at to remain empty before dispatch, got %q", startedAt)
 	}
 
-	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_king_backup" {
+	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_governance_backup" {
 		t.Fatalf("unexpected retry assignment agent: got %q", got)
 	}
 	var dueAt, payloadJSON string
@@ -141,10 +141,10 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttemptWithDriftedReplacement
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'blocked', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'blocked', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_governance', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -156,10 +156,10 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttemptWithDriftedReplacement
 	if result.AttemptsReassigned != 1 {
 		t.Fatalf("expected one reassigned attempt, got %d", result.AttemptsReassigned)
 	}
-	if got := queryNodeAssignedAgent(t, db, "nr_1_retry_2"); got != "agent_king_backup" {
+	if got := queryNodeAssignedAgent(t, db, "nr_1_retry_2"); got != "agent_governance_backup" {
 		t.Fatalf("expected drifted replacement agent to be claimed for retry, got %q", got)
 	}
-	if got := queryReconcilerAgentStatus(t, db, "agent_king_backup"); got != "busy" {
+	if got := queryReconcilerAgentStatus(t, db, "agent_governance_backup"); got != "busy" {
 		t.Fatalf("expected drifted replacement agent status to converge to busy after claim, got %q", got)
 	}
 }
@@ -172,9 +172,9 @@ func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) 
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_decree_intake_1', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_work_intake_1', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T11:58:00Z', '2026-03-01T12:00:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -197,14 +197,14 @@ func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:09:30Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting', 'starting', 'starting', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'architecture-advisor', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_starting', 'starting', 'starting', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting', 'starting-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting', 'wfdef_starting', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting', NULL, 'decree_starting', 'wfdef_starting', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_1', 'run_starting', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting:advisor_consultation_noble:1', 'run_starting', 'nr_starting_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting', 'wfdef_starting', 'architecture_consultation', 'architecture-advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting', NULL, 'work_order_starting', 'wfdef_starting', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_1', 'run_starting', 'architecture_consultation', 1,1, 'starting', 'architecture-advisor', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting:architecture_consultation:1', 'run_starting', 'nr_starting_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -231,9 +231,9 @@ func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *t
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	now := time.Date(2026, 3, 1, 12, 13, 0, 0, time.UTC)
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-03-01T12:20:00Z', 1, 'session_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-03-01T12:20:00Z', 1, 'session_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	stale, err := findStaleAttemptsWithQuerier(context.Background(), db, now, time.Minute)
 	if err != nil {
@@ -251,9 +251,9 @@ func TestFindStaleAttemptsKeepsStartingProviderAttemptWithLiveExecutionLease(t *
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	const nowText = "2026-09-28T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'starting', 'provider_backed', 'server_response', 'worker_1', '2099-03-01T12:20:00Z', 1, 'session_1', '', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'starting', 'provider_backed', 'server_response', 'worker_1', '2099-03-01T12:20:00Z', 1, 'session_1', '', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	now, err := time.Parse(time.RFC3339Nano, nowText)
 	if err != nil {
@@ -275,9 +275,9 @@ func TestFindStaleAttemptsKeepsLeaseThatExpiresAfterVariablePrecisionNow(t *test
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	const nowText = "2026-09-25T10:00:00.1Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '2026-09-25T09:00:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-09-25T10:00:00.11Z', 1, 'session_1', '2026-09-25T09:00:00Z', '2026-09-25T09:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', 'worker_1', '2026-09-25T10:00:00.11Z', 1, 'session_1', '2026-09-25T09:00:00Z', '2026-09-25T09:00:00Z')`)
 
 	now, err := time.Parse(time.RFC3339Nano, nowText)
 	if err != nil {
@@ -298,7 +298,7 @@ func TestFindStaleAttemptsRespectsFractionalSecondCutoff(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:00:00.100000001Z' WHERE node_run_id = 'nr_1'`)
 
 	now := time.Date(2026, 3, 1, 12, 1, 0, 100000000, time.UTC)
@@ -317,7 +317,7 @@ func TestReconcilerSchedulesRetryForStartingProviderFailure(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
 	mustExecArgs(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, committed_at) VALUES (?, 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', 'llm_rate_limited', 'provider rate limit', '2026-03-01T12:00:00.123456789Z', '2026-03-01T12:00:01.123456789Z', '2026-03-01T12:00:01.123456789Z')`, attemptID)
 
@@ -329,7 +329,7 @@ func TestReconcilerSchedulesRetryForStartingProviderFailure(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE source_attempt_id = ? AND decision = 'retry'`, attemptID).Scan(&decisions); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 2`).Scan(&successors); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt = 2`).Scan(&successors); err != nil {
 		t.Fatal(err)
 	}
 	if decisions != 1 || successors != 1 {
@@ -344,14 +344,14 @@ func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:09:50.1Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_lease', 'starting lease', 'starting lease', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'architecture-advisor', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_starting_lease', 'starting lease', 'starting lease', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_lease', 'starting-lease-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_lease', 'wfdef_starting_lease', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_lease', NULL, 'decree_starting_lease', 'wfdef_starting_lease', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_lease_1', 'run_starting_lease', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_lease:advisor_consultation_noble:1', 'run_starting_lease', 'nr_starting_lease_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_lease_1', '', '2026-03-01T12:09:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_lease', 'wfdef_starting_lease', 'architecture_consultation', 'architecture-advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_lease', NULL, 'work_order_starting_lease', 'wfdef_starting_lease', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_lease_1', 'run_starting_lease', 'architecture_consultation', 1,1, 'starting', 'architecture-advisor', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_lease:architecture_consultation:1', 'run_starting_lease', 'nr_starting_lease_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_lease_1', '', '2026-03-01T12:09:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_lease_1', 'agent_noble', 'active', '2026-03-01T12:11:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -388,15 +388,15 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *t
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:13:30Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'noble-delegate', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_stale', 'starting stale', 'starting stale', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'architecture-advisor', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'architecture-advisor', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_starting_stale', 'starting stale', 'starting stale', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_stale', 'starting-stale-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_stale', 'wfdef_starting_stale', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_stale', NULL, 'decree_starting_stale', 'wfdef_starting_stale', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_stale_1', 'run_starting_stale', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_stale:advisor_consultation_noble:1', 'run_starting_stale', 'nr_starting_stale_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_stale_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_stale', 'wfdef_starting_stale', 'architecture_consultation', 'architecture-advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_stale', NULL, 'work_order_starting_stale', 'wfdef_starting_stale', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_stale_1', 'run_starting_stale', 'architecture_consultation', 1,1, 'starting', 'architecture-advisor', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_stale:architecture_consultation:1', 'run_starting_stale', 'nr_starting_stale_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_stale_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_stale_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:09:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -429,15 +429,15 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:13:30Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('noble-delegate', 'Noble Delegate', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'noble-delegate', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'noble-delegate', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_starting_expired', 'starting expired', 'starting expired', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble', 'architecture-advisor', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_noble_backup', 'architecture-advisor', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_starting_expired', 'starting expired', 'starting expired', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_starting_expired', 'starting-expired-flow', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_expired', 'wfdef_starting_expired', 'advisor_consultation_noble', 'noble-delegate', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_expired', NULL, 'decree_starting_expired', 'wfdef_starting_expired', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_expired_1', 'run_starting_expired', 'advisor_consultation_noble', 1,1, 'starting', 'noble-delegate', 'agent_noble', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_expired:advisor_consultation_noble:1', 'run_starting_expired', 'nr_starting_expired_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_expired_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_starting_expired', 'wfdef_starting_expired', 'architecture_consultation', 'architecture-advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_starting_expired', NULL, 'work_order_starting_expired', 'wfdef_starting_expired', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_starting_expired_1', 'run_starting_expired', 'architecture_consultation', 1,1, 'starting', 'architecture-advisor', 'agent_noble', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_starting_expired:architecture_consultation:1', 'run_starting_expired', 'nr_starting_expired_1', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_starting_expired_1', '', '2026-03-01T12:08:00Z', NULL, NULL, NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_starting_expired_1', 'agent_noble', 'active', '2026-03-01T12:12:00Z', '2026-03-01T12:13:00Z', '2026-03-01T12:08:00Z', '2026-03-01T12:13:00Z')`)
 
 	engine := loadRetryEngine(t)
@@ -468,11 +468,11 @@ func TestReconcilerDoesNotUseNodeAttemptOrdinalAsRetryBudget(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2', 'entry_nr2', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2', 'entry_nr2', '2026-03-01T12:08:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -505,12 +505,12 @@ func TestReconcilerStaleRetryCreatesSixtyFirstRunAttempt(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 	for i := 0; i < 59; i++ {
-		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-stale-%d', 'run_1', 'budget-stale-node-%d', 1, 1, 'failed', 'king', 'agent_king', 1, '2026-03-01T11:58:00Z', '2026-03-01T11:59:00Z')`, i, i))
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-budget-stale-%d', 'run_1', 'budget-stale-node-%d', 1, 1, 'failed', 'governance', 'agent_governance', 1, '2026-03-01T11:58:00Z', '2026-03-01T11:59:00Z')`, i, i))
 	}
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
@@ -546,10 +546,10 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
 	firstNow := "2026-03-01T12:05:30Z"
@@ -560,10 +560,10 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 	if err := db.QueryRow(`SELECT target_node_run_id, due_at FROM retry_decisions WHERE node_run_id = 'nr_1'`).Scan(&successor, &dueAt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_1", dueAt); err != nil {
+	if _, err := NewTransitionService(db, nil).ReleaseDueWorkOrderRetries(context.Background(), "run_1", dueAt); err != nil {
 		t.Fatalf("release stale successor: %v", err)
 	}
-	exhaustedAttemptID := composeAttemptID("run_1", "decree_intake", 2)
+	exhaustedAttemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: exhaustedAttemptID, RunID: "run_1", NodeRunID: successor, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_stale_successor", CreatedAt: "2026-03-01T12:06:00Z"}); err != nil {
 		t.Fatalf("enqueue stale successor: %v", err)
@@ -577,7 +577,7 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '2026-03-01T12:06:00Z', finished_at = NULL WHERE node_run_id = '`+successor+`'`)
 
 	secondNow := "2026-03-01T12:10:00Z"
-	staleSuccessor := staleAttempt{NodeRunID: successor, RunID: "run_1", NodeID: "decree_intake", Attempt: 2, Wave: 1, RequiredRole: "king", AgentID: "agent_king_backup", CurrentStatus: "running", StartedAt: "2026-03-01T12:06:00Z"}
+	staleSuccessor := staleAttempt{NodeRunID: successor, RunID: "run_1", NodeID: "work_intake", Attempt: 2, Wave: 1, RequiredRole: "governance", AgentID: "agent_governance_backup", CurrentStatus: "running", StartedAt: "2026-03-01T12:06:00Z"}
 	if result, err := reconciler.recoverAttempt(context.Background(), staleSuccessor, mustParseRFC3339(t, secondNow)); err != nil || !result.failed {
 		t.Fatalf("exhaust stale successor result=%+v err=%v", result, err)
 	}
@@ -596,7 +596,7 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = 'escalation.raised'`, exhaustedAttemptID).Scan(&escalations); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_1' AND message_type = 'escalation' AND to_agent_id = 'agent_chancellor'`).Scan(&deliveries); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM mailbox_messages WHERE run_id = 'run_1' AND message_type = 'escalation' AND to_agent_id = 'agent_coordinator'`).Scan(&deliveries); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT invocation_state FROM provider_invocations WHERE provider_invocation_id = 'invocation_stale_successor'`).Scan(&invocationState); err != nil {
@@ -605,7 +605,7 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 	if err := db.QueryRow(`SELECT COUNT(1), COALESCE(MAX(status), '') FROM attempt_cancel_outbox WHERE attempt_id = ?`, exhaustedAttemptID).Scan(&cancellations, &cancelState); err != nil {
 		t.Fatal(err)
 	}
-	if decision != string(RetryDecisionExhausted) || resolution != string(RetryDecisionResolutionEscalated) || target != "chancellor" || decisions != 1 || escalations != 1 || deliveries != 1 || invocationState != "superseded" || cancellations != 1 || cancelState != "pending" {
+	if decision != string(RetryDecisionExhausted) || resolution != string(RetryDecisionResolutionEscalated) || target != "coordinator" || decisions != 1 || escalations != 1 || deliveries != 1 || invocationState != "superseded" || cancellations != 1 || cancelState != "pending" {
 		t.Fatalf("stale exhaustion decision=%q resolution=%q target=%q decisions=%d events=%d deliveries=%d invocation=%q cancellations=%d cancel_state=%q", decision, resolution, target, decisions, escalations, deliveries, invocationState, cancellations, cancelState)
 	}
 }
@@ -618,14 +618,14 @@ func TestReconcilerFencesStaleProviderInvocationBeforeSchedulingRetry(t *testing
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_stale_settlement', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_stale_settlement', 'caus_nr2_stale_settlement', 'prev_nr2_stale_settlement', 'entry_nr2_stale_settlement', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_stale_settlement', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_stale_settlement', 'caus_nr2_stale_settlement', 'prev_nr2_stale_settlement', 'entry_nr2_stale_settlement', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -708,7 +708,7 @@ func TestReconcilerFencesStaleProviderInvocationBeforeSchedulingRetry(t *testing
 		t.Fatalf("expected stale attempt failure not to create a provider settlement, got %#v", settlement)
 	}
 	var retryStatus string
-	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 3`).Scan(&retryStatus); err != nil {
+	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt = 3`).Scan(&retryStatus); err != nil {
 		t.Fatalf("load fenced retry node: %v", err)
 	}
 	if retryStatus != "pending" {
@@ -734,7 +734,7 @@ func TestReconcilerPrecheckPreservesProviderInvocationWithTerminalHandoff(t *tes
 	) VALUES ('terminal_handoff_precheck', ?, ?, 'run_1', 'nr_2', ?, ?, '{}', '{}', '2026-03-01T12:08:03Z')`, fixture.invocationID, fixture.attemptID, fixture.leaseOwner, fixture.leaseVersion)
 
 	reconciler := NewReconciler(fixture.db, NewSessionManager(fixture.db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
-	stale := staleAttempt{NodeRunID: "nr_2", RunID: "run_1", NodeID: "decree_intake", Attempt: 2, Wave: 2, RequiredRole: "king", AgentID: "agent_king", CurrentStatus: "running", StartedAt: "2026-03-01T12:08:00Z"}
+	stale := staleAttempt{NodeRunID: "nr_2", RunID: "run_1", NodeID: "work_intake", Attempt: 2, Wave: 2, RequiredRole: "governance", AgentID: "agent_governance", CurrentStatus: "running", StartedAt: "2026-03-01T12:08:00Z"}
 	skip, err := reconciler.shouldSkipStaleRecovery(ctx, stale, fixture.attemptID)
 	if err != nil || !skip {
 		t.Fatalf("precheck skipped=%t err=%v, want pending terminal handoff to fence stale recovery", skip, err)
@@ -758,7 +758,7 @@ func TestReconcilerPrecheckPreservesProviderInvocationWithTerminalHandoff(t *tes
 	if err != nil || !found || invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
 		t.Fatalf("active invocation was superseded despite its terminal handoff: found=%t invocation=%#v err=%v", found, invocation, err)
 	}
-	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 2`); count != 0 {
+	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt > 2`); count != 0 {
 		t.Fatalf("terminal handoff precheck created %d retry attempts", count)
 	}
 }
@@ -770,8 +770,8 @@ func TestReconcilerPrecheckPreservesProviderInvocationWithFileOnlyRecoveryMarker
 
 	reconciler := NewReconciler(fixture.db, NewSessionManager(fixture.db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
 	stale := staleAttempt{
-		NodeRunID: "nr_2", RunID: "run_1", NodeID: "decree_intake", Attempt: 2, Wave: 2,
-		RequiredRole: "king", AgentID: "agent_king", CurrentStatus: "running", StartedAt: "2026-03-01T12:08:00Z",
+		NodeRunID: "nr_2", RunID: "run_1", NodeID: "work_intake", Attempt: 2, Wave: 2,
+		RequiredRole: "governance", AgentID: "agent_governance", CurrentStatus: "running", StartedAt: "2026-03-01T12:08:00Z",
 	}
 	mustExecArgs(t, fixture.db, `UPDATE provider_invocations SET terminal_handoff_pending_at = ? WHERE provider_invocation_id = ?`, "2026-03-01T12:08:20Z", fixture.invocationID)
 	skip, err := reconciler.shouldSkipStaleRecovery(context.Background(), stale, fixture.attemptID)
@@ -795,7 +795,7 @@ func TestReconcilerTransactionFencePreservesInvocationWhenRecoveryMarkerAppearsA
 	fixture := newStaleProviderHandoffFenceFixture(t)
 	mustExec(t, fixture.db, `CREATE TRIGGER inject_provider_terminal_recovery_marker_before_stale_fence
 		AFTER UPDATE OF status ON agents
-		WHEN NEW.agent_id = 'agent_king' AND NEW.status = 'blocked'
+		WHEN NEW.agent_id = 'agent_governance' AND NEW.status = 'blocked'
 		BEGIN
 			UPDATE provider_invocations
 			SET terminal_handoff_pending_at = '2026-03-01T12:08:03Z'
@@ -814,7 +814,7 @@ func TestReconcilerTransactionFencePreservesInvocationWhenRecoveryMarkerAppearsA
 	if got := queryNodeStatus(t, fixture.db, "nr_2"); got != "running" {
 		t.Fatalf("stale transaction changed node status to %q after handoff appeared", got)
 	}
-	if got := queryReconcilerAgentStatus(t, fixture.db, "agent_king"); got != "busy" {
+	if got := queryReconcilerAgentStatus(t, fixture.db, "agent_governance"); got != "busy" {
 		t.Fatalf("stale transaction changed agent status to %q after handoff appeared", got)
 	}
 	attempt, found, err := fixture.store.GetAttempt(context.Background(), fixture.attemptID)
@@ -831,7 +831,7 @@ func TestReconcilerTransactionFencePreservesInvocationWhenRecoveryMarkerAppearsA
 	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = ?`, fixture.attemptID); count != 0 {
 		t.Fatalf("stale transaction queued %d cancellation handoffs after losing authority", count)
 	}
-	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 2`); count != 0 {
+	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt > 2`); count != 0 {
 		t.Fatalf("stale transaction created %d retry attempts after losing authority", count)
 	}
 }
@@ -843,10 +843,10 @@ func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccesso
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	const invocationID = "invocation_stale_meaningful_progress"
 	const now = "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 
 	store := executionstore.New(db)
 	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_stale_meaningful_progress", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
@@ -859,11 +859,11 @@ func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccesso
 	if _, err := store.MarkProviderInvocationOpen(ctx, executionstore.MarkProviderInvocationOpenRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, ProviderSessionID: "ses_stale_meaningful_progress", OpenedAt: "2026-03-01T12:00:02Z"}); err != nil {
 		t.Fatalf("open provider invocation: %v", err)
 	}
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_stale_meaningful_progress', 'agent_king', 'active', '2026-03-01T12:10:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_text', 'run_1', 2, 'nr_1', '`+attemptID+`', 'v1', 'attempt.progress', 1, '{"text":"assistant produced a real response"}', 'runtime', 'king', 'runtime', 'stream_event', 'streamed assistant text', 'corr_stale_meaningful', 'caus_stale_meaningful_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_reasoning', 'run_1', 3, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.reasoning","summary":"reasoning"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider reasoning', 'corr_stale_meaningful', 'caus_stale_meaningful_reasoning', 'prev', 'entry', '2026-03-01T12:01:01Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_tool', 'run_1', 4, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 3, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider tool', 'corr_stale_meaningful', 'caus_stale_meaningful_tool', 'prev', 'entry', '2026-03-01T12:01:02Z')`)
-	mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_meaningful', 'run_1', 'nr_1', '`+attemptID+`', '`+invocationID+`', 'king', 'model', '', 5, 3, 8, 2, 0, 0, '2026-03-01T12:01:03Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_stale_meaningful_progress', 'agent_governance', 'active', '2026-03-01T12:10:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_text', 'run_1', 2, 'nr_1', '`+attemptID+`', 'v1', 'attempt.progress', 1, '{"text":"assistant produced a real response"}', 'runtime', 'governance', 'runtime', 'stream_event', 'streamed assistant text', 'corr_stale_meaningful', 'caus_stale_meaningful_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_reasoning', 'run_1', 3, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.reasoning","summary":"reasoning"}', 'runtime', 'governance', 'runtime', 'provider_activity', 'provider reasoning', 'corr_stale_meaningful', 'caus_stale_meaningful_reasoning', 'prev', 'entry', '2026-03-01T12:01:01Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_meaningful_tool', 'run_1', 4, 'nr_1', '`+attemptID+`', 'v1', 'attempt.activity', 3, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'governance', 'runtime', 'provider_activity', 'provider tool', 'corr_stale_meaningful', 'caus_stale_meaningful_tool', 'prev', 'entry', '2026-03-01T12:01:02Z')`)
+	mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_meaningful', 'run_1', 'nr_1', '`+attemptID+`', '`+invocationID+`', 'governance', 'model', '', 5, 3, 8, 2, 0, 0, '2026-03-01T12:01:03Z')`)
 	mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_stale_base', 'run_1', NULL, 'baseline', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('snap_stale_result', 'run_1', 'snap_stale_base', 'attempt_result', '2026-03-01T12:01:04Z')`)
 	mustExec(t, db, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES ('snap_stale_result', 'changed.txt', 'file', 'blob', 1, 420, 0)`)
@@ -873,7 +873,7 @@ func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccesso
 	if err != nil || !meaningful {
 		t.Fatalf("meaningful durable stale evidence=%t err=%v", meaningful, err)
 	}
-	result, err := reconciler.recoverAttempt(ctx, staleAttempt{NodeRunID: "nr_1", RunID: "run_1", NodeID: "decree_intake", Attempt: 1, Wave: 1, RequiredRole: "king", AgentID: "agent_king", CurrentStatus: "running", StartedAt: "2026-03-01T12:00:00Z"}, mustParseRFC3339(t, now))
+	result, err := reconciler.recoverAttempt(ctx, staleAttempt{NodeRunID: "nr_1", RunID: "run_1", NodeID: "work_intake", Attempt: 1, Wave: 1, RequiredRole: "governance", AgentID: "agent_governance", CurrentStatus: "running", StartedAt: "2026-03-01T12:00:00Z"}, mustParseRFC3339(t, now))
 	if err != nil || !result.failed || result.reassigned {
 		t.Fatalf("recover meaningful stale attempt result=%+v err=%v", result, err)
 	}
@@ -881,7 +881,7 @@ func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccesso
 		t.Fatalf("meaningful stale attempt status=%q, want failed", status)
 	}
 	var successors int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 1`).Scan(&successors); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt > 1`).Scan(&successors); err != nil {
 		t.Fatal(err)
 	}
 	if successors != 0 {
@@ -918,25 +918,25 @@ func TestReconcilerRecognizesEachMeaningfulStaleEvidenceSource(t *testing.T) {
 		{
 			name: "assistant text",
 			seed: func(t *testing.T, db *sql.DB) {
-				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_text_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.progress', 1, '{"text":"assistant response"}', 'runtime', 'king', 'runtime', 'stream_event', 'streamed assistant text', 'corr', 'caus_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_text_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.progress', 1, '{"text":"assistant response"}', 'runtime', 'governance', 'runtime', 'stream_event', 'streamed assistant text', 'corr', 'caus_text', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
 			},
 		},
 		{
 			name: "reasoning activity",
 			seed: func(t *testing.T, db *sql.DB) {
-				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_reasoning_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","summary":"thinking"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider reasoning', 'corr', 'caus_reasoning', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_reasoning_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","summary":"thinking"}', 'runtime', 'governance', 'runtime', 'provider_activity', 'provider reasoning', 'corr', 'caus_reasoning', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
 			},
 		},
 		{
 			name: "tool activity",
 			seed: func(t *testing.T, db *sql.DB) {
-				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_tool_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'king', 'runtime', 'provider_activity', 'provider tool', 'corr', 'caus_tool', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
+				mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_stale_tool_source', 'run_1', 2, 'nr_1', 'stale_evidence_attempt', 'v1', 'attempt.activity', 1, '{"kind":"kingdom.tool","tool_name":"shell"}', 'runtime', 'governance', 'runtime', 'provider_activity', 'provider tool', 'corr', 'caus_tool', 'prev', 'entry', '2026-03-01T12:01:00Z')`)
 			},
 		},
 		{
 			name: "token usage",
 			seed: func(t *testing.T, db *sql.DB) {
-				mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_evidence', 'run_1', 'nr_1', 'stale_evidence_attempt', 'king', 'model', '', 1, 0, 1, 0, 0, 0, '2026-03-01T12:01:00Z')`)
+				mustExec(t, db, `INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at) VALUES ('usage_stale_evidence', 'run_1', 'nr_1', 'stale_evidence_attempt', 'governance', 'model', '', 1, 0, 1, 0, 0, 0, '2026-03-01T12:01:00Z')`)
 			},
 		},
 		{
@@ -970,15 +970,15 @@ func TestReconcilerSchedulesSameAgentExecutionRetryOnlyAfterHandoff(t *testing.T
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	const now = "2026-03-01T12:13:00Z"
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder-berserker', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_execution_retry', 'execution retry', 'execution retry', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_execution_retry', 'execution retry', 'execution retry', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wf_execution_retry', 'execution-retry', 'v1', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_execution_retry', 'wf_execution_retry', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_execution_retry', NULL, 'decree_execution_retry', 'wf_execution_retry', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_execution_retry_1', 'run_execution_retry', 'delegated_execution_berserker', 1, 1, 'running', 'builder-berserker', 'agent_builder', 1, '2026-03-01T12:00:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_execution_retry', 'wf_execution_retry', 'implementation', 'builder', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_execution_retry', NULL, 'work_order_execution_retry', 'wf_execution_retry', 'running', 'approved', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_execution_retry_1', 'run_execution_retry', 'implementation', 1, 1, 'running', 'builder', 'agent_builder', 1, '2026-03-01T12:00:00Z', NULL)`)
 
-	const attemptID = "run_execution_retry:delegated_execution_berserker:1"
+	const attemptID = "run_execution_retry:implementation:1"
 	store := executionstore.New(db)
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_execution_retry", NodeRunID: "nr_execution_retry_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_execution_retry", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatalf("enqueue stale execution attempt: %v", err)
@@ -1014,11 +1014,11 @@ func TestReconcilerSchedulesSameAgentExecutionRetryOnlyAfterHandoff(t *testing.T
 	if decision != string(RetryDecisionRetry) || dispatchState != string(RetryDispatchStatePending) || resolution != string(RetryDecisionResolutionPending) {
 		t.Fatalf("same-agent retry decision=%q dispatch=%q resolution=%q", decision, dispatchState, resolution)
 	}
-	if released, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 0 {
+	if released, err := NewTransitionService(db, nil).ReleaseDueWorkOrderRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 0 {
 		t.Fatalf("same-agent retry bypassed cancellation handoff: released=%#v err=%v", released, err)
 	}
 	mustExec(t, db, `UPDATE attempt_cancel_outbox SET status = 'published', handoff_state = 'released', published_at = '`+now+`' WHERE attempt_id = '`+attemptID+`'`)
-	if released, err := NewTransitionService(db, nil).ReleaseDueDecreeRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 1 || released[0].NodeRunID != retryNodeRunID {
+	if released, err := NewTransitionService(db, nil).ReleaseDueWorkOrderRetries(context.Background(), "run_execution_retry", dueAt); err != nil || len(released) != 1 || released[0].NodeRunID != retryNodeRunID {
 		t.Fatalf("same-agent retry release after handoff: released=%#v err=%v", released, err)
 	}
 }
@@ -1029,9 +1029,9 @@ func TestReconcilerLeavesProviderReplacementPendingUntilCancellationHandoff(t *t
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 	store := executionstore.New(db)
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      "att_1",
@@ -1075,7 +1075,7 @@ func TestReconcilerLeavesProviderReplacementPendingUntilCancellationHandoff(t *t
 		t.Fatalf("expected stale provider attempt to remain visibly blocked, got %q", got)
 	}
 	var retries int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 1`).Scan(&retries); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt > 1`).Scan(&retries); err != nil {
 		t.Fatalf("count provider retry attempts: %v", err)
 	}
 	if retries != 1 {
@@ -1094,15 +1094,15 @@ func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "execution_review_shieldmaiden", 1)
+	attemptID := composeAttemptID("run_1", "execution_review", 1)
 	store := executionstore.New(db)
 
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_existing_settlement', 'reviewer-shieldmaiden', 'busy', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_existing_settlement', 'wfdef_1', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_existing_settlement', 'run_1', 'execution_review_shieldmaiden', 1, 1, 'running', 'reviewer-shieldmaiden', 'agent_reviewer_existing_settlement', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_1', 'agent_reviewer_existing_settlement', 'reviewer-shieldmaiden', 'Reviewer', NULL, 0, '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_review_existing_settlement_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_review_existing_settlement', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'reviewer-shieldmaiden', 'system', 'internal_error', 'seed', 'corr_review_existing_settlement', 'caus_review_existing_settlement', 'prev_review_existing_settlement', 'entry_review_existing_settlement', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_existing_settlement', 'reviewer', 'busy', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_existing_settlement', 'wfdef_1', 'execution_review', 'reviewer', 'execution_review', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_existing_settlement', 'run_1', 'execution_review', 1, 1, 'running', 'reviewer', 'agent_reviewer_existing_settlement', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES ('run_1', 'agent_reviewer_existing_settlement', 'reviewer', 'Reviewer', NULL, 0, '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_review_existing_settlement_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_review_existing_settlement', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'reviewer', 'system', 'internal_error', 'seed', 'corr_review_existing_settlement', 'caus_review_existing_settlement', 'prev_review_existing_settlement', 'entry_review_existing_settlement', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1209,13 +1209,13 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:12:15Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:12:15Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2_recent_failure', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:12:20Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_recent_failure', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_recent_failure', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_recent_failure', 'caus_nr2_recent_failure', 'prev_nr2_recent_failure', 'entry_nr2_recent_failure', '2026-03-01T12:12:20Z')`, attemptID))
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2_recent_failure', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:12:20Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_recent_failure', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_recent_failure', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_recent_failure', 'caus_nr2_recent_failure', 'prev_nr2_recent_failure', 'entry_nr2_recent_failure', '2026-03-01T12:12:20Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1334,7 +1334,7 @@ func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
 
 	ctx := context.Background()
 	store := executionstore.New(db)
-	attemptID := composeAttemptID("run_1", "decree_intake", 1)
+	attemptID := composeAttemptID("run_1", "work_intake", 1)
 	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
@@ -1398,7 +1398,7 @@ func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
 		SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z',
 		    committed_at = '2026-03-01T12:00:04Z', failure_code = 'timeout',
 		    failure_text = 'provider asked Kingdom to retry later', updated_at = '2026-03-01T12:00:04Z'
-		WHERE attempt_id = 'run_1:decree_intake:1'`)
+		WHERE attempt_id = 'run_1:work_intake:1'`)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
 	if _, err := reconciler.Reconcile(ctx, ReconcileRequest{Now: "2026-03-01T12:01:00Z"}); err != nil {
@@ -1413,7 +1413,7 @@ func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
 		t.Fatalf("expected persisted provider hint to set retry deadline, got provider_retry_at=%q due_at=%q", providerRetryAt, dueAt)
 	}
 	restarted := NewTransitionService(db, nil)
-	released, err := restarted.ReleaseDueDecreeRetries(ctx, "run_1", "2026-03-01T12:09:59Z")
+	released, err := restarted.ReleaseDueWorkOrderRetries(ctx, "run_1", "2026-03-01T12:09:59Z")
 	if err != nil {
 		t.Fatalf("release retries before provider hint: %v", err)
 	}
@@ -1430,11 +1430,11 @@ func TestReconcilerMeaningfulProgressDoesNotEscalateExhaustedRetry(t *testing.T)
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
 	store := executionstore.New(db)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_prior_retry', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_prior_retry', 'run_1', 'work_intake', 2, 2, 'ready', 'governance', 'agent_governance', 1, NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('prior_attempt', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry_prior_attempt', 'decree_attempt', 'run_1', 'decree_intake', 'nr_1', 'prior_attempt', 'nr_prior_retry', 'retry-policy-mvp-v1', 'internal_runtime', 'internal_error', 'retry', 0, 'retry', 1, 1, 0, '2026-03-01T12:00:00Z', 'pending', 'chancellor', 'pending', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO retry_decisions (retry_decision_id, subject_kind, run_id, node_id, node_run_id, source_attempt_id, target_node_run_id, policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, due_at, dispatch_state, escalation_target, resolution, created_at) VALUES ('retry_prior_attempt', 'work_order_attempt', 'run_1', 'work_intake', 'nr_1', 'prior_attempt', 'nr_prior_retry', 'retry-policy-mvp-v1', 'internal_runtime', 'internal_error', 'retry', 0, 'retry', 1, 1, 0, '2026-03-01T12:00:00Z', 'pending', 'coordinator', 'pending', '2026-03-01T12:00:00Z')`)
 
-	attemptID := composeAttemptID("run_1", "decree_intake", 3)
+	attemptID := composeAttemptID("run_1", "work_intake", 3)
 	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_meaningful_exhaustion", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatalf("enqueue provider-backed attempt: %v", err)
 	}
@@ -1450,7 +1450,7 @@ func TestReconcilerMeaningfulProgressDoesNotEscalateExhaustedRetry(t *testing.T)
 	}
 	mustExec(t, db, `UPDATE provider_completion_evidence SET payload_json = '{"observation":{"meaningful_progress":true}}' WHERE evidence_id = 'evidence_terminal_invocation_meaningful_exhaustion'`)
 	seedHistoricalProviderSettlementWithoutTerminal(t, db, executionstore.FinalizeProviderCompletionSettlementRequest{SettlementID: executionstore.ProviderCompletionSettlementID("invocation_meaningful_exhaustion"), ProviderInvocationID: "invocation_meaningful_exhaustion", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", Outcome: executionstore.ProviderCompletionOutcomeFailed, PrimaryEvidenceID: evidence.EvidenceID, ProviderDiagnosticsJSON: `{}`, FailureReasonCode: "internal_error", FailureReasonText: "provider made progress before failure", StructuredPayloadJSON: `{}`, SettledAt: "2026-03-01T12:00:04Z"})
-	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z', committed_at = '2026-03-01T12:00:04Z', failure_code = 'internal_error', failure_text = 'provider made progress before failure', updated_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:decree_intake:3'`)
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = '2026-03-01T12:00:03Z', committed_at = '2026-03-01T12:00:04Z', failure_code = 'internal_error', failure_text = 'provider made progress before failure', updated_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:work_intake:3'`)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), loadRetryEngine(t), nil)
 	if _, err := reconciler.Reconcile(ctx, ReconcileRequest{Now: "2026-03-01T12:05:00Z"}); err != nil {
@@ -1473,13 +1473,13 @@ func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptState(t *testing.T)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_committed_success_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_committed_success_backfill', 'caus_nr2_committed_success_backfill', 'prev_nr2_committed_success_backfill', 'entry_nr2_committed_success_backfill', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_committed_success_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_committed_success_backfill', 'caus_nr2_committed_success_backfill', 'prev_nr2_committed_success_backfill', 'entry_nr2_committed_success_backfill', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1564,8 +1564,8 @@ func TestReconcilerDoesNotClassifyWorkflowReworkAsAutomaticRetry(t *testing.T) {
 		nodeType string
 		code     string
 	}{
-		{name: "execution review", nodeID: "execution_review_shieldmaiden", nodeRun: "nr_rework_review", roleID: "reviewer-shieldmaiden", agentID: "agent_rework_review", nodeType: "execution_review", code: "execution_review_rework"},
-		{name: "validation gate", nodeID: "validation_gates_qa_scout", nodeRun: "nr_rework_validation", roleID: "intelligence-qa-scout", agentID: "agent_rework_validation", nodeType: "validation_gates", code: "validation_gate_rework"},
+		{name: "execution review", nodeID: "execution_review", nodeRun: "nr_rework_review", roleID: "reviewer", agentID: "agent_rework_review", nodeType: "execution_review", code: "execution_review_rework"},
+		{name: "validation gate", nodeID: "quality_validation", nodeRun: "nr_rework_validation", roleID: "qa-validator", agentID: "agent_rework_validation", nodeType: "validation_gates", code: "validation_gate_rework"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := openTestDB(t)
@@ -1605,13 +1605,13 @@ func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptEvidence(t *testing
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_existing_evidence_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_existing_evidence_backfill', 'caus_nr2_existing_evidence_backfill', 'prev_nr2_existing_evidence_backfill', 'entry_nr2_existing_evidence_backfill', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_existing_evidence_backfill', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_existing_evidence_backfill', 'caus_nr2_existing_evidence_backfill', 'prev_nr2_existing_evidence_backfill', 'entry_nr2_existing_evidence_backfill', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1712,13 +1712,13 @@ func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_reconcile', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_reconcile', 'caus_nr2_settlement_reconcile', 'prev_nr2_settlement_reconcile', 'entry_nr2_settlement_reconcile', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_reconcile', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_reconcile', 'caus_nr2_settlement_reconcile', 'prev_nr2_settlement_reconcile', 'entry_nr2_settlement_reconcile', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1833,13 +1833,13 @@ func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t 
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	attemptID := composeAttemptID("run_1", "decree_intake", 2)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
 	store := executionstore.New(db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2_pinned', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_pinned', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_pinned', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_pinned', 'caus_nr2_settlement_pinned', 'prev_nr2_settlement_pinned', 'entry_nr2_settlement_pinned', '2026-03-01T12:08:00Z')`, attemptID))
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2_pinned', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_settlement_pinned', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2_pinned', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_settlement_pinned', 'caus_nr2_settlement_pinned', 'prev_nr2_settlement_pinned', 'entry_nr2_settlement_pinned', '2026-03-01T12:08:00Z')`, attemptID))
 
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
@@ -1941,13 +1941,13 @@ func TestReconcilerRetryHandoffDoesNotCommitBlockedStateOnQueueFailure(t *testin
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_idle', 'agent_king_backup', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_governance', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_idle', 'agent_governance_backup', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 	mustExec(t, db, `CREATE TRIGGER fail_reconcile_retry_insert BEFORE INSERT ON node_runs
-		WHEN NEW.run_id = 'run_1' AND NEW.node_id = 'decree_intake' AND NEW.attempt = 2
+		WHEN NEW.run_id = 'run_1' AND NEW.node_id = 'work_intake' AND NEW.attempt = 2
 		BEGIN
 			SELECT RAISE(FAIL, 'forced retry insert failure');
 		END`)
@@ -1964,7 +1964,7 @@ func TestReconcilerRetryHandoffDoesNotCommitBlockedStateOnQueueFailure(t *testin
 	}
 
 	var retryCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 2`).Scan(&retryCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt = 2`).Scan(&retryCount); err != nil {
 		t.Fatalf("query retry node count: %v", err)
 	}
 	if retryCount != 0 {
@@ -1980,11 +1980,11 @@ func TestReconcilerIncludesDiagnosticsInStaleFailurePayload(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2', 'entry_nr2', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_progress', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.progress', 2, '{"text":"draft done","execution_path_diagnostics_snapshot":{"stdout_event_count":3,"step_finish_seen":false}}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2b', 'entry_nr2b', '2026-03-01T12:09:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2', 'entry_nr2', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_progress', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', 'att_2', 'v1', 'attempt.progress', 2, '{"text":"draft done","execution_path_diagnostics_snapshot":{"stdout_event_count":3,"step_finish_seen":false}}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_nr2', 'caus_nr2', 'prev_nr2b', 'entry_nr2b', '2026-03-01T12:09:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2004,8 +2004,8 @@ func TestReconcilerIncludesDiagnosticsInStaleFailurePayload(t *testing.T) {
 	if payload["reason"] != "stale_attempt" {
 		t.Fatalf("expected reason=stale_attempt, got %#v", payload["reason"])
 	}
-	if payload["node_id"] != "decree_intake" {
-		t.Fatalf("expected node_id=decree_intake, got %#v", payload["node_id"])
+	if payload["node_id"] != "work_intake" {
+		t.Fatalf("expected node_id=work_intake, got %#v", payload["node_id"])
 	}
 	if payload["retry_allowed"] != false || payload["meaningful_progress"] != true {
 		t.Fatalf("expected meaningful provider text to disable retry, got retry_allowed=%#v meaningful_progress=%#v", payload["retry_allowed"], payload["meaningful_progress"])
@@ -2059,16 +2059,16 @@ func newStaleProviderHandoffFenceFixture(t *testing.T) staleProviderHandoffFence
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	const (
-		attemptID    = "run_1:decree_intake:2"
+		attemptID    = "run_1:work_intake:2"
 		invocationID = "invocation_stale_handoff_fence"
 		leaseOwner   = "stale-handoff-fence-worker"
 		startedAt    = "2026-03-01T12:08:00Z"
 	)
-	mustExecArgs(t, db, `UPDATE agents SET status = 'busy', updated_at = ? WHERE agent_id = 'agent_king'`, startedAt)
-	mustExecArgs(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, ?, ?)`, startedAt, startedAt)
+	mustExecArgs(t, db, `UPDATE agents SET status = 'busy', updated_at = ? WHERE agent_id = 'agent_governance'`, startedAt)
+	mustExecArgs(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, ?, ?)`, startedAt, startedAt)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExecArgs(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'decree_intake', 2, 2, 'running', 'king', 'agent_king', 1, ?, NULL)`, startedAt)
-	mustExecArgs(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_handoff_fence', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', ?, 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'internal_error', 'seed', 'corr_nr2_handoff_fence', 'caus_nr2_handoff_fence', 'prev_nr2_handoff_fence', 'entry_nr2_handoff_fence', ?)`, attemptID, startedAt)
+	mustExecArgs(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2, 2, 'running', 'governance', 'agent_governance', 1, ?, NULL)`, startedAt)
+	mustExecArgs(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_handoff_fence', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', ?, 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_nr2_handoff_fence', 'caus_nr2_handoff_fence', 'prev_nr2_handoff_fence', 'entry_nr2_handoff_fence', ?)`, attemptID, startedAt)
 
 	store := executionstore.New(db)
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
@@ -2123,7 +2123,7 @@ func assertStaleProviderInvocationRemainsActive(t *testing.T, fixture staleProvi
 	if err != nil || !found || invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
 		t.Fatalf("active provider invocation changed: found=%t invocation=%#v err=%v", found, invocation, err)
 	}
-	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt > 2`); count != 0 {
+	if count := countRowsForReconcilerTest(t, fixture.db, `SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt > 2`); count != 0 {
 		t.Fatalf("stale recovery created %d replacement attempts", count)
 	}
 }
@@ -2196,9 +2196,9 @@ func TestReconcilerAllowsOneSelfRetryForPlanningNodeWhenNoReplacementAgent(t *te
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_1_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'run_1:decree_intake:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_nr1', 'caus_nr1', 'prev_nr1', 'entry_nr1', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_1_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'run_1:work_intake:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_nr1', 'caus_nr1', 'prev_nr1', 'entry_nr1', '2026-03-01T11:58:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2218,11 +2218,11 @@ func TestReconcilerAllowsOneSelfRetryForPlanningNodeWhenNoReplacementAgent(t *te
 	if startedAt := queryNodeStartedAt(t, db, retryNodeRunID); startedAt != "" {
 		t.Fatalf("expected self-retry started_at to remain empty before dispatch, got %q", startedAt)
 	}
-	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_king" {
+	if got := queryNodeAssignedAgent(t, db, retryNodeRunID); got != "agent_governance" {
 		t.Fatalf("expected self-retry to keep same agent, got %q", got)
 	}
-	if got := queryReconcilerAgentStatus(t, db, "agent_king"); got != "busy" {
-		t.Fatalf("expected agent_king to remain busy during self-retry, got %q", got)
+	if got := queryReconcilerAgentStatus(t, db, "agent_governance"); got != "busy" {
+		t.Fatalf("expected agent_governance to remain busy during self-retry, got %q", got)
 	}
 }
 
@@ -2234,9 +2234,9 @@ func TestReconcilerDoesNotMarkRecentPlanningAttemptAsStale(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_planner_1', 'king', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_1', 'run_1', 'plan_drafting', 1,1, 'running', 'king', 'agent_planner_1', 1, '2026-03-01T12:00:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_plan_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_plan_1', 'run_1:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_plan', 'caus_plan', 'prev_plan', 'entry_plan', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_planner_1', 'governance', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_1', 'run_1', 'plan_drafting', 1,1, 'running', 'governance', 'agent_planner_1', 1, '2026-03-01T12:00:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_plan_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_plan_1', 'run_1:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_plan', 'caus_plan', 'prev_plan', 'entry_plan', '2026-03-01T12:00:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2261,9 +2261,9 @@ func TestReconcilerPlanningNodesUseExtendedStaleGraceWindow(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_planner_2', 'king', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_2', 'run_1', 'plan_drafting', 1,1, 'running', 'king', 'agent_planner_2', 1, '2026-03-01T12:00:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_plan_started_2', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_plan_2', 'run_1:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_plan_2', 'caus_plan_2', 'prev_plan_2', 'entry_plan_2', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_planner_2', 'governance', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_2', 'run_1', 'plan_drafting', 1,1, 'running', 'governance', 'agent_planner_2', 1, '2026-03-01T12:00:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_plan_started_2', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_plan_2', 'run_1:plan_drafting:1', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_plan_2', 'caus_plan_2', 'prev_plan_2', 'entry_plan_2', '2026-03-01T12:00:00Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2283,7 +2283,7 @@ func TestReconcilerPlanningNodesUseExtendedStaleGraceWindow(t *testing.T) {
 func TestExecutionKickoffIsNotClassifiedAsPlanningNode(t *testing.T) {
 	t.Parallel()
 
-	if isPlanningNodeID("execution_kickoff") {
+	if isPlanningNodeClass("execution_kickoff") {
 		t.Fatal("expected execution_kickoff to stay out of planning stale-grace classification")
 	}
 }
@@ -2296,11 +2296,11 @@ func TestReconcilerSkipsStaleFailureWhenRecentProgressHeartbeatExists(t *testing
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_1', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_1', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder', 'caus_builder', 'prev_builder', 'entry_builder', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_progress_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_1', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"text":"provider produced progress output"}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder', 'caus_builder_progress', 'prev_builder_2', 'entry_builder_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_1', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_1', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder', 'caus_builder', 'prev_builder', 'entry_builder', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_progress_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_1', 'run_1:work_intake:2', 'v1', 'attempt.progress', 2, '{"text":"provider produced progress output"}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder', 'caus_builder_progress', 'prev_builder_2', 'entry_builder_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2325,11 +2325,11 @@ func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_2', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_started_2', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_2', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_2', 'caus_builder_2', 'prev_builder_2', 'entry_builder_2', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_2', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":0,"stream_error":"attempt not found: \"run_1:decree_intake:2\""}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_2', 'caus_builder_2b', 'prev_builder_2b', 'entry_builder_2b', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_started_2', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_2', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder_2', 'caus_builder_2', 'prev_builder_2', 'entry_builder_2', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_2', 'run_1:work_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:work_intake:2","event_count":0,"stream_error":"attempt not found: \"run_1:work_intake:2\""}}', 'actor_1', 'governance', 'system', 'runtime_observation', 'seed', 'corr_builder_2', 'caus_builder_2b', 'prev_builder_2b', 'entry_builder_2b', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2354,11 +2354,11 @@ func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live_observe', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe', 'prev_builder_live_observe', 'entry_builder_live_observe', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe_recent', 'prev_builder_live_observe_2', 'entry_builder_live_observe_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live_observe', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe', 'prev_builder_live_observe', 'entry_builder_live_observe', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_observe_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live_observe', 'run_1:work_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:work_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'governance', 'system', 'runtime_observation', 'seed', 'corr_builder_live_observe', 'caus_builder_live_observe_recent', 'prev_builder_live_observe_2', 'entry_builder_live_observe_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2383,11 +2383,11 @@ func TestReconcilerTreatsRecentProviderActivityAsHeartbeat(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_live', 'caus_builder_live', 'prev_builder_live', 'entry_builder_live', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_activity_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:decree_intake:2', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.tool","label":"Processing"}', 'actor_1', 'king', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr_builder_live', 'caus_builder_live_activity', 'prev_builder_live_2', 'entry_builder_live_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_live', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder_live', 'caus_builder_live', 'prev_builder_live', 'entry_builder_live', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_live_activity_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_live', 'run_1:work_intake:2', 'v1', 'attempt.activity', 2, '{"kind":"kingdom.tool","label":"Processing"}', 'actor_1', 'governance', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr_builder_live', 'caus_builder_live_activity', 'prev_builder_live_2', 'entry_builder_live_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2412,11 +2412,11 @@ func TestReconcilerTreatsRecentStreamProgressAsHeartbeat(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_quiet', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_quiet', 'caus_builder_quiet', 'prev_builder_quiet', 'entry_builder_quiet', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_progress_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"text":"still working"}', 'actor_1', 'king', 'runtime.event_bridge', 'stream_event', 'stream event ingested', 'corr_builder_quiet', 'caus_builder_quiet_progress', 'prev_builder_quiet_2', 'entry_builder_quiet_2', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_quiet', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder_quiet', 'caus_builder_quiet', 'prev_builder_quiet', 'entry_builder_quiet', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_quiet_progress_recent', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_quiet', 'run_1:work_intake:2', 'v1', 'attempt.progress', 2, '{"text":"still working"}', 'actor_1', 'governance', 'runtime.event_bridge', 'stream_event', 'stream event ingested', 'corr_builder_quiet', 'caus_builder_quiet_progress', 'prev_builder_quiet_2', 'entry_builder_quiet_2', '2026-03-01T12:12:50Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2441,12 +2441,12 @@ func TestReconcilerTreatsRecentCompletionObservationAsHeartbeat(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_completion', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_builder_completion', 'caus_builder_completion_started', 'prev_builder_completion_started', 'entry_builder_completion_started', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_progress', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:decree_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'king', 'system', 'runtime_observation', 'seed', 'corr_builder_completion', 'caus_builder_completion_progress', 'prev_builder_completion_progress', 'entry_builder_completion_progress', '2026-03-01T12:12:50Z')`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_observation', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:decree_intake:2', 'v1', 'attempt.progress', 3, '{"phase":"complete_execution_entered","attempt_id":"run_1:decree_intake:2","node_id":"decree_intake","node_run_id":"nr_builder_completion"}', 'actor_1', 'king', 'system', 'runtime_completion_observation', 'seed', 'corr_builder_completion', 'caus_builder_completion_observation', 'prev_builder_completion_observation', 'entry_builder_completion_observation', '2026-03-01T12:12:55Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_completion', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_builder_completion', 'caus_builder_completion_started', 'prev_builder_completion_started', 'entry_builder_completion_started', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_progress', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:work_intake:2', 'v1', 'attempt.progress', 2, '{"execution_diagnostics":{"attempt_id":"run_1:work_intake:2","event_count":2,"execution_path_diagnostics_snapshot":{"stdout_event_count":17,"last_stdout_event_at":"2026-03-01T12:12:50Z","step_finish_seen":true,"last_step_finish_reason":"tool-calls","completion_gate_passed":false}}}', 'actor_1', 'governance', 'system', 'runtime_observation', 'seed', 'corr_builder_completion', 'caus_builder_completion_progress', 'prev_builder_completion_progress', 'entry_builder_completion_progress', '2026-03-01T12:12:50Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_builder_completion_observation', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_builder_completion', 'run_1:work_intake:2', 'v1', 'attempt.progress', 3, '{"phase":"complete_execution_entered","attempt_id":"run_1:work_intake:2","node_id":"work_intake","node_run_id":"nr_builder_completion"}', 'actor_1', 'governance', 'system', 'runtime_completion_observation', 'seed', 'corr_builder_completion', 'caus_builder_completion_observation', 'prev_builder_completion_observation', 'entry_builder_completion_observation', '2026-03-01T12:12:55Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2471,11 +2471,11 @@ func TestReconcilerRecoverAttemptSkipsTerminalObservedExecutionState(t *testing.
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_terminal_observed', 'run_1', 'decree_intake', 2,2, 'running', 'king', 'agent_king', 1, '2026-03-01T12:08:00Z', NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal_observed_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_terminal_observed', 'run_1:decree_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'king', 'system', 'orchestration_progress', 'seed', 'corr_terminal_observed', 'caus_terminal_observed_started', 'prev_terminal_observed_started', 'entry_terminal_observed_started', '2026-03-01T12:08:00Z')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_terminal_observed', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_decree_intake_2', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z', NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_terminal_observed', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal_observed_started', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_terminal_observed', 'run_1:work_intake:2', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'orchestration_progress', 'seed', 'corr_terminal_observed', 'caus_terminal_observed_started', 'prev_terminal_observed_started', 'entry_terminal_observed_started', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_terminal_observed', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_run_1_work_intake_2', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z', NULL, '', '', '2026-03-01T12:08:00Z', '2026-03-01T12:12:59Z')`)
 
 	engine := loadRetryEngine(t)
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), engine, nil)
@@ -2483,11 +2483,11 @@ func TestReconcilerRecoverAttemptSkipsTerminalObservedExecutionState(t *testing.
 	outcome, err := reconciler.recoverAttempt(context.Background(), staleAttempt{
 		NodeRunID:     "nr_terminal_observed",
 		RunID:         "run_1",
-		NodeID:        "decree_intake",
+		NodeID:        "work_intake",
 		Attempt:       2,
 		Wave:          2,
-		RequiredRole:  "king",
-		AgentID:       "agent_king",
+		RequiredRole:  "governance",
+		AgentID:       "agent_governance",
 		CurrentStatus: "running",
 		StartedAt:     "2026-03-01T12:08:00Z",
 	}, mustParseRFC3339(t, now))
@@ -2531,10 +2531,10 @@ func TestReconcilerErrorsWhenRetryPlannerMissing(t *testing.T) {
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:59:00Z' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_king', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_busy', 'agent_governance', 'active', '2026-03-01T11:58:30Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z', '2026-03-01T11:58:00Z')`)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), nil, nil)
 	_, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: now})

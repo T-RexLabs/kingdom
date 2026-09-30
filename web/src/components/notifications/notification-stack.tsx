@@ -83,7 +83,7 @@ function NotificationCard({ notification, onRemove }: { notification: Notificati
           {notification.action ? (
             <button
               type="button"
-              className="text-xs font-medium text-gold transition-colors hover:text-gold-bright"
+              className="text-xs font-medium text-accent transition-colors hover:text-accent-bright"
               onClick={() => {
                 notification.action?.onClick();
                 startDismiss();
@@ -109,7 +109,7 @@ function NotificationCard({ notification, onRemove }: { notification: Notificati
 function StatusIcon({ status }: { status: Notification["status"] }) {
   switch (status) {
     case "loading":
-      return <div className="mt-0.5 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-gold border-t-transparent" />;
+      return <div className="mt-0.5 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-accent border-t-transparent" />;
     case "success":
       return <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-status-succeeded" />;
     case "error":

@@ -14,8 +14,8 @@ function readBuffer(qc: QueryClient): LiveRunActivityBuffer {
 describe("run live activity buffer", () => {
   it("appends and isolates activity per attempt", () => {
     const qc = new QueryClient();
-    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", kind: "thinking", label: "Thinking", detail: "a" });
-    appendLiveRunActivity(qc, "run-1", "att-2", { id: "p2", kind: "tool", label: "Reading x" });
+    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", eventId: "event-1", sequence: 1, kind: "thinking", label: "Thinking", detail: "a" });
+    appendLiveRunActivity(qc, "run-1", "att-2", { id: "p2", eventId: "event-2", sequence: 2, kind: "tool", label: "Reading x" });
 
     const buffer = readBuffer(qc);
     expect(selectLiveRunActivity(buffer, "att-1").map((item) => item.id)).toEqual(["p1"]);
@@ -26,8 +26,8 @@ describe("run live activity buffer", () => {
 
   it("merges repeated parts last-wins so growing reasoning replaces its snapshot", () => {
     const qc = new QueryClient();
-    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", kind: "thinking", label: "Thinking", detail: "First" });
-    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", kind: "thinking", label: "Thinking", detail: "First and more" });
+    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", eventId: "event-3", sequence: 3, kind: "thinking", label: "Thinking", detail: "First" });
+    appendLiveRunActivity(qc, "run-1", "att-1", { id: "p1", eventId: "event-4", sequence: 4, kind: "thinking", label: "Thinking", detail: "First and more" });
 
     const items = selectLiveRunActivity(readBuffer(qc), "att-1");
     expect(items).toHaveLength(1);

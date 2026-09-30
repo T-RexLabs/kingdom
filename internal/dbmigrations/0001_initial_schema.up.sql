@@ -46,20 +46,20 @@ CREATE TABLE run_participants (
   FOREIGN KEY (parent_agent_id) REFERENCES agents(agent_id)
 );
 
-CREATE TABLE decrees (
-  decree_id TEXT PRIMARY KEY,
-  decree_title TEXT NOT NULL,
-  decree_text TEXT NOT NULL,
+CREATE TABLE work_orders (
+  work_order_id TEXT PRIMARY KEY,
+  work_order_title TEXT NOT NULL,
+  work_order_text TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
 
 CREATE TABLE campaigns (
   campaign_id TEXT PRIMARY KEY,
-  decree_id TEXT NOT NULL,
+  work_order_id TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('active', 'paused', 'closed')),
   created_at TEXT NOT NULL,
-  FOREIGN KEY (decree_id) REFERENCES decrees(decree_id)
+  FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id)
 );
 
 CREATE TABLE workflow_definitions (
@@ -99,10 +99,10 @@ CREATE TABLE workflow_edges (
 CREATE TABLE workflow_runs (
   run_id TEXT PRIMARY KEY,
   campaign_id TEXT,
-  decree_id TEXT NOT NULL,
+  work_order_id TEXT NOT NULL,
   workflow_definition_id TEXT NOT NULL,
   run_status TEXT NOT NULL CHECK (run_status IN ('pending', 'running', 'awaiting_human_confirmation', 'succeeded', 'failed', 'cancelled')),
-  plan_state TEXT NOT NULL CHECK (plan_state IN ('draft', 'in_council_review', 'awaiting_king_decision', 'approved', 'needs_rework')),
+  plan_state TEXT NOT NULL CHECK (plan_state IN ('draft', 'in_plan_review', 'awaiting_plan_decision', 'approved', 'needs_rework')),
   rework_cycle_count INTEGER NOT NULL DEFAULT 0 CHECK (rework_cycle_count >= 0),
   autonomous_approvals INTEGER NOT NULL DEFAULT 1 CHECK (autonomous_approvals IN (0, 1)),
   pending_approval_key TEXT NOT NULL DEFAULT '',
@@ -115,7 +115,7 @@ CREATE TABLE workflow_runs (
   updated_at TEXT NOT NULL,
   publish_mode TEXT NOT NULL DEFAULT 'direct' CHECK (publish_mode IN ('direct', 'git_worktree')),
   FOREIGN KEY (campaign_id) REFERENCES campaigns(campaign_id),
-  FOREIGN KEY (decree_id) REFERENCES decrees(decree_id),
+  FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id),
   FOREIGN KEY (workflow_definition_id) REFERENCES workflow_definitions(workflow_definition_id)
 );
 
@@ -129,16 +129,16 @@ CREATE TABLE run_activity (
 
 CREATE TABLE run_search_documents (
   run_id TEXT PRIMARY KEY,
-  decree_id TEXT NOT NULL,
+  work_order_id TEXT NOT NULL,
   run_id_search TEXT NOT NULL,
-  decree_title_search TEXT NOT NULL,
+  work_order_title_search TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
-  FOREIGN KEY (decree_id) REFERENCES decrees(decree_id)
+  FOREIGN KEY (work_order_id) REFERENCES work_orders(work_order_id)
 );
 
 CREATE VIRTUAL TABLE run_search_fts USING fts5(
   run_id_search,
-  decree_title_search,
+  work_order_title_search,
   content='run_search_documents',
   content_rowid='rowid',
   tokenize = "unicode61 remove_diacritics 2 tokenchars '-_'",
@@ -205,7 +205,7 @@ WHERE run_status IN ('succeeded', 'failed', 'cancelled');
 CREATE INDEX idx_workflow_runs_manual_decision_updated
 ON workflow_runs(updated_at DESC, run_id DESC)
 WHERE autonomous_approvals = 0
-  AND ((run_status = 'running' AND plan_state = 'awaiting_king_decision')
+  AND ((run_status = 'running' AND plan_state = 'awaiting_plan_decision')
     OR run_status = 'awaiting_human_confirmation');
 
 CREATE INDEX idx_workflow_runs_created_at
@@ -231,8 +231,8 @@ END;
 CREATE UNIQUE INDEX idx_run_search_documents_run_id_search
 ON run_search_documents(run_id_search);
 
-CREATE INDEX idx_run_search_documents_decree_id
-ON run_search_documents(decree_id);
+CREATE INDEX idx_run_search_documents_work_order_id
+ON run_search_documents(work_order_id);
 
 CREATE INDEX idx_node_runs_running_started
 ON node_runs(started_at, run_id, node_id, attempt, agent_id)
@@ -244,43 +244,43 @@ ON node_runs(run_id, node_status, node_id, attempt, agent_id);
 CREATE TRIGGER run_search_documents_ai
 AFTER INSERT ON run_search_documents
 BEGIN
-  INSERT INTO run_search_fts(rowid, run_id_search, decree_title_search)
-  VALUES (new.rowid, new.run_id_search, new.decree_title_search);
+  INSERT INTO run_search_fts(rowid, run_id_search, work_order_title_search)
+  VALUES (new.rowid, new.run_id_search, new.work_order_title_search);
 END;
 
 CREATE TRIGGER run_search_documents_au
 AFTER UPDATE ON run_search_documents
 BEGIN
-  INSERT INTO run_search_fts(run_search_fts, rowid, run_id_search, decree_title_search)
-  VALUES ('delete', old.rowid, old.run_id_search, old.decree_title_search);
-  INSERT INTO run_search_fts(rowid, run_id_search, decree_title_search)
-  VALUES (new.rowid, new.run_id_search, new.decree_title_search);
+  INSERT INTO run_search_fts(run_search_fts, rowid, run_id_search, work_order_title_search)
+  VALUES ('delete', old.rowid, old.run_id_search, old.work_order_title_search);
+  INSERT INTO run_search_fts(rowid, run_id_search, work_order_title_search)
+  VALUES (new.rowid, new.run_id_search, new.work_order_title_search);
 END;
 
 CREATE TRIGGER run_search_documents_ad
 AFTER DELETE ON run_search_documents
 BEGIN
-  INSERT INTO run_search_fts(run_search_fts, rowid, run_id_search, decree_title_search)
-  VALUES ('delete', old.rowid, old.run_id_search, old.decree_title_search);
+  INSERT INTO run_search_fts(run_search_fts, rowid, run_id_search, work_order_title_search)
+  VALUES ('delete', old.rowid, old.run_id_search, old.work_order_title_search);
 END;
 
 CREATE TRIGGER workflow_runs_run_search_ai
 AFTER INSERT ON workflow_runs
 BEGIN
-  INSERT INTO run_search_documents (run_id, decree_id, run_id_search, decree_title_search)
-  SELECT new.run_id, new.decree_id, lower(new.run_id), lower(d.decree_title)
-  FROM decrees d
-  WHERE d.decree_id = new.decree_id;
+  INSERT INTO run_search_documents (run_id, work_order_id, run_id_search, work_order_title_search)
+  SELECT new.run_id, new.work_order_id, lower(new.run_id), lower(d.work_order_title)
+  FROM work_orders d
+  WHERE d.work_order_id = new.work_order_id;
 END;
 
 CREATE TRIGGER workflow_runs_run_search_au
-AFTER UPDATE OF run_id, decree_id ON workflow_runs
+AFTER UPDATE OF run_id, work_order_id ON workflow_runs
 BEGIN
   UPDATE run_search_documents
   SET run_id = new.run_id,
-      decree_id = new.decree_id,
+      work_order_id = new.work_order_id,
       run_id_search = lower(new.run_id),
-      decree_title_search = lower((SELECT d.decree_title FROM decrees d WHERE d.decree_id = new.decree_id))
+      work_order_title_search = lower((SELECT d.work_order_title FROM work_orders d WHERE d.work_order_id = new.work_order_id))
   WHERE run_id = old.run_id;
 END;
 
@@ -291,18 +291,18 @@ BEGIN
 END;
 
 CREATE TRIGGER decrees_run_search_title_au
-AFTER UPDATE OF decree_title ON decrees
+AFTER UPDATE OF work_order_title ON work_orders
 BEGIN
   UPDATE run_search_documents
-  SET decree_title_search = lower(new.decree_title)
-  WHERE decree_id = new.decree_id;
+  SET work_order_title_search = lower(new.work_order_title)
+  WHERE work_order_id = new.work_order_id;
 END;
 
 CREATE TABLE plan_documents (
   plan_document_id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,
   version INTEGER NOT NULL CHECK (version >= 1),
-  state TEXT NOT NULL CHECK (state IN ('draft', 'in_council_review', 'awaiting_king_decision', 'approved', 'needs_rework')),
+  state TEXT NOT NULL CHECK (state IN ('draft', 'in_plan_review', 'awaiting_plan_decision', 'approved', 'needs_rework')),
   content_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
@@ -552,7 +552,7 @@ ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocati
 
 CREATE TABLE provider_process_guards (
   guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
-  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('decree_attempt', 'planning_operation')),
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_order_attempt', 'planning_operation')),
   owner_id TEXT NOT NULL CHECK (TRIM(owner_id) <> ''),
   provider_invocation_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL DEFAULT '',
@@ -589,7 +589,7 @@ CREATE TABLE provider_process_guards (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   CHECK (
-    (owner_kind = 'decree_attempt' AND owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> '' AND planning_operation_id = '' AND planning_session_id = '')
+    (owner_kind = 'work_order_attempt' AND owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> '' AND planning_operation_id = '' AND planning_session_id = '')
     OR
     (owner_kind = 'planning_operation' AND owner_id = planning_operation_id AND planning_operation_id <> '' AND planning_session_id <> '' AND attempt_id = '' AND run_id = '' AND node_run_id = '')
   ),
@@ -745,7 +745,8 @@ CREATE INDEX idx_attempt_cancel_outbox_status_created
 ON attempt_cancel_outbox (status, created_at);
 
 CREATE TABLE artifacts (
-  artifact_id TEXT PRIMARY KEY,
+  artifact_seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  artifact_id TEXT NOT NULL UNIQUE,
   run_id TEXT NOT NULL,
   node_run_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL,
@@ -889,6 +890,7 @@ CREATE TABLE run_publication_batches (
   published_count INTEGER NOT NULL DEFAULT 0 CHECK (published_count >= 0),
   conflicted_count INTEGER NOT NULL DEFAULT 0 CHECK (conflicted_count >= 0),
   failed_count INTEGER NOT NULL DEFAULT 0 CHECK (failed_count >= 0),
+  entries_revision INTEGER NOT NULL DEFAULT 0 CHECK (entries_revision >= 0),
   created_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
@@ -912,6 +914,9 @@ CREATE TABLE run_publication_entries (
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
 );
+
+CREATE INDEX idx_run_publication_entries_batch_page
+ON run_publication_entries (publication_batch_id, publication_entry_id);
 
 CREATE INDEX idx_run_publication_entries_attempt_created
 ON run_publication_entries (attempt_id, created_at DESC, publication_entry_id);
@@ -1169,8 +1174,8 @@ ON planning_messages (planning_session_id, parent_message_id, created_at);
 CREATE TABLE planning_drafts (
   planning_draft_id TEXT PRIMARY KEY,
   planning_session_id TEXT NOT NULL,
-  decree_title TEXT NOT NULL,
-  decree_text TEXT NOT NULL,
+  work_order_title TEXT NOT NULL,
+  work_order_text TEXT NOT NULL,
   summary_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE
@@ -1294,7 +1299,7 @@ ON planning_provider_invocations (invocation_state, updated_at DESC, planning_pr
 
 CREATE TABLE retry_decisions (
   retry_decision_id TEXT PRIMARY KEY CHECK (TRIM(retry_decision_id) <> ''),
-  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('decree_attempt', 'planning_invocation')),
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('work_order_attempt', 'planning_invocation')),
   run_id TEXT,
   node_id TEXT,
   node_run_id TEXT,
@@ -1320,7 +1325,7 @@ CREATE TABLE retry_decisions (
   resolved_at TEXT,
   created_at TEXT NOT NULL,
   CHECK (
-    (subject_kind = 'decree_attempt'
+    (subject_kind = 'work_order_attempt'
       AND run_id IS NOT NULL AND TRIM(run_id) <> ''
       AND node_id IS NOT NULL AND TRIM(node_id) <> ''
       AND node_run_id IS NOT NULL AND TRIM(node_run_id) <> ''
@@ -1334,7 +1339,7 @@ CREATE TABLE retry_decisions (
   ),
   CHECK (
     (decision = 'retry' AND (dispatch_state IN ('pending', 'dispatched') OR (dispatch_state = 'not_applicable' AND resolution = 'cancelled'))
-      AND ((subject_kind = 'decree_attempt' AND target_node_run_id IS NOT NULL AND TRIM(target_node_run_id) <> '')
+      AND ((subject_kind = 'work_order_attempt' AND target_node_run_id IS NOT NULL AND TRIM(target_node_run_id) <> '')
         OR subject_kind = 'planning_invocation'))
     OR
     (decision IN ('fail_fast', 'exhausted') AND target_node_run_id IS NULL AND dispatch_state = 'not_applicable')
@@ -1355,17 +1360,17 @@ CREATE TABLE retry_decisions (
   FOREIGN KEY (source_planning_invocation_id, planning_operation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id, planning_operation_id) ON DELETE CASCADE
 );
 
-CREATE UNIQUE INDEX idx_retry_decisions_source_decree_attempt
+CREATE UNIQUE INDEX idx_retry_decisions_source_work_order_attempt
 ON retry_decisions (source_attempt_id)
-WHERE subject_kind = 'decree_attempt';
+WHERE subject_kind = 'work_order_attempt';
 
 CREATE UNIQUE INDEX idx_retry_decisions_source_planning_invocation
 ON retry_decisions (source_planning_invocation_id)
 WHERE subject_kind = 'planning_invocation';
 
-CREATE UNIQUE INDEX idx_retry_decisions_pending_decree_node
+CREATE UNIQUE INDEX idx_retry_decisions_pending_work_order_node
 ON retry_decisions (run_id, node_id)
-WHERE subject_kind = 'decree_attempt' AND decision = 'retry' AND dispatch_state = 'pending';
+WHERE subject_kind = 'work_order_attempt' AND decision = 'retry' AND dispatch_state = 'pending';
 
 CREATE UNIQUE INDEX idx_retry_decisions_pending_planning_operation
 ON retry_decisions (planning_operation_id)
@@ -1375,10 +1380,10 @@ CREATE UNIQUE INDEX idx_retry_decisions_target_node_run
 ON retry_decisions (target_node_run_id)
 WHERE target_node_run_id IS NOT NULL;
 
-CREATE TRIGGER retry_decisions_validate_decree_lineage_insert
+CREATE TRIGGER retry_decisions_validate_work_order_lineage_insert
 BEFORE INSERT ON retry_decisions
 FOR EACH ROW
-WHEN NEW.subject_kind = 'decree_attempt'
+WHEN NEW.subject_kind = 'work_order_attempt'
 BEGIN
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM node_runs
@@ -1394,10 +1399,10 @@ BEGIN
   ) THEN RAISE(ABORT, 'retry decision target node lineage mismatch') END;
 END;
 
-CREATE TRIGGER retry_decisions_validate_decree_lineage_update
+CREATE TRIGGER retry_decisions_validate_work_order_lineage_update
 BEFORE UPDATE OF subject_kind, run_id, node_id, node_run_id, target_node_run_id, decision ON retry_decisions
 FOR EACH ROW
-WHEN NEW.subject_kind = 'decree_attempt'
+WHEN NEW.subject_kind = 'work_order_attempt'
 BEGIN
   SELECT CASE WHEN NOT EXISTS (
     SELECT 1 FROM node_runs

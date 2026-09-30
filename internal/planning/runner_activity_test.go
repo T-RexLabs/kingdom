@@ -2,7 +2,10 @@ package planning
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"kingdom/internal/core/providerexecution"
+	"strings"
 	"testing"
 
 	"kingdom/internal/acp"
@@ -11,16 +14,16 @@ import (
 
 func TestPlannerActivityPayloadOmitsRawReasoningText(t *testing.T) {
 	operation := state.PlanningOperation{OperationID: "op_1", PlanningSessionID: "ps_1", Type: state.PlanningOperationTypeReply}
-	payload := plannerActivityPayload(operation, "activity_1", ProviderActivity{Kind: "reasoning", RawText: "sensitive reasoning text"})
+	payload := plannerActivityPayload(operation, "activity_1", ProviderActivity{Kind: "reasoning", Reasoning: providerexecution.ActivityText("provider reasoning text")})
 
 	if payload["raw_reasoning_text"] != nil {
 		t.Fatalf("expected persisted payload to omit raw reasoning text, got %#v", payload["raw_reasoning_text"])
 	}
-	if payload["summary"] != "sensitive reasoning text" {
-		t.Fatalf("expected persisted payload to retain provider-emitted reasoning detail, got %#v", payload["summary"])
+	if content, ok := payload["reasoning"].(providerexecution.ActivityContent); !ok || content.PreviewText() != "provider reasoning text" {
+		t.Fatalf("missing observed reasoning source: %#v", payload)
 	}
-	if payload["detail"] != "sensitive reasoning text" {
-		t.Fatalf("expected persisted payload detail to retain provider-emitted reasoning detail, got %#v", payload["detail"])
+	if payload["detail"] != nil || payload["summary"] != nil {
+		t.Fatal("reasoning must use its bounded content descriptor")
 	}
 	if payload["label"] != "Thinking" {
 		t.Fatalf("expected persisted payload label to be Thinking, got %#v", payload["label"])
@@ -37,13 +40,13 @@ func TestPlannerActivityPayloadRetainsToolMetadata(t *testing.T) {
 		ToolName:   "webfetch",
 		ToolStatus: "completed",
 		ToolTitle:  "https://example.com (text/html)",
-		ToolInput:  `{"url":"https://example.com"}`,
+		Input:      providerexecution.ActivityText(`{"url":"https://example.com"}`),
 	})
 
 	if payload["tool_title"] != "https://example.com (text/html)" {
 		t.Fatalf("expected tool title to be retained, got %#v", payload["tool_title"])
 	}
-	if payload["tool_input"] != `{"url":"https://example.com"}` {
+	if payload["input"].(providerexecution.ActivityContent).PreviewText() != `{"url":"https://example.com"}` {
 		t.Fatalf("expected tool input to be retained, got %#v", payload["tool_input"])
 	}
 	if payload["label"] != "Fetched https://example.com" {
@@ -164,3 +167,50 @@ func TestListAllPlanningOperationEventsReadsPastFirstPage(t *testing.T) {
 		t.Fatalf("expected helper to include activity event after first page, got %+v", events[len(events)-1])
 	}
 }
+
+func plannerActivityIDFromStoredEvent(event state.PlanningOperationEvent) (string, bool) {
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
+		return "", false
+	}
+	activityID := strings.TrimSpace(plannerStringValue(payload["activity_id"]))
+	if activityID == "" {
+		return "", false
+	}
+	return activityID, true
+}
+
+func plannerStringValue(value any) string {
+	if typed, ok := value.(string); ok {
+		return typed
+	}
+	return ""
+}
+
+func listAllPlanningOperationEvents(ctx context.Context, store *state.PlanningStore, operationID string) ([]state.PlanningOperationEvent, error) {
+	if store == nil {
+		return nil, fmt.Errorf("planning store is required")
+	}
+	all := make([]state.PlanningOperationEvent, 0)
+	cursor := ""
+	for {
+		page, err := store.ListOperationEventsAfterEventIDPage(ctx, operationID, cursor, state.DefaultPlanningOperationEventListLimit)
+		if err != nil {
+			return nil, err
+		}
+		if len(page) == 0 {
+			return all, nil
+		}
+		all = append(all, page...)
+		if len(page) < state.DefaultPlanningOperationEventListLimit {
+			return all, nil
+		}
+		cursor = page[len(page)-1].EventID
+	}
+}
+
+// buildTerminalEventFromCursor uses the supplied cursor when available
+// (preserving monotonicity with concurrent stream events) and falls back to
+// reading the next sequence from storage only when no cursor is in scope —
+// e.g. the recovery / stuck-operation paths that finalise without ever
+// streaming.

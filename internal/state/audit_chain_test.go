@@ -99,7 +99,7 @@ func TestAuditChainCorruptionDetection(t *testing.T) {
 		Seq:             2,
 		PayloadJSON:     `{"message":"ok"}`,
 		ActorID:         "actor_1",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "system",
 		ReasonCode:      "internal_error",
 		ReasonText:      "audit corruption setup",
@@ -116,7 +116,7 @@ func TestAuditChainCorruptionDetection(t *testing.T) {
 		t.Fatalf("verify audit chain before corruption: %v", err)
 	}
 
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_audit_corruption_tampered', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'att_1', 'v1', 'attempt.progress', 3, '{"message":"tampered"}', 'actor_1', 'king', 'system', 'internal_error', 'tampered append', 'corr_audit_tampered', 'caus_audit_tampered', '0000000000000000000000000000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000', '2026-03-01T12:02:00Z')`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_audit_corruption_tampered', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_1', 'att_1', 'v1', 'attempt.progress', 3, '{"message":"tampered"}', 'actor_1', 'governance', 'system', 'internal_error', 'tampered append', 'corr_audit_tampered', 'caus_audit_tampered', '0000000000000000000000000000000000000000000000000000000000000000', '0000000000000000000000000000000000000000000000000000000000000000', '2026-03-01T12:02:00Z')`)
 
 	err = verifier.VerifyOrError(context.Background())
 	if err == nil {
@@ -182,7 +182,7 @@ func TestAuditChainDetectsEventLineageTampering(t *testing.T) {
 		Seq:             2,
 		PayloadJSON:     `{"message":"ok"}`,
 		ActorID:         "actor_1",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "system",
 		ReasonCode:      "internal_error",
 		ReasonText:      "audit lineage tamper setup",
@@ -232,7 +232,7 @@ func TestAuditChainDetectsRunEventSequenceGaps(t *testing.T) {
 		Seq:             1,
 		PayloadJSON:     `{"message":"gap"}`,
 		ActorID:         "actor_1",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "system",
 		ReasonCode:      "internal_error",
 		ReasonText:      "introduce sequence gap",

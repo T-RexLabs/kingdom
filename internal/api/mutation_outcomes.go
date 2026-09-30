@@ -14,7 +14,7 @@ import (
 var mutationOutcomeRoutes = map[gen.GetMutationOutcomeParamsOperation]string{
 	gen.PlanningSessionCreate:   "POST /planning-sessions",
 	gen.PlanningOperationCreate: "POST /acp/runs",
-	gen.WorkOrderCreate:         "POST /decrees",
+	gen.WorkOrderCreate:         "POST /work-orders",
 	gen.RunCreate:               "POST /runs",
 }
 

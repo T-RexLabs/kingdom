@@ -14,7 +14,7 @@ func TestResolveModelForRolePrefersRoleOverrideThenGlobal(t *testing.T) {
 	globalThinking := "low"
 	reviewerThinking := "high"
 	overrides := map[string]gen.RunModelSelectionEntry{
-		"reviewer-shieldmaiden": {Model: "agent/reviewer-model", ThinkingEffort: &reviewerThinking},
+		"reviewer": {Model: "agent/reviewer-model", ThinkingEffort: &reviewerThinking},
 	}
 	run := runSnapshot{
 		ModelSelection: &gen.RunModelSelection{
@@ -23,24 +23,24 @@ func TestResolveModelForRolePrefersRoleOverrideThenGlobal(t *testing.T) {
 		},
 	}
 
-	model, variant, source := loop.resolveModelForRole(run, "reviewer-shieldmaiden")
+	model, variant, source := loop.resolveModelForRole(run, "reviewer")
 	if model != "agent/reviewer-model" || variant != "high" || source != "role_override" {
 		t.Fatalf("expected role override model selection, got model=%q variant=%q source=%q", model, variant, source)
 	}
 
-	model, variant, source = loop.resolveModelForRole(run, "king")
+	model, variant, source = loop.resolveModelForRole(run, "governance")
 	if model != "global/default-model" || variant != "low" || source != "global_selection" {
 		t.Fatalf("expected global model selection, got model=%q variant=%q source=%q", model, variant, source)
 	}
 
 	run.ModelSelection.Global = gen.RunModelSelectionEntry{}
-	model, variant, source = loop.resolveModelForRole(run, "reviewer-shieldmaiden")
+	model, variant, source = loop.resolveModelForRole(run, "reviewer")
 	if model != "agent/reviewer-model" || variant != "high" || source != "role_override" {
 		t.Fatalf("expected role override without global selection, got model=%q variant=%q source=%q", model, variant, source)
 	}
 
 	run.ModelSelection.RoleOverrides = nil
-	model, variant, source = loop.resolveModelForRole(run, "reviewer-shieldmaiden")
+	model, variant, source = loop.resolveModelForRole(run, "reviewer")
 	if model != "" || variant != "" || source != "opencode_default" {
 		t.Fatalf("expected explicit model selection only, got model=%q variant=%q source=%q", model, variant, source)
 	}

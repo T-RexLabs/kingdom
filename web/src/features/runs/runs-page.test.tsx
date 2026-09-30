@@ -4,6 +4,14 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { RunsPage } from "./runs-page";
 
+
+vi.mock("@/theme", async () => {
+  const actual = await vi.importActual<typeof import("@/theme")>("@/theme");
+  return { ...actual, useTheme: () => ({ theme: actual.builtInThemes[3] }), useThemeCopy: (slot: keyof (typeof actual.builtInThemes)[number]["copy"]) => actual.builtInThemes[0].copy[slot], useRoleIdentity: (role: string) => actual.roleIdentity(actual.builtInThemes[3], role), ThemeIcon: () => <span aria-hidden="true" /> };
+});
+
+vi.mock("react-virtuoso", () => ({ Virtuoso: ({ data, itemContent }: { data: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => <div>{data.map((item, index) => <div key={index}>{itemContent(index, item)}</div>)}</div> }));
+
 const useInfiniteRunsMock = vi.fn();
 
 const routerState = vi.hoisted(() => ({
@@ -19,9 +27,9 @@ const runsByFilter = {
   all: [
     {
       run_id: "run-running",
-      decree_id: "decree-running",
-      decree_title: "Running Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-running",
+      work_order_title: "Running Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "running",
       display_state: "running",
@@ -31,21 +39,21 @@ const runsByFilter = {
     },
     {
       run_id: "run-plan",
-      decree_id: "decree-plan",
-      decree_title: "Plan Decision Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-plan",
+      work_order_title: "Plan Decision Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: false,
       status: "running",
       display_state: "awaiting_plan_decision",
-      plan_state: "awaiting_king_decision",
+      plan_state: "awaiting_plan_decision",
       created_at: "2026-03-06T10:00:00.000Z",
       updated_at: "2026-03-06T10:02:00.000Z",
     },
     {
       run_id: "run-final",
-      decree_id: "decree-final",
-      decree_title: "Final Decision Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-final",
+      work_order_title: "Final Decision Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: false,
       status: "awaiting_human_confirmation",
       display_state: "awaiting_final_decision",
@@ -57,9 +65,9 @@ const runsByFilter = {
   running: [
     {
       run_id: "run-running",
-      decree_id: "decree-running",
-      decree_title: "Running Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-running",
+      work_order_title: "Running Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "running",
       display_state: "running",
@@ -71,21 +79,21 @@ const runsByFilter = {
   awaiting_human_decision: [
     {
       run_id: "run-plan",
-      decree_id: "decree-plan",
-      decree_title: "Plan Decision Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-plan",
+      work_order_title: "Plan Decision Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: false,
       status: "running",
       display_state: "awaiting_plan_decision",
-      plan_state: "awaiting_king_decision",
+      plan_state: "awaiting_plan_decision",
       created_at: "2026-03-06T10:00:00.000Z",
       updated_at: "2026-03-06T10:02:00.000Z",
     },
     {
       run_id: "run-final",
-      decree_id: "decree-final",
-      decree_title: "Final Decision Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-final",
+      work_order_title: "Final Decision Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: false,
       status: "awaiting_human_confirmation",
       display_state: "awaiting_final_decision",
@@ -97,9 +105,9 @@ const runsByFilter = {
   succeeded: [
     {
       run_id: "run-succeeded",
-      decree_id: "decree-succeeded",
-      decree_title: "Succeeded Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-succeeded",
+      work_order_title: "Succeeded Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "succeeded",
       display_state: "succeeded",
@@ -111,9 +119,9 @@ const runsByFilter = {
   failed: [
     {
       run_id: "run-failed",
-      decree_id: "decree-failed",
-      decree_title: "Failed Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-failed",
+      work_order_title: "Failed Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "failed",
       display_state: "failed",
@@ -125,9 +133,9 @@ const runsByFilter = {
   pending: [
     {
       run_id: "run-pending",
-      decree_id: "decree-pending",
-      decree_title: "Pending Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-pending",
+      work_order_title: "Pending Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "pending",
       display_state: "pending",
@@ -139,9 +147,9 @@ const runsByFilter = {
   cancelled: [
     {
       run_id: "run-cancelled",
-      decree_id: "decree-cancelled",
-      decree_title: "Cancelled Run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work-order-cancelled",
+      work_order_title: "Cancelled Run",
+      workflow_id: "work-order-v1",
       autonomous_approvals: true,
       status: "cancelled",
       display_state: "cancelled",
@@ -183,7 +191,7 @@ vi.mock("@tanstack/react-router", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
 
   return {
-    Link: ({ children, ...props }: { children: ReactNode }) => <a {...props}>{children}</a>,
+    Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
     useSearch: ({ select }: { select?: (search: Record<string, unknown>) => unknown } = {}) =>
       React.useSyncExternalStore(
         (listener) => {
@@ -221,13 +229,18 @@ afterEach(() => {
 });
 
 describe("runs page quick filters", () => {
+  it("uses the active theme's work order noun in the create action", () => {
+    render(<RunsPage />);
+    expect(screen.getByRole("button", { name: "New Decree" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "New Decree" })).toHaveAttribute("href", "/work-orders/new");
+  });
   it("drives the active filter from URL search state and labels decision stages clearly", async () => {
     routerState.search = { state_filter: "awaiting_human_decision" };
 
     const user = userEvent.setup();
     render(<RunsPage />);
 
-    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: "awaiting_human_decision", limit: 50 });
+    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: "awaiting_human_decision", limit: 50, search: undefined });
     expect(screen.getByText("Plan Decision Run")).toBeInTheDocument();
     expect(screen.getByText("Final Decision Run")).toBeInTheDocument();
     expect(screen.getByText("Awaiting Plan Decision")).toBeInTheDocument();
@@ -237,18 +250,18 @@ describe("runs page quick filters", () => {
     const finalRow = screen.getByText("Final Decision Run").closest("a");
     expect(planRow).not.toBeNull();
     expect(finalRow).not.toBeNull();
-    expect(within(planRow as HTMLElement).getByText("Action Required")).toBeInTheDocument();
-    expect(within(finalRow as HTMLElement).getByText("Action Required")).toBeInTheDocument();
+    expect(within(planRow as HTMLElement).getByText("Plan Decision Required")).toBeInTheDocument();
+    expect(within(finalRow as HTMLElement).getByText("Final Decision Required")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Running" }));
     expect(routerState.search).toEqual({ state_filter: "running" });
-    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: "running", limit: 50 });
+    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: "running", limit: 50, search: undefined });
     expect(screen.getByText("Running Run")).toBeInTheDocument();
     expect(screen.queryByText("Plan Decision Run")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "All" }));
     expect(routerState.search).toEqual({});
-    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: undefined, limit: 50 });
+    expect(useInfiniteRunsMock).toHaveBeenLastCalledWith({ stateFilter: undefined, limit: 50, search: undefined });
     expect(screen.getByText("Plan Decision Run")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Succeeded" }));
@@ -280,13 +293,13 @@ describe("runs page quick filters", () => {
     render(<RunsPage />);
 
     expect(screen.getByText("Plan Decision Run")).toBeInTheDocument();
-    expect(screen.getByText("3 runs")).toBeInTheDocument();
+    expect(screen.getByText("3 Loaded")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Running" }));
 
     expect(routerState.search).toEqual({ state_filter: "running" });
     expect(screen.getByText("Plan Decision Run")).toBeInTheDocument();
-    expect(screen.getByText("3 runs")).toBeInTheDocument();
+    expect(screen.getByText("3 Loaded")).toBeInTheDocument();
     expect(screen.queryByText("Unable to load runs")).not.toBeInTheDocument();
   });
 
@@ -299,12 +312,12 @@ describe("runs page quick filters", () => {
     render(<RunsPage />);
 
     expect(screen.getByText("Running Run")).toBeInTheDocument();
-    expect(screen.getByText("1 run")).toBeInTheDocument();
-    expect(screen.queryByText("Updating runs...")).not.toBeInTheDocument();
-    expect(screen.getByText("1 run").closest("[aria-busy]")).toHaveAttribute("aria-busy", "false");
+    expect(screen.getByText("1 Loaded")).toBeInTheDocument();
+    expect(screen.queryByText("Updating runs…")).not.toBeInTheDocument();
+    expect(screen.getByText("1 Loaded").closest("[aria-busy]")).toHaveAttribute("aria-busy", "false");
   });
 
-	it("shows only created and last activity metadata beneath each decree title", () => {
+	it("shows truthful execution start and meaningful activity metadata beneath each title", () => {
 		render(<RunsPage />);
 
 		const runRow = screen.getByText("Running Run").closest("a");
@@ -312,8 +325,8 @@ describe("runs page quick filters", () => {
 
 		const row = runRow as HTMLElement;
 		expect(within(row).queryByText("run-running")).not.toBeInTheDocument();
-		expect(within(row).queryByText("Workflow: royal-decree-v1")).not.toBeInTheDocument();
-		expect(within(row).getByText(/Created:/)).toBeInTheDocument();
-		expect(within(row).getByText(/Last Activity:/)).toBeInTheDocument();
+		expect(within(row).queryByText("Workflow: work-order-v1")).not.toBeInTheDocument();
+		expect(row).toHaveTextContent("Started Not Started");
+		expect(within(row).getByText(/Updated/)).toBeInTheDocument();
 	});
 });

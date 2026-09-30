@@ -21,3 +21,8 @@ ALTER TABLE artifact_contents DROP COLUMN content;
 
 CREATE INDEX idx_artifacts_attempt_identity ON artifacts(attempt_id, artifact_id);
 CREATE INDEX idx_artifacts_attempt_chronology ON artifacts(attempt_id, created_at DESC, artifact_id);
+
+-- Artifact pages retain kind grouping, chronological order, and an exact keyset.
+CREATE INDEX idx_artifacts_run_page ON artifacts(run_id, CASE artifact_kind WHEN 'deliverable' THEN 0 WHEN 'verification' THEN 1 ELSE 2 END, created_at DESC, artifact_id);
+
+CREATE INDEX idx_artifacts_run_insertion ON artifacts(run_id, artifact_seq);

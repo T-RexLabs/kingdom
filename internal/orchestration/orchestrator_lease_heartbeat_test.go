@@ -105,7 +105,7 @@ func TestProviderLeaseOwnershipLossCancelsAdapterAndCannotSettle(t *testing.T) {
 	loop.startAsyncExecution(context.Background(), job)
 	<-adapter.started
 	ticker := <-created
-	mustExec(t, db, `UPDATE attempt_executions SET lease_owner = 'replacement-worker', lease_version = lease_version + 1 WHERE attempt_id = 'run_1:decree_intake:1'`)
+	mustExec(t, db, `UPDATE attempt_executions SET lease_owner = 'replacement-worker', lease_version = lease_version + 1 WHERE attempt_id = 'run_1:work_intake:1'`)
 	ticker.ticks <- base.Add(10 * time.Second)
 	<-adapter.cancelled
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), time.Second)
@@ -211,7 +211,7 @@ func TestProviderLeaseHeartbeatIntervalIsCappedByLeaseDuration(t *testing.T) {
 
 func seedHeartbeatProviderAttempt(t *testing.T, db *sql.DB, store *executionstore.Store, base time.Time) asyncExecutionResult {
 	t.Helper()
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
 		AttemptID:      attemptID,
 		RunID:          "run_1",
@@ -231,11 +231,11 @@ func seedHeartbeatProviderAttempt(t *testing.T, db *sql.DB, store *executionstor
 	if err != nil || !acquired {
 		t.Fatalf("claim heartbeat provider attempt: acquired=%t err=%v", acquired, err)
 	}
-	mustExec(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = 'run_1:decree_intake:1'`)
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = 'run_1:work_intake:1'`)
 	return asyncExecutionResult{
 		run:                    runSnapshot{RunID: "run_1", RunStatus: "running"},
-		node:                   nodeDefinition{NodeID: "decree_intake", NodeClass: "decree_intake", RequiredRole: "king"},
-		attempt:                nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
+		node:                   nodeDefinition{NodeID: "work_intake", NodeClass: "work_intake", RequiredRole: "governance"},
+		attempt:                nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
 		attemptID:              attemptID,
 		expectedLeaseOwner:     claim.LeaseOwner,
 		expectedLeaseVersion:   claim.LeaseVersion,

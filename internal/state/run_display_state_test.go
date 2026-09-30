@@ -12,7 +12,7 @@ func TestDeriveRunDisplayState(t *testing.T) {
 		want      string
 	}{
 		{name: "awaiting final decision", status: "awaiting_human_confirmation", planState: "approved", want: "awaiting_final_decision"},
-		{name: "awaiting plan decision", status: "running", planState: "awaiting_king_decision", want: "awaiting_plan_decision"},
+		{name: "awaiting plan decision", status: "running", planState: "awaiting_plan_decision", want: "awaiting_plan_decision"},
 		{name: "pending", status: "pending", planState: "draft", want: "pending"},
 		{name: "running", status: "running", planState: "approved", want: "running"},
 		{name: "succeeded", status: "succeeded", planState: "approved", want: "succeeded"},

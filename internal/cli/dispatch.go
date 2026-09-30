@@ -302,8 +302,8 @@ func (r *Runtime) run(ctx context.Context, args []string) error {
 	}
 
 	switch {
-	case len(args) >= 2 && sameHelpPath(args[:2], []string{"create", "decree"}):
-		return r.handleCreateDecree(ctx, args[2:])
+	case len(args) >= 2 && sameHelpPath(args[:2], []string{"create", "work-order"}):
+		return r.handleCreateWorkOrder(ctx, args[2:])
 	case len(args) >= 4 && sameHelpPath(args[:4], []string{"connections", "github", "key", "provision"}):
 		return r.handleGitHubKeyProvision(args[4:], false)
 	case len(args) >= 4 && sameHelpPath(args[:4], []string{"connections", "github", "key", "rotate"}):
@@ -346,7 +346,7 @@ var cliCommandRoutes = []commandRoute{
 	{path: []string{"summon", "stop"}},
 	{path: []string{"connections", "github", "key", "provision"}},
 	{path: []string{"connections", "github", "key", "rotate"}},
-	{path: []string{"create", "decree"}},
+	{path: []string{"create", "work-order"}},
 	{path: []string{"run", "start"}},
 	{path: []string{"run", "status"}},
 	{path: []string{"run", "artifacts", "export"}},
@@ -731,14 +731,14 @@ func (r *Runtime) currentPlanRevisionID(ctx context.Context, client *gen.ClientW
 	return planRevisionID, nil
 }
 
-func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
-	opts := createDecreeOptions{}
+func (r *Runtime) handleCreateWorkOrder(ctx context.Context, args []string) error {
+	opts := createWorkOrderOptions{}
 	commandUsage := func(err error) error {
-		return usageError{err: err, helpTopic: []string{"create", "decree"}}
+		return usageError{err: err, helpTopic: []string{"create", "work-order"}}
 	}
-	flags := newFlagSet("create decree")
-	bindCreateDecreeFlags(flags, &opts)
-	if err := parseLeafFlags(flags, args, []string{"create", "decree"}); err != nil {
+	flags := newFlagSet("create work order")
+	bindCreateWorkOrderFlags(flags, &opts)
+	if err := parseLeafFlags(flags, args, []string{"create", "work-order"}); err != nil {
 		return commandUsage(err)
 	}
 	if opts.title == "" || opts.text == "" {
@@ -748,13 +748,13 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 		return commandUsage(err)
 	}
 
-	decreeRequest := gen.CreateDecreeRequest{DecreeTitle: opts.title, DecreeText: opts.text}
+	workOrderRequest := gen.CreateWorkOrderRequest{WorkOrderTitle: opts.title, WorkOrderText: opts.text}
 	if strings.TrimSpace(opts.metadataRaw) != "" {
 		metadata, err := parseJSONObject(opts.metadataRaw, "--metadata-json")
 		if err != nil {
 			return commandUsage(err)
 		}
-		decreeRequest.Metadata = &metadata
+		workOrderRequest.Metadata = &metadata
 	}
 	publishMode, err := parsePublishModeFlag(opts.publishModeRaw)
 	if err != nil {
@@ -782,43 +782,43 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 		runRequest.ModelSelection = *modelSelection
 	}
 
-	decreeResponse, err := r.createDecree(ctx, decreeRequest)
+	workOrderResponse, err := r.createWorkOrder(ctx, workOrderRequest)
 	if err != nil {
 		return err
 	}
-	runRequest.DecreeId = decreeResponse.DecreeId
+	runRequest.WorkOrderId = workOrderResponse.WorkOrderId
 	runResponse, err := r.createRun(ctx, runRequest)
 	if err != nil {
-		return &decreeIssueError{DecreeID: decreeResponse.DecreeId, SkipReviewsAndValidations: opts.skipReviewsAndValidations, RunRequest: runRequest, Err: err}
+		return &workOrderIssueError{WorkOrderID: workOrderResponse.WorkOrderId, SkipReviewsAndValidations: opts.skipReviewsAndValidations, RunRequest: runRequest, Err: err}
 	}
 
 	if r.config.JSONOutput {
 		return writeJSON(r.stdout, map[string]any{
-			"decree_id":   decreeResponse.DecreeId,
-			"decree_at":   decreeResponse.CreatedAt,
-			"run_id":      runResponse.RunId,
-			"workflow_id": runResponse.WorkflowId,
-			"status":      runResponse.Status,
-			"created_at":  runResponse.CreatedAt,
-			"updated_at":  runResponse.UpdatedAt,
+			"work_order_id": workOrderResponse.WorkOrderId,
+			"work_order_at": workOrderResponse.CreatedAt,
+			"run_id":        runResponse.RunId,
+			"workflow_id":   runResponse.WorkflowId,
+			"status":        runResponse.Status,
+			"created_at":    runResponse.CreatedAt,
+			"updated_at":    runResponse.UpdatedAt,
 		})
 	}
 
-	_, err = fmt.Fprintf(r.stdout, "decree issued: %s run=%s status=%s workflow=%s\n", decreeResponse.DecreeId, runResponse.RunId, runResponse.Status, runResponse.WorkflowId)
+	_, err = fmt.Fprintf(r.stdout, "work order issued: %s run=%s status=%s workflow=%s\n", workOrderResponse.WorkOrderId, runResponse.RunId, runResponse.Status, runResponse.WorkflowId)
 	return err
 }
 
-func (r *Runtime) createDecree(ctx context.Context, request gen.CreateDecreeRequest) (*gen.CreateDecreeResult, error) {
+func (r *Runtime) createWorkOrder(ctx context.Context, request gen.CreateWorkOrderRequest) (*gen.CreateWorkOrderResult, error) {
 	client, err := r.newResponsesClient()
 	if err != nil {
 		return nil, err
 	}
-	key, err := r.newIdempotencyKey("decree-create")
+	key, err := r.newIdempotencyKey("work-order-create")
 	if err != nil {
 		return nil, err
 	}
 
-	response, err := client.CreateDecreeWithResponse(ctx, &gen.CreateDecreeParams{
+	response, err := client.CreateWorkOrderWithResponse(ctx, &gen.CreateWorkOrderParams{
 		IdempotencyKey: key,
 	}, request)
 	if err != nil {
@@ -862,8 +862,8 @@ func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 	if err := parseLeafFlags(flags, args, []string{"run", "start"}); err != nil {
 		return commandUsage(err)
 	}
-	if opts.decreeID == "" {
-		return commandUsage(errors.New("--decree-id is required"))
+	if opts.workOrderID == "" {
+		return commandUsage(errors.New("--work-order-id is required"))
 	}
 	if err := requireGlobalModelForInstallMode(opts.globalModel, r.config); err != nil {
 		return commandUsage(err)
@@ -876,7 +876,7 @@ func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 	if err := requirePublishModeSupportForInstallMode(publishMode, r.config); err != nil {
 		return commandUsage(err)
 	}
-	request := gen.CreateRunRequest{DecreeId: opts.decreeID, PublishMode: publishMode}
+	request := gen.CreateRunRequest{WorkOrderId: opts.workOrderID, PublishMode: publishMode}
 	autonomousApprovals, err := parseAutonomousApprovalsOverride(opts.autonomousApprovalsRaw)
 	if err != nil {
 		return commandUsage(err)
@@ -1819,18 +1819,18 @@ type apiError struct {
 	retryable  bool
 }
 
-type decreeIssueError struct {
-	DecreeID                  string
+type workOrderIssueError struct {
+	WorkOrderID               string
 	SkipReviewsAndValidations bool
 	RunRequest                gen.CreateRunRequest
 	Err                       error
 }
 
-func (e *decreeIssueError) Error() string {
+func (e *workOrderIssueError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return fmt.Sprintf("decree created (%s) but run start failed: %v", e.DecreeID, e.Err)
+	return fmt.Sprintf("work order created (%s) but run start failed: %v", e.WorkOrderID, e.Err)
 }
 
 func (e *apiError) Error() string {
@@ -1866,8 +1866,8 @@ func (r *Runtime) writeError(err error) int {
 	case *apiError:
 		r.writeStructuredError(typed)
 		return ExitAPI
-	case *decreeIssueError:
-		r.writeDecreeIssueError(typed)
+	case *workOrderIssueError:
+		r.writeWorkOrderIssueError(typed)
 		if _, ok := typed.Err.(*apiError); ok {
 			return ExitAPI
 		}
@@ -1886,7 +1886,7 @@ func (r *Runtime) writeError(err error) int {
 	}
 }
 
-func (r *Runtime) writeDecreeIssueError(err *decreeIssueError) {
+func (r *Runtime) writeWorkOrderIssueError(err *workOrderIssueError) {
 	recoveryCommand := buildRunRecoveryCommand(err.RunRequest, err.Err)
 	workflowID := workflow.BuiltInWorkflowID(err.SkipReviewsAndValidations)
 	if r.config.JSONOutput {
@@ -1894,7 +1894,7 @@ func (r *Runtime) writeDecreeIssueError(err *decreeIssueError) {
 			"error": map[string]any{
 				"message": err.Error(),
 			},
-			"decree_id":                    err.DecreeID,
+			"work_order_id":                err.WorkOrderID,
 			"skip_reviews_and_validations": err.SkipReviewsAndValidations,
 			"workflow_id":                  workflowID,
 			"recovery_command":             recoveryCommand,
@@ -1903,7 +1903,7 @@ func (r *Runtime) writeDecreeIssueError(err *decreeIssueError) {
 		return
 	}
 
-	_, _ = fmt.Fprintf(r.stderr, "api error: decree created (%s) but run start failed\n", err.DecreeID)
+	_, _ = fmt.Fprintf(r.stderr, "api error: work order created (%s) but run start failed\n", err.WorkOrderID)
 	if err.Err != nil {
 		_, _ = fmt.Fprintf(r.stderr, "  cause: %v\n", err.Err)
 	}
@@ -1916,7 +1916,7 @@ func buildRunRecoveryCommand(request gen.CreateRunRequest, cause error) string {
 	if errors.As(cause, &ambiguous) && strings.TrimSpace(ambiguous.Key) != "" {
 		parts = append(parts, "--idempotency-key", shellQuote(ambiguous.Key))
 	}
-	parts = append(parts, "run", "start", "--decree-id", shellQuote(request.DecreeId))
+	parts = append(parts, "run", "start", "--work-order-id", shellQuote(request.WorkOrderId))
 	if request.ModelSelection.Global.Model != "" {
 		parts = append(parts, "--global-model", shellQuote(request.ModelSelection.Global.Model))
 	}

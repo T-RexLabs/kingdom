@@ -117,9 +117,9 @@ func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning
 		return planning.FormalizedPlan{}, err
 	}
 	return planning.FormalizedPlan{
-		DecreeTitle: input.Title,
-		DecreeText:  defaultPlannerAPITestScript.FormalizedText,
-		Metadata:    metadata,
+		WorkOrderTitle: input.Title,
+		WorkOrderText:  defaultPlannerAPITestScript.FormalizedText,
+		Metadata:       metadata,
 	}, nil
 }
 
@@ -456,20 +456,19 @@ func seedRoles(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	roles := []string{
-		"king",
-		"allfather",
-		"chancellor",
-		"council-member",
-		"noble-delegate",
-		"clergy-delegate",
-		"burgher-delegate",
-		"peasant-delegate",
-		"builder-berserker",
+		"governance",
+		"operator",
+		"coordinator",
+		"plan-author",
+		"architecture-advisor",
+		"risk-advisor",
+		"systems-advisor",
+		"usability-advisor",
 		"builder",
-		"reviewer-shieldmaiden",
-		"intelligence-qa-scout",
-		"intelligence-nightraven",
-		"intelligence-loki-chaos",
+		"reviewer",
+		"qa-validator",
+		"security-validator",
+		"resilience-validator",
 		"intelligence",
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -494,22 +493,22 @@ func withCreateRunBody(extra map[string]any) seedRunOption {
 func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) string {
 	t.Helper()
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Seed decree",
-			"decree_text":  "Seed text",
+			"work_order_title": "Seed work order",
+			"work_order_text":  "Seed text",
 		},
-		idempotencyKey: "idem-seed-decree",
+		idempotencyKey: "idem-seed-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("seed decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("seed work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -521,7 +520,7 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 			"definition_json": map[string]any{
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
-				"nodes":       []map[string]any{{"node_id": "kickoff", "required_role": "council-member", "node_class": "execution_kickoff"}},
+				"nodes":       []map[string]any{{"node_id": "kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"}},
 				"edges":       []map[string]any{},
 			},
 		},
@@ -532,7 +531,7 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 	}
 
 	runBody := map[string]any{
-		"decree_id":       decree.DecreeId,
+		"work_order_id":   workOrder.WorkOrderId,
 		"publish_mode":    "direct",
 		"model_selection": defaultTestRunModelSelectionBody(),
 	}
@@ -560,25 +559,25 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 	return run.RunId
 }
 
-func seedDecree(t *testing.T, handler http.Handler) string {
+func seedWorkOrder(t *testing.T, handler http.Handler) string {
 	t.Helper()
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Seed decree",
-			"decree_text":  "Seed text",
+			"work_order_title": "Seed work order",
+			"work_order_text":  "Seed text",
 		},
-		idempotencyKey: "idem-seed-decree",
+		idempotencyKey: "idem-seed-work order",
 	})
 	if res.Code != http.StatusCreated {
-		t.Fatalf("seed decree expected 201, got %d (%s)", res.Code, res.Body.String())
+		t.Fatalf("seed work order expected 201, got %d (%s)", res.Code, res.Body.String())
 	}
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(res.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode decree seed: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(res.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode work order seed: %v", err)
 	}
-	return decree.DecreeId
+	return workOrder.WorkOrderId
 }
 
 func seedWorkflow(t *testing.T, handler http.Handler, workflowID string) {
@@ -594,7 +593,7 @@ func seedWorkflow(t *testing.T, handler http.Handler, workflowID string) {
 				"workflow_id": workflowID,
 				"nodes": []map[string]any{map[string]any{
 					"node_id":       "kickoff",
-					"required_role": "council-member",
+					"required_role": "plan-author",
 					"node_class":    "execution_kickoff",
 				}},
 				"edges": []map[string]any{},
@@ -610,22 +609,22 @@ func seedWorkflow(t *testing.T, handler http.Handler, workflowID string) {
 func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Linear replay decree",
-			"decree_text":  "Linear replay text",
+			"work_order_title": "Linear replay work order",
+			"work_order_text":  "Linear replay text",
 		},
-		idempotencyKey: "idem-linear-decree",
+		idempotencyKey: "idem-linear-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("linear decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("linear work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode linear decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode linear work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -638,19 +637,19 @@ func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) stri
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{
-					{"node_id": "plan_drafting", "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
-					{"node_id": "delegated_execution_berserker", "required_role": "builder-berserker", "node_class": "delegated_execution"},
-					{"node_id": "execution_review_shieldmaiden", "required_role": "reviewer-shieldmaiden", "node_class": "execution_review"},
-					{"node_id": "validation_gates_qa_scout", "required_role": "intelligence-qa-scout", "node_class": "validation_gates"},
-					{"node_id": "royal_closure", "required_role": "king", "node_class": "royal_closure"},
+					{"node_id": "plan_drafting", "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
+					{"node_id": "implementation", "required_role": "builder", "node_class": "delegated_execution"},
+					{"node_id": "execution_review", "required_role": "reviewer", "node_class": "execution_review"},
+					{"node_id": "quality_validation", "required_role": "qa-validator", "node_class": "validation_gates"},
+					{"node_id": "completion", "required_role": "governance", "node_class": "completion"},
 				},
 				"edges": []map[string]any{
 					{"from": "plan_drafting", "to": "execution_kickoff", "on": "success"},
-					{"from": "execution_kickoff", "to": "delegated_execution_berserker", "on": "success"},
-					{"from": "delegated_execution_berserker", "to": "execution_review_shieldmaiden", "on": "success"},
-					{"from": "execution_review_shieldmaiden", "to": "validation_gates_qa_scout", "on": "success"},
-					{"from": "validation_gates_qa_scout", "to": "royal_closure", "on": "success"},
+					{"from": "execution_kickoff", "to": "implementation", "on": "success"},
+					{"from": "implementation", "to": "execution_review", "on": "success"},
+					{"from": "execution_review", "to": "quality_validation", "on": "success"},
+					{"from": "quality_validation", "to": "completion", "on": "success"},
 				},
 			},
 		},
@@ -664,7 +663,7 @@ func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) stri
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decree.DecreeId,
+			"work_order_id":   workOrder.WorkOrderId,
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -688,22 +687,22 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 		t.Fatal("plan node id is required")
 	}
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Custom plan replay decree",
-			"decree_text":  "Custom plan replay text",
+			"work_order_title": "Custom plan replay work order",
+			"work_order_text":  "Custom plan replay text",
 		},
-		idempotencyKey: "idem-custom-plan-decree-" + trimmedPlanNodeID,
+		idempotencyKey: "idem-custom-plan-work order-" + trimmedPlanNodeID,
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("custom plan decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("custom plan work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode custom plan decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode custom plan work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -716,15 +715,15 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{
-					{"node_id": trimmedPlanNodeID, "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
-					{"node_id": "delegated_execution_berserker", "required_role": "builder-berserker", "node_class": "delegated_execution"},
-					{"node_id": "royal_closure", "required_role": "king", "node_class": "royal_closure"},
+					{"node_id": trimmedPlanNodeID, "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
+					{"node_id": "implementation", "required_role": "builder", "node_class": "delegated_execution"},
+					{"node_id": "completion", "required_role": "governance", "node_class": "completion"},
 				},
 				"edges": []map[string]any{
 					{"from": trimmedPlanNodeID, "to": "execution_kickoff", "on": "success"},
-					{"from": "execution_kickoff", "to": "delegated_execution_berserker", "on": "success"},
-					{"from": "delegated_execution_berserker", "to": "royal_closure", "on": "success"},
+					{"from": "execution_kickoff", "to": "implementation", "on": "success"},
+					{"from": "implementation", "to": "completion", "on": "success"},
 				},
 			},
 		},
@@ -738,7 +737,7 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decree.DecreeId,
+			"work_order_id":   workOrder.WorkOrderId,
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -758,22 +757,22 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Multi plan decree",
-			"decree_text":  "Multi plan decree text",
+			"work_order_title": "Multi plan work order",
+			"work_order_text":  "Multi plan work order text",
 		},
-		idempotencyKey: "idem-multi-plan-decree",
+		idempotencyKey: "idem-multi-plan-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("multi plan decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("multi plan work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode multi plan decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode multi plan work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -786,18 +785,18 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{
-					{"node_id": "advisory_synthesis", "required_role": "chancellor", "node_class": "advisory_synthesis"},
-					{"node_id": "plan_drafting_scope", "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "plan_drafting_delivery", "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "king_plan_decision", "required_role": "king", "node_class": "king_plan_decision"},
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
+					{"node_id": "advisory_synthesis", "required_role": "coordinator", "node_class": "advisory_synthesis"},
+					{"node_id": "plan_drafting_scope", "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "plan_drafting_delivery", "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "plan_decision", "required_role": "governance", "node_class": "plan_decision"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
 				},
 				"edges": []map[string]any{
 					{"from": "advisory_synthesis", "to": "plan_drafting_scope", "on": "success"},
 					{"from": "advisory_synthesis", "to": "plan_drafting_delivery", "on": "success"},
-					{"from": "plan_drafting_scope", "to": "king_plan_decision", "on": "success"},
-					{"from": "plan_drafting_delivery", "to": "king_plan_decision", "on": "success"},
-					{"from": "king_plan_decision", "to": "execution_kickoff", "on": "approved"},
+					{"from": "plan_drafting_scope", "to": "plan_decision", "on": "success"},
+					{"from": "plan_drafting_delivery", "to": "plan_decision", "on": "success"},
+					{"from": "plan_decision", "to": "execution_kickoff", "on": "approved"},
 				},
 			},
 		},
@@ -811,7 +810,7 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decree.DecreeId,
+			"work_order_id":   workOrder.WorkOrderId,
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -831,22 +830,22 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) string {
 	t.Helper()
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Governance branch decree",
-			"decree_text":  "Governance branch text",
+			"work_order_title": "Governance branch work order",
+			"work_order_text":  "Governance branch text",
 		},
-		idempotencyKey: "idem-governance-branch-decree",
+		idempotencyKey: "idem-governance-branch-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("governance branch decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("governance branch work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode governance branch decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode governance branch work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -859,19 +858,19 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{
-					{"node_id": "plan_drafting", "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "king_plan_decision", "required_role": "king", "node_class": "king_plan_decision"},
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
-					{"node_id": "execution_review_shieldmaiden", "required_role": "reviewer-shieldmaiden", "node_class": "execution_review"},
-					{"node_id": "delegated_execution_berserker", "required_role": "builder-berserker", "node_class": "delegated_execution"},
-					{"node_id": "royal_closure", "required_role": "king", "node_class": "royal_closure"},
+					{"node_id": "plan_drafting", "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "plan_decision", "required_role": "governance", "node_class": "plan_decision"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
+					{"node_id": "execution_review", "required_role": "reviewer", "node_class": "execution_review"},
+					{"node_id": "implementation", "required_role": "builder", "node_class": "delegated_execution"},
+					{"node_id": "completion", "required_role": "governance", "node_class": "completion"},
 				},
 				"edges": []map[string]any{
-					{"from": "plan_drafting", "to": "king_plan_decision", "on": "success"},
-					{"from": "king_plan_decision", "to": "execution_kickoff", "on": "approved"},
-					{"from": "king_plan_decision", "to": "execution_review_shieldmaiden", "on": "needs_rework"},
-					{"from": "execution_kickoff", "to": "delegated_execution_berserker", "on": "success"},
-					{"from": "delegated_execution_berserker", "to": "royal_closure", "on": "success"},
+					{"from": "plan_drafting", "to": "plan_decision", "on": "success"},
+					{"from": "plan_decision", "to": "execution_kickoff", "on": "approved"},
+					{"from": "plan_decision", "to": "execution_review", "on": "needs_rework"},
+					{"from": "execution_kickoff", "to": "implementation", "on": "success"},
+					{"from": "implementation", "to": "completion", "on": "success"},
 				},
 			},
 		},
@@ -885,7 +884,7 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 		method: http.MethodPost,
 		path:   "/api/v1/runs",
 		body: map[string]any{
-			"decree_id":       decree.DecreeId,
+			"work_order_id":   workOrder.WorkOrderId,
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
@@ -905,22 +904,22 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ...seedRunOption) string {
 	t.Helper()
 
-	decreeRes := performJSONRequest(t, handler, requestSpec{
+	workOrderRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/decrees",
+		path:   "/api/v1/work-orders",
 		body: map[string]any{
-			"decree_title": "Planning wave decree",
-			"decree_text":  "Planning wave text",
+			"work_order_title": "Planning wave work order",
+			"work_order_text":  "Planning wave text",
 		},
-		idempotencyKey: "idem-planning-wave-decree",
+		idempotencyKey: "idem-planning-wave-work order",
 	})
-	if decreeRes.Code != http.StatusCreated {
-		t.Fatalf("planning wave decree expected 201, got %d (%s)", decreeRes.Code, decreeRes.Body.String())
+	if workOrderRes.Code != http.StatusCreated {
+		t.Fatalf("planning wave work order expected 201, got %d (%s)", workOrderRes.Code, workOrderRes.Body.String())
 	}
 
-	var decree gen.CreateDecreeResult
-	if err := json.Unmarshal(decreeRes.Body.Bytes(), &decree); err != nil {
-		t.Fatalf("decode planning wave decree response: %v", err)
+	var workOrder gen.CreateWorkOrderResult
+	if err := json.Unmarshal(workOrderRes.Body.Bytes(), &workOrder); err != nil {
+		t.Fatalf("decode planning wave work order response: %v", err)
 	}
 
 	publishRes := performJSONRequest(t, handler, requestSpec{
@@ -933,15 +932,15 @@ func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ..
 				"version":     "v1",
 				"workflow_id": workflow.DefaultWorkflowID,
 				"nodes": []map[string]any{
-					{"node_id": "advisory_synthesis", "required_role": "chancellor", "node_class": "advisory_synthesis"},
-					{"node_id": "plan_drafting", "required_role": "council-member", "node_class": "plan_drafting"},
-					{"node_id": "king_plan_decision", "required_role": "king", "node_class": "king_plan_decision"},
-					{"node_id": "execution_kickoff", "required_role": "council-member", "node_class": "execution_kickoff"},
+					{"node_id": "advisory_synthesis", "required_role": "coordinator", "node_class": "advisory_synthesis"},
+					{"node_id": "plan_drafting", "required_role": "plan-author", "node_class": "plan_drafting"},
+					{"node_id": "plan_decision", "required_role": "governance", "node_class": "plan_decision"},
+					{"node_id": "execution_kickoff", "required_role": "plan-author", "node_class": "execution_kickoff"},
 				},
 				"edges": []map[string]any{
 					{"from": "advisory_synthesis", "to": "plan_drafting", "on": "success"},
-					{"from": "plan_drafting", "to": "king_plan_decision", "on": "success"},
-					{"from": "king_plan_decision", "to": "execution_kickoff", "on": "approved"},
+					{"from": "plan_drafting", "to": "plan_decision", "on": "success"},
+					{"from": "plan_decision", "to": "execution_kickoff", "on": "approved"},
 				},
 			},
 		},
@@ -952,7 +951,7 @@ func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ..
 	}
 
 	runBody := map[string]any{
-		"decree_id":       decree.DecreeId,
+		"work_order_id":   workOrder.WorkOrderId,
 		"publish_mode":    "direct",
 		"model_selection": defaultTestRunModelSelectionBody(),
 	}
@@ -997,7 +996,7 @@ func seedTimelineEvents(t *testing.T, db *sql.DB, runID string) {
 			Seq:             i,
 			PayloadJSON:     string(payload),
 			ActorID:         "actor-1",
-			RoleID:          "chancellor",
+			RoleID:          "coordinator",
 			AuthoritySource: "test.seed",
 			ReasonCode:      "internal_error",
 			ReasonText:      "seed",
@@ -1014,10 +1013,10 @@ func seedArtifact(t *testing.T, db *sql.DB, runID string) {
 	t.Helper()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-1', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-1', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
 		t.Fatalf("seed agent: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-1', ?, 'kickoff', 1,1, 'pending', 'council-member', 'agent-1', 1, NULL, NULL)`, runID); err != nil {
+	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-1', ?, 'kickoff', 1,1, 'pending', 'plan-author', 'agent-1', 1, NULL, NULL)`, runID); err != nil {
 		t.Fatalf("seed node run: %v", err)
 	}
 	workspaceRoot := t.TempDir()
@@ -1034,10 +1033,12 @@ func seedArtifact(t *testing.T, db *sql.DB, runID string) {
 	body := []byte("seed artifact")
 	sum := sha256.Sum256(body)
 	checksum := hex.EncodeToString(sum[:])
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'plan-author', ?)`, runID, checksum, now); err != nil {
 		t.Fatalf("seed artifact: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, ?)`, body); err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, ?)`, body); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact-1', ?, 13, ?)`, checksum, now); err != nil {
 		t.Fatalf("seed artifact content: %v", err)
 	}
@@ -1047,24 +1048,24 @@ func seedReadyPlanReworkNodes(t *testing.T, db *sql.DB, runID string) string {
 	t.Helper()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`UPDATE workflow_runs SET plan_state = 'awaiting_king_decision' WHERE run_id = ?`, runID); err != nil {
-		t.Fatalf("set run plan_state awaiting_king_decision: %v", err)
+	if _, err := db.Exec(`UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = ?`, runID); err != nil {
+		t.Fatalf("set run plan_state awaiting_plan_decision: %v", err)
 	}
 
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'chancellor', 'idle', NULL, 0, ?, ?)`, "agent_chancellor_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, "agent_council_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, "agent_king_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'coordinator', 'idle', NULL, 0, ?, ?)`, "agent_coordinator_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'plan-author', 'idle', NULL, 0, ?, ?)`, "agent_council_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'governance', 'idle', NULL, 0, ?, ?)`, "agent_governance_"+runID, now, now)
 
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', 1,1, 'succeeded', 'chancellor', ?, 1, ?, ?)`, "nr_plan_rework_advisory_"+runID, runID, "agent_chancellor_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', 1,1, 'succeeded', 'council-member', ?, 1, ?, ?)`, "nr_plan_rework_plan_"+runID, runID, "agent_council_"+runID, now, now)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'king_plan_decision', 1,1, 'pending', 'king', ?, 1, NULL, NULL)`, "nr_plan_rework_king_"+runID, runID, "agent_king_"+runID)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', 1,1, 'succeeded', 'coordinator', ?, 1, ?, ?)`, "nr_plan_rework_advisory_"+runID, runID, "agent_coordinator_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', 1,1, 'succeeded', 'plan-author', ?, 1, ?, ?)`, "nr_plan_rework_plan_"+runID, runID, "agent_council_"+runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_decision', 1,1, 'pending', 'governance', ?, 1, NULL, NULL)`, "nr_plan_rework_governance_"+runID, runID, "agent_governance_"+runID)
 
 	messageID := "msg_plan_current_" + runID
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES (?, ?, ?, ?, ?, 'status_update', 'normal', ?, ?)`,
 		messageID,
 		runID,
 		"agent_council_"+runID,
-		"agent_king_"+runID,
+		"agent_governance_"+runID,
 		"thread_"+runID+"_plan",
 		`{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Current council plan revision"}`,
 		now,
@@ -1109,20 +1110,20 @@ func seedPlanOutputForNode(t *testing.T, db *sql.DB, runID, nodeID, content stri
 	nowRFC3339 := now.Format(time.RFC3339)
 	suffix := strconv.FormatInt(now.UnixNano(), 10)
 	councilAgentID := "agent_council_" + trimmedNodeID + "_" + runID
-	kingAgentID := "agent_king_" + trimmedNodeID + "_" + runID
+	governanceAgentID := "agent_governance_" + trimmedNodeID + "_" + runID
 	messageID := "msg_plan_" + trimmedNodeID + "_" + runID + "_" + suffix
 	nodeRunID := "nr_plan_" + trimmedNodeID + "_" + runID
 	attemptID := runID + ":" + trimmedNodeID + ":" + suffix
 	planningOutputID := "planout_" + trimmedNodeID + "_" + runID + "_" + suffix
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, councilAgentID, nowRFC3339, nowRFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, kingAgentID, nowRFC3339, nowRFC3339)
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 1,1, 'succeeded', 'council-member', ?, 1, ?, ?)`, nodeRunID, runID, trimmedNodeID, councilAgentID, nowRFC3339, nowRFC3339)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'plan-author', 'idle', NULL, 0, ?, ?)`, councilAgentID, nowRFC3339, nowRFC3339)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'governance', 'idle', NULL, 0, ?, ?)`, governanceAgentID, nowRFC3339, nowRFC3339)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 1,1, 'succeeded', 'plan-author', ?, 1, ?, ?)`, nodeRunID, runID, trimmedNodeID, councilAgentID, nowRFC3339, nowRFC3339)
 	seedAttemptExecution(t, db, attemptID, runID, nodeRunID, nowRFC3339)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES (?, ?, ?, ?, ?, 'status_update', 'normal', ?, ?)`,
 		messageID,
 		runID,
 		councilAgentID,
-		kingAgentID,
+		governanceAgentID,
 		"thread_"+runID+"_"+trimmedNodeID,
 		fmt.Sprintf(`{"message_source":"communication","communication_type":"response_received","node_id":%q,"response_full":%q}`,
 			trimmedNodeID,
@@ -1178,8 +1179,8 @@ func seedPlanningWaveAttempts(t *testing.T, db *sql.DB, runID string, maxAttempt
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	for attempt := 2; attempt <= maxAttempt; attempt++ {
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', ?, ?, 'succeeded', 'chancellor', ?, 1, ?, ?)`, fmt.Sprintf("nr_plan_rework_advisory_%d_%s", attempt, runID), runID, attempt, attempt, "agent_chancellor_"+runID, now, now)
-		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', ?, ?, 'succeeded', 'council-member', ?, 1, ?, ?)`, fmt.Sprintf("nr_plan_rework_plan_%d_%s", attempt, runID), runID, attempt, attempt, "agent_council_"+runID, now, now)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'advisory_synthesis', ?, ?, 'succeeded', 'coordinator', ?, 1, ?, ?)`, fmt.Sprintf("nr_plan_rework_advisory_%d_%s", attempt, runID), runID, attempt, attempt, "agent_coordinator_"+runID, now, now)
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'plan_drafting', ?, ?, 'succeeded', 'plan-author', ?, 1, ?, ?)`, fmt.Sprintf("nr_plan_rework_plan_%d_%s", attempt, runID), runID, attempt, attempt, "agent_council_"+runID, now, now)
 		attemptID := fmt.Sprintf("%s:plan_drafting:%d", runID, attempt)
 		nodeRunID := fmt.Sprintf("nr_plan_rework_plan_%d_%s", attempt, runID)
 		seedAttemptExecution(t, db, attemptID, runID, nodeRunID, now)
@@ -1204,19 +1205,19 @@ func seedLinearGovernanceAttempts(t *testing.T, db *sql.DB, runID string, maxAtt
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	rolesByNode := map[string]string{
-		"plan_drafting":                 "council-member",
-		"execution_kickoff":             "council-member",
-		"delegated_execution_berserker": "builder-berserker",
-		"execution_review_shieldmaiden": "reviewer-shieldmaiden",
-		"validation_gates_qa_scout":     "intelligence-qa-scout",
-		"royal_closure":                 "king",
+		"plan_drafting":      "plan-author",
+		"execution_kickoff":  "plan-author",
+		"implementation":     "builder",
+		"execution_review":   "reviewer",
+		"quality_validation": "qa-validator",
+		"completion":         "governance",
 	}
 	agentsByRole := map[string]string{
-		"council-member":        "agent_seed_council_" + runID,
-		"builder-berserker":     "agent_seed_builder_" + runID,
-		"reviewer-shieldmaiden": "agent_seed_reviewer_" + runID,
-		"intelligence-qa-scout": "agent_seed_scout_" + runID,
-		"king":                  "agent_seed_king_" + runID,
+		"plan-author":  "agent_seed_council_" + runID,
+		"builder":      "agent_seed_builder_" + runID,
+		"reviewer":     "agent_seed_reviewer_" + runID,
+		"qa-validator": "agent_seed_scout_" + runID,
+		"governance":   "agent_seed_governance_" + runID,
 	}
 	for roleID, agentID := range agentsByRole {
 		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, ?, 'idle', NULL, 0, ?, ?)`, agentID, roleID, now, now)
@@ -1245,10 +1246,10 @@ func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 	t.Helper()
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-identity', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-identity', 'plan-author', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
 		t.Fatalf("seed identity agent: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-identity', ?, 'kickoff', 1,1, 'pending', 'council-member', 'agent-identity', 1, NULL, NULL)`, runID); err != nil {
+	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-identity', ?, 'kickoff', 1,1, 'pending', 'plan-author', 'agent-identity', 1, NULL, NULL)`, runID); err != nil {
 		t.Fatalf("seed identity node run: %v", err)
 	}
 	workspaceRoot := t.TempDir()
@@ -1260,10 +1261,12 @@ func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 		t.Helper()
 		sum := sha256.Sum256([]byte(body))
 		checksum := hex.EncodeToString(sum[:])
-		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'plan-author', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact %s: %v", artifactID, err)
 		}
-		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?, 0, ?)`, artifactID, []byte(body)); err != nil { t.Fatal(err) }
+		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?, 0, ?)`, artifactID, []byte(body)); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?)`, artifactID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact content %s: %v", artifactID, err)
 		}

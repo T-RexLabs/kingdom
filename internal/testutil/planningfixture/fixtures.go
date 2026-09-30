@@ -50,6 +50,6 @@ func DefaultAPIScript() Script {
 
 const (
 	openingQuestionPrompt    = "How would you like to start?"
-	apiOpeningQuestionPrompt = "What is the primary objective for this decree?"
+	apiOpeningQuestionPrompt = "What is the primary objective for this work order?"
 	continueQuestionPrompt   = "What constraints should shape the plan?"
 )

@@ -1,396 +1,150 @@
-import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
+import type { RunGraphResponse, RunNodeExecution } from "@/api/hooks";
 import { DAGVisualization } from "./dag-visualization";
-import type { RunGraphNode, RunNodeExecution } from "@/api/hooks";
 
-type NodeState = RunGraphNode["state"];
-
-function providerNode(node_id: string, required_role: string, state: NodeState) {
-  return { node_id, required_role, execution_ownership: "provider_backed" as const, state };
-}
-
-function runtimeNode(node_id: string, required_role: string, state: NodeState) {
-  return { node_id, required_role, execution_ownership: "runtime_owned" as const, state };
-}
-
-function logicalNode(node_id: string, required_role: string, status: RunNodeExecution["status"]): RunNodeExecution {
+vi.mock("@/theme", async () => {
+  const actual = await vi.importActual<typeof import("@/theme")>("@/theme");
   return {
-    node_id,
-    required_role,
-    execution_ownership: "provider_backed",
-    status,
-    attempt_count: 1,
+    ...actual,
+    useTheme: () => ({ theme: actual.builtInThemes[3] }),
+    useRoleIdentity: (role: string) =>
+      actual.roleIdentity(actual.builtInThemes[3], role),
+    ThemeIcon: () => <span aria-hidden="true" />,
   };
-}
-
-beforeAll(() => {
-  Object.defineProperty(SVGElement.prototype, "getBBox", {
-    configurable: true,
-    value: () => ({ x: 0, y: 0, width: 120, height: 40 }),
-  });
-  Object.defineProperty(SVGElement.prototype, "getComputedTextLength", {
-    configurable: true,
-    value: () => 80,
-  });
-  Object.defineProperty(SVGElement.prototype, "getScreenCTM", {
-    configurable: true,
-    value: () => ({ inverse: () => ({}) }),
-  });
-  Object.defineProperty(SVGSVGElement.prototype, "createSVGPoint", {
-    configurable: true,
-    value: () => ({ x: 0, y: 0, matrixTransform: vi.fn(() => ({ x: 0, y: 0 })) }),
-  });
 });
 
-describe("dag visualization", () => {
-  it("uses the shared logical-node cards as the mobile fallback and opens the selected node in Activity", () => {
+const graph: RunGraphResponse = {
+  run_id: "run",
+  nodes: [
+    {
+      node_id: "work_intake",
+      required_role: "governance",
+      execution_ownership: "runtime_owned",
+      state: "succeeded",
+    },
+    {
+      node_id: "implementation",
+      required_role: "builder",
+      execution_ownership: "provider_backed",
+      state: "running",
+    },
+  ],
+  edges: [{ from: "work_intake", to: "implementation", on: "success" }],
+};
+
+const running: RunNodeExecution = {
+  node_id: "implementation",
+  required_role: "builder",
+  execution_ownership: "provider_backed",
+  status: "running",
+  attempt_count: 1,
+  current_execution: {
+    attempt_id: "a",
+    node_id: "implementation",
+    node_run_id: "nr",
+    attempt: 1,
+    agent_id: "builder",
+    required_role: "builder",
+    execution_mode: "provider_backed",
+    status: "running",
+    queued_at: "2026-09-29T10:00:00Z",
+    activity_at: "2026-09-29T10:00:01Z",
+    started_at: "2026-09-29T10:00:01Z",
+    updated_at: "2026-09-29T10:00:01Z",
+    stop_retry_available: false,
+  },
+};
+
+describe("workflow DAG", () => {
+  it("starts at readable dimensions and fits the whole graph only on request", () => {
+    render(<DAGVisualization graph={graph} nodes={[]} />);
+    const svg = screen.getByRole("group", { name: "Run execution DAG" });
+    expect(svg).toHaveAttribute("data-view", "readable");
+    fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
+    expect(svg).toHaveAttribute("data-view", "overview");
+  });
+  it("leaves normal wheel scrolling alone and zooms only with Ctrl or Meta", () => {
+    render(<DAGVisualization graph={graph} nodes={[]} />);
+    const svg = screen.getByRole("group", { name: "Run execution DAG" });
+    const initial = svg.querySelector("g")?.getAttribute("transform");
+    fireEvent.wheel(svg, { deltaY: 100, clientX: 50, clientY: 50 });
+    expect(svg.querySelector("g")).toHaveAttribute("transform", initial!);
+    fireEvent.wheel(svg, {
+      deltaY: -100,
+      ctrlKey: true,
+      clientX: 50,
+      clientY: 50,
+    });
+    expect(svg.querySelector("g")?.getAttribute("transform")).not.toBe(initial);
+    fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
+    fireEvent.wheel(svg, {
+      deltaY: -100,
+      metaKey: true,
+      clientX: 50,
+      clientY: 50,
+    });
+    expect(svg.querySelector("g")?.getAttribute("transform")).not.toBe(initial);
+  });
+  it("preserves stored edges, exposes runtime ownership and selects a node without opening a permanent inspector", () => {
     const onViewActivity = vi.fn();
     render(
       <DAGVisualization
-        graph={{
-          run_id: "run-1",
-          nodes: [providerNode("execution_kickoff", "council-member", "ready")],
-          edges: [],
-        }}
-        nodes={[logicalNode("execution_kickoff", "council-member", "ready")]}
+        graph={graph}
+        nodes={[running]}
         onViewActivity={onViewActivity}
       />,
     );
-
-    const action = screen.getByRole("button", { name: "View Execution Kickoff in Activity" });
-
-    expect(action).toHaveClass("min-h-11");
-    expect(screen.getByTestId("dag-visualization-root").querySelector(".lg\\:hidden")).toBeInTheDocument();
-    expect(screen.getByTestId("dag-visualization-root").querySelector(".hidden.lg\\:block")).toBeInTheDocument();
-
-    fireEvent.click(action);
-
-    expect(onViewActivity).toHaveBeenCalledWith("execution_kickoff");
+    expect(
+      screen.getByRole("button", { name: /Work Intake.*Runtime step/ }),
+    ).toBeInTheDocument();
+    fireEvent.click(
+      screen.getByRole("button", { name: /Implementation.*View activity/ }),
+    );
+    expect(onViewActivity).toHaveBeenCalledWith("implementation");
+    expect(document.querySelector("path title")?.textContent).toMatch(
+      /Work.*Intake → Implementation · success/,
+    );
   });
-
-	it("reports unavailable execution steps in the mobile fallback without claiming the graph is empty", () => {
-		const onRetryExecutions = vi.fn();
-		render(
-			<DAGVisualization
-				graph={{
-					run_id: "run-1",
-					nodes: [providerNode("execution_kickoff", "council-member", "ready")],
-					edges: [],
-				}}
-				nodes={[]}
-				executionsErrorMessage="The execution steps could not be loaded right now."
-				onRetryExecutions={onRetryExecutions}
-			/>,
-		);
-
-		expect(screen.getByRole("alert")).toHaveTextContent("Execution Step List Unavailable");
-		expect(screen.getByRole("alert")).toHaveTextContent("The execution steps could not be loaded right now.");
-		expect(screen.queryByText("No execution steps have been recorded yet.")).not.toBeInTheDocument();
-		expect(screen.getByRole("img", { name: "Run execution DAG" })).toBeInTheDocument();
-
-		fireEvent.click(screen.getByRole("button", { name: "Retry Step List" }));
-		expect(onRetryExecutions).toHaveBeenCalledTimes(1);
-	});
-
-  it("labels the graph and supports keyboard node selection", () => {
+  it("glows only observed running provider nodes and their incoming edges while connected", () => {
+    const { container, rerender } = render(
+      <DAGVisualization graph={graph} nodes={[running]} connected />,
+    );
+    expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(2);
+    rerender(
+      <DAGVisualization graph={graph} nodes={[running]} connected={false} />,
+    );
+    expect(container.querySelectorAll('[data-active="true"]')).toHaveLength(0);
+  });
+  it("supports keyboard zoom, pan, reset and visible zoom controls", () => {
+    render(<DAGVisualization graph={graph} nodes={[]} />);
+    const svg = screen.getByRole("group", { name: "Run execution DAG" });
+    fireEvent.keyDown(svg, { key: "+" });
+    expect(svg.querySelector("g")).toHaveAttribute(
+      "transform",
+      expect.stringContaining("scale(1.3)"),
+    );
+    fireEvent.keyDown(svg, { key: "ArrowRight" });
+    fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
+    expect(svg.querySelector("g")).toHaveAttribute(
+      "transform",
+      "translate(0,0) scale(1)",
+    );
+  });
+  it("retains the graph and offers retry when execution status fails", () => {
+    const retry = vi.fn();
     render(
       <DAGVisualization
-        graph={{
-          run_id: "run-1",
-          nodes: [
-            providerNode("kickoff", "chancellor", "running"),
-            providerNode("build", "builder-berserker", "pending"),
-          ],
-          edges: [{ from: "kickoff", to: "build", on: "success" }],
-        }}
+        graph={graph}
+        nodes={[]}
+        executionsErrorMessage="Read failed"
+        onRetryExecutions={retry}
       />,
     );
-
-    const dag = screen.getByRole("img", { name: /run execution dag/i });
-
-    expect(dag).toBeInTheDocument();
-    expect(dag.querySelector("title")).toBeNull();
-
-    const kickoffNode = screen.getByRole("button", { name: /Kickoff.*Execution mode Agent-executed.*Role Chancellor/i });
-    fireEvent.keyDown(kickoffNode, { key: "Enter" });
-
-    expect(screen.getByText(/Selected:/i)).toHaveTextContent("kickoff");
-  });
-
-  it("shows crown-handled nodes with role-forward labels and split tooltip semantics", () => {
-    const { container } = render(
-      <DAGVisualization
-        graph={{
-          run_id: "run-1",
-          nodes: [runtimeNode("execution_kickoff", "council-member", "pending")],
-          edges: [],
-        }}
-      />,
-    );
-
-    const kickoffNode = screen.getByRole("button", { name: /Execution Kickoff.*Execution mode Crown-handled.*Role Council Member/i });
-
-    expect(container.querySelector('[data-node="execution_kickoff"] text[data-part="role-label"]')).toHaveTextContent("Council Member");
-    expect(kickoffNode.getAttribute("aria-label")).not.toContain("Authority");
-
-    fireEvent.mouseEnter(kickoffNode);
-
-    expect(screen.getByText("Execution mode: Crown-handled")).toBeInTheDocument();
-    expect(screen.getByText("Role: Council Member")).toBeInTheDocument();
-    expect(screen.queryByText(/Runtime-owned/i)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Authority:/i)).not.toBeInTheDocument();
-  });
-
-  it("uses the full panel height and anchors the readable legend to the panel corner", () => {
-    render(
-      <DAGVisualization
-        graph={{
-          run_id: "run-1",
-          nodes: [
-            providerNode("kickoff", "chancellor", "running"),
-            providerNode("build", "builder-berserker", "pending"),
-          ],
-          edges: [{ from: "kickoff", to: "build", on: "success" }],
-        }}
-      />,
-    );
-
-    expect(screen.getByTestId("dag-visualization-root")).toHaveClass("h-full");
-    expect(screen.getByTestId("dag-visualization-root")).toHaveClass("min-h-0");
-
-    const legend = screen.getByTestId("dag-legend");
-
-    expect(legend).toHaveClass("absolute");
-		expect(legend).toHaveClass("bottom-3");
-		expect(legend).toHaveClass("right-3");
-		expect(legend).toHaveClass("sm:bottom-4");
-		expect(legend).toHaveClass("sm:right-4");
-		expect(legend).toHaveTextContent("Active");
-		expect(legend).toHaveTextContent("Pending");
-		expect(legend).not.toHaveTextContent("Ready");
-		expect(legend).not.toHaveTextContent("Blocked");
-		expect(legend).not.toHaveTextContent("Skipped");
-	});
-
-	it("shows blocked and ready when those states are present in the graph", () => {
-		render(
-			<DAGVisualization
-				graph={{
-					run_id: "run-1",
-					nodes: [
-						providerNode("launch", "chancellor", "starting"),
-						providerNode("recover", "builder-berserker", "blocked"),
-						runtimeNode("handoff", "council-member", "ready"),
-					],
-					edges: [],
-				}}
-			/>,
-		);
-
-		const legend = screen.getByTestId("dag-legend");
-
-		expect(legend).toHaveTextContent("Launching");
-		expect(legend).toHaveTextContent("Blocked");
-		expect(legend).toHaveTextContent("Ready");
-	});
-
-  it("preserves the selected node across graph refreshes when the node still exists", () => {
-    const initialGraph = {
-      run_id: "run-1",
-      nodes: [
-        providerNode("kickoff", "chancellor", "running"),
-        providerNode("build", "builder-berserker", "pending"),
-      ],
-      edges: [{ from: "kickoff", to: "build", on: "success" }],
-    };
-
-    const { rerender } = render(<DAGVisualization graph={initialGraph} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /Kickoff.*Execution mode Agent-executed.*Role Chancellor/i }));
-    expect(screen.getByText(/Selected:/i)).toHaveTextContent("kickoff");
-
-    rerender(
-      <DAGVisualization
-        graph={{
-          ...initialGraph,
-          nodes: [
-            providerNode("kickoff", "chancellor", "succeeded"),
-            providerNode("build", "builder-berserker", "running"),
-          ],
-        }}
-      />,
-    );
-
-    expect(screen.getByText(/Selected:/i)).toHaveTextContent("kickoff");
-  });
-
-  it("preserves viewport transform across graph refreshes", () => {
-    const initialGraph = {
-      run_id: "run-1",
-      nodes: [
-        providerNode("kickoff", "chancellor", "running"),
-        providerNode("build", "builder-berserker", "pending"),
-      ],
-      edges: [{ from: "kickoff", to: "build", on: "success" }],
-    };
-
-    const { container, rerender } = render(<DAGVisualization graph={initialGraph} />);
-    const svg = screen.getByRole("img", { name: /run execution dag/i });
-
-    fireEvent.wheel(svg, { deltaY: -120, clientX: 300, clientY: 200 });
-
-    const transformBefore = container
-      .querySelector('svg[aria-label="Run execution DAG"] > g')
-      ?.getAttribute("transform");
-
-    expect(transformBefore).toBeTruthy();
-
-    rerender(
-      <DAGVisualization
-        graph={{
-          ...initialGraph,
-          nodes: [
-            providerNode("kickoff", "chancellor", "succeeded"),
-            providerNode("build", "builder-berserker", "running"),
-          ],
-        }}
-      />,
-    );
-
-    const transformAfter = container
-      .querySelector('svg[aria-label="Run execution DAG"] > g')
-      ?.getAttribute("transform");
-
-    expect(transformAfter).toBe(transformBefore);
-  });
-
-  it("reuses existing node and edge elements for state-only graph refreshes", () => {
-    const initialGraph = {
-      run_id: "run-1",
-      nodes: [
-        providerNode("kickoff", "chancellor", "running"),
-        providerNode("build", "builder-berserker", "pending"),
-      ],
-      edges: [{ from: "kickoff", to: "build", on: "success" }],
-    };
-
-    const { container, rerender } = render(<DAGVisualization graph={initialGraph} />);
-
-    const kickoffNodeBefore = container.querySelector('[data-node="kickoff"]');
-    const kickoffChildBefore = kickoffNodeBefore?.firstElementChild;
-    const edgeBefore = container.querySelector('[data-edge="kickoff->build"]');
-
-    expect(kickoffNodeBefore).toBeTruthy();
-    expect(kickoffChildBefore).toBeTruthy();
-    expect(edgeBefore).toBeTruthy();
-
-    rerender(
-      <DAGVisualization
-        graph={{
-          ...initialGraph,
-          nodes: [
-            providerNode("kickoff", "chancellor", "succeeded"),
-            providerNode("build", "builder-berserker", "running"),
-          ],
-        }}
-      />,
-    );
-
-    const kickoffNodeAfter = container.querySelector('[data-node="kickoff"]');
-    const kickoffChildAfter = kickoffNodeAfter?.firstElementChild;
-    const edgeAfter = container.querySelector('[data-edge="kickoff->build"]');
-
-    expect(kickoffNodeAfter).toBe(kickoffNodeBefore);
-    expect(kickoffChildAfter).toBe(kickoffChildBefore);
-    expect(edgeAfter).toBe(edgeBefore);
-    expect(kickoffNodeAfter).toHaveAttribute("aria-label", expect.stringContaining("Status Succeeded"));
-  });
-
-  it("does not rebuild node contents when selection changes", () => {
-    const graph = {
-      run_id: "run-1",
-      nodes: [
-        providerNode("kickoff", "chancellor", "running"),
-        providerNode("build", "builder-berserker", "pending"),
-      ],
-      edges: [{ from: "kickoff", to: "build", on: "success" }],
-    };
-
-    const { container } = render(<DAGVisualization graph={graph} />);
-
-    const kickoffNode = container.querySelector('[data-node="kickoff"]');
-    const kickoffChildBefore = kickoffNode?.firstElementChild;
-
-    expect(kickoffNode).toBeTruthy();
-    expect(kickoffChildBefore).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /Kickoff.*Execution mode Agent-executed.*Role Chancellor/i }));
-
-    const kickoffChildAfter = container.querySelector('[data-node="kickoff"]')?.firstElementChild;
-    expect(kickoffChildAfter).toBe(kickoffChildBefore);
-    expect(screen.getByText(/Selected:/i)).toHaveTextContent("kickoff");
-  });
-
-  it("updates the rendered DAG when topology changes", () => {
-    const initialGraph = {
-      run_id: "run-1",
-      nodes: [
-        providerNode("kickoff", "chancellor", "running"),
-        providerNode("build", "builder-berserker", "pending"),
-      ],
-      edges: [{ from: "kickoff", to: "build", on: "success" }],
-    };
-
-    const { container, rerender } = render(<DAGVisualization graph={initialGraph} />);
-
-    rerender(
-      <DAGVisualization
-        graph={{
-          ...initialGraph,
-          nodes: [
-            providerNode("kickoff", "chancellor", "succeeded"),
-            providerNode("review", "reviewer-shieldmaiden", "running"),
-            providerNode("build", "builder-berserker", "pending"),
-          ],
-          edges: [
-            { from: "kickoff", to: "review", on: "success" },
-            { from: "review", to: "build", on: "success" },
-          ],
-        }}
-      />,
-    );
-
-    expect(container.querySelectorAll("[data-node]")).toHaveLength(3);
-    expect(container.querySelector('[data-node="review"]')).toBeTruthy();
-    expect(container.querySelectorAll("[data-edge]")).toHaveLength(2);
-    expect(container.querySelector('[data-edge="kickoff->build"]')).toBeNull();
-    expect(screen.getByRole("button", { name: /Review.*Execution mode Agent-executed.*Role Reviewer Shieldmaiden/i })).toBeInTheDocument();
-  });
-  it("draws a rework request as its own state rather than a failure", () => {
-    const { container } = render(
-      <DAGVisualization
-        graph={{
-          run_id: "run-rework",
-          nodes: [
-            providerNode("execution_review", "reviewer-shieldmaiden", "rework"),
-            providerNode("build", "builder-berserker", "failed"),
-          ],
-          edges: [{ from: "execution_review", to: "build", on: "rework" }],
-        }}
-      />,
-    );
-
-    // The pulsing red border is the graph's "this step broke" signal. A
-    // reviewer that asked for another pass did not break, and saying so is the
-    // whole point of the state.
-    const reworkNode = container.querySelector('[data-node="execution_review"] rect[data-part="bg"]');
-    const failedNode = container.querySelector('[data-node="build"] rect[data-part="bg"]');
-    expect(reworkNode).toBeTruthy();
-    expect(reworkNode).not.toHaveClass("dag-node-failed-border");
-    expect(failedNode).toHaveClass("dag-node-failed-border");
-    expect(reworkNode?.getAttribute("stroke")).not.toBe(failedNode?.getAttribute("stroke"));
-
-    expect(screen.getByRole("button", { name: /Execution Review\. Status Rework\./i })).toBeInTheDocument();
-    expect(screen.getByTestId("dag-legend")).toHaveTextContent("Rework");
+    expect(
+      screen.getByRole("group", { name: "Run execution DAG" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Retry Step List" }));
+    expect(retry).toHaveBeenCalledOnce();
   });
 });

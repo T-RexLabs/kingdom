@@ -16,7 +16,7 @@ path_scopes:
   artifacts_root: /workspace/.artifacts
 
 roles:
-  king:
+  governance:
     execution_authority: governance_only
     allowed_tool_classes:
       - workflow_review
@@ -27,7 +27,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  chancellor:
+  coordinator:
     execution_authority: orchestration_only
     allowed_tool_classes:
       - workflow_review
@@ -39,7 +39,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  council-member:
+  plan-author:
     execution_authority: orchestration_only
     allowed_tool_classes:
       - workflow_review
@@ -51,7 +51,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  noble-delegate:
+  architecture-advisor:
     execution_authority: advisory_only
     allowed_tool_classes:
       - advisory_analysis
@@ -61,7 +61,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  clergy-delegate:
+  risk-advisor:
     execution_authority: advisory_only
     allowed_tool_classes:
       - advisory_analysis
@@ -72,7 +72,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  burgher-delegate:
+  systems-advisor:
     execution_authority: advisory_only
     allowed_tool_classes:
       - advisory_analysis
@@ -82,7 +82,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  peasant-delegate:
+  usability-advisor:
     execution_authority: advisory_only
     allowed_tool_classes:
       - advisory_analysis
@@ -92,7 +92,7 @@ roles:
     allowed_path_scopes:
       - workspace_root
 
-  builder-berserker:
+  builder:
     execution_authority: implementation
     allowed_tool_classes:
       - workspace_read
@@ -110,7 +110,7 @@ roles:
       - ephemeral_tmp_root
       - artifacts_root
 
-  reviewer-shieldmaiden:
+  reviewer:
     execution_authority: review
     allowed_tool_classes:
       - workspace_read
@@ -120,7 +120,7 @@ roles:
       - workspace_root
       - artifacts_root
 
-  intelligence-qa-scout:
+  qa-validator:
     execution_authority: validation
     allowed_tool_classes:
       - workspace_read
@@ -136,7 +136,7 @@ roles:
       - ephemeral_tmp_root
       - artifacts_root
 
-  intelligence-nightraven:
+  security-validator:
     execution_authority: validation_security
     allowed_tool_classes:
       - workspace_read
@@ -153,7 +153,7 @@ roles:
       - ephemeral_tmp_root
       - artifacts_root
 
-  intelligence-loki-chaos:
+  resilience-validator:
     execution_authority: validation_resilience
     allowed_tool_classes:
       - workspace_read

@@ -19,7 +19,7 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	const invocationID = "pinv_starting_failure"
 	const sessionID = "session_starting_failure"
 	const providerSessionID = "ses_starting_failure"
@@ -34,7 +34,7 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	if err != nil || !acquired {
 		t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
 	}
-	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '2026-03-01T12:00:05.123456789Z' WHERE attempt_id = 'run_1:decree_intake:1'`)
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '2026-03-01T12:00:05.123456789Z' WHERE attempt_id = 'run_1:work_intake:1'`)
 	seedOpenProviderInvocationForAttempt(t, store, attemptID, "run_1", "nr_1", sessionID, providerSessionID, invocationID, now)
 	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, now)
 
@@ -57,8 +57,8 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), executionStore: store, fsStore: fsStore, retryEngine: retries, now: func() time.Time { return nowTime }}
 	job := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
-		node:                      nodeDefinition{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "decree_intake", Attempt: 1, RequiredRole: "king", AgentID: "agent_king", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
+		node:                      nodeDefinition{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", AgentID: "agent_governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		sessionID:                 sessionID,
 		providerSessionID:         providerSessionID,
@@ -93,7 +93,7 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE source_attempt_id = ? AND decision = 'retry'`, attemptID).Scan(&decisions); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake' AND attempt = 2`).Scan(&successors); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake' AND attempt = 2`).Scan(&successors); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = ? AND event_type = 'attempt.started'`, attemptID).Scan(&launchEvents); err != nil {

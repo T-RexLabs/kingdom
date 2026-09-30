@@ -20,7 +20,7 @@ import (
 
 const (
 	operatorActorID     = "local-operator"
-	operatorRoleID      = "allfather"
+	operatorRoleID      = "operator"
 	defaultSessionTTL   = 8 * time.Hour
 	defaultSessionLimit = 128
 )

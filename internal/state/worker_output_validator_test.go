@@ -31,7 +31,7 @@ func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
 		RunID:         "run_1",
 		NodeRunID:     "nr_1",
 		AttemptID:     "att_e5_invalid",
-		ProducerRole:  "king",
+		ProducerRole:  "governance",
 		WorkspacePath: workspace,
 		OutputJSON:    []byte(`{"schema_version":"v1","status":"succeeded","payload_json":{},"artifacts":[],"error_reason":null}`),
 		CreatedAt:     "2026-03-01T13:00:00Z",
@@ -80,7 +80,7 @@ func TestWorkerOutputValidatorRollsBackCompleteBatchOnStreamFailure(t *testing.T
 				constraint = `,"size_bytes":3`
 			}
 			closed := 0
-			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_failure", ProducerRole: "king", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"first","mime":"text/plain","path":"first"},{"name":"second","mime":"text/plain","path":"second"` + constraint + `}],"error_reason":null}`), OpenArtifact: func(_ context.Context, path string) (io.ReadCloser, error) {
+			req := WorkerOutputValidationRequest{RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_failure", ProducerRole: "governance", CreatedAt: "2026-03-01T12:00:00Z", OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"first","mime":"text/plain","path":"first"},{"name":"second","mime":"text/plain","path":"second"` + constraint + `}],"error_reason":null}`), OpenArtifact: func(_ context.Context, path string) (io.ReadCloser, error) {
 				closed++
 				if path == "first" {
 					return io.NopCloser(strings.NewReader("first")), nil
@@ -114,7 +114,7 @@ func TestWorkerOutputValidatorRejectsUnsafeDeletionArtifactPaths(t *testing.T) {
 	t.Parallel()
 
 	validator := &WorkerOutputValidator{}
-	request := WorkerOutputValidationRequest{RunID: "run", NodeRunID: "node", AttemptID: "attempt", ProducerRole: "builder-berserker", CreatedAt: "2026-08-17T12:00:00Z"}
+	request := WorkerOutputValidationRequest{RunID: "run", NodeRunID: "node", AttemptID: "attempt", ProducerRole: "builder", CreatedAt: "2026-08-17T12:00:00Z"}
 	for _, artifactPath := range []string{"/tmp/file", "//tmp/file", `..\secret`, `C:\temp\file`, "../secret"} {
 		t.Run(artifactPath, func(t *testing.T) {
 			t.Parallel()
@@ -156,7 +156,7 @@ func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T
 		RunID:         "run_1",
 		NodeRunID:     "nr_1",
 		AttemptID:     "att_e5_valid",
-		ProducerRole:  "king",
+		ProducerRole:  "governance",
 		WorkspacePath: workspace,
 		OutputJSON: []byte(`{
 			"schema_version":"v1",
@@ -252,7 +252,7 @@ func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 		RunID:         "run_1",
 		NodeRunID:     "nr_1",
 		AttemptID:     "att_e5_mismatch",
-		ProducerRole:  "king",
+		ProducerRole:  "governance",
 		WorkspacePath: workspace,
 		OutputJSON: []byte(`{
 			"schema_version":"v1",
@@ -304,7 +304,7 @@ func TestWorkerOutputValidatorStreamsArtifactBeyondFormerFileAndAggregateLimits(
 		t.Fatalf("truncate oversized artifact: %v", err)
 	}
 	req := WorkerOutputValidationRequest{
-		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_oversized_artifact", ProducerRole: "king", WorkspacePath: workspace,
+		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_oversized_artifact", ProducerRole: "governance", WorkspacePath: workspace,
 		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.bin","mime":"application/octet-stream","path":"report.bin"}],"error_reason":null}`),
 		CreatedAt:  "2026-03-01T13:10:00Z",
 	}
@@ -338,7 +338,7 @@ func TestWorkerOutputValidatorDoesNotFollowArtifactSymlinks(t *testing.T) {
 		t.Fatalf("create artifact symlink: %v", err)
 	}
 	req := WorkerOutputValidationRequest{
-		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_symlink_artifact", ProducerRole: "king", WorkspacePath: workspace,
+		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "att_symlink_artifact", ProducerRole: "governance", WorkspacePath: workspace,
 		OutputJSON: []byte(`{"schema_version":"v1","status":"succeeded","summary":"complete","payload_json":{},"artifacts":[{"name":"report.md","mime":"text/markdown","path":"report.md"}],"error_reason":null}`),
 		CreatedAt:  "2026-03-01T13:10:00Z",
 	}

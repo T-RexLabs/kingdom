@@ -158,7 +158,7 @@ ON external_source_snapshot_comments (snapshot_id, ordinal, provider_comment_id)
 -- target transactionally, while immutable provenance can outlive that target.
 CREATE TABLE external_source_links (
   link_id TEXT PRIMARY KEY,
-  target_kind TEXT NOT NULL CHECK (target_kind IN ('planning_session', 'decree')),
+  target_kind TEXT NOT NULL CHECK (target_kind IN ('planning_session', 'work_order')),
   target_id TEXT NOT NULL,
   source_id TEXT NOT NULL,
   used_snapshot_id TEXT NOT NULL,

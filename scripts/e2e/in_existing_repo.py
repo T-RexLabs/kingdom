@@ -69,12 +69,12 @@ def run_in_existing_repo(config: InExistingRepoConfig, root_dir: Path) -> None:
             max_execution_review_cycles=config.common.max_execution_review_cycles,
             max_validation_rework_cycles=config.common.max_validation_rework_cycles,
         )
-        print("[in-existing-repo] create decree")
-        run_id = runtime.create_decree_run(
+        print("[in-existing-repo] create work order")
+        run_id = runtime.create_work_order_run(
             server_url,
             paths.credential_path,
             run_request,
-            paths.report_dir / "decree.json",
+            paths.report_dir / "work-order.json",
         )
         print(f"[in-existing-repo] run_id={run_id}")
         poll_result = runtime.poll_run(

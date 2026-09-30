@@ -40,13 +40,13 @@ func requestTextSchema(t *testing.T) *openapi3.Schema {
 	return &schema
 }
 
-func TestCreateDecreeStreamsTextAndReplaysCompactResponse(t *testing.T) {
+func TestCreateWorkOrderStreamsTextAndReplaysCompactResponse(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	const size = (17 << 20) + 1
-	key := testIdempotencyKey(t, "streamed-decree", time.Now())
+	key := testIdempotencyKey(t, "streamed-work order", time.Now())
 	request := func() *httptest.ResponseRecorder {
-		body := io.MultiReader(strings.NewReader(`{"decree_title":"Streamed","decree_text":"`), io.LimitReader(requestTextRepeatReader('x'), size), strings.NewReader(`\n\ud83d\ude00"}`))
-		req := httptest.NewRequest(http.MethodPost, "/api/v1/decrees", body)
+		body := io.MultiReader(strings.NewReader(`{"work_order_title":"Streamed","work_order_text":"`), io.LimitReader(requestTextRepeatReader('x'), size), strings.NewReader(`\n\ud83d\ude00"}`))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/work-orders", body)
 		authenticateAPITestRequest(req)
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set(idempotencyKeyHeader, key)
@@ -62,7 +62,7 @@ func TestCreateDecreeStreamsTextAndReplaysCompactResponse(t *testing.T) {
 		t.Fatalf("mutation response echoed large text: %d bytes", first.Body.Len())
 	}
 	var result struct {
-		DecreeID string `json:"decree_id"`
+		WorkOrderID string `json:"work_order_id"`
 	}
 	if err := json.Unmarshal(first.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
@@ -71,18 +71,18 @@ func TestCreateDecreeStreamsTextAndReplaysCompactResponse(t *testing.T) {
 	io.CopyN(expected, requestTextRepeatReader('x'), size)
 	io.WriteString(expected, "\n😀")
 	actual := sha256.New()
-	if err := state.CopyDecreeText(context.Background(), db, result.DecreeID, actual); err != nil || !bytes.Equal(expected.Sum(nil), actual.Sum(nil)) {
-		t.Fatalf("stored decree text changed: %v", err)
+	if err := state.CopyWorkOrderText(context.Background(), db, result.WorkOrderID, actual); err != nil || !bytes.Equal(expected.Sum(nil), actual.Sum(nil)) {
+		t.Fatalf("stored work order text changed: %v", err)
 	}
-	get := httptest.NewRequest(http.MethodGet, "/api/v1/decrees/"+result.DecreeID, nil)
+	get := httptest.NewRequest(http.MethodGet, "/api/v1/work-orders/"+result.WorkOrderID, nil)
 	authenticateAPITestRequest(get)
 	loaded := httptest.NewRecorder()
 	handler.ServeHTTP(loaded, get)
 	if loaded.Code != http.StatusOK {
-		t.Fatalf("get decree status=%d body=%s", loaded.Code, loaded.Body.String())
+		t.Fatalf("get work order status=%d body=%s", loaded.Code, loaded.Body.String())
 	}
 	var detail struct {
-		Text string `json:"decree_text"`
+		Text string `json:"work_order_text"`
 	}
 	if err := json.Unmarshal(loaded.Body.Bytes(), &detail); err != nil {
 		t.Fatal(err)
@@ -90,26 +90,26 @@ func TestCreateDecreeStreamsTextAndReplaysCompactResponse(t *testing.T) {
 	actual.Reset()
 	io.WriteString(actual, detail.Text)
 	if !bytes.Equal(expected.Sum(nil), actual.Sum(nil)) {
-		t.Fatal("GET decree read the empty inline column or changed streamed UTF-8 text")
+		t.Fatal("GET work order read the empty inline column or changed streamed UTF-8 text")
 	}
 	replay := request()
 	if replay.Code != first.Code || replay.Body.String() != first.Body.String() {
 		t.Fatalf("replay=%d %s", replay.Code, replay.Body.String())
 	}
 	var count int
-	if err := db.QueryRow(`SELECT count(*) FROM decree_text_refs WHERE decree_id=?`, result.DecreeID).Scan(&count); err != nil || count != 1 {
+	if err := db.QueryRow(`SELECT count(*) FROM work_order_text_refs WHERE work_order_id=?`, result.WorkOrderID).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("publication count=%d err=%v", count, err)
 	}
 }
 
-func TestGetDecreeRejectsCorruptChunkAuthorityBeforeWritingSuccess(t *testing.T) {
+func TestGetWorkOrderRejectsCorruptChunkAuthorityBeforeWritingSuccess(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
-	created := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", body: map[string]any{"decree_title": "Corruption", "decree_text": "canonical text"}, idempotencyKey: testIdempotencyKey(t, "corrupt-decree-get", time.Now())})
+	created := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/work-orders", body: map[string]any{"work_order_title": "Corruption", "work_order_text": "canonical text"}, idempotencyKey: testIdempotencyKey(t, "corrupt-work-order-get", time.Now())})
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d %s", created.Code, created.Body.String())
 	}
 	var value struct {
-		ID string `json:"decree_id"`
+		ID string `json:"work_order_id"`
 	}
 	if err := json.Unmarshal(created.Body.Bytes(), &value); err != nil {
 		t.Fatal(err)
@@ -117,18 +117,18 @@ func TestGetDecreeRejectsCorruptChunkAuthorityBeforeWritingSuccess(t *testing.T)
 	if _, err := db.Exec(`DROP TRIGGER request_content_chunks_no_update`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE request_content_chunks SET content=X'626164' WHERE content_id=(SELECT content_id FROM decree_text_refs WHERE decree_id=?)`, value.ID); err != nil {
+	if _, err := db.Exec(`UPDATE request_content_chunks SET content=X'626164' WHERE content_id=(SELECT content_id FROM work_order_text_refs WHERE work_order_id=?)`, value.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`UPDATE decrees SET decree_text='misleading inline fallback' WHERE decree_id=?`, value.ID); err != nil {
+	if _, err := db.Exec(`UPDATE work_orders SET work_order_text='misleading inline fallback' WHERE work_order_id=?`, value.ID); err != nil {
 		t.Fatal(err)
 	}
-	request := httptest.NewRequest(http.MethodGet, "/api/v1/decrees/"+value.ID, nil)
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/work-orders/"+value.ID, nil)
 	authenticateAPITestRequest(request)
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
-	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "misleading inline fallback") || strings.Contains(response.Body.String(), `"decree_text"`) {
-		t.Fatalf("corrupt decree response=%d %s", response.Code, response.Body.String())
+	if response.Code != http.StatusInternalServerError || strings.Contains(response.Body.String(), "misleading inline fallback") || strings.Contains(response.Body.String(), `"work_order_text"`) {
+		t.Fatalf("corrupt work order response=%d %s", response.Code, response.Body.String())
 	}
 }
 

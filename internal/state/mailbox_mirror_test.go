@@ -33,8 +33,8 @@ func TestTransitionServiceMirrorsEventIntoMailbox(t *testing.T) {
 
 	messageID := "msg_evt_evt_mailbox_mirror_run"
 	body := queryMailboxBodyMarkdown(t, db, messageID)
-	if !strings.Contains(body, "By rune, ring, and Crown,") {
-		t.Fatalf("expected king signoff in mirrored mailbox message, got %q", body)
+	if !strings.Contains(body, "Recorded by\nGovernance") {
+		t.Fatalf("expected governance signoff in mirrored mailbox message, got %q", body)
 	}
 	if !strings.Contains(body, "`state.transitioned`") {
 		t.Fatalf("expected mirrored event type in mailbox body, got %q", body)
@@ -58,7 +58,7 @@ func TestAttemptEventIngestorMirrorsEventIntoMailbox(t *testing.T) {
 	req.AttemptID = "att_mailbox_mirror_ingest"
 	req.Seq = 2
 	req.EventType = "attempt.progress"
-	req.RoleID = "king"
+	req.RoleID = "governance"
 
 	if _, err := ingestor.Ingest(context.Background(), req); err != nil {
 		t.Fatalf("ingest event: %v", err)
@@ -66,12 +66,12 @@ func TestAttemptEventIngestorMirrorsEventIntoMailbox(t *testing.T) {
 
 	messageID := "msg_evt_evt_mailbox_mirror_ingest"
 	body := queryMailboxBodyMarkdown(t, db, messageID)
-	if !strings.Contains(body, "By rune, ring, and Crown,") {
-		t.Fatalf("expected king signoff in mirrored mailbox message, got %q", body)
+	if !strings.Contains(body, "Recorded by\nGovernance") {
+		t.Fatalf("expected governance signoff in mirrored mailbox message, got %q", body)
 	}
 }
 
-func TestMirrorEventToMailboxUsesRoleSignoffForChancellor(t *testing.T) {
+func TestMirrorEventToMailboxUsesRoleSignoffForCoordinator(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -85,12 +85,12 @@ func TestMirrorEventToMailboxUsesRoleSignoffForChancellor(t *testing.T) {
 	}
 
 	err = MirrorEventToMailbox(context.Background(), tx, policy, EventMailboxMirrorRequest{
-		EventID:     "evt_mailbox_mirror_chancellor",
+		EventID:     "evt_mailbox_mirror_coordinator",
 		RunID:       "run_1",
-		AttemptID:   "att_mailbox_mirror_chancellor",
+		AttemptID:   "att_mailbox_mirror_coordinator",
 		EventType:   "approval.recorded",
 		PayloadJSON: `{"decision":"approve"}`,
-		RoleID:      "chancellor",
+		RoleID:      "coordinator",
 		ReasonCode:  "internal_error",
 		ReasonText:  "council review complete",
 		CreatedAt:   "2026-03-02T21:00:00Z",
@@ -103,9 +103,9 @@ func TestMirrorEventToMailboxUsesRoleSignoffForChancellor(t *testing.T) {
 		t.Fatalf("commit mirror mailbox transaction: %v", err)
 	}
 
-	body := queryMailboxBodyMarkdown(t, db, "msg_evt_evt_mailbox_mirror_chancellor")
-	if !strings.Contains(body, "Under the King's standard,") {
-		t.Fatalf("expected chancellor signoff in mirrored mailbox message, got %q", body)
+	body := queryMailboxBodyMarkdown(t, db, "msg_evt_evt_mailbox_mirror_coordinator")
+	if !strings.Contains(body, "Recorded by\nCoordinator") {
+		t.Fatalf("expected coordinator signoff in mirrored mailbox message, got %q", body)
 	}
 }
 

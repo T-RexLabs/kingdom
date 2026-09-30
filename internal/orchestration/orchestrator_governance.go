@@ -23,8 +23,8 @@ func normalizeGovernanceMode(raw string) string {
 	}
 }
 
-func (o *orchestrationLoop) autoAdvanceKingDecision(ctx context.Context, run *runSnapshot, occurredAt string) error {
-	if run == nil || run.PlanState != "awaiting_king_decision" {
+func (o *orchestrationLoop) autoAdvanceGovernanceDecision(ctx context.Context, run *runSnapshot, occurredAt string) error {
+	if run == nil || run.PlanState != "awaiting_plan_decision" {
 		return nil
 	}
 	if normalizeGovernanceMode(o.governanceMode) != governanceModeAutonomous {
@@ -37,17 +37,17 @@ func (o *orchestrationLoop) autoAdvanceKingDecision(ctx context.Context, run *ru
 	attemptID := "run:" + run.RunID + ":plan"
 	eventSeq := o.nextEventSeq(ctx, attemptID)
 	err := o.transition.Apply(ctx, state.TransitionRequest{
-		TransitionID:    fmt.Sprintf("tr_orch_%s_plan_auto_king_approve_%d", run.RunID, eventSeq),
-		EventID:         fmt.Sprintf("evt_orch_%s_plan_auto_king_approve_%d", run.RunID, eventSeq),
+		TransitionID:    fmt.Sprintf("tr_orch_%s_plan_auto_governance_approve_%d", run.RunID, eventSeq),
+		EventID:         fmt.Sprintf("evt_orch_%s_plan_auto_governance_approve_%d", run.RunID, eventSeq),
 		RunID:           run.RunID,
 		Entity:          state.EntityTypePlan,
-		FromState:       "awaiting_king_decision",
+		FromState:       "awaiting_plan_decision",
 		ToState:         "approved",
-		ActorID:         "agent_king",
-		RoleID:          "king",
-		AuthoritySource: "runtime.autonomous_king",
+		ActorID:         "agent_governance",
+		RoleID:          "governance",
+		AuthoritySource: "runtime.autonomous_governance",
 		ReasonCode:      "governance_decision",
-		ReasonText:      "autonomous king approval based on decree contract",
+		ReasonText:      "autonomous governance approval based on work order contract",
 		CorrelationID:   "corr_orch_" + run.RunID,
 		CausationID:     fmt.Sprintf("caus_orch_%s_auto_approve", run.RunID),
 		OccurredAt:      occurredAt,
@@ -61,15 +61,15 @@ func (o *orchestrationLoop) autoAdvanceKingDecision(ctx context.Context, run *ru
 		_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 			MessageID:         fmt.Sprintf("msg_comm_%s_plan_approval_response", sanitizeFileToken(run.RunID)),
 			RunID:             run.RunID,
-			FromAgentID:       deterministicAgentIDForRole("king"),
-			ToAgentID:         deterministicAgentIDForRole("chancellor"),
+			FromAgentID:       deterministicAgentIDForRole("governance"),
+			ToAgentID:         deterministicAgentIDForRole("coordinator"),
 			ThreadID:          fmt.Sprintf("thread_%s_plan_governance", sanitizeFileToken(run.RunID)),
 			CommunicationType: "approval_response",
-			NodeID:            "king_plan_decision",
+			NodeID:            "plan_decision",
 			AttemptID:         attemptID,
 			ReasonCode:        "",
-			ReasonText:        "autonomous king approval based on decree contract",
-			AuthoritySource:   "runtime.autonomous_king",
+			ReasonText:        "autonomous governance approval based on work order contract",
+			AuthoritySource:   "runtime.autonomous_governance",
 			OccurredAt:        occurredAt,
 		})
 		run.PlanState = "approved"
@@ -106,13 +106,13 @@ func (o *orchestrationLoop) advancePlanProjection(ctx context.Context, run *runS
 
 		switch run.PlanState {
 		case "draft":
-			to = "in_council_review"
-		case "in_council_review":
-			if o.canAdvanceToKingDecision(ctx, run.RunID, nodes, nodeIDs) {
-				to = "awaiting_king_decision"
+			to = "in_plan_review"
+		case "in_plan_review":
+			if o.canAdvanceToGovernanceDecision(ctx, run.RunID, nodes, nodeIDs) {
+				to = "awaiting_plan_decision"
 			}
 		case "needs_rework":
-			to = "in_council_review"
+			to = "in_plan_review"
 		default:
 			return nil
 		}
@@ -121,18 +121,18 @@ func (o *orchestrationLoop) advancePlanProjection(ctx context.Context, run *runS
 			return nil
 		}
 
-		if to == "awaiting_king_decision" {
+		if to == "awaiting_plan_decision" {
 			_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 				MessageID:         fmt.Sprintf("msg_comm_%s_plan_approval_request", sanitizeFileToken(run.RunID)),
 				RunID:             run.RunID,
-				FromAgentID:       deterministicAgentIDForRole("council-member"),
-				ToAgentID:         deterministicAgentIDForRole("king"),
+				FromAgentID:       deterministicAgentIDForRole("plan-author"),
+				ToAgentID:         deterministicAgentIDForRole("governance"),
 				ThreadID:          fmt.Sprintf("thread_%s_plan_governance", sanitizeFileToken(run.RunID)),
 				CommunicationType: "approval_request",
-				NodeID:            "king_plan_decision",
+				NodeID:            "plan_decision",
 				AttemptID:         "run:" + run.RunID + ":plan",
 				ReasonCode:        "",
-				ReasonText:        "plan is ready for king decision",
+				ReasonText:        "plan is ready for governance decision",
 				AuthoritySource:   "runtime.orchestrator",
 				OccurredAt:        occurredAt,
 			})
@@ -148,7 +148,7 @@ func (o *orchestrationLoop) advancePlanProjection(ctx context.Context, run *runS
 			FromState:       from,
 			ToState:         to,
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "chancellor",
+			RoleID:          "coordinator",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "orchestration_progress",
 			ReasonText:      "advance plan projection",
@@ -180,7 +180,7 @@ func (o *orchestrationLoop) advancePlanProjection(ctx context.Context, run *runS
 	}
 }
 
-func (o *orchestrationLoop) canAdvanceToKingDecision(ctx context.Context, runID string, nodes []nodeDefinition, nodeIDs map[string]struct{}) bool {
+func (o *orchestrationLoop) canAdvanceToGovernanceDecision(ctx context.Context, runID string, nodes []nodeDefinition, nodeIDs map[string]struct{}) bool {
 	requiredNodeIDs := make([]string, 0)
 	for _, node := range nodes {
 		switch node.NodeClass {

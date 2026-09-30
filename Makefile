@@ -93,6 +93,7 @@ verify: test test-web lint-web test-race vet coverage-core contracts-check ## Ru
 
 ##@ Contracts
 contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date
+	node scripts/generate_theme_contract.mjs --check
 	@tmp_dir="$$(mktemp -d)"; trap 'rm -rf "$$tmp_dir"' EXIT; \
 	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o "$$tmp_dir/types.gen.go" $(OPENAPI_SPEC); \
 	($(WEB_PNPM) exec openapi-typescript ../$(OPENAPI_SPEC) -o "$$tmp_dir/schema.ts"); \
@@ -110,6 +111,9 @@ tool-versions: ## Print the pinned local tool versions
 
 # Internal targets
 contracts-generate: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
+
+$(OPENAPI_SPEC): contracts/theme/theme.schema.json scripts/generate_theme_contract.mjs
+	node scripts/generate_theme_contract.mjs
 
 $(WEB_NODE_MODULES_STAMP): web/package.json web/pnpm-lock.yaml web/pnpm-workspace.yaml Makefile
 	rm -rf web/node_modules

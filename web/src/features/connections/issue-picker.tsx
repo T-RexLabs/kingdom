@@ -363,11 +363,11 @@ export function IssuePicker({
                   </div>
                   {incomplete ? <p role="status" className="text-xs text-status-warning">GitHub returned partial search results. Search is capped at 1,000 issues.</p> : null}
                   <div className="max-h-64 min-w-0 divide-y divide-border overflow-auto rounded-md border border-border lg:max-h-none lg:min-h-0 lg:flex-1">
-                    {loadingIssues && issues.length === 0 ? <p className="flex items-center gap-2 p-3 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading issues...</p> : issues.length === 0 ? <p className="p-3 text-xs text-foreground-muted">No issues found. Pull requests are excluded.</p> : issues.map((item) => <button type="button" key={`${item.native_id}-${item.issue.issue_number}`} onClick={() => setSelected(item)} className={cn("w-full min-w-0 p-3 text-left hover:bg-surface-raised", selected?.native_id === item.native_id && "bg-gold/10")}><span className="text-xs text-foreground-subtle">#{item.issue.issue_number} / {item.issue.state}</span><p className="break-words text-sm font-medium">{item.issue.title}</p></button>)}
+                    {loadingIssues && issues.length === 0 ? <p className="flex items-center gap-2 p-3 text-xs text-foreground-muted"><Loader2 className="h-3.5 w-3.5 animate-spin" />Loading issues...</p> : issues.length === 0 ? <p className="p-3 text-xs text-foreground-muted">No issues found. Pull requests are excluded.</p> : issues.map((item) => <button type="button" key={`${item.native_id}-${item.issue.issue_number}`} onClick={() => setSelected(item)} className={cn("w-full min-w-0 p-3 text-left hover:bg-surface-raised", selected?.native_id === item.native_id && "bg-accent/10")}><span className="text-xs text-foreground-subtle">#{item.issue.issue_number} / {item.issue.state}</span><p className="break-words text-sm font-medium">{item.issue.title}</p></button>)}
                   </div>
                   {issueCursor ? <Button type="button" variant="ghost" size="sm" onClick={() => void loadMoreIssues()} disabled={loadingIssues}>{loadingIssues ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}Load More Issues</Button> : null}
                   {/* Whether comments come along changes what the import is
-                      worth, and it changes the decree text the operator ends up
+                      worth, and it changes the work order text the operator ends up
                       with. Behind the preview it was a choice they only found
                       after picking an issue — if at all. */}
                   <div className="shrink-0 rounded-lg border border-border bg-background/40 px-3">
@@ -391,7 +391,7 @@ export function IssuePicker({
                 <div className="flex min-h-0 min-w-0 flex-1 flex-col">
                   <div className="min-w-0">
                     <p className="break-words font-semibold text-foreground">{shownIssue.title}</p>
-                    <p className="mt-1 break-words text-xs text-foreground-muted">{issueURL ? <a href={issueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-gold underline">{shownIssue.repository}#{shownIssue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{shownIssue.repository}#{shownIssue.issue_number}</span>} / updated {new Date(shownIssue.updated_at).toLocaleString()}</p>
+                    <p className="mt-1 break-words text-xs text-foreground-muted">{issueURL ? <a href={issueURL} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-accent underline">{shownIssue.repository}#{shownIssue.issue_number}<ExternalLink className="h-3 w-3" /></a> : <span>{shownIssue.repository}#{shownIssue.issue_number}</span>} / updated {new Date(shownIssue.updated_at).toLocaleString()}</p>
                   </div>
                   {/* Always occupies one line: the preview refetches on every
                       toggle flip, and a status row that mounts and unmounts
@@ -400,7 +400,7 @@ export function IssuePicker({
                     {loadingPreview ? "Loading preview..." : preview ? `Previewed ${preview.fetched_comment_count} comment bodies; ${preview.comment_count} comments reported.` : ""}
                   </p>
                   <div data-testid="issue-preview-body" aria-busy={loadingPreview} className="mt-3 min-h-0 flex-1 space-y-4 overflow-y-auto lg:pr-1">
-                    <div className="min-w-0 rounded-lg border border-gold/20 bg-gold/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
+                    <div className="min-w-0 rounded-lg border border-accent/20 bg-accent/5 p-3 text-sm"><MarkdownBlock content={shownIssue.body || "_No issue body._"} /></div>
                     {includeComments && preview?.profile.include_comments ? <CommentPreview comments={shownComments} allComments={previewComments} page={commentPage} pageCount={commentPageCount} preview={preview} onPageChange={setCommentPage} /> : null}
                     {error && (error.scope === "preview" || error.scope === "select") ? <PickerError error={error} onRetry={() => error.scope === "preview" ? setPreviewAttempt((value) => value + 1) : void submit()} /> : null}
                   </div>
@@ -436,7 +436,7 @@ function PickerTrigger({
   disabled: boolean;
   onOpen: () => void;
 }) {
-  const shape = cn("w-full border-gold/35 bg-gold/5 text-gold hover:bg-gold/10 hover:text-gold sm:w-auto", !compact && "border-dashed");
+  const shape = cn("w-full border-accent/35 bg-accent/5 text-accent hover:bg-accent/10 hover:text-accent sm:w-auto", !compact && "border-dashed");
   const iconClass = compact ? "h-3.5 w-3.5" : "h-4 w-4";
   if (needsSetup) {
     return (
@@ -472,7 +472,7 @@ function ConnectionControls({ loading, loaded, loadError, allConnections, connec
 }
 
 function ConnectionEmptyState({ message }: { message: string }) {
-  return <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-foreground-muted"><p>{message}</p><Link to="/connections" className="mt-2 inline-flex items-center gap-1 font-medium text-gold underline">Open Connections</Link></div>;
+  return <div className="rounded-md border border-border bg-background/60 p-3 text-xs text-foreground-muted"><p>{message}</p><Link to="/connections" className="mt-2 inline-flex items-center gap-1 font-medium text-accent underline">Open Connections</Link></div>;
 }
 
 function PickerError({ error, onRetry }: { error: RequestError; onRetry: () => void }) {
@@ -480,5 +480,5 @@ function PickerError({ error, onRetry }: { error: RequestError; onRetry: () => v
 }
 
 function CommentPreview({ comments, allComments, page, pageCount, preview, onPageChange }: { comments: ExternalComment[]; allComments: ExternalComment[]; page: number; pageCount: number; preview: IssuePreview; onPageChange: (page: number) => void }) {
-  return <section aria-labelledby="github-comment-preview-heading" className="border-t border-gold/20 pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 id="github-comment-preview-heading" className="text-sm font-semibold">Comment Preview</h4>{allComments.length > 0 ? <p aria-live="polite" className="text-xs text-foreground-subtle">Page {page + 1} of {pageCount}</p> : null}</div>{allComments.length === 0 ? <p role="status" className="mt-2 text-xs text-foreground-muted">No comment bodies are available for this issue.</p> : <ol className="mt-2 space-y-3">{comments.map((comment) => <li key={comment.provider_comment_id}><article className="min-w-0 rounded-md border border-border/80 bg-background/60 p-3"><header className="flex flex-wrap items-center justify-between gap-2 text-xs text-foreground-muted"><span>{comment.author || "Unknown GitHub author"}</span><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleString()}</time></header><div className="mt-2 max-h-40 min-w-0 overflow-auto text-sm">{comment.body.trim() ? <MarkdownBlock content={comment.body} /> : <p className="italic text-foreground-muted">Empty comment.</p>}</div>{comment.truncation_reason ? <p className="mt-2 text-xs text-status-warning">This comment was truncated to Kingdom's {comment.truncation_reason === "comment_byte_limit" ? "per-comment" : "aggregate"} preview limit.</p> : null}</article></li>)}</ol>}{preview.omitted_comment_count > 0 ? <p className="mt-2 text-xs text-status-warning">{preview.omitted_comment_count} older comments were omitted by the bounded import.</p> : null}{pageCount > 1 ? <div className="mt-3 flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" size="sm" aria-label="Previous comment page" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>Previous</Button><Button type="button" variant="outline" size="sm" aria-label="Next comment page" disabled={page + 1 >= pageCount} onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}>Next</Button></div> : null}</section>;
+  return <section aria-labelledby="github-comment-preview-heading" className="border-t border-accent/20 pt-3"><div className="flex flex-wrap items-center justify-between gap-2"><h4 id="github-comment-preview-heading" className="text-sm font-semibold">Comment Preview</h4>{allComments.length > 0 ? <p aria-live="polite" className="text-xs text-foreground-subtle">Page {page + 1} of {pageCount}</p> : null}</div>{allComments.length === 0 ? <p role="status" className="mt-2 text-xs text-foreground-muted">No comment bodies are available for this issue.</p> : <ol className="mt-2 space-y-3">{comments.map((comment) => <li key={comment.provider_comment_id}><article className="min-w-0 rounded-md border border-border/80 bg-background/60 p-3"><header className="flex flex-wrap items-center justify-between gap-2 text-xs text-foreground-muted"><span>{comment.author || "Unknown GitHub author"}</span><time dateTime={comment.created_at}>{new Date(comment.created_at).toLocaleString()}</time></header><div className="mt-2 max-h-40 min-w-0 overflow-auto text-sm">{comment.body.trim() ? <MarkdownBlock content={comment.body} /> : <p className="italic text-foreground-muted">Empty comment.</p>}</div>{comment.truncation_reason ? <p className="mt-2 text-xs text-status-warning">This comment was truncated to Kingdom's {comment.truncation_reason === "comment_byte_limit" ? "per-comment" : "aggregate"} preview limit.</p> : null}</article></li>)}</ol>}{preview.omitted_comment_count > 0 ? <p className="mt-2 text-xs text-status-warning">{preview.omitted_comment_count} older comments were omitted by the bounded import.</p> : null}{pageCount > 1 ? <div className="mt-3 flex flex-wrap justify-end gap-2"><Button type="button" variant="outline" size="sm" aria-label="Previous comment page" disabled={page === 0} onClick={() => onPageChange(Math.max(0, page - 1))}>Previous</Button><Button type="button" variant="outline" size="sm" aria-label="Next comment page" disabled={page + 1 >= pageCount} onClick={() => onPageChange(Math.min(pageCount - 1, page + 1))}>Next</Button></div> : null}</section>;
 }

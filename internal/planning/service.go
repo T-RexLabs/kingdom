@@ -1,4 +1,4 @@
-// Package planning implements decree-planning session orchestration.
+// Package planning implements work-order-planning session orchestration.
 //
 // It layers planner-facing services on top of state.PlanningStore: creating and
 // mutating sessions, running reply/regenerate/formalize operations, replaying
@@ -73,7 +73,7 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 }
 
 // NewServiceWithRetryEngine accepts the already-loaded runtime policy engine.
-// It avoids a second policy load and keeps planning and decree retry decisions
+// It avoids a second policy load and keeps planning and work order retry decisions
 // on the same canonical model.
 func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projectRoot string, nowRFC3339 func() string, idGenerator func(prefix string) string, retryEngine *retryengine.Engine) *Service {
 	clock := clockFunc(nowRFC3339)
@@ -484,11 +484,11 @@ func (s *Service) CancelOperationByAcpRunID(ctx context.Context, acpRunID, reaso
 	return s.operations.CancelOperationByAcpRunID(ctx, acpRunID, reason)
 }
 
-func (s *Service) ListOperationEventsAfterEventID(ctx context.Context, operationID string, afterEventID string) ([]state.PlanningOperationEvent, error) {
+func (s *Service) ListOperationEventsAfterEventIDPage(ctx context.Context, operationID string, afterEventID string) ([]state.PlanningOperationEvent, error) {
 	if s == nil || s.events == nil {
 		return nil, fmt.Errorf("planning service event runtime is required")
 	}
-	return s.events.ListOperationEventsAfterEventID(ctx, operationID, afterEventID)
+	return s.events.ListOperationEventsAfterEventIDPage(ctx, operationID, afterEventID)
 }
 
 func (s *Service) SubscribeOperationEvents(operationID string) (<-chan struct{}, func()) {

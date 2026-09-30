@@ -88,13 +88,13 @@ type TokenUsageByModel struct {
 }
 
 type TokenUsageByRun struct {
-	RunID        string `json:"run_id"`
-	DecreeTitle  string `json:"decree_title"`
-	CreatedAt    string `json:"created_at"`
-	TotalTokens  int64  `json:"total_tokens"`
-	InputTokens  int64  `json:"input_tokens"`
-	OutputTokens int64  `json:"output_tokens"`
-	RecordCount  int    `json:"record_count"`
+	RunID          string `json:"run_id"`
+	WorkOrderTitle string `json:"work_order_title"`
+	CreatedAt      string `json:"created_at"`
+	TotalTokens    int64  `json:"total_tokens"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	RecordCount    int    `json:"record_count"`
 }
 
 type TokenUsageStore struct {
@@ -333,7 +333,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 
 	rows, err := s.db.QueryContext(ctx,
 		`SELECT tu.run_id,
-		        COALESCE(d.decree_title, ''),
+		        COALESCE(d.work_order_title, ''),
 		        COALESCE(wr.created_at, ''),
 		        COALESCE(SUM(tu.total_tokens), 0),
 		        COALESCE(SUM(tu.input_tokens), 0),
@@ -341,7 +341,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 		        COUNT(1)
 		 FROM token_usage tu
 		 LEFT JOIN workflow_runs wr ON wr.run_id = tu.run_id
-		 LEFT JOIN decrees d ON d.decree_id = wr.decree_id
+		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE tu.created_at >= ?
 		 GROUP BY tu.run_id
 		 ORDER BY SUM(tu.total_tokens) DESC
@@ -357,7 +357,7 @@ func (s *TokenUsageStore) TopRunsByTokens(ctx context.Context, sinceRFC3339 stri
 	results := make([]TokenUsageByRun, 0)
 	for rows.Next() {
 		var r TokenUsageByRun
-		if err := rows.Scan(&r.RunID, &r.DecreeTitle, &r.CreatedAt, &r.TotalTokens, &r.InputTokens, &r.OutputTokens, &r.RecordCount); err != nil {
+		if err := rows.Scan(&r.RunID, &r.WorkOrderTitle, &r.CreatedAt, &r.TotalTokens, &r.InputTokens, &r.OutputTokens, &r.RecordCount); err != nil {
 			return nil, fmt.Errorf("scan top runs by tokens row: %w", err)
 		}
 		results = append(results, r)

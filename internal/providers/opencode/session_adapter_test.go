@@ -1432,7 +1432,7 @@ func TestSessionAdapterRejectsEmptyTerminalStepOutput(t *testing.T) {
 		WorkspacePath:  t.TempDir(),
 		Prompt:         "finish after tool work",
 		OccurredAt:     "2026-03-02T10:10:00Z",
-		Agent:          "planner",
+		Agent:          "planning-assistant",
 	})
 	if err == nil {
 		t.Fatal("expected empty terminal step to fail")

@@ -85,6 +85,8 @@ type ExecuteRequest struct {
 
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
+	// Content sources are valid only through this synchronous callback; persist
+	// their bytes before returning rather than retaining the process-local opener.
 	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
 }
 
@@ -116,26 +118,16 @@ const (
 	CompletionModeServerResponse CompletionMode = "server_response"
 )
 
-type ExecuteActivityKind string
+type ExecuteActivityKind = string
 
 const (
-	ExecuteActivityKindTool      ExecuteActivityKind = "tool"
-	ExecuteActivityKindReasoning ExecuteActivityKind = "reasoning"
-	ExecuteActivityKindProgress  ExecuteActivityKind = "progress"
+	ExecuteActivityKindMessage   = "message"
+	ExecuteActivityKindTool      = "tool"
+	ExecuteActivityKindReasoning = "reasoning"
+	ExecuteActivityKindProgress  = "progress"
 )
 
-type ExecuteActivityObservation struct {
-	Kind           ExecuteActivityKind `json:"kind"`
-	ProviderPartID string              `json:"provider_part_id,omitempty"`
-	OccurredAt     string              `json:"occurred_at,omitempty"`
-	ToolName       string              `json:"tool_name,omitempty"`
-	ToolStatus     string              `json:"tool_status,omitempty"`
-	ToolTitle      string              `json:"tool_title,omitempty"`
-	ToolInput      string              `json:"tool_input,omitempty"`
-	Label          string              `json:"label,omitempty"`
-	Summary        string              `json:"summary,omitempty"`
-	RawText        string              `json:"raw_text,omitempty"`
-}
+type ExecuteActivityObservation = providerexecution.ActivityObservation
 
 type mockExecutionArtifact struct {
 	Path string `json:"path"`
@@ -456,7 +448,7 @@ func validateExecuteRequest(req ExecuteRequest) error {
 
 func buildMemoryOutput(req ExecuteRequest) (string, error) {
 	prompt := strings.ToLower(req.Prompt)
-	implementationAuthorized := strings.Contains(prompt, "roleid: builder-berserker")
+	implementationAuthorized := strings.Contains(prompt, "roleid: builder")
 
 	summary := fmt.Sprintf("mock engine completed %s", req.NodeRunID)
 	if !implementationAuthorized {
@@ -466,7 +458,7 @@ func buildMemoryOutput(req ExecuteRequest) (string, error) {
 		if strings.Contains(prompt, "nodeclass: validation_gates") {
 			return "VERDICT: PASS\nMock validation completed with no blockers.", nil
 		}
-		if strings.Contains(prompt, "nodeclass: royal_closure") {
+		if strings.Contains(prompt, "nodeclass: completion") {
 			return "ROYAL_VERDICT: APPROVE\nRoyal closure approved based on provided evidence.", nil
 		}
 		return summary, nil

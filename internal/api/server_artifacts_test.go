@@ -233,7 +233,7 @@ func TestServerDeletionArtifactMetadataOmitsContentFields(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifact(t, db, runID)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-metadata', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-metadata', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder', ?)`, runID, now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -367,7 +367,7 @@ func TestServerGetRunArtifactsArchiveDeleteOnlyUsesMetadata(t *testing.T) {
 		t.Fatalf("delete seeded artifact: %v", err)
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-only', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-only', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder', ?)`, runID, now); err != nil {
 		t.Fatalf("insert delete artifact: %v", err)
 	}
 
@@ -426,7 +426,7 @@ func TestServerGetRunArtifactsArchiveMixedWriteAndDelete(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifact(t, db, runID)
 	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-mixed', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-mixed', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder', ?)`, runID, now); err != nil {
 		t.Fatalf("insert delete artifact: %v", err)
 	}
 
@@ -456,7 +456,7 @@ func TestServerGetRunArtifactsArchiveExportsBeyondFormerEntryLimit(t *testing.T)
 	seedArtifact(t, db, runID)
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := 0; i < 1000; i++ {
-		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-1', 'attempt-seed', 'deliverable', 'write', ?, 'text/plain', ?, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'council-member', ?)`, "artifact-limit-"+strconv.Itoa(i), runID, "file-"+strconv.Itoa(i)+".txt", "artifacts/file-"+strconv.Itoa(i)+".txt", now); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-1', 'attempt-seed', 'deliverable', 'write', ?, 'text/plain', ?, 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855', 0, 'plan-author', ?)`, "artifact-limit-"+strconv.Itoa(i), runID, "file-"+strconv.Itoa(i)+".txt", "artifacts/file-"+strconv.Itoa(i)+".txt", now); err != nil {
 			t.Fatalf("seed artifact %d: %v", i, err)
 		}
 		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts WHERE artifact_id = ?`, "artifact-limit-"+strconv.Itoa(i)); err != nil {

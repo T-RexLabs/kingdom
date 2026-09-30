@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+
+	"kingdom/internal/core/providerexecution"
 )
 
 var ErrPlanningOperationEventNotFound = errors.New("planning operation event not found")
@@ -105,8 +107,8 @@ type PlanningMessagePage struct {
 type PlanningDraft struct {
 	PlanningDraftID   string
 	PlanningSessionID string
-	DecreeTitle       string
-	DecreeText        string
+	WorkOrderTitle    string
+	WorkOrderText     string
 	SummaryJSON       string
 	CreatedAt         string
 }
@@ -314,8 +316,8 @@ type CreatePlanningDraftRequest struct {
 	TextSource        *PlanningTextSource
 	PlanningDraftID   string
 	PlanningSessionID string
-	DecreeTitle       string
-	DecreeText        string
+	WorkOrderTitle    string
+	WorkOrderText     string
 	SummaryJSON       string
 	CreatedAt         string
 }
@@ -369,13 +371,14 @@ type UpdatePlanningOperationRequest struct {
 }
 
 type AppendPlanningOperationEventRequest struct {
-	TextRefs    map[string]string
-	EventID     string
-	OperationID string
-	Seq         int
-	EventType   string
-	PayloadJSON string
-	CreatedAt   string
+	ActivityContents map[string]providerexecution.ActivityContent
+	TextRefs         map[string]string
+	EventID          string
+	OperationID      string
+	Seq              int
+	EventType        string
+	PayloadJSON      string
+	CreatedAt        string
 }
 
 type CancelQueuedPlanningOperationRequest struct {
@@ -734,11 +737,11 @@ func validatePlanningDraftCreate(req CreatePlanningDraftRequest) error {
 	if strings.TrimSpace(req.PlanningSessionID) == "" {
 		return fmt.Errorf("planning session id is required")
 	}
-	if strings.TrimSpace(req.DecreeTitle) == "" {
-		return fmt.Errorf("planning draft decree title is required")
+	if strings.TrimSpace(req.WorkOrderTitle) == "" {
+		return fmt.Errorf("planning draft work order title is required")
 	}
-	if strings.TrimSpace(req.DecreeText) == "" && (req.TextSource == nil || req.TextSource.SizeBytes == 0) {
-		return fmt.Errorf("planning draft decree text is required")
+	if strings.TrimSpace(req.WorkOrderText) == "" && (req.TextSource == nil || req.TextSource.SizeBytes == 0) {
+		return fmt.Errorf("planning draft work order text is required")
 	}
 	if strings.TrimSpace(req.SummaryJSON) == "" {
 		return fmt.Errorf("planning draft summary json is required")

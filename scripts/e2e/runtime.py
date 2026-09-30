@@ -125,50 +125,50 @@ class RuntimeService:
             check=False,
         )
 
-    def create_decree_run(
+    def create_work_order_run(
         self,
         server_url: str,
         credential_path: Path,
         request: RunRequest,
-        decree_path: Path,
+        work_order_path: Path,
     ) -> str:
-        decree_payload = self.post_json(
-            f"{server_url}/decrees",
+        work_order_payload = self.post_json(
+            f"{server_url}/work-orders",
             {
-                "decree_title": request.title,
-                "decree_text": request.text,
+                "work_order_title": request.title,
+                "work_order_text": request.text,
             },
             credential_path,
-            new_idempotency_key("decree-create"),
+            new_idempotency_key("work-order-create"),
         )
-        decree_id = str(decree_payload.get("decree_id") or "").strip()
-        if not decree_id:
-            raise RuntimeError("create decree response missing decree_id")
+        work_order_id = str(work_order_payload.get("work_order_id") or "").strip()
+        if not work_order_id:
+            raise RuntimeError("create work order response missing work_order_id")
         run_payload = self.post_json(
             f"{server_url}/runs",
-            self.build_run_payload(decree_id, request),
+            self.build_run_payload(work_order_id, request),
             credential_path,
             new_idempotency_key("run-start"),
         )
         payload = {
-            "decree_id": decree_id,
-            "decree_at": decree_payload.get("created_at"),
+            "work_order_id": work_order_id,
+            "work_order_at": work_order_payload.get("created_at"),
             "run_id": run_payload.get("run_id"),
             "workflow_id": run_payload.get("workflow_id"),
             "status": run_payload.get("status"),
             "created_at": run_payload.get("created_at"),
             "updated_at": run_payload.get("updated_at"),
         }
-        decree_path.parent.mkdir(parents=True, exist_ok=True)
-        self.write_json(decree_path, payload)
+        work_order_path.parent.mkdir(parents=True, exist_ok=True)
+        self.write_json(work_order_path, payload)
         run_id = str(payload.get("run_id") or "").strip()
         if not run_id:
-            raise RuntimeError("create decree response missing run_id")
+            raise RuntimeError("create work order response missing run_id")
         return run_id
 
-    def build_run_payload(self, decree_id: str, request: RunRequest) -> dict[str, Any]:
+    def build_run_payload(self, work_order_id: str, request: RunRequest) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "decree_id": decree_id,
+            "work_order_id": work_order_id,
             "workflow_id": request.workflow_id,
             "publish_mode": request.publish_mode,
             "max_execution_review_cycles": request.max_execution_review_cycles,

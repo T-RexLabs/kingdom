@@ -80,11 +80,11 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
 
   return (
     <div ref={cardRef} data-testid="run-final-approval-card" tabIndex={-1}>
-      <Card className="border-gold/30">
+      <Card className="border-accent/30">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2 text-sm">
-            <Gavel className="h-4 w-4 text-gold" />
-            <span className="text-gold">Awaiting Your Final Approval</span>
+            <Gavel className="h-4 w-4 text-accent" />
+            <span className="text-accent">Awaiting Your Final Approval</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -164,7 +164,7 @@ export function NodeActionsCard({
           </span>
         </CardTitle>
         <p className="text-xs text-foreground-subtle">
-          Retry reruns only the selected node. Rerun replays from the selected node and downstream (royal closure rerun promotes to plan drafting).
+          Retry reruns only the selected node. Rerun replays from the selected node and downstream (completion rerun promotes to plan drafting).
         </p>
       </CardHeader>
       <CardContent className="space-y-2">

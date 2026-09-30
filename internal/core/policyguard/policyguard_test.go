@@ -79,7 +79,7 @@ func TestGuardEvaluateInfersCommandClassWhenNotProvided(t *testing.T) {
 
 	guard := newTestGuard(t, &memoryDecisionLogger{})
 	err := guard.Evaluate(context.Background(), Action{
-		RoleID:      "builder-berserker",
+		RoleID:      "builder",
 		NodeClass:   "build",
 		ActionType:  "container_start",
 		ToolClasses: []string{"workspace_write"},
@@ -97,7 +97,7 @@ func TestGuardEvaluateReturnsLoggerError(t *testing.T) {
 
 	guard := newTestGuard(t, failingDecisionLogger{err: errors.New("logger down")})
 	err := guard.Evaluate(context.Background(), Action{
-		RoleID:      "builder-berserker",
+		RoleID:      "builder",
 		NodeClass:   "build",
 		ActionType:  "container_start",
 		ToolClasses: []string{"workspace_write"},
@@ -120,7 +120,7 @@ func TestGuardRoleAllowDenyMatrix(t *testing.T) {
 	guard := newTestGuard(t, logger)
 
 	err := guard.Evaluate(context.Background(), Action{
-		RoleID:         "builder-berserker",
+		RoleID:         "builder",
 		NodeClass:      "build",
 		ActionType:     "container_start",
 		ToolClasses:    []string{"workspace_write", "build"},
@@ -134,13 +134,13 @@ func TestGuardRoleAllowDenyMatrix(t *testing.T) {
 	}
 
 	err = guard.Evaluate(context.Background(), Action{
-		RoleID:      "king",
-		NodeClass:   "decree_intake",
+		RoleID:      "governance",
+		NodeClass:   "work_intake",
 		ActionType:  "governance_review",
 		ToolClasses: []string{"workspace_write"},
 	})
 	if err == nil {
-		t.Fatal("expected king workspace_write to be denied")
+		t.Fatal("expected governance workspace_write to be denied")
 	}
 
 	var violation *PolicyViolationError
@@ -179,7 +179,7 @@ func TestGuardBlocksForbiddenCommandClasses(t *testing.T) {
 
 			guard := newTestGuard(t, &memoryDecisionLogger{})
 			err := guard.Evaluate(context.Background(), Action{
-				RoleID:         "builder-berserker",
+				RoleID:         "builder",
 				NodeClass:      "build",
 				ActionType:     "container_start",
 				ToolClasses:    []string{"workspace_write"},
@@ -208,7 +208,7 @@ func TestGuardBlocksOutOfScopeWriteAndUnallowlistedNetwork(t *testing.T) {
 	guard := newTestGuard(t, &memoryDecisionLogger{})
 
 	err := guard.Evaluate(context.Background(), Action{
-		RoleID:         "builder-berserker",
+		RoleID:         "builder",
 		NodeClass:      "build",
 		ActionType:     "container_start",
 		ToolClasses:    []string{"workspace_write"},
@@ -221,7 +221,7 @@ func TestGuardBlocksOutOfScopeWriteAndUnallowlistedNetwork(t *testing.T) {
 	}
 
 	err = guard.Evaluate(context.Background(), Action{
-		RoleID:         "builder-berserker",
+		RoleID:         "builder",
 		NodeClass:      "build",
 		ActionType:     "container_start",
 		ToolClasses:    []string{"workspace_write"},
@@ -250,7 +250,7 @@ func TestGuardLogsAuthorityAndReasonOnAllowAndDeny(t *testing.T) {
 	guard := newTestGuard(t, logger)
 
 	err := guard.Evaluate(context.Background(), Action{
-		RoleID:         "builder-berserker",
+		RoleID:         "builder",
 		NodeClass:      "build",
 		ActionType:     "container_start",
 		ToolClasses:    []string{"workspace_write"},
@@ -264,7 +264,7 @@ func TestGuardLogsAuthorityAndReasonOnAllowAndDeny(t *testing.T) {
 	}
 
 	err = guard.Evaluate(context.Background(), Action{
-		RoleID:         "builder-berserker",
+		RoleID:         "builder",
 		NodeClass:      "build",
 		ActionType:     "container_start",
 		ToolClasses:    []string{"workspace_write"},

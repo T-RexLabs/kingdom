@@ -317,27 +317,27 @@ func TestOpenAPISecuredOperationsDeclareCanonicalValidationAndAuthErrors(t *test
 	}
 }
 
-func TestOpenAPISpecKeepsTypedDecreeBody(t *testing.T) {
+func TestOpenAPISpecKeepsTypedWorkOrderBody(t *testing.T) {
 	t.Parallel()
 
 	swagger, err := gen.GetSwagger()
 	if err != nil {
 		t.Fatalf("load swagger: %v", err)
 	}
-	path := swagger.Paths.Find("/decrees")
+	path := swagger.Paths.Find("/work-orders")
 	if path == nil || path.Post == nil {
-		t.Fatal("expected POST /decrees operation")
+		t.Fatal("expected POST /work-orders operation")
 	}
 	operation := path.Post
 	if operation.RequestBody == nil || operation.RequestBody.Value == nil || !operation.RequestBody.Value.Required {
-		t.Fatal("decree request body must remain required")
+		t.Fatal("work order request body must remain required")
 	}
 	content := operation.RequestBody.Value.Content.Get("application/json")
 	if content == nil || content.Schema == nil || content.Schema.Value == nil {
-		t.Fatal("decree JSON schema is missing")
+		t.Fatal("work order JSON schema is missing")
 	}
-	if err := content.Schema.Value.VisitJSON(map[string]any{"decree_title": "test", "decree_text": 42}); err == nil {
-		t.Fatal("decree text must remain a typed string")
+	if err := content.Schema.Value.VisitJSON(map[string]any{"work_order_title": "test", "work_order_text": 42}); err == nil {
+		t.Fatal("work order text must remain a typed string")
 	}
 }
 
@@ -351,8 +351,8 @@ func TestOpenAPISpecIncludesCanonicalExamplesForCoreSchemas(t *testing.T) {
 
 	for _, schemaName := range []string{
 		"ErrorEnvelope",
-		"CreateDecreeRequest",
-		"CreateDecreeResult",
+		"CreateWorkOrderRequest",
+		"CreateWorkOrderResult",
 		"PlanningSessionDetail",
 		"AcpRun",
 		"CreateRunRequest",

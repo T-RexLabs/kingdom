@@ -633,7 +633,7 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
 
 	mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_title_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_run_output', 'Run Output', 'custom', 'active', 'ready', NULL, 'po_run_output', NULL, NULL, NULL, ?, '{"model":"test-model"}', '2026-04-21T17:20:00Z', '2026-04-21T17:20:00Z')`, projectRoot)
-	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_run_output', ?, 'ps_run_output', 'formalize', 'failed', '{}', '', NULL, 0, NULL, NULL, NULL, 'Partial decree body', 'formalize failed', NULL, NULL, '2026-04-21T17:20:01Z', '2026-04-21T17:20:01Z', '2026-04-21T17:20:09Z')`, acp.PlannerRunID("po_run_output"))
+	mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, provider_session_id, active_provider_invocation_id, observed_output_text, error, result_ref, canonical_settlement_id, created_at, started_at, finished_at) VALUES ('po_run_output', ?, 'ps_run_output', 'formalize', 'failed', '{}', '', NULL, 0, NULL, NULL, NULL, 'Partial work order body', 'formalize failed', NULL, NULL, '2026-04-21T17:20:01Z', '2026-04-21T17:20:01Z', '2026-04-21T17:20:09Z')`, acp.PlannerRunID("po_run_output"))
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,
@@ -646,7 +646,7 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode acp run: %v", err)
 	}
-	if run.OutputText == nil || *run.OutputText != "Partial decree body" {
+	if run.OutputText == nil || *run.OutputText != "Partial work order body" {
 		t.Fatalf("expected output_text to expose persisted terminal text, got %+v", run.OutputText)
 	}
 }

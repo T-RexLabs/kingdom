@@ -30,9 +30,9 @@ var (
 	ErrExternalDetachUnsupported       = errors.New("only planning session sources can be removed")
 	ErrExternalPlanningSessionNotFound = errors.New("planning session not found for external source attachment")
 	ErrExternalPlanningSessionInactive = errors.New("external sources can only be attached to an active planning session")
-	ErrDecreeLineageInvalid            = errors.New("decree planning lineage is invalid")
-	ErrDecreeProvenanceConflict        = errors.New("decree provenance conflicts with an existing source")
-	ErrDecreeProvenanceNotFound        = errors.New("decree provenance snapshot not found")
+	ErrWorkOrderLineageInvalid         = errors.New("work order planning lineage is invalid")
+	ErrWorkOrderProvenanceConflict     = errors.New("work order provenance conflicts with an existing source")
+	ErrWorkOrderProvenanceNotFound     = errors.New("work order provenance snapshot not found")
 )
 
 // UnsupportedPlanningExternalContextVersionError identifies a durable planner
@@ -1626,12 +1626,12 @@ func (s *ExternalStore) ListSnapshotComments(ctx context.Context, id string, off
 }
 
 func createExternalLinkTx(ctx context.Context, tx *sql.Tx, linkID, targetKind, targetID, sourceID, snapshotID, actorID, adoptionID, at string) error {
-	if targetKind != "planning_session" && targetKind != "decree" {
+	if targetKind != "planning_session" && targetKind != "work_order" {
 		return fmt.Errorf("invalid external link target")
 	}
 	var exists int
-	table := "decrees"
-	column := "decree_id"
+	table := "work_orders"
+	column := "work_order_id"
 	if targetKind == "planning_session" {
 		table = "planning_sessions"
 		column = "planning_session_id"
@@ -1653,28 +1653,28 @@ func createExternalLinkTx(ctx context.Context, tx *sql.Tx, linkID, targetKind, t
 	return nil
 }
 
-type DecreePlanningLineage struct {
+type WorkOrderPlanningLineage struct {
 	PlanningSessionID string
 	PlanningDraftID   string
 }
 
-type CreateDecreeRequest struct {
-	DecreeID, Title, Text, CreatedAt, ActorID string
-	Metadata                                  map[string]any
-	PlanningLineage                           *DecreePlanningLineage
-	DirectSnapshotID                          string
-	NewLinkID                                 func() string
-	TextContent                               *RequestContentSource
+type CreateWorkOrderRequest struct {
+	WorkOrderID, Title, Text, CreatedAt, ActorID string
+	Metadata                                     map[string]any
+	PlanningLineage                              *WorkOrderPlanningLineage
+	DirectSnapshotID                             string
+	NewLinkID                                    func() string
+	TextContent                                  *RequestContentSource
 }
 
-type decreeSnapshotBinding struct {
+type workOrderSnapshotBinding struct {
 	SnapshotID string
 	SourceID   string
 }
 
-func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeRequest) error {
+func (s *ExternalStore) CreateWorkOrder(ctx context.Context, req CreateWorkOrderRequest) error {
 	if req.TextContent != nil && req.Text != "" {
-		return fmt.Errorf("decree text has competing sources")
+		return fmt.Errorf("work order text has competing sources")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1689,7 +1689,7 @@ func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeReques
 
 	directSnapshotID := strings.TrimSpace(req.DirectSnapshotID)
 	if req.PlanningLineage != nil && directSnapshotID != "" {
-		return fmt.Errorf("%w: planning_lineage and external_source_snapshot_id are mutually exclusive", ErrDecreeLineageInvalid)
+		return fmt.Errorf("%w: planning_lineage and external_source_snapshot_id are mutually exclusive", ErrWorkOrderLineageInvalid)
 	}
 
 	metadata := make(map[string]any, len(req.Metadata)+3)
@@ -1700,14 +1700,14 @@ func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeReques
 		delete(metadata, key)
 	}
 
-	var bindings []decreeSnapshotBinding
+	var bindings []workOrderSnapshotBinding
 	if req.PlanningLineage != nil {
-		lineage := DecreePlanningLineage{
+		lineage := WorkOrderPlanningLineage{
 			PlanningSessionID: strings.TrimSpace(req.PlanningLineage.PlanningSessionID),
 			PlanningDraftID:   strings.TrimSpace(req.PlanningLineage.PlanningDraftID),
 		}
 		var planningContextSnapshotID string
-		bindings, planningContextSnapshotID, err = resolveDecreePlanningBindingsTx(ctx, tx, lineage)
+		bindings, planningContextSnapshotID, err = resolveWorkOrderPlanningBindingsTx(ctx, tx, lineage)
 		if err != nil {
 			return err
 		}
@@ -1718,11 +1718,11 @@ func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeReques
 		var sourceID string
 		if err := tx.QueryRowContext(ctx, `SELECT source_id FROM external_source_snapshots WHERE snapshot_id=?`, directSnapshotID).Scan(&sourceID); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return errors.Join(ErrDecreeProvenanceNotFound, ErrExternalNotFound)
+				return errors.Join(ErrWorkOrderProvenanceNotFound, ErrExternalNotFound)
 			}
-			return fmt.Errorf("resolve decree external snapshot: %w", err)
+			return fmt.Errorf("resolve work order external snapshot: %w", err)
 		}
-		bindings = []decreeSnapshotBinding{{SnapshotID: directSnapshotID, SourceID: sourceID}}
+		bindings = []workOrderSnapshotBinding{{SnapshotID: directSnapshotID, SourceID: sourceID}}
 	}
 
 	seenSources := make(map[string]string, len(bindings))
@@ -1730,7 +1730,7 @@ func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeReques
 	seenLinkIDs := make(map[string]struct{}, len(bindings))
 	for i, binding := range bindings {
 		if prior, exists := seenSources[binding.SourceID]; exists {
-			return fmt.Errorf("%w: snapshots %q and %q resolve to source %q", ErrDecreeProvenanceConflict, prior, binding.SnapshotID, binding.SourceID)
+			return fmt.Errorf("%w: snapshots %q and %q resolve to source %q", ErrWorkOrderProvenanceConflict, prior, binding.SnapshotID, binding.SourceID)
 		}
 		seenSources[binding.SourceID] = binding.SnapshotID
 		if req.NewLinkID == nil {
@@ -1741,52 +1741,52 @@ func (s *ExternalStore) CreateDecree(ctx context.Context, req CreateDecreeReques
 			return fmt.Errorf("new external link id is required")
 		}
 		if _, exists := seenLinkIDs[linkIDs[i]]; exists {
-			return fmt.Errorf("%w: duplicate external link id %q", ErrDecreeProvenanceConflict, linkIDs[i])
+			return fmt.Errorf("%w: duplicate external link id %q", ErrWorkOrderProvenanceConflict, linkIDs[i])
 		}
 		seenLinkIDs[linkIDs[i]] = struct{}{}
 	}
 
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {
-		return fmt.Errorf("encode decree metadata: %w", err)
+		return fmt.Errorf("encode work order metadata: %w", err)
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO decrees (decree_id,decree_title,decree_text,metadata_json,created_at,text_storage) VALUES (?,?,?,?,?,'chunked')`, req.DecreeID, req.Title, "", string(metadataJSON), req.CreatedAt); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO work_orders (work_order_id,work_order_title,work_order_text,metadata_json,created_at,text_storage) VALUES (?,?,?,?,?,'chunked')`, req.WorkOrderID, req.Title, "", string(metadataJSON), req.CreatedAt); err != nil {
 		if IsUniqueViolation(err) {
-			return errors.Join(ErrDecreeProvenanceConflict, err)
+			return errors.Join(ErrWorkOrderProvenanceConflict, err)
 		}
 		return err
 	}
-	if err := persistDecreeTextTx(ctx, tx, req); err != nil {
+	if err := persistWorkOrderTextTx(ctx, tx, req); err != nil {
 		return err
 	}
 	for i, binding := range bindings {
-		if err = createExternalLinkTx(ctx, tx, linkIDs[i], "decree", req.DecreeID, binding.SourceID, binding.SnapshotID, req.ActorID, "", req.CreatedAt); err != nil {
+		if err = createExternalLinkTx(ctx, tx, linkIDs[i], "work_order", req.WorkOrderID, binding.SourceID, binding.SnapshotID, req.ActorID, "", req.CreatedAt); err != nil {
 			if IsUniqueViolation(err) {
-				return errors.Join(ErrDecreeProvenanceConflict, err)
+				return errors.Join(ErrWorkOrderProvenanceConflict, err)
 			}
 			return err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return &CommitOutcomeUnknownError{Operation: "create decree", ResourceID: strings.TrimSpace(req.DecreeID), Cause: err}
+		return &CommitOutcomeUnknownError{Operation: "create work order", ResourceID: strings.TrimSpace(req.WorkOrderID), Cause: err}
 	}
 	committed = true
 	return nil
 }
 
-func resolveDecreePlanningBindingsTx(ctx context.Context, tx *sql.Tx, lineage DecreePlanningLineage) ([]decreeSnapshotBinding, string, error) {
+func resolveWorkOrderPlanningBindingsTx(ctx context.Context, tx *sql.Tx, lineage WorkOrderPlanningLineage) ([]workOrderSnapshotBinding, string, error) {
 	if lineage.PlanningSessionID == "" || lineage.PlanningDraftID == "" {
-		return nil, "", fmt.Errorf("%w: planning session id and planning draft id are required", ErrDecreeLineageInvalid)
+		return nil, "", fmt.Errorf("%w: planning session id and planning draft id are required", ErrWorkOrderLineageInvalid)
 	}
 	var draftSessionID string
 	if err := tx.QueryRowContext(ctx, `SELECT planning_session_id FROM planning_drafts WHERE planning_draft_id=?`, lineage.PlanningDraftID).Scan(&draftSessionID); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, "", fmt.Errorf("%w: planning draft not found", ErrDecreeLineageInvalid)
+			return nil, "", fmt.Errorf("%w: planning draft not found", ErrWorkOrderLineageInvalid)
 		}
 		return nil, "", err
 	}
 	if draftSessionID != lineage.PlanningSessionID {
-		return nil, "", fmt.Errorf("%w: planning draft does not belong to session", ErrDecreeLineageInvalid)
+		return nil, "", fmt.Errorf("%w: planning draft does not belong to session", ErrWorkOrderLineageInvalid)
 	}
 
 	rows, err := tx.QueryContext(ctx, `SELECT operation_id,planning_context_snapshot_id FROM planning_operations WHERE planning_session_id=? AND type='formalize' AND status='succeeded' AND result_ref=? ORDER BY operation_id`, lineage.PlanningSessionID, lineage.PlanningDraftID)
@@ -1810,7 +1810,7 @@ func resolveDecreePlanningBindingsTx(ctx context.Context, tx *sql.Tx, lineage De
 		return nil, "", err
 	}
 	if len(operations) != 1 || !operations[0].contextSnapshotID.Valid || strings.TrimSpace(operations[0].contextSnapshotID.String) == "" {
-		return nil, "", fmt.Errorf("%w: draft must be the result of exactly one context-bound successful formalize operation", ErrDecreeLineageInvalid)
+		return nil, "", fmt.Errorf("%w: draft must be the result of exactly one context-bound successful formalize operation", ErrWorkOrderLineageInvalid)
 	}
 
 	rows, err = tx.QueryContext(ctx, `SELECT binding.snapshot_id,snapshot.source_id FROM planning_operation_external_snapshots binding JOIN external_source_snapshots snapshot ON snapshot.snapshot_id=binding.snapshot_id WHERE binding.operation_id=? ORDER BY binding.snapshot_id`, operations[0].operationID)
@@ -1818,9 +1818,9 @@ func resolveDecreePlanningBindingsTx(ctx context.Context, tx *sql.Tx, lineage De
 		return nil, "", err
 	}
 	defer rows.Close()
-	bindings := make([]decreeSnapshotBinding, 0)
+	bindings := make([]workOrderSnapshotBinding, 0)
 	for rows.Next() {
-		var binding decreeSnapshotBinding
+		var binding workOrderSnapshotBinding
 		if err := rows.Scan(&binding.SnapshotID, &binding.SourceID); err != nil {
 			return nil, "", err
 		}

@@ -239,7 +239,7 @@ function renderJsonValue(value: JsonValue, indent: number): ReactNode {
         {entries.map(([key, entryValue], index) => (
           <Fragment key={`object-${indent}-${key}`}>
             {indentText(indent + 2)}
-            <span className="text-role-council">{JSON.stringify(key)}</span>
+            <span className="text-accent">{JSON.stringify(key)}</span>
             {": "}
             {renderJsonValue(entryValue, indent + 2)}
             {index < entries.length - 1 ? "," : ""}

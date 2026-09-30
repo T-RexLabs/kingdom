@@ -84,12 +84,12 @@ def run_profile(
             max_execution_review_cycles=config.common.max_execution_review_cycles,
             max_validation_rework_cycles=config.common.max_validation_rework_cycles,
         )
-        print(f"[{profile.profile_id}] create decree")
-        run_id = runtime.create_decree_run(
+        print(f"[{profile.profile_id}] create work order")
+        run_id = runtime.create_work_order_run(
             server_url,
             paths.credential_path,
             run_request,
-            paths.report_dir / "decree.json",
+            paths.report_dir / "work-order.json",
         )
         print(f"[{profile.profile_id}] run_id={run_id}")
         poll_result = runtime.poll_run(

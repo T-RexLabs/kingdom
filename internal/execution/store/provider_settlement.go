@@ -684,7 +684,7 @@ func (s *Store) markProviderTerminalHandoffPendingOnce(ctx context.Context, req 
 	var unresolvedGuardCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE provider_invocation_id = ? AND owner_kind = 'decree_attempt'`, req.ProviderInvocationID).Scan(&unresolvedGuardCount); err != nil {
+		WHERE provider_invocation_id = ? AND owner_kind = 'work_order_attempt'`, req.ProviderInvocationID).Scan(&unresolvedGuardCount); err != nil {
 		return fmt.Errorf("load provider terminal recovery process guards: %w", err)
 	}
 	if unresolvedGuardCount != 0 {
@@ -950,7 +950,7 @@ func ensureProviderTerminalAttemptQuiescentTx(ctx context.Context, tx *sql.Tx, o
 	var totalGuardCount, unresolvedGuardCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE provider_invocation_id = ? AND owner_kind = 'decree_attempt'`, providerInvocationID).Scan(&totalGuardCount, &unresolvedGuardCount); err != nil {
+		WHERE provider_invocation_id = ? AND owner_kind = 'work_order_attempt'`, providerInvocationID).Scan(&totalGuardCount, &unresolvedGuardCount); err != nil {
 		return fmt.Errorf("load provider terminal recovery process guards: %w", err)
 	}
 	if unresolvedGuardCount != 0 {
@@ -1205,7 +1205,7 @@ func (s *Store) ListProviderTerminalHandoffFileRecoveryCandidates(ctx context.Co
 		    provider_invocations.terminal_handoff_pending_at IS NOT NULL
 		    OR EXISTS (
 		      SELECT 1 FROM provider_process_guards ppg
-		      WHERE ppg.provider_invocation_id = provider_invocations.provider_invocation_id AND ppg.owner_kind = 'decree_attempt'
+		      WHERE ppg.provider_invocation_id = provider_invocations.provider_invocation_id AND ppg.owner_kind = 'work_order_attempt'
 		    )
 		  )
 		  AND NOT EXISTS (
@@ -1775,7 +1775,7 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		}
 		var wrongLineage, unclean, count, maxOrdinal int64
 		if err := tx.QueryRowContext(ctx, `SELECT count(*),COALESCE(max(command_ordinal),0),
-			COALESCE(sum(CASE WHEN owner_kind<>'decree_attempt' OR attempt_id<>? OR run_id<>? OR node_run_id<>? OR lease_owner<>? OR lease_version<>? THEN 1 ELSE 0 END),0),
+			COALESCE(sum(CASE WHEN owner_kind<>'work_order_attempt' OR attempt_id<>? OR run_id<>? OR node_run_id<>? OR lease_owner<>? OR lease_version<>? THEN 1 ELSE 0 END),0),
 			COALESCE(sum(CASE WHEN exit_code IS NULL OR exit_code<>0 OR COALESCE(exit_signal,0)<>0 OR failure_code<>'' THEN 1 ELSE 0 END),0)
 			FROM provider_process_guards WHERE provider_invocation_id=?`, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, invocation.ProviderInvocationID).Scan(&count, &maxOrdinal, &wrongLineage, &unclean); err != nil {
 			return ProviderCompletionSettlement{}, err

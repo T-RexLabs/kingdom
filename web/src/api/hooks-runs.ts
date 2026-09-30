@@ -1,20 +1,21 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { historyItems } from "./history-pages";
-import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
+import { useActivityHistory } from "./hooks-activity";
+import { dashboardSnapshotQueryKey, analyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
 import { manualRefetchQueryOptions, refetchOnMountQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
 import { RUNS_STATE_FILTERS, type RunsStateFilter } from "@/lib/run-filters";
 import type {
   AgentsResponse,
   CancelRunRequest,
-  CreateDecreeRequest,
-  CreateDecreeResult,
+  CreateWorkOrderRequest,
+  CreateWorkOrderResult,
   CreateFinalApprovalRequest,
   CreateFinalApprovalResult,
   CreatePlanApprovalRequest,
   CreatePlanApprovalResult,
   CreateRunRequest,
-  DecreeDetail,
+  WorkOrderDetail,
   GovernanceDecisionsResponse,
   MailboxFilters,
   MailboxMessageDetail,
@@ -38,7 +39,6 @@ import type {
   RunPlanReviewsResponse,
   RunSummary,
   RunTimelineResponse,
-  AcpRunActivityResponse,
 } from "./hooks-types";
 
 export type { RunsStateFilter } from "@/lib/run-filters";
@@ -322,11 +322,11 @@ export function useRunGovernanceDecisions(runId: string, options?: RunDetailQuer
 	});
 }
 
-export function useDecree(decreeId?: string) {
+export function useWorkOrder(workOrderId?: string) {
   return useQuery({
-    queryKey: ["decrees", decreeId],
-    queryFn: decreeId
-      ? () => apiFetch<DecreeDetail>(`/decrees/${decreeId}`)
+    queryKey: ["work-orders", workOrderId],
+    queryFn: workOrderId
+      ? () => apiFetch<WorkOrderDetail>(`/work-orders/${workOrderId}`)
       : skipToken,
   });
 }
@@ -393,16 +393,8 @@ export function useRunExecutionActivity(
 ) {
   const trimmedAttemptId = attemptId?.trim() ?? "";
   const enabled = (options?.enabled ?? true) && !!runId && trimmedAttemptId !== "";
-  return useQuery({
-    queryKey: runQueryKeys.executionActivity(runId, trimmedAttemptId),
-    queryFn: enabled
-      ? () => apiFetch<AcpRunActivityResponse>(`/runs/${runId}/executions/${trimmedAttemptId}/activity`)
-      : skipToken,
-    enabled,
-    refetchInterval: options?.refetchIntervalMs,
-    retry: retryRunDetailQuery,
-    ...manualRefetchQueryOptions,
-  });
+  return useActivityHistory(enabled ? `/runs/${runId}/executions/${trimmedAttemptId}/activity` : undefined,
+    runQueryKeys.executionActivity(runId, trimmedAttemptId),{...options,enabled});
 }
 
 export function useTimeline(runId: string, limit = 50, options?: RunDetailQueryOptions) {
@@ -561,8 +553,8 @@ function invalidateDashboardSnapshotQueries(qc: ReturnType<typeof useQueryClient
 	return qc.invalidateQueries({ queryKey: dashboardSnapshotQueryKey });
 }
 
-function invalidateRealmAnalyticsQueries(qc: ReturnType<typeof useQueryClient>) {
-	return qc.invalidateQueries({ queryKey: realmAnalyticsQueryKey });
+function invalidateAnalyticsQueries(qc: ReturnType<typeof useQueryClient>) {
+	return qc.invalidateQueries({ queryKey: analyticsQueryKey });
 }
 
 function invalidateRuntimeMetricsQueries(qc: ReturnType<typeof useQueryClient>) {
@@ -572,7 +564,7 @@ function invalidateRuntimeMetricsQueries(qc: ReturnType<typeof useQueryClient>) 
 function invalidateDashboardAnalyticsQueries(qc: ReturnType<typeof useQueryClient>) {
 	return Promise.all([
 		invalidateDashboardSnapshotQueries(qc),
-		invalidateRealmAnalyticsQueries(qc),
+		invalidateAnalyticsQueries(qc),
 	]);
 }
 
@@ -629,11 +621,11 @@ function invalidateRunCancelQueries(qc: ReturnType<typeof useQueryClient>, runId
 	]);
 }
 
-export function useCreateDecree() {
+export function useCreateWorkOrder() {
   const qc = useQueryClient();
 	return useMutation({
-		mutationFn: ({ body, key }: MutationWithBody<CreateDecreeRequest>) =>
-			apiFetch<CreateDecreeResult>("/decrees", {
+		mutationFn: ({ body, key }: MutationWithBody<CreateWorkOrderRequest>) =>
+			apiFetch<CreateWorkOrderResult>("/work-orders", {
         method: "POST",
         headers: { "Idempotency-Key": key },
         body: JSON.stringify(body),

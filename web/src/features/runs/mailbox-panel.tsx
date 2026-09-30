@@ -478,7 +478,7 @@ export function MailboxPanel({
                       {isResponse ? (
                         <Reply className="h-3.5 w-3.5 shrink-0 text-status-succeeded" />
                       ) : message.communication_type.startsWith("approval") ? (
-                        <Gavel className="h-3.5 w-3.5 shrink-0 text-gold" />
+                        <Gavel className="h-3.5 w-3.5 shrink-0 text-accent" />
                       ) : (
                         <Send className="h-3.5 w-3.5 shrink-0 text-status-running" />
                       )}

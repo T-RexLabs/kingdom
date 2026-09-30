@@ -1,15 +1,5 @@
 export type StatusTone = "running" | "attention" | "succeeded" | "failed" | "cancelled" | "rework" | "neutral";
 
-export const STATUS_TONE_HEX: Record<StatusTone, string> = {
-	running: "#3b82f6",
-	attention: "#f59e0b",
-	succeeded: "#22c55e",
-	failed: "#ef4444",
-	cancelled: "#8b5cf6",
-	rework: "#ec4899",
-	neutral: "#6b7280",
-};
-
 export function statusToneForKey(status: string): StatusTone {
 		switch (status.trim()) {
 			case "busy":

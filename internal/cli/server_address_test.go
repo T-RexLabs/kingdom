@@ -102,10 +102,10 @@ func TestBuildRunRecoveryCommandPreservesRequestAndAmbiguousKey(t *testing.T) {
 	zero := 0
 	five := 5
 	overrides := map[string]gen.RunModelSelectionEntry{
-		"builder-berserker": {Model: "provider/builder"},
+		"builder": {Model: "provider/builder"},
 	}
 	command := buildRunRecoveryCommand(gen.CreateRunRequest{
-		DecreeId:                  "decree-1",
+		WorkOrderId:               "work order-1",
 		PublishMode:               gen.GitWorktree,
 		AutonomousApprovals:       &trueValue,
 		RunUntilAllApprove:        &trueValue,
@@ -118,8 +118,8 @@ func TestBuildRunRecoveryCommandPreservesRequestAndAmbiguousKey(t *testing.T) {
 	}, &ambiguousMutationError{Key: "stable-key", Cause: context.DeadlineExceeded})
 
 	for _, required := range []string{
-		"--idempotency-key 'stable-key'", "--decree-id 'decree-1'",
-		"--global-model 'provider/global'", "--agent-model-overrides 'builder-berserker=provider/builder'",
+		"--idempotency-key 'stable-key'", "--work-order-id 'work order-1'",
+		"--global-model 'provider/global'", "--agent-model-overrides 'builder=provider/builder'",
 		"--publish-mode 'git_worktree'", "--autonomous-approvals=true", "--run-until-all-approve",
 		"--max-execution-review-cycles 0", "--max-validation-rework-cycles 5",
 	} {

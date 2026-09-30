@@ -1,4 +1,4 @@
-// Package workflow compiles and schedules decree workflows.
+// Package workflow compiles and schedules work order workflows.
 //
 // It parses YAML definitions into canonical JSON, validates them against the
 // shipped schema and runtime invariants, computes immutable workflow checksums,

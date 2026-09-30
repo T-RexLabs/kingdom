@@ -15,7 +15,7 @@ import (
 
 // ImportZIP validates the entire archive before any filesystem mutation.
 func (r *Resolver) ImportZIP(raw []byte) (Package, error) {
-	if len(raw) > MaxPackageBytes+MaxManifestBytes {
+	if len(raw) > MaxArchiveBytes {
 		return Package{}, invalid("/", "size", "Theme archive exceeds its resource budget.")
 	}
 	archive, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))

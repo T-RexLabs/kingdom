@@ -85,7 +85,7 @@ export function CurrentPlanPanel({
         >
           <div className="flex min-w-0 items-center gap-2">
             {isOpen ? <ChevronDown className="h-3.5 w-3.5 text-foreground-subtle" /> : <ChevronRight className="h-3.5 w-3.5 text-foreground-subtle" />}
-            <FileText className="h-4 w-4 text-gold" />
+            <FileText className="h-4 w-4 text-accent" />
              <h2 className="text-sm font-semibold text-foreground">Current Plan</h2>
              <Badge variant="status" status={run.plan_state === "approved" ? "succeeded" : run.status === "failed" ? "failed" : run.status === "running" ? "running" : "pending"}>
               {runPlanStateLabel(run)}
@@ -96,7 +96,7 @@ export function CurrentPlanPanel({
         {isOpen && (
           <>
             {planRefreshWarning ? (
-              <div className={`mt-3 rounded-md border px-3 py-2 text-sm ${accentBannerClass("gold")}`}>
+              <div className={`mt-3 rounded-md border px-3 py-2 text-sm ${accentBannerClass("accent")}`}>
                 {planRefreshWarning}
               </div>
             ) : null}
@@ -118,11 +118,11 @@ export function CurrentPlanPanel({
             {latestDecision && (
               <div className="mt-3 rounded-md border border-border bg-surface p-3">
                 <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Allfather Guidance</p>
+                  <p className="text-xs font-semibold uppercase tracking-wide text-foreground-subtle">Operator Guidance</p>
                   <button
                     type="button"
                     onClick={() => setHistoryOpen(true)}
-                    className="text-xs font-medium text-gold transition-colors hover:text-gold-bright"
+                    className="text-xs font-medium text-accent transition-colors hover:text-accent-bright"
                   >
                     View History
                   </button>
@@ -150,7 +150,7 @@ export function CurrentPlanPanel({
                     onClick={() => setHistoryOpen(true)}
                     className="mt-2 block w-full rounded-md border border-border bg-background px-3 py-2 text-left text-sm text-foreground-muted transition-colors hover:bg-surface-raised/40"
                   >
-                    View the complete Allfather decision history for this run.
+                    View the complete Operator decision history for this run.
                   </button>
                 )}
               </div>
@@ -164,9 +164,9 @@ export function CurrentPlanPanel({
           ref={approvalSectionRef}
           data-testid="run-plan-approval-card"
           tabIndex={-1}
-          className="rounded-md border border-gold/30 bg-background p-3"
+          className="rounded-md border border-accent/30 bg-background p-3"
         >
-          <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-gold">
+          <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-accent">
             <Gavel className="h-4 w-4" />
             Awaiting Your Plan Approval
           </p>
@@ -212,18 +212,18 @@ export function CurrentPlanPanel({
 function PendingPlanRevisionState() {
   return (
     <div className="rounded-md border border-border bg-background px-3 py-4 text-sm text-foreground-subtle">
-      Syncing the current council plan revision for review.
+      Syncing the current plan revision for review.
     </div>
   );
 }
 
 function PendingPlanRevisionNotice() {
   return (
-    <div className={`rounded-md border px-3 py-2 text-sm ${accentBannerClass("gold")}`}>
+    <div className={`rounded-md border px-3 py-2 text-sm ${accentBannerClass("accent")}`}>
       <div className="flex items-start gap-2">
         <Clock3 className="mt-0.5 h-4 w-4 shrink-0" />
         <p>
-          The council plan revision is still syncing into the approval view. Approval actions will unlock automatically once the current revision is ready.
+          The plan revision is still syncing into the approval view. Approval actions will unlock automatically once the current revision is ready.
         </p>
       </div>
     </div>
@@ -233,7 +233,7 @@ function PendingPlanRevisionNotice() {
 function UnavailablePlanRevisionNotice() {
   return (
     <div className={`rounded-md border px-3 py-2 text-sm ${runStatusBannerClass("failed")}`}>
-      The current council plan revision could not be loaded. Wait for the snapshot to recover before deciding.
+      The current plan revision could not be loaded. Wait for the snapshot to recover before deciding.
     </div>
   );
 }

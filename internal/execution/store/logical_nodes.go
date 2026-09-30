@@ -100,7 +100,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		WHERE ae.run_id = ?
 		UNION ALL
 		SELECT rd.node_id, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at)
-		FROM retry_decisions rd WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ?
+		FROM retry_decisions rd WHERE rd.subject_kind = 'work_order_attempt' AND rd.run_id = ?
 	), ranked_logical_activity AS (
 		SELECT node_id, activity_at,
 		       ROW_NUMBER() OVER (PARTITION BY node_id ORDER BY %[2]s) AS activity_rank
@@ -140,7 +140,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
 		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
 		LEFT JOIN attempt_executions target_ae ON target_ae.run_id = rd.run_id AND target_ae.node_run_id = rd.target_node_run_id
-		WHERE rd.subject_kind = 'decree_attempt' AND rd.run_id = ?
+		WHERE rd.subject_kind = 'work_order_attempt' AND rd.run_id = ?
 	), manual_recovery_candidates AS (
 		SELECT nr.node_id,
 		       CASE
@@ -189,7 +189,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 		   SELECT 1 FROM attempt_cancel_outbox aco
-		   JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
+		   JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
 		   WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
 		     AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
 		          OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))
@@ -320,7 +320,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		       target_ae.attempt_id AS target_attempt_id, rd.target_node_run_id, rd.retry_index, rd.max_retries AS retry_max,
 		       rd.due_at AS scheduled_at, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at) AS last_updated_at
 		FROM selected_attempts selected
-		JOIN retry_decisions rd ON rd.subject_kind = 'decree_attempt' AND rd.source_attempt_id = selected.attempt_id
+		JOIN retry_decisions rd ON rd.subject_kind = 'work_order_attempt' AND rd.source_attempt_id = selected.attempt_id
 		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
 		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
 		LEFT JOIN attempt_executions target_ae ON target_ae.run_id = rd.run_id AND target_ae.node_run_id = rd.target_node_run_id
@@ -337,7 +337,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		       rd.due_at, COALESCE(rd.resolved_at, rd.dispatched_at, rd.created_at)
 		FROM selected_attempts selected
 		JOIN attempt_executions target_ae ON target_ae.attempt_id = selected.attempt_id
-		JOIN retry_decisions rd ON rd.subject_kind = 'decree_attempt' AND rd.run_id = target_ae.run_id AND rd.target_node_run_id = target_ae.node_run_id
+		JOIN retry_decisions rd ON rd.subject_kind = 'work_order_attempt' AND rd.run_id = target_ae.run_id AND rd.target_node_run_id = target_ae.node_run_id
 		JOIN node_runs source_nr ON source_nr.run_id = rd.run_id AND source_nr.node_run_id = rd.node_run_id
 		LEFT JOIN node_runs target_nr ON target_nr.run_id = rd.run_id AND target_nr.node_run_id = rd.target_node_run_id
 		UNION ALL
@@ -382,7 +382,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		(SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 		CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 			SELECT 1 FROM attempt_cancel_outbox aco
-			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle = 'acknowledged'
+			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
 			WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
 			  AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
 			       OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))

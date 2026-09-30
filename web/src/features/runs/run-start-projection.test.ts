@@ -18,7 +18,7 @@ describe("run start projection", () => {
 
 	it("carries the authoritative start evidence through collection events", () => {
 		const summary = buildRunSummaryFromCollectionEvent({
-			run_id: "run", workflow_id: "workflow", decree_id: "decree", decree_title: "Work",
+			run_id: "run", workflow_id: "workflow", work_order_id: "work_order", work_order_title: "Work",
 			status: "running", plan_state: "approved", display_state: "running",
 			created_at: "2026-04-30T12:00:00Z", updated_at: "2026-04-30T12:01:00Z", last_activity_at: "2026-04-30T12:01:00Z",
 			start_state: "observed", started_at: "2026-04-30T12:00:01Z",

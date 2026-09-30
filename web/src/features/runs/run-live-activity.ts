@@ -1,5 +1,5 @@
 import { skipToken, useQuery, type QueryClient } from "@tanstack/react-query";
-import type { ActivityItem } from "@/features/activity/activity-view";
+import { mergeActivityTimeline, type ActivityItem } from "@/features/activity/activity-view";
 
 // Per-attempt live activity buffer. The run event stream is a single connection for
 // the whole run, so we key the buffer by attempt id and let each execution view read
@@ -44,28 +44,8 @@ export function appendLiveRunActivity(
   qc.setQueryData<LiveRunActivityBuffer>(liveRunActivityQueryKey(runId), (current) => {
     const buffer = current ?? {};
     const existing = buffer[trimmedAttemptId] ?? [];
-    const index = existing.findIndex((entry) => entry.id === item.id);
-
-    let nextItems: ActivityItem[];
-    if (index >= 0) {
-      // Same provider part streamed again — enrich in place (last-wins), mirroring
-      // the durable merge so growing reasoning text replaces its earlier snapshot.
-      const previous = existing[index];
-      nextItems = [...existing];
-      nextItems[index] = {
-        ...previous,
-        ...item,
-        detail: item.detail ?? previous.detail,
-        input: item.input ?? previous.input,
-        output: item.output ?? previous.output,
-        occurredAt: item.occurredAt ?? previous.occurredAt,
-      };
-    } else {
-      nextItems = [...existing, item];
-      if (nextItems.length > MAX_LIVE_ACTIVITY_PER_ATTEMPT) {
-        nextItems = nextItems.slice(nextItems.length - MAX_LIVE_ACTIVITY_PER_ATTEMPT);
-      }
-    }
+    const merged = mergeActivityTimeline(existing,[item]);
+    const nextItems = merged.slice(-MAX_LIVE_ACTIVITY_PER_ATTEMPT);
 
     return { ...buffer, [trimmedAttemptId]: nextItems };
   });

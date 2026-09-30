@@ -25,8 +25,10 @@ import (
 )
 
 type runArtifactsResponse struct {
-	RunID string            `json:"run_id"`
-	Items []runArtifactItem `json:"items"`
+	RunID      string            `json:"run_id"`
+	SnapshotID string            `json:"snapshot_id"`
+	Items      []runArtifactItem `json:"items"`
+	NextCursor string            `json:"next_cursor,omitempty"`
 }
 
 type runArtifactItem struct {
@@ -69,14 +71,48 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	records, err := s.artifactService.ListRunArtifactProvenance(r.Context(), runID)
+	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 50)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	attemptID := strings.TrimSpace(r.URL.Query().Get("attempt_id"))
+	scopeBytes, _ := json.Marshal([]string{runID, attemptID})
+	scope := string(scopeBytes)
+	var cursor *state.ArtifactPageCursor
+	if raw := r.URL.Query().Get("cursor"); raw != "" {
+		payload, decodeErr := s.cursors.Decode("run-artifacts", scope, raw)
+		var value state.ArtifactPageCursor
+		if decodeErr != nil || json.Unmarshal([]byte(payload), &value) != nil || value.HighWater < 1 || value.LineageFingerprint == "" || value.ArtifactID == "" || value.CreatedAt == "" || value.KindRank < 0 || value.KindRank > 2 {
+			s.writeBadRequest(w, "invalid artifact cursor")
+			return
+		}
+		cursor = &value
+	}
+	if attemptID != "" {
+		var exists int
+		err := s.db.QueryRowContext(r.Context(), `SELECT 1 FROM attempt_executions WHERE run_id=? AND attempt_id=?`, runID, attemptID).Scan(&exists)
+		if errors.Is(err, sql.ErrNoRows) {
+			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run execution not found", "api.list_run_artifacts", nil)
+			return
+		}
+		if err != nil {
+			s.writeInternalError(w, "fetch artifact attempt failed")
+			return
+		}
+	}
+	page, err := s.artifactService.PageRunArtifactProvenance(r.Context(), runID, attemptID, limit, cursor)
+	if errors.Is(err, state.ErrArtifactSnapshotChanged) {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, err.Error(), "api.list_run_artifacts", map[string]any{"refresh_required": true})
+		return
+	}
 	if err != nil {
 		s.writeInternalError(w, "list run artifacts failed")
 		return
 	}
 
-	items := make([]runArtifactItem, 0, len(records))
-	for _, record := range records {
+	items := make([]runArtifactItem, 0, len(page.Items))
+	for _, record := range page.Items {
 		downloadURL := ""
 		if record.ArtifactAction != "delete" {
 			downloadURL = s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
@@ -102,7 +138,12 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 		})
 	}
 
-	writeJSON(w, http.StatusOK, runArtifactsResponse{RunID: runID, Items: items})
+	nextCursor := ""
+	if page.Next != nil {
+		payload, _ := json.Marshal(page.Next)
+		nextCursor = s.cursors.Encode("run-artifacts", scope, string(payload))
+	}
+	writeJSON(w, http.StatusOK, runArtifactsResponse{RunID: runID, SnapshotID: page.SnapshotID, Items: items, NextCursor: nextCursor})
 }
 
 func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Request) {

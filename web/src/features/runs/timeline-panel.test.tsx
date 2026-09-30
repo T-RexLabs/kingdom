@@ -56,7 +56,7 @@ describe("timeline panel", () => {
         event_type: "attempt.failed",
         reason_code: "validation_gate_rework",
         emitted_at: "2026-03-18T11:40:00Z",
-        payload_json: { node_id: "validation_gates_qa_scout", node_run_id: "nr-qa-1", error: "validator requested rework" },
+        payload_json: { node_id: "quality_validation", node_run_id: "nr-qa-1", error: "validator requested rework" },
       },
       {
         event_id: "evt-qa-cap-success",
@@ -65,7 +65,7 @@ describe("timeline panel", () => {
         event_type: "attempt.succeeded",
         reason_code: "validation_gate_cap_auto_succeeded",
         emitted_at: "2026-03-18T11:41:00Z",
-        payload_json: { node_id: "validation_gates_qa_scout", node_run_id: "nr-qa-1", status: "ok" },
+        payload_json: { node_id: "quality_validation", node_run_id: "nr-qa-1", status: "ok" },
       },
       {
         event_id: "evt-night-success",
@@ -74,18 +74,18 @@ describe("timeline panel", () => {
         event_type: "attempt.succeeded",
         reason_code: "execution_completed",
         emitted_at: "2026-03-18T11:41:30Z",
-        payload_json: { node_id: "validation_gates_nightraven", node_run_id: "nr-night-1", status: "ok" },
+        payload_json: { node_id: "security_validation", node_run_id: "nr-night-1", status: "ok" },
       },
     ];
     const graph = {
       nodes: [
-        { node_id: "execution_review_shieldmaiden", required_role: "reviewer-shieldmaiden", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
-        { node_id: "validation_gates_qa_scout", required_role: "intelligence-qa-scout", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
-        { node_id: "validation_gates_nightraven", required_role: "intelligence-nightraven", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
+        { node_id: "execution_review", required_role: "reviewer", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
+        { node_id: "quality_validation", required_role: "qa-validator", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
+        { node_id: "security_validation", required_role: "security-validator", execution_ownership: "provider_backed" as const, state: "succeeded" as const },
       ],
       edges: [
-        { from: "execution_review_shieldmaiden", to: "validation_gates_qa_scout", on: "success" },
-        { from: "execution_review_shieldmaiden", to: "validation_gates_nightraven", on: "success" },
+        { from: "execution_review", to: "quality_validation", on: "success" },
+        { from: "execution_review", to: "security_validation", on: "success" },
       ],
     };
 
@@ -107,19 +107,19 @@ describe("timeline panel", () => {
 				event_type: "attempt.failed",
 				reason_code: "execution_review_rework",
 				emitted_at: "2026-03-18T11:40:00Z",
-				payload_json: { node_id: "execution_review_shieldmaiden", node_run_id: "nr-review-1", error: "review requested rework" },
+				payload_json: { node_id: "execution_review", node_run_id: "nr-review-1", error: "review requested rework" },
 			},
 		];
 		const graph = {
 			nodes: [
-				{ node_id: "execution_review_shieldmaiden", required_role: "reviewer-shieldmaiden", execution_ownership: "provider_backed" as const, state: "failed" as const },
+				{ node_id: "execution_review", required_role: "reviewer", execution_ownership: "provider_backed" as const, state: "failed" as const },
 			],
 			edges: [],
 		};
 
 		const lookups = buildTimelineLookups(events, graph.nodes);
 		const milestones = synthesizeMilestones(events, graph.nodes, graph.edges, lookups);
-		const reviewMilestone = milestones.find((milestone) => milestone.id === "node-execution_review_shieldmaiden");
+		const reviewMilestone = milestones.find((milestone) => milestone.id === "node-execution_review");
 
 		expect(reviewMilestone?.status).toBe("rework");
 	});
@@ -135,7 +135,7 @@ describe("timeline panel", () => {
 						event_type: "mailbox.message_recorded",
 						emitted_at: "2026-03-18T11:40:00Z",
 						payload_json: {
-							node_id: "king_plan_decision",
+							node_id: "plan_decision",
 							communication_type: "approval_request",
 							visible_to_operator: true,
 						},
@@ -143,8 +143,8 @@ describe("timeline panel", () => {
 				]}
 				graph={{
 					nodes: [{
-						node_id: "king_plan_decision",
-						required_role: "king",
+						node_id: "plan_decision",
+						required_role: "governance",
 						execution_ownership: "runtime_owned",
 						state: "pending",
 					}],
@@ -154,7 +154,7 @@ describe("timeline panel", () => {
 			/>,
 		);
 
-		expect(screen.getByText("King Plan Decision awaiting approval")).toBeInTheDocument();
+		expect(screen.getByText("Plan Decision awaiting approval")).toBeInTheDocument();
 		expect(screen.queryByText(/Crown-handled/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
 	});
@@ -171,7 +171,7 @@ describe("timeline panel", () => {
 						event_type: "attempt.failed",
 						reason_code: "provider_incomplete_turn",
 						emitted_at: "2026-03-18T11:40:00Z",
-						payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", error: "incomplete terminal state" },
+						payload_json: { node_id: "implementation", node_run_id: "nr-builder-1", error: "incomplete terminal state" },
 					},
 					{
 						event_id: "evt-response",
@@ -181,7 +181,7 @@ describe("timeline panel", () => {
 						reason_code: "provider_incomplete_turn",
 						emitted_at: "2026-03-18T11:40:01Z",
 						payload_json: {
-							node_id: "delegated_execution_berserker",
+							node_id: "implementation",
 							node_run_id: "nr-builder-1",
 							communication_type: "response_received",
 							response_full: "Builder response",
@@ -190,8 +190,8 @@ describe("timeline panel", () => {
 				]}
 				graph={{
 					nodes: [{
-						node_id: "delegated_execution_berserker",
-						required_role: "builder-berserker",
+						node_id: "implementation",
+						required_role: "builder",
 						execution_ownership: "provider_backed",
 						state: "failed",
 					}],
@@ -201,12 +201,12 @@ describe("timeline panel", () => {
 			/>,
 		);
 
-		expect(screen.queryByText("Delegated Execution Berserker response received")).not.toBeInTheDocument();
-		expect(screen.getByText("Delegated Execution Berserker")).toBeInTheDocument();
+		expect(screen.queryByText("Implementation response received")).not.toBeInTheDocument();
+		expect(screen.getByText("Implementation")).toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: /Raw Events/i }));
 
-		expect(screen.getByText("Delegated Execution Berserker response received")).toBeInTheDocument();
+		expect(screen.getByText("Implementation response received")).toBeInTheDocument();
 	});
 
   it("keeps the default timeline focused on the step outcome instead of response mailbox noise", () => {
@@ -220,7 +220,7 @@ describe("timeline panel", () => {
 						event_type: "attempt.failed",
 						reason_code: "execution_review_rework",
 						emitted_at: "2026-03-18T11:40:00Z",
-						payload_json: { node_id: "execution_review_shieldmaiden", node_run_id: "nr-review-1", error: "rework requested" },
+						payload_json: { node_id: "execution_review", node_run_id: "nr-review-1", error: "rework requested" },
 					},
 					{
 						event_id: "evt-review-response-2",
@@ -230,7 +230,7 @@ describe("timeline panel", () => {
 						reason_code: "execution_review_rework",
 						emitted_at: "2026-03-18T11:41:00Z",
 						payload_json: {
-							node_id: "execution_review_shieldmaiden",
+							node_id: "execution_review",
 							node_run_id: "nr-review-2",
 							communication_type: "response_received",
 							response_full: "second attempt review response",
@@ -239,8 +239,8 @@ describe("timeline panel", () => {
 				]}
 				graph={{
 					nodes: [{
-						node_id: "execution_review_shieldmaiden",
-						required_role: "reviewer-shieldmaiden",
+						node_id: "execution_review",
+						required_role: "reviewer",
 						execution_ownership: "provider_backed",
 						state: "running",
 					}],
@@ -250,8 +250,8 @@ describe("timeline panel", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Execution Review Shieldmaiden")).toBeInTheDocument();
-		expect(screen.queryByText("Execution Review Shieldmaiden response received")).not.toBeInTheDocument();
+		expect(screen.getByText("Execution Review")).toBeInTheDocument();
+		expect(screen.queryByText("Execution Review response received")).not.toBeInTheDocument();
 	});
 
 	it("shows the newest raw events first inside an expanded milestone", async () => {
@@ -279,7 +279,7 @@ describe("timeline panel", () => {
 				graph={{
 					nodes: [{
 						node_id: "plan_drafting",
-						required_role: "council-member",
+						required_role: "plan-author",
 						execution_ownership: "provider_backed",
 						state: "failed",
 					}],
@@ -487,7 +487,7 @@ describe("timeline panel", () => {
 				attempt_seq: 1,
 				event_type: "attempt.started",
 				emitted_at: "2026-03-18T11:40:00Z",
-				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+				payload_json: { node_id: "usability_consultation", node_run_id: "nr-peasant-1" },
 			},
 		];
 		const { rerender } = render(
@@ -495,8 +495,8 @@ describe("timeline panel", () => {
 				events={initialEvents}
 				graph={{
 					nodes: [{
-						node_id: "advisor_consultation_peasant",
-						required_role: "peasant-delegate",
+						node_id: "usability_consultation",
+						required_role: "usability-advisor",
 						execution_ownership: "provider_backed",
 						state: "running",
 					}],
@@ -507,7 +507,7 @@ describe("timeline panel", () => {
 		);
 		scrollTo.mockClear();
 
-		await user.click(screen.getByRole("button", { name: /Advisor Consultation Peasant/i }));
+		await user.click(screen.getByRole("button", { name: /Usability Consultation/i }));
 
 		rerender(
 			<TimelinePanel
@@ -525,14 +525,14 @@ describe("timeline panel", () => {
 				graph={{
 					nodes: [
 						{
-							node_id: "advisor_consultation_peasant",
-							required_role: "peasant-delegate",
+							node_id: "usability_consultation",
+							required_role: "usability-advisor",
 							execution_ownership: "provider_backed",
 							state: "running",
 						},
 						{
 							node_id: "plan_drafting",
-							required_role: "council-member",
+							required_role: "plan-author",
 							execution_ownership: "provider_backed",
 							state: "running",
 						},
@@ -556,7 +556,7 @@ describe("timeline panel", () => {
 				attempt_seq: 1,
 				event_type: "attempt.started",
 				emitted_at: "2026-03-18T11:40:00Z",
-				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+				payload_json: { node_id: "usability_consultation", node_run_id: "nr-peasant-1" },
 			},
 			{
 				event_id: "evt-2",
@@ -564,20 +564,20 @@ describe("timeline panel", () => {
 				attempt_seq: 2,
 				event_type: "attempt.progress",
 				emitted_at: "2026-03-18T11:41:00Z",
-				payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+				payload_json: { node_id: "usability_consultation", node_run_id: "nr-peasant-1" },
 			},
 		];
 		const graph = {
 			nodes: [{
-				node_id: "advisor_consultation_peasant",
-				required_role: "peasant-delegate",
+				node_id: "usability_consultation",
+				required_role: "usability-advisor",
 				execution_ownership: "provider_backed" as const,
 				state: "running" as const,
 			}],
 			edges: [],
 		};
 		const view = render(<TimelinePanel events={initialEvents} graph={graph} hasMore={false} />);
-		await user.click(screen.getByRole("button", { name: /Advisor Consultation Peasant/i }));
+		await user.click(screen.getByRole("button", { name: /Usability Consultation/i }));
 		expect(screen.queryByRole("button", { name: /Jump to latest/i })).not.toBeInTheDocument();
 
 		view.rerender(
@@ -590,7 +590,7 @@ describe("timeline panel", () => {
 						attempt_seq: 3,
 						event_type: "attempt.succeeded",
 						emitted_at: "2026-03-18T11:42:00Z",
-						payload_json: { node_id: "advisor_consultation_peasant", node_run_id: "nr-peasant-1" },
+						payload_json: { node_id: "usability_consultation", node_run_id: "nr-peasant-1" },
 					},
 				]}
 				graph={graph}

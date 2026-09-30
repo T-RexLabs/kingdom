@@ -561,12 +561,12 @@ func currentExecutionReasonCode(outcome opencode.ExecutionOutcome, err error) st
 	return classifyExecutionReasonCode(err)
 }
 
-func (o *orchestrationLoop) planAutomaticDecreeRetry(ctx context.Context, result asyncExecutionResult, reasonCode, occurredAt string) (state.RetryDecisionCreateRequest, bool, error) {
+func (o *orchestrationLoop) planAutomaticWorkOrderRetry(ctx context.Context, result asyncExecutionResult, reasonCode, occurredAt string) (state.RetryDecisionCreateRequest, bool, error) {
 	if o == nil || o.retryEngine == nil {
 		return state.RetryDecisionCreateRequest{}, false, nil
 	}
 	code := canonicalAutomaticRetryCode(reasonCode)
-	retriesAttempted, err := o.transitionService().CountDecreeRetryDecisions(ctx, result.run.RunID, result.node.NodeID)
+	retriesAttempted, err := o.transitionService().CountWorkOrderRetryDecisions(ctx, result.run.RunID, result.node.NodeID)
 	if err != nil {
 		return state.RetryDecisionCreateRequest{}, false, err
 	}
@@ -598,7 +598,7 @@ func (o *orchestrationLoop) planAutomaticDecreeRetry(ctx context.Context, result
 	}
 	return state.RetryDecisionCreateRequest{
 		DecisionID:         fmt.Sprintf("retry_decision_%s", sanitizeFileToken(result.attemptID)),
-		SubjectKind:        state.RetrySubjectKindDecreeAttempt,
+		SubjectKind:        state.RetrySubjectKindWorkOrderAttempt,
 		RunID:              result.run.RunID,
 		NodeID:             result.node.NodeID,
 		NodeRunID:          result.attempt.NodeRunID,
@@ -901,12 +901,12 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 		retryRecorded := false
 		var transitionErr error
 		if result.attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && actualAttemptState == "committed_failure" && decision.LatestAttempt && !isWorkflowReworkFailure(terminalReasonCode) {
-			retryReq, planned, planErr := o.planAutomaticDecreeRetry(ctx, result, terminalReasonCode, now)
+			retryReq, planned, planErr := o.planAutomaticWorkOrderRetry(ctx, result, terminalReasonCode, now)
 			if planErr != nil {
 				return planErr
 			}
 			if planned {
-				_, _, transitionErr = o.transitionService().RecordAutomaticDecreeRetry(ctx, state.AutomaticDecreeRetryRecordRequest{Transition: transitionReq, Decision: retryReq})
+				_, _, transitionErr = o.transitionService().RecordAutomaticWorkOrderRetry(ctx, state.AutomaticWorkOrderRetryRecordRequest{Transition: transitionReq, Decision: retryReq})
 				retryRecorded = transitionErr == nil
 			}
 		}
@@ -938,7 +938,7 @@ func (o *orchestrationLoop) completeExecution(ctx context.Context, result asyncE
 	// Reconcile the agent's registry status from live node_runs on every completion.
 	// SyncOperationalStatus derives the status from current node_runs (idempotent), so
 	// it is safe to run unconditionally. Gating it on a committed/projected transition
-	// left runtime-owned agents (e.g. the King's plan-decision node) stuck "busy" when
+	// left runtime-owned agents (e.g. the Governance's plan-decision node) stuck "busy" when
 	// their completion landed after the run/node had already moved past "running".
 	if o.registry != nil {
 		if statusErr := o.registry.SyncOperationalStatus(ctx, result.attempt.AgentID, now); statusErr != nil {
@@ -1352,29 +1352,15 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	o.eventSeqMu.Lock()
 	defer o.eventSeqMu.Unlock()
 	seq := o.nextEventSeq(ctx, result.attemptID)
-	// Prefer the provider part id so live and diagnostic activity observations
-	// share one stable id the reader de-dupes on; fall
-	// back to a seq-derived id only when the provider omits a part id.
-	activityID := strings.TrimSpace(observation.ProviderPartID)
-	if activityID == "" {
-		activityID = fmt.Sprintf("%s_act_%d", result.attemptID, seq)
-	}
+	observation.InvocationID = result.providerInvocationID
+	observation.OccurredAt = occurredAt
+	activityID := acp.ActivityIdentity(observation, fmt.Sprintf("%s_act_%d", result.attemptID, seq))
 	payload := acp.ActivityPayload(map[string]any{
 		"run_id":      strings.TrimSpace(result.run.RunID),
 		"node_id":     strings.TrimSpace(result.node.NodeID),
 		"node_run_id": strings.TrimSpace(result.attempt.NodeRunID),
 		"attempt_id":  strings.TrimSpace(result.attemptID),
-	}, activityID, acp.ActivityInput{
-		Kind:       string(observation.Kind),
-		ToolName:   observation.ToolName,
-		ToolStatus: observation.ToolStatus,
-		ToolTitle:  observation.ToolTitle,
-		ToolInput:  observation.ToolInput,
-		Label:      observation.Label,
-		Summary:    observation.Summary,
-		RawText:    observation.RawText,
-		OccurredAt: occurredAt,
-	})
+	}, activityID, observation)
 	if len(payload) == 0 {
 		return
 	}
@@ -1382,24 +1368,28 @@ func (o *orchestrationLoop) emitProviderActivityObservation(ctx context.Context,
 	if err != nil {
 		return
 	}
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_act_%d", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt, seq),
-		RunID:           result.run.RunID,
-		NodeRunID:       sql.NullString{String: result.attempt.NodeRunID, Valid: strings.TrimSpace(result.attempt.NodeRunID) != ""},
-		AttemptID:       result.attemptID,
-		SchemaVersion:   "v1",
-		EventType:       state.AttemptActivityEventType,
-		Seq:             seq,
-		PayloadJSON:     string(raw),
-		ActorID:         "runtime_orchestrator",
-		RoleID:          result.node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "provider_activity",
-		ReasonText:      "provider activity telemetry",
-		CorrelationID:   "corr_orch_" + result.run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_act_%s", result.run.RunID, result.attempt.NodeRunID, sanitizeFileToken(activityID)),
-		CreatedAt:       receivedAt.Format(time.RFC3339Nano),
+	_, err = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
+		EventID:          fmt.Sprintf("evt_orch_%s_%s_%d_act_%d", sanitizeFileToken(result.run.RunID), sanitizeFileToken(result.node.NodeID), result.attempt.Attempt, seq),
+		RunID:            result.run.RunID,
+		NodeRunID:        sql.NullString{String: result.attempt.NodeRunID, Valid: strings.TrimSpace(result.attempt.NodeRunID) != ""},
+		AttemptID:        result.attemptID,
+		SchemaVersion:    "v1",
+		EventType:        state.AttemptActivityEventType,
+		Seq:              seq,
+		PayloadJSON:      string(raw),
+		ActivityContents: observation.ContentSources(),
+		ActorID:          "runtime_orchestrator",
+		RoleID:           result.node.RequiredRole,
+		AuthoritySource:  "runtime.orchestrator",
+		ReasonCode:       "provider_activity",
+		ReasonText:       "provider activity telemetry",
+		CorrelationID:    "corr_orch_" + result.run.RunID,
+		CausationID:      fmt.Sprintf("caus_orch_%s_%s_act_%s", result.run.RunID, result.attempt.NodeRunID, sanitizeFileToken(activityID)),
+		CreatedAt:        receivedAt.Format(time.RFC3339Nano),
 	})
+	if err != nil {
+		slog.Warn("failed to persist provider activity", "attempt_id", result.attemptID, "error", err)
+	}
 }
 
 func isDurableExecutionTerminalState(state string) bool {

@@ -259,14 +259,14 @@ type analyticsRoleDurationPayload struct {
 	AvgDurationSeconds float64 `json:"avg_duration_seconds"`
 }
 
-type realmAnalyticsRunAnalyticsPayload struct {
+type analyticsRunAnalyticsPayload struct {
 	BucketType     string                          `json:"bucket_type"`
 	OutcomeSeries  []analyticsOutcomeBucketPayload `json:"outcome_series"`
 	DurationByRole []analyticsRoleDurationPayload  `json:"duration_by_role"`
 	RecentRuns     []gen.RunSummary                `json:"recent_runs"`
 }
 
-type realmAnalyticsTokenSummaryPayload struct {
+type analyticsTokenSummaryPayload struct {
 	ProviderTotalTokens int64                `json:"provider_total_tokens"`
 	DerivedTotalTokens  int64                `json:"derived_total_tokens"`
 	Input               int64                `json:"input"`
@@ -277,44 +277,44 @@ type realmAnalyticsTokenSummaryPayload struct {
 	ByRole              []tokenByRolePayload `json:"by_role"`
 }
 
-type realmAnalyticsArtifactSummaryPayload struct {
+type analyticsArtifactSummaryPayload struct {
 	TotalCount     int   `json:"total_count"`
 	TotalSizeBytes int64 `json:"total_size_bytes"`
 }
 
-type realmAnalyticsNodeSummaryPayload struct {
+type analyticsNodeSummaryPayload struct {
 	TotalExecuted int `json:"total_executed"`
 }
 
-type realmAnalyticsSelectedRunPayload struct {
-	RunID       string `json:"run_id"`
-	DecreeTitle string `json:"decree_title"`
-	Status      string `json:"status"`
-	CreatedAt   string `json:"created_at"`
+type analyticsSelectedRunPayload struct {
+	RunID          string `json:"run_id"`
+	WorkOrderTitle string `json:"work_order_title"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
 }
 
-type realmAnalyticsExecutionDetailPayload struct {
-	SelectedRun *realmAnalyticsSelectedRunPayload    `json:"selected_run,omitempty"`
-	Tokens      realmAnalyticsTokenSummaryPayload    `json:"tokens"`
-	Artifacts   realmAnalyticsArtifactSummaryPayload `json:"artifacts"`
-	Nodes       realmAnalyticsNodeSummaryPayload     `json:"nodes"`
+type analyticsExecutionDetailPayload struct {
+	SelectedRun *analyticsSelectedRunPayload    `json:"selected_run,omitempty"`
+	Tokens      analyticsTokenSummaryPayload    `json:"tokens"`
+	Artifacts   analyticsArtifactSummaryPayload `json:"artifacts"`
+	Nodes       analyticsNodeSummaryPayload     `json:"nodes"`
 }
 
-type realmAnalyticsSnapshotPayload struct {
+type analyticsSnapshotPayload struct {
 	SnapshotAt      string                            `json:"snapshot_at"`
 	WindowMinutes   int                               `json:"window_minutes"`
 	AllTimeRunCount int                               `json:"all_time_run_count"`
 	Overview        analyticsOverviewPayload          `json:"overview"`
-	RunAnalytics    realmAnalyticsRunAnalyticsPayload `json:"run_analytics"`
+	RunAnalytics    analyticsRunAnalyticsPayload `json:"run_analytics"`
 }
 
-type realmAnalyticsExecutionDetailSnapshotPayload struct {
+type analyticsExecutionDetailSnapshotPayload struct {
 	SnapshotAt      string                               `json:"snapshot_at"`
 	WindowMinutes   int                                  `json:"window_minutes"`
-	ExecutionDetail realmAnalyticsExecutionDetailPayload `json:"execution_detail"`
+	ExecutionDetail analyticsExecutionDetailPayload `json:"execution_detail"`
 }
 
-var errRealmAnalyticsSelectedRunNotFound = errors.New("realm analytics selected run not found")
+var errAnalyticsSelectedRunNotFound = errors.New("realm analytics selected run not found")
 
 func (s *Server) handleGetMetricsRuntime(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requirePrincipal(w, r, "api.get_metrics_runtime"); !ok {
@@ -351,7 +351,7 @@ func (s *Server) handleGetDashboardSnapshot(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
-func (s *Server) handleGetRealmAnalyticsSnapshot(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetAnalyticsSnapshot(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requirePrincipal(w, r, "api.get_realm_analytics_snapshot"); !ok {
 		return
 	}
@@ -361,7 +361,7 @@ func (s *Server) handleGetRealmAnalyticsSnapshot(w http.ResponseWriter, r *http.
 		return
 	}
 
-	snapshot, err := s.buildRealmAnalyticsSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes)
+	snapshot, err := s.buildAnalyticsSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes)
 	if err != nil {
 		s.writeInternalError(w, "fetch realm analytics snapshot failed")
 		return
@@ -370,7 +370,7 @@ func (s *Server) handleGetRealmAnalyticsSnapshot(w http.ResponseWriter, r *http.
 	writeJSON(w, http.StatusOK, snapshot)
 }
 
-func (s *Server) handleGetRealmAnalyticsExecutionDetailSnapshot(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleGetAnalyticsExecutionDetailSnapshot(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requirePrincipal(w, r, "api.get_realm_analytics_execution_detail_snapshot"); !ok {
 		return
 	}
@@ -381,9 +381,9 @@ func (s *Server) handleGetRealmAnalyticsExecutionDetailSnapshot(w http.ResponseW
 	}
 	selectedRunID := strings.TrimSpace(r.URL.Query().Get("run_id"))
 
-	snapshot, err := s.buildRealmAnalyticsExecutionDetailSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes, selectedRunID)
+	snapshot, err := s.buildAnalyticsExecutionDetailSnapshot(r.Context(), snapshotAt, windowStart, windowMinutes, selectedRunID)
 	if err != nil {
-		if errors.Is(err, errRealmAnalyticsSelectedRunNotFound) {
+		if errors.Is(err, errAnalyticsSelectedRunNotFound) {
 			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.get_realm_analytics_execution_detail_snapshot", map[string]any{"run_id": selectedRunID})
 			return
 		}
@@ -457,31 +457,31 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotP
 	}, nil
 }
 
-func (s *Server) buildRealmAnalyticsSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int) (realmAnalyticsSnapshotPayload, error) {
+func (s *Server) buildAnalyticsSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int) (analyticsSnapshotPayload, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return realmAnalyticsSnapshotPayload{}, fmt.Errorf("begin realm analytics snapshot tx: %w", err)
+		return analyticsSnapshotPayload{}, fmt.Errorf("begin realm analytics snapshot tx: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
 	allTimeRunCount, err := loadAllTimeRunCount(ctx, tx)
 	if err != nil {
-		return realmAnalyticsSnapshotPayload{}, err
+		return analyticsSnapshotPayload{}, err
 	}
 	overview, err := loadAnalyticsOverview(ctx, tx, windowStart)
 	if err != nil {
-		return realmAnalyticsSnapshotPayload{}, err
+		return analyticsSnapshotPayload{}, err
 	}
-	runAnalytics, err := loadRealmAnalyticsRunAnalytics(ctx, tx, windowStart, windowMinutes)
+	runAnalytics, err := loadAnalyticsRunAnalytics(ctx, tx, windowStart, windowMinutes)
 	if err != nil {
-		return realmAnalyticsSnapshotPayload{}, err
+		return analyticsSnapshotPayload{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return realmAnalyticsSnapshotPayload{}, fmt.Errorf("commit realm analytics snapshot tx: %w", err)
+		return analyticsSnapshotPayload{}, fmt.Errorf("commit realm analytics snapshot tx: %w", err)
 	}
 
-	return realmAnalyticsSnapshotPayload{
+	return analyticsSnapshotPayload{
 		SnapshotAt:      snapshotAt.Format(time.RFC3339),
 		WindowMinutes:   windowMinutes,
 		AllTimeRunCount: allTimeRunCount,
@@ -490,26 +490,26 @@ func (s *Server) buildRealmAnalyticsSnapshot(ctx context.Context, snapshotAt tim
 	}, nil
 }
 
-func (s *Server) buildRealmAnalyticsExecutionDetailSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int, selectedRunID string) (realmAnalyticsExecutionDetailSnapshotPayload, error) {
+func (s *Server) buildAnalyticsExecutionDetailSnapshot(ctx context.Context, snapshotAt time.Time, windowStart string, windowMinutes int, selectedRunID string) (analyticsExecutionDetailSnapshotPayload, error) {
 	metadataByModel := s.loadTokenModelMetadata(ctx)
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return realmAnalyticsExecutionDetailSnapshotPayload{}, fmt.Errorf("begin realm analytics execution detail tx: %w", err)
+		return analyticsExecutionDetailSnapshotPayload{}, fmt.Errorf("begin realm analytics execution detail tx: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback()
 	}()
 	tokenStore := snapshotScopedTokenStore(s.tokenUsageStore, tx)
 
-	executionDetail, err := s.loadRealmAnalyticsExecutionDetail(ctx, tx, tokenStore, metadataByModel, windowStart, selectedRunID)
+	executionDetail, err := s.loadAnalyticsExecutionDetail(ctx, tx, tokenStore, metadataByModel, windowStart, selectedRunID)
 	if err != nil {
-		return realmAnalyticsExecutionDetailSnapshotPayload{}, err
+		return analyticsExecutionDetailSnapshotPayload{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return realmAnalyticsExecutionDetailSnapshotPayload{}, fmt.Errorf("commit realm analytics execution detail tx: %w", err)
+		return analyticsExecutionDetailSnapshotPayload{}, fmt.Errorf("commit realm analytics execution detail tx: %w", err)
 	}
 
-	return realmAnalyticsExecutionDetailSnapshotPayload{
+	return analyticsExecutionDetailSnapshotPayload{
 		SnapshotAt:      snapshotAt.Format(time.RFC3339),
 		WindowMinutes:   windowMinutes,
 		ExecutionDetail: executionDetail,
@@ -590,8 +590,8 @@ func loadDashboardRecentRuns(ctx context.Context, q sqlReadQuerier, since string
 	rows, err := q.QueryContext(ctx,
 		`SELECT wr.run_id,
 		        wd.workflow_name,
-		        wr.decree_id,
-		        COALESCE(NULLIF(d.decree_title, ''), wr.run_id),
+		        wr.work_order_id,
+		        COALESCE(NULLIF(d.work_order_title, ''), wr.run_id),
 		        wr.run_status,
 		        wr.plan_state,
 		        wr.created_at,
@@ -601,7 +601,7 @@ func loadDashboardRecentRuns(ctx context.Context, q sqlReadQuerier, since string
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-		 LEFT JOIN decrees d ON d.decree_id = wr.decree_id
+		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.created_at >= ?
 		 ORDER BY ra.last_activity_at DESC, wr.run_id DESC
 		 LIMIT ?`,
@@ -632,8 +632,8 @@ func scanRunSummaryRows(rows *sql.Rows, limit int) ([]gen.RunSummary, error) {
 		if err := rows.Scan(
 			&summary.RunId,
 			&summary.WorkflowId,
-			&summary.DecreeId,
-			&summary.DecreeTitle,
+			&summary.WorkOrderId,
+			&summary.WorkOrderTitle,
 			&summary.Status,
 			&summary.PlanState,
 			&createdAt,
@@ -771,7 +771,7 @@ func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since string) 
 	return overview, nil
 }
 
-func loadRealmAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since string, windowMinutes int) (realmAnalyticsRunAnalyticsPayload, error) {
+func loadAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since string, windowMinutes int) (analyticsRunAnalyticsPayload, error) {
 	bucketType := "day"
 	bucketExpr := "strftime('%Y-%m-%d', created_at)"
 	if windowMinutes <= 24*60 {
@@ -790,19 +790,19 @@ func loadRealmAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since
 		bucketExpr,
 	), since)
 	if err != nil {
-		return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics outcome series: %w", err)
+		return analyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics outcome series: %w", err)
 	}
 	defer outcomeRows.Close()
 	outcomeSeries := make([]analyticsOutcomeBucketPayload, 0)
 	for outcomeRows.Next() {
 		var bucket analyticsOutcomeBucketPayload
 		if err := outcomeRows.Scan(&bucket.Bucket, &bucket.Succeeded, &bucket.Failed, &bucket.Cancelled); err != nil {
-			return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("scan analytics outcome series row: %w", err)
+			return analyticsRunAnalyticsPayload{}, fmt.Errorf("scan analytics outcome series row: %w", err)
 		}
 		outcomeSeries = append(outcomeSeries, bucket)
 	}
 	if err := outcomeRows.Err(); err != nil {
-		return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("iterate analytics outcome series rows: %w", err)
+		return analyticsRunAnalyticsPayload{}, fmt.Errorf("iterate analytics outcome series rows: %w", err)
 	}
 
 	nodeClassFilter, nodeClassArgs := executionAnalyticsNodeClassFilterSQL("wn")
@@ -823,27 +823,27 @@ func loadRealmAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since
 		roleArgs...,
 	)
 	if err != nil {
-		return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics duration by role: %w", err)
+		return analyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics duration by role: %w", err)
 	}
 	defer roleRows.Close()
 	durationByRole := make([]analyticsRoleDurationPayload, 0)
 	for roleRows.Next() {
 		var row analyticsRoleDurationPayload
 		if err := roleRows.Scan(&row.Role, &row.AvgDurationSeconds); err != nil {
-			return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("scan analytics duration by role row: %w", err)
+			return analyticsRunAnalyticsPayload{}, fmt.Errorf("scan analytics duration by role row: %w", err)
 		}
 		durationByRole = append(durationByRole, row)
 	}
 	if err := roleRows.Err(); err != nil {
-		return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("iterate analytics duration by role rows: %w", err)
+		return analyticsRunAnalyticsPayload{}, fmt.Errorf("iterate analytics duration by role rows: %w", err)
 	}
 
-	recentRuns, err := loadRealmAnalyticsRecentRuns(ctx, q, since, 20)
+	recentRuns, err := loadAnalyticsRecentRuns(ctx, q, since, 20)
 	if err != nil {
-		return realmAnalyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics recent runs: %w", err)
+		return analyticsRunAnalyticsPayload{}, fmt.Errorf("query analytics recent runs: %w", err)
 	}
 
-	return realmAnalyticsRunAnalyticsPayload{
+	return analyticsRunAnalyticsPayload{
 		BucketType:     bucketType,
 		OutcomeSeries:  outcomeSeries,
 		DurationByRole: durationByRole,
@@ -851,12 +851,12 @@ func loadRealmAnalyticsRunAnalytics(ctx context.Context, q sqlReadQuerier, since
 	}, nil
 }
 
-func loadRealmAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since string, limit int) ([]gen.RunSummary, error) {
+func loadAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since string, limit int) ([]gen.RunSummary, error) {
 	rows, err := q.QueryContext(ctx,
 		`SELECT wr.run_id,
 		        wd.workflow_name,
-		        wr.decree_id,
-		        COALESCE(NULLIF(d.decree_title, ''), wr.run_id),
+		        wr.work_order_id,
+		        COALESCE(NULLIF(d.work_order_title, ''), wr.run_id),
 		        wr.run_status,
 		        wr.plan_state,
 		        wr.created_at,
@@ -866,7 +866,7 @@ func loadRealmAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since s
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-		 LEFT JOIN decrees d ON d.decree_id = wr.decree_id
+		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.created_at >= ?
 		   AND wr.run_status IN ('succeeded', 'failed', 'cancelled')
 		 ORDER BY wr.updated_at DESC, wr.run_id DESC
@@ -882,37 +882,37 @@ func loadRealmAnalyticsRecentRuns(ctx context.Context, q sqlReadQuerier, since s
 	return scanRunSummaryRows(rows, limit)
 }
 
-func (s *Server) loadRealmAnalyticsExecutionDetail(
+func (s *Server) loadAnalyticsExecutionDetail(
 	ctx context.Context,
 	q sqlReadQuerier,
 	tokenStore *state.TokenUsageStore,
 	metadataByModel map[string]tokenModelMetadata,
 	since string,
 	selectedRunID string,
-) (realmAnalyticsExecutionDetailPayload, error) {
+) (analyticsExecutionDetailPayload, error) {
 	if selectedRunID != "" {
-		selectedRun, err := loadRealmAnalyticsSelectedRun(ctx, q, selectedRunID)
+		selectedRun, err := loadAnalyticsSelectedRun(ctx, q, selectedRunID)
 		if err != nil {
-			return realmAnalyticsExecutionDetailPayload{}, err
+			return analyticsExecutionDetailPayload{}, err
 		}
 		tokenSummary, err := tokenStore.SummaryByRunExecutionAnalytics(ctx, selectedRunID)
 		if err != nil {
-			return realmAnalyticsExecutionDetailPayload{}, fmt.Errorf("query selected run token summary: %w", err)
+			return analyticsExecutionDetailPayload{}, fmt.Errorf("query selected run token summary: %w", err)
 		}
 		byRole, err := tokenStore.ByRoleForRunExecutionAnalytics(ctx, selectedRunID)
 		if err != nil {
-			return realmAnalyticsExecutionDetailPayload{}, fmt.Errorf("query selected run token breakdown: %w", err)
+			return analyticsExecutionDetailPayload{}, fmt.Errorf("query selected run token breakdown: %w", err)
 		}
 		artifacts, err := loadArtifactSummaryForRun(ctx, q, selectedRunID)
 		if err != nil {
-			return realmAnalyticsExecutionDetailPayload{}, err
+			return analyticsExecutionDetailPayload{}, err
 		}
 		nodes, err := loadExecutionNodeSummaryForRun(ctx, q, selectedRunID)
 		if err != nil {
-			return realmAnalyticsExecutionDetailPayload{}, err
+			return analyticsExecutionDetailPayload{}, err
 		}
-		payload := buildRealmAnalyticsTokenSummaryPayload(tokenSummary, byRole, metadataByModel)
-		return realmAnalyticsExecutionDetailPayload{
+		payload := buildAnalyticsTokenSummaryPayload(tokenSummary, byRole, metadataByModel)
+		return analyticsExecutionDetailPayload{
 			SelectedRun: selectedRun,
 			Tokens:      payload,
 			Artifacts:   artifacts,
@@ -922,30 +922,30 @@ func (s *Server) loadRealmAnalyticsExecutionDetail(
 
 	tokenSummary, err := tokenStore.SummaryByTimeWindowExecutionAnalytics(ctx, since)
 	if err != nil {
-		return realmAnalyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token summary: %w", err)
+		return analyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token summary: %w", err)
 	}
 	byRole, err := tokenStore.ByRoleExecutionAnalytics(ctx, since)
 	if err != nil {
-		return realmAnalyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token breakdown: %w", err)
+		return analyticsExecutionDetailPayload{}, fmt.Errorf("query aggregate token breakdown: %w", err)
 	}
 	artifacts, err := loadArtifactSummarySince(ctx, q, since)
 	if err != nil {
-		return realmAnalyticsExecutionDetailPayload{}, err
+		return analyticsExecutionDetailPayload{}, err
 	}
 	nodes, err := loadExecutionNodeSummarySince(ctx, q, since)
 	if err != nil {
-		return realmAnalyticsExecutionDetailPayload{}, err
+		return analyticsExecutionDetailPayload{}, err
 	}
-	return realmAnalyticsExecutionDetailPayload{
-		Tokens:    buildRealmAnalyticsTokenSummaryPayload(tokenSummary, byRole, metadataByModel),
+	return analyticsExecutionDetailPayload{
+		Tokens:    buildAnalyticsTokenSummaryPayload(tokenSummary, byRole, metadataByModel),
 		Artifacts: artifacts,
 		Nodes:     nodes,
 	}, nil
 }
 
-func buildRealmAnalyticsTokenSummaryPayload(summary state.TokenUsageSummary, byRole []state.TokenUsageByRole, metadataByModel map[string]tokenModelMetadata) realmAnalyticsTokenSummaryPayload {
+func buildAnalyticsTokenSummaryPayload(summary state.TokenUsageSummary, byRole []state.TokenUsageByRole, metadataByModel map[string]tokenModelMetadata) analyticsTokenSummaryPayload {
 	tokenSummary := buildTokenSummaryPayload(summary)
-	return realmAnalyticsTokenSummaryPayload{
+	return analyticsTokenSummaryPayload{
 		ProviderTotalTokens: tokenSummary.ProviderTotalTokens,
 		DerivedTotalTokens:  tokenSummary.DerivedTotalTokens,
 		Input:               tokenSummary.Input,
@@ -957,20 +957,20 @@ func buildRealmAnalyticsTokenSummaryPayload(summary state.TokenUsageSummary, byR
 	}
 }
 
-func loadRealmAnalyticsSelectedRun(ctx context.Context, q sqlReadQuerier, runID string) (*realmAnalyticsSelectedRunPayload, error) {
-	var selectedRun realmAnalyticsSelectedRunPayload
+func loadAnalyticsSelectedRun(ctx context.Context, q sqlReadQuerier, runID string) (*analyticsSelectedRunPayload, error) {
+	var selectedRun analyticsSelectedRunPayload
 	err := q.QueryRowContext(ctx,
 		`SELECT wr.run_id,
-		        COALESCE(NULLIF(d.decree_title, ''), wr.run_id),
+		        COALESCE(NULLIF(d.work_order_title, ''), wr.run_id),
 		        wr.run_status,
 		        wr.created_at
 		 FROM workflow_runs wr
-		 LEFT JOIN decrees d ON d.decree_id = wr.decree_id
+		 LEFT JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.run_id = ?`,
 		runID,
-	).Scan(&selectedRun.RunID, &selectedRun.DecreeTitle, &selectedRun.Status, &selectedRun.CreatedAt)
+	).Scan(&selectedRun.RunID, &selectedRun.WorkOrderTitle, &selectedRun.Status, &selectedRun.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, errRealmAnalyticsSelectedRunNotFound
+		return nil, errAnalyticsSelectedRunNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("query selected run summary: %w", err)
@@ -978,16 +978,16 @@ func loadRealmAnalyticsSelectedRun(ctx context.Context, q sqlReadQuerier, runID 
 	return &selectedRun, nil
 }
 
-func loadArtifactSummarySince(ctx context.Context, q sqlReadQuerier, since string) (realmAnalyticsArtifactSummaryPayload, error) {
+func loadArtifactSummarySince(ctx context.Context, q sqlReadQuerier, since string) (analyticsArtifactSummaryPayload, error) {
 	return loadArtifactSummary(ctx, q, `created_at >= ?`, since)
 }
 
-func loadArtifactSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (realmAnalyticsArtifactSummaryPayload, error) {
+func loadArtifactSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (analyticsArtifactSummaryPayload, error) {
 	return loadArtifactSummary(ctx, q, `run_id = ?`, runID)
 }
 
-func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (realmAnalyticsArtifactSummaryPayload, error) {
-	var summary realmAnalyticsArtifactSummaryPayload
+func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (analyticsArtifactSummaryPayload, error) {
+	var summary analyticsArtifactSummaryPayload
 	err := q.QueryRowContext(ctx,
 		fmt.Sprintf(`SELECT COALESCE(COUNT(1), 0), COALESCE(SUM(size_bytes), 0)
 		 FROM artifacts
@@ -995,21 +995,21 @@ func loadArtifactSummary(ctx context.Context, q sqlReadQuerier, predicate string
 		arg,
 	).Scan(&summary.TotalCount, &summary.TotalSizeBytes)
 	if err != nil {
-		return realmAnalyticsArtifactSummaryPayload{}, fmt.Errorf("query artifact summary: %w", err)
+		return analyticsArtifactSummaryPayload{}, fmt.Errorf("query artifact summary: %w", err)
 	}
 	return summary, nil
 }
 
-func loadExecutionNodeSummarySince(ctx context.Context, q sqlReadQuerier, since string) (realmAnalyticsNodeSummaryPayload, error) {
+func loadExecutionNodeSummarySince(ctx context.Context, q sqlReadQuerier, since string) (analyticsNodeSummaryPayload, error) {
 	return loadExecutionNodeSummary(ctx, q, `nr.started_at IS NOT NULL AND nr.started_at >= ?`, since)
 }
 
-func loadExecutionNodeSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (realmAnalyticsNodeSummaryPayload, error) {
+func loadExecutionNodeSummaryForRun(ctx context.Context, q sqlReadQuerier, runID string) (analyticsNodeSummaryPayload, error) {
 	return loadExecutionNodeSummary(ctx, q, `nr.run_id = ? AND nr.started_at IS NOT NULL`, runID)
 }
 
-func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (realmAnalyticsNodeSummaryPayload, error) {
-	var summary realmAnalyticsNodeSummaryPayload
+func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate string, arg any) (analyticsNodeSummaryPayload, error) {
+	var summary analyticsNodeSummaryPayload
 	nodeClassFilter, nodeClassArgs := executionAnalyticsNodeClassFilterSQL("wn")
 	args := make([]any, 0, 1+len(nodeClassArgs))
 	args = append(args, arg)
@@ -1024,7 +1024,7 @@ func loadExecutionNodeSummary(ctx context.Context, q sqlReadQuerier, predicate s
 		args...,
 	).Scan(&summary.TotalExecuted)
 	if err != nil {
-		return realmAnalyticsNodeSummaryPayload{}, fmt.Errorf("query execution node summary: %w", err)
+		return analyticsNodeSummaryPayload{}, fmt.Errorf("query execution node summary: %w", err)
 	}
 	return summary, nil
 }

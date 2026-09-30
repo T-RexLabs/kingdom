@@ -5,11 +5,11 @@ import (
 	"testing"
 )
 
-func TestIsNodeReadyUsesStoredKingPlanDecisionClassForArbitraryNodeID(t *testing.T) {
+func TestIsNodeReadyUsesStoredGovernancePlanDecisionClassForArbitraryNodeID(t *testing.T) {
 	t.Parallel()
 
 	loop := orchestrationLoop{}
-	nodes := []nodeDefinition{{NodeID: "approval_gate", RequiredRole: "king", NodeClass: "king_plan_decision"}}
+	nodes := []nodeDefinition{{NodeID: "approval_gate", RequiredRole: "governance", NodeClass: "plan_decision"}}
 	latest := map[string]nodeAttempt{
 		"approval_gate": {
 			NodeID:     "approval_gate",
@@ -20,17 +20,17 @@ func TestIsNodeReadyUsesStoredKingPlanDecisionClassForArbitraryNodeID(t *testing
 
 	ready, err := loop.isNodeReady(
 		context.Background(),
-		runSnapshot{RunID: "run_custom_king_decision", PlanState: "awaiting_king_decision"},
+		runSnapshot{RunID: "run_custom_governance_decision", PlanState: "awaiting_plan_decision"},
 		nodes[0],
 		buildResolvedNodeClassIndex(nodes),
 		latest,
 		nil,
 	)
 	if err != nil {
-		t.Fatalf("custom king decision readiness: %v", err)
+		t.Fatalf("custom governance decision readiness: %v", err)
 	}
 	if ready {
-		t.Fatal("expected arbitrary king_plan_decision node to remain blocked while the decision is still pending")
+		t.Fatal("expected arbitrary plan_decision node to remain blocked while the decision is still pending")
 	}
 }
 
@@ -39,9 +39,9 @@ func TestIsNodeReadyUsesStoredExecutionKickoffClassForArbitraryNodeID(t *testing
 
 	loop := orchestrationLoop{}
 	nodes := []nodeDefinition{
-		{NodeID: "approval_gate", RequiredRole: "king", NodeClass: "king_plan_decision"},
-		{NodeID: "council_plan", RequiredRole: "council-member", NodeClass: "plan_drafting"},
-		{NodeID: "kickoff", RequiredRole: "council-member", NodeClass: "execution_kickoff"},
+		{NodeID: "approval_gate", RequiredRole: "governance", NodeClass: "plan_decision"},
+		{NodeID: "council_plan", RequiredRole: "plan-author", NodeClass: "plan_drafting"},
+		{NodeID: "kickoff", RequiredRole: "plan-author", NodeClass: "execution_kickoff"},
 	}
 	latest := map[string]nodeAttempt{
 		"approval_gate": {
@@ -78,14 +78,14 @@ func TestIsNodeReadyUsesStoredExecutionKickoffClassForArbitraryNodeID(t *testing
 	}
 }
 
-func TestIsNodeReadyUsesStoredRoyalClosureClassForArbitraryNodeID(t *testing.T) {
+func TestIsNodeReadyUsesStoredCompletionClassForArbitraryNodeID(t *testing.T) {
 	t.Parallel()
 
 	loop := orchestrationLoop{}
 	nodes := []nodeDefinition{
-		{NodeID: "review_gate", RequiredRole: "reviewer-shieldmaiden", NodeClass: "execution_review"},
-		{NodeID: "quality_gate", RequiredRole: "intelligence-qa-scout", NodeClass: "validation_gates"},
-		{NodeID: "final_seal", RequiredRole: "king", NodeClass: "royal_closure"},
+		{NodeID: "review_gate", RequiredRole: "reviewer", NodeClass: "execution_review"},
+		{NodeID: "quality_gate", RequiredRole: "qa-validator", NodeClass: "validation_gates"},
+		{NodeID: "final_seal", RequiredRole: "governance", NodeClass: "completion"},
 	}
 	latest := map[string]nodeAttempt{
 		"review_gate": {
@@ -118,6 +118,6 @@ func TestIsNodeReadyUsesStoredRoyalClosureClassForArbitraryNodeID(t *testing.T) 
 		t.Fatalf("custom royal closure readiness: %v", err)
 	}
 	if ready {
-		t.Fatal("expected arbitrary royal_closure node to remain blocked until every validation gate has succeeded")
+		t.Fatal("expected arbitrary completion node to remain blocked until every validation gate has succeeded")
 	}
 }

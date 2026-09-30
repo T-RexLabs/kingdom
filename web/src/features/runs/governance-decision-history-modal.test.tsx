@@ -40,7 +40,7 @@ describe("governance decision history modal", () => {
 			/>,
 		);
 
-		const dialog = screen.getByRole("dialog", { name: "Allfather Decision History" });
+		const dialog = screen.getByRole("dialog", { name: "Operator Decision History" });
 		const decisionRows = within(dialog).getAllByText(/Requested Plan Rework|Confirmed Completion/);
 		expect(decisionRows[0]).toHaveTextContent("Confirmed Completion");
 		expect(decisionRows[1]).toHaveTextContent("Requested Plan Rework");

@@ -84,17 +84,17 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Seed the pre-migration decree shape explicitly; current decree creation
+	// Seed the pre-migration work order shape explicitly; current work order creation
 	// may depend on later migrations owned by another subsystem.
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tx.Exec(`INSERT INTO decrees(decree_id,decree_title,decree_text,metadata_json,created_at) VALUES('migration-decree','Decree','immutable','{}',?)`, at); err != nil {
+	if _, err := tx.Exec(`INSERT INTO work_orders(work_order_id,work_order_title,work_order_text,metadata_json,created_at) VALUES('migration-work order','WorkOrder','immutable','{}',?)`, at); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
-	if err := createExternalLinkTx(ctx, tx, "migration-link", "decree", "migration-decree", old.SourceID, old.SnapshotID, "operator", "", at); err != nil {
+	if err := createExternalLinkTx(ctx, tx, "migration-link", "work_order", "migration-work order", old.SourceID, old.SnapshotID, "operator", "", at); err != nil {
 		tx.Rollback()
 		t.Fatal(err)
 	}
@@ -145,9 +145,9 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 			t.Fatalf("immutable source accepted %s", stmt)
 		}
 	}
-	links, err := store.GetLinksForTarget(ctx, "decree", "migration-decree")
+	links, err := store.GetLinksForTarget(ctx, "work_order", "migration-work order")
 	if err != nil || len(links) != 1 || links[0].UsedSnapshotID != old.SnapshotID {
-		t.Fatalf("historical decree binding changed: %v", err)
+		t.Fatalf("historical work order binding changed: %v", err)
 	}
 	rows, err := db.Query(`PRAGMA foreign_key_check`)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 	}
 }
 
-func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(t *testing.T) {
+func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableWorkOrderProvenance(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewExternalStore(db)
@@ -185,8 +185,8 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(
 	if second != first {
 		t.Fatalf("capture did not deduplicate: %#v %#v", first, second)
 	}
-	for i, id := range []string{"decree-1", "decree-2"} {
-		if err = store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: id, Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: first.SnapshotID, NewLinkID: func() string { return "link-" + id }, ActorID: "local-operator"}); err != nil {
+	for i, id := range []string{"work order-1", "work order-2"} {
+		if err = store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: id, Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: first.SnapshotID, NewLinkID: func() string { return "link-" + id }, ActorID: "local-operator"}); err != nil {
 			t.Fatal(err)
 		}
 		_ = i
@@ -218,7 +218,7 @@ func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-six" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "work-order-six", Title: "WorkOrder", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-six" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 	basis, err := store.GetRefreshBasis(ctx, "link-six")
@@ -227,43 +227,43 @@ func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
 	}
 }
 
-func TestCreateDecreeExternalLinkRollsBackOnUnknownSnapshot(t *testing.T) {
+func TestCreateWorkOrderExternalLinkRollsBackOnUnknownSnapshot(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewExternalStore(db)
-	err := store.CreateDecree(context.Background(), CreateDecreeRequest{DecreeID: "decree-x", Title: "D", Text: "T", CreatedAt: "2026-08-12T10:00:00Z", DirectSnapshotID: "missing", NewLinkID: func() string { return "link-x" }, ActorID: "local-operator"})
+	err := store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{WorkOrderID: "work-order-x", Title: "D", Text: "T", CreatedAt: "2026-08-12T10:00:00Z", DirectSnapshotID: "missing", NewLinkID: func() string { return "link-x" }, ActorID: "local-operator"})
 	if !errors.Is(err, ErrExternalNotFound) {
 		t.Fatalf("expected external not found, got %v", err)
 	}
 	var count int
-	_ = db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_id='decree-x'`).Scan(&count)
+	_ = db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_id='work-order-x'`).Scan(&count)
 	if count != 0 {
-		t.Fatal("decree escaped failed transaction")
+		t.Fatal("work order escaped failed transaction")
 	}
 }
 
-func TestCreateDecreeDerivesExactFormalizeBindingsAtomically(t *testing.T) {
-	fixture := newDecreeLineageFixture(t)
+func TestCreateWorkOrderDerivesExactFormalizeBindingsAtomically(t *testing.T) {
+	fixture := newWorkOrderLineageFixture(t)
 	linkIndex := 0
-	err := fixture.store.CreateDecree(context.Background(), CreateDecreeRequest{
-		DecreeID: "decree-planned", Title: "Planned", Text: "Exact draft", CreatedAt: fixture.at,
+	err := fixture.store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{
+		WorkOrderID: "work-order-planned", Title: "Planned", Text: "Exact draft", CreatedAt: fixture.at,
 		Metadata: map[string]any{
 			"priority":                     "high",
 			"planning_session_id":          "untrusted-session",
 			"planning_draft_id":            "untrusted-draft",
 			"planning_context_snapshot_id": "untrusted-context",
 		},
-		PlanningLineage: &DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"},
+		PlanningLineage: &WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"},
 		NewLinkID: func() string {
 			linkIndex++
-			return fmt.Sprintf("decree-link-%d", linkIndex)
+			return fmt.Sprintf("work-order-link-%d", linkIndex)
 		},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	rows, err := fixture.db.Query(`SELECT used_snapshot_id FROM external_source_links WHERE target_kind='decree' AND target_id='decree-planned' ORDER BY used_snapshot_id`)
+	rows, err := fixture.db.Query(`SELECT used_snapshot_id FROM external_source_links WHERE target_kind='work_order' AND target_id='work-order-planned' ORDER BY used_snapshot_id`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -277,18 +277,18 @@ func TestCreateDecreeDerivesExactFormalizeBindingsAtomically(t *testing.T) {
 		snapshots = append(snapshots, snapshotID)
 	}
 	if got, want := strings.Join(snapshots, ","), "snapshot-a,snapshot-b"; got != want {
-		t.Fatalf("decree snapshots=%q, want %q", got, want)
+		t.Fatalf("work order snapshots=%q, want %q", got, want)
 	}
-	links, err := fixture.store.GetLinksForTarget(context.Background(), "decree", "decree-planned")
+	links, err := fixture.store.GetLinksForTarget(context.Background(), "work_order", "work-order-planned")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(links) != 2 || links[0].LinkID != "decree-link-1" || links[0].UsedSnapshotID != "snapshot-a" || links[1].LinkID != "decree-link-2" || links[1].UsedSnapshotID != "snapshot-b" {
-		t.Fatalf("deterministic decree links=%#v", links)
+	if len(links) != 2 || links[0].LinkID != "work-order-link-1" || links[0].UsedSnapshotID != "snapshot-a" || links[1].LinkID != "work-order-link-2" || links[1].UsedSnapshotID != "snapshot-b" {
+		t.Fatalf("deterministic work order links=%#v", links)
 	}
 
 	var metadataJSON string
-	if err := fixture.db.QueryRow(`SELECT metadata_json FROM decrees WHERE decree_id='decree-planned'`).Scan(&metadataJSON); err != nil {
+	if err := fixture.db.QueryRow(`SELECT metadata_json FROM work_orders WHERE work_order_id='work-order-planned'`).Scan(&metadataJSON); err != nil {
 		t.Fatal(err)
 	}
 	var metadata map[string]any
@@ -300,56 +300,56 @@ func TestCreateDecreeDerivesExactFormalizeBindingsAtomically(t *testing.T) {
 	}
 }
 
-func TestCreateDecreeRejectsInvalidPlanningLineageWithoutWrites(t *testing.T) {
+func TestCreateWorkOrderRejectsInvalidPlanningLineageWithoutWrites(t *testing.T) {
 	tests := []struct {
 		name    string
-		lineage DecreePlanningLineage
+		lineage WorkOrderPlanningLineage
 	}{
-		{name: "cross-session draft", lineage: DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-b"}},
-		{name: "formalize missing context binding", lineage: DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-unbound"}},
-		{name: "failed formalize", lineage: DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-failed"}},
-		{name: "non-formalize operation", lineage: DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-reply"}},
+		{name: "cross-session draft", lineage: WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-b"}},
+		{name: "formalize missing context binding", lineage: WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-unbound"}},
+		{name: "failed formalize", lineage: WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-failed"}},
+		{name: "non-formalize operation", lineage: WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-reply"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newDecreeLineageFixture(t)
-			err := fixture.store.CreateDecree(context.Background(), CreateDecreeRequest{DecreeID: "decree-invalid", Title: "D", Text: "T", CreatedAt: fixture.at, PlanningLineage: &test.lineage, NewLinkID: func() string { return "unused-link" }})
-			if !errors.Is(err, ErrDecreeLineageInvalid) {
+			fixture := newWorkOrderLineageFixture(t)
+			err := fixture.store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{WorkOrderID: "work-order-invalid", Title: "D", Text: "T", CreatedAt: fixture.at, PlanningLineage: &test.lineage, NewLinkID: func() string { return "unused-link" }})
+			if !errors.Is(err, ErrWorkOrderLineageInvalid) {
 				t.Fatalf("expected invalid lineage, got %v", err)
 			}
-			assertDecreeProvenanceWriteCount(t, fixture.db, "decree-invalid", 0, 0)
+			assertWorkOrderProvenanceWriteCount(t, fixture.db, "work-order-invalid", 0, 0)
 		})
 	}
 }
 
-func TestCreateDecreeRejectsPlanningAndDirectSnapshotWithoutWrites(t *testing.T) {
-	fixture := newDecreeLineageFixture(t)
-	err := fixture.store.CreateDecree(context.Background(), CreateDecreeRequest{DecreeID: "decree-mixed", Title: "D", Text: "T", CreatedAt: fixture.at, DirectSnapshotID: "snapshot-a", PlanningLineage: &DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"}, NewLinkID: func() string { return "unused-link" }})
-	if !errors.Is(err, ErrDecreeLineageInvalid) {
+func TestCreateWorkOrderRejectsPlanningAndDirectSnapshotWithoutWrites(t *testing.T) {
+	fixture := newWorkOrderLineageFixture(t)
+	err := fixture.store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{WorkOrderID: "work-order-mixed", Title: "D", Text: "T", CreatedAt: fixture.at, DirectSnapshotID: "snapshot-a", PlanningLineage: &WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"}, NewLinkID: func() string { return "unused-link" }})
+	if !errors.Is(err, ErrWorkOrderLineageInvalid) {
 		t.Fatalf("expected invalid lineage, got %v", err)
 	}
-	assertDecreeProvenanceWriteCount(t, fixture.db, "decree-mixed", 0, 0)
+	assertWorkOrderProvenanceWriteCount(t, fixture.db, "work-order-mixed", 0, 0)
 }
 
-func TestCreateDecreeRejectsDuplicateSourceBindingsWithoutWrites(t *testing.T) {
-	fixture := newDecreeLineageFixture(t)
+func TestCreateWorkOrderRejectsDuplicateSourceBindingsWithoutWrites(t *testing.T) {
+	fixture := newWorkOrderLineageFixture(t)
 	if _, err := fixture.db.Exec(`INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES ('operation-good','snapshot-a-later',?, ?,0,0,?)`, ExternalAssemblerVersion, strings.Repeat("0", 64), fixture.at); err != nil {
 		t.Fatal(err)
 	}
-	err := fixture.store.CreateDecree(context.Background(), CreateDecreeRequest{DecreeID: "decree-conflict", Title: "D", Text: "T", CreatedAt: fixture.at, PlanningLineage: &DecreePlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"}, NewLinkID: func() string { return "unused-link" }})
-	if !errors.Is(err, ErrDecreeProvenanceConflict) {
+	err := fixture.store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{WorkOrderID: "work-order-conflict", Title: "D", Text: "T", CreatedAt: fixture.at, PlanningLineage: &WorkOrderPlanningLineage{PlanningSessionID: "session-a", PlanningDraftID: "draft-a"}, NewLinkID: func() string { return "unused-link" }})
+	if !errors.Is(err, ErrWorkOrderProvenanceConflict) {
 		t.Fatalf("expected provenance conflict, got %v", err)
 	}
-	assertDecreeProvenanceWriteCount(t, fixture.db, "decree-conflict", 0, 0)
+	assertWorkOrderProvenanceWriteCount(t, fixture.db, "work-order-conflict", 0, 0)
 }
 
-type decreeLineageFixture struct {
+type workOrderLineageFixture struct {
 	db    *sql.DB
 	store *ExternalStore
 	at    string
 }
 
-func newDecreeLineageFixture(t *testing.T) decreeLineageFixture {
+func newWorkOrderLineageFixture(t *testing.T) workOrderLineageFixture {
 	t.Helper()
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
@@ -374,7 +374,7 @@ func newDecreeLineageFixture(t *testing.T) decreeLineageFixture {
 		mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES (?,?,'custom','active','ready','/tmp','{}',?,?)`, sessionID, sessionID, at, at)
 	}
 	for _, draft := range []struct{ id, session string }{{"draft-a", "session-a"}, {"draft-b", "session-b"}, {"draft-failed", "session-a"}, {"draft-reply", "session-a"}, {"draft-unbound", "session-a"}} {
-		mustExecArgs(t, db, `INSERT INTO planning_drafts (planning_draft_id,planning_session_id,decree_title,decree_text,summary_json,created_at) VALUES (?,?,?,?,'{}',?)`, draft.id, draft.session, draft.id, "text", at)
+		mustExecArgs(t, db, `INSERT INTO planning_drafts (planning_draft_id,planning_session_id,work_order_title,work_order_text,summary_json,created_at) VALUES (?,?,?,?,'{}',?)`, draft.id, draft.session, draft.id, "text", at)
 	}
 	for _, contextSnapshot := range []struct{ id, session string }{{"context-a", "session-a"}, {"context-b", "session-b"}} {
 		mustExecArgs(t, db, `INSERT INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES (?,?,?,'[]','[]',?)`, contextSnapshot.id, contextSnapshot.session, "context", at)
@@ -398,7 +398,7 @@ func newDecreeLineageFixture(t *testing.T) decreeLineageFixture {
 		t.Fatal(err)
 	}
 	mustExecArgs(t, db, `INSERT INTO planning_external_source_adoptions (adoption_id,link_id,planning_session_id,snapshot_id,actor_id,adopted_at) VALUES ('adoption-later','planning-link','session-a',?,'local-operator','2026-08-12T11:00:00Z')`, snapshotALater.SnapshotID)
-	return decreeLineageFixture{db: db, store: store, at: at}
+	return workOrderLineageFixture{db: db, store: store, at: at}
 }
 
 func mustExecArgs(t *testing.T, db *sql.DB, query string, args ...any) {
@@ -408,17 +408,17 @@ func mustExecArgs(t *testing.T, db *sql.DB, query string, args ...any) {
 	}
 }
 
-func assertDecreeProvenanceWriteCount(t *testing.T, db *sql.DB, decreeID string, wantDecrees, wantLinks int) {
+func assertWorkOrderProvenanceWriteCount(t *testing.T, db *sql.DB, workOrderID string, wantWorkOrders, wantLinks int) {
 	t.Helper()
-	var decrees, links int
-	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_id=?`, decreeID).Scan(&decrees); err != nil {
+	var workOrders, links int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM work_orders WHERE work_order_id=?`, workOrderID).Scan(&workOrders); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='decree' AND target_id=?`, decreeID).Scan(&links); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='work_order' AND target_id=?`, workOrderID).Scan(&links); err != nil {
 		t.Fatal(err)
 	}
-	if decrees != wantDecrees || links != wantLinks {
-		t.Fatalf("writes for %s: decrees=%d links=%d, want %d/%d", decreeID, decrees, links, wantDecrees, wantLinks)
+	if workOrders != wantWorkOrders || links != wantLinks {
+		t.Fatalf("writes for %s: work orders=%d links=%d, want %d/%d", workOrderID, workOrders, links, wantWorkOrders, wantLinks)
 	}
 }
 
@@ -1641,7 +1641,7 @@ func TestApplyRefreshPersistsTransferEvidence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-transfer", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: first.SnapshotID, NewLinkID: func() string { return "link-transfer" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "work-order-transfer", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: first.SnapshotID, NewLinkID: func() string { return "link-transfer" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 	basis, err := store.GetRefreshBasis(ctx, "link-transfer")
@@ -1683,7 +1683,7 @@ func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-two-links", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: oldSnapshot.SnapshotID, NewLinkID: func() string { return "link-two-links-decree" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "work-order-two-links", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: oldSnapshot.SnapshotID, NewLinkID: func() string { return "link-two-links-work order" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('planning-two-links','Moved','custom','active','ready','/tmp','{}',?,?)`, at, at); err != nil {
@@ -1700,15 +1700,15 @@ func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *
 		t.Fatal(err)
 	}
 
-	decreeBasis, err := store.GetRefreshBasis(ctx, "link-two-links-decree")
+	workOrderBasis, err := store.GetRefreshBasis(ctx, "link-two-links-work order")
 	if err != nil {
 		t.Fatal(err)
 	}
 	finished := "2026-08-12T11:00:00Z"
 	newIssue := NormalizedExternalIssue{Title: "Moved", Body: "body", State: "open", Repository: "owner/new", IssueNumber: 9, CanonicalURL: "https://github.com/owner/new/issues/9", CreatedAt: at, UpdatedAt: finished}
 	newCapture := CaptureExternalIssueRequest{SourceID: oldSnapshot.SourceID, SnapshotID: "snapshot-two-links-new", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "300", Issue: newIssue, Profile: oldSnapshot.Profile, ProviderUpdatedAt: finished, FetchedAt: finished}
-	if _, created, outcome, err := store.ApplyRefresh(ctx, ApplyExternalRefreshRequest{Basis: decreeBasis, Capture: &newCapture, ObservationID: "observation-two-links-decree", AuditEventID: "audit-two-links-decree", AliasID: "alias-two-links-old", ActorID: "local-operator", Outcome: "changed", StartedAt: finished, FinishedAt: finished}); err != nil || !created || outcome != "changed" {
-		t.Fatalf("decree transfer created=%v outcome=%q err=%v", created, outcome, err)
+	if _, created, outcome, err := store.ApplyRefresh(ctx, ApplyExternalRefreshRequest{Basis: workOrderBasis, Capture: &newCapture, ObservationID: "observation-two-links-work order", AuditEventID: "audit-two-links-work order", AliasID: "alias-two-links-old", ActorID: "local-operator", Outcome: "changed", StartedAt: finished, FinishedAt: finished}); err != nil || !created || outcome != "changed" {
+		t.Fatalf("work order transfer created=%v outcome=%q err=%v", created, outcome, err)
 	}
 
 	var currentRepositoryID, currentRepository string
@@ -1719,11 +1719,11 @@ func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *
 	if currentRepositoryID != "300" || currentRepository != "owner/new" || currentIssueNumber != 9 {
 		t.Fatalf("current source locator did not move: repository_id=%q repository=%q issue=%d", currentRepositoryID, currentRepository, currentIssueNumber)
 	}
-	decreeLinks, err := store.GetLinksForTarget(ctx, "decree", "decree-two-links")
-	if err != nil || len(decreeLinks) != 1 {
-		t.Fatalf("decree links=%#v err=%v", decreeLinks, err)
+	workOrderLinks, err := store.GetLinksForTarget(ctx, "work_order", "work-order-two-links")
+	if err != nil || len(workOrderLinks) != 1 {
+		t.Fatalf("work order links=%#v err=%v", workOrderLinks, err)
 	}
-	assertExternalLinkCoordinates(t, decreeLinks[0], oldSnapshot.SnapshotID, "", newCapture.SnapshotID, "owner/old", 7)
+	assertExternalLinkCoordinates(t, workOrderLinks[0], oldSnapshot.SnapshotID, "", newCapture.SnapshotID, "owner/old", 7)
 
 	planningLinks, err := store.GetLinksForTarget(ctx, "planning_session", "planning-two-links")
 	if err != nil || len(planningLinks) != 1 {
@@ -1758,27 +1758,27 @@ func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *
 		t.Fatalf("adopted planning links=%#v err=%v", planningLinks, err)
 	}
 	assertExternalLinkCoordinates(t, planningLinks[0], oldSnapshot.SnapshotID, newCapture.SnapshotID, newCapture.SnapshotID, "owner/new", 9)
-	decreeLinks, err = store.GetLinksForTarget(ctx, "decree", "decree-two-links")
-	if err != nil || len(decreeLinks) != 1 {
-		t.Fatalf("final decree links=%#v err=%v", decreeLinks, err)
+	workOrderLinks, err = store.GetLinksForTarget(ctx, "work_order", "work-order-two-links")
+	if err != nil || len(workOrderLinks) != 1 {
+		t.Fatalf("final work order links=%#v err=%v", workOrderLinks, err)
 	}
-	assertExternalLinkCoordinates(t, decreeLinks[0], oldSnapshot.SnapshotID, "", newCapture.SnapshotID, "owner/old", 7)
+	assertExternalLinkCoordinates(t, workOrderLinks[0], oldSnapshot.SnapshotID, "", newCapture.SnapshotID, "owner/old", 7)
 
-	for _, linkID := range []string{"link-two-links-decree", "link-two-links-planning"} {
+	for _, linkID := range []string{"link-two-links-work order", "link-two-links-planning"} {
 		history, err := store.LinkHistory(ctx, linkID)
 		if err != nil || len(history) != 2 || history[0].SnapshotID != newCapture.SnapshotID || history[1].SnapshotID != oldSnapshot.SnapshotID {
 			t.Fatalf("history for %s=%#v err=%v", linkID, history, err)
 		}
 	}
-	var decreeTransfer, planningTransfer string
-	if err := db.QueryRow(`SELECT transfer_json FROM external_source_observations WHERE observation_id='observation-two-links-decree'`).Scan(&decreeTransfer); err != nil {
+	var workOrderTransfer, planningTransfer string
+	if err := db.QueryRow(`SELECT transfer_json FROM external_source_observations WHERE observation_id='observation-two-links-work order'`).Scan(&workOrderTransfer); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.QueryRow(`SELECT transfer_json FROM external_source_observations WHERE observation_id='observation-two-links-planning'`).Scan(&planningTransfer); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(decreeTransfer, `"repository":"owner/old"`) || !strings.Contains(decreeTransfer, `"repository":"owner/new"`) || planningTransfer != `{}` {
-		t.Fatalf("incoherent transfer evidence decree=%s planning=%s", decreeTransfer, planningTransfer)
+	if !strings.Contains(workOrderTransfer, `"repository":"owner/old"`) || !strings.Contains(workOrderTransfer, `"repository":"owner/new"`) || planningTransfer != `{}` {
+		t.Fatalf("incoherent transfer evidence work order=%s planning=%s", workOrderTransfer, planningTransfer)
 	}
 	if err := NewAuditIntegrityVerifier(db).VerifyOrError(ctx); err != nil {
 		t.Fatalf("external audit chain failed verification: %v", err)
@@ -1806,7 +1806,7 @@ func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-failure", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-failure" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "work-order-failure", Title: "D", Text: "immutable", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-failure" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 	basis, err := store.GetRefreshBasis(ctx, "link-failure")
@@ -1821,7 +1821,7 @@ func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
 	if link.Status != "revoked" {
 		t.Fatalf("actionable failure collapsed to %q", link.Status)
 	}
-	reloaded, err := store.GetLinksForTarget(ctx, "decree", "decree-failure")
+	reloaded, err := store.GetLinksForTarget(ctx, "work_order", "work-order-failure")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1860,7 +1860,7 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-detach-control", Title: "Control", Text: "immutable", CreatedAt: at, DirectSnapshotID: capture.SnapshotID, NewLinkID: func() string { return "link-detach-decree" }, ActorID: "local-operator"}); err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "work-order-detach-control", Title: "Control", Text: "immutable", CreatedAt: at, DirectSnapshotID: capture.SnapshotID, NewLinkID: func() string { return "link-detach-work order" }, ActorID: "local-operator"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1975,11 +1975,11 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	if len(afterReattachIDs) != 1 || afterReattachIDs[0] != fresh.SnapshotID || !strings.Contains(afterText, "Version B") {
 		t.Fatalf("re-added source did not feed later operations: ids=%#v text=%s", afterReattachIDs, afterText)
 	}
-	decreeLinks, err := store.GetLinksForTarget(ctx, "decree", "decree-detach-control")
-	if err != nil || len(decreeLinks) != 1 {
-		t.Fatalf("control decree links=%#v err=%v", decreeLinks, err)
+	workOrderLinks, err := store.GetLinksForTarget(ctx, "work_order", "work-order-detach-control")
+	if err != nil || len(workOrderLinks) != 1 {
+		t.Fatalf("control work order links=%#v err=%v", workOrderLinks, err)
 	}
-	assertExternalLinkCoordinates(t, decreeLinks[0], capture.SnapshotID, "", capture.SnapshotID, "owner/repo", 7)
+	assertExternalLinkCoordinates(t, workOrderLinks[0], capture.SnapshotID, "", capture.SnapshotID, "owner/repo", 7)
 	var attachmentChanges, adoptions int
 	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_link_attachment_changes WHERE link_id=?`, link.LinkID).Scan(&attachmentChanges); err != nil {
 		t.Fatal(err)
@@ -2007,13 +2007,13 @@ func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-archived-detach','Archived','custom','archived','ready','/tmp','{}',?,?)`, at, at)
-	mustExecArgs(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree-1', 'Decree', 'text', '{}', ?)`, at)
+	mustExecArgs(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work order-1', 'WorkOrder', 'text', '{}', ?)`, at)
 
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := createExternalLinkTx(ctx, tx, "link-decree", "decree", "decree-1", snapshot.SourceID, snapshot.SnapshotID, "local-operator", "", at); err != nil {
+	if err := createExternalLinkTx(ctx, tx, "link-work order", "work_order", "work order-1", snapshot.SourceID, snapshot.SnapshotID, "local-operator", "", at); err != nil {
 		t.Fatal(err)
 	}
 	if err := createExternalLinkTx(ctx, tx, "link-archived", "planning_session", "session-archived-detach", snapshot.SourceID, snapshot.SnapshotID, "local-operator", "adopt-archived", at); err != nil {
@@ -2023,9 +2023,9 @@ func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Issued decrees keep their exact source; only planning sources are removable.
-	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-decree", ChangeID: "change-decree", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-decree-detach"}); !errors.Is(err, ErrExternalDetachUnsupported) {
-		t.Fatalf("decree detach error=%v", err)
+	// Issued work orders keep their exact source; only planning sources are removable.
+	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-work order", ChangeID: "change-work order", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-work-order-detach"}); !errors.Is(err, ErrExternalDetachUnsupported) {
+		t.Fatalf("work order detach error=%v", err)
 	}
 	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: "link-archived", ChangeID: "change-archived", ActorID: "local-operator", DetachedAt: at, AuditEventID: "audit-archived-detach"}); !errors.Is(err, ErrExternalPlanningSessionInactive) {
 		t.Fatalf("archived session detach error=%v", err)

@@ -86,8 +86,8 @@ describe("useRunsCollectionEventStream", () => {
 	      items: [{
 	        run_id: "run-1",
         workflow_id: "wf-1",
-        decree_id: "decree-1",
-        decree_title: "Original",
+        work_order_id: "work order-1",
+        work_order_title: "Original",
         status: "pending",
         plan_state: "draft",
         display_state: "pending",
@@ -104,8 +104,8 @@ describe("useRunsCollectionEventStream", () => {
 	      pages: [{ items: [{
         run_id: "run-1",
         workflow_id: "wf-1",
-        decree_id: "decree-1",
-        decree_title: "Original",
+        work_order_id: "work order-1",
+        work_order_title: "Original",
         status: "pending",
         plan_state: "draft",
         display_state: "pending",
@@ -121,8 +121,8 @@ describe("useRunsCollectionEventStream", () => {
 	      items: [{
 	        run_id: "run-1",
 	        workflow_id: "wf-1",
-	        decree_id: "decree-1",
-	        decree_title: "Search cached",
+	        work_order_id: "work order-1",
+	        work_order_title: "Search cached",
 	        status: "pending",
 	        plan_state: "draft",
 	        display_state: "pending",
@@ -148,8 +148,8 @@ describe("useRunsCollectionEventStream", () => {
           event_type: "run.state_changed",
           run_id: "run-1",
           workflow_id: "wf-1",
-          decree_id: "decree-1",
-          decree_title: "Updated",
+          work_order_id: "work order-1",
+          work_order_title: "Updated",
           status: "running",
           plan_state: "approved",
           display_state: "running",
@@ -186,13 +186,13 @@ describe("useRunsCollectionEventStream", () => {
 	    expect(invocations[1].buildHeaders(null)).toEqual({ "Last-Event-ID": "evt-collection-1" });
 
 	    expect(queryClient.getQueryData(["runs", "collection", null, null, null])).toMatchObject({
-	      items: [{ run_id: "run-1", decree_title: "Updated", status: "running", display_state: "running" }],
+	      items: [{ run_id: "run-1", work_order_title: "Updated", status: "running", display_state: "running" }],
 	    });
 	    expect(queryClient.getQueryData(["runs", "collection", "infinite", null, 50, null])).toMatchObject({
-	      pages: [{ items: [{ run_id: "run-1", decree_title: "Updated", status: "running", display_state: "running" }] }],
+	      pages: [{ items: [{ run_id: "run-1", work_order_title: "Updated", status: "running", display_state: "running" }] }],
 	    });
 	    expect(queryClient.getQueryData(["runs", "collection", null, 25, "stale search"])).toMatchObject({
-	      items: [{ run_id: "run-1", decree_title: "Search cached", status: "pending", display_state: "pending" }],
+	      items: [{ run_id: "run-1", work_order_title: "Search cached", status: "pending", display_state: "pending" }],
 	    });
 	    expect(queryClient.getQueryState(["runs", "collection", null, 25, "stale search"])?.isInvalidated).not.toBe(true);
 	    expect(queryClient.getQueryState(["unrelated"])?.isInvalidated).not.toBe(true);
@@ -203,8 +203,8 @@ describe("useRunsCollectionEventStream", () => {
 			items: [{
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Original",
+				work_order_id: "work order-1",
+				work_order_title: "Original",
 				status: "failed",
 				plan_state: "approved",
 				display_state: "failed",
@@ -222,8 +222,8 @@ describe("useRunsCollectionEventStream", () => {
 				event_type: "run.retry_reopened",
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Original",
+				work_order_id: "work order-1",
+				work_order_title: "Original",
 				status: "running",
 				plan_state: "approved",
 				display_state: "running",
@@ -245,8 +245,8 @@ describe("useRunsCollectionEventStream", () => {
 				event_type: "run.rerun_reopened",
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Original",
+				work_order_id: "work order-1",
+				work_order_title: "Original",
 				status: "running",
 				plan_state: "draft",
 				display_state: "running",
@@ -267,8 +267,8 @@ describe("useRunsCollectionEventStream", () => {
 			items: [{
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Original",
+				work_order_id: "work order-1",
+				work_order_title: "Original",
 				status: "running",
 				plan_state: "draft",
 				display_state: "running",
@@ -287,10 +287,10 @@ describe("useRunsCollectionEventStream", () => {
 				event_type: "run.state_changed",
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Original",
+				work_order_id: "work order-1",
+				work_order_title: "Original",
 				status: "running",
-				plan_state: "awaiting_king_decision",
+				plan_state: "awaiting_plan_decision",
 				display_state: "awaiting_plan_decision",
 				created_at: "2026-03-01T10:00:00Z",
 				updated_at: "2026-03-01T10:05:00Z",
@@ -324,8 +324,8 @@ describe("useRunsCollectionEventStream", () => {
 					items: [{
 						run_id: "run-2",
 						workflow_id: "wf-1",
-						decree_id: "decree-2",
-						decree_title: "Second",
+						work_order_id: "work order-2",
+						work_order_title: "Second",
 						status: "pending",
 						plan_state: "draft",
 						display_state: "pending",
@@ -340,8 +340,8 @@ describe("useRunsCollectionEventStream", () => {
 					items: [{
 						run_id: "run-1",
 						workflow_id: "wf-1",
-						decree_id: "decree-1",
-						decree_title: "Original",
+						work_order_id: "work order-1",
+						work_order_title: "Original",
 						status: "pending",
 						plan_state: "draft",
 						display_state: "pending",
@@ -367,8 +367,8 @@ describe("useRunsCollectionEventStream", () => {
 					event_type: "run.created",
 					run_id: "run-3",
 					workflow_id: "wf-1",
-					decree_id: "decree-3",
-					decree_title: "Newest",
+					work_order_id: "work order-3",
+					work_order_title: "Newest",
 					status: "pending",
 					plan_state: "draft",
 					display_state: "pending",
@@ -402,10 +402,10 @@ describe("useRunsCollectionEventStream", () => {
 				items: [{
 					run_id: "run-1",
 					workflow_id: "wf-1",
-					decree_id: "decree-1",
-					decree_title: "Original",
+					work_order_id: "work order-1",
+					work_order_title: "Original",
 					status: "running",
-					plan_state: "awaiting_king_decision",
+					plan_state: "awaiting_plan_decision",
 					display_state: "awaiting_plan_decision",
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:00:00Z",
@@ -425,10 +425,10 @@ describe("useRunsCollectionEventStream", () => {
 					event_type: "approval.recorded",
 					run_id: "run-1",
 					workflow_id: "wf-1",
-					decree_id: "decree-1",
-					decree_title: "Updated",
+					work_order_id: "work order-1",
+					work_order_title: "Updated",
 					status: "running",
-					plan_state: "awaiting_king_decision",
+					plan_state: "awaiting_plan_decision",
 					display_state: "awaiting_plan_decision",
 					created_at: "2026-03-01T10:00:00Z",
 					updated_at: "2026-03-01T10:05:00Z",
@@ -441,7 +441,7 @@ describe("useRunsCollectionEventStream", () => {
 		).resolves.toBe(true);
 
 		expect(queryClient.getQueryData(["runs", "collection", "infinite", "awaiting_human_decision", 50, null])).toMatchObject({
-			pages: [{ items: [{ run_id: "run-1", decree_title: "Updated", updated_at: "2026-03-01T10:05:00Z" }] }],
+			pages: [{ items: [{ run_id: "run-1", work_order_title: "Updated", updated_at: "2026-03-01T10:05:00Z" }] }],
 		});
 
 		await act(async () => {
@@ -457,8 +457,8 @@ describe("useRunsCollectionEventStream", () => {
 			items: [{
 				run_id: "run-1",
 				workflow_id: "wf-1",
-				decree_id: "decree-1",
-				decree_title: "Only active run",
+				work_order_id: "work order-1",
+				work_order_title: "Only active run",
 				status: "running",
 				plan_state: "approved",
 					display_state: "running",
@@ -479,8 +479,8 @@ describe("useRunsCollectionEventStream", () => {
 					event_type: "run.state_changed",
 					run_id: "run-1",
 					workflow_id: "wf-1",
-					decree_id: "decree-1",
-					decree_title: "Only active run",
+					work_order_id: "work order-1",
+					work_order_title: "Only active run",
 					status: "succeeded",
 					plan_state: "approved",
 					display_state: "succeeded",
@@ -508,8 +508,8 @@ describe("useRunsCollectionEventStream", () => {
 		const item = {
 			run_id: "run-1",
 			workflow_id: "wf-1",
-			decree_id: "decree-1",
-			decree_title: "Original",
+			work_order_id: "work order-1",
+			work_order_title: "Original",
 			status: "running",
 			plan_state: "approved",
 			display_state: "running",
@@ -545,8 +545,8 @@ describe("useRunsCollectionEventStream", () => {
 		const item = {
 			run_id: "run-1",
 			workflow_id: "wf-1",
-			decree_id: "decree-1",
-			decree_title: "Original",
+			work_order_id: "work order-1",
+			work_order_title: "Original",
 			status: "running",
 			plan_state: "approved",
 			display_state: "running",
@@ -559,7 +559,7 @@ describe("useRunsCollectionEventStream", () => {
 			model_selection: {
 				global: { model: "github-copilot/gpt-5.4", thinking_effort: "low" },
 				role_overrides: {
-					"council-member": { model: "github-copilot/gpt-5.4-mini", thinking_effort: "low" },
+					"plan-author": { model: "github-copilot/gpt-5.4-mini", thinking_effort: "low" },
 				},
 			},
 		};
@@ -577,7 +577,7 @@ describe("useRunsCollectionEventStream", () => {
 					model_selection: {
 						global: { model: "github-copilot/gpt-5.4", thinking_effort: "low" },
 						role_overrides: {
-							"council-member": { model: "github-copilot/gpt-5.4-mini", thinking_effort: "low" },
+							"plan-author": { model: "github-copilot/gpt-5.4-mini", thinking_effort: "low" },
 						},
 					},
 				}),
@@ -611,8 +611,8 @@ describe("useRunsCollectionEventStream", () => {
 				items: [{
 					run_id: "run-1",
 					workflow_id: "wf-1",
-					decree_id: "decree-1",
-					decree_title: "Original",
+					work_order_id: "work order-1",
+					work_order_title: "Original",
 					status: "pending",
 					plan_state: "draft",
 					display_state: "pending",
@@ -678,8 +678,8 @@ describe("useRunsCollectionEventStream", () => {
 					event_type: "run.state_changed",
 					run_id: "run-1",
 					workflow_id: "wf-1",
-					decree_id: "decree-1",
-					decree_title: "Updated",
+					work_order_id: "work order-1",
+					work_order_title: "Updated",
 					status: "running",
 					plan_state: "approved",
 					display_state: "running",

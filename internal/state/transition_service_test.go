@@ -35,7 +35,7 @@ func TestTransitionServiceRecordExecutionStartConfirmsDurableCommitError(t *test
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL, finished_at = NULL WHERE node_run_id = 'nr_1'`)
-			const attemptID = "run_1:decree_intake:commit_ambiguous"
+			const attemptID = "run_1:work_intake:commit_ambiguous"
 			mustExecArgs(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES (?, 'run_1', 'nr_1', 'queued', ?, ?, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, attemptID, tc.executionMode, tc.completionMode)
 
 			req := TransitionRequest{
@@ -47,7 +47,7 @@ func TestTransitionServiceRecordExecutionStartConfirmsDurableCommitError(t *test
 				FromState:       "ready",
 				ToState:         tc.toState,
 				ActorID:         "runtime_orchestrator",
-				RoleID:          "king",
+				RoleID:          "governance",
 				AuthoritySource: "runtime.orchestrator",
 				ReasonCode:      "orchestration_progress",
 				ReasonText:      "execution launch prepared",
@@ -155,17 +155,17 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyReviewAttempt
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap', 'Loop cap', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap', NULL, 'decree_loop_cap', 'wfdef_loop_cap', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_review', 'wfdef_loop_cap', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_1', 'run_loop_cap', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_2', 'run_loop_cap', 'custom_review_gate', 2,2, 'failed', 'reviewer-shieldmaiden', 'agent_review', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review', 'reviewer', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap', 'Loop cap', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap', NULL, 'work_order_loop_cap', 'wfdef_loop_cap', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_review', 'wfdef_loop_cap', 'custom_review_gate', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_1', 'run_loop_cap', 'custom_review_gate', 1,1, 'failed', 'reviewer', 'agent_review', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_2', 'run_loop_cap', 'custom_review_gate', 2,2, 'failed', 'reviewer', 'agent_review', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap:custom_review_gate:1', 'run_loop_cap', 'nr_loop_cap_review_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap:custom_review_gate:2', 'run_loop_cap', 'nr_loop_cap_review_2', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_3', 'run_loop_cap', 'custom_review_gate', 3,3, 'ready', 'reviewer-shieldmaiden', 'agent_review', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_review_3', 'run_loop_cap', 'custom_review_gate', 3,3, 'ready', 'reviewer', 'agent_review', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -177,7 +177,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyReviewAttempt
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "reviewer-shieldmaiden",
+		RoleID:          "reviewer",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_review_cap_auto_succeeded",
 		ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -210,15 +210,15 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictQueuesMissingOutboxAf
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_conflict_missing_outbox', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_missing_outbox', 'Loop cap missing outbox', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_missing_outbox', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_missing_outbox', NULL, 'decree_loop_cap_missing_outbox', 'wfdef_loop_cap_missing_outbox', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_missing_outbox', 'wfdef_loop_cap_missing_outbox', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_missing_outbox_1', 'run_loop_cap_missing_outbox', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_conflict_missing_outbox', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_conflict_missing_outbox', 'reviewer', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_missing_outbox', 'Loop cap missing outbox', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_missing_outbox', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_missing_outbox', NULL, 'work_order_loop_cap_missing_outbox', 'wfdef_loop_cap_missing_outbox', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_missing_outbox', 'wfdef_loop_cap_missing_outbox', 'custom_review_gate', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_missing_outbox_1', 'run_loop_cap_missing_outbox', 'custom_review_gate', 1,1, 'failed', 'reviewer', 'agent_review_conflict_missing_outbox', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_missing_outbox:custom_review_gate:1', 'run_loop_cap_missing_outbox', 'nr_loop_cap_missing_outbox_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_missing_outbox_2', 'run_loop_cap_missing_outbox', 'custom_review_gate', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review_conflict_missing_outbox', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_missing_outbox_2', 'run_loop_cap_missing_outbox', 'custom_review_gate', 2,2, 'ready', 'reviewer', 'agent_review_conflict_missing_outbox', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	transition := TransitionRequest{
@@ -230,7 +230,7 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictQueuesMissingOutboxAf
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "reviewer-shieldmaiden",
+		RoleID:          "reviewer",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_review_cap_auto_succeeded",
 		ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -286,13 +286,13 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictNoOpsWhenAnotherTrans
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_conflict_winner', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_conflict_winner', 'Loop cap conflict winner', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_conflict_winner', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_conflict_winner', NULL, 'decree_loop_cap_conflict_winner', 'wfdef_loop_cap_conflict_winner', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_conflict_winner', 'wfdef_loop_cap_conflict_winner', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_conflict_winner_1', 'run_loop_cap_conflict_winner', 'custom_review_gate', 1,1, 'running', 'reviewer-shieldmaiden', 'agent_review_conflict_winner', 1, '2026-03-01T12:04:59Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_conflict_winner', 'reviewer', 'Reviewer', 'busy', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_conflict_winner', 'Loop cap conflict winner', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_conflict_winner', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_conflict_winner', NULL, 'work_order_loop_cap_conflict_winner', 'wfdef_loop_cap_conflict_winner', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_conflict_winner', 'wfdef_loop_cap_conflict_winner', 'custom_review_gate', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_conflict_winner_1', 'run_loop_cap_conflict_winner', 'custom_review_gate', 1,1, 'running', 'reviewer', 'agent_review_conflict_winner', 1, '2026-03-01T12:04:59Z', NULL)`)
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_loop_cap_conflict_winner:custom_review_gate:1', 'run_loop_cap_conflict_winner', 'nr_loop_cap_conflict_winner_1', 'running', 'provider_backed', 'server_response', 'worker-1', '%s', 1, 'session_run_loop_cap_conflict_winner_custom_review_gate_1', 'ses_conflict_winner', '%s', '', '', '%s', '%s')`, "2026-03-01T12:10:00Z", now, now, now))
 
 	projectionRequired, err := NewTransitionService(db, nil).RecoverLoopCapAutoSuccessConflict(context.Background(), LoopCapAutoSuccessRecordRequest{
@@ -305,7 +305,7 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictNoOpsWhenAnotherTrans
 			FromState:       "ready",
 			ToState:         "succeeded",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "reviewer-shieldmaiden",
+			RoleID:          "reviewer",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "execution_review_cap_auto_succeeded",
 			ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -352,15 +352,15 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsWhenCapNotReached(t *te
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_reject', 'Loop cap reject', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_reject', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_reject', NULL, 'decree_loop_cap_reject', 'wfdef_loop_cap_reject', 'running', 'approved', 2, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_reject_review', 'wfdef_loop_cap_reject', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_reject_review_1', 'run_loop_cap_reject', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review', 'reviewer', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_reject', 'Loop cap reject', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_reject', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_reject', NULL, 'work_order_loop_cap_reject', 'wfdef_loop_cap_reject', 'running', 'approved', 2, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_reject_review', 'wfdef_loop_cap_reject', 'custom_review_gate', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_reject_review_1', 'run_loop_cap_reject', 'custom_review_gate', 1,1, 'failed', 'reviewer', 'agent_review', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_reject:custom_review_gate:1', 'run_loop_cap_reject', 'nr_loop_cap_reject_review_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_reject_review_2', 'run_loop_cap_reject', 'custom_review_gate', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_reject_review_2', 'run_loop_cap_reject', 'custom_review_gate', 2,2, 'ready', 'reviewer', 'agent_review', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -372,7 +372,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsWhenCapNotReached(t *te
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "reviewer-shieldmaiden",
+		RoleID:          "reviewer",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_review_cap_auto_succeeded",
 		ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -402,15 +402,15 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentReviewBoundar
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_boundary', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_boundary', 'Loop cap boundary', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_boundary', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_boundary', NULL, 'decree_loop_cap_boundary', 'wfdef_loop_cap_boundary', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_boundary_review', 'wfdef_loop_cap_boundary', 'custom_review_gate', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_boundary_review_1', 'run_loop_cap_boundary', 'custom_review_gate', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_boundary', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_boundary', 'reviewer', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_boundary', 'Loop cap boundary', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_boundary', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_boundary', NULL, 'work_order_loop_cap_boundary', 'wfdef_loop_cap_boundary', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_boundary_review', 'wfdef_loop_cap_boundary', 'custom_review_gate', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_boundary_review_1', 'run_loop_cap_boundary', 'custom_review_gate', 1,1, 'failed', 'reviewer', 'agent_review_boundary', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_boundary:custom_review_gate:1', 'run_loop_cap_boundary', 'nr_loop_cap_boundary_review_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_boundary_review_2', 'run_loop_cap_boundary', 'custom_review_gate', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review_boundary', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_boundary_review_2', 'run_loop_cap_boundary', 'custom_review_gate', 2,2, 'ready', 'reviewer', 'agent_review_boundary', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -422,7 +422,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentReviewBoundar
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "reviewer-shieldmaiden",
+		RoleID:          "reviewer",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_review_cap_auto_succeeded",
 		ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -455,22 +455,22 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyValidationAtt
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_validation_loop_cap', 'Validation loop cap', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap', NULL, 'decree_validation_loop_cap', 'wfdef_validation_loop_cap', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_qa', 'wfdef_validation_loop_cap', 'custom_validation_gate_qa', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_night', 'wfdef_validation_loop_cap', 'custom_validation_gate_night', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_1', 'run_validation_loop_cap', 'custom_validation_gate_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_night_1', 'run_validation_loop_cap', 'custom_validation_gate_night', 1,1, 'succeeded', 'intelligence-nightraven', 'agent_validation_night', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_2', 'run_validation_loop_cap', 'custom_validation_gate_qa', 2,2, 'failed', 'intelligence-qa-scout', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_night_2', 'run_validation_loop_cap', 'custom_validation_gate_night', 2,2, 'succeeded', 'intelligence-nightraven', 'agent_validation_night', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Security Validator', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_qa', 'qa-validator', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_night', 'security-validator', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_validation_loop_cap', 'Validation loop cap', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap', NULL, 'work_order_validation_loop_cap', 'wfdef_validation_loop_cap', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_qa', 'wfdef_validation_loop_cap', 'custom_validation_gate_qa', 'qa-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_night', 'wfdef_validation_loop_cap', 'custom_validation_gate_night', 'security-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_1', 'run_validation_loop_cap', 'custom_validation_gate_qa', 1,1, 'failed', 'qa-validator', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_night_1', 'run_validation_loop_cap', 'custom_validation_gate_night', 1,1, 'succeeded', 'security-validator', 'agent_validation_night', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_2', 'run_validation_loop_cap', 'custom_validation_gate_qa', 2,2, 'failed', 'qa-validator', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_night_2', 'run_validation_loop_cap', 'custom_validation_gate_night', 2,2, 'succeeded', 'security-validator', 'agent_validation_night', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_loop_cap:custom_validation_gate_qa:1', 'run_validation_loop_cap', 'nr_validation_loop_cap_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_loop_cap:custom_validation_gate_qa:2', 'run_validation_loop_cap', 'nr_validation_loop_cap_qa_2', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_3', 'run_validation_loop_cap', 'custom_validation_gate_qa', 3,3, 'ready', 'intelligence-qa-scout', 'agent_validation_qa', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_qa_3', 'run_validation_loop_cap', 'custom_validation_gate_qa', 3,3, 'ready', 'qa-validator', 'agent_validation_qa', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -482,7 +482,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyValidationAtt
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "intelligence-qa-scout",
+		RoleID:          "qa-validator",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "validation_gate_cap_auto_succeeded",
 		ReasonText:      "validation cap reached; node auto-succeeded before dispatch",
@@ -507,19 +507,19 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentValidationBou
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_validation_loop_cap_boundary', 'Validation loop cap boundary', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap_boundary', 'royal-decree-v1', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap_boundary', NULL, 'decree_validation_loop_cap_boundary', 'wfdef_validation_loop_cap_boundary', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_boundary_qa', 'wfdef_validation_loop_cap_boundary', 'custom_validation_gate_qa', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_boundary_night', 'wfdef_validation_loop_cap_boundary', 'custom_validation_gate_night', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_qa_1', 'run_validation_loop_cap_boundary', 'custom_validation_gate_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_boundary_qa', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_night_1', 'run_validation_loop_cap_boundary', 'custom_validation_gate_night', 1,1, 'succeeded', 'intelligence-nightraven', 'agent_validation_boundary_night', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Security Validator', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_qa', 'qa-validator', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_night', 'security-validator', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_validation_loop_cap_boundary', 'Validation loop cap boundary', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap_boundary', 'work-order-v1', '1', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap_boundary', NULL, 'work_order_validation_loop_cap_boundary', 'wfdef_validation_loop_cap_boundary', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_boundary_qa', 'wfdef_validation_loop_cap_boundary', 'custom_validation_gate_qa', 'qa-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_boundary_night', 'wfdef_validation_loop_cap_boundary', 'custom_validation_gate_night', 'security-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_qa_1', 'run_validation_loop_cap_boundary', 'custom_validation_gate_qa', 1,1, 'failed', 'qa-validator', 'agent_validation_boundary_qa', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_night_1', 'run_validation_loop_cap_boundary', 'custom_validation_gate_night', 1,1, 'succeeded', 'security-validator', 'agent_validation_boundary_night', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_loop_cap_boundary:custom_validation_gate_qa:1', 'run_validation_loop_cap_boundary', 'nr_validation_loop_cap_boundary_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_qa_2', 'run_validation_loop_cap_boundary', 'custom_validation_gate_qa', 2,2, 'ready', 'intelligence-qa-scout', 'agent_validation_boundary_qa', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_boundary_qa_2', 'run_validation_loop_cap_boundary', 'custom_validation_gate_qa', 2,2, 'ready', 'qa-validator', 'agent_validation_boundary_qa', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -531,7 +531,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentValidationBou
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "intelligence-qa-scout",
+		RoleID:          "qa-validator",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "validation_gate_cap_auto_succeeded",
 		ReasonText:      "validation cap reached; node auto-succeeded before dispatch",
@@ -581,20 +581,20 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsValidationAfterMixedWav
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 
 			now := "2026-03-01T12:00:00Z"
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Nightraven', 0, '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_validation_loop_cap_reject', 'Validation loop cap reject', 'text', '{}', '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap_reject', 'royal-decree-v1', '1', '{}', '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap_reject', NULL, 'decree_validation_loop_cap_reject', 'wfdef_validation_loop_cap_reject', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_reject_qa', 'wfdef_validation_loop_cap_reject', 'custom_validation_gate_qa', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_reject_night', 'wfdef_validation_loop_cap_reject', 'custom_validation_gate_night', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_qa_1', 'run_validation_loop_cap_reject', 'custom_validation_gate_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_night_1', 'run_validation_loop_cap_reject', 'custom_validation_gate_night', 1,1, '%s', 'intelligence-nightraven', 'agent_validation_night', 1, '%s', '%s')`, tc.otherNodeStatus, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Security Validator', 0, '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_qa', 'qa-validator', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_night', 'security-validator', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_validation_loop_cap_reject', 'Validation loop cap reject', 'text', '{}', '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_validation_loop_cap_reject', 'work-order-v1', '1', '{}', '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_validation_loop_cap_reject', NULL, 'work_order_validation_loop_cap_reject', 'wfdef_validation_loop_cap_reject', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_reject_qa', 'wfdef_validation_loop_cap_reject', 'custom_validation_gate_qa', 'qa-validator', 'validation_gates', '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_loop_cap_reject_night', 'wfdef_validation_loop_cap_reject', 'custom_validation_gate_night', 'security-validator', 'validation_gates', '%s')`, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_qa_1', 'run_validation_loop_cap_reject', 'custom_validation_gate_qa', 1,1, 'failed', 'qa-validator', 'agent_validation_qa', 1, '%s', '%s')`, now, now))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_night_1', 'run_validation_loop_cap_reject', 'custom_validation_gate_night', 1,1, '%s', 'security-validator', 'agent_validation_night', 1, '%s', '%s')`, tc.otherNodeStatus, now, now))
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_loop_cap_reject:custom_validation_gate_qa:1', 'run_validation_loop_cap_reject', 'nr_validation_loop_cap_reject_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_loop_cap_reject:custom_validation_gate_night:1', 'run_validation_loop_cap_reject', 'nr_validation_loop_cap_reject_night_1', '%s', 'provider_backed', 'server_response', '%s', '%s', '%s', '%s', '%s', '%s', '%s')`, tc.otherAttemptState, tc.otherFailureCode, tc.otherFailureText, now, now, now, now, now))
-			mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_qa_2', 'run_validation_loop_cap_reject', 'custom_validation_gate_qa', 2,2, 'ready', 'intelligence-qa-scout', 'agent_validation_qa', 1, NULL, NULL)`)
+			mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_loop_cap_reject_qa_2', 'run_validation_loop_cap_reject', 'custom_validation_gate_qa', 2,2, 'ready', 'qa-validator', 'agent_validation_qa', 1, NULL, NULL)`)
 
 			svc := NewTransitionService(db, nil)
 			err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -606,7 +606,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsValidationAfterMixedWav
 				FromState:       "ready",
 				ToState:         "succeeded",
 				ActorID:         "runtime_orchestrator",
-				RoleID:          "intelligence-qa-scout",
+				RoleID:          "qa-validator",
 				AuthoritySource: "runtime.orchestrator",
 				ReasonCode:      "validation_gate_cap_auto_succeeded",
 				ReasonText:      "validation cap reached; node auto-succeeded before dispatch",
@@ -638,18 +638,18 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesReviewScopeParticipants(t 
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_scope', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_scope_review', 'Loop cap review scope', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_review_scope', 'reviewer', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_scope_review', 'Loop cap review scope', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_scope_review', 'review-scope', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_scope_review', NULL, 'decree_loop_cap_scope_review', 'wfdef_loop_cap_scope_review', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_review_a', 'wfdef_loop_cap_scope_review', 'custom_review_gate_a', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_review_b', 'wfdef_loop_cap_scope_review', 'custom_review_gate_b', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_a_1', 'run_loop_cap_scope_review', 'custom_review_gate_a', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_scope', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_b_1', 'run_loop_cap_scope_review', 'custom_review_gate_b', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent_review_scope', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_execution_review_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_scope_review', NULL, 'work_order_loop_cap_scope_review', 'wfdef_loop_cap_scope_review', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_review_a', 'wfdef_loop_cap_scope_review', 'custom_review_gate_a', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_review_b', 'wfdef_loop_cap_scope_review', 'custom_review_gate_b', 'reviewer', 'execution_review', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_a_1', 'run_loop_cap_scope_review', 'custom_review_gate_a', 1,1, 'failed', 'reviewer', 'agent_review_scope', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_b_1', 'run_loop_cap_scope_review', 'custom_review_gate_b', 1,1, 'failed', 'reviewer', 'agent_review_scope', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_scope_review:custom_review_gate_a:1', 'run_loop_cap_scope_review', 'nr_loop_cap_scope_review_a_1', 'committed_failure', 'provider_backed', 'server_response', 'execution_review_rework', 'review requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_scope_review:custom_review_gate_b:1', 'run_loop_cap_scope_review', 'nr_loop_cap_scope_review_b_1', 'committed_failure', 'provider_backed', 'server_response', 'timeout', 'provider timed out', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_a_2', 'run_loop_cap_scope_review', 'custom_review_gate_a', 2,2, 'ready', 'reviewer-shieldmaiden', 'agent_review_scope', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_review_a_2', 'run_loop_cap_scope_review', 'custom_review_gate_a', 2,2, 'ready', 'reviewer', 'agent_review_scope', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -661,7 +661,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesReviewScopeParticipants(t 
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "reviewer-shieldmaiden",
+		RoleID:          "reviewer",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_review_cap_auto_succeeded",
 		ReasonText:      "review cycle cap reached; node auto-succeeded before dispatch",
@@ -686,20 +686,20 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesValidationScopeParticipant
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 
 	now := "2026-03-01T12:00:00Z"
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-nightraven', 'Night', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_scope_qa', 'intelligence-qa-scout', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_scope_night', 'intelligence-nightraven', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_loop_cap_scope_validation', 'Loop cap validation scope', 'text', '{}', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('security-validator', 'Night', 0, '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_scope_qa', 'qa-validator', 'QA', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_scope_night', 'security-validator', 'Night', 'idle', NULL, 0, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_loop_cap_scope_validation', 'Loop cap validation scope', 'text', '{}', '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_loop_cap_scope_validation', 'validation-scope', '1', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_scope_validation', NULL, 'decree_loop_cap_scope_validation', 'wfdef_loop_cap_scope_validation', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_validation_qa', 'wfdef_loop_cap_scope_validation', 'custom_validation_gate_qa', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_validation_night', 'wfdef_loop_cap_scope_validation', 'custom_validation_gate_night', 'intelligence-nightraven', 'validation_gates', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_qa_1', 'run_loop_cap_scope_validation', 'custom_validation_gate_qa', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_scope_qa', 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_night_1', 'run_loop_cap_scope_validation', 'custom_validation_gate_night', 1,1, 'failed', 'intelligence-nightraven', 'agent_validation_scope_night', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_loop_cap_scope_validation', NULL, 'work_order_loop_cap_scope_validation', 'wfdef_loop_cap_scope_validation', 'running', 'approved', 1, 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_validation_qa', 'wfdef_loop_cap_scope_validation', 'custom_validation_gate_qa', 'qa-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_loop_cap_scope_validation_night', 'wfdef_loop_cap_scope_validation', 'custom_validation_gate_night', 'security-validator', 'validation_gates', '%s')`, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_qa_1', 'run_loop_cap_scope_validation', 'custom_validation_gate_qa', 1,1, 'failed', 'qa-validator', 'agent_validation_scope_qa', 1, '%s', '%s')`, now, now))
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_night_1', 'run_loop_cap_scope_validation', 'custom_validation_gate_night', 1,1, 'failed', 'security-validator', 'agent_validation_scope_night', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_scope_validation:custom_validation_gate_qa:1', 'run_loop_cap_scope_validation', 'nr_loop_cap_scope_validation_qa_1', 'committed_failure', 'provider_backed', 'server_response', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_loop_cap_scope_validation:custom_validation_gate_night:1', 'run_loop_cap_scope_validation', 'nr_loop_cap_scope_validation_night_1', 'committed_failure', 'provider_backed', 'server_response', 'timeout', 'provider timed out', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_qa_2', 'run_loop_cap_scope_validation', 'custom_validation_gate_qa', 2,2, 'ready', 'intelligence-qa-scout', 'agent_validation_scope_qa', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_loop_cap_scope_validation_qa_2', 'run_loop_cap_scope_validation', 'custom_validation_gate_qa', 2,2, 'ready', 'qa-validator', 'agent_validation_scope_qa', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.RecordLoopCapAutoSuccess(context.Background(), LoopCapAutoSuccessRecordRequest{Transition: TransitionRequest{
@@ -711,7 +711,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesValidationScopeParticipant
 		FromState:       "ready",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "intelligence-qa-scout",
+		RoleID:          "qa-validator",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "validation_gate_cap_auto_succeeded",
 		ReasonText:      "validation cap reached; node auto-succeeded before dispatch",
@@ -735,10 +735,10 @@ func TestTransitionServiceProjectsCanonicalRunStateChangedPayloadForPlanTransiti
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_king_decision' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, loadStateTestSchemas(t))
-	req := baseTransitionRequest(EntityTypePlan, "awaiting_king_decision", "approved")
+	req := baseTransitionRequest(EntityTypePlan, "awaiting_plan_decision", "approved")
 	req.TransitionID = "tr_plan_approved"
 	req.EventID = "evt_plan_approved"
 	req.AttemptID = "att_plan_approved"
@@ -818,10 +818,10 @@ func TestTransitionServiceKeepsAuditIntegrityForProjectedRunStateChangedPayload(
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_king_decision' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, loadStateTestSchemas(t))
-	req := baseTransitionRequest(EntityTypePlan, "awaiting_king_decision", "approved")
+	req := baseTransitionRequest(EntityTypePlan, "awaiting_plan_decision", "approved")
 	req.TransitionID = "tr_plan_audit_integrity"
 	req.EventID = "evt_plan_audit_integrity"
 	req.AttemptID = "att_plan_audit_integrity"
@@ -886,33 +886,33 @@ func TestTransitionServiceSetsAndClearsPlanPendingApprovalKey(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'in_council_review' WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'in_plan_review' WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, nil)
-	awaitingReq := baseTransitionRequest(EntityTypePlan, "in_council_review", "awaiting_king_decision")
+	awaitingReq := baseTransitionRequest(EntityTypePlan, "in_plan_review", "awaiting_plan_decision")
 	awaitingReq.TransitionID = "tr_plan_gate_open"
 	awaitingReq.EventID = "evt_plan_gate_open"
 	awaitingReq.AttemptID = "att_plan_gate_open"
 	awaitingReq.EventSeq = 1
 
 	if err := svc.Apply(context.Background(), awaitingReq); err != nil {
-		t.Fatalf("apply in_council_review->awaiting_king_decision transition: %v", err)
+		t.Fatalf("apply in_plan_review->awaiting_plan_decision transition: %v", err)
 	}
-	if got := queryPlanState(t, db, "run_1"); got != "awaiting_king_decision" {
-		t.Fatalf("expected plan state awaiting_king_decision, got %q", got)
+	if got := queryPlanState(t, db, "run_1"); got != "awaiting_plan_decision" {
+		t.Fatalf("expected plan state awaiting_plan_decision, got %q", got)
 	}
 	if got := queryRunPendingApprovalKey(t, db, "run_1"); got != "plan:tr_plan_gate_open" {
 		t.Fatalf("expected plan pending approval key plan:tr_plan_gate_open, got %q", got)
 	}
 
-	approveReq := baseTransitionRequest(EntityTypePlan, "awaiting_king_decision", "approved")
+	approveReq := baseTransitionRequest(EntityTypePlan, "awaiting_plan_decision", "approved")
 	approveReq.TransitionID = "tr_plan_gate_close"
 	approveReq.EventID = "evt_plan_gate_close"
 	approveReq.AttemptID = "att_plan_gate_close"
 	approveReq.EventSeq = 1
 
 	if err := svc.Apply(context.Background(), approveReq); err != nil {
-		t.Fatalf("apply awaiting_king_decision->approved transition: %v", err)
+		t.Fatalf("apply awaiting_plan_decision->approved transition: %v", err)
 	}
 	if got := queryRunPendingApprovalKey(t, db, "run_1"); got != "" {
 		t.Fatalf("expected plan pending approval key to clear after approval, got %q", got)
@@ -939,7 +939,7 @@ func TestTransitionServiceClearsPlanPendingApprovalKeyWhenRunTerminalizes(t *tes
 			db := openTestDB(t)
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			seedMinimumGraph(t, db)
-			mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_king_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate_open' WHERE run_id = 'run_1'`)
+			mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate_open' WHERE run_id = 'run_1'`)
 
 			svc := NewTransitionService(db, nil)
 			req := baseTransitionRequest(EntityTypeRun, "running", tt.toState)
@@ -995,22 +995,22 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'King Backup', 'idle', NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'Governance Backup', 'idle', NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`)
 
 	svc := NewTransitionService(db, nil)
 	queued, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
 		Attempt: staleAttempt{
 			NodeRunID:     "nr_1",
 			RunID:         "run_1",
-			NodeID:        "decree_intake",
+			NodeID:        "work_intake",
 			Attempt:       1,
 			Wave:          1,
-			RequiredRole:  "king",
-			AgentID:       "agent_king",
+			RequiredRole:  "governance",
+			AgentID:       "agent_governance",
 			CurrentStatus: "running",
 			StartedAt:     "2026-03-01T12:00:00Z",
 		},
-		ReplacementAgentID: "agent_king_backup",
+		ReplacementAgentID: "agent_governance_backup",
 		HasReplacement:     true,
 		OccurredAt:         "2026-03-01T12:10:00Z",
 		CurrentAttemptID:   "att_1",
@@ -1019,7 +1019,7 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	if err != nil {
 		t.Fatalf("schedule fenced stale retry: %v", err)
 	}
-	if queued.AgentID != "agent_king_backup" {
+	if queued.AgentID != "agent_governance_backup" {
 		t.Fatalf("expected queued replacement agent, got %#v", queued)
 	}
 	if queued.Wave != 1 {
@@ -1057,12 +1057,12 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 	if err := json.Unmarshal([]byte(retryPayloadJSON), &retryPayload); err != nil {
 		t.Fatalf("decode fenced retry payload: %v", err)
 	}
-	if retryPayload["node_id"] != "decree_intake" || retryPayload["node_run_id"] != "nr_1" || retryPayload["recovery_trigger"] != "automatic_retry" || retryPayload["recovery_phase"] != "scheduled" || retryPayload["error_code"] != "agent_unresponsive" || retryPayload["source_attempt_id"] != "att_1" || retryPayload["target_attempt_id"] != composeAttemptID("run_1", "decree_intake", queued.Attempt) || retryPayload["scheduled_at"] != "2026-03-01T12:10:00Z" {
+	if retryPayload["node_id"] != "work_intake" || retryPayload["node_run_id"] != "nr_1" || retryPayload["recovery_trigger"] != "automatic_retry" || retryPayload["recovery_phase"] != "scheduled" || retryPayload["error_code"] != "agent_unresponsive" || retryPayload["source_attempt_id"] != "att_1" || retryPayload["target_attempt_id"] != composeAttemptID("run_1", "work_intake", queued.Attempt) || retryPayload["scheduled_at"] != "2026-03-01T12:10:00Z" {
 		t.Fatalf("unexpected fenced retry payload: %#v", retryPayload)
 	}
 
 	var projectedCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM run_participants WHERE run_id = 'run_1' AND agent_id = 'agent_king_backup'`).Scan(&projectedCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM run_participants WHERE run_id = 'run_1' AND agent_id = 'agent_governance_backup'`).Scan(&projectedCount); err != nil {
 		t.Fatalf("count projected replacement participants: %v", err)
 	}
 	if projectedCount != 1 {
@@ -1092,8 +1092,8 @@ func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPaylo
 	svc := NewTransitionService(db, nil)
 	generated := 0
 	if _, err := svc.ReplayTerminalRun(context.Background(), ReplayTerminalRunRequest{
-		RunID: "run_1", AnchorNodeID: "decree_intake", TargetNodeIDs: []string{"decree_intake"}, Reason: "Try the provider again.",
-		ActorID: "local-operator", RoleID: "king", AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened",
+		RunID: "run_1", AnchorNodeID: "work_intake", TargetNodeIDs: []string{"work_intake"}, Reason: "Try the provider again.",
+		ActorID: "local-operator", RoleID: "governance", AuthoritySource: "api.retry_node", RunEventType: "run.retry_reopened",
 		RunReasonCode: "manual_retry_requested", NodeEventType: "attempt.retry_queued", EventPrefix: "retry", OccurredAt: now,
 		GenerateID: func(prefix string) string {
 			generated++
@@ -1114,7 +1114,7 @@ func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPaylo
 	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
 		t.Fatalf("decode manual recovery payload: %v", err)
 	}
-	if payload["node_id"] != "decree_intake" || payload["node_run_id"] == "" || payload["recovery_trigger"] != "operator_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "manual_retry_requested" || payload["source_attempt_id"] != "att_1" || payload["source_node_run_id"] != "nr_1" || payload["target_attempt_id"] != "run_1:decree_intake:2" || payload["retry_index"] != float64(0) || payload["retry_max"] != float64(0) || payload["scheduled_at"] != now {
+	if payload["node_id"] != "work_intake" || payload["node_run_id"] == "" || payload["recovery_trigger"] != "operator_retry" || payload["recovery_phase"] != "scheduled" || payload["error_code"] != "manual_retry_requested" || payload["source_attempt_id"] != "att_1" || payload["source_node_run_id"] != "nr_1" || payload["target_attempt_id"] != "run_1:work_intake:2" || payload["retry_index"] != float64(0) || payload["retry_max"] != float64(0) || payload["scheduled_at"] != now {
 		t.Fatalf("unexpected manual recovery payload: %#v", payload)
 	}
 }
@@ -1133,7 +1133,7 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 		VALUES ('inv_1', 'att_1', 'run_1', 'nr_1', 'session_1', 'ses_1', 'superseded', 'server_response', %q, %q)`, now, now))
 	mustExec(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv_1' WHERE attempt_id = 'att_1'`)
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, created_at, updated_at)
-		VALUES ('guard_1', 'decree_attempt', 'att_1', 'inv_1', 'att_1', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_1', 1, %q, %q, %q, %q)`, now, now, now, now))
+		VALUES ('guard_1', 'work_order_attempt', 'att_1', 'inv_1', 'att_1', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_1', 1, %q, %q, %q, %q)`, now, now, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at)
 		VALUES ('cancel_1', 'att_1', 'run_1', 'nr_1', 'ses_1', 'agent_unresponsive', 'provider did not stop', %q, 'pending', 'awaiting_quiescence', 1, 'Kingdom could not confirm that the previous provider process stopped.', %q, %q)`, now, now, now))
 
@@ -1142,7 +1142,7 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 		RunID:      "run_1",
 		AttemptID:  "att_1",
 		ActorID:    "local-operator",
-		RoleID:     "allfather",
+		RoleID:     "operator",
 		OccurredAt: "2026-03-01T12:11:00Z",
 		GenerateID: func(prefix string) string { return prefix + "_stop_retry" },
 	}); err != nil {
@@ -1165,7 +1165,7 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 	}
 
 	err := svc.RequestAttemptStopRetry(context.Background(), AttemptStopRetryRequest{
-		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:12:00Z",
+		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "operator", OccurredAt: "2026-03-01T12:12:00Z",
 	})
 	if err == nil {
 		t.Fatal("expected duplicate stop retry request to conflict")
@@ -1181,7 +1181,7 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 		t.Fatalf("expected durable stop retry dispatch claim, got %q", handoffState)
 	}
 	if err := svc.RequestAttemptStopRetry(context.Background(), AttemptStopRetryRequest{
-		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:14:00Z",
+		RunID: "run_1", AttemptID: "att_1", ActorID: "local-operator", RoleID: "operator", OccurredAt: "2026-03-01T12:14:00Z",
 	}); err != nil {
 		t.Fatalf("request a new stop retry after an interrupted dispatch: %v", err)
 	}
@@ -1193,23 +1193,23 @@ func TestTransitionServiceDoesNotFenceProviderAttemptAfterLeaseRenewal(t *testin
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, created_at, updated_at)
-		VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'starting', 'provider_backed', 'server_response', 'worker_1', '2026-09-28T12:20:00Z', 1, 'session_1', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z')`)
+		VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'starting', 'provider_backed', 'server_response', 'worker_1', '2026-09-28T12:20:00Z', 1, 'session_1', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z', '2026-09-28T12:00:00Z')`)
 
 	svc := NewTransitionService(db, nil)
 	_, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
 		Attempt: staleAttempt{
-			NodeRunID: "nr_1", RunID: "run_1", NodeID: "decree_intake", Attempt: 1, Wave: 1,
-			RequiredRole: "king", AgentID: "agent_king", AttemptState: "starting",
+			NodeRunID: "nr_1", RunID: "run_1", NodeID: "work_intake", Attempt: 1, Wave: 1,
+			RequiredRole: "governance", AgentID: "agent_governance", AttemptState: "starting",
 			ExecutionMode: executionstore.ExecutionModeProviderBacked,
 			LeaseOwner:    "worker_1", LeaseVersion: 1, LeaseExpiresAt: "2026-09-28T12:12:00Z",
 			CurrentStatus: "starting", StartedAt: "2026-09-28T12:00:00Z",
 		},
-		ReplacementAgentID: "agent_king",
+		ReplacementAgentID: "agent_governance",
 		OccurredAt:         "2026-09-28T12:13:00Z",
-		CurrentAttemptID:   "run_1:decree_intake:1",
+		CurrentAttemptID:   "run_1:work_intake:1",
 		CurrentEventSeq:    1,
 	})
 	if !errors.Is(err, errStaleAttemptExecutionLeaseChanged) {
@@ -1219,13 +1219,13 @@ func TestTransitionServiceDoesNotFenceProviderAttemptAfterLeaseRenewal(t *testin
 		t.Fatalf("renewed provider attempt node status=%q, want starting", got)
 	}
 	var state, leaseOwner, leaseExpiresAt string
-	if err := db.QueryRow(`SELECT state, lease_owner, lease_expires_at FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&state, &leaseOwner, &leaseExpiresAt); err != nil {
+	if err := db.QueryRow(`SELECT state, lease_owner, lease_expires_at FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&state, &leaseOwner, &leaseExpiresAt); err != nil {
 		t.Fatalf("load renewed provider attempt: %v", err)
 	}
 	if state != "starting" || leaseOwner != "worker_1" || leaseExpiresAt != "2026-09-28T12:20:00Z" {
 		t.Fatalf("stale retry revoked renewed attempt authority: state=%q owner=%q expires=%q", state, leaseOwner, leaseExpiresAt)
 	}
-	if count := countRowsForReconcilerTest(t, db, `SELECT COUNT(1) FROM node_runs WHERE handoff_source_attempt_id = 'run_1:decree_intake:1'`); count != 0 {
+	if count := countRowsForReconcilerTest(t, db, `SELECT COUNT(1) FROM node_runs WHERE handoff_source_attempt_id = 'run_1:work_intake:1'`); count != 0 {
 		t.Fatalf("renewed attempt created %d stale retry successors", count)
 	}
 }
@@ -1240,22 +1240,22 @@ func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterSt
 			db := openTestDB(t)
 			applyMigration(t, db, "0001_initial_schema.up.sql")
 			seedMinimumGraph(t, db)
-			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_king_backup', 'king', 'King Backup', %q, NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`, replacementStatus))
+			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'Governance Backup', %q, NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`, replacementStatus))
 
 			svc := NewTransitionService(db, nil)
 			queued, err := svc.ScheduleFencedStaleRetry(context.Background(), ScheduleFencedStaleRetryRequest{
 				Attempt: staleAttempt{
 					NodeRunID:     "nr_1",
 					RunID:         "run_1",
-					NodeID:        "decree_intake",
+					NodeID:        "work_intake",
 					Attempt:       1,
 					Wave:          1,
-					RequiredRole:  "king",
-					AgentID:       "agent_king",
+					RequiredRole:  "governance",
+					AgentID:       "agent_governance",
 					CurrentStatus: "running",
 					StartedAt:     "2026-03-01T12:00:00Z",
 				},
-				ReplacementAgentID: "agent_king_backup",
+				ReplacementAgentID: "agent_governance_backup",
 				HasReplacement:     true,
 				OccurredAt:         "2026-03-01T12:10:00Z",
 				CurrentAttemptID:   "att_1",
@@ -1264,12 +1264,12 @@ func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterSt
 			if err != nil {
 				t.Fatalf("schedule fenced stale retry with drifted replacement status: %v", err)
 			}
-			if queued.AgentID != "agent_king_backup" {
+			if queued.AgentID != "agent_governance_backup" {
 				t.Fatalf("expected queued replacement agent, got %#v", queued)
 			}
 
 			var agentStatus string
-			if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king_backup'`).Scan(&agentStatus); err != nil {
+			if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_governance_backup'`).Scan(&agentStatus); err != nil {
 				t.Fatalf("query replacement agent status: %v", err)
 			}
 			if agentStatus != "busy" {
@@ -1350,10 +1350,10 @@ func TestTransitionServiceIncrementsReworkCyclesForPlanRework(t *testing.T) {
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_king_decision', rework_cycle_count = 1 WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', rework_cycle_count = 1 WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, nil)
-	req := baseTransitionRequest(EntityTypePlan, "awaiting_king_decision", "needs_rework")
+	req := baseTransitionRequest(EntityTypePlan, "awaiting_plan_decision", "needs_rework")
 	req.TransitionID = "tr_plan_rework_within_limit"
 	req.EventID = "evt_plan_rework_within_limit"
 	req.AttemptID = "att_plan_rework_within_limit"
@@ -1387,7 +1387,7 @@ func TestTransitionServiceAllowsNeedsReworkToCouncilReviewLoop(t *testing.T) {
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'needs_rework', rework_cycle_count = 1 WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, nil)
-	req := baseTransitionRequest(EntityTypePlan, "needs_rework", "in_council_review")
+	req := baseTransitionRequest(EntityTypePlan, "needs_rework", "in_plan_review")
 	req.TransitionID = "tr_plan_rework_loop"
 	req.EventID = "evt_plan_rework_loop"
 	req.AttemptID = "att_plan_rework_loop"
@@ -1397,8 +1397,8 @@ func TestTransitionServiceAllowsNeedsReworkToCouncilReviewLoop(t *testing.T) {
 		t.Fatalf("apply plan loop transition: %v", err)
 	}
 
-	if got := queryPlanState(t, db, "run_1"); got != "in_council_review" {
-		t.Fatalf("expected plan_state in_council_review, got %q", got)
+	if got := queryPlanState(t, db, "run_1"); got != "in_plan_review" {
+		t.Fatalf("expected plan_state in_plan_review, got %q", got)
 	}
 }
 
@@ -1409,10 +1409,10 @@ func TestTransitionServiceKeepsRunActiveWhenPlanReworkCyclesGrowPastLegacyCap(t 
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_king_decision', rework_cycle_count = 2 WHERE run_id = 'run_1'`)
+	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', rework_cycle_count = 2 WHERE run_id = 'run_1'`)
 
 	svc := NewTransitionService(db, nil)
-	req := baseTransitionRequest(EntityTypePlan, "awaiting_king_decision", "needs_rework")
+	req := baseTransitionRequest(EntityTypePlan, "awaiting_plan_decision", "needs_rework")
 	req.TransitionID = "tr_plan_rework_uncapped"
 	req.EventID = "evt_plan_rework_uncapped"
 	req.AttemptID = "att_plan_rework_uncapped"
@@ -1442,10 +1442,10 @@ func TestTransitionServiceBlocksExecutionNodeStartBeforePlanApproval(t *testing.
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('council-member', 'Council Member', 1, '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec', 'wfdef_1', 'execution_kickoff', 'council-member', 'execution_kickoff', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec', 'run_1', 'execution_kickoff', 1,1, 'ready', 'council-member', 'agent_council', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec', 'wfdef_1', 'execution_kickoff', 'plan-author', 'execution_kickoff', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec', 'run_1', 'execution_kickoff', 1,1, 'ready', 'plan-author', 'agent_council', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	req := baseTransitionRequest(EntityTypeNode, "ready", "running")
@@ -1474,21 +1474,21 @@ func TestTransitionServiceRejectsClosureStartEvenWhenWaiverEventExists(t *testin
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_adv', 'wfdef_1', 'advisor_consultation', 'king', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_syn', 'wfdef_1', 'advisory_synthesis', 'king', 'advisory_synthesis', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan', 'wfdef_1', 'plan_drafting', 'king', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_decision', 'wfdef_1', 'king_plan_decision', 'king', 'king_plan_decision', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec2', 'wfdef_1', 'execution_kickoff', 'king', 'execution_kickoff', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_del', 'wfdef_1', 'delegated_execution', 'king', 'delegated_execution', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val', 'wfdef_1', 'validation_gates', 'king', 'validation_gates', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_adv', 'run_1', 'advisor_consultation', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_syn', 'run_1', 'advisory_synthesis', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_decision', 'run_1', 'king_plan_decision', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec2', 'run_1', 'execution_kickoff', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_del', 'run_1', 'delegated_execution', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close', 'run_1', 'royal_closure', 1,1, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_waive', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, NULL, 'waiver_1', 'v1', 'waiver.granted', 1, '{"target_gate":"functional_validation"}', 'actor_1', 'king', 'api.waiver', 'policy_violation', 'seed waiver', 'corr_w', 'caus_w', 'p', 'e', '2026-03-01T12:10:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_adv', 'wfdef_1', 'advisor_consultation', 'governance', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_syn', 'wfdef_1', 'advisory_synthesis', 'governance', 'advisory_synthesis', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan', 'wfdef_1', 'plan_drafting', 'governance', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_decision', 'wfdef_1', 'plan_decision', 'governance', 'plan_decision', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec2', 'wfdef_1', 'execution_kickoff', 'governance', 'execution_kickoff', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_del', 'wfdef_1', 'delegated_execution', 'governance', 'delegated_execution', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val', 'wfdef_1', 'validation_gates', 'governance', 'validation_gates', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_adv', 'run_1', 'advisor_consultation', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_syn', 'run_1', 'advisory_synthesis', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_decision', 'run_1', 'plan_decision', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec2', 'run_1', 'execution_kickoff', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_del', 'run_1', 'delegated_execution', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close', 'run_1', 'completion', 1,1, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_waive', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, NULL, 'waiver_1', 'v1', 'waiver.granted', 1, '{"target_gate":"functional_validation"}', 'actor_1', 'governance', 'api.waiver', 'policy_violation', 'seed waiver', 'corr_w', 'caus_w', 'p', 'e', '2026-03-01T12:10:00Z')`)
 
 	svc := NewTransitionService(db, nil)
 	req := baseTransitionRequest(EntityTypeNode, "ready", "running")
@@ -1516,9 +1516,9 @@ func TestTransitionServiceAllowsClosureStartWhenValidationNodeAbsent(t *testing.
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan', 'wfdef_1', 'plan_drafting', 'king', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close', 'run_1', 'royal_closure', 1,1, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan', 'wfdef_1', 'plan_drafting', 'governance', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close', 'run_1', 'completion', 1,1, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	req := baseTransitionRequest(EntityTypeNode, "ready", "running")
@@ -1541,22 +1541,22 @@ func TestTransitionServiceAllowsClosureStartWhenValidationLatestAttemptsSucceede
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_adv_latest', 'wfdef_1', 'advisor_consultation', 'king', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_syn_latest', 'wfdef_1', 'advisory_synthesis', 'king', 'advisory_synthesis', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_latest', 'wfdef_1', 'plan_drafting', 'king', 'plan_drafting', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_decision_latest', 'wfdef_1', 'king_plan_decision', 'king', 'king_plan_decision', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val_a', 'wfdef_1', 'validation_gates_qa_scout', 'king', 'validation_gates', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val_b', 'wfdef_1', 'validation_gates_nightraven', 'king', 'validation_gates', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_adv_latest', 'wfdef_1', 'advisor_consultation', 'governance', 'advisor_consultation', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_syn_latest', 'wfdef_1', 'advisory_synthesis', 'governance', 'advisory_synthesis', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_latest', 'wfdef_1', 'plan_drafting', 'governance', 'plan_drafting', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_decision_latest', 'wfdef_1', 'plan_decision', 'governance', 'plan_decision', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val_a', 'wfdef_1', 'quality_validation', 'governance', 'validation_gates', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_val_b', 'wfdef_1', 'security_validation', 'governance', 'validation_gates', '2026-03-01T12:00:00Z')`)
 
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_adv_latest', 'run_1', 'advisor_consultation', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_syn_latest', 'run_1', 'advisory_synthesis', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_latest', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_decision_latest', 'run_1', 'king_plan_decision', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_a_1', 'run_1', 'validation_gates_qa_scout', 1,1, 'failed', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_a_2', 'run_1', 'validation_gates_qa_scout', 2,2, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_b_1', 'run_1', 'validation_gates_nightraven', 1,1, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_b_2', 'run_1', 'validation_gates_nightraven', 2,2, 'succeeded', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close_latest', 'run_1', 'royal_closure', 1,1, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_adv_latest', 'run_1', 'advisor_consultation', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_syn_latest', 'run_1', 'advisory_synthesis', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_latest', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_decision_latest', 'run_1', 'plan_decision', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_a_1', 'run_1', 'quality_validation', 1,1, 'failed', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_a_2', 'run_1', 'quality_validation', 2,2, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_b_1', 'run_1', 'security_validation', 1,1, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_val_b_2', 'run_1', 'security_validation', 2,2, 'succeeded', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_close_latest', 'run_1', 'completion', 1,1, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
 
 	svc := NewTransitionService(db, nil)
 	req := baseTransitionRequest(EntityTypeNode, "ready", "running")
@@ -1818,20 +1818,20 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 1, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA', 0, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder-berserker', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer', 'reviewer-shieldmaiden', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_qa', 'intelligence-qa-scout', 'blocked', NULL, 0, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec_live', 'wfdef_1', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_live', 'wfdef_1', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_live', 'wfdef_1', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec_live', 'run_1', 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', 'agent_builder', 1, '`+now+`', NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_live', 'run_1', 'execution_review_shieldmaiden', 1,1, 'ready', 'reviewer-shieldmaiden', 'agent_reviewer', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_live', 'run_1', 'validation_gates_qa_scout', 1,1, 'blocked', 'intelligence-qa-scout', 'agent_qa', 1, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:delegated_execution_berserker:1', 'run_1', 'nr_exec_live', 'running', 'provider_backed', 'server_response', 'worker-1', '`+now+`', 1, 'session_exec_live', '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder', 'busy', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer', 'reviewer', 'idle', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_qa', 'qa-validator', 'blocked', NULL, 0, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_exec_live', 'wfdef_1', 'implementation', 'builder', 'delegated_execution', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_live', 'wfdef_1', 'execution_review', 'reviewer', 'execution_review', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_validation_live', 'wfdef_1', 'quality_validation', 'qa-validator', 'validation_gates', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_exec_live', 'run_1', 'implementation', 1,1, 'running', 'builder', 'agent_builder', 1, '`+now+`', NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_live', 'run_1', 'execution_review', 1,1, 'ready', 'reviewer', 'agent_reviewer', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_live', 'run_1', 'quality_validation', 1,1, 'blocked', 'qa-validator', 'agent_qa', 1, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:implementation:1', 'run_1', 'nr_exec_live', 'running', 'provider_backed', 'server_response', 'worker-1', '`+now+`', 1, 'session_exec_live', '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_exec_live', 'agent_builder', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
@@ -1844,7 +1844,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 			FromState:       "running",
 			ToState:         "failed",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "chancellor",
+			RoleID:          "coordinator",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "dependency_blocked",
 			ReasonText:      "node failure propagated to run",
@@ -1876,7 +1876,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 	}
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`).Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:implementation:1'`).Scan(&attemptState); err != nil {
 		t.Fatalf("query cancelled attempt execution state: %v", err)
 	}
 	if attemptState != "committed_cancelled" {
@@ -1894,7 +1894,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 	var cancelReasonCode string
 	var cancelReasonText string
 	var cancelStatus string
-	if err := db.QueryRow(`SELECT reason_code, reason_text, status FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:delegated_execution_berserker:1'`).Scan(&cancelReasonCode, &cancelReasonText, &cancelStatus); err != nil {
+	if err := db.QueryRow(`SELECT reason_code, reason_text, status FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:implementation:1'`).Scan(&cancelReasonCode, &cancelReasonText, &cancelStatus); err != nil {
 		t.Fatalf("query attempt cancel outbox row: %v", err)
 	}
 	if cancelReasonCode != "dependency_blocked" {
@@ -1932,7 +1932,7 @@ func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomical
 
 	ctx := context.Background()
 	execStore := executionstore.New(db)
-	const attemptID = "run_1:decree_intake:1"
+	const attemptID = "run_1:work_intake:1"
 	const invocationID = "invocation_run_cancel"
 	if err := execStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_run_cancel", CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 		t.Fatalf("enqueue provider attempt: %v", err)
@@ -1996,7 +1996,7 @@ func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomical
 		ExpectedLeaseOwner:   "worker_run_cancel",
 		ExpectedLeaseVersion: claim.LeaseVersion,
 		TerminalHandoffID:    handoff.Handoff.HandoffID,
-		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "king", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
+		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: "governance", Model: "github-copilot/gpt-5.4-mini", Variant: "low", CreatedAt: "2026-03-01T12:00:04Z"},
 		Terminal:             executionstore.CommitTerminalRequest{OutboxID: "outbox_run_cancel", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", TerminalState: "committed_cancelled", PayloadJSON: `{}`, CommittedAt: "2026-03-01T12:00:04Z", TerminalReasonCode: "provider_cancelled", FailureCode: "provider_cancelled", FailureText: "run cancelled by user", ProviderSessionID: "ses_run_cancel"},
 	})
 	if err != nil {
@@ -2027,9 +2027,9 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 1, '', '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 1, '', '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{
@@ -2041,7 +2041,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 			FromState:       "running",
 			ToState:         "failed",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "king",
+			RoleID:          "governance",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "dependency_blocked",
 			ReasonText:      "node failure propagated to run",
@@ -2064,7 +2064,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 	}
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&attemptState); err != nil {
 		t.Fatalf("query runtime-owned attempt execution state: %v", err)
 	}
 	if attemptState != "committed_cancelled" {
@@ -2072,7 +2072,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 	}
 
 	var cancelCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&cancelCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&cancelCount); err != nil {
 		t.Fatalf("count runtime-owned cancel outbox rows: %v", err)
 	}
 	if cancelCount != 0 {
@@ -2080,7 +2080,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 	}
 
 	var agentStatus string
-	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king'`).Scan(&agentStatus); err != nil {
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_governance'`).Scan(&agentStatus); err != nil {
 		t.Fatalf("query runtime-owned agent status: %v", err)
 	}
 	if agentStatus != "idle" {
@@ -2097,9 +2097,9 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesPreservesObservedCompl
 
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_exec_observed', '`+now+`', '`+now+`', NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'terminal_observed', 'provider_backed', 'server_response', '', NULL, 1, 'session_exec_observed', '`+now+`', '`+now+`', NULL, '', '', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{
@@ -2111,7 +2111,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesPreservesObservedCompl
 			FromState:       "running",
 			ToState:         "cancelled",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "king",
+			RoleID:          "governance",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "operator_cancelled",
 			ReasonText:      "operator cancelled run",
@@ -2134,7 +2134,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesPreservesObservedCompl
 	}
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&attemptState); err != nil {
 		t.Fatalf("query observed attempt execution state: %v", err)
 	}
 	if attemptState != "terminal_observed" {
@@ -2142,7 +2142,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesPreservesObservedCompl
 	}
 
 	var cancelCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&cancelCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&cancelCount); err != nil {
 		t.Fatalf("count observed cancel outbox rows: %v", err)
 	}
 	if cancelCount != 0 {
@@ -2175,9 +2175,9 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 
 			now := "2026-03-01T12:40:00Z"
 			mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-			mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+			mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 			mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-			mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', '`+tc.attemptState+`', 'provider_backed', 'server_response', '', NULL, 1, 'session_terminalized_projection', '`+now+`', '`+now+`', '`+now+`', '`+tc.failureCode+`', '`+tc.failureText+`', '`+now+`', '`+now+`')`)
+			mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', '`+tc.attemptState+`', 'provider_backed', 'server_response', '', NULL, 1, 'session_terminalized_projection', '`+now+`', '`+now+`', '`+now+`', '`+tc.failureCode+`', '`+tc.failureText+`', '`+now+`', '`+now+`')`)
 
 			svc := NewTransitionService(db, nil)
 			err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{
@@ -2189,7 +2189,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 					FromState:       "running",
 					ToState:         "failed",
 					ActorID:         "runtime_orchestrator",
-					RoleID:          "king",
+					RoleID:          "governance",
 					AuthoritySource: "runtime.orchestrator",
 					ReasonCode:      "dependency_blocked",
 					ReasonText:      "node failure propagated to run",
@@ -2212,7 +2212,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 			}
 
 			var attemptState string
-			if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&attemptState); err != nil {
+			if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&attemptState); err != nil {
 				t.Fatalf("query projected attempt execution state: %v", err)
 			}
 			if attemptState != tc.attemptState {
@@ -2221,7 +2221,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 
 			var eventType string
 			var reasonCode string
-			if err := db.QueryRow(`SELECT event_type, reason_code FROM events WHERE attempt_id = 'run_1:decree_intake:1' ORDER BY run_event_seq DESC LIMIT 1`).Scan(&eventType, &reasonCode); err != nil {
+			if err := db.QueryRow(`SELECT event_type, reason_code FROM events WHERE attempt_id = 'run_1:work_intake:1' ORDER BY run_event_seq DESC LIMIT 1`).Scan(&eventType, &reasonCode); err != nil {
 				t.Fatalf("query projected node event: %v", err)
 			}
 			if eventType != tc.expectedEvent || reasonCode != tc.expectedReason {
@@ -2229,7 +2229,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 			}
 
 			var cancelCount int
-			if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&cancelCount); err != nil {
+			if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&cancelCount); err != nil {
 				t.Fatalf("count terminalized cancel outbox rows: %v", err)
 			}
 			if cancelCount != 0 {
@@ -2248,16 +2248,16 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchKeepsSharedAgentBus
 
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_2', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_2', 'run_1', 'work_intake', 2, 2, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, '`+now+`', NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_2', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2282,7 +2282,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchKeepsSharedAgentBus
 	}
 
 	var agentStatus string
-	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_king'`).Scan(&agentStatus); err != nil {
+	if err := db.QueryRow(`SELECT status FROM agents WHERE agent_id = 'agent_governance'`).Scan(&agentStatus); err != nil {
 		t.Fatalf("query agent status after supersession: %v", err)
 	}
 	if agentStatus != "busy" {
@@ -2298,16 +2298,16 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCance
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_2', 'run_1', 'decree_intake', 2, 2, 'starting', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_2', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_2', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_2', 'run_1', 'work_intake', 2, 2, 'starting', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_provider_2', 'starting', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_2', '', '2026-03-01T12:00:05Z', NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_2', 'agent_governance', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2320,7 +2320,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCance
 	}
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:2'`).Scan(&attemptState); err != nil {
 		t.Fatalf("query superseded attempt execution state: %v", err)
 	}
 	if attemptState != "committed_cancelled" {
@@ -2342,7 +2342,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCance
 	var cancelReasonCode string
 	var cancelReasonText string
 	var cancelStatus string
-	if err := db.QueryRow(`SELECT reason_code, reason_text, status FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelReasonCode, &cancelReasonText, &cancelStatus); err != nil {
+	if err := db.QueryRow(`SELECT reason_code, reason_text, status FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:2'`).Scan(&cancelReasonCode, &cancelReasonText, &cancelStatus); err != nil {
 		t.Fatalf("query superseded attempt cancel outbox: %v", err)
 	}
 	if cancelReasonCode != "superseded_after_launch_handoff" {
@@ -2380,16 +2380,16 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsProviderCancel
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_queued_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_queued_2', 'queued', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_queued_2', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_queued_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_queued_2', 'run_1', 'work_intake', 2, 2, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_provider_queued_2', 'queued', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_queued_2', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_queued_2', 'agent_governance', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2402,7 +2402,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsProviderCancel
 	}
 
 	var cancelCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelCount); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:2'`).Scan(&cancelCount); err != nil {
 		t.Fatalf("count queued retry cancel outbox rows: %v", err)
 	}
 	if cancelCount != 0 {
@@ -2426,16 +2426,16 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchTreatsQueuedRetryWi
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_invocation_2', 'run_1', 'decree_intake', 2, 2, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_provider_invocation_2', 'queued', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_invocation_2', 'provider_session_retry_provider_invocation_2', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_invocation_2', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_provider_invocation_2', 'run_1', 'work_intake', 2, 2, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_provider_invocation_2', 'queued', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_invocation_2', 'provider_session_retry_provider_invocation_2', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_retry_provider_invocation_2', 'agent_governance', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2456,7 +2456,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchTreatsQueuedRetryWi
 	}
 
 	var cancelReasonCode string
-	if err := db.QueryRow(`SELECT reason_code FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:decree_intake:2'`).Scan(&cancelReasonCode); err != nil {
+	if err := db.QueryRow(`SELECT reason_code FROM attempt_cancel_outbox WHERE attempt_id = 'run_1:work_intake:2'`).Scan(&cancelReasonCode); err != nil {
 		t.Fatalf("query cancel outbox for queued retry with active invocation: %v", err)
 	}
 	if cancelReasonCode != "superseded_after_launch_handoff" {
@@ -2473,17 +2473,17 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsTerminalNoopRe
 
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_pending_3', 'run_1', 'decree_intake', 3, 3, 'ready', 'king', 'agent_king', 1, NULL, NULL)`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, '`+now+`', '`+now+`', 'superseded_before_launch', 'already cancelled', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:3', 'run_1', 'nr_retry_pending_3', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_pending_3', 'run_1', 'work_intake', 3, 3, 'ready', 'governance', 'agent_governance', 1, NULL, NULL)`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, '`+now+`', '`+now+`', 'superseded_before_launch', 'already cancelled', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:3', 'run_1', 'nr_retry_pending_3', 'queued', 'runtime_owned', 'not_applicable', '', NULL, 0, '', '', NULL, NULL, NULL, NULL, '', '', '`+now+`', '`+now+`')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2518,13 +2518,13 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchBlocksOlderAdoption
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_canonical', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_canonical', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry remained canonical')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_canonical', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_terminal_canonical', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry remained canonical')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.SupersedeQueuedAttemptsBeforeLaunch(context.Background(), SupersedeQueuedAttemptsRequest{
 		RunID:       "run_1",
-		NodeID:      "decree_intake",
+		NodeID:      "work_intake",
 		KeepAttempt: 1,
 		OccurredAt:  now,
 		ActorID:     "runtime_orchestrator",
@@ -2558,9 +2558,9 @@ func TestLoadLiveNodeAttemptsTxPrefersNonSupersededAttempt(t *testing.T) {
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, started_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_superseded', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'superseded_before_launch', 'superseded')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, started_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_superseded', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'superseded_before_launch', 'superseded')`)
 
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -2575,15 +2575,15 @@ func TestLoadLiveNodeAttemptsTxPrefersNonSupersededAttempt(t *testing.T) {
 	}
 
 	for _, attempt := range attempts {
-		if attempt.NodeID != "decree_intake" {
+		if attempt.NodeID != "work_intake" {
 			continue
 		}
 		if attempt.NodeRunID != "nr_1" || attempt.Attempt != 1 || attempt.NodeStatus != "running" {
-			t.Fatalf("expected decree_intake to resolve to non-superseded running attempt 1, got node_run=%q attempt=%d status=%q", attempt.NodeRunID, attempt.Attempt, attempt.NodeStatus)
+			t.Fatalf("expected work_intake to resolve to non-superseded running attempt 1, got node_run=%q attempt=%d status=%q", attempt.NodeRunID, attempt.Attempt, attempt.NodeStatus)
 		}
 		return
 	}
-	t.Fatal("expected decree_intake live attempt to remain visible")
+	t.Fatal("expected work_intake live attempt to remain visible")
 }
 
 func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
@@ -2596,7 +2596,7 @@ func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_superseded', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`', '`+now+`')`)
 
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -2604,7 +2604,7 @@ func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
 	}
 	defer tx.Rollback()
 
-	active, err := liveNodeAttemptExistsTx(context.Background(), tx, "run_1", []string{"decree_intake"})
+	active, err := liveNodeAttemptExistsTx(context.Background(), tx, "run_1", []string{"work_intake"})
 	if err != nil {
 		t.Fatalf("check live target node attempt activity: %v", err)
 	}
@@ -2622,12 +2622,12 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemp
 
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_king'`)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'blocked', started_at = '`+now+`', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 1, 'session_terminalize_hidden_live', '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_terminalize_hidden_live', 'agent_king', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'already terminal')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 1, 'session_terminalize_hidden_live', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES ('session_terminalize_hidden_live', 'agent_governance', 'active', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'already terminal')`)
 
 	svc := NewTransitionService(db, nil)
 	err := svc.TerminalizeRunAndCancelLiveNodes(context.Background(), RunTerminalizationRequest{
@@ -2639,7 +2639,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemp
 			FromState:       "running",
 			ToState:         "failed",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "king",
+			RoleID:          "governance",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "dependency_blocked",
 			ReasonText:      "node failure propagated to run",
@@ -2662,7 +2662,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemp
 	}
 
 	var attemptState string
-	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:decree_intake:1'`).Scan(&attemptState); err != nil {
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = 'run_1:work_intake:1'`).Scan(&attemptState); err != nil {
 		t.Fatalf("query hidden live attempt state after run terminalization: %v", err)
 	}
 	if attemptState != "committed_cancelled" {
@@ -2680,14 +2680,14 @@ func TestTransitionServiceQueuePendingNodeWaveNoopsWhenOlderLiveLineageExistsBes
 	now := "2026-03-01T12:40:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running', plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'running', started_at = '`+now+`', finished_at = NULL WHERE node_run_id = 'nr_1'`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, started_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'decree_intake', 2, 2, 'cancelled', 'king', 'agent_king', 1, NULL, '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:decree_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry should not hide live attempt')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, started_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_retry_terminal_2', 'run_1', 'work_intake', 2, 2, 'cancelled', 'governance', 'agent_governance', 1, NULL, '`+now+`')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at, committed_at, terminal_observed_at, failure_code, failure_text) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_terminal_2', 'committed_cancelled', 'runtime_owned', 'not_applicable', '`+now+`', '`+now+`', '`+now+`', '`+now+`', 'provider_process_failed', 'terminal retry should not hide live attempt')`)
 
 	svc := NewTransitionService(db, nil)
 	result, err := svc.QueuePendingNodeWave(context.Background(), QueuePendingNodeWaveRequest{
 		RunID:      "run_1",
-		NodeIDs:    []string{"decree_intake"},
+		NodeIDs:    []string{"work_intake"},
 		OccurredAt: now,
 	})
 	if err != nil {
@@ -2698,7 +2698,7 @@ func TestTransitionServiceQueuePendingNodeWaveNoopsWhenOlderLiveLineageExistsBes
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake'`).Scan(&count); err != nil {
 		t.Fatalf("count node attempts after hidden live noop queue: %v", err)
 	}
 	if count != 2 {
@@ -2794,7 +2794,7 @@ func TestTransitionServiceQueuePendingNodeWaveNoopsWhenParentRunIsNotRunning(t *
 	svc := NewTransitionService(db, nil)
 	result, err := svc.QueuePendingNodeWave(context.Background(), QueuePendingNodeWaveRequest{
 		RunID:      "run_1",
-		NodeIDs:    []string{"decree_intake"},
+		NodeIDs:    []string{"work_intake"},
 		OccurredAt: "2026-03-01T12:06:00Z",
 	})
 	if err != nil {
@@ -2805,7 +2805,7 @@ func TestTransitionServiceQueuePendingNodeWaveNoopsWhenParentRunIsNotRunning(t *
 	}
 
 	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'decree_intake'`).Scan(&count); err != nil {
+	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = 'run_1' AND node_id = 'work_intake'`).Scan(&count); err != nil {
 		t.Fatalf("count node attempts after noop queue: %v", err)
 	}
 	if count != 1 {
@@ -2823,7 +2823,7 @@ func baseTransitionRequest(entity EntityType, fromState, toState string) Transit
 		FromState:           fromState,
 		ToState:             toState,
 		ActorID:             "actor_1",
-		RoleID:              "king",
+		RoleID:              "governance",
 		AuthoritySource:     "system",
 		ReasonCode:          "internal_error",
 		ReasonText:          "test transition",

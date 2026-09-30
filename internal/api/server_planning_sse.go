@@ -52,14 +52,15 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 	defer staleCheckTicker.Stop()
 
 	catchUp := func() bool {
-		events, err := s.planningService.ListOperationEventsAfterEventID(r.Context(), operationID, lastEventID)
-		if err != nil {
-			return false
+		for {
+			events, err := s.planningService.ListOperationEventsAfterEventIDPage(r.Context(), operationID, lastEventID)
+			if err != nil || !writeEvents(events) {
+				return false
+			}
+			if len(events) < state.DefaultPlanningOperationEventListLimit {
+				return true
+			}
 		}
-		if len(events) == 0 {
-			return true
-		}
-		return writeEvents(events)
 	}
 
 	for {

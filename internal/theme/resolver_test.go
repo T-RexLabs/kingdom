@@ -178,3 +178,33 @@ func TestBuiltinTokensMatchCanonicalPaletteResolver(t *testing.T) {
 		}
 	}
 }
+
+func TestThemeRejectsInvisibleAccentText(t *testing.T) {
+	r := resolverForTest(t)
+	draft := draftForTest()
+	draft["palette"] = map[string]string{"accent": "#0d1110"}
+	_, err := r.Resolve(rawForTest(t, draft), nil)
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("invisible accent text accepted: %v", err)
+	}
+}
+
+func TestNautilusPreservesApprovedLightPalette(t *testing.T) {
+	r := resolverForTest(t)
+	for _, p := range r.Builtins() {
+		if p.Manifest.ID != "nautilus" {
+			continue
+		}
+		if p.Manifest.ColorScheme != "light" {
+			t.Fatalf("Nautilus color scheme=%q, want light", p.Manifest.ColorScheme)
+		}
+		for key, want := range map[string]string{"canvas": "#f3f0e7", "surface": "#faf8f1", "text": "#213f43", "accent": "#23616a"} {
+			if got := p.Manifest.Palette[key]; got != want {
+				t.Errorf("Nautilus %s=%s, want %s", key, got, want)
+			}
+		}
+		return
+	}
+	t.Fatal("Nautilus builtin missing")
+}

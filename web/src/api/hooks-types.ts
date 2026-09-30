@@ -59,7 +59,7 @@ export type RunTimelineResponse = components["schemas"]["RunTimelineResponse"];
 export type MailboxMessage = components["schemas"]["RunMailboxMessageSummary"];
 export type MailboxMessagesResponse = components["schemas"]["RunMailboxMessagesResponse"];
 export type MailboxMessageDetail = components["schemas"]["RunMailboxMessageDetail"];
-export type DecreeDetail = components["schemas"]["DecreeDetail"];
+export type WorkOrderDetail = components["schemas"]["WorkOrderDetail"];
 export type PlanningSessionSummary = components["schemas"]["PlanningSessionSummary"];
 export type PlanningSessionDetail = components["schemas"]["PlanningSessionDetail"];
 export type AcpAgent = components["schemas"]["AcpAgent"];
@@ -83,24 +83,24 @@ export type DashboardSnapshot = components["schemas"]["DashboardSnapshot"];
 export type DashboardTrendPoint = components["schemas"]["DashboardTrendPoint"];
 export type AnalyticsOutcomeBucket = components["schemas"]["AnalyticsOutcomeBucket"];
 export type AnalyticsRoleDuration = components["schemas"]["AnalyticsRoleDuration"];
-export type RealmAnalyticsOverview = components["schemas"]["RealmAnalyticsOverview"];
-export type RealmAnalyticsRunAnalytics = components["schemas"]["RealmAnalyticsRunAnalytics"];
+export type AnalyticsOverview = components["schemas"]["AnalyticsOverview"];
+export type AnalyticsRunAnalytics = components["schemas"]["AnalyticsRunAnalytics"];
 export type TokenUsageByRole = components["schemas"]["TokenUsageByRole"];
 export type TokenUsageByRoleModel = components["schemas"]["TokenUsageByRoleModel"];
-export type RealmAnalyticsTokenSummary = components["schemas"]["RealmAnalyticsTokenSummary"];
-export type RealmAnalyticsArtifactSummary = components["schemas"]["RealmAnalyticsArtifactSummary"];
-export type RealmAnalyticsNodeSummary = components["schemas"]["RealmAnalyticsNodeSummary"];
-export type RealmAnalyticsSelectedRun = components["schemas"]["RealmAnalyticsSelectedRun"];
-export type RealmAnalyticsExecutionDetail = components["schemas"]["RealmAnalyticsExecutionDetail"];
-export type RealmAnalyticsExecutionDetailSnapshot = components["schemas"]["RealmAnalyticsExecutionDetailSnapshot"];
-export type RealmAnalyticsSnapshot = components["schemas"]["RealmAnalyticsSnapshot"];
+export type AnalyticsTokenSummary = components["schemas"]["AnalyticsTokenSummary"];
+export type AnalyticsArtifactSummary = components["schemas"]["AnalyticsArtifactSummary"];
+export type AnalyticsNodeSummary = components["schemas"]["AnalyticsNodeSummary"];
+export type AnalyticsSelectedRun = components["schemas"]["AnalyticsSelectedRun"];
+export type AnalyticsExecutionDetail = components["schemas"]["AnalyticsExecutionDetail"];
+export type AnalyticsExecutionDetailSnapshot = components["schemas"]["AnalyticsExecutionDetailSnapshot"];
+export type AnalyticsSnapshot = components["schemas"]["AnalyticsSnapshot"];
 
 export interface MailboxFilters {
   communicationType?: string;
 }
 
-export type CreateDecreeRequest = components["schemas"]["CreateDecreeRequest"];
-export type CreateDecreeResult = components["schemas"]["CreateDecreeResult"];
+export type CreateWorkOrderRequest = components["schemas"]["CreateWorkOrderRequest"];
+export type CreateWorkOrderResult = components["schemas"]["CreateWorkOrderResult"];
 export type CreatePlanningSessionRequest = components["schemas"]["CreatePlanningSessionRequest"];
 export type UpdatePlanningSessionRequest = components["schemas"]["UpdatePlanningSessionRequest"];
 export type CreateAcpRunRequest = components["schemas"]["CreateAcpRunRequest"];

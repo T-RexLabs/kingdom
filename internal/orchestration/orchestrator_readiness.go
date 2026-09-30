@@ -16,15 +16,15 @@ var guardedExecutionNodeClasses = map[string]struct{}{
 	"delegated_execution": {},
 	"execution_review":    {},
 	"validation_gates":    {},
-	"royal_closure":       {},
+	"completion":          {},
 }
 
 var governancePredecessorNodeClasses = []string{
-	"decree_intake",
+	"work_intake",
 	"advisor_consultation",
 	"advisory_synthesis",
 	"plan_drafting",
-	"king_plan_decision",
+	"plan_decision",
 }
 
 func (o *orchestrationLoop) promoteReadyNodes(ctx context.Context, run runSnapshot, nodes []nodeDefinition, edges []edgeDefinition, latest map[string]nodeAttempt, now string) error {
@@ -88,7 +88,7 @@ func (o *orchestrationLoop) promoteReadyNodes(ctx context.Context, run runSnapsh
 
 func (o *orchestrationLoop) pendingAutomaticRetryForNodeRun(ctx context.Context, nodeRunID string) (bool, error) {
 	var count int
-	err := o.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM retry_decisions WHERE subject_kind = 'decree_attempt' AND target_node_run_id = ? AND decision = 'retry' AND dispatch_state = 'pending'`, nodeRunID).Scan(&count)
+	err := o.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM retry_decisions WHERE subject_kind = 'work_order_attempt' AND target_node_run_id = ? AND decision = 'retry' AND dispatch_state = 'pending'`, nodeRunID).Scan(&count)
 	if err != nil {
 		return false, fmt.Errorf("check automatic retry due barrier: %w", err)
 	}
@@ -98,7 +98,7 @@ func (o *orchestrationLoop) pendingAutomaticRetryForNodeRun(ctx context.Context,
 func (o *orchestrationLoop) isNodeReady(ctx context.Context, run runSnapshot, node nodeDefinition, nodeClasses map[string]string, latest map[string]nodeAttempt, edges []edgeDefinition) (bool, error) {
 	currentClass := resolvedNodeClass(node.NodeID, node.NodeClass)
 	behavior := coreworkflow.BehaviorForNode(node.NodeID, currentClass)
-	if behavior.WaitsForRecordedPlanDecision && run.PlanState == "awaiting_king_decision" {
+	if behavior.WaitsForRecordedPlanDecision && run.PlanState == "awaiting_plan_decision" {
 		return false, nil
 	}
 
@@ -160,7 +160,7 @@ func (o *orchestrationLoop) isNodeReady(ctx context.Context, run runSnapshot, no
 		}
 	}
 
-	if currentClass == coreworkflow.NodeClassRoyalClosure {
+	if currentClass == coreworkflow.NodeClassCompletion {
 		for candidateNodeID, attempt := range latest {
 			if resolvedNodeClassForNodeID(candidateNodeID, nodeClasses) == coreworkflow.NodeClassValidationGates && attempt.NodeStatus != "succeeded" {
 				return false, nil

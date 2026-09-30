@@ -30,7 +30,9 @@ type plannerWarmHandle struct {
 
 func (*plannerWarmHandle) GuardID() string       { return "planner-warm-guard" }
 func (*plannerWarmHandle) Stdin() io.WriteCloser { return plannerDiscardWriter{} }
-func (*plannerWarmHandle) Stdout() io.ReadCloser { return io.NopCloser(strings.NewReader("planner")) }
+func (*plannerWarmHandle) Stdout() io.ReadCloser {
+	return io.NopCloser(strings.NewReader("planning-assistant"))
+}
 func (*plannerWarmHandle) Stderr() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
 func (h *plannerWarmHandle) Cancel(context.Context) error {
 	h.cancelOnce.Do(func() { close(h.cancelled) })
@@ -49,7 +51,7 @@ func (plannerDiscardWriter) Close() error                { return nil }
 
 func TestPlanningClosePropagatesDeadlineToRealAdapterWarmGuardian(t *testing.T) {
 	handle := &plannerWarmHandle{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planner", Runner: plannerWarmRunner{handle}})
+	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planning-assistant", Runner: plannerWarmRunner{handle}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +226,7 @@ func (a *acknowledgingPlannerAdapter) CloseContext(ctx context.Context) error {
 
 func TestPlanningForceCloseCancelsAdapterDrainContext(t *testing.T) {
 	handle := &plannerWarmHandle{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planner", Runner: plannerWarmRunner{handle}})
+	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planning-assistant", Runner: plannerWarmRunner{handle}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,10 +265,10 @@ func TestPlanningForceDoesNotCloseAdapterWhileDiagnosticConsumerIsLive(t *testin
 	adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Complete reply."}, store: store}
 	service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 	started, release := make(chan struct{}), make(chan struct{})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(context.Context, string, string, string, string, *string, string) ([]sessionActivityItem, error) {
+	service.activity.deps.inspectPlannerProviderSessionActivity = func(context.Context, string, string, string, string, *string, string, func(ProviderActivity) error) error {
 		close(started)
 		<-release
-		return nil, nil
+		return nil
 	}
 	session, err := service.CreateSession(context.Background(), "Diagnostic lifecycle", "{}")
 	if err != nil {

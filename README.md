@@ -13,7 +13,7 @@ In a world of rising token costs, raising your own Kingdom can help protect the 
 
 If you want to spend a few gold nuggets on hosted models, Kingdom supports that too through your local OpenCode setup.
 
-Kingdom is built for governed AI work: plan with counsel, issue a decree, and route execution through fixed authority, durable state, review, validation, and royal closure.
+Kingdom is built for governed AI work: plan with counsel, issue a work order, and route execution through fixed authority, durable state, review, validation, and royal closure.
 
 Kingdom consists of:
 
@@ -30,8 +30,8 @@ Kingdom is built for peopl/teams that want AI work to stay under their control w
 
 - Self-hosted by default, so you control the runtime, data, and operating boundary.
 - Open source, so the system can be inspected, adapted, and trusted on its merits.
-- Use planning sessions to turn rough intent into execution-ready decrees.
-- Route decrees through stored workflows instead of ad-hoc agent chains.
+- Use planning sessions to turn rough intent into execution-ready work orders.
+- Route work orders through stored workflows instead of ad-hoc agent chains.
 - Enforce role authority in the runtime instead of relying on prompt convention.
 - Preserve review, validation, approvals, artifacts, and mailbox history for audit and recovery.
 - Operate through the web UI, the `kd` CLI, or the API.
@@ -107,9 +107,9 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 ### 5. Use Kingdom
 
 1. Open the web UI.
-2. Go to `Decrees`.
+2. Go to `Work Orders`.
 3. Choose a global model from the models OpenCode exposes.
-4. Start with `Planning Sessions` or issue a decree directly.
+4. Start with `Planning Sessions` or issue a work order directly.
 5. Follow the run under `Runs`.
 6. Inspect the graph, Activity, agents, messages, and published output.
 
@@ -128,7 +128,7 @@ Plan-review history and planning-context entries are also paginated through the 
 
 ## GitHub Issue Connections
 
-Kingdom can start planning, attach additional issues to an active planning session, or prefill direct decree issuance from a GitHub App installation through three local setup paths.
+Kingdom can start planning, attach additional issues to an active planning session, or prefill direct work order issuance from a GitHub App installation through three local setup paths.
 
 1. Fresh `kd init` configuration enables Kingdom's official public GitHub App automatically. Select **Connect GitHub**, enter the displayed device code on GitHub, and tick every account the connection should cover — one connection covers them all and reads every repository they grant. Authorizing is not installing: the App can be installed on additional accounts at any point in the flow, and a saved connection links straight to its repository selection on GitHub. Closing setup preserves it for **Resume Setup**; **Discard Setup** clears it. **Reconnect Connection** always reauthorizes the complete saved installation set, while **Change** is the only set editor. The App uses device flow and expiring user tokens with exactly **Metadata: read-only** and **Issues: read-only**, and no events.
 2. Select **Create a private GitHub App** to use the preserved Manifest path and own a dedicated private App under a personal account or organization.
@@ -140,7 +140,7 @@ For manual setup, save display name, App ID, client ID, and installation ID, the
    kd connections github key provision --connection-id <connection-id> --from ./private-key.pem
    ```
 
-Run the connection health check after manual provisioning or any key rotation. The check requires the App and installation to grant exactly **Metadata: read-only** and **Issues: read-only**, with zero subscribed events and no additional App permissions. Healthy connections become available in the shared issue picker on planning and direct-decree screens.
+Run the connection health check after manual provisioning or any key rotation. The check requires the App and installation to grant exactly **Metadata: read-only** and **Issues: read-only**, with zero subscribed events and no additional App permissions. Healthy connections become available in the shared issue picker on planning and direct-work order screens.
 
 Private keys remain in generation files at `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared user tokens remain in `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. SQLite stores only the active generation pointer, never credential bytes. Tokens never enter logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect Connection**. The picker paginates repositories/issues and renders opted-in comments through paginated restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
 
@@ -150,20 +150,20 @@ Comment bodies default off. **Include Comments** captures every comment page and
 
 The mental model is simple:
 
-1. Planning sessions turn rough intent into execution-ready decrees.
-2. A decree captures what should be done.
-3. A run executes the decree through a stored workflow.
+1. Planning sessions turn rough intent into execution-ready work orders.
+2. A work order captures what should be done.
+3. A run executes the work order through a stored workflow.
 4. Roles act in order, under fixed authority.
 5. Builder output is reviewed and validated.
-6. The King closes the decree.
+6. The Governance closes the work order.
 
 The default workflow moves through these stages:
 
-1. decree intake
+1. work order intake
 2. advisor consultation
 3. advisory synthesis
 4. plan drafting
-5. king plan decision
+5. governance plan decision
 6. execution kickoff
 7. builder execution
 8. execution review
@@ -172,7 +172,7 @@ The default workflow moves through these stages:
 
 Important boundaries:
 
-- `decree intake`, `king plan decision`, `execution kickoff`, and `royal closure` are runtime-owned deterministic steps; provider-backed run nodes are host-launched through OpenCode sessions, not containers.
+- `work order intake`, `governance plan decision`, `execution kickoff`, and `royal closure` are runtime-owned deterministic steps; provider-backed run nodes are host-launched through OpenCode sessions, not containers.
 - SQLite is the system of record. 
 - Publication is done into the project root or a git worktree if toggled on and in a Git repo.
 - Only builder output is treated as implementation deliverable content.
@@ -192,19 +192,19 @@ Kingdom has a canonical role catalog in the runtime, and a smaller set of manage
 
 | Role | Purpose |
 | --- | --- |
-| :cloud: `allfather` | Human operator who issues decrees and makes plan and final approval decisions when manual approvals are enabled. |
-| :crown: `king` | Supreme governance authority that approves plans, requests rework when needed, and closes decrees. |
-| :scroll: `chancellor` | Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction. |
-| :compass: `council-member` | Strategic planner that turns decree intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework. |
-| :classical_building: `noble-delegate` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
-| :church: `clergy-delegate` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
-| :hammer_and_pick: `burgher-delegate` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
-| :ear_of_rice: `peasant-delegate` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
-| :axe: `builder-berserker` | Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs. |
-| :shield: `reviewer-shieldmaiden` | Reviews builder output against the decree and approved plan, checks scope and correctness before validation begins. |
-| :test_tube: `intelligence-qa-scout` | Validates functional behavior, test evidence, and requirement coverage before royal closure. |
-| :candle: `intelligence-nightraven` | Validates security posture, security findings, and risk concerns before royal closure. |
-| :cyclone: `intelligence-loki-chaos`* | Resilience validator for chaos, recovery, and failure-mode concerns. |
+| :cloud: `operator` | Human operator who issues work orders and makes plan and final approval decisions when manual approvals are enabled. |
+| :crown: `governance` | Supreme governance authority that approves plans, requests rework when needed, and closes work orders. |
+| :scroll: `coordinator` | Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction. |
+| :compass: `plan-author` | Strategic planner that turns work order intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework. |
+| :classical_building: `architecture-advisor` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
+| :church: `risk-advisor` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
+| :hammer_and_pick: `systems-advisor` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
+| :ear_of_rice: `usability-advisor` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
+| :axe: `builder` | Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs. |
+| :shield: `reviewer` | Reviews builder output against the work order and approved plan, checks scope and correctness before validation begins. |
+| :test_tube: `qa-validator` | Validates functional behavior, test evidence, and requirement coverage before completion. |
+| :candle: `security-validator` | Validates security posture, security findings, and risk concerns before completion. |
+| :cyclone: `resilience-validator`* | Resilience validator for chaos, recovery, and failure-mode concerns. |
 
 \* Present in the canonical role catalog, but not used in the workflow today.
 
@@ -214,30 +214,34 @@ Kingdom has a canonical role catalog in the runtime, and a smaller set of manage
 
 | Profile | Used For |
 | --- | --- |
-| `king` | Strategic governance voice for `king`; provider policy also maps `allfather` to this profile when needed. |
-| `chancellor` | Orchestration and delegation guidance for `chancellor`. |
-| `council` | Planning and coordination work for `council-member`. |
+| `governance` | Strategic governance voice for `governance`; provider policy also maps `operator` to this profile when needed. |
+| `coordinator` | Orchestration and delegation guidance for `coordinator`. |
+| `plan-author` | Planning and coordination work for `plan-author`. |
 | `advisor` | Shared advisor profile for the four delegate roles. |
-| `builder` | Implementation profile for `builder-berserker`. |
-| `reviewer` | Review profile for `reviewer-shieldmaiden`. |
-| `qa_scout` | Functional validation profile for `intelligence-qa-scout`. |
-| `nightraven` | Security validation profile for `intelligence-nightraven`. |
-| `tester` | Resilience validation profile for `intelligence-loki-chaos`. |
-| `planner` | Interactive planning profile used for planning sessions, separate from decree role execution. |
+| `builder` | Implementation profile for `builder`. |
+| `reviewer` | Review profile for `reviewer`. |
+| `qa-validator` | Functional validation profile for `qa-validator`. |
+| `security-validator` | Security validation profile for `security-validator`. |
+| `resilience-validator` | Resilience validation profile for `resilience-validator`. |
+| `planning-assistant` | Interactive planning profile used for planning sessions, separate from work order role execution. |
 
 In the UI, think in terms of roles. In OpenCode, Kingdom resolves those roles onto managed profiles.
 
 ## Operator Surfaces
 
-The realm is split into distinct operator surfaces:
+The operator surfaces share one theme and navigation system:
 
-- `Throne Room`: runtime overview, health, metrics, recent runs
-- `Decrees`: planning sessions and decree creation
-- `Runs`: run list, graph, timeline, agents, mailbox, approvals
-- `Agents`: canonical agent registry and lineage view
-- `Realm Analytics`: runtime and run analytics
+- `Overview`: current decisions, work in progress, planning sessions, and a 24-hour summary
+- `Planning`: durable sessions, source context, and generated plans
+- `New Work Order`: direct issuance or issuance from a saved plan
+- `Runs`: workflow graph, execution evidence, artifact downloads, communication, and approvals
+- `Agents`: themed identities, canonical responsibilities, and aggregate availability
+- `Analytics`: run outcomes, resource usage, and runtime reliability
+- `Connections`: GitHub App setup, accounts, credentials, and health
+- `Appearance`: personal theme selection and shared theme authoring
 
-Artifact browsing is still primarily CLI and API first. There is not yet a dedicated full web artifact browser.
+
+Appearance offers personal theme selection and a shared, file-friendly theme editor. See [Themes and Appearance](docs/themes.md) for package authoring, private previews, publication, and import/export.
 
 ## Contributing to Kingdom
 
@@ -275,7 +279,7 @@ kd init
 kd summon
 ```
 
-Then open `http://127.0.0.1:8080` and walk through a real decree flow.
+Then open `http://127.0.0.1:8080` and walk through a real work order flow.
 
 ### Frontend Development Loop
 
@@ -354,8 +358,8 @@ When the migration baseline changes, `kd clean` followed by `kd init` is the sup
 | `kd summon` | Start the local runtime and web/API server |
 | `kd summon status` | Inspect the local summoned runtime |
 | `kd summon stop` | Stop the local summoned runtime |
-| `kd create decree` | Create a decree |
-| `kd run start` | Start a run from an existing decree |
+| `kd create work order` | Create a work order |
+| `kd run start` | Start a run from an existing work order |
 | `kd run status` | Inspect run state |
 | `kd timeline follow` | Follow run events over SSE |
 | `kd run artifacts export` | Export run artifacts |

@@ -209,7 +209,7 @@ func copyPromptTransform(ctx context.Context, dst io.Writer, source io.ReaderAt,
 		size = info.Size()
 	}
 	if doc.dropComposed {
-		found, err := promptContains(ctx, io.NewSectionReader(source, offset, size), []string{"Primary Council Rework Plan:", "Approved Plan Baseline:", "Failure Context:", "Scoped Delegator Instruction:"})
+		found, err := promptContains(ctx, io.NewSectionReader(source, offset, size), []string{"Primary Rework Plan:", "Approved Plan Baseline:", "Failure Context:", "Scoped Delegator Instruction:"})
 		if err != nil {
 			return err
 		}
@@ -447,11 +447,11 @@ func (r promptContextReader) Read(p []byte) (int, error) {
 	return r.Reader.Read(p)
 }
 
-func (o *orchestrationLoop) buildNodePromptDocument(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRole string, decree, plan, guidance promptDocument) promptDocument {
+func (o *orchestrationLoop) buildNodePromptDocument(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRole string, workOrder, plan, guidance promptDocument) promptDocument {
 	frame := o.buildNodePromptFrame(ctx, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRole)
-	decree = promptFiltered(decree)
-	decree.fallback = "No decree text was provided."
-	blocks := []promptDocument{promptSection("Current Assignment", promptLiteral(frame.Assignment)), promptSection("Current Decree", decree)}
+	workOrder = promptFiltered(workOrder)
+	workOrder.fallback = "No work order text was provided."
+	blocks := []promptDocument{promptSection("Current Assignment", promptLiteral(frame.Assignment)), promptSection("Current Work Order", workOrder)}
 	if resolvedNodeClass(nodeID, nodeClass) != workflow.NodeClassDelegatedExecution {
 		blocks = append(blocks, promptSection("Approved Plan", promptFiltered(plan)))
 	}

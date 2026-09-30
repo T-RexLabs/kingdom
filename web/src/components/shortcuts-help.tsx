@@ -23,8 +23,8 @@ export function ShortcutsHelp({ open, onClose, shortcuts, pendingG }: ShortcutsH
   // Just the "g" pending indicator (small toast)
   if (!open && pendingG) {
     return (
-      <div className="fixed bottom-4 right-4 z-[60] rounded-lg border border-gold/30 bg-surface px-3 py-2 shadow-lg">
-        <span className="font-mono text-sm text-gold">g</span>
+      <div className="fixed bottom-4 right-4 z-[60] rounded-lg border border-accent/30 bg-surface px-3 py-2 shadow-lg">
+        <span className="font-mono text-sm text-accent">g</span>
         <span className="ml-2 text-xs text-foreground-muted">waiting for key...</span>
       </div>
     );
@@ -35,7 +35,7 @@ export function ShortcutsHelp({ open, onClose, shortcuts, pendingG }: ShortcutsH
 			open={open}
 			onClose={onClose}
 			size="sm"
-			title={<span className="flex items-center gap-2"><Keyboard className="h-5 w-5 text-gold" /> Keyboard Shortcuts</span>}
+			title={<span className="flex items-center gap-2"><Keyboard className="h-5 w-5 text-accent" /> Keyboard Shortcuts</span>}
 			footer={<p className="text-xs text-foreground-subtle">Press <Kbd>?</Kbd> to toggle this overlay</p>}
 		>
 	          <div className="mb-3">

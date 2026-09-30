@@ -2,12 +2,12 @@ import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { plannerKeys } from "@/features/decrees/planner-query-keys";
-import { applyPlanningSessionFields, applyGeneratedPlanningSessionTitleIfPlaceholder, compareAndSwapPlanningSessionTitle } from "@/features/decrees/planner-session-cache";
+import { plannerKeys } from "@/features/work-orders/planner-query-keys";
+import { applyPlanningSessionFields, applyGeneratedPlanningSessionTitleIfPlaceholder, compareAndSwapPlanningSessionTitle } from "@/features/work-orders/planner-session-cache";
 import {
   SUPERSEDED,
   useCancelRun,
-  useCreateDecree,
+  useCreateWorkOrder,
   useCreateFinalApproval,
   useCreatePlanApproval,
   useCreateRun,
@@ -19,8 +19,8 @@ import {
   useRunExecution,
   useRunExecutions,
 	useInfiniteRunNodeAttempts,
-  useRealmAnalyticsExecutionDetailSnapshot,
-  useRealmAnalyticsSnapshot,
+  useAnalyticsExecutionDetailSnapshot,
+  useAnalyticsSnapshot,
   useRerunFromNode,
   useRun,
   useRunGraph,
@@ -37,7 +37,7 @@ import {
   useUpdatePlanningSessionTitle,
   type PlanningSessionDetail,
 } from "./hooks";
-import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
+import { dashboardSnapshotQueryKey, analyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
 import { providerModelsQueryKey, runQueryKeys } from "./hooks-runs";
 
 // Mock @/api/client so we can drive request/response timing.
@@ -82,9 +82,9 @@ function buildDetail(overrides: Partial<PlanningSessionDetail> = {}): PlanningSe
 function buildRun(overrides: Record<string, unknown> = {}) {
   return {
     run_id: "run-1",
-    decree_id: "decree-1",
-    decree_title: "Fresh run",
-    workflow_id: "royal-decree-v1",
+    work_order_id: "work order-1",
+    work_order_title: "Fresh run",
+    workflow_id: "work-order-v1",
     autonomous_approvals: true,
     status: "running",
     display_state: "running",
@@ -121,6 +121,24 @@ afterEach(() => {
 });
 
 describe("cursor history queries", () => {
+  it("searches across server pages and never reuses another search's cursor", async () => {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    apiFetchMock.mockImplementation(async (_path: string, options: { params: { q?: string; cursor?: string } }) => {
+      const query = options.params.q ?? "all";
+      return { items: [{ ...buildDetail(), planning_session_id: `${query}-${options.params.cursor ? "older" : "newer"}` }], ...(query === "alpha" && !options.params.cursor ? { next_cursor: "alpha-page-2" } : {}) };
+    });
+    const { result, rerender } = renderHook(({ search }) => usePlanningSessions(1, search), { initialProps: { search: " alpha " }, wrapper: makeWrapper(qc) });
+    await waitFor(() => expect(result.current.data?.items[0].planning_session_id).toBe("alpha-newer"));
+    await act(async () => { await result.current.fetchNextPage(); });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(2));
+    rerender({ search: "beta" });
+    await waitFor(() => expect(result.current.data?.items[0].planning_session_id).toBe("beta-newer"));
+    const betaRequest = apiFetchMock.mock.calls.find(([, options]) => options.params.q === "beta");
+    expect(betaRequest?.[1].params.cursor).toBeUndefined();
+    rerender({ search: "alpha" });
+    await waitFor(() => expect(result.current.data?.items).toHaveLength(2));
+  });
+
   it("loads planning sessions beyond 200 and patches titles on older cached pages", async () => {
     const items = Array.from({ length: 245 }, (_, index) => buildDetail({ planning_session_id: `ps_${index}`, title: `Session ${index}`, title_state: "placeholder" }));
     apiFetchMock
@@ -431,7 +449,7 @@ describe("mailbox query keys", () => {
 	it("creates stable execution list and detail query keys", async () => {
 		apiFetchMock
 			.mockResolvedValueOnce({ run_id: "run-1", items: [{ attempt_id: "attempt-1" }] })
-			.mockResolvedValueOnce({ attempt_id: "attempt-1", node_id: "delegated_execution_berserker" });
+			.mockResolvedValueOnce({ attempt_id: "attempt-1", node_id: "implementation" });
 
 		const { result } = renderHook(() => ({
 			executions: useRunExecutions("run-1", { enabled: true }),
@@ -486,9 +504,9 @@ describe("mailbox query keys", () => {
 	it("invalidates active analytics queries after creating a run", async () => {
     apiFetchMock.mockResolvedValue({
       run_id: "run-1",
-      decree_id: "decree-1",
-      decree_title: "Fresh run",
-      workflow_id: "royal-decree-v1",
+      work_order_id: "work order-1",
+      work_order_title: "Fresh run",
+      workflow_id: "work-order-v1",
       status: "pending",
       display_state: "pending",
       plan_state: "draft",
@@ -504,7 +522,7 @@ describe("mailbox query keys", () => {
     await act(async () => {
 	    await result.current.mutateAsync({
 	      body: {
-	        decree_id: "decree-1",
+	        work_order_id: "work order-1",
 	        publish_mode: "direct",
 	        model_selection: { global: { model: "github-copilot/gpt-5.4" } },
 	      },
@@ -514,25 +532,25 @@ describe("mailbox query keys", () => {
 
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "collection"] });
 	    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dashboardSnapshotQueryKey });
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: realmAnalyticsQueryKey });
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: analyticsQueryKey });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeMetricsQueryKey });
 	});
 
-	it("does not invalidate runtime metrics after creating a decree", async () => {
-		apiFetchMock.mockResolvedValue({ decree_id: "decree-1" });
+	it("does not invalidate runtime metrics after creating a work order", async () => {
+		apiFetchMock.mockResolvedValue({ work_order_id: "work order-1" });
 
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
-		const { result } = renderHook(() => useCreateDecree(), {
+		const { result } = renderHook(() => useCreateWorkOrder(), {
 			wrapper: makeWrapper(qc),
 		});
 
 		await act(async () => {
 			await result.current.mutateAsync({
 				body: {
-					decree_title: "Fresh decree",
-					decree_text: "Stabilize the realm",
+					work_order_title: "Fresh work order",
+					work_order_text: "Stabilize the realm",
 				},
-				key: "idem-create-decree",
+				key: "idem-create-work order",
 			});
 		});
 
@@ -590,7 +608,7 @@ describe("mailbox query keys", () => {
 	});
 
 	it("lets retry-node mutations own stale run execution queries", async () => {
-		apiFetchMock.mockResolvedValue({ node_key: "execution_review_shieldmaiden" });
+		apiFetchMock.mockResolvedValue({ node_key: "execution_review" });
 
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
 		const { result } = renderHook(() => useRetryNode("run-1"), {
@@ -599,7 +617,7 @@ describe("mailbox query keys", () => {
 
 		await act(async () => {
 			await result.current.mutateAsync({
-				value: "execution_review_shieldmaiden",
+				value: "execution_review",
 				key: "idem-retry-node",
 			});
 		});
@@ -610,12 +628,12 @@ describe("mailbox query keys", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "collection"] });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dashboardSnapshotQueryKey });
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: realmAnalyticsQueryKey });
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: analyticsQueryKey });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeMetricsQueryKey });
 	});
 
 	it("invalidates runtime metrics after rerunning from a node", async () => {
-		apiFetchMock.mockResolvedValue({ run_id: "run-2", from_node: "execution_review_shieldmaiden", rerun_enqueued: true });
+		apiFetchMock.mockResolvedValue({ run_id: "run-2", from_node: "execution_review", rerun_enqueued: true });
 
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
 		const { result } = renderHook(() => useRerunFromNode("run-1"), {
@@ -624,7 +642,7 @@ describe("mailbox query keys", () => {
 
 		await act(async () => {
 			await result.current.mutateAsync({
-				value: "execution_review_shieldmaiden",
+				value: "execution_review",
 				key: "idem-rerun-node",
 			});
 		});
@@ -880,7 +898,7 @@ describe("mailbox query keys", () => {
 			run_analytics: { bucket_type: "hour", outcome_series: [], duration_by_role: [], recent_runs: [] },
 		});
 
-		const { result } = renderHook(() => useRealmAnalyticsSnapshot(1440), {
+		const { result } = renderHook(() => useAnalyticsSnapshot(1440), {
 			wrapper: makeWrapper(qc),
 		});
 
@@ -889,7 +907,7 @@ describe("mailbox query keys", () => {
 		});
 
 		expect(apiFetchMock).toHaveBeenCalledTimes(1);
-		expect(apiFetchMock.mock.calls[0][0]).toBe("/realm-analytics/snapshot");
+		expect(apiFetchMock.mock.calls[0][0]).toBe("/analytics/snapshot");
 		expect(apiFetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 	});
 
@@ -900,7 +918,7 @@ describe("mailbox query keys", () => {
 			execution_detail: {
 				selected_run: {
 					run_id: "run-1",
-					decree_title: "Run 1",
+					work_order_title: "Run 1",
 					status: "succeeded",
 					created_at: "2026-03-22T10:10:00Z",
 				},
@@ -919,7 +937,7 @@ describe("mailbox query keys", () => {
 			},
 		});
 
-		const { result } = renderHook(() => useRealmAnalyticsExecutionDetailSnapshot(1440, "run-1"), {
+		const { result } = renderHook(() => useAnalyticsExecutionDetailSnapshot(1440, "run-1"), {
 			wrapper: makeWrapper(qc),
 		});
 
@@ -928,7 +946,7 @@ describe("mailbox query keys", () => {
 		});
 
 		expect(apiFetchMock).toHaveBeenCalledTimes(1);
-		expect(apiFetchMock.mock.calls[0][0]).toBe("/realm-analytics/execution-detail");
+		expect(apiFetchMock.mock.calls[0][0]).toBe("/analytics/execution-detail");
 		expect(apiFetchMock.mock.calls[0][1]?.params).toEqual({ run_id: "run-1" });
 		expect(apiFetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 	});

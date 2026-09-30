@@ -59,34 +59,34 @@
         "required_role": {
           "type": "string",
           "enum": [
-            "king",
-            "allfather",
-            "chancellor",
-            "council-member",
-            "noble-delegate",
-            "clergy-delegate",
-            "burgher-delegate",
-            "peasant-delegate",
-            "builder-berserker",
-            "reviewer-shieldmaiden",
-            "intelligence-qa-scout",
-            "intelligence-nightraven",
-            "intelligence-loki-chaos"
+            "governance",
+            "operator",
+            "coordinator",
+            "plan-author",
+            "architecture-advisor",
+            "risk-advisor",
+            "systems-advisor",
+            "usability-advisor",
+            "builder",
+            "reviewer",
+            "qa-validator",
+            "security-validator",
+            "resilience-validator"
           ]
         },
         "node_class": {
           "type": "string",
           "enum": [
-            "decree_intake",
+            "work_intake",
             "advisor_consultation",
             "advisory_synthesis",
             "plan_drafting",
-            "king_plan_decision",
+            "plan_decision",
             "execution_kickoff",
             "delegated_execution",
             "execution_review",
             "validation_gates",
-            "royal_closure"
+            "completion"
           ]
         }
       }

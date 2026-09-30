@@ -42,7 +42,7 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 	attemptID := "run:" + run.RunID + ":status"
 
 	if summary.HasFailed {
-		outstandingRetry, err := o.hasOutstandingAutomaticDecreeRetriesForFailedNodes(ctx, run.RunID, summary.FailedNodeIDs)
+		outstandingRetry, err := o.hasOutstandingAutomaticWorkOrderRetriesForFailedNodes(ctx, run.RunID, summary.FailedNodeIDs)
 		if err != nil {
 			return err
 		}
@@ -75,7 +75,7 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 				FromState:       "running",
 				ToState:         "failed",
 				ActorID:         "runtime_orchestrator",
-				RoleID:          "chancellor",
+				RoleID:          "coordinator",
 				AuthoritySource: "runtime.orchestrator",
 				ReasonCode:      "dependency_blocked",
 				ReasonText:      "node failure propagated to run",
@@ -121,10 +121,10 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 			FromState:       "running",
 			ToState:         "awaiting_human_confirmation",
 			ActorID:         "runtime_orchestrator",
-			RoleID:          "king",
+			RoleID:          "governance",
 			AuthoritySource: "runtime.orchestrator",
 			ReasonCode:      "governance_decision",
-			ReasonText:      "king recommendation recorded; awaiting allfather confirm/rework",
+			ReasonText:      "governance recommendation recorded; awaiting operator confirm/rework",
 			CorrelationID:   "corr_orch_" + run.RunID,
 			CausationID:     "caus_orch_" + run.RunID + "_awaiting_human_confirmation",
 			OccurredAt:      now,
@@ -155,7 +155,7 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 		FromState:       "running",
 		ToState:         "succeeded",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "king",
+		RoleID:          "governance",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "execution_completed",
 		ReasonText:      reasonText,
@@ -174,10 +174,10 @@ func (o *orchestrationLoop) finalizeRunState(ctx context.Context, run runSnapsho
 	return nil
 }
 
-// hasOutstandingAutomaticDecreeRetriesForFailedNodes is the durable
+// hasOutstandingAutomaticWorkOrderRetriesForFailedNodes is the durable
 // finalization fence. Every failed node needs its own policy-owned successor;
 // a retry on one branch cannot keep a different fail-fast branch alive.
-func (o *orchestrationLoop) hasOutstandingAutomaticDecreeRetriesForFailedNodes(ctx context.Context, runID string, failedNodeIDs []string) (bool, error) {
+func (o *orchestrationLoop) hasOutstandingAutomaticWorkOrderRetriesForFailedNodes(ctx context.Context, runID string, failedNodeIDs []string) (bool, error) {
 	failed := make(map[string]struct{}, len(failedNodeIDs))
 	for _, nodeID := range failedNodeIDs {
 		if nodeID = strings.TrimSpace(nodeID); nodeID != "" {
@@ -190,24 +190,24 @@ func (o *orchestrationLoop) hasOutstandingAutomaticDecreeRetriesForFailedNodes(c
 
 	rows, err := o.db.QueryContext(ctx, `SELECT node_id
 		FROM retry_decisions
-		WHERE subject_kind = 'decree_attempt'
+		WHERE subject_kind = 'work_order_attempt'
 		  AND run_id = ?
 		  AND decision = 'retry'
 		  AND dispatch_state IN ('pending', 'dispatched')
 		  AND resolution = 'pending'`, strings.TrimSpace(runID))
 	if err != nil {
-		return false, fmt.Errorf("list outstanding automatic decree retries: %w", err)
+		return false, fmt.Errorf("list outstanding automatic work order retries: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var nodeID string
 		if err := rows.Scan(&nodeID); err != nil {
-			return false, fmt.Errorf("scan outstanding automatic decree retry: %w", err)
+			return false, fmt.Errorf("scan outstanding automatic work order retry: %w", err)
 		}
 		delete(failed, strings.TrimSpace(nodeID))
 	}
 	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate outstanding automatic decree retries: %w", err)
+		return false, fmt.Errorf("iterate outstanding automatic work order retries: %w", err)
 	}
 	return len(failed) == 0, nil
 }
@@ -405,7 +405,7 @@ func (o *orchestrationLoop) reopenFailedRunForRecovery(ctx context.Context, runI
 		FromState:       "failed",
 		ToState:         "running",
 		ActorID:         "runtime_orchestrator",
-		RoleID:          "chancellor",
+		RoleID:          "coordinator",
 		AuthoritySource: "runtime.orchestrator",
 		ReasonCode:      "durable_completion_recovered",
 		ReasonText:      "run reopened after durable execution recovery",

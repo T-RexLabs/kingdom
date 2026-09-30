@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -56,6 +57,11 @@ func spoolRequestBody(next http.Handler) http.Handler {
 		size, err := securefs.Copy(r.Context(), file, r.Body)
 		_ = r.Body.Close()
 		if err != nil {
+			var tooLarge *http.MaxBytesError
+			if errors.As(err, &tooLarge) {
+				writeCatalogError(w, http.StatusRequestEntityTooLarge, errorcatalog.CodePolicyViolation, "Request body exceeds the size limit.")
+				return
+			}
 			writeCatalogError(w, 400, errorcatalog.CodePolicyViolation, "read request body")
 			return
 		}

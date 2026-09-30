@@ -10,6 +10,7 @@ func TestHistoryCollectionsExposeContinuation(t *testing.T) {
 	for _, path := range []string{
 		"/planning-sessions", "/runs/{id}/mailbox/messages", "/runs/{id}/plan-reviews",
 		"/planning-sessions/{id}/context/{snapshotId}/entries",
+		"/runs/{id}/artifacts", "/runs/{id}/executions/{attemptId}/publication/{batchId}/entries",
 	} {
 		operation := spec.Paths.Value(path).Get
 		parameters := map[string]bool{}
@@ -43,10 +44,22 @@ func TestContentCeilingsRemovedButInstallationLimitsPreserved(t *testing.T) {
 			t.Fatalf("obsolete ceiling on %s.%s", field[0], field[1])
 		}
 	}
-	for _, field := range [][2]string{{"IssuePreview", "comments"}, {"RunArtifactsResponse", "items"}} {
+	for _, field := range [][2]string{{"IssuePreview", "comments"}} {
 		if spec.Components.Schemas[field[0]].Value.Properties[field[1]].Value.MaxItems != nil {
 			t.Fatalf("obsolete collection ceiling on %s.%s", field[0], field[1])
 		}
+	}
+	// These maxima bound one response page, not retained collection size.
+	for _, schemaName := range []string{"RunArtifactsResponse", "RunPublicationEntriesResponse"} {
+		page := spec.Components.Schemas[schemaName].Value
+		limit := page.Properties["items"].Value.MaxItems
+		if limit == nil || *limit != 200 || page.Properties["next_cursor"] == nil {
+			t.Fatalf("%s must bound a page and expose continuation", schemaName)
+		}
+	}
+	publication := spec.Components.Schemas["RunExecutionPublication"].Value
+	if publication.Properties["entries"] != nil || publication.Properties["entries_revision"] == nil {
+		t.Fatal("publication summary must expose a revision instead of hydrating entries")
 	}
 	for _, field := range [][2]string{{"NormalizedIssue", "title"}, {"NormalizedIssue", "body"}} {
 		if spec.Components.Schemas[field[0]].Value.Properties[field[1]].Value.MaxLength != nil {
@@ -82,7 +95,7 @@ func TestContentCeilingsRemovedButInstallationLimitsPreserved(t *testing.T) {
 			t.Fatalf("%s lost governance controls", schemaName)
 		}
 	}
-	if spec.Paths.Value("/decrees").Post.Responses.Status(413) != nil {
-		t.Fatal("obsolete decree request-body ceiling response")
+	if spec.Paths.Value("/work-orders").Post.Responses.Status(413) != nil {
+		t.Fatal("obsolete work order request-body ceiling response")
 	}
 }

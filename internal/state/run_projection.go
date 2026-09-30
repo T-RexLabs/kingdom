@@ -11,8 +11,8 @@ import (
 type runProjection struct {
 	AutonomousApprovals bool
 	CreatedAt           string
-	DecreeID            string
-	DecreeTitle         string
+	WorkOrderID         string
+	WorkOrderTitle      string
 	DisplayState        string
 	LastActivityAt      string
 	StartedAt           sql.NullString
@@ -42,8 +42,8 @@ func loadRunProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (runProj
 	var pendingApprovalKey sql.NullString
 	err := tx.QueryRowContext(ctx,
 		`SELECT wd.workflow_name,
-		        wr.decree_id,
-		        d.decree_title,
+		        wr.work_order_id,
+		        d.work_order_title,
 		        wr.run_status,
 		        wr.plan_state,
 		        wr.created_at,
@@ -56,10 +56,10 @@ func loadRunProjectionTx(ctx context.Context, tx *sql.Tx, runID string) (runProj
 		 FROM workflow_runs wr
 		 JOIN run_activity ra ON ra.run_id = wr.run_id
 		 JOIN workflow_definitions wd ON wd.workflow_definition_id = wr.workflow_definition_id
-		 JOIN decrees d ON d.decree_id = wr.decree_id
+		 JOIN work_orders d ON d.work_order_id = wr.work_order_id
 		 WHERE wr.run_id = ?`,
 		trimmedRunID,
-	).Scan(&projection.WorkflowID, &projection.DecreeID, &projection.DecreeTitle, &projection.Status, &projection.PlanState, &projection.CreatedAt, &projection.UpdatedAt, &projection.LastActivityAt, &autonomousApprovals, &projection.PublishMode, &modelSelectionJSON, &pendingApprovalKey, &projection.StartedAt, &projection.StartState)
+	).Scan(&projection.WorkflowID, &projection.WorkOrderID, &projection.WorkOrderTitle, &projection.Status, &projection.PlanState, &projection.CreatedAt, &projection.UpdatedAt, &projection.LastActivityAt, &autonomousApprovals, &projection.PublishMode, &modelSelectionJSON, &pendingApprovalKey, &projection.StartedAt, &projection.StartState)
 	if err != nil {
 		return runProjection{}, fmt.Errorf("load run projection for %q: %w", trimmedRunID, err)
 	}

@@ -102,6 +102,12 @@ func validateContrast(m Manifest) error {
 			check(fg, bg, 4.5)
 		}
 	}
+	// Accent is also foreground text for links, navigation, selected tabs and
+	// their hover states. Button-foreground contrast alone cannot protect those.
+	for _, bg := range []string{"canvas", "surface.base", "surface.inset", "surface.elevated", "surface.overlay", "tool.background", "dag.nodeActiveBackground", "accent.subtle"} {
+		check("accent.base", bg, 4.5)
+		check("accent.hover", bg, 4.5)
+	}
 	for _, bg := range []string{"accent.base", "accent.hover", "accent.pressed"} {
 		check("accent.foreground", bg, 4.5)
 	}

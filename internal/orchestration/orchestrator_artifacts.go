@@ -463,6 +463,19 @@ func (o *orchestrationLoop) recordPublicationEntry(ctx context.Context, batchID,
 	if err != nil {
 		return err
 	}
+	// The entry and its revision commit together. Failed retries can change a
+	// previously returned entry; a page cursor must never silently mix those states.
+	result, err := tx.ExecContext(ctx, `UPDATE run_publication_batches SET entries_revision=entries_revision+1 WHERE publication_batch_id=? AND run_id=? AND attempt_id=?`, batchID, runID, attemptID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed != 1 {
+		return fmt.Errorf("publication batch does not belong to run and attempt")
+	}
 	return tx.Commit()
 }
 
@@ -525,7 +538,7 @@ func (o *orchestrationLoop) resolveRunArtifactOutputRoot(ctx context.Context, ru
 	baseFolder := "kingdom-artifacts"
 	runFolder := strings.TrimSpace(runID)
 	if o != nil && o.db != nil {
-		if title, err := o.decreeTitleForRun(ctx, runID); err == nil {
+		if title, err := o.workOrderTitleForRun(ctx, runID); err == nil {
 			runFolder = workspace.RunPathName(title, runID)
 		}
 	}
@@ -741,7 +754,7 @@ func determineArtifactKind(nodeID, nodeClass, roleID, artifactPath string) strin
 		return "orchestration_meta"
 	}
 	path := strings.ToLower(strings.TrimSpace(artifactPath))
-	if strings.Contains(path, "verification") || strings.Contains(path, "check") || nodeID == "royal_closure" {
+	if strings.Contains(path, "verification") || strings.Contains(path, "check") || nodeID == "completion" {
 		return "verification"
 	}
 	if strings.Contains(path, "report") {

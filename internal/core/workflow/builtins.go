@@ -1,8 +1,8 @@
 package workflow
 
 const (
-	DefaultWorkflowID              = "royal-decree-v1"
-	SkipReviewValidationWorkflowID = "royal-decree-skip-review-validation-v1"
+	DefaultWorkflowID              = "work-order-v1"
+	SkipReviewValidationWorkflowID = "work-order-skip-review-validation-v1"
 )
 
 func BuiltInWorkflowID(skipReviewsAndValidations bool) string {

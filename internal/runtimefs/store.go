@@ -207,7 +207,7 @@ func (s *Store) ListPendingResponseOnlyWorkspaceCleanups(ctx context.Context, af
 		    OR (
 		      ae.state IN ('starting', 'running')
 		      AND (
-		        EXISTS (SELECT 1 FROM provider_process_guards ppg WHERE ppg.attempt_id = ae.attempt_id AND ppg.owner_kind = 'decree_attempt')
+		        EXISTS (SELECT 1 FROM provider_process_guards ppg WHERE ppg.attempt_id = ae.attempt_id AND ppg.owner_kind = 'work_order_attempt')
 		        OR (pi.terminal_handoff_pending_at IS NOT NULL
 		            AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner
 		            AND pi.terminal_handoff_pending_lease_version = ae.lease_version)
@@ -489,7 +489,7 @@ func (s *Store) runProviderProcessGuardsQuiescent(ctx context.Context, runID str
 		SELECT 1
 		FROM provider_process_guards ppg
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
-		WHERE ae.run_id = ? AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle <> 'quiescent'
+		WHERE ae.run_id = ? AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("load direct target provider process guard quiescence: %w", err)
 	}

@@ -15,6 +15,7 @@ const (
 	MaxManifestBytes = 256 << 10
 	MaxAssetBytes    = 8 << 20
 	MaxPackageBytes  = 32 << 20
+	MaxArchiveBytes  = MaxPackageBytes + MaxManifestBytes
 	MaxAssets        = 64
 	MaxImagePixels   = 16_000_000
 )

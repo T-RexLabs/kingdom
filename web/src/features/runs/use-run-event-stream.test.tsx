@@ -557,7 +557,7 @@ describe("useRunEventStream", () => {
     const governanceKey = runQueryKeys.governanceSummary("run-1");
     const governanceHistoryKey = runQueryKeys.governanceHistory("run-1");
     queryClient.setQueryData(detailKey, { run_id: "run-1", status: "awaiting_human_confirmation" });
-    queryClient.setQueryData(planKey, { run_id: "run-1", plan_state: "awaiting_king_decision" });
+    queryClient.setQueryData(planKey, { run_id: "run-1", plan_state: "awaiting_plan_decision" });
     queryClient.setQueryData(governanceKey, { items: [] });
     queryClient.setQueryData(governanceHistoryKey, { pages: [] });
 
@@ -684,7 +684,7 @@ describe("useRunEventStream", () => {
 	          run_event_seq: 1,
 	          attempt_seq: 4,
 	          created_at: "2026-03-01T10:07:00Z",
-	          node_id: "delegated_execution_berserker",
+	          node_id: "implementation",
 	        }),
       }),
     ).resolves.toBe(true);
@@ -838,7 +838,7 @@ describe("useRunEventStream", () => {
 					run_event_seq: 1,
 					attempt_seq: 5,
 					created_at: "2026-03-01T10:08:00Z",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 				}),
 			}),
 		).resolves.toBe(true);
@@ -888,9 +888,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 5,
 					attempt_id: "attempt-run-1",
 					node_run_id: "nr-run-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:00Z",
 				}),
@@ -900,9 +900,9 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
 			"nr-run-1": {
 				attempt_id: "attempt-run-1",
-				node_id: "delegated_execution_berserker",
+				node_id: "implementation",
 				attempt: 1,
-				required_role: "builder-berserker",
+				required_role: "builder",
 				execution_mode: "provider_backed",
 				node_run_id: "nr-run-1",
 				activity_at: "2026-03-01T10:08:00Z",
@@ -999,9 +999,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 1,
 					attempt_id: "attempt-runtime-1",
 					node_run_id: "nr-runtime-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:00Z",
 				}),
@@ -1020,9 +1020,9 @@ describe("useRunEventStream", () => {
 					attempt_seq: 2,
 					attempt_id: "attempt-runtime-1",
 					node_run_id: "nr-runtime-1",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 1,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 					created_at: "2026-03-01T10:08:05Z",
 				}),
@@ -1130,9 +1130,9 @@ describe("useRunEventStream", () => {
 					created_at: "2026-03-01T10:07:00Z",
 					attempt_id: "attempt-retry-queued",
 					node_run_id: "nr-retry-queued",
-					node_id: "delegated_execution_berserker",
+					node_id: "implementation",
 					attempt: 4,
-					required_role: "builder-berserker",
+					required_role: "builder",
 					execution_mode: "provider_backed",
 				}),
 			}),
@@ -1141,9 +1141,9 @@ describe("useRunEventStream", () => {
 		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
 			"nr-retry-queued": {
 				attempt_id: "attempt-retry-queued",
-				node_id: "delegated_execution_berserker",
+				node_id: "implementation",
 				attempt: 4,
-				required_role: "builder-berserker",
+				required_role: "builder",
 				execution_mode: "provider_backed",
 				node_run_id: "nr-retry-queued",
 				activity_at: "2026-03-01T10:07:00Z",
@@ -1328,9 +1328,9 @@ describe("useRunEventStream", () => {
 					node_run_id: "nr-retry-scheduled",
 					created_at: "2026-03-01T10:11:00Z",
 					payload_json: {
-						node_id: "delegated_execution_berserker",
+						node_id: "implementation",
 						node_run_id: "nr-retry-scheduled",
-						attempt_id: "run-1:delegated_execution_berserker:1",
+						attempt_id: "run-1:implementation:1",
 						attempt: 1,
 						recovery_trigger: "automatic_retry",
 						recovery_phase: "scheduled",

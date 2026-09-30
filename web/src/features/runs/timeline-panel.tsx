@@ -187,7 +187,7 @@ export function TimelinePanel({
 			{(userScrolledAwayFromLatest || hasHiddenLatestUpdate) && (
 				<button
 					onClick={scrollToLatest}
-					className="absolute right-4 z-20 flex items-center gap-1.5 rounded-full border border-border-strong bg-surface-overlay px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition-colors hover:bg-surface-raised hover:text-gold sm:right-6"
+					className="absolute right-4 z-20 flex items-center gap-1.5 rounded-full border border-border-strong bg-surface-overlay px-3 py-1.5 text-xs font-medium text-foreground shadow-lg transition-colors hover:bg-surface-raised hover:text-accent sm:right-6"
 					style={{ bottom: "max(1rem, env(safe-area-inset-bottom))" }}
 				>
 					<ArrowUp className="h-3.5 w-3.5" />

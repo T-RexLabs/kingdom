@@ -1,9 +1,24 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { RunExecution, RunNodeExecution } from "@/api/hooks";
 import { RunLiveStatus } from "./run-live-status";
+
+vi.mock("@/theme", async () => {
+  const actual = await vi.importActual<typeof import("@/theme")>("@/theme");
+  return {
+    ...actual,
+    useTheme: () => ({ theme: actual.builtInThemes[3] }),
+    useRoleIdentity: (role: string) =>
+      actual.roleIdentity(actual.builtInThemes[3], role),
+    ThemeIcon: () => <span aria-hidden="true" />,
+  };
+});
+
+vi.mock("@/api/client", () => ({
+  apiFetch: () => Promise.resolve({ items: [] }),
+}));
 
 function execution(args: {
   node: string;
@@ -42,54 +57,36 @@ function renderStatus(executions: RunExecution[]) {
   return render(<RunLiveStatus runId="run-1" nodes={nodes} />, { wrapper });
 }
 
-describe("RunLiveStatus", () => {
-  it("names the two most-recently-active agents by role and rolls the rest into +N more", () => {
-    renderStatus([
-      execution({ node: "advisor_consultation_burgher", attemptId: "att-burgher", requiredRole: "burgher-delegate", activityAt: "2026-06-15T10:00:01Z" }),
-      execution({ node: "advisor_consultation_clergy", attemptId: "att-clergy", requiredRole: "clergy-delegate", activityAt: "2026-06-15T10:00:04Z" }),
-      execution({ node: "advisor_consultation_noble", attemptId: "att-noble", requiredRole: "noble-delegate", activityAt: "2026-06-15T10:00:03Z" }),
-      execution({ node: "advisor_consultation_peasant", attemptId: "att-peasant", requiredRole: "peasant-delegate", activityAt: "2026-06-15T10:00:02Z" }),
-    ]);
-
-    // Two freshest by activity_at are Clergy (…04) and Noble (…03); names are agent roles.
-    expect(screen.getByText("Clergy Delegate")).toBeInTheDocument();
-    expect(screen.getByText("Noble Delegate")).toBeInTheDocument();
-    expect(screen.queryByText("Burgher Delegate")).not.toBeInTheDocument();
-    expect(screen.queryByText("Peasant Delegate")).not.toBeInTheDocument();
-    expect(screen.getByText("+2 more")).toBeInTheDocument();
-  });
-
-  it("shows no overflow badge at or below the cap", () => {
-    renderStatus([
-      execution({ node: "advisor_consultation_burgher", attemptId: "att-burgher", requiredRole: "burgher-delegate" }),
-      execution({ node: "advisor_consultation_clergy", attemptId: "att-clergy", requiredRole: "clergy-delegate" }),
-    ]);
-    expect(screen.queryByText(/more$/)).not.toBeInTheDocument();
-  });
-
-  it("falls back to the node label instead of 'Unknown Role' before the role resolves", () => {
-    renderStatus([
-      execution({ node: "advisor_consultation_clergy", attemptId: "att-clergy", requiredRole: "" }),
-    ]);
-    expect(screen.getByText("Advisor Consultation Clergy")).toBeInTheDocument();
-    expect(screen.queryByText("Unknown Role")).not.toBeInTheDocument();
-  });
-
-  it("renders nothing when no node is active", () => {
+describe("compact run live bar", () => {
+  it("omits settled and runtime-owned attempts", () => {
     const { container } = renderStatus([
-      execution({ node: "plan_drafting", attemptId: "att-plan", requiredRole: "builder-berserker", status: "succeeded" }),
+      execution({
+        node: "implementation",
+        attemptId: "a",
+        requiredRole: "builder",
+        status: "succeeded",
+      }),
+      execution({
+        node: "work_intake",
+        attemptId: "b",
+        requiredRole: "governance",
+        executionMode: "runtime_owned",
+      }),
     ]);
     expect(container).toBeEmptyDOMElement();
   });
-
-  it("excludes runtime-owned executions from the headline", () => {
+  it("keeps starting and verifying work visible without a running pulse", () => {
     renderStatus([
-      execution({ node: "execution_kickoff", attemptId: "att-kickoff", requiredRole: "king", executionMode: "runtime_owned" }),
-      execution({ node: "advisor_consultation_clergy", attemptId: "att-clergy", requiredRole: "clergy-delegate" }),
+      execution({
+        node: "implementation",
+        attemptId: "a",
+        requiredRole: "builder",
+        status: "starting",
+      }),
     ]);
-
-    expect(screen.getByText("Clergy Delegate")).toBeInTheDocument();
-    expect(screen.queryByTestId("run-live-status")).toHaveTextContent("Clergy Delegate");
-    expect(screen.queryByText("King")).not.toBeInTheDocument();
+    expect(screen.getByText("Starting")).toBeInTheDocument();
+    expect(screen.getByTestId("run-live-status")).not.toHaveClass(
+      "animate-pulse",
+    );
   });
 });

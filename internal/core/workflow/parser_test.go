@@ -9,16 +9,16 @@ import (
 func TestParseJSON(t *testing.T) {
 	t.Parallel()
 
-	parser := NewParser([]string{"king"})
+	parser := NewParser([]string{"governance"})
 
 	t.Run("success", func(t *testing.T) {
 		t.Parallel()
 
 		definition := Definition{
 			Version:    "v1",
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+				{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
 			},
 		}
 
@@ -31,7 +31,7 @@ func TestParseJSON(t *testing.T) {
 		if err != nil {
 			t.Fatalf("parse json: %v", err)
 		}
-		if graph.WorkflowID != "royal-decree-v1" {
+		if graph.WorkflowID != "work-order-v1" {
 			t.Fatalf("unexpected workflow id: %s", graph.WorkflowID)
 		}
 	})
@@ -48,7 +48,7 @@ func TestParseJSON(t *testing.T) {
 	t.Run("decode_unknown_field_error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := parser.ParseJSON([]byte(`{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"decree_intake","required_role":"king","node_class":"decree_intake","extra":true}],"edges":[]}`))
+		_, err := parser.ParseJSON([]byte(`{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"work_intake","required_role":"governance","node_class":"work_intake","extra":true}],"edges":[]}`))
 		if err == nil {
 			t.Fatal("expected parse error")
 		}
@@ -57,7 +57,7 @@ func TestParseJSON(t *testing.T) {
 	t.Run("decode_multiple_values_error", func(t *testing.T) {
 		t.Parallel()
 
-		_, err := parser.ParseJSON([]byte(`{"version":"v1","workflow_id":"royal-decree-v1","nodes":[{"node_id":"decree_intake","required_role":"king","node_class":"decree_intake"}],"edges":[]} {}`))
+		_, err := parser.ParseJSON([]byte(`{"version":"v1","workflow_id":"work-order-v1","nodes":[{"node_id":"work_intake","required_role":"governance","node_class":"work_intake"}],"edges":[]} {}`))
 		if err == nil {
 			t.Fatal("expected parse error")
 		}
@@ -73,48 +73,48 @@ func TestValidationErrorMessageFallback(t *testing.T) {
 	}
 }
 
-func TestParseDefinitionValidRoyalDecreeV1(t *testing.T) {
+func TestParseDefinitionValidRoyalWorkOrderV1(t *testing.T) {
 	t.Parallel()
 
 	parser := NewParser([]string{
-		"king",
-		"noble-delegate",
-		"chancellor",
-		"council-member",
-		"builder-berserker",
-		"intelligence-qa-scout",
+		"governance",
+		"architecture-advisor",
+		"coordinator",
+		"plan-author",
+		"builder",
+		"qa-validator",
 	})
 
 	graph, err := parser.ParseDefinition(Definition{
 		Version:    "v1",
-		WorkflowID: "royal-decree-v1",
+		WorkflowID: "work-order-v1",
 		Nodes: []Node{
-			{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-			{NodeID: "advisor_consultation", RequiredRole: "noble-delegate", NodeClass: "advisor_consultation"},
-			{NodeID: "advisory_synthesis", RequiredRole: "chancellor", NodeClass: "advisory_synthesis"},
-			{NodeID: "plan_drafting", RequiredRole: "council-member", NodeClass: "plan_drafting"},
-			{NodeID: "king_plan_decision", RequiredRole: "king", NodeClass: "king_plan_decision"},
-			{NodeID: "execution_kickoff", RequiredRole: "council-member", NodeClass: "execution_kickoff"},
-			{NodeID: "delegated_execution", RequiredRole: "builder-berserker", NodeClass: "delegated_execution"},
-			{NodeID: "validation_gates", RequiredRole: "intelligence-qa-scout", NodeClass: "validation_gates"},
-			{NodeID: "royal_closure", RequiredRole: "king", NodeClass: "royal_closure"},
+			{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
+			{NodeID: "advisor_consultation", RequiredRole: "architecture-advisor", NodeClass: "advisor_consultation"},
+			{NodeID: "advisory_synthesis", RequiredRole: "coordinator", NodeClass: "advisory_synthesis"},
+			{NodeID: "plan_drafting", RequiredRole: "plan-author", NodeClass: "plan_drafting"},
+			{NodeID: "plan_decision", RequiredRole: "governance", NodeClass: "plan_decision"},
+			{NodeID: "execution_kickoff", RequiredRole: "plan-author", NodeClass: "execution_kickoff"},
+			{NodeID: "delegated_execution", RequiredRole: "builder", NodeClass: "delegated_execution"},
+			{NodeID: "validation_gates", RequiredRole: "qa-validator", NodeClass: "validation_gates"},
+			{NodeID: "completion", RequiredRole: "governance", NodeClass: "completion"},
 		},
 		Edges: []Edge{
-			{From: "decree_intake", To: "advisor_consultation", On: "success"},
+			{From: "work_intake", To: "advisor_consultation", On: "success"},
 			{From: "advisor_consultation", To: "advisory_synthesis", On: "success"},
 			{From: "advisory_synthesis", To: "plan_drafting", On: "success"},
-			{From: "plan_drafting", To: "king_plan_decision", On: "success"},
-			{From: "king_plan_decision", To: "execution_kickoff", On: "approved"},
+			{From: "plan_drafting", To: "plan_decision", On: "success"},
+			{From: "plan_decision", To: "execution_kickoff", On: "approved"},
 			{From: "execution_kickoff", To: "delegated_execution", On: "success"},
 			{From: "delegated_execution", To: "validation_gates", On: "success"},
-			{From: "validation_gates", To: "royal_closure", On: "success"},
+			{From: "validation_gates", To: "completion", On: "success"},
 		},
 	})
 	if err != nil {
 		t.Fatalf("expected valid workflow, got error: %v", err)
 	}
 
-	if graph.WorkflowID != "royal-decree-v1" {
+	if graph.WorkflowID != "work-order-v1" {
 		t.Fatalf("unexpected workflow id: %s", graph.WorkflowID)
 	}
 	if len(graph.Nodes) != 9 {
@@ -128,16 +128,16 @@ func TestParseDefinitionValidRoyalDecreeV1(t *testing.T) {
 func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 	t.Parallel()
 
-	parser := NewParser([]string{"king"})
+	parser := NewParser([]string{"governance"})
 
 	t.Run("duplicate_node_id", func(t *testing.T) {
 		t.Parallel()
 
 		_, err := parser.ParseDefinition(Definition{
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
-				{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+				{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
+				{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
 			},
 		})
 		assertValidationCode(t, err, CodeDuplicateNodeID)
@@ -147,11 +147,11 @@ func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 		t.Parallel()
 
 		_, err := parser.ParseDefinition(Definition{
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "decree_intake"},
+				{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
 			},
-			Edges: []Edge{{From: "decree_intake", To: "missing_node", On: "success"}},
+			Edges: []Edge{{From: "work_intake", To: "missing_node", On: "success"}},
 		})
 		assertValidationCode(t, err, CodeUnknownNodeRef)
 	})
@@ -160,9 +160,9 @@ func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 		t.Parallel()
 
 		_, err := parser.ParseDefinition(Definition{
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "decree_intake", RequiredRole: "invalid-role", NodeClass: "decree_intake"},
+				{NodeID: "work_intake", RequiredRole: "invalid-role", NodeClass: "work_intake"},
 			},
 		})
 		assertValidationCode(t, err, CodeInvalidRequiredRole)
@@ -172,9 +172,9 @@ func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 		t.Parallel()
 
 		_, err := parser.ParseDefinition(Definition{
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "decree_intake", RequiredRole: "king", NodeClass: "totally_unknown_class"},
+				{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "totally_unknown_class"},
 			},
 		})
 		assertValidationCode(t, err, CodeInvalidNodeClass)
@@ -184,10 +184,10 @@ func TestParseDefinitionInvalidDiagnostics(t *testing.T) {
 		t.Parallel()
 
 		_, err := parser.ParseDefinition(Definition{
-			WorkflowID: "royal-decree-v1",
+			WorkflowID: "work-order-v1",
 			Nodes: []Node{
-				{NodeID: "a", RequiredRole: "king", NodeClass: "decree_intake"},
-				{NodeID: "b", RequiredRole: "king", NodeClass: "decree_intake"},
+				{NodeID: "a", RequiredRole: "governance", NodeClass: "work_intake"},
+				{NodeID: "b", RequiredRole: "governance", NodeClass: "work_intake"},
 			},
 			Edges: []Edge{
 				{From: "a", To: "b", On: "success"},

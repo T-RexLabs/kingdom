@@ -68,6 +68,7 @@ type SessionAdapter struct {
 }
 
 type opencodeRunEvent struct {
+	activityContent       map[string]providerexecution.ActivityContent
 	textContent           *eventTextContent
 	Type                  string   `json:"type"`
 	SessionID             string   `json:"sessionID"`
@@ -1982,27 +1983,37 @@ func emitActivityObservation(req ExecuteRequest, event opencodeRunEvent) {
 	}
 	observation := ExecuteActivityObservation{
 		ProviderPartID: strings.TrimSpace(event.Part.ID),
+		ToolCallID:     strings.TrimSpace(event.Part.CallID),
+		InvocationID:   strings.TrimSpace(req.InvocationID),
+		Input:          event.activityContent["input"].Normalized(),
+		Output:         event.activityContent["output"].Normalized(),
+		Reasoning:      providerexecution.ActivityContent{Availability: "not_provided"},
+		Message:        providerexecution.ActivityContent{Availability: "not_provided"},
 		OccurredAt:     activityObservationOccurredAt(event),
 	}
 	switch normalizeActivityEventType(event.Type) {
 	case "tool", "tool_call", "tool_result", "tool_use":
-		toolName := strings.TrimSpace(event.Part.Tool)
-		if toolName == "" {
-			return
-		}
 		observation.Kind = ExecuteActivityKindTool
-		observation.ToolName = toolName
+		observation.ToolName = strings.TrimSpace(event.Part.Tool)
 		observation.ToolStatus = firstNonEmpty(strings.TrimSpace(event.Part.State.Status), strings.TrimSpace(event.Part.Reason))
 		observation.ToolTitle = strings.TrimSpace(event.Part.State.Title)
-		observation.ToolInput = formatToolActivityInput(event.Part.State.Input)
+	case "text":
+		observation.Kind = ExecuteActivityKindMessage
+		observation.Message = event.activityContent["text"].Normalized()
+		if observation.Message.Availability != "available" {
+			return
+		}
 	case "reasoning":
+		observation.Reasoning = event.activityContent["text"].Normalized()
 		observation.Kind = ExecuteActivityKindReasoning
-		observation.RawText = strings.TrimSpace(event.Part.Text)
-		if observation.RawText == "" {
+		if observation.Reasoning.Availability != "available" {
 			observation.Summary = reasoningDetailFromMetadata(
 				strings.TrimSpace(event.Part.Metadata.Redacted),
 				strings.TrimSpace(event.Part.Metadata.OpenAI.ReasoningEncryptedContent),
 			)
+			if observation.Summary != "" {
+				observation.Reasoning = providerexecution.ActivityContent{Availability: "unavailable"}
+			}
 		}
 	case "step_start":
 		observation.Kind = ExecuteActivityKindProgress
@@ -2060,27 +2071,6 @@ func isToolRunEvent(event opencodeRunEvent) bool {
 		return true
 	default:
 		return false
-	}
-}
-
-func formatToolActivityInput(raw json.RawMessage) string {
-	trimmed := strings.TrimSpace(string(raw))
-	if trimmed == "" || trimmed == "null" {
-		return ""
-	}
-	var decoded any
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return trimmed
-	}
-	switch typed := decoded.(type) {
-	case string:
-		return strings.TrimSpace(typed)
-	default:
-		formatted, err := json.MarshalIndent(decoded, "", "  ")
-		if err != nil {
-			return trimmed
-		}
-		return strings.TrimSpace(string(formatted))
 	}
 }
 

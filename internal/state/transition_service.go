@@ -243,17 +243,17 @@ var legalNodeTransitions = map[string]map[string]struct{}{
 
 var legalPlanTransitions = map[string]map[string]struct{}{
 	"draft": {
-		"in_council_review": {},
+		"in_plan_review": {},
 	},
-	"in_council_review": {
-		"awaiting_king_decision": {},
+	"in_plan_review": {
+		"awaiting_plan_decision": {},
 	},
-	"awaiting_king_decision": {
+	"awaiting_plan_decision": {
 		"approved":     {},
 		"needs_rework": {},
 	},
 	"needs_rework": {
-		"in_council_review": {},
+		"in_plan_review": {},
 	},
 	"approved": {
 		"needs_rework": {},
@@ -265,15 +265,15 @@ var executionGuardNodeClasses = map[string]struct{}{
 	"delegated_execution": {},
 	"execution_review":    {},
 	"validation_gates":    {},
-	"royal_closure":       {},
+	"completion":          {},
 }
 
 var governancePredecessorNodeClasses = []string{
-	"decree_intake",
+	"work_intake",
 	"advisor_consultation",
 	"advisory_synthesis",
 	"plan_drafting",
-	"king_plan_decision",
+	"plan_decision",
 }
 
 func (s *TransitionService) Apply(ctx context.Context, req TransitionRequest) error {
@@ -383,7 +383,7 @@ func enrichAutomaticRetryStartPayloadTx(ctx context.Context, tx *sql.Tx, req *Tr
 	var recovery retryRecoveryEventPayload
 	err := tx.QueryRowContext(ctx, `SELECT retry_decision_id, node_id, node_run_id, source_attempt_id, target_node_run_id, error_code, retry_index, max_retries, due_at
 		FROM retry_decisions
-		WHERE subject_kind = 'decree_attempt'
+		WHERE subject_kind = 'work_order_attempt'
 		  AND decision = 'retry'
 		  AND dispatch_state = 'dispatched'
 		  AND resolution = 'pending'
@@ -520,7 +520,7 @@ func (s *TransitionService) enforceTransitionInvariants(ctx context.Context, tx 
 		}
 	}
 
-	if nodeClass == "royal_closure" {
+	if nodeClass == "completion" {
 		validationExists, err := s.runIncludesNodeClass(ctx, tx, req.RunID, "validation_gates")
 		if err != nil {
 			return err
@@ -840,22 +840,22 @@ func (s *TransitionService) applyEntityState(ctx context.Context, tx *sql.Tx, re
 		)
 	case EntityTypePlan:
 		reworkCycleDelta := 0
-		if req.FromState == "awaiting_king_decision" && req.ToState == "needs_rework" {
+		if req.FromState == "awaiting_plan_decision" && req.ToState == "needs_rework" {
 			reworkCycleDelta = 1
 		}
 		pendingApprovalKey, keyErr := pendingApprovalGateKey("plan", req)
-		if req.ToState != "awaiting_king_decision" {
+		if req.ToState != "awaiting_plan_decision" {
 			pendingApprovalKey = ""
 		}
-		if keyErr != nil && req.ToState == "awaiting_king_decision" {
+		if keyErr != nil && req.ToState == "awaiting_plan_decision" {
 			return keyErr
 		}
 		result, err = tx.ExecContext(ctx,
 			`UPDATE workflow_runs
 			 SET plan_state = ?,
 			     pending_approval_key = CASE
-			         WHEN ? = 'awaiting_king_decision' THEN ?
-			         WHEN ? = 'awaiting_king_decision' THEN ''
+			         WHEN ? = 'awaiting_plan_decision' THEN ?
+			         WHEN ? = 'awaiting_plan_decision' THEN ''
 			         ELSE pending_approval_key
 			     END,
 			     rework_cycle_count = rework_cycle_count + ?,

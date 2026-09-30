@@ -11,8 +11,8 @@ import (
 func seedRunProvenanceAttempt(t *testing.T, db *sql.DB, runID, id, mode, state, started string, attempt int) {
 	t.Helper()
 	const at = "2026-04-30T12:00:00Z"
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES ('provenance-agent','council-member','idle',0,?,?)`, at, at)
-	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?, 'kickoff',?,1,'pending','council-member','provenance-agent',1)`, id, runID, attempt)
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO agents (agent_id,role_id,status,spawn_depth,created_at,updated_at) VALUES ('provenance-agent','plan-author','idle',0,?,?)`, at, at)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES (?,?, 'kickoff',?,1,'pending','plan-author','provenance-agent',1)`, id, runID, attempt)
 	completion := "server_response"
 	if mode == "runtime_owned" {
 		completion = "not_applicable"
@@ -103,7 +103,7 @@ func TestRunStartProjectionKeepsFirstObservedAttemptAcrossRetry(t *testing.T) {
 func TestRunArtifactProvenanceSeparatesSettledBuilderLineage(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
-	mustExecSQL(t, db, `UPDATE workflow_nodes SET node_class='delegated_execution', required_role='builder-berserker' WHERE workflow_definition_id=(SELECT workflow_definition_id FROM workflow_runs WHERE run_id=?)`, runID)
+	mustExecSQL(t, db, `UPDATE workflow_nodes SET node_class='delegated_execution', required_role='builder' WHERE workflow_definition_id=(SELECT workflow_definition_id FROM workflow_runs WHERE run_id=?)`, runID)
 	for i, id := range []string{"old", "current", "failed", "queued", "superseded", "unsettled"} {
 		state := "committed_success"
 		if id == "failed" {
@@ -120,8 +120,8 @@ func TestRunArtifactProvenanceSeparatesSettledBuilderLineage(t *testing.T) {
 		if id == "superseded" {
 			mustExecSQL(t, db, `UPDATE node_runs SET superseded_at='2026-04-30T12:05:00Z' WHERE node_run_id=?`, id)
 		}
-		mustExecSQL(t, db, `UPDATE node_runs SET required_role='builder-berserker' WHERE node_run_id=?`, id)
-		mustExecSQL(t, db, `INSERT INTO artifacts (artifact_id,run_id,node_run_id,attempt_id,artifact_kind,artifact_action,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (?,?,?,?, 'deliverable','delete','removed.txt','text/plain','removed.txt','',0,'builder-berserker','2026-04-30T12:05:00Z')`, id, runID, id, id)
+		mustExecSQL(t, db, `UPDATE node_runs SET required_role='builder' WHERE node_run_id=?`, id)
+		mustExecSQL(t, db, `INSERT INTO artifacts (artifact_id,run_id,node_run_id,attempt_id,artifact_kind,artifact_action,name,mime,path,sha256,size_bytes,producer_role,created_at) VALUES (?,?,?,?, 'deliverable','delete','removed.txt','text/plain','removed.txt','',0,'builder','2026-04-30T12:05:00Z')`, id, runID, id, id)
 	}
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts"})
 	if res.Code != http.StatusOK {
@@ -161,7 +161,7 @@ func TestRunExecutionPublicationReportsStructuredPartialOutcome(t *testing.T) {
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 	seedRunProvenanceAttempt(t, db, runID, "publication", "provider_backed", "committed_failure", "", 1)
-	mustExecSQL(t, db, `INSERT INTO run_publication_batches VALUES ('batch',?,'publication','direct','partial_conflict',1,1,0,'2026-04-30T12:05:00Z')`, runID)
+	mustExecSQL(t, db, `INSERT INTO run_publication_batches (publication_batch_id,run_id,attempt_id,target_mode,status,published_count,conflicted_count,failed_count,entries_revision,created_at) VALUES ('batch',?,'publication','direct','partial_conflict',1,1,0,1,'2026-04-30T12:05:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO run_publication_entries (publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,status,reason_code,reason_text,created_at) VALUES ('entry','batch',?,'publication','removed.txt','delete','conflicted','changed_since_snapshot','File changed outside this run.','2026-04-30T12:05:00Z')`, runID)
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/publication"})
 	if res.Code != http.StatusOK {
@@ -169,15 +169,12 @@ func TestRunExecutionPublicationReportsStructuredPartialOutcome(t *testing.T) {
 	}
 	var got struct {
 		Publication *struct {
-			BatchID    string `json:"batch_id"`
-			Status     string `json:"status"`
-			Published  int    `json:"published_count"`
-			Conflicted int    `json:"conflicted_count"`
-			Entries    []struct {
-				Action string `json:"action"`
-				Status string `json:"status"`
-				Reason string `json:"reason_code"`
-			} `json:"entries"`
+			BatchID         string          `json:"batch_id"`
+			Status          string          `json:"status"`
+			Published       int             `json:"published_count"`
+			Conflicted      int             `json:"conflicted_count"`
+			EntriesRevision int64           `json:"entries_revision"`
+			Entries         json.RawMessage `json:"entries"`
 		} `json:"publication"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &got); err != nil {
@@ -187,7 +184,11 @@ func TestRunExecutionPublicationReportsStructuredPartialOutcome(t *testing.T) {
 		t.Fatal("publication omitted")
 	}
 	p := got.Publication
-	if p.BatchID != "batch" || p.Status != "partial_conflict" || p.Published != 1 || p.Conflicted != 1 || len(p.Entries) != 1 || p.Entries[0].Action != "delete" || p.Entries[0].Status != "conflicted" || p.Entries[0].Reason != "changed_since_snapshot" {
+	if p.BatchID != "batch" || p.Status != "partial_conflict" || p.Published != 1 || p.Conflicted != 1 || p.EntriesRevision != 1 || len(p.Entries) != 0 {
 		t.Fatalf("wrong publication: %+v", p)
+	}
+	entries := readHistoryTestPage(t, handler, "/api/v1/runs/"+runID+"/executions/publication/publication/batch/entries")
+	if len(entries.Items) != 1 || entries.Items[0]["action"] != "delete" || entries.Items[0]["status"] != "conflicted" || entries.Items[0]["reason_code"] != "changed_since_snapshot" {
+		t.Fatalf("wrong publication entry: %+v", entries)
 	}
 }

@@ -34,7 +34,7 @@ type globalFlagHelp struct {
 
 var rootHelpSections = []rootHelpSection{
 	{
-		title:       "Workspace And Runtime",
+		title:       "Workspace and Runtime",
 		description: "Bootstrap and manage the local Kingdom runtime.",
 		commands: [][]string{
 			{"init"},
@@ -47,10 +47,10 @@ var rootHelpSections = []rootHelpSection{
 		},
 	},
 	{
-		title:       "Decrees And Runs",
-		description: "Create decrees and inspect or control execution.",
+		title:       "Work Orders and Runs",
+		description: "Create work orders and inspect or control execution.",
 		commands: [][]string{
-			{"create", "decree"},
+			{"create", "work-order"},
 			{"run", "start"},
 			{"run", "status"},
 			{"graph", "show"},
@@ -60,7 +60,7 @@ var rootHelpSections = []rootHelpSection{
 		},
 	},
 	{
-		title:       "Artifacts And Approvals",
+		title:       "Artifacts and Approvals",
 		description: "Export run outputs and record operator decisions.",
 		commands: [][]string{
 			{"run", "artifacts", "export"},
@@ -145,43 +145,43 @@ var helpTopics = []*helpTopic{
 	{
 		path:               []string{"create"},
 		summary:            "Create Kingdom resources.",
-		usage:              []string{"kd create decree --title <title> --text <text> [flags]"},
-		subcommands:        [][]string{{"create", "decree"}},
+		usage:              []string{"kd create work order --title <title> --text <text> [flags]"},
+		subcommands:        [][]string{{"create", "work-order"}},
 		includeGlobalFlags: true,
 	},
 	{
-		path:    []string{"create", "decree"},
-		summary: "Create a decree and immediately start a run.",
-		usage:   []string{"kd create decree --title <title> --text <text> [flags]"},
+		path:    []string{"create", "work-order"},
+		summary: "Create a work order and immediately start a run.",
+		usage:   []string{"kd create work order --title <title> --text <text> [flags]"},
 		flags: func(flags *flag.FlagSet) {
-			bindCreateDecreeFlags(flags, &createDecreeOptions{})
+			bindCreateWorkOrderFlags(flags, &createWorkOrderOptions{})
 		},
 		flagOrder: []string{"title", "text", "global-model", "agent-model-overrides", "publish-mode", "autonomous-approvals", "metadata-json", "skip-reviews-and-validations", "run-until-all-approve", "max-execution-review-cycles", "max-validation-rework-cycles"},
 		notes: []string{
 			"`--global-model` is required when provider.engine=opencode and `--server` is omitted.",
-			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini`.",
+			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder=github-copilot/gpt-5.4-mini,reviewer=github-copilot/gpt-5.4-mini`.",
 			"`--max-execution-review-cycles=0` and `--max-validation-rework-cycles=0` auto-succeed review or validation at the cap boundary.",
 		},
 		includeGlobalFlags: true,
 	},
 	{
 		path:               []string{"run"},
-		summary:            "Start, inspect, and export decree runs.",
-		usage:              []string{"kd run start --decree-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]"},
+		summary:            "Start, inspect, and export work order runs.",
+		usage:              []string{"kd run start --work-order-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]"},
 		subcommands:        [][]string{{"run", "start"}, {"run", "status"}, {"run", "artifacts", "export"}},
 		includeGlobalFlags: true,
 	},
 	{
 		path:    []string{"run", "start"},
-		summary: "Start a run for an existing decree.",
-		usage:   []string{"kd run start --decree-id <id> [flags]"},
+		summary: "Start a run for an existing work order.",
+		usage:   []string{"kd run start --work-order-id <id> [flags]"},
 		flags: func(flags *flag.FlagSet) {
 			bindRunStartFlags(flags, &runStartOptions{})
 		},
-		flagOrder: []string{"decree-id", "global-model", "agent-model-overrides", "publish-mode", "autonomous-approvals", "skip-reviews-and-validations", "run-until-all-approve", "max-execution-review-cycles", "max-validation-rework-cycles"},
+		flagOrder: []string{"work-order-id", "global-model", "agent-model-overrides", "publish-mode", "autonomous-approvals", "skip-reviews-and-validations", "run-until-all-approve", "max-execution-review-cycles", "max-validation-rework-cycles"},
 		notes: []string{
 			"`--global-model` is required when provider.engine=opencode and `--server` is omitted.",
-			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini`.",
+			"`--global-model` example: `github-copilot/gpt-5.4-mini`; `--agent-model-overrides` example: `builder=github-copilot/gpt-5.4-mini,reviewer=github-copilot/gpt-5.4-mini`.",
 			"`--max-execution-review-cycles=0` and `--max-validation-rework-cycles=0` auto-succeed review or validation at the cap boundary.",
 		},
 		includeGlobalFlags: true,
@@ -452,7 +452,7 @@ func writeCommandSummaries(stdout io.Writer, commands [][]string) {
 }
 
 func writeGlobalFlagsSection(stdout io.Writer) {
-	_, _ = io.WriteString(stdout, "\nGlobal Flags For API Commands:\n")
+	_, _ = io.WriteString(stdout, "\nGlobal Flags for API Commands:\n")
 	maxWidth := 0
 	for _, item := range globalHelpFlags {
 		if len(item.syntax) > maxWidth {

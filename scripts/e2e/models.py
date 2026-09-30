@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_WORKFLOW_ID = "royal-decree-v1"
+DEFAULT_WORKFLOW_ID = "work-order-v1"
 DEFAULT_BASE_PATH = "/api/v1"
 PUBLISH_MODE_DIRECT = "direct"
 PUBLISH_MODE_GIT_WORKTREE = "git_worktree"

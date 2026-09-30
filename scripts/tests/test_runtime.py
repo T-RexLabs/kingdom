@@ -23,20 +23,20 @@ class RuntimeServiceTests(unittest.TestCase):
         request = RunRequest(
             title="Title",
             text="Text",
-            workflow_id="royal-decree-v1",
+            workflow_id="work-order-v1",
             publish_mode="direct",
             global_model="github-copilot/gpt-5.4-mini",
-            agent_model_overrides="reviewer-shieldmaiden=github-copilot/gpt-5.4-mini",
+            agent_model_overrides="reviewer=github-copilot/gpt-5.4-mini",
             max_execution_review_cycles=5,
             max_validation_rework_cycles=5,
         )
 
-        payload = runtime.build_run_payload("decree_123", request)
+        payload = runtime.build_run_payload("work_order_123", request)
 
         self.assertEqual(payload["model_selection"]["global"], {"model": "github-copilot/gpt-5.4-mini"})
         self.assertEqual(
             payload["model_selection"]["role_overrides"],
-            {"reviewer-shieldmaiden": {"model": "github-copilot/gpt-5.4-mini"}},
+            {"reviewer": {"model": "github-copilot/gpt-5.4-mini"}},
         )
 
     def test_post_json_retries_ambiguous_transport_with_same_key(self) -> None:

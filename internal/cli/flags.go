@@ -43,7 +43,7 @@ type summonLogsOptions struct {
 	lines      int
 }
 
-type createDecreeOptions struct {
+type createWorkOrderOptions struct {
 	title                     string
 	text                      string
 	metadataRaw               string
@@ -58,7 +58,7 @@ type createDecreeOptions struct {
 }
 
 type runStartOptions struct {
-	decreeID                  string
+	workOrderID               string
 	skipReviewsAndValidations bool
 	autonomousApprovalsRaw    string
 	runUntilAllApprove        bool
@@ -156,17 +156,17 @@ func bindSummonLogsFlags(flags *flag.FlagSet, opts *summonLogsOptions) {
 	flags.IntVar(&opts.lines, "lines", 50, "show the last `n` log lines before follow")
 }
 
-func bindCreateDecreeFlags(flags *flag.FlagSet, opts *createDecreeOptions) {
+func bindCreateWorkOrderFlags(flags *flag.FlagSet, opts *createWorkOrderOptions) {
 	if flags == nil || opts == nil {
 		return
 	}
-	flags.StringVar(&opts.title, "title", "", "decree `title`")
-	flags.StringVar(&opts.text, "text", "", "decree `text`")
+	flags.StringVar(&opts.title, "title", "", "work order `title`")
+	flags.StringVar(&opts.text, "text", "", "work order `text`")
 	flags.StringVar(&opts.globalModel, "global-model", "", "global model `provider/model` (example: github-copilot/gpt-5.4-mini); required when provider.engine=opencode")
-	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini)")
+	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder=github-copilot/gpt-5.4-mini,reviewer=github-copilot/gpt-5.4-mini)")
 	flags.StringVar(&opts.publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish `mode`: direct or git_worktree")
 	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "true", "run autonomous approvals `value`: true or false")
-	flags.StringVar(&opts.metadataRaw, "metadata-json", "", "optional decree metadata JSON `object`")
+	flags.StringVar(&opts.metadataRaw, "metadata-json", "", "optional work order metadata JSON `object`")
 	flags.BoolVar(&opts.skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")
 	flags.BoolVar(&opts.runUntilAllApprove, "run-until-all-approve", false, "continue reviewer and validator loops until pass")
 	flags.IntVar(&opts.maxExecutionReviewCycles, "max-execution-review-cycles", 2, "max execution review `cycles`; `0` auto-succeeds review at the cap")
@@ -177,9 +177,9 @@ func bindRunStartFlags(flags *flag.FlagSet, opts *runStartOptions) {
 	if flags == nil || opts == nil {
 		return
 	}
-	flags.StringVar(&opts.decreeID, "decree-id", "", "decree `id`")
+	flags.StringVar(&opts.workOrderID, "work-order-id", "", "work order `id`")
 	flags.StringVar(&opts.globalModel, "global-model", "", "global model `provider/model` (example: github-copilot/gpt-5.4-mini); required when provider.engine=opencode")
-	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder-berserker=github-copilot/gpt-5.4-mini,reviewer-shieldmaiden=github-copilot/gpt-5.4-mini)")
+	flags.StringVar(&opts.agentModelOverridesRaw, "agent-model-overrides", "", "optional `role=model` overrides (example: builder=github-copilot/gpt-5.4-mini,reviewer=github-copilot/gpt-5.4-mini)")
 	flags.StringVar(&opts.publishModeRaw, "publish-mode", defaultPublishModeForCLI(), "publish `mode`: direct or git_worktree")
 	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "true", "run autonomous approvals `value`: true or false")
 	flags.BoolVar(&opts.skipReviewsAndValidations, "skip-reviews-and-validations", false, "skip execution review and validation")

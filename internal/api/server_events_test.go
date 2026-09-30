@@ -237,7 +237,7 @@ func TestServerStreamEventsFollowModeDeliversEventsAfterConnect(t *testing.T) {
 	}()
 
 	time.Sleep(120 * time.Millisecond)
-	_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-follow-1', ?, COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = ?), 0) + 1, NULL, 'att-ob-1', 'v1', 'attempt.progress', 2, '{"delta":"working"}', 'actor-1', 'chancellor', 'api.test', 'internal_error', 'follow test', 'corr-follow-1', 'caus-follow-1', 'hash-prev', 'hash-entry', '2026-03-01T12:00:30Z')`, runID, runID)
+	_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-follow-1', ?, COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = ?), 0) + 1, NULL, 'att-ob-1', 'v1', 'attempt.progress', 2, '{"delta":"working"}', 'actor-1', 'coordinator', 'api.test', 'internal_error', 'follow test', 'corr-follow-1', 'caus-follow-1', 'hash-prev', 'hash-entry', '2026-03-01T12:00:30Z')`, runID, runID)
 	if err != nil {
 		t.Fatalf("insert follow event: %v", err)
 	}
@@ -262,20 +262,20 @@ func TestServerStreamEventsEnrichesMissingExecutionLineageFromEventRow(t *testin
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
-	_, err := db.Exec(`INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('chancellor', 'Chancellor', 0, '2026-03-01T12:00:00Z')`)
+	_, err := db.Exec(`INSERT OR IGNORE INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 0, '2026-03-01T12:00:00Z')`)
 	if err != nil {
 		t.Fatalf("insert lineage role: %v", err)
 	}
-	_, err = db.Exec(`INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-lineage-1', 'chancellor', 'Chancellor', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	_, err = db.Exec(`INSERT OR IGNORE INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-lineage-1', 'coordinator', 'Coordinator', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	if err != nil {
 		t.Fatalf("insert lineage agent: %v", err)
 	}
-	_, err = db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-lineage-1', ?, 'delegated_execution_berserker', 1, 1, 'succeeded', 'chancellor', 'agent-lineage-1', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, runID)
+	_, err = db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-lineage-1', ?, 'implementation', 1, 1, 'succeeded', 'coordinator', 'agent-lineage-1', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, runID)
 	if err != nil {
 		t.Fatalf("insert lineage node run: %v", err)
 	}
 
-	_, err = db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-lineage-1', ?, 1, 'nr-lineage-1', 'attempt-lineage-1', 'v1', 'attempt.succeeded', 1, '{}', 'actor-1', 'chancellor', 'api.test', 'execution_completed', 'lineage test', 'corr-lineage-1', 'caus-lineage-1', 'prev-lineage-1', 'entry-lineage-1', '2026-03-01T12:00:30Z')`, runID)
+	_, err = db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-lineage-1', ?, 1, 'nr-lineage-1', 'attempt-lineage-1', 'v1', 'attempt.succeeded', 1, '{}', 'actor-1', 'coordinator', 'api.test', 'execution_completed', 'lineage test', 'corr-lineage-1', 'caus-lineage-1', 'prev-lineage-1', 'entry-lineage-1', '2026-03-01T12:00:30Z')`, runID)
 	if err != nil {
 		t.Fatalf("insert lineage event: %v", err)
 	}
@@ -442,7 +442,7 @@ func insertRunCollectionEvent(t *testing.T, db *sql.DB, eventID string, runID st
 
 func insertStreamTestEvent(t *testing.T, db *sql.DB, runID, eventID string) {
 	t.Helper()
-	_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = ?), 0) + 1, NULL, 'att-stream-auth', 'v1', 'attempt.progress', 1, '{}', 'local-operator', 'allfather', 'api.test', 'internal_error', 'auth stream test', 'corr-stream-auth', 'caus-stream-auth', 'hash-prev', 'hash-entry', '2026-08-15T12:00:00Z')`, eventID, runID, runID)
+	_, err := db.Exec(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES (?, ?, COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = ?), 0) + 1, NULL, 'att-stream-auth', 'v1', 'attempt.progress', 1, '{}', 'local-operator', 'operator', 'api.test', 'internal_error', 'auth stream test', 'corr-stream-auth', 'caus-stream-auth', 'hash-prev', 'hash-entry', '2026-08-15T12:00:00Z')`, eventID, runID, runID)
 	if err != nil {
 		t.Fatalf("insert stream event %s: %v", eventID, err)
 	}

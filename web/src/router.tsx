@@ -9,7 +9,7 @@ import { NotFoundPage } from "@/components/error-boundary";
 import { RootLayout } from "@/components/root-layout";
 import { isRunDetailTab, type RunDetailTab } from "@/features/runs/run-detail-tabs";
 import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
-import { validateDecreeNewSearch } from "@/features/decrees/decree-route-search";
+import { validateWorkOrderNewSearch } from "@/features/work-orders/work-order-route-search";
 import { GITHUB_SETUP_RETURN_PATH } from "@/features/connections/github-setup-return-path";
 
 const rootRoute = createRootRoute({
@@ -39,13 +39,10 @@ const dashboardRoute = createRoute({
 const runsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runs",
-  validateSearch: (search: Record<string, unknown>): { state_filter?: RunsStateFilter } => {
-    const rawStateFilter = search.state_filter;
-    if (isRunsStateFilter(rawStateFilter)) {
-      return { state_filter: rawStateFilter };
-    }
-    return {};
-  },
+  validateSearch: (search: Record<string, unknown>): { state_filter?: RunsStateFilter; q?: string } => ({
+    ...(isRunsStateFilter(search.state_filter) ? { state_filter: search.state_filter } : {}),
+    ...(typeof search.q === "string" && search.q.trim() ? { q: search.q.trim() } : {}),
+  }),
   component: lazyRouteComponent(
     () => import("@/features/runs/runs-page"),
     "RunsPage"
@@ -68,38 +65,38 @@ const runDetailRoute = createRoute({
   ),
 });
 
-const decreesRoute = createRoute({
+const workOrdersRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/decrees",
+  path: "/work-orders",
   component: lazyRouteComponent(
-    () => import("@/features/decrees/decrees-workspace-layout"),
-    "DecreesWorkspaceLayout"
+    () => import("@/features/work-orders/work-orders-workspace-layout"),
+    "WorkOrdersWorkspaceLayout"
   ),
 });
 
-const decreesIndexRoute = createRoute({
-  getParentRoute: () => decreesRoute,
+const workOrdersIndexRoute = createRoute({
+  getParentRoute: () => workOrdersRoute,
   path: "/",
   beforeLoad: () => {
-    throw redirect({ to: "/decrees/planning" });
+    throw redirect({ to: "/work-orders/planning" });
   },
   component: lazyRouteComponent(
-    () => import("@/features/decrees/planning-session-index-page"),
+    () => import("@/features/work-orders/planning-session-index-page"),
     "PlanningSessionIndexPage"
   ),
 });
 
-const decreesPlanningRoute = createRoute({
-  getParentRoute: () => decreesRoute,
+const workOrdersPlanningRoute = createRoute({
+  getParentRoute: () => workOrdersRoute,
   path: "/planning",
   component: lazyRouteComponent(
-    () => import("@/features/decrees/planning-session-index-page"),
+    () => import("@/features/work-orders/planning-session-index-page"),
     "PlanningSessionIndexPage"
   ),
 });
 
-const decreesPlanningSessionRoute = createRoute({
-  getParentRoute: () => decreesRoute,
+const workOrdersPlanningSessionRoute = createRoute({
+  getParentRoute: () => workOrdersRoute,
   path: "/planning/$sessionId",
   validateSearch: (search: Record<string, unknown>): { show_plan?: boolean } => {
     if (search.show_plan === true || search.show_plan === "true") {
@@ -108,18 +105,18 @@ const decreesPlanningSessionRoute = createRoute({
     return {};
   },
   component: lazyRouteComponent(
-    () => import("@/features/decrees/planning-session-page"),
+    () => import("@/features/work-orders/planning-session-page"),
     "PlanningSessionPage"
   ),
 });
 
-const decreesNewRoute = createRoute({
-  getParentRoute: () => decreesRoute,
+const workOrdersNewRoute = createRoute({
+  getParentRoute: () => workOrdersRoute,
   path: "/new",
-  validateSearch: validateDecreeNewSearch,
+  validateSearch: validateWorkOrderNewSearch,
   component: lazyRouteComponent(
-    () => import("@/features/decrees/issue-decree-page"),
-    "IssueDecreePage"
+    () => import("@/features/work-orders/issue-work-order-page"),
+    "IssueWorkOrderPage"
   ),
 });
 
@@ -135,18 +132,20 @@ const agentsRoute = createRoute({
 const connectionsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/connections",
+  validateSearch: (search: Record<string, unknown>): { connection?: string } => typeof search.connection === "string" && search.connection.trim() ? { connection: search.connection } : {},
   component: lazyRouteComponent(
     () => import("@/features/connections/connections-page"),
     "ConnectionsPage"
   ),
 });
 
-const realmAnalyticsRoute = createRoute({
+const analyticsRoute = createRoute({
   getParentRoute: () => rootRoute,
-  path: "/realm-analytics",
-  validateSearch: (search: Record<string, unknown>): { window_minutes?: number; run_id?: string } => {
-    const next: { window_minutes?: number; run_id?: string } = {};
+  path: "/analytics",
+  validateSearch: (search: Record<string, unknown>): { window_minutes?: number; run_id?: string; view?: "runs" | "usage" | "reliability" } => {
+    const next: { window_minutes?: number; run_id?: string; view?: "runs" | "usage" | "reliability" } = {};
 
+    if (search.view === "runs" || search.view === "usage" || search.view === "reliability") next.view = search.view;
     const rawMinutes = search.window_minutes;
     if (typeof rawMinutes === "number" && Number.isFinite(rawMinutes)) {
       const rounded = Math.round(rawMinutes);
@@ -168,24 +167,44 @@ const realmAnalyticsRoute = createRoute({
     return next;
   },
   component: lazyRouteComponent(
-    () => import("@/features/realm-analytics/realm-analytics-page"),
-    "RealmAnalyticsPage"
+    () => import("@/features/analytics/analytics-page"),
+    "AnalyticsPage"
   ),
+});
+
+const appearanceRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/appearance",
+  component: lazyRouteComponent(() => import("@/features/appearance/appearance-page"), "AppearancePage"),
+});
+const createThemeRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/appearance/create",
+  validateSearch: (search: Record<string, unknown>): { source?: string; revision?: string; base?: string } => {
+    const next: { source?: string; revision?: string; base?: string } = {};
+    for (const key of ["source", "revision", "base"] as const) {
+      if (typeof search[key] === "string" && search[key].length > 0) next[key] = search[key];
+    }
+    return next;
+  },
+  component: lazyRouteComponent(() => import("@/features/appearance/create-theme-page"), "CreateThemePage"),
 });
 
 const routeTree = rootRoute.addChildren([
   dashboardRoute,
   runsRoute,
   runDetailRoute,
-  decreesRoute.addChildren([
-    decreesIndexRoute,
-    decreesPlanningRoute,
-    decreesPlanningSessionRoute,
-    decreesNewRoute,
+  workOrdersRoute.addChildren([
+    workOrdersIndexRoute,
+    workOrdersPlanningRoute,
+    workOrdersPlanningSessionRoute,
+    workOrdersNewRoute,
   ]),
   agentsRoute,
   connectionsRoute,
-  realmAnalyticsRoute,
+  appearanceRoute,
+  createThemeRoute,
+  analyticsRoute,
   githubSetupReturnRoute,
 ]);
 
@@ -193,7 +212,7 @@ export const router = createRouter({
   routeTree,
   defaultPendingComponent: () => (
     <div className="flex h-64 items-center justify-center">
-      <div className="h-8 w-8 animate-spin rounded-full border-2 border-gold border-t-transparent" />
+      <div className="h-8 w-8 animate-spin rounded-full border-2 border-accent border-t-transparent" />
     </div>
   ),
 });

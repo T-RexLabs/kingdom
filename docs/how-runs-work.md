@@ -1,15 +1,15 @@
 # How Runs Work
 
-This document explains how work moves through Kingdom today, from optional planning through decree closure.
+This document explains how work moves through Kingdom today, from optional planning through work order closure.
 
 ## Two Separate Lifecycles
 
 Kingdom has two related but separate lifecycles:
 
 1. Planning sessions
-2. Decree execution runs
+2. Work Order execution runs
 
-Planning sessions are optional. A decree can be issued directly without using the planner first.
+Planning sessions are optional. A work order can be issued directly without using the planner first.
 
 ## Planning Session Lifecycle
 
@@ -78,26 +78,26 @@ The stream supports:
 
 If the client exhausts SSE retries, the web planner falls back to polling the planning-operation row until the operation reaches a terminal state.
 
-### Issuing a Decree from a Plan
+### Issuing a Work Order from a Plan
 
-When the operator issues a decree from a planning session, the client supplies:
+When the operator issues a work order from a planning session, the client supplies:
 
 - `planning_session_id`
 - `planning_draft_id`
 
-Kingdom derives the following immutable lineage from the draft's unique successful formalize operation and attaches all three values to decree metadata:
+Kingdom derives the following immutable lineage from the draft's unique successful formalize operation and attaches all three values to work order metadata:
 
 - `planning_context_snapshot_id`
 
-That lineage is attached only at decree issuance time. Planning itself does not mutate a decree run.
+That lineage is attached only at work order issuance time. Planning itself does not mutate a work order run.
 
 ## Run Creation Lifecycle
 
-Decree execution starts when a decree is created and a run is started for it.
+Work Order execution starts when a work order is created and a run is started for it.
 
 A run carries:
 
-- decree id
+- work order id
 - workflow id
 - approval mode
 - review and validation loop controls
@@ -109,47 +109,47 @@ Current model-selection contract:
 - role overrides are optional
 - `/roles` defines which roles appear in the override selector
 
-## Canonical Workflow: `royal-decree-v1`
+## Canonical Workflow: `work-order-v1`
 
 The seeded workflow definition contains these nodes.
 
 | Node ID | Required Role | Purpose |
 | ------- | ------------- | ------- |
-| `decree_intake` | `king` | Record royal intake and open advisory consultation |
-| `advisor_consultation_noble` | `noble-delegate` | Functional-fit, architecture-fit, and precedent counsel |
-| `advisor_consultation_clergy` | `clergy-delegate` | Security, trust-boundary, and resilience counsel |
-| `advisor_consultation_burgher` | `burgher-delegate` | Performance, scalability, efficiency, and maintainability counsel |
-| `advisor_consultation_peasant` | `peasant-delegate` | Usability, operability, and day-2 practicality counsel |
-| `advisory_synthesis` | `chancellor` | Synthesize advisory counsel into clear downstream direction |
-| `plan_drafting` | `council-member` | Draft the execution-ready plan and rework deltas |
-| `king_plan_decision` | `king` | Approve the plan or request plan rework |
-| `execution_kickoff` | `council-member` | Record the runtime-owned execution handoff after plan approval |
-| `delegated_execution_berserker` | `builder-berserker` | Perform implementation |
-| `execution_review_shieldmaiden` | `reviewer-shieldmaiden` | Perform execution review |
-| `validation_gates_qa_scout` | `intelligence-qa-scout` | Functional validation |
-| `validation_gates_nightraven` | `intelligence-nightraven` | Security validation |
-| `royal_closure` | `king` | Close the decree |
+| `work_intake` | `governance` | Record royal intake and open advisory consultation |
+| `architecture_consultation` | `architecture-advisor` | Functional-fit, architecture-fit, and precedent counsel |
+| `risk_consultation` | `risk-advisor` | Security, trust-boundary, and resilience counsel |
+| `systems_consultation` | `systems-advisor` | Performance, scalability, efficiency, and maintainability counsel |
+| `usability_consultation` | `usability-advisor` | Usability, operability, and day-2 practicality counsel |
+| `advisory_synthesis` | `coordinator` | Synthesize advisory counsel into clear downstream direction |
+| `plan_drafting` | `plan-author` | Draft the execution-ready plan and rework deltas |
+| `plan_decision` | `governance` | Approve the plan or request plan rework |
+| `execution_kickoff` | `plan-author` | Record the runtime-owned execution handoff after plan approval |
+| `implementation` | `builder` | Perform implementation |
+| `execution_review` | `reviewer` | Perform execution review |
+| `quality_validation` | `qa-validator` | Functional validation |
+| `security_validation` | `security-validator` | Security validation |
+| `completion` | `governance` | Close the work order |
 
 Notes:
 
-- `decree_intake` is a runtime-owned deterministic node. It records ceremonial intake, persists the opening response snapshot, and advances the workflow without invoking OpenCode.
-- `king_plan_decision` is a runtime-owned deterministic governance node. It does not invoke OpenCode; it stays pending at the plan approval gate until approval or rework is recorded, then persists a deterministic response snapshot.
+- `work_intake` is a runtime-owned deterministic node. It records ceremonial intake, persists the opening response snapshot, and advances the workflow without invoking OpenCode.
+- `plan_decision` is a runtime-owned deterministic governance node. It does not invoke OpenCode; it stays pending at the plan approval gate until approval or rework is recorded, then persists a deterministic response snapshot.
 - `execution_kickoff` is a runtime-owned deterministic handoff node. It records that approved work has moved into implementation and opens the builder/review/validation phase without invoking OpenCode.
-- `royal_closure` is a runtime-owned deterministic ceremonial node. It does not invoke OpenCode; it persists the final ceremonial summary before the run either auto-succeeds or pauses for allfather final approval.
-- The canonical role catalog also includes `intelligence-loki-chaos`, but the seeded workflow does not currently include a Loki node.
+- `completion` is a runtime-owned deterministic ceremonial node. It does not invoke OpenCode; it persists the final ceremonial summary before the run either auto-succeeds or pauses for operator final approval.
+- The canonical role catalog also includes `resilience-validator`, but the seeded workflow does not currently include a Loki node.
 - The default workflow metadata sets `max_execution_review_cycles=5` and `max_validation_rework_cycles=5`.
 
-## Bundled Alternate Workflow: `royal-decree-skip-review-validation-v1`
+## Bundled Alternate Workflow: `work-order-skip-review-validation-v1`
 
 Kingdom also ships a built-in alternate workflow for runs that intentionally bypass quality gates.
 
-It keeps the same planning path through `execution_kickoff`, runs `delegated_execution_berserker`, and then routes directly to `royal_closure`.
+It keeps the same planning path through `execution_kickoff`, runs `implementation`, and then routes directly to `completion`.
 
 Notes:
 
 - `execution_review` and `validation_gates` nodes are absent from this workflow by design.
 - review and validation caps default to `0` for runs created from this workflow.
-- the web decree form and `kd` CLI expose this mode as `Skip Reviews and Validations` and disable or reject review-loop controls when selected.
+- the web work order form and `kd` CLI expose this mode as `Skip Reviews and Validations` and disable or reject review-loop controls when selected.
 
 ## Governance and Rework
 
@@ -157,20 +157,20 @@ Notes:
 
 Plan drafting must complete before execution begins.
 
-- If `governance.autonomous_approvals=true`, the runtime auto-approves the plan and then completes `king_plan_decision` without a provider call.
-- If `governance.autonomous_approvals=false`, the run pauses for an allfather plan decision while `king_plan_decision` remains pending.
+- If `governance.autonomous_approvals=true`, the runtime auto-approves the plan and then completes `plan_decision` without a provider call.
+- If `governance.autonomous_approvals=false`, the run pauses for an operator plan decision while `plan_decision` remains pending.
 
 Plan rework behavior:
 
-- allfather plan rework is uncapped
+- operator plan rework is uncapped
 - a rework decision records `needs_rework` plan state, persists feedback in the plan review record, and reopens `advisory_synthesis` plus `plan_drafting`
-- plan state can move from `needs_rework` back to `in_council_review` for another council pass
+- plan state can move from `needs_rework` back to `in_plan_review` for another planning pass
 
 ### Execution Review and Validation
 
 After builder execution:
 
-1. `reviewer-shieldmaiden` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
+1. `reviewer` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
 2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
 
 Rework behavior:
@@ -190,11 +190,11 @@ Rework behavior:
 
 Successful workflow progression is not enough for terminal success on its own.
 
-- `royal_closure` completes before the final governance gate and does not invoke OpenCode.
+- `completion` completes before the final governance gate and does not invoke OpenCode.
 - If `governance.autonomous_approvals=true`, final acceptance is automatic.
-- If `governance.autonomous_approvals=false`, the run pauses at `awaiting_human_confirmation` until allfather records `confirm` or `rework`.
-- Final `confirm` transitions the decree to `succeeded`.
-- Final `rework` records durable allfather feedback, reopens the decree from `plan_drafting`, and requires the revised plan to return to allfather plan approval before execution resumes.
+- If `governance.autonomous_approvals=false`, the run pauses at `awaiting_human_confirmation` until operator records `confirm` or `rework`.
+- Final `confirm` transitions the work order to `succeeded`.
+- Final `rework` records durable operator feedback, reopens the work order from `plan_drafting`, and requires the revised plan to return to operator plan approval before execution resumes.
 
 ## Workspace Lifecycle
 
@@ -209,7 +209,7 @@ Before execution, the runtime resolves one shared execution target for the run.
 ### `publish.mode=git_worktree`
 
 - the project root must be a valid non-bare git working tree
-- Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<decree-title-slug>-<run_id>/` next to the repository's main worktree root
+- Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<work-order-title-slug>-<run_id>/` next to the repository's main worktree root
 - if the configured project root is nested inside the repository, execution is scoped back to that same relative subdirectory inside the linked worktree
 - that scoped project directory becomes the shared execution and publish target for the run
 - terminal worktree cleanup is bounded and resumable; Retry/Rerun cancels cleanup before deletion starts, but returns `409 dependency_blocked` once deletion begins until filesystem removal and Git pruning finish. A later dispatch recreates the checkout from its pinned seed commit.
@@ -235,16 +235,16 @@ Tracked snapshot capture ignores:
 
 ## Execution Lifecycle
 
-Kingdom launches OpenCode directly on the host against the prepared workspace for provider-backed decree execution nodes.
+Kingdom launches OpenCode directly on the host against the prepared workspace for provider-backed work order execution nodes.
 
 Important runtime behavior:
 
-- `decree_intake`, `execution_kickoff`, `king_plan_decision`, and `royal_closure` are runtime-owned and deterministic; they do not open OpenCode sessions.
+- `work_intake`, `execution_kickoff`, `plan_decision`, and `completion` are runtime-owned and deterministic; they do not open OpenCode sessions.
 - execution is session-based via `opencode run --format json`
-- runtime creates a provider invocation record before dispatching every provider-backed decree execution attempt. Completion mode is a runtime-owned node-class contract, not workflow-authored configuration.
+- runtime creates a provider invocation record before dispatching every provider-backed work order execution attempt. Completion mode is a runtime-owned node-class contract, not workflow-authored configuration.
 - strict mode validates managed OpenCode assets, binary availability, and agent resolution
 - runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`
-- every provider-backed decree node, including builder execution, uses `server_response`: success requires the strict server-observed terminal response and node-specific output validation.
+- every provider-backed work order node, including builder execution, uses `server_response`: success requires the strict server-observed terminal response and node-specific output validation.
 - runtime-owned nodes are `not_applicable` and do not have provider completion authority.
 - direct-mode response-only planning and advisory nodes use attempt-scoped isolated copies without durable execution-target or snapshot rows; the first workspace-owning attempt captures its baseline from the then-current project.
 - runtime validates active attempt, invocation, lease, guardian, and node-contract lineage for every settlement.
@@ -255,7 +255,7 @@ Important runtime behavior:
 - each provider command has a durable guardian. Its acknowledged ownership and file-backed quiescence evidence are ingested before terminal settlement; cleanup after ingestion is replayable evidence debt, not proof loss.
 - server-response success requires all of: normalized terminal reason `stop`; final turn and step IDs; a positive final stream sequence; non-empty canonical terminal text; no pending or non-terminal tool calls; no events after the terminal response; clean process exit with both output streams drained; and no timeout, cancellation, provider error, malformed stream data, or conflicting terminal evidence.
 - settlement is atomic: it records canonical evidence and settlement, terminal attempt state, token usage, and the durable completion outbox handoff together. Later outbox projection advances the workflow but cannot alter settlement truth.
-- `opencode export` is diagnostic only for provider-backed decree execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
+- `opencode export` is diagnostic only for provider-backed work order execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
 - provider output and complete invocation stdout/stderr diagnostics have no fixed byte ceiling; bounded activity/output previews and stderr tails are display projections, not substitutes for canonical content. Provider context-window limits and active timeouts still apply.
@@ -291,7 +291,7 @@ For `publish_mode=direct`, publication is per-path and best-effort. If a destina
 
 - builder deliverables publish into the project root in `direct` mode
 - builder deliverables publish into the run worktree in `git_worktree` mode
-- non-builder outputs publish under `kingdom-artifacts/<decree-slug>-<run_id>/...`
+- non-builder outputs publish under `kingdom-artifacts/<work-order-slug>-<run_id>/...`
 
 ## Event Streaming
 

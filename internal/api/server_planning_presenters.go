@@ -186,8 +186,8 @@ func planningDraftFromState(item state.PlanningDraft) gen.PlanningDraft {
 	result := gen.PlanningDraft{
 		PlanningDraftId:   item.PlanningDraftID,
 		PlanningSessionId: item.PlanningSessionID,
-		DecreeTitle:       item.DecreeTitle,
-		DecreeText:        item.DecreeText,
+		WorkOrderTitle:    item.WorkOrderTitle,
+		WorkOrderText:     item.WorkOrderText,
 		CreatedAt:         mustParseRFC3339(item.CreatedAt),
 	}
 	if strings.TrimSpace(item.SummaryJSON) != "" && strings.TrimSpace(item.SummaryJSON) != "{}" {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { STATUS_TONE_HEX, statusBadgeClass, statusLabel, statusTextClass, statusToneForKey } from "./status-system";
+import { statusBadgeClass, statusLabel, statusTextClass, statusToneForKey } from "./status-system";
 
 describe("statusLabel", () => {
 	it("labels the working state 'Active' for both agents and nodes/runs", () => {
@@ -19,13 +19,11 @@ describe("statusLabel", () => {
 
 describe("status system", () => {
 	it("keeps cancelled and rework on distinct tones", () => {
-		expect(STATUS_TONE_HEX.cancelled).toBe("#8b5cf6");
-		expect(STATUS_TONE_HEX.rework).toBe("#ec4899");
 		expect(statusToneForKey("cancelled")).toBe("cancelled");
 		expect(statusToneForKey("rework")).toBe("rework");
 	});
 
-	it("emits cancelled purple badges separately from rework rose badges", () => {
+	it("uses distinct semantic badges for cancelled and rework", () => {
 		expect(statusBadgeClass("cancelled", "strong")).toContain("bg-status-cancelled/15");
 		expect(statusBadgeClass("cancelled", "strong")).toContain("text-status-cancelled");
 		expect(statusBadgeClass("rework", "strong")).toContain("bg-status-rework/15");

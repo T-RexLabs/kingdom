@@ -9,7 +9,7 @@ import (
 // a run is actively awaiting manual plan approval.
 func ManualPlanApprovalActiveSelectExpr(runAlias string) string {
 	trimmedAlias := normalizePendingApprovalRunAlias(runAlias)
-	return fmt.Sprintf(`(%[1]s.run_status = 'running' AND %[1]s.plan_state = 'awaiting_king_decision')`, trimmedAlias)
+	return fmt.Sprintf(`(%[1]s.run_status = 'running' AND %[1]s.plan_state = 'awaiting_plan_decision')`, trimmedAlias)
 }
 
 // ManualFinalApprovalActiveSelectExpr returns a SQL expression that is true

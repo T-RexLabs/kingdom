@@ -1,0 +1,57 @@
+{
+  "version": "v1",
+  "workflow_id": "work-order-v1",
+  "name": "Work Order",
+  "nodes": [
+    {
+      "node_id": "work_intake",
+      "required_role": "governance",
+      "node_class": "work_intake"
+    },
+    {
+      "node_id": "architecture_consultation",
+      "required_role": "architecture-advisor",
+      "node_class": "advisor_consultation"
+    },
+    {
+      "node_id": "advisory_synthesis",
+      "required_role": "coordinator",
+      "node_class": "advisory_synthesis"
+    },
+    {
+      "node_id": "plan_drafting",
+      "required_role": "plan-author",
+      "node_class": "plan_drafting"
+    },
+    {
+      "node_id": "plan_decision",
+      "required_role": "governance",
+      "node_class": "plan_decision"
+    }
+  ],
+  "edges": [
+    {
+      "from": "work_intake",
+      "to": "architecture_consultation",
+      "on": "success"
+    },
+    {
+      "from": "architecture_consultation",
+      "to": "advisory_synthesis",
+      "on": "success"
+    },
+    {
+      "from": "advisory_synthesis",
+      "to": "plan_drafting",
+      "on": "success"
+    },
+    {
+      "from": "plan_drafting",
+      "to": "plan_decision",
+      "on": "success"
+    }
+  ],
+  "metadata": {
+    "max_execution_review_cycles": 2
+  }
+}

@@ -46,9 +46,9 @@ func TestAppendRunCollectionEventProjectsStablePendingApprovalKey(t *testing.T) 
 	db := openTestDB(t)
 	applyAllMigrationsForRunCollectionEventTest(t, db)
 
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_1', 'Pending Plan', 'Pending Plan', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'decree_1', 'wfdef_1', 'running', 'awaiting_king_decision', 0, 'plan:gate_1', 9, '2026-03-01T12:01:00Z', '2026-03-01T12:02:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_1', 'Pending Plan', 'Pending Plan', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'work_order_1', 'wfdef_1', 'running', 'awaiting_plan_decision', 0, 'plan:gate_1', 9, '2026-03-01T12:01:00Z', '2026-03-01T12:02:00Z')`)
 
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
@@ -89,9 +89,9 @@ func TestAppendRunCollectionEventOmitsStalePendingApprovalKeyForTerminalRun(t *t
 	db := openTestDB(t)
 	applyAllMigrationsForRunCollectionEventTest(t, db)
 
-	mustExec(t, db, `INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_1', 'Cancelled Pending Plan', 'Cancelled Pending Plan', '{}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'royal-decree-v1', 'v1', '{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
-	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'decree_1', 'wfdef_1', 'cancelled', 'awaiting_king_decision', 0, 'plan:gate_1', 9, '2026-03-01T12:01:00Z', '2026-03-01T12:02:00Z')`)
+	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_1', 'Cancelled Pending Plan', 'Cancelled Pending Plan', '{}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_1', 'work-order-v1', 'v1', '{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[]}', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, pending_approval_key, row_version, created_at, updated_at) VALUES ('run_1', NULL, 'work_order_1', 'wfdef_1', 'cancelled', 'awaiting_plan_decision', 0, 'plan:gate_1', 9, '2026-03-01T12:01:00Z', '2026-03-01T12:02:00Z')`)
 
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {

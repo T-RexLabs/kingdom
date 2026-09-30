@@ -1,7 +1,10 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
+	"io"
+	"kingdom/internal/core/providerexecution"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -42,7 +45,7 @@ func TestParseSessionActivityExportIncludesReasoningAndExternalTools(t *testing.
 		t.Fatalf("expected 3 visible activity items, got %#v", items)
 	}
 	assertHasActivityItem(t, items, "progress", "Processing")
-	assertHasActivityItem(t, items, "thinking", "Thinking")
+	assertHasActivityItem(t, items, "reasoning", "Thinking")
 	assertHasActivityItem(t, items, "tool", "Fetched https://example.com")
 }
 
@@ -52,7 +55,7 @@ func TestParseSessionActivityExportKeepsEncryptedReasoningPresence(t *testing.T)
 			{
 				"info": {"role": "assistant", "time": {"completed": 1781181496736}},
 				"parts": [
-					{"type": "reasoning", "id": "reason_1", "text": "", "metadata": {"openai": {"reasoningEncryptedContent": "ciphertext"}}}
+					{"type": "reasoning", "id": "reason_1", "metadata": {"openai": {"reasoningEncryptedContent": "ciphertext"}}}
 				]
 			}
 		]
@@ -63,10 +66,10 @@ func TestParseSessionActivityExportKeepsEncryptedReasoningPresence(t *testing.T)
 	if len(items) != 1 {
 		t.Fatalf("expected one reasoning activity item, got %#v", items)
 	}
-	if items[0].Kind != "thinking" {
+	if items[0].Kind != "reasoning" {
 		t.Fatalf("expected thinking item, got %#v", items[0])
 	}
-	if items[0].Detail == "" {
+	if items[0].Summary == "" {
 		t.Fatalf("expected encrypted reasoning placeholder detail, got %#v", items[0])
 	}
 }
@@ -83,7 +86,7 @@ func TestParseSessionActivityExportScopesByAttemptAndInvocationBoundary(t *testi
 
 	items := parseSessionActivityExport(raw, sessionActivityScope{AttemptID: "attempt_current", InvocationID: "invocation_shared"})
 
-	if len(items) != 1 || items[0].ID != "tool_current" {
+	if len(items) != 1 || items[0].ProviderPartID != "tool_current" {
 		t.Fatalf("expected only current attempt activity, got %#v", items)
 	}
 }
@@ -101,7 +104,7 @@ func TestParseSessionActivityExportKeepsBoundaryAcrossWrapperUserMessage(t *test
 
 	items := parseSessionActivityExport(raw, sessionActivityScope{AttemptID: "attempt_current", InvocationID: "invocation_current"})
 
-	if len(items) != 1 || items[0].ID != "reason_current" {
+	if len(items) != 1 || items[0].ProviderPartID != "reason_current" {
 		t.Fatalf("expected activity only from the current invocation window, got %#v", items)
 	}
 }
@@ -119,7 +122,7 @@ func TestParseSessionActivityExportRecognizesSplitQuotedBoundary(t *testing.T) {
 
 	items := parseSessionActivityExport(raw, sessionActivityScope{AttemptID: "attempt_current", InvocationID: "invocation_current"})
 
-	if len(items) != 1 || items[0].ID != "reason_current" {
+	if len(items) != 1 || items[0].ProviderPartID != "reason_current" {
 		t.Fatalf("expected split quoted invocation boundary to match, got %#v", items)
 	}
 }
@@ -140,10 +143,10 @@ func TestParseSessionActivityExportUsesPartThenAssistantTimestampFallback(t *tes
 	if len(items) != 2 {
 		t.Fatalf("expected two activity items, got %#v", items)
 	}
-	if items[0].ID != "part_time" || items[0].OccurredAt != "2026-06-12T10:00:02Z" {
+	if items[0].ProviderPartID != "part_time" || items[0].OccurredAt != "2026-06-12T10:00:02Z" {
 		t.Fatalf("expected part timestamp to take precedence, got %#v", items[0])
 	}
-	if items[1].ID != "assistant_time" || items[1].OccurredAt != "2026-06-12T10:00:03Z" {
+	if items[1].ProviderPartID != "assistant_time" || items[1].OccurredAt != "2026-06-12T10:00:03Z" {
 		t.Fatalf("expected assistant completion timestamp fallback, got %#v", items[1])
 	}
 }
@@ -154,11 +157,11 @@ func TestInspectSessionActivityFallsBackToSanitizedDiagnosticExport(t *testing.T
 		sanitized: []byte(`{"messages":[{"info":{"role":"assistant","time":{"completed":"2026-06-12T10:00:03Z"}},"parts":[{"type":"reasoning","id":"reason_sanitized","text":"Sanitized activity"}]}]}`),
 	}
 
-	items, err := inspectSessionActivityWithExporter(context.Background(), SessionActivityRequest{ProviderSessionID: "session_1"}, exporter)
+	items, err := collectSessionActivityWithExporter(context.Background(), SessionActivityRequest{ProviderSessionID: "session_1"}, exporter)
 	if err != nil {
 		t.Fatalf("inspect session activity: %v", err)
 	}
-	if len(items) != 1 || items[0].ID != "reason_sanitized" {
+	if len(items) != 1 || items[0].ProviderPartID != "reason_sanitized" {
 		t.Fatalf("expected sanitized diagnostic activity, got %#v", items)
 	}
 	if len(exporter.modes) != 2 || exporter.modes[0] != sessionDiagnosticExportModeRaw || exporter.modes[1] != sessionDiagnosticExportModeSanitized {
@@ -179,7 +182,7 @@ func TestInspectSessionActivitySkipsBlockedSanitizedFallbackAfterEmptyRawExport(
 		return now.Add(sessionDiagnosticExportRunBudget)
 	}
 
-	items, err := inspectSessionActivityWithExporterAt(ctx, SessionActivityRequest{ProviderSessionID: "session_1"}, exporter, clock)
+	items, err := collectSessionActivityWithExporterAt(ctx, SessionActivityRequest{ProviderSessionID: "session_1"}, exporter, clock)
 	if err != nil {
 		t.Fatalf("inspect session activity: %v", err)
 	}
@@ -291,7 +294,7 @@ func TestInspectSessionActivityFallbackStillHonorsInvocationStartedAt(t *testing
 		]
 	}`)
 
-	items, err := inspectSessionActivityWithExporter(context.Background(), SessionActivityRequest{
+	items, err := collectSessionActivityWithExporter(context.Background(), SessionActivityRequest{
 		ProviderSessionID:   "session_1",
 		AttemptID:           "op_1",
 		InvocationID:        "inv_current",
@@ -304,7 +307,7 @@ func TestInspectSessionActivityFallbackStillHonorsInvocationStartedAt(t *testing
 	if len(items) != 1 {
 		t.Fatalf("expected one fallback-scoped activity item, got %#v", items)
 	}
-	if items[0].ID != "tool_new" {
+	if items[0].ProviderPartID != "tool_new" {
 		t.Fatalf("expected fallback activity to exclude older session activity, got %#v", items)
 	}
 	if items[0].Label != "Fetched https://new.example.com" {
@@ -349,7 +352,7 @@ func (f *sessionActivityTestExporter) Export(_ context.Context, req sessionDiagn
 	return sessionDiagnosticExportResult{Stdout: strings.NewReader(string(f.raw))}, nil
 }
 
-func assertHasActivityItem(t *testing.T, items []SessionActivityItem, kind string, label string) {
+func assertHasActivityItem(t *testing.T, items []providerexecution.ActivityObservation, kind string, label string) {
 	t.Helper()
 	for _, item := range items {
 		if item.Kind == kind && item.Label == label {
@@ -357,4 +360,47 @@ func assertHasActivityItem(t *testing.T, items []SessionActivityItem, kind strin
 		}
 	}
 	t.Fatalf("expected activity item %q/%q, got %#v", kind, label, items)
+}
+
+// Test collectors snapshot the synchronous content sources. Production keeps
+// the visitor interface and never builds a history-sized observation array.
+func snapshotActivityForTest(item providerexecution.ActivityObservation) providerexecution.ActivityObservation {
+	for _, content := range []*providerexecution.ActivityContent{&item.Input, &item.Output, &item.Reasoning} {
+		if content.Availability != "available" {
+			continue
+		}
+		reader, err := content.Open(context.Background())
+		if err != nil {
+			panic(err)
+		}
+		raw, err := io.ReadAll(reader)
+		_ = reader.Close()
+		if err != nil {
+			panic(err)
+		}
+		*content = providerexecution.ActivityText(string(raw))
+	}
+	return item
+}
+func parseSessionActivityExport(raw []byte, scope sessionActivityScope) []providerexecution.ActivityObservation {
+	var items []providerexecution.ActivityObservation
+	_, err := visitSessionActivityReader(context.Background(), bytes.NewReader(raw), scope, scope.InvocationID, func(item providerexecution.ActivityObservation) error {
+		items = append(items, snapshotActivityForTest(item))
+		return nil
+	})
+	if err != nil {
+		panic(err)
+	}
+	return items
+}
+func collectSessionActivityWithExporter(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter) ([]providerexecution.ActivityObservation, error) {
+	return collectSessionActivityWithExporterAt(ctx, req, exporter, time.Now)
+}
+func collectSessionActivityWithExporterAt(ctx context.Context, req SessionActivityRequest, exporter sessionDiagnosticExporter, now func() time.Time) ([]providerexecution.ActivityObservation, error) {
+	var items []providerexecution.ActivityObservation
+	err := inspectSessionActivityWithExporterAt(ctx, req, exporter, now, func(item providerexecution.ActivityObservation) error {
+		items = append(items, snapshotActivityForTest(item))
+		return nil
+	})
+	return items, err
 }

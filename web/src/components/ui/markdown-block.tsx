@@ -26,7 +26,7 @@ const components = {
       href={safeMarkdownURL(href)}
       target="_blank"
       rel="noopener noreferrer"
-      className="font-medium text-gold underline underline-offset-4 transition-colors hover:text-gold/80"
+      className="font-medium text-accent underline underline-offset-4 transition-colors hover:text-accent/80"
     >
       {children}
     </a>
@@ -83,7 +83,7 @@ function safeMarkdownURL(raw?: string): string | undefined {
 }
 
 /**
- * Shared markdown renderer used across the plan panel, decree panel,
+ * Shared markdown renderer used across the plan panel, work order panel,
  * and mailbox message viewer.  Keeps styling consistent everywhere.
  *
  * Wrapped in React.memo — skips re-rendering (and re-parsing) when

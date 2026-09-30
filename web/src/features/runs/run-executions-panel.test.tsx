@@ -8,10 +8,10 @@ function makeExecution(overrides: Partial<RunExecution> = {}): RunExecution {
 	return {
 		attempt_id: overrides.attempt_id ?? "attempt-1",
 		node_run_id: overrides.node_run_id ?? "nr-1",
-		node_id: overrides.node_id ?? "delegated_execution_berserker",
+		node_id: overrides.node_id ?? "implementation",
 		attempt: overrides.attempt ?? 1,
 		agent_id: overrides.agent_id ?? "agent-builder",
-		required_role: overrides.required_role ?? "builder-berserker",
+		required_role: overrides.required_role ?? "builder",
 		execution_mode: overrides.execution_mode ?? "provider_backed",
 		status: overrides.status ?? "succeeded",
 		queued_at: overrides.queued_at ?? "2026-03-06T10:00:00.000Z",
@@ -49,7 +49,25 @@ function makeExecutionDetail(overrides: Partial<RunExecutionDetail> = {}): RunEx
 	};
 }
 
+async function ensureOutcomeOpen(user: ReturnType<typeof userEvent.setup>) {
+  const button = screen.getByRole("button", { name: /Outcome/i });
+  if (button.getAttribute("aria-expanded") !== "true") await user.click(button);
+}
+
 describe("run executions panel", () => {
+	it("renders settled prose as Markdown and exposes its exact unmodified source on request", async () => {
+		const user = userEvent.setup();
+		const source = "\n## Delivery Summary\n\n- Added `overview.md`\n- Verified **all checks**\n\n";
+		render(<RunExecutionsPanel detail={makeExecutionDetail({ output_text: source })} isDetailLoading={false} detailErrorMessage={null} onRetryDetail={() => {}} />);
+		expect(screen.getByRole("heading", { name: "Delivery Summary", level: 2 })).toBeInTheDocument();
+		expect(screen.getAllByRole("listitem")).toHaveLength(2);
+		expect(screen.getByText("overview.md").tagName).toBe("CODE");
+		expect(screen.queryByLabelText("Exact response source")).not.toBeInTheDocument();
+		await user.click(screen.getByText("Raw Response"));
+		expect(screen.getByLabelText("Exact response source").textContent).toBe(source);
+		expect(screen.getByText("Outcome")).not.toHaveClass("uppercase");
+		expect(screen.getByText("Diagnostics")).not.toHaveClass("uppercase");
+	});
 	it("withholds output until provider settlement is canonical", async () => {
 		const user = userEvent.setup();
 		const detail = makeExecutionDetail({
@@ -68,7 +86,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("Kingdom is still confirming the final result for this step.")).toBeInTheDocument();
 		expect(screen.queryByText("The output below may still change.")).not.toBeInTheDocument();
 		expect(screen.queryByText("Partial output")).not.toBeInTheDocument();
@@ -98,7 +116,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step is finishing up.")).toBeInTheDocument();
 	});
 
@@ -120,7 +138,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step is queued to start.")).toBeInTheDocument();
 		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
 	});
@@ -145,7 +163,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step is launching now.")).toBeInTheDocument();
 	});
 
@@ -169,7 +187,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
 		expect(screen.queryByText("This step completed.")).not.toBeInTheDocument();
 	});
@@ -192,7 +210,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("Kingdom could not confirm a clean finish for this step.")).toBeInTheDocument();
 	});
 
@@ -214,7 +232,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step was stopped before it could finish.")).toBeInTheDocument();
 	});
 
@@ -241,7 +259,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("Changes were requested for this step.")).toBeInTheDocument();
 		expect(screen.getByText("The output below contains the explanation for what needs to change.")).toHaveClass("text-status-rework");
 		expect(screen.getByText(/VERDICT: REWORK/)).toBeInTheDocument();
@@ -261,7 +279,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		expect(screen.queryByText("Builder Berserker")).not.toBeInTheDocument();
+		expect(screen.queryByText("Builder Builder")).not.toBeInTheDocument();
 		expect(screen.queryByText("agent-builder")).not.toBeInTheDocument();
 		expect(screen.queryByText("Role")).not.toBeInTheDocument();
 		expect(screen.queryByText("Agent")).not.toBeInTheDocument();
@@ -285,7 +303,7 @@ describe("run executions panel", () => {
 		);
 
 		expect(screen.getByRole("button", { name: /Outcome/i })).toBeInTheDocument();
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.queryByText("Attempt ID")).not.toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /Diagnostics/i }));
 		expect(screen.queryByText("Attempt ID")).not.toBeInTheDocument();
@@ -373,7 +391,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This step is blocked while Kingdom decides or performs recovery.")).toBeInTheDocument();
 	});
 
@@ -389,22 +407,22 @@ describe("run executions panel", () => {
 		);
 
 		const outcomeButton = screen.getByRole("button", { name: /Outcome/i });
-		expect(outcomeButton).toHaveAttribute("aria-expanded", "false");
+		expect(outcomeButton).toHaveAttribute("aria-expanded", "true");
 		const controlsId = outcomeButton.getAttribute("aria-controls");
 		expect(controlsId).toBeTruthy();
 
 		await user.click(outcomeButton);
 
-		expect(outcomeButton).toHaveAttribute("aria-expanded", "true");
-		expect(document.getElementById(controlsId ?? "")).not.toBeNull();
+		expect(outcomeButton).toHaveAttribute("aria-expanded", "false");
+		expect(document.getElementById(controlsId ?? "")).toBeNull();
 	});
 
 	it("omits provider-only diagnostics for runtime-owned attempts", async () => {
 		const user = userEvent.setup();
 		const detail = makeExecutionDetail({
 			attempt_id: "attempt-runtime",
-			node_id: "king_plan_decision",
-			required_role: "king",
+			node_id: "plan_decision",
+			required_role: "governance",
 			execution_mode: "runtime_owned",
 			output_status: "none",
 			provider_session_id: undefined,
@@ -420,7 +438,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 		expect(screen.getByText("This was a runtime-owned step, so no user-facing output was expected.")).toBeInTheDocument();
 		await user.click(screen.getByRole("button", { name: /Diagnostics/i }));
 		expect(screen.queryByText("Session ID")).not.toBeInTheDocument();
@@ -468,7 +486,7 @@ describe("run executions panel", () => {
 			/>,
 		);
 
-		await user.click(screen.getByRole("button", { name: /Outcome/i }));
+		await ensureOutcomeOpen(user);
 
 		expect(screen.getByText("x".repeat(300))).toHaveClass("text-wrap-anywhere");
 	});
