@@ -286,6 +286,20 @@ type AttemptCancelRecord struct {
 	NodeID         string
 	NodeClass      string
 	BaseSnapshotID string
+	CreatedAt      string
+}
+
+type AttemptCancelCursor struct {
+	CreatedAt      string
+	CancelOutboxID string
+}
+
+type RecordAttemptCancelFailureRequest struct {
+	CancelOutboxID       string
+	ExpectedHandoffState string
+	LastError            string
+	HandoffState         string
+	UpdatedAt            string
 }
 
 type ActiveRunAttempt struct {
@@ -2039,7 +2053,28 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 	return records, nil
 }
 
-func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]AttemptCancelRecord, error) {
+const pendingAttemptCancelStates = `('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')`
+
+// PendingAttemptCancelHighWatermark fixes the end of one finite scan cycle.
+// New cancellations wait for the next cycle instead of delaying revisits.
+func (s *Store) PendingAttemptCancelHighWatermark(ctx context.Context) (AttemptCancelCursor, error) {
+	if s == nil || s.db == nil {
+		return AttemptCancelCursor{}, fmt.Errorf("store database is required")
+	}
+	var cursor AttemptCancelCursor
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, cancel_outbox_id FROM attempt_cancel_outbox
+		WHERE status = 'pending' AND handoff_state IN `+pendingAttemptCancelStates+`
+		ORDER BY created_at DESC, cancel_outbox_id DESC LIMIT 1`).Scan(&cursor.CreatedAt, &cursor.CancelOutboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return AttemptCancelCursor{}, nil
+	}
+	if err != nil {
+		return AttemptCancelCursor{}, fmt.Errorf("load pending attempt cancellation high watermark: %w", err)
+	}
+	return cursor, nil
+}
+
+func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through AttemptCancelCursor, limit int) ([]AttemptCancelRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store database is required")
 	}
@@ -2052,17 +2087,19 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 		        COALESCE(NULLIF(TRIM(ae.provider_session_id), ''), aco.session_id) AS session_id,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
 		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
-		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, '')
+		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, ''), aco.created_at
 		 FROM attempt_cancel_outbox aco
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id
 		 LEFT JOIN node_runs nr ON nr.node_run_id = aco.node_run_id AND nr.run_id = aco.run_id
 		 LEFT JOIN workflow_runs wr ON wr.run_id = aco.run_id
 		 LEFT JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
 		 WHERE status = 'pending'
-		   AND handoff_state IN ('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')
+		   AND handoff_state IN `+pendingAttemptCancelStates+`
+		   AND (aco.created_at, aco.cancel_outbox_id) > (?, ?)
+		   AND (aco.created_at, aco.cancel_outbox_id) <= (?, ?)
 		 ORDER BY aco.created_at ASC, aco.cancel_outbox_id ASC
 		 LIMIT ?`,
-		limit,
+		after.CreatedAt, after.CancelOutboxID, through.CreatedAt, through.CancelOutboxID, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list pending attempt cancels: %w", err)
@@ -2073,7 +2110,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, limit int) ([]Att
 	for rows.Next() {
 		var rec AttemptCancelRecord
 		var executionMode string
-		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID); err != nil {
+		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending attempt cancel: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)
@@ -2331,22 +2368,25 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 	return nil
 }
 
-func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, lastError, handoffState, updatedAt string) error {
+// RecordAttemptCancelFailure only updates the phase observed by the caller.
+// Provider proof or a new operator stop authorization may have superseded it.
+func (s *Store) RecordAttemptCancelFailure(ctx context.Context, req RecordAttemptCancelFailureRequest) (bool, error) {
 	if s == nil || s.db == nil {
-		return fmt.Errorf("store database is required")
+		return false, fmt.Errorf("store database is required")
 	}
-	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
-	lastError = strings.TrimSpace(lastError)
-	handoffState = strings.TrimSpace(handoffState)
-	updatedAt = strings.TrimSpace(updatedAt)
-	if cancelOutboxID == "" {
-		return fmt.Errorf("cancel_outbox_id is required")
+	cancelOutboxID := strings.TrimSpace(req.CancelOutboxID)
+	expectedHandoffState := strings.TrimSpace(req.ExpectedHandoffState)
+	lastError := strings.TrimSpace(req.LastError)
+	handoffState := strings.TrimSpace(req.HandoffState)
+	updatedAt := strings.TrimSpace(req.UpdatedAt)
+	if cancelOutboxID == "" || expectedHandoffState == "" {
+		return false, fmt.Errorf("cancel_outbox_id and expected handoff state are required")
 	}
 	if lastError == "" {
 		lastError = "attempt cancel failed"
 	}
 	if handoffState != "awaiting_quiescence" && handoffState != "guardian_evidence_recovery_requested" && handoffState != "awaiting_workspace_quiescence" && handoffState != "workspace_restore_failed" {
-		return fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
+		return false, fmt.Errorf("invalid pending attempt cancellation handoff state %q", handoffState)
 	}
 	if updatedAt == "" {
 		updatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2358,23 +2398,24 @@ func (s *Store) RecordAttemptCancelFailure(ctx context.Context, cancelOutboxID, 
 		     last_error = ?,
 		     handoff_state = ?,
 		     updated_at = ?
-		 WHERE cancel_outbox_id = ? AND status = 'pending'`,
+		 WHERE cancel_outbox_id = ? AND status = 'pending' AND handoff_state = ?
+		   AND (handoff_state <> ? OR last_error <> ?)`,
 		lastError,
 		handoffState,
 		updatedAt,
 		cancelOutboxID,
+		expectedHandoffState,
+		handoffState,
+		lastError,
 	)
 	if err != nil {
-		return fmt.Errorf("record attempt cancel failure for %q: %w", cancelOutboxID, err)
+		return false, fmt.Errorf("record attempt cancel failure for %q: %w", cancelOutboxID, err)
 	}
 	rows, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("read attempt cancel failure rows affected: %w", err)
+		return false, fmt.Errorf("read attempt cancel failure rows affected: %w", err)
 	}
-	if rows == 0 {
-		return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
-	}
-	return nil
+	return rows == 1, nil
 }
 
 func (s *Store) QueueOutbox(ctx context.Context, req QueueOutboxRequest) error {

@@ -1170,9 +1170,9 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected duplicate stop retry request to conflict")
 	}
-	claimed, err := svc.ClaimAttemptCancelHandoffDispatch(context.Background(), "cancel_1", "2026-03-01T12:13:00Z")
-	if err != nil || !claimed {
-		t.Fatalf("claim stop retry dispatch: claimed=%t err=%v", claimed, err)
+	dispatchedState, err := svc.ClaimAttemptCancelHandoffDispatch(context.Background(), "cancel_1", "2026-03-01T12:13:00Z")
+	if err != nil || dispatchedState != "stop_retry_dispatched" {
+		t.Fatalf("claim stop retry dispatch: state=%q err=%v", dispatchedState, err)
 	}
 	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_1'`).Scan(&handoffState); err != nil {
 		t.Fatalf("load dispatched handoff state: %v", err)

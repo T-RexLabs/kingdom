@@ -146,6 +146,53 @@ func TestStoreProviderProcessGuardQuiescenceIsIdempotentAndRejectsConflicts(t *t
 	}
 }
 
+func TestStoreProviderQuiescenceResumesCancellationPhases(t *testing.T) {
+	for _, phase := range []string{"cancellation_requested", "cancellation_dispatched", "stop_retry_requested", "stop_retry_dispatched", "awaiting_quiescence", "guardian_evidence_lost", "guardian_evidence_recovery_requested"} {
+		for _, replay := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/replay=%t", phase, replay), func(t *testing.T) {
+				t.Parallel()
+				s, db, req := providerProcessGuardFixture(t)
+				ctx := context.Background()
+				ack := providerProcessGuardAcknowledgement(req, "guard_cancel_phase", 1)
+				if _, err := s.AcknowledgeProviderProcessGuard(ctx, ack); err != nil {
+					t.Fatal(err)
+				}
+				proof := providerProcessGuardQuiescenceProof(ack)
+				if replay {
+					if _, err := s.IngestProviderProcessGuardQuiescence(ctx, proof); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if _, err := db.Exec(`UPDATE attempt_executions SET state='committed_cancelled', lease_owner='', lease_expires_at=NULL WHERE attempt_id=?`, ack.AttemptID); err != nil {
+					t.Fatal(err)
+				}
+				if err := s.QueueAttemptCancel(ctx, QueueAttemptCancelRequest{
+					CancelOutboxID: "cancel_phase", AttemptID: ack.AttemptID, RunID: ack.RunID, NodeRunID: ack.NodeRunID,
+					RequestedAt: proof.QuiescentAt, CreatedAt: proof.QuiescentAt,
+				}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := db.Exec(`UPDATE attempt_cancel_outbox SET handoff_state=? WHERE cancel_outbox_id='cancel_phase'`, phase); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := s.IngestProviderProcessGuardQuiescence(ctx, proof); err != nil {
+					t.Fatal(err)
+				}
+				var got string
+				if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id='cancel_phase'`).Scan(&got); err != nil || got != "awaiting_workspace_quiescence" {
+					t.Fatalf("quiescent handoff=%q; want retryable workspace handoff: %v", got, err)
+				}
+				if applied, err := s.RecordAttemptCancelFailure(ctx, RecordAttemptCancelFailureRequest{
+					CancelOutboxID: "cancel_phase", ExpectedHandoffState: phase,
+					HandoffState: "awaiting_quiescence", LastError: "stop request returned late", UpdatedAt: "2026-03-01T12:00:05Z",
+				}); err != nil || applied {
+					t.Fatalf("late stop write replaced durable proof promotion: applied=%t err=%v", applied, err)
+				}
+			})
+		}
+	}
+}
+
 func TestStoreListPendingProviderProcessGuardsUsesKeyset(t *testing.T) {
 	t.Parallel()
 	s, _, req := providerProcessGuardFixture(t)
@@ -207,6 +254,9 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 	}); err != nil {
 		t.Fatalf("queue cancellation handoff: %v", err)
 	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state='committed_cancelled', lease_owner='', lease_expires_at=NULL WHERE attempt_id=?`, ack.AttemptID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.QuarantineProviderProcessGuardEvidence(context.Background(), ack.GuardID, "2026-03-01T12:00:04Z"); err != nil {
 		t.Fatalf("quarantine cancellation handoff: %v", err)
 	}
@@ -214,7 +264,7 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 		t.Fatalf("ingest delayed valid guardian evidence: %v", err)
 	}
 	var handoffState string
-	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_evidence_lost'`).Scan(&handoffState); err != nil || handoffState != "cancellation_requested" {
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_evidence_lost'`).Scan(&handoffState); err != nil || handoffState != "awaiting_workspace_quiescence" {
 		t.Fatalf("valid guardian evidence did not resume cancellation handoff: state=%q err=%v", handoffState, err)
 	}
 }

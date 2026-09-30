@@ -181,6 +181,7 @@ Important boundaries:
 - Decree/planning text, persisted execution prompts, provider terminal content, and artifacts use SQLite content manifests and chunks. Decree terminal handoffs reference verified content rather than embedding full output. Complete invocation diagnostics are retained separately from bounded activity/output previews.
 - Runtime content processing uses streaming and disk staging without fixed provider-output, tracked-file-size, aggregate-workspace-size, entry-count, or directory-depth ceilings. Some individual scalar values and read responses still materialize in memory; host resources and provider context windows remain practical constraints.
 - There is no run-wide attempt-count budget. Per-error automatic retries, review/validation cycle caps and ready-node auto-success, `run_until_all_approve`, recovery batching, active timeouts, and guardian metadata boundaries retain their existing roles.
+- After a provider stop is proven, cancellation resumes automatically when worker cleanup and workspace restoration finish. Unproven stops retain the explicit **Retry Stop** gate; see [`docs/errors-and-retries.md`](docs/errors-and-retries.md).
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 

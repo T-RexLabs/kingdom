@@ -739,7 +739,7 @@ CREATE TABLE attempt_cancel_outbox (
 );
 
 CREATE INDEX idx_attempt_cancel_outbox_status_created
-ON attempt_cancel_outbox (status, created_at);
+ON attempt_cancel_outbox (status, created_at, cancel_outbox_id);
 
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY,

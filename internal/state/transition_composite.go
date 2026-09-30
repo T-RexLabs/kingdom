@@ -3135,34 +3135,36 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 // ClaimAttemptCancelHandoffDispatch records the point after which a cancellation
 // request may perform its external provider stop. A crash after this claim leaves
 // the handoff paused instead of replaying an unbounded external side effect.
-func (s *TransitionService) ClaimAttemptCancelHandoffDispatch(ctx context.Context, cancelOutboxID, occurredAt string) (bool, error) {
+// The returned phase fences later bookkeeping; an empty phase means no claim.
+func (s *TransitionService) ClaimAttemptCancelHandoffDispatch(ctx context.Context, cancelOutboxID, occurredAt string) (string, error) {
 	if s == nil || s.db == nil {
-		return false, fmt.Errorf("transition service database is required")
+		return "", fmt.Errorf("transition service database is required")
 	}
 	cancelOutboxID = strings.TrimSpace(cancelOutboxID)
 	occurredAt = strings.TrimSpace(occurredAt)
 	if cancelOutboxID == "" {
-		return false, fmt.Errorf("cancel outbox id is required")
+		return "", fmt.Errorf("cancel outbox id is required")
 	}
 	if occurredAt == "" {
 		occurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE attempt_cancel_outbox
+	var dispatchedState string
+	err := s.db.QueryRowContext(ctx, `UPDATE attempt_cancel_outbox
 		SET handoff_state = CASE handoff_state
 			WHEN 'cancellation_requested' THEN 'cancellation_dispatched'
 			WHEN 'stop_retry_requested' THEN 'stop_retry_dispatched'
 		END,
 		updated_at = ?
 		WHERE cancel_outbox_id = ? AND status = 'pending'
-		  AND handoff_state IN ('cancellation_requested', 'stop_retry_requested')`, occurredAt, cancelOutboxID)
-	if err != nil {
-		return false, fmt.Errorf("claim attempt cancellation handoff dispatch: %w", err)
+		  AND handoff_state IN ('cancellation_requested', 'stop_retry_requested')
+		RETURNING handoff_state`, occurredAt, cancelOutboxID).Scan(&dispatchedState)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
 	}
-	rows, err := result.RowsAffected()
 	if err != nil {
-		return false, fmt.Errorf("read attempt cancellation dispatch claim rows affected: %w", err)
+		return "", fmt.Errorf("claim attempt cancellation handoff dispatch: %w", err)
 	}
-	return rows == 1, nil
+	return dispatchedState, nil
 }
 
 func attemptSupersessionDecisionForAttempt(attempt liveNodeAttempt) attemptSupersessionDecision {

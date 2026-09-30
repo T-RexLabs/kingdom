@@ -26,152 +26,127 @@ func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, 
 	if o == nil || o.executionStore == nil {
 		return 0, nil
 	}
+	o.attemptCancelMu.Lock()
+	defer o.attemptCancelMu.Unlock()
+	ctx = firstNonNilContext(ctx)
 
-	pending, err := o.executionStore.ListPendingAttemptCancels(ctx, 64)
+	const batchSize = 64
+	if o.attemptCancelHighWatermark.CancelOutboxID == "" {
+		end, err := o.executionStore.PendingAttemptCancelHighWatermark(ctx)
+		if err != nil || end.CancelOutboxID == "" {
+			return 0, err
+		}
+		o.attemptCancelHighWatermark = end
+	}
+	pending, err := o.executionStore.ListPendingAttemptCancels(ctx, o.attemptCancelCursor, o.attemptCancelHighWatermark, batchSize)
 	if err != nil {
 		return 0, err
 	}
-	if len(pending) == 0 {
-		return 0, nil
-	}
 	publishedAt := o.now().UTC().Format(time.RFC3339)
-	cancelTimeout := defaultDuration(o.cancelGrace, 5*time.Second)
 	processed := 0
 	for _, rec := range pending {
-		if ctx != nil {
-			select {
-			case <-ctx.Done():
-				return processed, ctx.Err()
-			default:
-			}
+		if err := ctx.Err(); err != nil {
+			return processed, err
 		}
-
-		quiescent, queryErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
-		if queryErr != nil {
-			return processed, queryErr
-		}
-		if o.executionAttemptInflight(rec.AttemptID) {
-			quiescent = false
-		}
-		if quiescent || rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
-			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
-			if err != nil {
-				return processed, err
-			}
-			if completed {
-				processed++
-			}
-			continue
-		}
-		if rec.HandoffState == "guardian_evidence_recovery_requested" {
-			quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
-			if err != nil {
-				return processed, err
-			}
-			if !quarantined {
-				return processed, fmt.Errorf("guardian evidence recovery for attempt %q no longer has a durable absence quarantine", rec.AttemptID)
-			}
-			if o.executionAttemptInflight(rec.AttemptID) {
-				if err := o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "The provider worker is still active, so Kingdom is waiting before restoring the shared workspace.", "awaiting_quiescence", publishedAt); err != nil {
-					return processed, err
-				}
-				continue
-			}
-			completed, err := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
-			if err != nil {
-				return processed, err
-			}
-			if completed {
-				processed++
-			}
-			continue
-		}
-		if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
-			if err := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, publishedAt); err != nil {
-				return processed, err
-			}
-			continue
-		}
-		if o.adapter == nil {
-			return processed, fmt.Errorf("execution adapter is not configured")
-		}
-		var claimed bool
-		claimed, err = o.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, rec.CancelOutboxID, publishedAt)
+		completed, err := o.drainAttemptCancel(ctx, rec, publishedAt)
 		if err != nil {
 			return processed, err
 		}
-		if !claimed {
-			continue
-		}
-		quiescent, queryErr = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
-		if queryErr != nil {
-			return processed, queryErr
-		}
-		if o.executionAttemptInflight(rec.AttemptID) {
-			quiescent = false
-		}
-		if quiescent {
-			completed, completeErr := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
-			if completeErr != nil {
-				return processed, completeErr
-			}
-			if completed {
-				processed++
-			}
-			continue
-		}
-		request := attemptCancelRequest(rec, publishedAt)
-		cancelCtx, cancel := context.WithTimeout(firstNonNilContext(ctx), cancelTimeout)
-		err := o.adapter.Cancel(cancelCtx, request)
-		cancel()
-		quiescent, queryErr = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
-		if queryErr != nil {
-			return processed, queryErr
-		}
-		if o.executionAttemptInflight(rec.AttemptID) {
-			quiescent = false
-		}
-		var missing *opencode.AttemptNotFoundError
-		if quiescent && (err == nil || errors.As(err, &missing)) {
-			completed, completeErr := o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
-			if completeErr != nil {
-				return processed, completeErr
-			}
-			if completed {
-				processed++
-			}
-			continue
-		}
-		if ctx != nil && ctx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
-			return processed, ctx.Err()
-		}
-
-		if err == nil && !quiescent {
-			err = fmt.Errorf("managed provider process quiescence has not been proven")
-		}
-		slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", err)
-		if recordErr := o.recordAttemptCancelFailure(ctx, rec.CancelOutboxID, publishedAt); recordErr != nil {
-			return processed, recordErr
+		// Waiting rows retain their durable eligibility without monopolizing the
+		// first batch on every dispatch tick. The cursor is only a scan position.
+		o.attemptCancelCursor = executionstore.AttemptCancelCursor{CreatedAt: rec.CreatedAt, CancelOutboxID: rec.CancelOutboxID}
+		if completed {
+			processed++
 		}
 	}
-
+	if len(pending) < batchSize || o.attemptCancelCursor == o.attemptCancelHighWatermark {
+		o.attemptCancelCursor = executionstore.AttemptCancelCursor{}
+		o.attemptCancelHighWatermark = executionstore.AttemptCancelCursor{}
+	}
 	return processed, nil
 }
 
+func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
+	quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	if quiescent || rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
+		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+	}
+	if rec.HandoffState == "guardian_evidence_recovery_requested" {
+		quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
+		if err != nil {
+			return false, err
+		}
+		if !quarantined {
+			return false, fmt.Errorf("guardian evidence recovery for attempt %q no longer has a durable absence quarantine", rec.AttemptID)
+		}
+		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+	}
+	if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
+		return false, o.recordAttemptCancelFailure(ctx, rec, publishedAt)
+	}
+	if o.adapter == nil {
+		return false, fmt.Errorf("execution adapter is not configured")
+	}
+	dispatchedState, err := o.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, rec.CancelOutboxID, publishedAt)
+	if err != nil || dispatchedState == "" {
+		return false, err
+	}
+	rec.HandoffState = dispatchedState
+	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	if quiescent {
+		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+	}
+	cancelCtx, cancel := context.WithTimeout(ctx, defaultDuration(o.cancelGrace, 5*time.Second))
+	cancelErr := o.adapter.Cancel(cancelCtx, attemptCancelRequest(rec, publishedAt))
+	cancel()
+	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	if err != nil {
+		return false, err
+	}
+	// Durable guardian proof is authoritative even if the bounded stop request
+	// returned an error. The local worker is a separate handoff gate below.
+	if quiescent {
+		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+	}
+	if ctx.Err() != nil && (errors.Is(cancelErr, context.Canceled) || errors.Is(cancelErr, context.DeadlineExceeded)) {
+		return false, ctx.Err()
+	}
+	if cancelErr == nil {
+		cancelErr = fmt.Errorf("managed provider process quiescence has not been proven")
+	}
+	slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", cancelErr)
+	return false, o.recordAttemptCancelFailure(ctx, rec, publishedAt)
+}
+
 func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
+	// Execute can have persisted process proof before the outer worker finishes
+	// its lease and terminal bookkeeping. This applies to response-only work too.
+	if o.executionAttemptInflight(rec.AttemptID) {
+		handoffState := "awaiting_workspace_quiescence"
+		if rec.HandoffState == "guardian_evidence_recovery_requested" {
+			handoffState = rec.HandoffState
+		}
+		return false, o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom is waiting for the provider worker to finish before completing cancellation.", handoffState, publishedAt)
+	}
 	if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
 		slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
 		var blocked workspaceHandoffBlockedError
 		if errors.As(restoreErr, &blocked) {
 			if rec.HandoffState == "guardian_evidence_recovery_requested" {
-				return false, o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "Kingdom is waiting for another active step to release the shared workspace.", "guardian_evidence_recovery_requested", publishedAt)
+				return false, o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom is waiting for another active step to release the shared workspace.", "guardian_evidence_recovery_requested", publishedAt)
 			}
-			return false, o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec.CancelOutboxID, publishedAt)
+			return false, o.recordAttemptWorkspaceQuiescenceFailure(ctx, rec, publishedAt)
 		}
 		if rec.HandoffState == "guardian_evidence_recovery_requested" {
-			return false, o.recordAttemptCancelFailureMessage(ctx, rec.CancelOutboxID, "Kingdom could not restore the trusted workspace after cancellation.", "guardian_evidence_recovery_requested", publishedAt)
+			return false, o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom could not restore the trusted workspace after cancellation.", "guardian_evidence_recovery_requested", publishedAt)
 		}
-		return false, o.recordAttemptWorkspaceRestoreFailure(ctx, rec.CancelOutboxID, publishedAt)
+		return false, o.recordAttemptWorkspaceRestoreFailure(ctx, rec, publishedAt)
 	}
 	if rec.ReasonCode == "agent_unresponsive" {
 		released, err := o.transitionService().ReleaseFencedStaleRetryAfterCancellation(ctx, rec.AttemptID, publishedAt)
@@ -271,22 +246,26 @@ func (o *orchestrationLoop) markAttemptCancelPublished(ctx context.Context, canc
 	return o.executionStore.MarkAttemptCancelPublished(writeCtx, cancelOutboxID, publishedAt)
 }
 
-func (o *orchestrationLoop) recordAttemptCancelFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
-	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom could not confirm that the previous provider process stopped.", "awaiting_quiescence", updatedAt)
+func (o *orchestrationLoop) recordAttemptCancelFailure(ctx context.Context, rec executionstore.AttemptCancelRecord, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom could not confirm that the previous provider process stopped.", "awaiting_quiescence", updatedAt)
 }
 
-func (o *orchestrationLoop) recordAttemptWorkspaceRestoreFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
-	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom could not restore the trusted workspace after cancellation.", "workspace_restore_failed", updatedAt)
+func (o *orchestrationLoop) recordAttemptWorkspaceRestoreFailure(ctx context.Context, rec executionstore.AttemptCancelRecord, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom could not restore the trusted workspace after cancellation.", "workspace_restore_failed", updatedAt)
 }
 
-func (o *orchestrationLoop) recordAttemptWorkspaceQuiescenceFailure(ctx context.Context, cancelOutboxID, updatedAt string) error {
-	return o.recordAttemptCancelFailureMessage(ctx, cancelOutboxID, "Kingdom is waiting for another active step to release the shared workspace.", "awaiting_workspace_quiescence", updatedAt)
+func (o *orchestrationLoop) recordAttemptWorkspaceQuiescenceFailure(ctx context.Context, rec executionstore.AttemptCancelRecord, updatedAt string) error {
+	return o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom is waiting for another active step to release the shared workspace.", "awaiting_workspace_quiescence", updatedAt)
 }
 
-func (o *orchestrationLoop) recordAttemptCancelFailureMessage(ctx context.Context, cancelOutboxID, message, handoffState, updatedAt string) error {
+func (o *orchestrationLoop) recordAttemptCancelFailureMessage(ctx context.Context, rec executionstore.AttemptCancelRecord, message, handoffState, updatedAt string) error {
 	writeCtx, cancel := attemptCancelOutboxWriteContext(ctx)
 	defer cancel()
-	return o.executionStore.RecordAttemptCancelFailure(writeCtx, cancelOutboxID, message, handoffState, updatedAt)
+	_, err := o.executionStore.RecordAttemptCancelFailure(writeCtx, executionstore.RecordAttemptCancelFailureRequest{
+		CancelOutboxID: rec.CancelOutboxID, ExpectedHandoffState: rec.HandoffState,
+		LastError: message, HandoffState: handoffState, UpdatedAt: updatedAt,
+	})
+	return err
 }
 
 func attemptCancelOutboxWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {

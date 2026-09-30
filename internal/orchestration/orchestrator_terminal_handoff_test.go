@@ -686,42 +686,45 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 	}
 }
 
-func TestAttemptCancellationDoesNotTreatIntermediateQuiescentCommandAsInvocationComplete(t *testing.T) {
+func TestAttemptCancellationFencesFurtherCommandsAndWaitsForWorker(t *testing.T) {
 	t.Parallel()
-	h := newTerminalHandoffHarness(t)
-	invocation := h.addInvocation(t, 1)
-	h.runningHandoffJob(t, invocation, 1)
-	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
-		CancelOutboxID: "cancel_intermediate_command",
-		AttemptID:      invocation.AttemptID,
-		RunID:          invocation.RunID,
-		NodeRunID:      invocation.NodeRunID,
-		SessionID:      invocation.LogicalSessionID,
-		ReasonCode:     "run_cancelled_by_user",
-		ReasonText:     "operator cancel",
-		RequestedAt:    "2026-03-01T12:00:02Z",
-		CreatedAt:      "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("queue provider cancellation: %v", err)
+	h, invocation, _ := staleCancellationFixture(t)
+	ctx := context.Background()
+	guards, err := h.store.ListPendingProviderProcessGuards(ctx, "", 1)
+	if err != nil || len(guards) != 1 {
+		t.Fatalf("load original command guard: guards=%v err=%v", guards, err)
+	}
+	guard := guards[0]
+	// Production cancellation is queued in the same transaction that fences
+	// launch authority. Even an intermediate quiescent command cannot relaunch.
+	if _, err := h.store.AcknowledgeProviderProcessGuard(ctx, executionstore.AcknowledgeProviderProcessGuardRequest{
+		GuardID: "guard_after_cancellation", ProviderInvocationID: invocation.ProviderInvocationID,
+		AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		CommandOrdinal: 2, Platform: guard.Platform, GuardianPID: 1002, GuardianIdentityToken: "guardian-after-cancel",
+		ChildPID: 2002, ChildIdentityToken: "child-after-cancel", TreeID: "2002", TreeIdentityToken: "tree-after-cancel",
+		QuiescenceCapability: "capability-after-cancel", ExpectedLeaseOwner: guard.LeaseOwner, ExpectedLeaseVersion: guard.LeaseVersion,
+		StartedAt: "2026-03-01T12:10:00Z", AcknowledgedAt: "2026-03-01T12:10:00Z",
+	}); err == nil {
+		t.Fatal("cancelled attempt acknowledged a subsequent command")
+	} else {
+		var settlementErr *executionstore.ProviderSettlementError
+		if !errors.As(err, &settlementErr) || (settlementErr.Reason != "invocation_not_active" && settlementErr.Reason != "attempt_not_active") {
+			t.Fatalf("subsequent command rejected for the wrong reason: %v", err)
+		}
+	}
+	if err := h.loop.ingestPendingProviderProcessGuards(ctx); err != nil {
+		t.Fatal(err)
 	}
 	adapter := &timeoutCancelObserverAdapter{}
 	h.loop.adapter = adapter
-	h.loop.inflightExec = map[string]struct{}{invocation.AttemptID: {}}
-	h.loop.inflightRunIDs = map[string]string{invocation.AttemptID: invocation.RunID}
 
-	if _, err := h.loop.drainAttemptCancelOutbox(context.Background()); err != nil {
+	if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
 		t.Fatalf("drain cancellation while provider execution remains active: %v", err)
 	}
-	if got := adapter.cancelCalls(); got != 1 {
-		t.Fatalf("cancellation skipped active provider worker after an intermediate guard quiesced: cancel calls=%d", got)
+	if got := adapter.cancelCalls(); got != 0 {
+		t.Fatalf("quiescent fenced cancellation repeated provider stop: calls=%d", got)
 	}
-	var status, handoffState string
-	if err := h.db.QueryRow(`SELECT status, handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_intermediate_command'`).Scan(&status, &handoffState); err != nil {
-		t.Fatalf("load active cancellation handoff: %v", err)
-	}
-	if status != "pending" || handoffState != "awaiting_quiescence" {
-		t.Fatalf("intermediate guard quiescence released cancellation handoff: status=%q handoff_state=%q", status, handoffState)
-	}
+	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_workspace_quiescence")
 }
 
 func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T) {
@@ -782,8 +785,19 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 	if err := h.db.QueryRow(`SELECT status, handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_guardian_recovery_inflight'`).Scan(&status, &handoffState); err != nil {
 		t.Fatalf("load pending guardian recovery handoff: %v", err)
 	}
-	if status != "pending" || handoffState != "awaiting_quiescence" {
+	if status != "pending" || handoffState != "guardian_evidence_recovery_requested" {
 		t.Fatalf("in-flight guardian recovery released cancellation: status=%q handoff_state=%q", status, handoffState)
+	}
+	h.loop.clearExecutionInflight(attemptID)
+	if processed, err := h.loop.drainAttemptCancelOutbox(context.Background()); err != nil || processed != 1 {
+		t.Fatalf("resume authorized guardian recovery after worker drain: processed=%d err=%v", processed, err)
+	}
+	assertCancellationHandoff(t, h, attemptID, "published", "released")
+	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), attemptID); err != nil || quiescent {
+		t.Fatalf("operator recovery fabricated process proof: quiescent=%t err=%v", quiescent, err)
+	}
+	if got := adapter.cancelCalls(); got != 0 {
+		t.Fatalf("authorized recovery repeated stop: calls=%d", got)
 	}
 }
 

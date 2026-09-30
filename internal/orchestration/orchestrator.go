@@ -78,6 +78,9 @@ type orchestrationLoop struct {
 	newProviderLeaseTicker             func(time.Duration) providerLeaseTicker
 	execMu                             sync.Mutex
 	eventSeqMu                         sync.Mutex
+	attemptCancelMu                    sync.Mutex
+	attemptCancelCursor                executionstore.AttemptCancelCursor
+	attemptCancelHighWatermark         executionstore.AttemptCancelCursor
 	terminalHandoffMu                  sync.Mutex
 	terminalHandoffFileLocks           keyedLock
 	terminalHandoffCursor              string
