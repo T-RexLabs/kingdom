@@ -218,6 +218,8 @@ Kingdom is a single-host, role-governed orchestration runtime.
 
 ### Content Storage and Transport
 
+- The canonical schema is a four-migration baseline. Applied migration filenames and SHA-256 checksums must match an unchanged prefix of the embedded list before any migration DDL runs. Retired or altered baselines require explicit fresh initialization; startup never adopts or silently skips incompatible history.
+
 - SQLite is canonical for provider terminal text and invocation diagnostics, work order/planning text, persisted execution prompts, artifact content, and filesystem snapshot manifests. Content manifests identify ordered chunks by size and digest; transient spool paths are transport, never durable authority.
 - Work Order terminal handoffs use a compact `v2` envelope with invocation-scoped SHA-256/size references. Referenced content is published under the runtime-owned `provider-completion/content/` tree before the envelope, verified during lease-fenced SQLite ingestion, and retained in canonical chunk tables. File cleanup follows ingestion; envelope presence or a content hash alone cannot authorize settlement. Planning retains its separate invocation and settlement lifecycle.
 - Provider streams and helper-command diagnostics are captured in full on disk. Activity text, tool input, stderr tails, and settlement previews are display projections, not canonical content limits or success evidence. `opencode export` remains time-bounded and diagnostic only.

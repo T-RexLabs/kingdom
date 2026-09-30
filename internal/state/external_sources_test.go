@@ -9,10 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
-
-	"kingdom/internal/dbmigrations"
 )
 
 func readExternalSnapshotForTest(ctx context.Context, store *ExternalStore, id string) (ExternalSourceSnapshot, []ExternalComment, error) {
@@ -52,65 +49,23 @@ func TestExternalCommentCaptureRejectsChangedReplayAtomically(t *testing.T) {
 	}
 }
 
-func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
+func TestCompleteCommentBaselinePreservesSnapshotProvenance(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
-	names, err := dbmigrations.List()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var migrations []SQLMigration
-	for _, name := range names {
-		if name >= "0011_complete_external_comments.up.sql" {
-			continue
-		}
-		raw, err := dbmigrations.Read(name)
-		if err != nil {
-			t.Fatal(err)
-		}
-		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
-	}
-	if err := ApplySQLMigrations(ctx, db, migrations, time.Now()); err != nil {
-		t.Fatal(err)
-	}
+	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewExternalStore(db)
 	at := "2026-08-12T10:00:00Z"
-	_, err = store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "migration-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:migration-connection", ActorID: "operator", CreatedAt: at, AuditEventID: "migration-audit"})
+	_, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "migration-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:migration-connection", ActorID: "operator", CreatedAt: at, AuditEventID: "migration-audit"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	req := CaptureExternalIssueRequest{SourceID: "migration-source", SnapshotID: "migration-old", ConnectionID: "migration-connection", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: at, ProviderCommentCount: 205, FetchedCommentCount: 1, FetchedCommentPages: 1, OmittedCommentCount: 204, OmittedCommentPages: 2, Comments: ExternalCommentList{{ProviderCommentID: "1", Body: "historical prefix", OriginalBytes: 40000, TruncationReason: "comment_byte_limit"}}}
+	req := CaptureExternalIssueRequest{SourceID: "migration-source", SnapshotID: "migration-old", ConnectionID: "migration-connection", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: at, ProviderCommentCount: 1, FetchedCommentCount: 1, FetchedCommentPages: 1, Comments: ExternalCommentList{{ProviderCommentID: "1", Body: "original complete comment"}}}
 	old, _, err := store.CaptureIssue(ctx, req)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Seed the pre-migration work order shape explicitly; current work order creation
-	// may depend on later migrations owned by another subsystem.
-	tx, err := db.BeginTx(ctx, nil)
-	if err != nil {
+	if err := store.CreateWorkOrder(ctx, CreateWorkOrderRequest{WorkOrderID: "migration-work-order", Title: "Work Order", Text: "immutable", CreatedAt: at, DirectSnapshotID: old.SnapshotID, NewLinkID: func() string { return "migration-link" }, ActorID: "operator"}); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := tx.Exec(`INSERT INTO work_orders(work_order_id,work_order_title,work_order_text,metadata_json,created_at) VALUES('migration-work order','WorkOrder','immutable','{}',?)`, at); err != nil {
-		tx.Rollback()
-		t.Fatal(err)
-	}
-	if err := createExternalLinkTx(ctx, tx, "migration-link", "work_order", "migration-work order", old.SourceID, old.SnapshotID, "operator", "", at); err != nil {
-		tx.Rollback()
-		t.Fatal(err)
-	}
-	if err := tx.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := dbmigrations.Read("0011_complete_external_comments.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := ApplySQLMigrations(ctx, db, []SQLMigration{{Name: "0011_complete_external_comments.up.sql", SQL: raw}}, time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	after, comments, err := readExternalSnapshotForTest(ctx, store, old.SnapshotID)
-	if err != nil || after != old || len(comments) != 1 || comments[0].Body != "historical prefix" || comments[0].TruncationReason != "comment_byte_limit" {
-		t.Fatalf("migration rewrote historical source: %v", err)
 	}
 	spool, err := NewExternalCommentSpool()
 	if err != nil {
@@ -129,6 +84,7 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 	req.SnapshotID = "migration-full"
 	req.PredecessorSnapshotID = old.SnapshotID
 	req.Comments = spool
+	req.ProviderCommentCount = 205
 	req.FetchedCommentCount = 205
 	req.FetchedCommentPages = 3
 	req.OmittedCommentCount = 0
@@ -140,12 +96,16 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 	if full.RetainedCommentCount != 205 || full.RetainedCommentBytes != 205*len(body) || full.CommentsTruncated {
 		t.Fatalf("full capture metadata: %#v", full)
 	}
+	after, comments, err := readExternalSnapshotForTest(ctx, store, old.SnapshotID)
+	if err != nil || after != old || len(comments) != 1 || comments[0].Body != "original complete comment" || comments[0].TruncationReason != "" {
+		t.Fatalf("new capture rewrote original source: %v", err)
+	}
 	for _, stmt := range []string{`UPDATE external_source_snapshots SET content_digest='changed' WHERE snapshot_id='migration-old'`, `DELETE FROM external_source_snapshot_comments WHERE snapshot_id='migration-old'`, `INSERT INTO external_source_snapshot_comments VALUES('migration-old','extra',1,'','injected','','','',8,8,'')`} {
 		if _, err := db.Exec(stmt); err == nil {
 			t.Fatalf("immutable source accepted %s", stmt)
 		}
 	}
-	links, err := store.GetLinksForTarget(ctx, "work_order", "migration-work order")
+	links, err := store.GetLinksForTarget(ctx, "work_order", "migration-work-order")
 	if err != nil || len(links) != 1 || links[0].UsedSnapshotID != old.SnapshotID {
 		t.Fatalf("historical work order binding changed: %v", err)
 	}
@@ -155,7 +115,7 @@ func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
 	}
 	defer rows.Close()
 	if rows.Next() {
-		t.Fatal("migration broke foreign keys")
+		t.Fatal("snapshot capture broke foreign keys")
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/dbmigrations"
 )
 
 func newScaffoldPaths(t *testing.T) (projectRoot string, kingdomHome string, overlayRoot string) {
@@ -530,6 +531,43 @@ func TestWriteScaffoldTesterProfileStaysValidationOnly(t *testing.T) {
 	} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("expected tester profile to include %q", expected)
+		}
+	}
+}
+
+func TestFreshScaffoldContainsFourCanonicalMigrations(t *testing.T) {
+	t.Parallel()
+	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
+	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(filepath.Join(kingdomHome, "migrations"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("fresh scaffold has %d migrations, want %d", len(entries), len(want))
+	}
+	for i, name := range want {
+		if entries[i].Name() != name {
+			t.Fatalf("migration %d = %q, want %q", i, entries[i].Name(), name)
+		}
+		got, err := os.ReadFile(filepath.Join(kingdomHome, "migrations", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		canonical, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, canonical) {
+			t.Fatalf("scaffold migration %s differs from canonical SQL", name)
 		}
 	}
 }

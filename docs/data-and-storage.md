@@ -4,6 +4,14 @@ This document explains what Kingdom stores durably and how that storage is used.
 
 The current control plane uses SQLite with explicit startup pragmas.
 
+## Schema Baseline
+
+The embedded schema consists of four forward-only migrations: core state and content storage, the execution activity index, external sources and idempotency retention, and resumable workspace cleanup. Fresh scaffolds copy those same four files.
+
+`schema_migrations` records each applied filename and its SHA-256 checksum. Before applying SQL, startup verifies that recorded migrations form an unchanged prefix of the embedded migration list. Missing checksum metadata, unknown migrations, gaps, changed SQL, or an existing schema without migration history cause startup to fail without applying migration DDL. There is no upgrade path from the retired baseline.
+
+To replace an old local baseline, preserve any needed data first, then run `kd clean` and `kd init`. Cleaning removes the local `.kingdom/` scaffold and database. `kd init --force` is not a database conversion command.
+
 ## Required Pragmas
 
 - `PRAGMA foreign_keys = ON;`

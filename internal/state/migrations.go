@@ -2,16 +2,13 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 )
-
-const migrationForeignKeysOffMarker = "-- kingdom: foreign_keys=off"
 
 type SQLMigration struct {
 	Name string
@@ -20,7 +17,8 @@ type SQLMigration struct {
 
 // ApplySQLMigrations is intentionally forward-only. Runtime bootstrap executes
 // source-controlled *.up.sql files in sorted order and ignores any other asset
-// names until explicit rollback tooling exists.
+// names until explicit rollback tooling exists. Callers supply the complete
+// canonical sequence; applied migrations must be an unchanged prefix of it.
 func ApplySQLMigrations(ctx context.Context, db *sql.DB, migrations []SQLMigration, now time.Time) error {
 	if db == nil {
 		return fmt.Errorf("database handle is required")
@@ -38,24 +36,26 @@ func ApplySQLMigrations(ctx context.Context, db *sql.DB, migrations []SQLMigrati
 		return ordered[i].Name < ordered[j].Name
 	})
 
-	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
-		return fmt.Errorf("ensure schema_migrations table: %w", err)
+	for i := 1; i < len(ordered); i++ {
+		if ordered[i-1].Name == ordered[i].Name {
+			return fmt.Errorf("duplicate migration name %q", ordered[i].Name)
+		}
 	}
 
-	applied, err := loadAppliedMigrations(ctx, db)
+	applied, err := loadAppliedMigrations(ctx, db, ordered)
 	if err != nil {
 		return err
+	}
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
+		name TEXT PRIMARY KEY,
+		sha256 TEXT NOT NULL CHECK (length(sha256) = 64 AND sha256 NOT GLOB '*[^0-9a-f]*'),
+		applied_at TEXT NOT NULL
+	)`); err != nil {
+		return fmt.Errorf("ensure schema_migrations table: %w", err)
 	}
 
 	for _, migration := range ordered {
 		if applied[migration.Name] {
-			continue
-		}
-
-		if migrationRequiresForeignKeysOff(migration.SQL) {
-			if err := applyMigrationWithForeignKeysOff(ctx, db, migration, now); err != nil {
-				return err
-			}
 			continue
 		}
 
@@ -88,7 +88,7 @@ func applyMigrationTx(ctx context.Context, db *sql.DB, migration SQLMigration, n
 	} else if len(violations) > 0 {
 		return fmt.Errorf("validate foreign keys for migration %s: %s", migration.Name, strings.Join(violations, "; "))
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, migration.Name, now.UTC().Format(time.RFC3339)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (name, sha256, applied_at) VALUES (?, ?, ?)`, migration.Name, migrationChecksum(migration.SQL), now.UTC().Format(time.RFC3339)); err != nil {
 		return fmt.Errorf("record migration %s: %w", migration.Name, err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -96,108 +96,6 @@ func applyMigrationTx(ctx context.Context, db *sql.DB, migration SQLMigration, n
 	}
 	committed = true
 	return nil
-}
-
-func applyMigrationWithForeignKeysOff(ctx context.Context, db *sql.DB, migration SQLMigration, now time.Time) error {
-	if err := validateForeignKeysOffMigrationShadow(ctx, db, migration, now); err != nil {
-		return err
-	}
-	return applyMigrationWithForeignKeysOffOnce(ctx, db, migration, now)
-}
-
-func applyMigrationWithForeignKeysOffOnce(ctx context.Context, db *sql.DB, migration SQLMigration, now time.Time) error {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return fmt.Errorf("acquire dedicated connection for migration %s: %w", migration.Name, err)
-	}
-	defer conn.Close()
-
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
-		return fmt.Errorf("disable foreign keys for migration %s: %w", migration.Name, err)
-	}
-	defer func() {
-		_, _ = conn.ExecContext(context.Background(), `PRAGMA foreign_keys = ON`)
-	}()
-
-	tx, err := conn.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin migration %s on dedicated connection: %w", migration.Name, err)
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if _, err := tx.ExecContext(ctx, string(migration.SQL)); err != nil {
-		return fmt.Errorf("apply migration %s: %w", migration.Name, err)
-	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (name, applied_at) VALUES (?, ?)`, migration.Name, now.UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("record migration %s: %w", migration.Name, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit migration %s: %w", migration.Name, err)
-	}
-	committed = true
-
-	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
-		return fmt.Errorf("re-enable foreign keys for migration %s: %w", migration.Name, err)
-	}
-	return nil
-}
-
-func validateForeignKeysOffMigrationShadow(ctx context.Context, db *sql.DB, migration SQLMigration, now time.Time) error {
-	shadowRoot, err := os.MkdirTemp("", "kingdom-migration-*")
-	if err != nil {
-		return fmt.Errorf("create shadow migration directory for %s: %w", migration.Name, err)
-	}
-	defer os.RemoveAll(shadowRoot)
-
-	shadowPath := filepath.Join(shadowRoot, "shadow.sqlite")
-	if err := vacuumIntoSQLiteFile(ctx, db, shadowPath); err != nil {
-		return fmt.Errorf("snapshot database for migration %s: %w", migration.Name, err)
-	}
-
-	shadowDB, err := sql.Open("sqlite", shadowPath)
-	if err != nil {
-		return fmt.Errorf("open shadow database for migration %s: %w", migration.Name, err)
-	}
-	defer shadowDB.Close()
-
-	if err := applyMigrationWithForeignKeysOffOnce(ctx, shadowDB, migration, now); err != nil {
-		return err
-	}
-	violations, err := foreignKeyViolationsDB(ctx, shadowDB)
-	if err != nil {
-		return fmt.Errorf("validate foreign keys for migration %s: %w", migration.Name, err)
-	}
-	if len(violations) > 0 {
-		return fmt.Errorf("validate foreign keys for migration %s: %s", migration.Name, strings.Join(violations, "; "))
-	}
-	return nil
-}
-
-func vacuumIntoSQLiteFile(ctx context.Context, db *sql.DB, destPath string) error {
-	conn, err := db.Conn(ctx)
-	if err != nil {
-		return err
-	}
-	defer conn.Close()
-	_, err = conn.ExecContext(ctx, fmt.Sprintf(`VACUUM INTO %s`, quoteSQLiteStringLiteral(destPath)))
-	return err
-}
-
-func migrationRequiresForeignKeysOff(raw []byte) bool {
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		return trimmed == migrationForeignKeysOffMarker
-	}
-	return false
 }
 
 type migrationForeignKeyReference struct {
@@ -243,15 +141,6 @@ func foreignKeyViolationsTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
 		}
 	}
 	return violations, nil
-}
-
-func foreignKeyViolationsDB(ctx context.Context, db *sql.DB) ([]string, error) {
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	return foreignKeyViolationsTx(ctx, tx)
 }
 
 func migrationForeignKeyTablesTx(ctx context.Context, tx *sql.Tx) ([]string, error) {
@@ -334,20 +223,69 @@ func quoteSQLiteStringLiteral(value string) string {
 	return `'` + strings.ReplaceAll(strings.TrimSpace(value), `'`, `''`) + `'`
 }
 
-func loadAppliedMigrations(ctx context.Context, db *sql.DB) (map[string]bool, error) {
-	rows, err := db.QueryContext(ctx, `SELECT name FROM schema_migrations`)
+func migrationChecksum(raw []byte) string {
+	return fmt.Sprintf("%x", sha256.Sum256(raw))
+}
+
+func incompatibleMigrationHistory(format string, args ...any) error {
+	return fmt.Errorf("database migration history is incompatible: %s; back up this workspace before resetting with kd clean and kd init", fmt.Sprintf(format, args...))
+}
+
+// loadAppliedMigrations validates the entire history before bootstrap can write
+// anything. A previously applied migration must retain its exact SQL identity,
+// and the applied set must be a prefix of the supplied canonical sequence.
+func loadAppliedMigrations(ctx context.Context, db *sql.DB, ordered []SQLMigration) (map[string]bool, error) {
+	var historyExists bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='schema_migrations')`).Scan(&historyExists); err != nil {
+		return nil, fmt.Errorf("inspect migration history: %w", err)
+	}
+	applied := make(map[string]bool)
+	if !historyExists {
+		var schemaExists bool
+		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%')`).Scan(&schemaExists); err != nil {
+			return nil, fmt.Errorf("inspect database schema: %w", err)
+		}
+		if schemaExists {
+			return nil, incompatibleMigrationHistory("existing schema has no migration history")
+		}
+		return applied, nil
+	}
+
+	var hasChecksum bool
+	if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM pragma_table_info('schema_migrations') WHERE name='sha256')`).Scan(&hasChecksum); err != nil {
+		return nil, fmt.Errorf("inspect migration checksum metadata: %w", err)
+	}
+	if !hasChecksum {
+		return nil, incompatibleMigrationHistory("applied migration checksums are missing")
+	}
+
+	known := make(map[string]string, len(ordered))
+	for _, migration := range ordered {
+		known[migration.Name] = migrationChecksum(migration.SQL)
+	}
+	rows, err := db.QueryContext(ctx, `SELECT name, sha256 FROM schema_migrations ORDER BY name`)
 	if err != nil {
 		return nil, fmt.Errorf("load applied migrations: %w", err)
 	}
 	defer rows.Close()
-
-	applied := make(map[string]bool)
+	index := 0
 	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
+		var name, checksum string
+		if err := rows.Scan(&name, &checksum); err != nil {
 			return nil, fmt.Errorf("scan applied migration: %w", err)
 		}
+		expectedChecksum, exists := known[name]
+		if !exists {
+			return nil, incompatibleMigrationHistory("applied migration %q is not in the canonical sequence", name)
+		}
+		if index >= len(ordered) || ordered[index].Name != name {
+			return nil, incompatibleMigrationHistory("applied migrations are not a contiguous prefix of the canonical sequence at %q", name)
+		}
+		if checksum != expectedChecksum {
+			return nil, incompatibleMigrationHistory("checksum differs for applied migration %q", name)
+		}
 		applied[name] = true
+		index++
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate applied migrations: %w", err)

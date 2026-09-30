@@ -120,8 +120,8 @@ CREATE TABLE external_source_snapshots (
   fetched_comment_pages INTEGER NOT NULL DEFAULT 0 CHECK (fetched_comment_pages >= 0),
   omitted_comment_count INTEGER NOT NULL DEFAULT 0 CHECK (omitted_comment_count >= 0),
   omitted_comment_pages INTEGER NOT NULL DEFAULT 0 CHECK (omitted_comment_pages >= 0),
-  retained_comment_count INTEGER NOT NULL DEFAULT 0 CHECK (retained_comment_count BETWEEN 0 AND 100),
-  retained_comment_bytes INTEGER NOT NULL DEFAULT 0 CHECK (retained_comment_bytes BETWEEN 0 AND 131072),
+  retained_comment_count INTEGER NOT NULL DEFAULT 0 CHECK (retained_comment_count >= 0),
+  retained_comment_bytes INTEGER NOT NULL DEFAULT 0 CHECK (retained_comment_bytes >= 0),
   comments_truncated INTEGER NOT NULL DEFAULT 0 CHECK (comments_truncated IN (0, 1)),
   truncation_json TEXT NOT NULL DEFAULT '{}' CHECK (json_valid(truncation_json)),
   created_at TEXT NOT NULL,
@@ -145,9 +145,10 @@ CREATE TABLE external_source_snapshot_comments (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   original_bytes INTEGER NOT NULL CHECK (original_bytes >= 0),
-  retained_bytes INTEGER NOT NULL CHECK (retained_bytes BETWEEN 0 AND 32768),
+  retained_bytes INTEGER NOT NULL CHECK (retained_bytes >= 0),
   truncation_reason TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (snapshot_id, provider_comment_id),
+  UNIQUE (snapshot_id, ordinal),
   FOREIGN KEY (snapshot_id) REFERENCES external_source_snapshots(snapshot_id)
 );
 
@@ -237,8 +238,8 @@ CREATE TABLE planning_operation_external_snapshots (
   snapshot_id TEXT NOT NULL,
   assembler_version TEXT NOT NULL,
   context_digest TEXT NOT NULL,
-  issue_bytes INTEGER NOT NULL CHECK (issue_bytes BETWEEN 0 AND 131072),
-  comment_bytes INTEGER NOT NULL CHECK (comment_bytes BETWEEN 0 AND 65536),
+  issue_bytes INTEGER NOT NULL CHECK (issue_bytes >= 0),
+  comment_bytes INTEGER NOT NULL CHECK (comment_bytes >= 0),
   bound_at TEXT NOT NULL,
   PRIMARY KEY (operation_id, snapshot_id),
   FOREIGN KEY (snapshot_id) REFERENCES external_source_snapshots(snapshot_id)
@@ -309,8 +310,7 @@ WHEN NEW.head_id <> 1
 BEGIN SELECT RAISE(ABORT, 'external integration audit head update is invalid'); END;
 
 
--- Bounded idempotency retention. Squashed in from a separate migration: no
--- database exists that applied them in sequence.
+-- Bounded idempotency retention.
 CREATE INDEX idx_idempotency_keys_expires_at
 ON idempotency_keys(expires_at);
 
@@ -321,3 +321,7 @@ CREATE TABLE idempotency_retention_clock (
 
 INSERT INTO idempotency_retention_clock (singleton, high_water_unix)
 VALUES (1, CAST(strftime('%s', 'now') AS INTEGER));
+
+CREATE TRIGGER external_snapshot_comments_complete BEFORE INSERT ON external_source_snapshot_comments
+WHEN NOT EXISTS (SELECT 1 FROM external_source_snapshots WHERE snapshot_id=NEW.snapshot_id AND NEW.ordinal<retained_comment_count)
+BEGIN SELECT RAISE(ABORT, 'external snapshot comment ordinal is outside its immutable capture'); END;

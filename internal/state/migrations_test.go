@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"fmt"
 	"os"
@@ -195,46 +196,15 @@ func TestMigrationBaselineOmitsObsoleteRunDetailProjectionTables(t *testing.T) {
 	}
 }
 
-func TestMigrationUpgradeAddsRecoveryLeaseAndResponseWorkspaceCleanupFields(t *testing.T) {
+func TestMigrationBaselineContainsRecoveryLeaseAndResponseWorkspaceCleanupFields(t *testing.T) {
 	t.Parallel()
 	db := openTestDB(t)
-
-	var existingMigrations []SQLMigration
-	for _, name := range []string{
-		"0001_initial_schema.up.sql",
-		"0002_events_execution_activity_index.up.sql",
-		"0003_external_sources_and_idempotency_retention.up.sql",
-		"0004_resumable_workspace_tree_cleanup.up.sql",
-		"0005_unbounded_planning_external_context.up.sql",
-	} {
-		raw, err := dbmigrations.Read(name)
-		if err != nil {
-			t.Fatalf("read existing migration %s: %v", name, err)
-		}
-		existingMigrations = append(existingMigrations, SQLMigration{Name: name, SQL: raw})
-	}
-	if err := ApplySQLMigrations(context.Background(), db, existingMigrations, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("apply existing migration history: %v", err)
-	}
-	for _, tableColumn := range [][2]string{
-		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
-		{"provider_invocations", "terminal_handoff_pending_lease_version"},
-		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
-		{"provider_invocations", "terminal_recovery_required_lease_owner"},
-		{"provider_invocations", "terminal_recovery_required_lease_version"},
-		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
-		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
-	} {
-		if columnExists(t, db, tableColumn[0], tableColumn[1]) {
-			t.Fatalf("existing schema unexpectedly has %s.%s before forward migration", tableColumn[0], tableColumn[1])
-		}
-	}
-	raw, err := dbmigrations.Read("0006_execution_recovery_and_response_workspace_cleanup.up.sql")
+	raw, err := dbmigrations.Read("0001_initial_schema.up.sql")
 	if err != nil {
-		t.Fatalf("read forward recovery migration: %v", err)
+		t.Fatal(err)
 	}
-	if err := ApplySQLMigrations(context.Background(), db, []SQLMigration{{Name: "0006_execution_recovery_and_response_workspace_cleanup.up.sql", SQL: raw}}, time.Date(2026, 9, 29, 12, 1, 0, 0, time.UTC)); err != nil {
-		t.Fatalf("apply forward recovery migration: %v", err)
+	if err := ApplySQLMigrations(context.Background(), db, []SQLMigration{{Name: "0001_initial_schema.up.sql", SQL: raw}}, time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
 	}
 	for _, tableColumn := range [][2]string{
 		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
@@ -246,7 +216,7 @@ func TestMigrationUpgradeAddsRecoveryLeaseAndResponseWorkspaceCleanupFields(t *t
 		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
 	} {
 		if !columnExists(t, db, tableColumn[0], tableColumn[1]) {
-			t.Fatalf("forward migration did not add %s.%s", tableColumn[0], tableColumn[1])
+			t.Fatalf("baseline is missing %s.%s", tableColumn[0], tableColumn[1])
 		}
 	}
 }
@@ -874,16 +844,6 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 		"0002_events_execution_activity_index.up.sql",
 		"0003_external_sources_and_idempotency_retention.up.sql",
 		"0004_resumable_workspace_tree_cleanup.up.sql",
-		"0005_unbounded_planning_external_context.up.sql",
-		"0006_execution_recovery_and_response_workspace_cleanup.up.sql",
-		"0008_provider_content.up.sql",
-		"0009_planning_content.up.sql",
-		"0010_artifact_content.up.sql",
-		"0011_complete_external_comments.up.sql",
-		"0012_provider_stream_content.up.sql",
-		"0013_request_content.up.sql",
-		"0014_planning_text.up.sql",
-		"0015_execution_input_content.up.sql",
 	}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
 		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)
@@ -1259,7 +1219,7 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects foreign-key-off migration with broken references", func(t *testing.T) {
+	t.Run("rolls back migration with broken deferred references", func(t *testing.T) {
 		db := openTestDB(t)
 		if err := ApplySQLMigrations(context.Background(), db, load(t, "0001_initial_schema.up.sql"), time.Date(2026, 4, 21, 12, 0, 0, 0, time.UTC)); err != nil {
 			t.Fatalf("apply baseline migration: %v", err)
@@ -1268,14 +1228,17 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
-			Name: "0002_broken_fk_rebuild.up.sql",
-			SQL: []byte(`-- kingdom: foreign_keys=off
-DELETE FROM node_runs;`),
+			Name: "0002_broken_fk_reference.up.sql",
+			SQL: []byte(`CREATE TABLE fk_bad_child (
+				id TEXT PRIMARY KEY,
+				node_run_id TEXT NOT NULL REFERENCES node_runs(node_run_id) DEFERRABLE INITIALLY DEFERRED
+			);
+			INSERT INTO fk_bad_child VALUES ('invalid-child', 'missing-node');`),
 		})
 
 		err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 4, 21, 12, 7, 0, 0, time.UTC))
 		if err == nil {
-			t.Fatal("expected broken foreign-key-off migration to fail")
+			t.Fatal("expected broken deferred foreign-key migration to fail")
 		}
 		if !strings.Contains(err.Error(), "validate foreign keys") {
 			t.Fatalf("expected foreign key validation failure, got %v", err)
@@ -1285,7 +1248,7 @@ DELETE FROM node_runs;`),
 		}
 
 		var count int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE name = '0002_broken_fk_rebuild.up.sql'`).Scan(&count); err != nil {
+		if err := db.QueryRow(`SELECT COUNT(1) FROM schema_migrations WHERE name = '0002_broken_fk_reference.up.sql'`).Scan(&count); err != nil {
 			t.Fatalf("query broken migration recording: %v", err)
 		}
 		if count != 0 {
@@ -1333,6 +1296,109 @@ DELETE FROM node_runs;`),
 		}
 	})
 
+}
+
+func TestApplySQLMigrationsValidatesHistoryBeforeChanges(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
+	first := SQLMigration{Name: "0001_example.up.sql", SQL: []byte(`CREATE TABLE example (id TEXT PRIMARY KEY)`)}
+	second := SQLMigration{Name: "0002_followup.up.sql", SQL: []byte(`CREATE TABLE followup (id TEXT PRIMARY KEY)`)}
+
+	t.Run("records exact SQL identity", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(ctx, db, []SQLMigration{first}, now); err != nil {
+			t.Fatal(err)
+		}
+		var checksum string
+		if err := db.QueryRow(`SELECT sha256 FROM schema_migrations WHERE name=?`, first.Name).Scan(&checksum); err != nil {
+			t.Fatal(err)
+		}
+		if want := fmt.Sprintf("%x", sha256.Sum256(first.SQL)); checksum != want {
+			t.Fatalf("migration checksum=%q, want %q", checksum, want)
+		}
+	})
+
+	t.Run("rejects reused filename with different SQL", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(ctx, db, []SQLMigration{first}, now); err != nil {
+			t.Fatal(err)
+		}
+		changed := SQLMigration{Name: first.Name, SQL: []byte(`CREATE TABLE replacement (id TEXT PRIMARY KEY)`)}
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{changed, second}, now)
+		if err == nil || !strings.Contains(err.Error(), "checksum") {
+			t.Fatalf("expected checksum rejection, got %v", err)
+		}
+		if !tableExists(t, db, "example") || tableExists(t, db, "replacement") || tableExists(t, db, "followup") {
+			t.Fatal("mismatched migration history changed the database")
+		}
+	})
+
+	t.Run("rejects history without SQL identity", func(t *testing.T) {
+		db := openTestDB(t)
+		mustExec(t, db, `CREATE TABLE schema_migrations (name TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`)
+		mustExec(t, db, `INSERT INTO schema_migrations VALUES ('0001_example.up.sql', '2026-09-29T12:00:00Z')`)
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{first, second}, now)
+		if err == nil || !strings.Contains(err.Error(), "checksum") || !strings.Contains(err.Error(), "kd init") {
+			t.Fatalf("expected reset guidance for unverifiable history, got %v", err)
+		}
+		if tableExists(t, db, "example") || tableExists(t, db, "followup") || columnExists(t, db, "schema_migrations", "sha256") {
+			t.Fatal("unverifiable database was modified or adopted")
+		}
+	})
+
+	t.Run("rejects unknown applied migration", func(t *testing.T) {
+		db := openTestDB(t)
+		unknown := SQLMigration{Name: "0000_retired.up.sql", SQL: []byte(`CREATE TABLE retired (id TEXT PRIMARY KEY)`)}
+		if err := ApplySQLMigrations(ctx, db, []SQLMigration{unknown}, now); err != nil {
+			t.Fatal(err)
+		}
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{first, second}, now)
+		if err == nil || !strings.Contains(err.Error(), unknown.Name) {
+			t.Fatalf("expected unknown migration rejection, got %v", err)
+		}
+		if tableExists(t, db, "example") || tableExists(t, db, "followup") {
+			t.Fatal("unknown history allowed pending migrations")
+		}
+	})
+
+	t.Run("rejects gap in applied history", func(t *testing.T) {
+		db := openTestDB(t)
+		if err := ApplySQLMigrations(ctx, db, []SQLMigration{second}, now); err != nil {
+			t.Fatal(err)
+		}
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{first, second}, now)
+		if err == nil || !strings.Contains(err.Error(), "prefix") {
+			t.Fatalf("expected history gap rejection, got %v", err)
+		}
+		if tableExists(t, db, "example") {
+			t.Fatal("gap in history allowed an earlier migration")
+		}
+	})
+
+	t.Run("rejects schema without migration history", func(t *testing.T) {
+		db := openTestDB(t)
+		mustExec(t, db, `CREATE TABLE existing_data (value TEXT)`)
+		mustExec(t, db, `INSERT INTO existing_data VALUES ('preserve me')`)
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{first}, now)
+		if err == nil || !strings.Contains(err.Error(), "history") {
+			t.Fatalf("expected untracked database rejection, got %v", err)
+		}
+		if tableExists(t, db, "schema_migrations") || tableExists(t, db, "example") {
+			t.Fatal("untracked database was modified or adopted")
+		}
+	})
+
+	t.Run("rejects duplicate filenames before initialization", func(t *testing.T) {
+		db := openTestDB(t)
+		err := ApplySQLMigrations(ctx, db, []SQLMigration{first, first}, now)
+		if err == nil || !strings.Contains(err.Error(), "duplicate") {
+			t.Fatalf("expected duplicate migration rejection, got %v", err)
+		}
+		if tableExists(t, db, "schema_migrations") || tableExists(t, db, "example") {
+			t.Fatal("duplicate migration set partially initialized database")
+		}
+	})
 }
 
 func migrationDirFileNames(t *testing.T, dir string) []string {

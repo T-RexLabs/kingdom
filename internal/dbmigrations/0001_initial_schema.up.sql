@@ -51,7 +51,8 @@ CREATE TABLE work_orders (
   work_order_title TEXT NOT NULL,
   work_order_text TEXT NOT NULL,
   metadata_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
+  created_at TEXT NOT NULL,
+  text_storage TEXT NOT NULL DEFAULT 'inline' CHECK (text_storage IN ('inline', 'chunked'))
 );
 
 CREATE TABLE campaigns (
@@ -333,6 +334,7 @@ CREATE TABLE run_planning_outputs (
   kind TEXT NOT NULL CHECK (kind IN ('advisory_guidance', 'plan_revision')),
   content_markdown TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  content_ref_json TEXT NOT NULL DEFAULT '',
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
   FOREIGN KEY (attempt_id, node_run_id) REFERENCES attempt_executions(attempt_id, node_run_id),
@@ -485,6 +487,7 @@ CREATE TABLE attempt_executions (
   result_snapshot_id TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  response_only_workspace_cleanup_pending_at TEXT,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
 	FOREIGN KEY (node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
@@ -537,6 +540,12 @@ CREATE TABLE provider_invocations (
   terminal_handoff_file_cleanup_pending_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
+  terminal_handoff_pending_lease_owner TEXT NOT NULL DEFAULT '',
+  terminal_handoff_pending_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_lease_version >= 0),
+  terminal_handoff_pending_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_process_quiescent IN (0, 1)),
+  terminal_recovery_required_lease_owner TEXT NOT NULL DEFAULT '',
+  terminal_recovery_required_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_lease_version >= 0),
+  terminal_recovery_required_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_process_quiescent IN (0, 1)),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
@@ -667,6 +676,8 @@ CREATE TABLE provider_completion_settlements (
   failure_reason_text TEXT NOT NULL DEFAULT '',
   settled_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  final_text_ref_json TEXT NOT NULL DEFAULT '',
+  final_text_preview TEXT NOT NULL DEFAULT '',
   FOREIGN KEY (provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
@@ -772,7 +783,6 @@ CREATE TABLE artifacts (
 
 CREATE TABLE artifact_contents (
   artifact_id TEXT PRIMARY KEY,
-  content BLOB NOT NULL,
   sha256 TEXT NOT NULL,
   size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
   created_at TEXT NOT NULL,
@@ -1150,7 +1160,8 @@ CREATE TABLE planning_sessions (
   project_root TEXT NOT NULL,
   model_selection_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  title_content_id TEXT REFERENCES request_contents(content_id)
 );
 
 CREATE INDEX idx_planning_sessions_updated_at
@@ -1172,6 +1183,8 @@ CREATE TABLE planning_messages (
   question_payload_json TEXT NOT NULL,
   answer_payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  content_content_id TEXT REFERENCES request_contents(content_id),
+  answer_text_content_id TEXT REFERENCES request_contents(content_id),
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
   FOREIGN KEY (parent_message_id) REFERENCES planning_messages(planning_message_id) ON DELETE CASCADE
 );
@@ -1190,6 +1203,7 @@ CREATE TABLE planning_drafts (
   work_order_text TEXT NOT NULL,
   summary_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  work_order_text_content_id TEXT REFERENCES request_contents(content_id),
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE
 );
 
@@ -1230,6 +1244,7 @@ CREATE TABLE planning_operations (
   created_at TEXT NOT NULL,
   started_at TEXT,
   finished_at TEXT,
+  observed_output_ref_json TEXT NOT NULL DEFAULT '',
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
   FOREIGN KEY (planning_context_snapshot_id) REFERENCES planning_context_snapshots(planning_context_snapshot_id),
   FOREIGN KEY (active_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),
@@ -1263,6 +1278,7 @@ CREATE TABLE planning_activity_reconciliations (
   lease_version INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL,
   completed_at TEXT,
+  delivered_activity_count INTEGER NOT NULL DEFAULT 0 CHECK(delivered_activity_count >= 0),
   FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
   FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id)
 );
@@ -1463,6 +1479,7 @@ CREATE TABLE planning_provider_completion_settlements (
   failure_reason_text TEXT NOT NULL DEFAULT '',
   settled_at TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  final_text_ref_json TEXT NOT NULL DEFAULT '',
   FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),
   FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
@@ -1488,3 +1505,195 @@ CREATE TABLE planning_operation_events (
 
 CREATE INDEX idx_planning_operation_events_operation_seq
 ON planning_operation_events (operation_id, seq ASC, created_at ASC);
+
+-- Canonical chunked content, references, and sealing constraints.
+
+CREATE TABLE provider_contents (
+    provider_invocation_id TEXT NOT NULL REFERENCES provider_invocations(provider_invocation_id),
+    sha256 TEXT NOT NULL,
+    size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+    PRIMARY KEY(provider_invocation_id, sha256)
+);
+
+CREATE TABLE provider_content_chunks (
+    provider_invocation_id TEXT NOT NULL,
+    sha256 TEXT NOT NULL,
+    ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+    content BLOB NOT NULL CHECK(length(content) <= 65536),
+    PRIMARY KEY(provider_invocation_id, sha256, ordinal),
+    FOREIGN KEY(provider_invocation_id, sha256) REFERENCES provider_contents(provider_invocation_id, sha256)
+);
+
+CREATE TRIGGER provider_contents_immutable BEFORE UPDATE ON provider_contents
+BEGIN SELECT RAISE(ABORT, 'provider content is immutable'); END;
+
+CREATE TRIGGER provider_content_chunks_immutable BEFORE UPDATE ON provider_content_chunks
+BEGIN SELECT RAISE(ABORT, 'provider content is immutable'); END;
+
+CREATE TABLE planning_context_entries (
+  snapshot_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  kind TEXT NOT NULL CHECK (kind IN ('included', 'excluded')),
+  path TEXT NOT NULL CHECK (length(path) > 0),
+  reason TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  PRIMARY KEY (snapshot_id, ordinal),
+  FOREIGN KEY (snapshot_id) REFERENCES planning_context_snapshots(planning_context_snapshot_id) DEFERRABLE INITIALLY DEFERRED
+);
+
+CREATE INDEX planning_context_entries_kind ON planning_context_entries(snapshot_id, kind, ordinal);
+
+CREATE TRIGGER planning_context_entries_sealed BEFORE INSERT ON planning_context_entries
+WHEN EXISTS (SELECT 1 FROM planning_context_snapshots WHERE planning_context_snapshot_id=NEW.snapshot_id)
+BEGIN SELECT RAISE(ABORT, 'planning context snapshot is sealed'); END;
+
+CREATE TRIGGER planning_context_entries_no_update BEFORE UPDATE ON planning_context_entries
+BEGIN SELECT RAISE(ABORT, 'planning context entries are immutable'); END;
+
+CREATE TRIGGER planning_context_entries_no_delete BEFORE DELETE ON planning_context_entries
+BEGIN SELECT RAISE(ABORT, 'planning context entries are immutable'); END;
+
+CREATE TABLE planning_provider_contents (
+  planning_provider_invocation_id TEXT NOT NULL REFERENCES planning_provider_invocations(planning_provider_invocation_id),
+  sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL CHECK(size_bytes >= 0),
+  PRIMARY KEY(planning_provider_invocation_id,sha256)
+);
+
+CREATE TABLE planning_provider_content_chunks (
+  planning_provider_invocation_id TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  content BLOB NOT NULL CHECK(length(content) > 0 AND length(content) <= 65536),
+  PRIMARY KEY(planning_provider_invocation_id,sha256,ordinal),
+  FOREIGN KEY(planning_provider_invocation_id,sha256) REFERENCES planning_provider_contents(planning_provider_invocation_id,sha256)
+);
+
+CREATE TRIGGER planning_provider_contents_no_update BEFORE UPDATE ON planning_provider_contents
+BEGIN SELECT RAISE(ABORT, 'planning provider content is immutable'); END;
+
+CREATE TRIGGER planning_provider_contents_no_delete BEFORE DELETE ON planning_provider_contents
+BEGIN SELECT RAISE(ABORT, 'planning provider content is immutable'); END;
+
+CREATE TRIGGER planning_provider_chunks_no_update BEFORE UPDATE ON planning_provider_content_chunks
+BEGIN SELECT RAISE(ABORT, 'planning provider content is immutable'); END;
+
+CREATE TRIGGER planning_provider_chunks_no_delete BEFORE DELETE ON planning_provider_content_chunks
+BEGIN SELECT RAISE(ABORT, 'planning provider content is immutable'); END;
+
+CREATE TABLE artifact_content_chunks (
+    artifact_id TEXT NOT NULL REFERENCES artifacts(artifact_id) ON DELETE CASCADE,
+    chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+    content BLOB NOT NULL CHECK (length(content) > 0 AND length(content) <= 1048576),
+    PRIMARY KEY (artifact_id, chunk_index)
+) WITHOUT ROWID;
+
+CREATE INDEX idx_artifacts_attempt_identity ON artifacts(attempt_id, artifact_id);
+
+CREATE INDEX idx_artifacts_attempt_chronology ON artifacts(attempt_id, created_at DESC, artifact_id);
+
+CREATE INDEX idx_artifacts_run_page ON artifacts(run_id, CASE artifact_kind WHEN 'deliverable' THEN 0 WHEN 'verification' THEN 1 ELSE 2 END, created_at DESC, artifact_id);
+
+CREATE INDEX idx_artifacts_run_insertion ON artifacts(run_id, artifact_seq);
+
+CREATE TABLE request_contents (
+  content_id TEXT PRIMARY KEY,
+  sha256 TEXT NOT NULL CHECK (length(sha256) = 64),
+  size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  chunk_count INTEGER NOT NULL CHECK (chunk_count >= 0),
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE request_content_chunks (
+  content_id TEXT NOT NULL REFERENCES request_contents(content_id) DEFERRABLE INITIALLY DEFERRED,
+  ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+  content BLOB NOT NULL CHECK (length(content) > 0 AND length(content) <= 65536),
+  PRIMARY KEY (content_id, ordinal)
+) WITHOUT ROWID;
+
+CREATE TABLE work_order_text_refs (
+  work_order_id TEXT PRIMARY KEY REFERENCES work_orders(work_order_id),
+  content_id TEXT NOT NULL UNIQUE REFERENCES request_contents(content_id)
+);
+
+CREATE TRIGGER request_content_chunks_sealed BEFORE INSERT ON request_content_chunks
+WHEN EXISTS (SELECT 1 FROM request_contents WHERE content_id = NEW.content_id)
+BEGIN SELECT RAISE(ABORT, 'request content is sealed'); END;
+
+CREATE TRIGGER request_content_chunks_no_update BEFORE UPDATE ON request_content_chunks
+BEGIN SELECT RAISE(ABORT, 'request content chunks are immutable'); END;
+
+CREATE TRIGGER request_content_chunks_no_delete BEFORE DELETE ON request_content_chunks
+BEGIN SELECT RAISE(ABORT, 'request content chunks are immutable'); END;
+
+CREATE TRIGGER request_contents_no_update BEFORE UPDATE ON request_contents
+BEGIN SELECT RAISE(ABORT, 'request content manifests are immutable'); END;
+
+CREATE TRIGGER work_order_text_refs_no_update BEFORE UPDATE ON work_order_text_refs
+BEGIN SELECT RAISE(ABORT, 'work_order text references are immutable'); END;
+
+CREATE TRIGGER work_order_text_refs_no_delete BEFORE DELETE ON work_order_text_refs
+BEGIN SELECT RAISE(ABORT, 'work_order text references are immutable'); END;
+
+CREATE TABLE activity_event_contents (
+ content_id TEXT PRIMARY KEY REFERENCES request_contents(content_id),
+ run_event_id TEXT REFERENCES events(event_id) DEFERRABLE INITIALLY DEFERRED,
+ planning_event_id TEXT REFERENCES planning_operation_events(event_id) DEFERRABLE INITIALLY DEFERRED,
+ field TEXT NOT NULL CHECK(field IN ('input','output','reasoning','message')),
+ CHECK((run_event_id IS NULL) <> (planning_event_id IS NULL)),
+ UNIQUE(run_event_id,field),
+ UNIQUE(planning_event_id,field)
+);
+
+CREATE TABLE activity_content_chunk_digests (
+ content_id TEXT NOT NULL,
+ ordinal INTEGER NOT NULL,
+ sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+ PRIMARY KEY(content_id,ordinal),
+ FOREIGN KEY(content_id,ordinal) REFERENCES request_content_chunks(content_id,ordinal)
+) WITHOUT ROWID;
+
+CREATE TRIGGER activity_event_contents_no_update BEFORE UPDATE ON activity_event_contents
+BEGIN SELECT RAISE(ABORT, 'activity content references are immutable'); END;
+
+CREATE TRIGGER activity_event_contents_no_delete BEFORE DELETE ON activity_event_contents
+BEGIN SELECT RAISE(ABORT, 'activity content references are immutable'); END;
+
+CREATE TRIGGER activity_content_chunk_digests_no_update BEFORE UPDATE ON activity_content_chunk_digests
+BEGIN SELECT RAISE(ABORT, 'activity content chunk digests are immutable'); END;
+
+CREATE TRIGGER activity_content_chunk_digests_no_delete BEFORE DELETE ON activity_content_chunk_digests
+BEGIN SELECT RAISE(ABORT, 'activity content chunk digests are immutable'); END;
+
+CREATE INDEX idx_planning_activity_identity ON planning_operation_events(operation_id,json_extract(payload_json,'$.activity_id'),seq DESC);
+
+CREATE TABLE planning_event_text_refs (
+  event_id TEXT NOT NULL REFERENCES planning_operation_events(event_id),
+  field TEXT NOT NULL,
+  content_id TEXT NOT NULL REFERENCES request_contents(content_id),
+  PRIMARY KEY(event_id,field)
+);
+
+CREATE TRIGGER planning_event_text_refs_no_update BEFORE UPDATE ON planning_event_text_refs
+BEGIN SELECT RAISE(ABORT, 'planning event text references are immutable'); END;
+
+CREATE TRIGGER planning_event_text_refs_no_delete BEFORE DELETE ON planning_event_text_refs
+BEGIN SELECT RAISE(ABORT, 'planning event text references are immutable'); END;
+
+CREATE TRIGGER planning_message_text_refs_no_update BEFORE UPDATE OF content_content_id,answer_text_content_id ON planning_messages
+BEGIN SELECT RAISE(ABORT, 'planning message text references are immutable'); END;
+
+CREATE TRIGGER planning_draft_text_ref_no_update BEFORE UPDATE OF work_order_text_content_id ON planning_drafts
+BEGIN SELECT RAISE(ABORT, 'planning draft text reference is immutable'); END;
+
+CREATE TABLE execution_prompt_refs (
+    attempt_id TEXT PRIMARY KEY REFERENCES attempt_executions(attempt_id),
+    run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
+    node_run_id TEXT NOT NULL REFERENCES node_runs(node_run_id),
+    content_id TEXT NOT NULL REFERENCES request_contents(content_id),
+    created_at TEXT NOT NULL,
+    FOREIGN KEY(attempt_id,run_id,node_run_id) REFERENCES attempt_executions(attempt_id,run_id,node_run_id)
+);
+
+CREATE TRIGGER execution_prompt_refs_immutable BEFORE UPDATE ON execution_prompt_refs
+BEGIN SELECT RAISE(ABORT,'execution prompt references are immutable'); END;

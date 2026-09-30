@@ -332,7 +332,7 @@ Summons are also recorded machine-wide in `$XDG_CACHE_HOME/kingdom/summon_regist
 
 Use `kd clean` to remove the local `.kingdom/` scaffold before re-initializing from a clean state.
 
-When the migration baseline changes, `kd clean` followed by `kd init` is the supported reset path for local environments.
+The canonical schema uses four baseline migrations. Startup verifies each applied migration’s filename and SHA-256 checksum and rejects an older or modified baseline before applying schema changes. When the migration baseline changes, preserve any needed local data before using `kd clean` followed by `kd init`; `kd clean` removes local `.kingdom/` state. `kd init --force` refreshes managed files but does not convert an old database. See [Data and Storage](docs/data-and-storage.md#schema-baseline) for the baseline contract.
 
 ## Common Commands
 

@@ -8,41 +8,27 @@ import (
 	"testing"
 
 	"kingdom/internal/acp"
-	"kingdom/internal/dbmigrations"
 )
 
-func TestPlanningContentMigrationPreservesHistoricalSnapshotBytes(t *testing.T) {
+func TestPlanningContextBaselinePreservesExactSnapshotEntries(t *testing.T) {
 	db := openTestDB(t)
-	raw, err := dbmigrations.Read("0001_initial_schema.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(string(raw)); err != nil {
-		t.Fatal(err)
-	}
+	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 	at := "2026-04-21T16:14:00Z"
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{PlanningSessionID: "historical-content", Title: "Historical", TitleState: "custom", LifecycleState: PlanningSessionLifecycleStateActive, ConversationState: PlanningSessionConversationStateReady, ProjectRoot: "/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO planning_context_snapshots(planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES('historical-snapshot','historical-content','Original summary',?,?,?)`, `[{"path":" leading 界.go ","size_bytes":123}]`, `[{"path":".env","reason":"secret"}]`, at); err != nil {
-		t.Fatal(err)
-	}
-	before, err := store.GetContextSnapshot(ctx, "historical-snapshot")
+	before, err := store.CreateContextSnapshot(ctx, CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "historical-snapshot", PlanningSessionID: "historical-content", SummaryMarkdown: "Original summary", CreatedAt: at,
+		IncludedFilesJSON: `[{"path":" leading 界.go ","size_bytes":123}]`, ExcludedFilesJSON: `[{"path":".env","reason":"secret"}]`,
+	})
 	if err != nil {
-		t.Fatal(err)
-	}
-	raw, err = dbmigrations.Read("0009_planning_content.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(string(raw)); err != nil {
 		t.Fatal(err)
 	}
 	after, err := store.GetContextSnapshot(ctx, before.PlanningContextSnapshotID)
 	if err != nil || after != before {
-		t.Fatalf("migration rewrote historical snapshot: %v", err)
+		t.Fatalf("snapshot roundtrip changed metadata: %v", err)
 	}
 	entries, cursor, err := store.ListContextEntriesPage(ctx, before.PlanningContextSnapshotID, "included", -1, 1)
 	if err != nil || len(entries) != 1 || cursor != 0 || entries[0].Path != " leading 界.go " || entries[0].Size != 123 {
@@ -51,6 +37,15 @@ func TestPlanningContentMigrationPreservesHistoricalSnapshotBytes(t *testing.T) 
 	entries, cursor, err = store.ListContextEntriesPage(ctx, before.PlanningContextSnapshotID, "excluded", -1, 1)
 	if err != nil || len(entries) != 1 || cursor != 1 || entries[0].Reason != "secret" {
 		t.Fatalf("historical excluded entry: %#v %d %v", entries, cursor, err)
+	}
+	for _, mutation := range []string{
+		`UPDATE planning_context_entries SET path='changed' WHERE snapshot_id='historical-snapshot'`,
+		`DELETE FROM planning_context_entries WHERE snapshot_id='historical-snapshot'`,
+		`INSERT INTO planning_context_entries(snapshot_id,ordinal,kind,path,reason,size_bytes) VALUES('historical-snapshot',2,'included','late','',1)`,
+	} {
+		if _, err := db.Exec(mutation); err == nil {
+			t.Fatalf("sealed context accepted %s", mutation)
+		}
 	}
 }
 

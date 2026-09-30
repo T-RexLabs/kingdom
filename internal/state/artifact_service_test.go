@@ -12,8 +12,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"kingdom/internal/dbmigrations"
 )
 
 func getArtifactContentForTest(service *ArtifactService, id string) (ArtifactRecord, []byte, error) {
@@ -66,34 +64,23 @@ func TestArtifactInventoryUsesOnePublicationSnapshot(t *testing.T) {
 	}
 }
 
-func TestArtifactContentMigrationPreservesMonolithicBytes(t *testing.T) {
+func TestArtifactContentBaselinePreservesChunkedBytes(t *testing.T) {
 	db := openTestDB(t)
-	initial, err := dbmigrations.Read("0001_initial_schema.up.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(string(initial)); err != nil {
-		t.Fatal(err)
-	}
+	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	body := bytes.Repeat([]byte("m"), (2<<20)+7)
 	checksum := checksumHex(body)
-	if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'migrated', 'run_1', 'nr_1', 'att_1', 'migrated', 'text/plain', 'migrated', ?, ?, 'governance', '2026-03-01T12:00:00Z')`, checksum, len(body)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES ('migrated', ?, ?, ?, '2026-03-01T12:00:00Z')`, body, checksum, len(body)); err != nil {
-		t.Fatal(err)
-	}
-	migration, err := dbmigrations.Read("0010_artifact_content.up.sql")
+	_, err := NewWorkerOutputValidator(db, loadSchemaSet(t)).ValidateAndPersist(context.Background(), WorkerOutputValidationRequest{
+		RunID: "run_1", NodeRunID: "nr_1", AttemptID: "chunked-attempt", ProducerRole: "governance", CreatedAt: "2026-03-01T12:00:00Z",
+		ArtifactContentByPath: map[string][]byte{"report": body},
+		OutputJSON:            []byte(`{"schema_version":"v1","status":"succeeded","summary":"done","payload_json":{},"artifacts":[{"name":"report","mime":"text/plain","path":"report","mode_bits":448}],"error_reason":null}`),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	_, got, err := getArtifactContentForTest(NewArtifactService(db), "migrated")
-	if err != nil || !bytes.Equal(got, body) {
-		t.Fatalf("migration lost bytes: %v", err)
+	record, got, err := getArtifactContentForTest(NewArtifactService(db), "chunked-attempt_artifact_1")
+	if err != nil || !bytes.Equal(got, body) || record.SHA256 != checksum || record.SizeBytes != int64(len(body)) || record.ModeBits == nil || *record.ModeBits != 0700 {
+		t.Fatalf("chunked artifact lost bytes or metadata: %+v %v", record, err)
 	}
 	var count int
 	if err := db.QueryRow(`SELECT count(*) FROM artifact_content_chunks`).Scan(&count); err != nil || count != 3 {
