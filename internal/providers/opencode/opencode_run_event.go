@@ -30,6 +30,7 @@ type opencodeRunEventWire struct {
 		CallID    string  `json:"callID"`
 		MessageID string  `json:"messageID"`
 		Text      string  `json:"text"`
+		Synthetic bool    `json:"synthetic"`
 		Tool      string  `json:"tool"`
 		Reason    *string `json:"reason"`
 		State     struct {
@@ -263,6 +264,7 @@ func decodeNextOpencodeRunEvent(decoder *json.Decoder, numberMarkers ...string) 
 	event.Part.CallID = strings.TrimSpace(envelope.Part.CallID)
 	event.Part.MessageID = strings.TrimSpace(envelope.Part.MessageID)
 	event.Part.Text = envelope.Part.Text
+	event.Part.Synthetic = envelope.Part.Synthetic
 	event.Part.Tool = strings.TrimSpace(envelope.Part.Tool)
 	if envelope.Part.Reason != nil {
 		event.Part.ReasonPresent = true

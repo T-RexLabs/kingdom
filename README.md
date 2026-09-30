@@ -177,7 +177,7 @@ Important boundaries:
 - Publication is done into the project root or a git worktree if toggled on and in a Git repo.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
-- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success.
+- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success. OpenCode may continue after intermediate stopped steps during compaction or tool use; only the final completed assistant step supplies the settled response.
 - Decree/planning text, persisted execution prompts, provider terminal content, and artifacts use SQLite content manifests and chunks. Decree terminal handoffs reference verified content rather than embedding full output. Complete invocation diagnostics are retained separately from bounded activity/output previews.
 - Runtime content processing uses streaming and disk staging without fixed provider-output, tracked-file-size, aggregate-workspace-size, entry-count, or directory-depth ceilings. Some individual scalar values and read responses still materialize in memory; host resources and provider context windows remain practical constraints.
 - There is no run-wide attempt-count budget. Per-error automatic retries, review/validation cycle caps and ready-node auto-success, `run_until_all_approve`, recovery batching, active timeouts, and guardian metadata boundaries retain their existing roles.
