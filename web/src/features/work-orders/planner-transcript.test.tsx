@@ -115,6 +115,7 @@ function assistantItem(id: string, content: string): TranscriptItem {
       created_at: "2026-04-22T10:00:00Z",
     },
     isInteractive: false,
+    isCanonical: true,
   };
 }
 
@@ -130,6 +131,7 @@ function userItem(id: string, content: string): TranscriptItem {
       created_at: "2026-04-22T10:00:00Z",
     },
     isInteractive: false,
+    isCanonical: true,
   };
 }
 

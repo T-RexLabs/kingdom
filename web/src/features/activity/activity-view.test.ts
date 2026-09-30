@@ -3,6 +3,12 @@ import { describe, expect, it } from "vitest";
 import { buildActivityState, parseActivityEvent } from "./activity-view";
 
 describe("parseActivityEvent", () => {
+  it("uses the canonical event identity for runtime ACP phases without inventing provider identity", () => {
+    const item = parseActivityEvent({ payload: activityPayload({ kind: "kingdom.phase", activity_id: undefined, phase: "provider_session_open", label: "Opening provider session" }), eventId: "run:3" });
+    expect(item).toMatchObject({ id: "run:3", eventId: "run:3", kind: "progress", label: "Opening provider session" });
+    expect(item?.providerPartId).toBeUndefined();
+    expect(parseActivityEvent({ payload: activityPayload({ kind: "kingdom.tool", activity_id: undefined, label: "Tool Call" }), eventId: "run:4" })).toBeNull();
+  });
   it("maps a reasoning payload into a thinking item", () => {
     const item = parseActivityEvent({
       payload: activityPayload({kind:"kingdom.reasoning",activity_id:"p1",label:"Thinking",reasoning:availableActivityContent("step")}),

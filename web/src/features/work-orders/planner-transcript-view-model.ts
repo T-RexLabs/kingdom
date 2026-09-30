@@ -16,6 +16,7 @@ export type TranscriptItem = {
   message: PlanningMessage;
   resolvedAnswer?: AnswerPayload;
   isInteractive: boolean;
+  isCanonical: boolean;
   isStreaming?: boolean;
   contentMarkdown?: string;
   variantCount?: number;
@@ -69,6 +70,7 @@ export function buildPlannerTranscriptViewModel({
     kind: "message",
     key: `message-${message.planning_message_id}`,
     message,
+    isCanonical: true,
     resolvedAnswer: resolvedAnswersByQuestionId[message.planning_message_id],
     isInteractive:
       conversationState === "ready" &&
@@ -268,6 +270,7 @@ function buildGhostMessage(args: {
       branch_count: 1,
     },
     resolvedAnswer: undefined,
+    isCanonical: false,
     isInteractive: false,
     isStreaming: args.streaming,
     contentMarkdown: args.role === "assistant" ? args.content : undefined,

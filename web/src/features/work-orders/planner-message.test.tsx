@@ -118,7 +118,7 @@ describe("PlannerMessageCard", () => {
     ).toBeTruthy();
   });
 
-  it("keeps provider lifecycle observations out of the main streaming conversation", () => {
+  it("shows the current provider lifecycle status while streaming without an empty history panel", () => {
     render(
       <PlannerMessageCard
         message={{
@@ -141,9 +141,10 @@ describe("PlannerMessageCard", () => {
       />,
     );
     expect(
-      screen.queryByText("Provider Session Started"),
-    ).not.toBeInTheDocument();
+      screen.getByRole("status"),
+    ).toHaveTextContent("Provider Session Started");
     expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Hide Activity" })).not.toBeInTheDocument();
   });
 
   it("keeps routine events and provider message copies behind explicit inspection", async () => {
@@ -323,8 +324,6 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
-    expect(await screen.findByText("Thinking")).toBeInTheDocument();
     expect(
       await screen.findByText("Recovered durable reasoning"),
     ).toBeInTheDocument();
@@ -424,17 +423,16 @@ describe("PlannerMessageCard", () => {
         }}
         isStreaming
         liveActivityItems={[
-          { id: "thought-1", eventId: "event-4", sequence: 4, kind: "thinking", label: "Thinking", detail: "First reasoning step" },
-          { id: "thought-2", eventId: "event-5", sequence: 5, kind: "thinking", label: "Thinking", detail: "The provider emitted a reasoning step here, but only encrypted reasoning metadata is available." },
+          { id: "thought-1", eventId: "event-4", sequence: 4, kind: "thinking", label: "Thinking", reasoningContent: availableActivityContent("First reasoning step") },
+          { id: "thought-2", eventId: "event-5", sequence: 5, kind: "thinking", label: "Thinking", reasoningContent: { availability: "unavailable" } },
         ]}
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText(/First reasoning step/)).toBeInTheDocument();
     expect(
       await screen.findByText(
-        /The provider emitted a reasoning step here, but only encrypted reasoning metadata is available\./,
+        "The provider did not expose this content.",
       ),
     ).toBeInTheDocument();
   });
@@ -497,8 +495,9 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
-    expect(await screen.findByText("Read Page")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Fetching https://example.com")).toBeVisible());
+    expect(screen.getByRole("link", { name: /example\.com/ })).toHaveAttribute("href", "https://example.com");
+    expect(screen.getByLabelText("Tool running")).toBeVisible();
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
     expect(
       await screen.findByText("Searching ACP activity handlers"),
@@ -526,11 +525,10 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     await waitFor(() =>
-      expect(screen.getAllByText("Read Page")).toHaveLength(3),
+      expect(screen.getAllByText(/^Fetched https:/)).toHaveLength(3),
     );
     expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
-    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Processing");
   });
 });

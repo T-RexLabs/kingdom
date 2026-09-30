@@ -5,13 +5,17 @@ import type { PlannerMessageActivityState } from "./use-planner-message-activity
 export function PlannerMessageActivity({
   scopeKey,
   activity,
+  isLive,
+  hasFinalResponse,
 }: {
   scopeKey: string;
   activity: PlannerMessageActivityState;
+  isLive: boolean;
+  hasFinalResponse: boolean;
 }) {
   return (
     <section aria-label="Planner activity">
-      <ActivityDisclosure scopeKey={scopeKey} {...activity} />
+      <ActivityDisclosure scopeKey={scopeKey} {...activity} isLive={isLive} hasFinalResponse={hasFinalResponse} completionBehavior="collapse" />
     </section>
   );
 }

@@ -69,7 +69,8 @@ export function parseActivityEvent(args: {
 }): ActivityItem | null {
   const { payload, eventId, createdAt } = args;
   const rawKind = readString(payload.kind);
-  const id = readString(payload.activity_id);
+  // Runtime ACP phases have event identity but deliberately no provider part ID.
+  const id = readString(payload.activity_id) ?? (rawKind === "kingdom.phase" ? eventId : undefined);
   const sequence = payload.sequence;
   if (!id || !eventId || typeof sequence !== "number" || !Number.isSafeInteger(sequence) || sequence < 1) return null;
   const kind = rawKind === "kingdom.message" ? "message" : rawKind === "kingdom.reasoning" ? "thinking"

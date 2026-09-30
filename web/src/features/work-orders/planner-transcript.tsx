@@ -39,6 +39,7 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       message={item.message}
       isActive={item.isInteractive}
       isStreaming={item.isStreaming}
+      isCanonical={item.isCanonical}
       contentMarkdown={item.contentMarkdown}
       onEdit={callbacks.onEditMessage ? () => callbacks.onEditMessage?.(item.message.planning_message_id) : undefined}
       onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.planning_message_id, item.message.parent_message_id) : undefined}

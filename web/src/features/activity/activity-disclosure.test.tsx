@@ -13,6 +13,7 @@ import { mockActivityScrollGeometry } from "./activity-virtual-test-helpers";
 
 vi.mock("@/api/client", () => ({ apiFetch: vi.fn() }));
 const fetchMock = vi.mocked(apiFetch);
+const settledPlanner = { isLive: false, hasFinalResponse: true, completionBehavior: "collapse" as const };
 
 function Wrapper({ children }: PropsWithChildren) {
   const [client] = useState(
@@ -36,6 +37,52 @@ describe("shared activity disclosure", () => {
     fetchMock.mockReset();
   });
   afterEach(() => restoreGeometry());
+
+  it("automatically shows the latest real lifecycle status while live without a phase history", async () => {
+    const view = render(<ActivityDisclosure {...settledPlanner} scopeKey="live" isLive hasFinalResponse={false} completionBehavior="collapse" items={[
+      { id: "launch", eventId: "launch", sequence: 1, kind: "progress", label: "Launching provider" },
+      { id: "open", eventId: "open", sequence: 2, kind: "progress", label: "Opening provider session" },
+    ]} gaps={[]} isLoadingMore={false} loadError={null} loadMore={vi.fn()} />, { wrapper: Wrapper });
+    expect(screen.getByRole("status")).toHaveTextContent("Opening provider session");
+    expect(screen.queryByText("Launching provider")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Hide Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Provider activity history" })).not.toBeInTheDocument();
+    view.rerender(<ActivityDisclosure {...settledPlanner} scopeKey="live" isLive hasFinalResponse={false} items={[
+      { id: "open", eventId: "open", sequence: 2, kind: "progress", label: "Opening provider session" },
+      { id: "search", eventId: "search", sequence: 3, kind: "tool", toolName: "websearch", label: "Searching the exact question", toolStatus: "running" },
+    ]} gaps={[]} isLoadingMore={false} loadError={null} loadMore={vi.fn()} />);
+    await waitFor(() => expect(screen.getByText("Searching the exact question")).toBeVisible());
+    expect(screen.queryByText("Opening provider session")).not.toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
+  it("shows changing live reasoning and collapses only for a canonical planner response", async () => {
+    const props = { scopeKey: "planner-live", completionBehavior: "collapse" as const, gaps: [], isLoadingMore: false, loadError: null, loadMore: vi.fn() };
+    const items = [{ id: "thought", eventId: "thought-1", sequence: 1, kind: "thinking" as const, label: "Thinking", reasoningContent: availableActivityContent("First thought") }];
+    const view = render(<ActivityDisclosure {...settledPlanner} {...props} isLive hasFinalResponse={false} items={items} />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("First thought")).toBeVisible());
+    const nextItems = [{ ...items[0], eventId: "thought-2", sequence: 2, reasoningContent: availableActivityContent("Revised provider thought") }];
+    view.rerender(<ActivityDisclosure {...settledPlanner} {...props} isLive hasFinalResponse={false} items={nextItems} />);
+    await waitFor(() => expect(screen.getByText("Revised provider thought")).toBeVisible());
+    expect(screen.queryByText("First thought")).not.toBeInTheDocument();
+    view.rerender(<ActivityDisclosure {...settledPlanner} {...props} isLive={false} hasFinalResponse={false} items={nextItems} />);
+    expect(screen.getByText("Revised provider thought")).toBeVisible();
+    view.rerender(<ActivityDisclosure {...settledPlanner} {...props} isLive={false} hasFinalResponse items={nextItems} />);
+    expect(screen.getByText("Revised provider thought")).not.toBeVisible();
+    expect(screen.getByRole("button", { name: "Show Activity" })).toHaveAttribute("aria-expanded", "false");
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
+    expect(screen.getByText("Revised provider thought")).toBeVisible();
+  });
+
+  it("opens completed run activity initially and preserves manual visibility through refresh", async () => {
+    const props = { scopeKey: "run-complete", isLive: false, hasFinalResponse: true, completionBehavior: "keep-open" as const, gaps: [], isLoadingMore: false, loadError: null, loadMore: vi.fn(), items: [{ id: "thought", eventId: "e", sequence: 1, kind: "thinking" as const, label: "Thinking", reasoningContent: availableActivityContent("Saved provider thought") }] };
+    const view = render(<ActivityDisclosure {...settledPlanner} {...props} />, { wrapper: Wrapper });
+    await waitFor(() => expect(screen.getByText("Saved provider thought")).toBeVisible());
+    await userEvent.click(screen.getByRole("button", { name: "Hide Activity" }));
+    view.rerender(<ActivityDisclosure {...settledPlanner} {...props} items={[...props.items]} />);
+    expect(screen.getByText("Saved provider thought")).not.toBeVisible();
+  });
 
   it("shows the real read and observed message without surrounding provider lifecycle rows", async () => {
     const labels = [
@@ -62,7 +109,7 @@ describe("shared activity disclosure", () => {
             : ("progress" as const),
     }));
     render(
-      <ActivityDisclosure
+      <ActivityDisclosure {...settledPlanner}
         scopeKey="one-read"
         items={items}
         gaps={[]}
@@ -91,7 +138,7 @@ describe("shared activity disclosure", () => {
 
   it("omits the activity disclosure when the complete loaded history only contains routine progress", () => {
     render(
-      <ActivityDisclosure
+      <ActivityDisclosure {...settledPlanner}
         scopeKey="routine-only"
         items={[
           {
@@ -120,7 +167,7 @@ describe("shared activity disclosure", () => {
   it("preserves exact gap paging when the loaded window only contains routine progress", async () => {
     const loadMore = vi.fn(async () => undefined);
     render(
-      <ActivityDisclosure
+      <ActivityDisclosure {...settledPlanner}
         scopeKey="routine-window"
         items={[
           {
@@ -167,7 +214,7 @@ describe("shared activity disclosure", () => {
   it("does not claim that history is empty when its initial read failed", async () => {
     const retry = vi.fn(async () => undefined);
     render(
-      <ActivityDisclosure
+      <ActivityDisclosure {...settledPlanner}
         scopeKey="failed-read"
         items={[]}
         gaps={[]}
@@ -220,7 +267,7 @@ describe("shared activity disclosure", () => {
       loadMore: vi.fn(),
     };
     const view = render(
-      <ActivityDisclosure scopeKey="attempt-a" {...props} />,
+      <ActivityDisclosure {...settledPlanner} scopeKey="attempt-a" {...props} />,
       { wrapper: Wrapper },
     );
     const show = screen.getByRole("button", { name: "Show Activity" });
@@ -241,7 +288,7 @@ describe("shared activity disclosure", () => {
     await user.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(screen.getByText("Exact captured output")).toBeVisible();
     expect(fetchMock).toHaveBeenCalledOnce();
-    view.rerender(<ActivityDisclosure scopeKey="attempt-b" {...props} />);
+    view.rerender(<ActivityDisclosure {...settledPlanner} scopeKey="attempt-b" {...props} />);
     expect(
       screen.getByRole("button", { name: "Show Activity" }),
     ).toHaveAttribute("aria-expanded", "false");
@@ -257,7 +304,7 @@ describe("shared activity disclosure", () => {
       label: `Event ${index + 1}`,
     }));
     render(
-      <ActivityDisclosure
+      <ActivityDisclosure {...settledPlanner}
         scopeKey="large"
         items={items}
         gaps={[]}

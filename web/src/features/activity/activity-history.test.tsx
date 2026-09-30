@@ -161,9 +161,8 @@ describe("full provider content", () => {
     expect(screen.queryByText("Provider Observation")).not.toBeInTheDocument();
     expect(screen.queryByText(/bytes loaded/)).not.toBeInTheDocument();
     expect(screen.queryByText("inv")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByText("Event Details"));
-    expect(screen.getByText("Provider Observation")).toBeVisible();
-    expect(screen.getByText(`${content.byte_length} Bytes`)).toBeVisible();
+    expect(screen.queryByText("Event Details")).not.toBeInTheDocument();
+    expect(screen.queryByText("Event ID")).not.toBeInTheDocument();
   });
 
   it("keeps incomplete message content and its continuation visible", async () => {
@@ -294,17 +293,15 @@ describe("full provider content", () => {
       expect(document.querySelector("pre")?.textContent).toBe(content.preview),
     );
     expect(screen.queryByText("Event ID")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByText("Event Details"));
-    await waitFor(() => expect(screen.getByText("completed")).toBeVisible());
-    expect(screen.getByText("Event ID")).toBeVisible();
+    expect(screen.queryByText("Event Details")).not.toBeInTheDocument();
+    expect(screen.queryByText("completed")).not.toBeInTheDocument();
   });
 
   it("shows provider reasoning as a readable excerpt and expands complete text in one step", async () => {
-    const content = availableActivityContent(
-      "I will check the route and then the exact failure.",
-    );
+    const fullText = "I will check the route and then the exact failure.";
+    const content = { ...availableActivityContent(fullText), preview: "I will check the route" };
     fetchMock.mockResolvedValue({
-      text: content.preview,
+      text: fullText,
       offset: 0,
       byte_length: content.byte_length,
       sha256: content.sha256,
@@ -337,9 +334,9 @@ describe("full provider content", () => {
       expect(screen.getByText(content.preview!)).toBeVisible(),
     );
     expect(fetchMock).not.toHaveBeenCalled();
-    await userEvent.click(screen.getByText("Thinking"));
+    await userEvent.click(screen.getByRole("button", { name: "Read More" }));
     await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
-    expect(screen.getByText(content.preview!)).toBeVisible();
+    expect(screen.getByText(fullText)).toBeVisible();
     expect(screen.queryByText("Provider Reasoning")).not.toBeInTheDocument();
   });
 

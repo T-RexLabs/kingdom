@@ -21,6 +21,7 @@ export function activityToolSummary(item: ActivityItem): string {
   if (!item.toolName) return item.label.split(/\r?\n/)[0];
   const name = item.toolName.toLowerCase();
   const action = actions[name] ?? item.toolName;
+  if (["webfetch", "websearch", "glob", "grep"].includes(name)) return item.label.split(/\r?\n/)[0];
   if (!["read", "write", "edit"].includes(name)) return action;
   try {
     const input: unknown = JSON.parse(

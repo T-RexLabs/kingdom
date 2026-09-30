@@ -11,6 +11,9 @@ const tool = (overrides: Partial<ActivityItem>): ActivityItem => ({
   ...overrides,
 });
 describe("quiet tool summaries", () => {
+  it.each(["webfetch", "websearch", "glob", "grep"])("preserves the real target or query in %s activity", (toolName) => {
+    expect(activityToolSummary(tool({ toolName, label: "Searching the exact target" }))).toBe("Searching the exact target");
+  });
   it("shows a filename without exposing a full path in the default summary", () => {
     expect(
       activityToolSummary(

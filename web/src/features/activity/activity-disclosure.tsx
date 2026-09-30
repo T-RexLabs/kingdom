@@ -9,6 +9,9 @@ import type { ActivityItem } from "./activity-view";
 type ActivityDisclosureProps = ActivityHistoryControls & {
   scopeKey: string;
   items: ActivityItem[];
+  isLive: boolean;
+  hasFinalResponse: boolean;
+  completionBehavior: "collapse" | "keep-open";
   isLoading?: boolean;
   error?: Error | null;
   retry?: () => Promise<unknown>;
@@ -22,10 +25,25 @@ function ScopedActivityDisclosure({
   isLoading,
   error,
   retry,
+  isLive,
+  hasFinalResponse,
+  completionBehavior,
   ...history
 }: ActivityDisclosureProps) {
-  const [open, setOpen] = useState(false);
-  const [hasOpened, setHasOpened] = useState(false);
+  const initiallyOpen = completionBehavior === "keep-open" || !hasFinalResponse;
+  const [visibility, setVisibility] = useState({ responseReceived: hasFinalResponse, open: initiallyOpen, mounted: initiallyOpen });
+  // Collapse only for a newly received canonical response, never for a stopped
+  // stream or a replay/refresh. Manual choices survive within the same scope.
+  let currentVisibility = visibility;
+  if (visibility.responseReceived !== hasFinalResponse) {
+    currentVisibility = {
+      ...visibility,
+      responseReceived: hasFinalResponse,
+      open: hasFinalResponse && completionBehavior === "collapse" ? false : visibility.open,
+    };
+    setVisibility(currentVisibility);
+  }
+  const { open, mounted: hasOpened } = currentVisibility;
   const panelId = useId();
   const visibleItems = useMemo(
     () => history.items.filter((item) => item.kind !== "progress"),
@@ -33,17 +51,19 @@ function ScopedActivityDisclosure({
   );
   const hasHistory = visibleItems.length > 0 || history.gaps.length > 0;
   const readError = error ?? (!hasHistory ? history.loadError : null);
-  if (!hasHistory && !isLoading && !readError) return null;
+  const showHistoryControl = hasHistory || isLoading || Boolean(readError);
+  const currentActivity = isLive ? history.items.at(-1) : undefined;
+  const currentLabel = currentActivity?.kind === "progress" ? currentActivity.label : undefined;
+  if (!hasHistory && !isLive && !isLoading && !readError) return null;
 
   return (
     <div className="space-y-2">
-      <button
+      {showHistoryControl && <button
         type="button"
         aria-expanded={open}
         aria-controls={panelId}
         onClick={() => {
-          setHasOpened(true);
-          setOpen((current) => !current);
+          setVisibility((current) => ({ ...current, mounted: true, open: !current.open }));
         }}
         className="inline-flex min-h-9 items-center gap-2 text-xs font-medium text-foreground-muted transition-colors hover:text-foreground"
       >
@@ -52,7 +72,12 @@ function ScopedActivityDisclosure({
           className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
         />
         {open ? "Hide Activity" : "Show Activity"}
-      </button>
+      </button>}
+      {isLive && (currentLabel || !currentActivity) && (
+        <p role="status" className="text-xs text-foreground-muted">
+          {currentLabel || "Waiting for provider activity."}
+        </p>
+      )}
       {readError && (
         <p role="alert" className="text-xs text-status-failed">
           Activity could not be loaded.{" "}
@@ -67,7 +92,7 @@ function ScopedActivityDisclosure({
           )}
         </p>
       )}
-      <div
+      {showHistoryControl && <div
         id={panelId}
         hidden={!open}
         className="rounded-xl border border-border/60 bg-surface/40 px-3 py-2"
@@ -92,7 +117,7 @@ function ScopedActivityDisclosure({
             ) : null}
           </>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

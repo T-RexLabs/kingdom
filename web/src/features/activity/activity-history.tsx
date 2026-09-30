@@ -5,7 +5,6 @@ import { apiFetch } from "@/api/client";
 import type { components } from "@/api/schema";
 import type { ActivityGap } from "@/api/activity-history";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { formatExactTime } from "@/lib/date-time";
 import { activityToolSummary } from "./activity-tool-summary";
 import { ActivityChecklist } from "./activity-checklist";
 import type { ActivityContent, ActivityItem } from "./activity-view";
@@ -35,7 +34,6 @@ type Expansion = {
   row?: boolean;
   input?: boolean;
   output?: boolean;
-  metadata?: boolean;
 };
 
 export function ActivityHistory(props: HistoryProps) {
@@ -211,6 +209,11 @@ function ActivityHistoryRow({
   const isChecklist = checklistTool === "todowrite" || checklistTool === "todoread";
   const checklistContent = checklistTool === "todoread" ? item.outputContent : item.inputContent;
   const checklistExpanded = checklistTool === "todoread" ? expanded.output : expanded.input;
+  if (item.kind === "thinking") {
+    return <div data-activity-event={item.eventId} className="py-2">
+      <ActivityContentReader label="Provider Reasoning" presentation="reasoning" content={item.reasoningContent ?? { availability: "not_provided" }} open={expanded.row ?? false} onOpenChange={(open) => setExpanded("row", open)} />
+    </div>;
+  }
   return (
     <>
     <details
@@ -224,11 +227,7 @@ function ActivityHistoryRow({
     >
       <summary className="min-h-9 cursor-pointer py-2 text-[13px] marker:text-foreground-subtle">
         <span className="inline-block max-w-[90%] truncate align-bottom">
-          {item.kind === "tool"
-            ? activityToolSummary(item)
-            : item.kind === "thinking"
-              ? "Thinking"
-              : item.label}
+          {item.kind === "tool" ? activityToolSummary(item) : item.label}
         </span>
         {item.kind === "tool" && item.toolStatus === "running" && (
           <span aria-label="Tool running" className="ml-2 text-xs text-accent">
@@ -245,11 +244,6 @@ function ActivityHistoryRow({
               }
             </span>
           )}
-        {item.kind === "thinking" && !expanded.row && (
-          <span className="mt-2 block line-clamp-3 whitespace-pre-wrap border-l-2 border-border pl-4 text-sm leading-6 text-foreground-muted">
-            {item.reasoningContent?.preview ?? item.detail}
-          </span>
-        )}
       </summary>
       {expanded.row && (
         <div className="space-y-3 py-3 pl-4">
@@ -278,116 +272,16 @@ function ActivityHistoryRow({
               />
             </>
           ) : null}
-          {item.kind === "thinking" ? (
-            <ActivityContentReader
-              label="Provider Reasoning"
-              presentation="reasoning"
-              content={
-                item.reasoningContent ?? { availability: "not_provided" }
-              }
-            />
-          ) : null}
           {item.kind === "progress" && item.detail ? (
             <p className="whitespace-pre-wrap text-xs text-foreground-subtle">
               {item.detail}
             </p>
           ) : null}
-          <details
-            open={expanded.metadata ?? false}
-            onToggle={(event) => {
-              if (event.target === event.currentTarget)
-                setExpanded("metadata", event.currentTarget.open);
-            }}
-          >
-            <summary className="w-fit cursor-pointer py-1 text-[11px] text-foreground-subtle">
-              Event Details
-            </summary>
-            {expanded.metadata && <ActivityMetadata item={item} />}
-          </details>
         </div>
       )}
     </details>
     {isChecklist && (!expanded.row || !checklistExpanded) && checklistContent && <ActivityChecklist content={checklistContent} />}
     </>
-  );
-}
-
-function ActivityMetadata({ item }: { item: ActivityItem }) {
-  return (
-    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-[10px] text-foreground-muted">
-      {item.kind === "message" && (
-        <>
-          <dt>Origin</dt>
-          <dd>Provider Observation</dd>
-          {item.messageContent?.byte_length !== undefined && (
-            <>
-              <dt>Content</dt>
-              <dd>{item.messageContent.byte_length.toLocaleString()} Bytes</dd>
-            </>
-          )}
-        </>
-      )}
-      <dt>Activity</dt>
-      <dd>{item.label}</dd>
-      {item.toolName && (
-        <>
-          <dt>Tool</dt>
-          <dd>{item.toolName}</dd>
-        </>
-      )}
-      {item.toolTitle && (
-        <>
-          <dt>Title</dt>
-          <dd className="whitespace-pre-wrap break-words">{item.toolTitle}</dd>
-        </>
-      )}
-      {item.toolStatus && (
-        <>
-          <dt>Status</dt>
-          <dd>{item.toolStatus}</dd>
-        </>
-      )}
-      {item.occurredAt && (
-        <>
-          <dt>Occurred</dt>
-          <dd>
-            <time dateTime={item.occurredAt}>
-              {formatExactTime(item.occurredAt)}
-            </time>
-          </dd>
-        </>
-      )}
-      {item.recordedAt && (
-        <>
-          <dt>Recorded</dt>
-          <dd>
-            <time dateTime={item.recordedAt}>
-              {formatExactTime(item.recordedAt)}
-            </time>
-          </dd>
-        </>
-      )}
-      {item.toolCallId && (
-        <>
-          <dt>Tool Call ID</dt>
-          <dd className="break-all font-mono">{item.toolCallId}</dd>
-        </>
-      )}
-      {item.providerPartId && (
-        <>
-          <dt>Provider Part ID</dt>
-          <dd className="break-all font-mono">{item.providerPartId}</dd>
-        </>
-      )}
-      {item.invocationId && (
-        <>
-          <dt>Invocation ID</dt>
-          <dd className="break-all font-mono">{item.invocationId}</dd>
-        </>
-      )}
-      <dt>Event ID</dt>
-      <dd className="break-all font-mono">{item.eventId}</dd>
-    </dl>
   );
 }
 
@@ -409,6 +303,7 @@ export function ActivityContentReader({
   onOpenChange?: (open: boolean) => void;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
+  const readReasoning = controlledOpen ?? localOpen;
   const open = presentation !== "disclosure" || (controlledOpen ?? localOpen);
   const pages = useInfiniteQuery({
     queryKey: ["activity-content", content.content_url, content.sha256],
@@ -421,6 +316,7 @@ export function ActivityContentReader({
       open &&
       content.availability === "available" &&
       Boolean(content.content_url) &&
+      (presentation !== "reasoning" || readReasoning) &&
       (content.byte_length ?? 0) > 0,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor,
@@ -496,6 +392,9 @@ export function ActivityContentReader({
           {pages.isFetching ? (
             <p className="text-xs text-foreground-muted">Loading content…</p>
           ) : null}
+          {presentation === "reasoning" && !readReasoning && loadedBytes < (content.byte_length ?? 0) && content.content_url && (
+            <button type="button" className="min-h-9 text-xs font-medium text-accent" onClick={() => { setLocalOpen(true); onOpenChange?.(true); }}>Read More</button>
+          )}
           {pages.hasNextPage ? (
             <button
               type="button"

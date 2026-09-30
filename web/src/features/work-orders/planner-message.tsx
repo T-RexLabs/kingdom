@@ -31,6 +31,7 @@ export function PlannerMessageCard({
   onActivateVariant,
   activityRunId,
   liveActivityItems,
+  isCanonical,
 }: {
   message: PlanningMessage;
   children?: React.ReactNode;
@@ -52,10 +53,12 @@ export function PlannerMessageCard({
   onActivateVariant?: (messageId: string) => void;
   activityRunId?: string;
   liveActivityItems?: ActivityItem[];
+  isCanonical?: boolean;
 }) {
   const isAssistant = message.role === "assistant";
   const renderedContent = contentMarkdown ?? message.content_markdown;
   const isAssistantStreaming = isAssistant && (isStreaming ?? false);
+  const hasFinalResponse = isAssistant && (isCanonical ?? !isAssistantStreaming);
   // useTextReveal does no-op work for non-assistant messages, but its effect
   // and ref machinery still cost cycles on every render. Pass an empty string
   // when we know the hook will never animate so the no-op path stays cheap;
@@ -86,7 +89,7 @@ export function PlannerMessageCard({
     !isFirstAssistant &&
     !(isProcessing ?? false) &&
     onRegenerate;
-  const showSources = isAssistant && !isAssistantStreaming;
+  const showSources = isAssistant;
 
   return (
     <div
@@ -122,6 +125,8 @@ export function PlannerMessageCard({
                       resolvedActivityRunId ?? message.planning_message_id
                     }
                     activity={messageActivity}
+                    isLive={isAssistantStreaming && !hasFinalResponse}
+                    hasFinalResponse={hasFinalResponse}
                   />
                 )}
                 {displayText.trim() ? (

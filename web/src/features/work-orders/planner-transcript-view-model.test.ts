@@ -320,6 +320,8 @@ describe("planner transcript view model", () => {
       "optimistic-assistant-1",
     ]);
     expect(result.items[2]?.isStreaming).toBe(false);
+    expect(result.items[2]?.isCanonical).toBe(false);
+    expect(result.items[0]?.isCanonical).toBe(true);
     expect(result.activeQuestionId).toBe("assistant-1");
   });
 
@@ -350,6 +352,7 @@ describe("planner transcript view model", () => {
 
     expect(result.items.map((item) => item.message.planning_message_id)).toEqual(["assistant-1", "optimistic-regen-1"]);
     expect(result.items[1]?.isStreaming).toBe(false);
+    expect(result.items[1]?.isCanonical).toBe(false);
   });
 
   it("hides stale descendants for an optimistic edit reply", () => {
