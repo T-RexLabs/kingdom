@@ -128,7 +128,7 @@ describe("virtual provider activity", () => {
     expect(scroller.scrollTop).toBe(20 * 52);
     await user.click(screen.getByRole("button", { name: "Jump to Latest" }));
     await waitFor(() => expect(screen.getByText("Event 101")).toBeVisible());
-    expect(await screen.findByText("Following Latest")).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Jump to Latest" })).not.toBeInTheDocument());
   });
   it("retains lazy tool disclosures across virtual unmounts and resets them for another attempt", async () => {
     const user = userEvent.setup();

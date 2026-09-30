@@ -5,7 +5,8 @@ import { apiFetch } from "@/api/client";
 import type { components } from "@/api/schema";
 import type { ActivityGap } from "@/api/activity-history";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { RelativeTime } from "@/components/ui/relative-time";
+import { formatExactTime } from "@/lib/date-time";
+import { activityToolSummary } from "./activity-tool-summary";
 import type { ActivityContent, ActivityItem } from "./activity-view";
 import {
   initialActivityPosition,
@@ -24,18 +25,19 @@ type HistoryProps = {
   items: ActivityItem[];
   messageDisplay?: "conversation" | "inspection";
   headerActions?: ReactNode;
+  conclusion?: ReactNode;
 } & ActivityHistoryControls;
 type HistoryRow = {
   key: string;
   item?: ActivityItem;
   gap?: ActivityGap;
+  conclusion?: boolean;
   sequence: number;
 };
 type Expansion = {
   row?: boolean;
   input?: boolean;
   output?: boolean;
-  reasoning?: boolean;
 };
 
 export function ActivityHistory(props: HistoryProps) {
@@ -50,7 +52,9 @@ function VirtualActivityHistory({
   loadMore,
   messageDisplay = "conversation",
   headerActions,
+  conclusion,
 }: HistoryProps) {
+  const hasConclusion = !!conclusion;
   const rows = useMemo<HistoryRow[]>(
     () =>
       [
@@ -64,8 +68,17 @@ function VirtualActivityHistory({
           gap,
           sequence: gap.through + 0.5,
         })),
+        ...(hasConclusion
+          ? [
+              {
+                key: "canonical-response",
+                conclusion: true,
+                sequence: Infinity,
+              },
+            ]
+          : []),
       ].sort((left, right) => left.sequence - right.sequence),
-    [items, gaps],
+    [items, gaps, hasConclusion],
   );
   const list = useRef<VirtuosoHandle>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -111,16 +124,6 @@ function VirtualActivityHistory({
         </p>
       ) : null}
       <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 text-xs text-foreground-muted">
-        <span>
-          {rows.length > 0 &&
-            (atBottom ? "Following Latest" : "Reading Earlier Activity")}
-        </span>
-        {gaps.length > 0 && (
-          <span>
-            {gaps.reduce((count, gap) => count + gap.count, 0).toLocaleString()}{" "}
-            Events Not Loaded
-          </span>
-        )}
         <div className="ml-auto flex items-start gap-3">
           {!atBottom && (
             <button
@@ -194,6 +197,8 @@ function VirtualActivityHistory({
                     )
                   }
                 />
+              ) : row.conclusion ? (
+                conclusion
               ) : null}
             </div>
           )}
@@ -222,19 +227,14 @@ function ActivityHistoryRow({
     return (
       <article
         data-activity-event={item.eventId}
-        className="rounded-xl border border-border bg-surface/60 px-4 py-3"
+        className="group/message py-5"
       >
         <ActivityContentReader
           label="Message"
           presentation="message"
           content={item.messageContent ?? { availability: "not_provided" }}
         />
-        <div className="mt-2 flex flex-wrap items-start gap-x-4 text-xs text-foreground-muted">
-          {item.occurredAt && (
-            <span className="py-2">
-              <RelativeTime iso={item.occurredAt} />
-            </span>
-          )}
+        <div className="mt-1 text-[11px] text-foreground-subtle">
           <details
             open={expanded.row ?? false}
             onToggle={(event) => {
@@ -243,7 +243,7 @@ function ActivityHistoryRow({
             }}
             className="min-w-0 flex-1"
           >
-            <summary className="min-h-9 cursor-pointer py-2">
+            <summary className="w-fit cursor-pointer py-1 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 group-hover/message:opacity-100">
               Message Details
             </summary>
             <ActivityMetadata item={item} />
@@ -260,23 +260,39 @@ function ActivityHistoryRow({
         if (event.target === event.currentTarget)
           setExpanded("row", event.currentTarget.open);
       }}
-      className="rounded-lg border border-border bg-surface/50"
+      className="py-1 text-foreground-muted"
     >
-      <summary className="min-h-11 cursor-pointer px-3 py-2 text-xs marker:text-foreground-muted">
-        <span className="font-medium text-foreground">{item.label}</span>
-        {item.toolStatus ? (
-          <span className="ml-2 rounded bg-background px-1.5 py-0.5 text-[10px] capitalize text-foreground-muted">
-            {item.toolStatus.replaceAll("_", " ")}
+      <summary className="min-h-9 cursor-pointer py-2 text-[13px] marker:text-foreground-subtle">
+        <span className="inline-block max-w-[90%] truncate align-bottom">
+          {item.kind === "tool"
+            ? activityToolSummary(item)
+            : item.kind === "thinking"
+              ? "Thinking"
+              : item.label}
+        </span>
+        {item.kind === "tool" && item.toolStatus === "running" && (
+          <span aria-label="Tool running" className="ml-2 text-xs text-accent">
+            Running
           </span>
-        ) : null}
-        {item.occurredAt ? (
-          <span className="ml-2 text-foreground-muted">
-            <RelativeTime iso={item.occurredAt} />
+        )}
+        {item.toolStatus &&
+          ["failed", "error", "cancelled"].includes(item.toolStatus) && (
+            <span className="ml-2 text-xs text-status-failed">
+              {
+                { failed: "Failed", error: "Error", cancelled: "Cancelled" }[
+                  item.toolStatus
+                ]
+              }
+            </span>
+          )}
+        {item.kind === "thinking" && !expanded.row && (
+          <span className="mt-2 block line-clamp-3 whitespace-pre-wrap border-l-2 border-border pl-4 text-sm leading-6 text-foreground-muted">
+            {item.reasoningContent?.preview ?? item.detail}
           </span>
-        ) : null}
+        )}
       </summary>
       {expanded.row && (
-        <div className="space-y-2 border-t border-border px-3 py-3">
+        <div className="space-y-3 py-3 pl-4">
           {item.kind === "message" && (
             <ActivityContentReader
               label="Observed Message"
@@ -303,8 +319,7 @@ function ActivityHistoryRow({
           {item.kind === "thinking" ? (
             <ActivityContentReader
               label="Provider Reasoning"
-              open={expanded.reasoning ?? false}
-              onOpenChange={(open) => setExpanded("reasoning", open)}
+              presentation="reasoning"
               content={
                 item.reasoningContent ?? { availability: "not_provided" }
               }
@@ -335,6 +350,46 @@ function ActivityMetadata({ item }: { item: ActivityItem }) {
               <dd>{item.messageContent.byte_length.toLocaleString()} Bytes</dd>
             </>
           )}
+        </>
+      )}
+      <dt>Activity</dt>
+      <dd>{item.label}</dd>
+      {item.toolName && (
+        <>
+          <dt>Tool</dt>
+          <dd>{item.toolName}</dd>
+        </>
+      )}
+      {item.toolTitle && (
+        <>
+          <dt>Title</dt>
+          <dd className="whitespace-pre-wrap break-words">{item.toolTitle}</dd>
+        </>
+      )}
+      {item.toolStatus && (
+        <>
+          <dt>Status</dt>
+          <dd>{item.toolStatus}</dd>
+        </>
+      )}
+      {item.occurredAt && (
+        <>
+          <dt>Occurred</dt>
+          <dd>
+            <time dateTime={item.occurredAt}>
+              {formatExactTime(item.occurredAt)}
+            </time>
+          </dd>
+        </>
+      )}
+      {item.recordedAt && (
+        <>
+          <dt>Recorded</dt>
+          <dd>
+            <time dateTime={item.recordedAt}>
+              {formatExactTime(item.recordedAt)}
+            </time>
+          </dd>
         </>
       )}
       {item.toolCallId && (
@@ -370,14 +425,14 @@ export function ActivityContentReader({
   onOpenChange,
   presentation = "disclosure",
 }: {
-  presentation?: "disclosure" | "message";
+  presentation?: "disclosure" | "message" | "reasoning";
   label: string;
   content: ActivityContent;
   open?: boolean;
   onOpenChange?: (open: boolean) => void;
 }) {
   const [localOpen, setLocalOpen] = useState(false);
-  const open = presentation === "message" || (controlledOpen ?? localOpen);
+  const open = presentation !== "disclosure" || (controlledOpen ?? localOpen);
   const pages = useInfiniteQuery({
     queryKey: ["activity-content", content.content_url, content.sha256],
     queryFn: ({ pageParam, signal }) =>
@@ -406,7 +461,7 @@ export function ActivityContentReader({
   const body = (
     <div
       className={
-        presentation === "message"
+        presentation !== "disclosure"
           ? "space-y-2"
           : "space-y-2 border-t border-border/70 p-2.5"
       }
@@ -425,11 +480,15 @@ export function ActivityContentReader({
         </p>
       ) : (
         <>
-          {presentation === "message" ? (
-            <div className="max-h-[32rem] overflow-auto">
+          {presentation !== "disclosure" ? (
+            <div>
               <MarkdownBlock
                 content={text}
-                className="text-sm leading-relaxed text-foreground"
+                className={
+                  presentation === "reasoning"
+                    ? "border-l-2 border-border pl-4 text-sm leading-6 text-foreground-muted"
+                    : "text-[15px] leading-7 text-foreground"
+                }
               />
             </div>
           ) : (
@@ -437,7 +496,7 @@ export function ActivityContentReader({
               {text}
             </pre>
           )}
-          {(presentation !== "message" ||
+          {(presentation === "disclosure" ||
             loadedBytes < (content.byte_length ?? 0)) && (
             <p className="text-[10px] text-foreground-muted">
               {loadedBytes.toLocaleString()} of{" "}
@@ -473,7 +532,7 @@ export function ActivityContentReader({
       )}
     </div>
   );
-  if (presentation === "message") return body;
+  if (presentation !== "disclosure") return body;
   return (
     <details
       open={open}

@@ -110,7 +110,7 @@ describe("full provider content", () => {
     expect(
       await screen.findByText("80 earlier events are not loaded."),
     ).toBeInTheDocument();
-    expect(screen.getByText("80 Events Not Loaded")).toBeInTheDocument();
+    expect(screen.queryByText("80 Events Not Loaded")).not.toBeInTheDocument();
     await user.click(
       await screen.findByRole("button", { name: "Load Events" }),
     );
@@ -156,7 +156,7 @@ describe("full provider content", () => {
       await screen.findByRole("heading", { name: "Recommendation" }),
     ).toBeVisible();
     expect(screen.getByText("Proceed with the page.")).toBeVisible();
-    expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
+    expect(screen.getByText("Provider Message")).not.toBeVisible();
     expect(screen.getByText("Provider Observation")).not.toBeVisible();
     expect(screen.queryByText(/bytes loaded/)).not.toBeInTheDocument();
     expect(screen.getByText("inv")).not.toBeVisible();
@@ -191,6 +191,130 @@ describe("full provider content", () => {
     expect(
       screen.getByText(`16 of ${content.byte_length} bytes loaded.`),
     ).toBeVisible();
+  });
+
+  it("shows running tools quietly without inferring activity from an unspecified status", async () => {
+    const activity = (status?: string) => (
+      <VirtuosoMockContext.Provider
+        value={{ viewportHeight: 400, itemHeight: 100 }}
+      >
+        <ActivityHistory
+          scopeKey="active-tool"
+          items={[
+            {
+              id: "t",
+              eventId: "e",
+              sequence: 1,
+              kind: "tool",
+              toolName: "bash",
+              label: "Tool Call",
+              toolStatus: status,
+            },
+          ]}
+          gaps={[]}
+          isLoadingMore={false}
+          loadError={null}
+          loadMore={vi.fn()}
+        />
+      </VirtuosoMockContext.Provider>
+    );
+    const view = render(activity("running"), { wrapper: wrapper() });
+    await waitFor(() =>
+      expect(screen.getByLabelText("Tool running")).toBeVisible(),
+    );
+    view.rerender(activity());
+    expect(screen.queryByLabelText("Tool running")).not.toBeInTheDocument();
+  });
+
+  it("keeps raw commands out of the conversation until direct tool inspection", async () => {
+    const command = "python3 - <<'PY'\nprint('exact command')\nPY";
+    const content = availableActivityContent(JSON.stringify({ command }));
+    fetchMock.mockResolvedValue({
+      text: content.preview,
+      offset: 0,
+      byte_length: content.byte_length,
+      sha256: content.sha256,
+    });
+    render(
+      <VirtuosoMockContext.Provider
+        value={{ viewportHeight: 400, itemHeight: 100 }}
+      >
+        <ActivityHistory
+          scopeKey="tools"
+          items={[
+            {
+              id: "t",
+              eventId: "e",
+              sequence: 1,
+              kind: "tool",
+              toolName: "bash",
+              label: command,
+              toolStatus: "completed",
+              inputContent: content,
+            },
+          ]}
+          gaps={[]}
+          isLoadingMore={false}
+          loadError={null}
+          loadMore={vi.fn()}
+        />
+      </VirtuosoMockContext.Provider>,
+      { wrapper: wrapper() },
+    );
+    const summary = await screen.findByText("Run Command");
+    expect(summary.closest("summary")).not.toHaveTextContent("python3");
+    expect(screen.queryByText("completed")).not.toBeInTheDocument();
+    expect(document.querySelector("pre")).toBeNull();
+    await userEvent.click(summary);
+    await userEvent.click(screen.getByText("Input"));
+    await waitFor(() =>
+      expect(document.querySelector("pre")?.textContent).toBe(content.preview),
+    );
+    await waitFor(() => expect(screen.getByText("completed")).toBeVisible());
+  });
+
+  it("shows provider reasoning as a readable excerpt and expands complete text in one step", async () => {
+    const content = availableActivityContent(
+      "I will check the route and then the exact failure.",
+    );
+    fetchMock.mockResolvedValue({
+      text: content.preview,
+      offset: 0,
+      byte_length: content.byte_length,
+      sha256: content.sha256,
+    });
+    render(
+      <VirtuosoMockContext.Provider
+        value={{ viewportHeight: 400, itemHeight: 100 }}
+      >
+        <ActivityHistory
+          scopeKey="reasoning"
+          items={[
+            {
+              id: "r",
+              eventId: "e",
+              sequence: 1,
+              kind: "thinking",
+              label: "Thinking",
+              reasoningContent: content,
+            },
+          ]}
+          gaps={[]}
+          isLoadingMore={false}
+          loadError={null}
+          loadMore={vi.fn()}
+        />
+      </VirtuosoMockContext.Provider>,
+      { wrapper: wrapper() },
+    );
+    await waitFor(() =>
+      expect(screen.getByText(content.preview!)).toBeVisible(),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByText("Thinking"));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    expect(screen.getByText(content.preview!)).toBeVisible();
+    expect(screen.queryByText("Provider Reasoning")).not.toBeInTheDocument();
   });
 
   it("keeps planner provider messages as optional inspection instead of a second automatic reply", async () => {

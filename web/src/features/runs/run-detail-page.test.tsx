@@ -49,7 +49,7 @@ const agentsRefetchMock = vi.fn();
 const executionsRefetchMock = vi.fn();
 const executionDetailRefetchMock = vi.fn();
 const mailboxMessageRefetchMock = vi.fn();
-const mockSearch: { tab?: string } = { tab: "execution" };
+const mockSearch: { tab?: string; panel?: string; section?: string } = { tab: "execution" };
 const mockRouteParams = { runId: "run-1" };
 
 const mockRun = {
@@ -168,6 +168,7 @@ vi.mock("./dag-visualization", () => ({
 	},
 }));
 
+vi.mock("./run-execution-picker", () => ({ RunExecutionPicker: () => <div>Attempt Picker</div> }));
 vi.mock("./run-output", () => ({ RunOutput: () => <div>artifacts</div> }));
 
 vi.mock("./run-live-status", () => ({ RunLiveStatus: ({ onSelect }: { onSelect: (nodeId: string) => void }) => <button onClick={() => onSelect("implementation")}>Open Live Builder Activity</button> }));
@@ -263,7 +264,8 @@ describe("run detail page", () => {
     fetchNextPageMock.mockReset();
     timelineRefetchMock.mockReset();
     navigateMock.mockReset();
-    navigateMock.mockImplementation(({ search }: { search: { tab: string } }) => { mockSearch.tab = search.tab; });
+    navigateMock.mockImplementation(({ search }: { search: typeof mockSearch }) => { Object.keys(mockSearch).forEach((key) => delete mockSearch[key as keyof typeof mockSearch]); Object.assign(mockSearch, search); });
+    delete mockSearch.panel; delete mockSearch.section;
     mockRouteParams.runId = "run-1";
     mockSearch.tab = "execution";
     mockRun.start_state = "not_started";
@@ -332,7 +334,7 @@ describe("run detail page", () => {
 	}));
     useInfiniteRunNodeAttemptsMock.mockReset();
     useInfiniteRunNodeAttemptsMock.mockImplementation(() => ({
-      data: { pages: [{ items: mockExecutions.flatMap((node) => node.current_execution ? [node.current_execution] : []) }] },
+      data: { pages: [{ items: mockExecutions.flatMap((node) => node.current_execution ? [{ ...node.current_execution, superseded: false, retry_relationships: [] }] : []) }] },
       isSuccess: true,
       hasNextPage: false,
       isFetchingNextPage: false,
@@ -498,7 +500,7 @@ describe("run detail page", () => {
 	});
 
 	it("enables only the active agents tab query for a running run", () => {
-	  mockSearch.tab = "context";
+	  mockSearch.panel = "details"; mockSearch.section = "context";
 
 	  render(<RunDetailPage />);
 
@@ -559,7 +561,7 @@ describe("run detail page", () => {
     };
     mockRun.status = "cancelled";
     mockRun.display_state = "cancelled";
-    mockSearch.tab = "context";
+    mockSearch.panel = "details"; mockSearch.section = "context";
     useRunGraphMock.mockImplementation(() => ({
       data: { run_id: "run-1", nodes: [cancelledNode], edges: [] },
       isPending: false,
@@ -594,7 +596,7 @@ describe("run detail page", () => {
   });
 
 	it("passes graph data into the activity timeline when available", () => {
-		mockSearch.tab = "audit";
+		mockSearch.panel = "details"; mockSearch.section = "audit";
 		useRunGraphMock.mockImplementation(() => ({
 			data: {
 				run_id: "run-1",
@@ -640,7 +642,7 @@ describe("run detail page", () => {
 
 	it("shows an explicit timeline error state with retry instead of an empty state", async () => {
     const user = userEvent.setup();
-    mockSearch.tab = "audit";
+    mockSearch.panel = "details"; mockSearch.section = "audit";
 		mockExecutionsError = new Error("Execution list unavailable");
     useTimelineMock.mockImplementation(() => ({
       data: undefined,
@@ -658,7 +660,7 @@ describe("run detail page", () => {
 
     expect(screen.getByText("Timeline unavailable")).toBeInTheDocument();
     expect(screen.queryByText("No events recorded yet.")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await user.click(within(screen.getByRole("dialog", { name: "Run Details" })).getByRole("button", { name: "Retry" }));
     expect(timelineRefetchMock).toHaveBeenCalledTimes(1);
   });
 
@@ -690,7 +692,7 @@ describe("run detail page", () => {
 
 	it("surfaces timeline refresh failures even while cached activity remains visible", async () => {
 		const user = userEvent.setup();
-		mockSearch.tab = "audit";
+		mockSearch.panel = "details"; mockSearch.section = "audit";
 		mockTimelineItems.push({ event_id: "evt-1", event_type: "attempt.started", run_event_seq: 1, attempt_seq: 1, emitted_at: "2026-03-06T10:00:00.000Z", payload_json: {} });
 		useTimelineMock.mockImplementation(() => ({
 			data: mockTimelineData,
@@ -926,9 +928,9 @@ describe("run detail page", () => {
   const original=runExecution({attempt_id:"attempt-answer",node_run_id:"nr-answer",node_id:"implementation",attempt:1,agent_id:"agent-1",required_role:"builder",execution_mode:"provider_backed",status:"succeeded",queued_at:"2026-03-06T10:00:00.000Z",activity_at:"2026-03-06T10:01:00.000Z",updated_at:"2026-03-06T10:01:00.000Z",stop_retry_available:false});
   mockExecutions=[runNode(original,{status:"succeeded",attempt_count:1})];
   const {rerender}=render(<RunDetailPage />);
-  const props=executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {onViewOutput:()=>void};
-  await act(async()=>props.onViewOutput());
-  mockSearch.tab="output";
+  const props=executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {onViewDetails:()=>void};
+  await act(async()=>props.onViewDetails());
+  mockSearch.panel="details"; mockSearch.section="execution";
   mockExecutions=[runNode({...original,attempt_id:"attempt-next",node_run_id:"nr-next",attempt:2,status:"running"},{status:"running",attempt_count:2})];
   await act(async()=>rerender(<RunDetailPage />));
   expect(executionSurfacePropsMock.mock.calls.at(-1)?.[0].selectedAttemptId).toBe("attempt-answer");
@@ -1171,7 +1173,7 @@ describe("run detail page", () => {
 	    });
 	  });
 
-	  mockSearch.tab = "audit";
+	  mockSearch.panel = "details"; mockSearch.section = "audit";
 	  rerender(<RunDetailPage />);
 	  await act(async () => {
 	    await Promise.resolve();
@@ -1202,7 +1204,7 @@ describe("run detail page", () => {
 	    });
 	  });
 
-	  mockSearch.tab = "audit";
+	  mockSearch.panel = "details"; mockSearch.section = "audit";
 	  rerender(<RunDetailPage />);
 	  await act(async () => {
 	    await Promise.resolve();
@@ -1225,7 +1227,7 @@ describe("run detail page", () => {
 	});
 
 	it("fetches older canonical timeline pages until a hidden gap is covered", async () => {
-	  mockSearch.tab = "audit";
+	  mockSearch.panel = "details"; mockSearch.section = "audit";
 	  mockHasNextPage = true;
 	  mockTimelineData.pages = [{
 	    items: [{
@@ -1340,7 +1342,7 @@ describe("run detail page", () => {
 			queryClient.setQueryData(runSurfaceFreshnessQueryKey("run-1"), { dirtySurfaces: ["agents"] });
 		});
 
-		mockSearch.tab = "context";
+		mockSearch.panel = "details"; mockSearch.section = "context";
 		rerender(<RunDetailPage />);
 		await act(async () => {
 			await Promise.resolve();
@@ -1425,7 +1427,7 @@ describe("run detail page", () => {
 
 	  expect(screen.getByRole("tablist", { name: "Run detail sections" })).toBeInTheDocument();
 	  expect(screen.getByRole("tab", { name: /^Agent Activity$/i })).toHaveAttribute("aria-selected", "true");
-	  expect(screen.getByRole("combobox", { name: "More run views" })).toBeInTheDocument();
+	  expect(screen.queryByRole("combobox", { name: "More run views" })).not.toBeInTheDocument();
 	});
 
   it("shows an explicit plan approval notice when the run awaits manual plan approval", () => {
@@ -1494,7 +1496,7 @@ describe("run detail page", () => {
     mockRun.display_state = "awaiting_final_decision";
     mockRun.autonomous_approvals = false;
 
-    mockSearch.tab = "plan";
+    mockSearch.panel = "plan";
     render(<RunDetailPage />);
 
     const plan = screen.getByText("plan");
@@ -1536,7 +1538,7 @@ describe("run detail page", () => {
 
     rerender(<RunDetailPage />);
     const target = screen.getByTestId("run-plan-approval-target");
-    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "plan" } }));
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "execution", panel: "plan" } }));
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest", inline: "nearest" });
     expect(target).toHaveFocus();
 
@@ -1562,9 +1564,8 @@ describe("run detail page", () => {
 
     rerender(<RunDetailPage />);
     const target = screen.getByTestId("run-final-approval-target");
-    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "plan" } }));
-    expect(screen.getByRole("combobox", { name: "More run views" })).toHaveValue("plan");
-    expect(screen.getByRole("tabpanel", { name: "Plan" })).toContainElement(target);
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "workflow", panel: "plan" } }));
+    expect(screen.getByRole("dialog", { name: "Plan Review" })).toContainElement(target);
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "nearest", inline: "nearest" });
     expect(target).toHaveFocus();
 
@@ -1573,7 +1574,7 @@ describe("run detail page", () => {
   });
 
   it("wires timeline pagination into the activity panel", () => {
-    mockSearch.tab = "audit";
+    mockSearch.panel = "details"; mockSearch.section = "audit";
     mockTimelineData.items = [];
 	    mockTimelineData.pages = [
 	      {
@@ -1693,7 +1694,7 @@ describe("run detail page", () => {
 	});
 
 	it("shows auto-succeeded indicators only when triggered", () => {
-	  mockSearch.tab = "context";
+	  mockSearch.panel = "details"; mockSearch.section = "context";
     const { rerender } = render(<RunDetailPage />);
 	  expect(screen.queryByText(/Review Auto-Succeeded at Cap/)).not.toBeInTheDocument();
 	  expect(screen.queryByText(/Validation Auto-Succeeded at Cap/)).not.toBeInTheDocument();
@@ -1711,7 +1712,7 @@ describe("run detail page", () => {
   it("shows single review/validation cycle counters", () => {
     mockRun.review_rework_cycles = 2;
     mockRun.validation_rework_waves = 1;
-    mockSearch.tab = "context";
+    mockSearch.panel = "details"; mockSearch.section = "context";
     render(<RunDetailPage />);
     expect(screen.getByText("Review Rework Requests").parentElement).toHaveTextContent("2 · Cap 5");
     expect(screen.getByText("Validation Rework Requests").parentElement).toHaveTextContent("1 · Cap 5");
@@ -1719,7 +1720,7 @@ describe("run detail page", () => {
 
   it("shows skip-review mode and hides review metrics when quality gates are skipped", () => {
     mockRun.workflow_id = "work-order-skip-review-validation-v1";
-    mockSearch.tab = "context";
+    mockSearch.panel = "details"; mockSearch.section = "context";
     render(<RunDetailPage />);
 
     expect(screen.getByText("Review and validation were skipped for this workflow.")).toBeInTheDocument();
@@ -1729,13 +1730,26 @@ describe("run detail page", () => {
     mockRun.workflow_id = "work-order-v1";
   });
 
-  it("defaults to Workflow with three primary destinations and quieter secondary views", () => {
+  it("opens run files contextually without adding an Output primary view", async () => {
+    const { rerender } = render(<RunDetailPage />);
+    await userEvent.click(screen.getByRole("button", { name: "Run Files" }));
+    rerender(<RunDetailPage />);
+    const dialog = screen.getByRole("dialog", { name: "Run Files" });
+    expect(within(dialog).getByText("artifacts")).toBeVisible();
+    expect(within(dialog).getByText("Attempt Picker")).toBeVisible();
+    expect(screen.queryByRole("tab", { name: "Output" })).not.toBeInTheDocument();
+    expect(navigateMock).toHaveBeenCalledWith(expect.objectContaining({ search: { tab: "execution", panel: "files" } }));
+  });
+
+  it("defaults to Workflow with exactly two primary views and contextual resources", () => {
     mockSearch.tab = undefined;
     render(<RunDetailPage />);
     expect(screen.getByText("graph")).toBeInTheDocument();
-    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Workflow", "Agent Activity", "Output"]);
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual(["Workflow", "Agent Activity"]);
     expect(screen.getByRole("tab", { name: "Workflow" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("combobox", { name: "More run views" })).toHaveTextContent("PlanContextMessagesAudit");
+    expect(screen.queryByRole("combobox", { name: "More run views" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Run Files" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Run Details" })).toBeVisible();
     expect(screen.queryByTestId("run-plan-approval-target")).not.toBeInTheDocument();
     expect(executionSurfacePropsMock).not.toHaveBeenCalled();
   });
@@ -1763,14 +1777,15 @@ describe("run detail page", () => {
     rerender(<RunDetailPage />);
     expect(screen.getByTestId("run-status-pill")).toHaveTextContent("Succeeded");
   });
-  it("opens Audit through the quiet secondary view selector", async () => {
+  it("opens Audit contextually through Run Details", async () => {
     const user = userEvent.setup();
     mockSearch.tab = "workflow";
     const { rerender } = render(<RunDetailPage />);
-    await user.selectOptions(screen.getByRole("combobox", { name: "More run views" }), "audit");
+    await user.click(screen.getByRole("button", { name: "Run Details" }));
     rerender(<RunDetailPage />);
-    expect(screen.getByRole("tabpanel", { name: "Audit" })).toBeInTheDocument();
-    expect(screen.queryByText("graph")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Audit" }));
+    rerender(<RunDetailPage />);
+    expect(screen.getByRole("dialog", { name: "Run Details" })).toBeInTheDocument();
     expect(useTimelineMock).toHaveBeenLastCalledWith("run-1", 50, { enabled: true });
   });
   it("distinguishes unrecorded start observation from creation time", () => {

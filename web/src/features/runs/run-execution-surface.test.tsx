@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -17,12 +17,16 @@ vi.mock("@/theme", async () => {
     useRoleIdentity: (role: string) =>
       actual.roleIdentity(actual.builtInThemes[3], role),
     ThemeIcon: () => <span aria-hidden="true" />,
+    RoleIdentity: ({ role }: { role: string }) => (
+      <span>{actual.roleIdentity(actual.builtInThemes[3], role).name}</span>
+    ),
   };
 });
 
 vi.mock("@/components/ui/relative-time", () => ({
   RelativeTime: ({ iso }: { iso: string }) => <span>{iso}</span>,
 }));
+vi.mock("./run-conversation", () => ({ RunBrief: () => <div>Run Brief</div> }));
 vi.mock("./run-executions-panel", () => ({
   RunExecutionsPanel: () => <div data-testid="run-executions-panel" />,
 }));
@@ -165,35 +169,48 @@ function renderSurface(
 }
 
 describe("focused execution inspector", () => {
+  it("keeps historical attempt selection keyboard accessible", async () => {
+    const user = userEvent.setup();
+    const props = renderSurface();
+    const trigger = screen.getByRole("button", { name: "Select attempt" });
+    await user.click(trigger);
+    await waitFor(() =>
+      expect(screen.getByRole("option", { name: /Attempt 2/ })).toHaveFocus(),
+    );
+    await user.keyboard("{End}{Enter}");
+    expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-old");
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
   it("keeps the selected identity in compact controls and moves routine status prose into details", async () => {
     renderSurface();
     expect(
-      screen.getByRole("combobox", { name: "Select workflow agent or step" }),
+      screen.getByRole("button", { name: "Select workflow agent or step" }),
     ).toBeVisible();
     expect(
-      screen.getByRole("combobox", { name: "Select attempt" }),
+      screen.getByRole("button", { name: "Select attempt" }),
     ).toBeVisible();
     expect(
       screen.queryByRole("heading", { name: /Builder/ }),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("This step is still running.")).not.toBeVisible();
-    await userEvent.click(screen.getByText("Execution Details"));
-    expect(screen.getByText("This step is still running.")).toBeVisible();
+    expect(
+      screen.queryByText("This step is still running."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Execution Details")).not.toBeInTheDocument();
   });
   it("shows one agent selector and an attempt selector only when more than one attempt exists", () => {
     renderSurface({ nodes: [node({ attempt_count: 1 })] });
     expect(
-      screen.getByRole("combobox", { name: "Select workflow agent or step" }),
+      screen.getByRole("button", { name: "Select workflow agent or step" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByRole("combobox", { name: "Select attempt" }),
+      screen.queryByRole("button", { name: "Select attempt" }),
     ).not.toBeInTheDocument();
   });
   it("switches to a historical attempt and preserves an explicit return to current", async () => {
     const props = renderSurface({ selectedAttemptId: "attempt-old" });
     expect(
-      screen.getByRole("combobox", { name: "Select attempt" }),
-    ).toHaveValue("attempt-old");
+      screen.getByRole("button", { name: "Select attempt" }),
+    ).toHaveTextContent(/Attempt 1|Selected Attempt/);
     expect(
       screen.getByText(/Historical Attempt 1.*Superseded/),
     ).toBeInTheDocument();
@@ -205,8 +222,8 @@ describe("focused execution inspector", () => {
   it("never presents current evidence as a missing historical attempt", () => {
     renderSurface({ attempts: [], selectedAttemptId: "attempt-old" });
     expect(
-      screen.getByRole("combobox", { name: "Select attempt" }),
-    ).toHaveValue("attempt-old");
+      screen.getByRole("button", { name: "Select attempt" }),
+    ).toHaveTextContent(/Attempt 1|Selected Attempt/);
     expect(screen.getByText("Selected Attempt")).toBeInTheDocument();
     expect(
       screen.queryByText("This step is still running."),
@@ -253,8 +270,8 @@ describe("focused execution inspector", () => {
     );
     expect(props.onLoadMoreAttempts).toHaveBeenCalledOnce();
   });
-  it("opens Output for the exact selected historical settled attempt", async () => {
-    const onViewOutput = vi.fn();
+  it("opens details for the exact selected historical settled attempt", async () => {
+    const onViewDetails = vi.fn();
     renderSurface({
       selectedAttemptId: "attempt-old",
       detail: {
@@ -267,14 +284,14 @@ describe("focused execution inspector", () => {
         output_status: "settled",
         output_text: "Historical answer",
       },
-      onViewOutput,
+      onViewDetails,
     });
     await userEvent.click(
-      screen.getByRole("button", { name: "View Settled Response" }),
+      screen.getByRole("button", { name: "Attempt Details" }),
     );
-    expect(onViewOutput).toHaveBeenCalledOnce();
+    expect(onViewDetails).toHaveBeenCalledOnce();
     expect(
-      screen.getByRole("combobox", { name: "Select attempt" }),
-    ).toHaveValue("attempt-old");
+      screen.getByRole("button", { name: "Select attempt" }),
+    ).toHaveTextContent(/Attempt 1|Selected Attempt/);
   });
 });

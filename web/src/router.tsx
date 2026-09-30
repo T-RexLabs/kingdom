@@ -7,7 +7,7 @@ import {
 } from "@tanstack/react-router";
 import { NotFoundPage } from "@/components/error-boundary";
 import { RootLayout } from "@/components/root-layout";
-import { isRunDetailTab, type RunDetailTab } from "@/features/runs/run-detail-tabs";
+import { parseRunDetailSearch } from "@/features/runs/run-detail-tabs";
 import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
 import { validateWorkOrderNewSearch } from "@/features/work-orders/work-order-route-search";
 import { GITHUB_SETUP_RETURN_PATH } from "@/features/connections/github-setup-return-path";
@@ -52,13 +52,7 @@ const runsRoute = createRoute({
 const runDetailRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/runs/$runId",
-  validateSearch: (search: Record<string, unknown>): { tab?: RunDetailTab } => {
-    const tab = search.tab;
-    if (isRunDetailTab(tab)) {
-      return { tab };
-    }
-    return {};
-  },
+  validateSearch: parseRunDetailSearch,
   component: lazyRouteComponent(
     () => import("@/features/runs/run-detail-page"),
     "RunDetailPage"

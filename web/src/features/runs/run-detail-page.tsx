@@ -33,6 +33,7 @@ import { Button } from "@/components/ui/button";
 import { formatExactTime, timestampDescription } from "@/lib/date-time";
 import {
   ConfirmDialog,
+  Modal,
   MODAL_BODY_TEXT_CLASS,
 } from "@/components/ui/modal-shell";
 import { RelativeTime } from "@/components/ui/relative-time";
@@ -40,20 +41,15 @@ import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { cn } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import {
-  Activity,
-  GitBranch,
-  FileOutput,
-  ArrowLeft,
-  Shield,
-  AlertTriangle,
-  XCircle,
-} from "lucide-react";
+import { ArrowLeft, Shield, AlertTriangle, XCircle } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
 import { AgentDetailPanel } from "./agent-detail-panel";
 import { MailboxPanel } from "./mailbox-panel";
 import { RunExecutionSurface } from "./run-execution-surface";
+import { RunExecutionPicker } from "./run-execution-picker";
+import { RunAttemptProvenance } from "./run-attempt-provenance";
+import { RunExecutionsPanel } from "./run-executions-panel";
 import { RunOutput } from "./run-output";
 import { RunLiveStatus } from "./run-live-status";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
@@ -78,7 +74,11 @@ import {
 } from "./run-display-state";
 import { PageHeader } from "@/components/page-layout";
 import { TimelinePanel } from "./timeline-panel";
-import type { RunDetailTab } from "./run-detail-tabs";
+import type {
+  RunDetailTab,
+  RunDetailPanel,
+  RunDetailSection,
+} from "./run-detail-tabs";
 import { readRunStreamBootstrapState } from "./run-cache-updates";
 import {
   clearRunQuerySurfacesDirty,
@@ -99,16 +99,9 @@ type SelectedExecutionState = {
   attemptId: string | null;
 };
 
-const tabs: { id: RunDetailTab; label: string; icon: typeof GitBranch }[] = [
-  { id: "workflow", label: "Workflow", icon: GitBranch },
-  { id: "execution", label: "Agent Activity", icon: Activity },
-  { id: "output", label: "Output", icon: FileOutput },
-];
-const secondaryTabs: { id: RunDetailTab; label: string }[] = [
-  { id: "plan", label: "Plan" },
-  { id: "context", label: "Context" },
-  { id: "mailbox", label: "Messages" },
-  { id: "audit", label: "Audit" },
+const tabs: { id: RunDetailTab; label: string }[] = [
+  { id: "workflow", label: "Workflow" },
+  { id: "execution", label: "Agent Activity" },
 ];
 export function RunDetailPage() {
   const { runId } = useParams({ from: "/runs/$runId" });
@@ -117,15 +110,20 @@ export function RunDetailPage() {
   const queryClient = useQueryClient();
   const runMountStartedAtRef = useRef(0);
   const activeTab: RunDetailTab = search.tab ?? "workflow";
+  const panel = search.panel;
+  const detailSection = search.section ?? "context";
   const runQuery = useRun(runId);
   const run = runQuery.data;
   const runReady = runQuery.isSuccess;
-  const executionVisible = activeTab === "execution" || activeTab === "output";
+  const executionVisible =
+    activeTab === "execution" ||
+    panel === "files" ||
+    (panel === "details" && detailSection === "execution");
   const graphVisible = true;
-  const timelineVisible = activeTab === "audit";
+  const timelineVisible = panel === "details" && detailSection === "audit";
   const executionsQueryActive = graphVisible;
-  const agentsVisible = activeTab === "context";
-  const mailboxVisible = activeTab === "mailbox";
+  const agentsVisible = panel === "details" && detailSection === "context";
+  const mailboxVisible = panel === "details" && detailSection === "mailbox";
   const hiddenRunQuerySurfaces = useMemo(
     () =>
       hiddenRunDetailSurfaces({
@@ -323,6 +321,38 @@ export function RunDetailPage() {
     },
     [navigate, runId],
   );
+
+  const openPanel = useCallback(
+    (next: RunDetailPanel, section?: RunDetailSection) => {
+      if (
+        (next === "files" || (next === "details" && section === "execution")) &&
+        selectedExecutionNodeId &&
+        selectedExecutionId
+      )
+        setSelectedExecution({
+          runId,
+          nodeId: selectedExecutionNodeId,
+          attemptId: selectedExecutionId,
+        });
+      void navigate({
+        to: "/runs/$runId",
+        params: { runId },
+        search: {
+          tab: activeTab,
+          panel: next,
+          ...(section ? { section } : {}),
+        },
+      });
+    },
+    [activeTab, navigate, runId, selectedExecutionId, selectedExecutionNodeId],
+  );
+  const closePanel = useCallback(() => {
+    void navigate({
+      to: "/runs/$runId",
+      params: { runId },
+      search: { tab: activeTab },
+    });
+  }, [activeTab, navigate, runId]);
 
   const roleDescriptions = useMemo(() => {
     const map: Record<string, string> = {};
@@ -857,19 +887,12 @@ export function RunDetailPage() {
   }, [run]);
 
   const jumpToGovernanceAction = useCallback(() => {
-    if (activeTab === "plan") focusGovernanceAction();
+    if (panel === "plan") focusGovernanceAction();
     else {
       pendingGovernanceFocus.current = true;
-      setActiveTab("plan");
+      openPanel("plan");
     }
-  }, [activeTab, focusGovernanceAction, setActiveTab]);
-
-  useEffect(() => {
-    if (pendingGovernanceFocus.current && activeTab === "plan") {
-      pendingGovernanceFocus.current = false;
-      focusGovernanceAction();
-    }
-  }, [activeTab, focusGovernanceAction]);
+  }, [panel, focusGovernanceAction, openPanel]);
 
   if (runQuery.isPending) {
     return (
@@ -1027,6 +1050,32 @@ export function RunDetailPage() {
                 )}
               </div>
             </div>
+            <nav
+              aria-label="Run resources"
+              className="flex flex-wrap gap-x-5 text-xs text-foreground-muted"
+            >
+              <button
+                type="button"
+                className="min-h-9 hover:text-foreground"
+                onClick={() => openPanel("plan")}
+              >
+                View Plan
+              </button>
+              <button
+                type="button"
+                className="min-h-9 hover:text-foreground"
+                onClick={() => openPanel("files")}
+              >
+                Run Files
+              </button>
+              <button
+                type="button"
+                className="min-h-9 hover:text-foreground"
+                onClick={() => openPanel("details")}
+              >
+                Run Details
+              </button>
+            </nav>
             <RunLiveStatus
               runId={runId}
               nodes={presentedNodes}
@@ -1143,41 +1192,16 @@ export function RunDetailPage() {
                         : "border-transparent text-foreground-muted hover:text-foreground",
                     )}
                   >
-                    <tab.icon size={15} />
                     {tab.label}
                   </button>
                 ))}
               </nav>
-              <select
-                aria-label="More run views"
-                value={
-                  secondaryTabs.some((tab) => tab.id === activeTab)
-                    ? activeTab
-                    : ""
-                }
-                onChange={(event) =>
-                  setActiveTab(event.target.value as RunDetailTab)
-                }
-                className="min-h-10 rounded-lg border border-transparent bg-transparent px-2 text-xs text-foreground-muted outline-none hover:bg-surface focus-visible:border-accent"
-              >
-                <option value="" disabled>
-                  More Views
-                </option>
-                {secondaryTabs.map((tab) => (
-                  <option key={tab.id} value={tab.id}>
-                    {tab.label}
-                  </option>
-                ))}
-              </select>
             </div>
             <div
               ref={activeTabPanelRef}
               id={`run-tabpanel-${activeTab}`}
               role="tabpanel"
-              aria-label={
-                [...tabs, ...secondaryTabs].find((tab) => tab.id === activeTab)
-                  ?.label
-              }
+              aria-label={tabs.find((tab) => tab.id === activeTab)?.label}
               className="min-w-0 py-5"
             >
               {activeTab === "workflow" &&
@@ -1202,7 +1226,7 @@ export function RunDetailPage() {
                 ) : (
                   <TabLoading />
                 ))}
-              {executionVisible &&
+              {activeTab === "execution" &&
                 (executionsQuery.isPending && !nodes.length ? (
                   <TabLoading />
                 ) : executionsErrorMessage && !nodes.length ? (
@@ -1220,15 +1244,7 @@ export function RunDetailPage() {
                     onSelectStep={handleSelectExecutionStep}
                     onSelectAttempt={handleSelectExecutionAttempt}
                     onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
-                    onViewOutput={() => {
-                      if (!selectedExecutionNodeId || !selectedExecutionId) return;
-                      setSelectedExecution({
-                        runId,
-                        nodeId: selectedExecutionNodeId,
-                        attemptId: selectedExecutionId,
-                      });
-                      setActiveTab("output");
-                    }}
+                    onViewDetails={() => openPanel("details", "execution")}
                     hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
                     onLoadMoreAttempts={() =>
                       void nodeAttemptsQuery.fetchNextPage()
@@ -1275,137 +1291,270 @@ export function RunDetailPage() {
                           )
                         : null
                     }
-                    mode={activeTab === "output" ? "output" : "activity"}
                   />
                 ))}
-              {activeTab === "output" && (
-                <RunOutput
-                  runId={runId}
-                  attemptId={presentedExecutionDetail?.attempt_id}
-                  publication={presentedExecutionDetail?.publication}
-                  onRefreshPublication={() => executionDetailQuery.refetch()}
-                />
-              )}
-              {activeTab === "plan" && (
-                <div className="space-y-5">
-                  <CurrentPlanPanel
-                    run={run}
-                    approvalSectionRef={planApprovalTargetRef}
-                  />
-                  {governanceState.isAwaitingFinalApproval && (
-                    <GovernanceActions
-                      run={run}
-                      failedNodes={run.failed_nodes}
-                      showNodeActions={false}
-                      finalApprovalCardRef={finalApprovalTargetRef}
-                    />
-                  )}
-                </div>
-              )}
-              {activeTab === "context" && (
-                <div className="space-y-5">
-                  <WorkOrderPanel run={run} roles={roles?.items ?? []} />
-                  <div className="rounded-xl border border-border p-5 text-sm">
-                    <h2 className="font-medium">Review and Validation</h2>
-                    {skipReviewAndValidation ? (
-                      <p className="mt-2 text-foreground-muted">
-                        Review and validation were skipped for this workflow.
-                      </p>
-                    ) : (
-                      <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
-                        <div>
-                          <dt className="text-foreground-muted">
-                            Review Rework Requests
-                          </dt>
-                          <dd className="mt-1">
-                            {reviewReworkCycles} · Cap{" "}
-                            {run.max_execution_review_cycles ?? 5}
-                          </dd>
-                        </div>
-                        <div>
-                          <dt className="text-foreground-muted">
-                            Validation Rework Requests
-                          </dt>
-                          <dd className="mt-1">
-                            {validationReworkWaves} · Cap{" "}
-                            {run.max_validation_rework_cycles ?? 5}
-                          </dd>
-                        </div>
-                        {reviewAutoSucceededCount > 0 && (
-                          <div>
-                            <dt>Review Auto-Succeeded at Cap</dt>
-                            <dd>{reviewAutoSucceededCount}</dd>
-                          </div>
-                        )}
-                        {validationAutoSucceededCount > 0 && (
-                          <div>
-                            <dt>Validation Auto-Succeeded at Cap</dt>
-                            <dd>{validationAutoSucceededCount}</dd>
-                          </div>
-                        )}
-                      </dl>
-                    )}
-                  </div>
-                  {agentsQuery.isError ? (
-                    <TabError
-                      message={queryErrorMessage(
-                        agentsQuery.error,
-                        "Run agents could not be loaded.",
-                      )}
-                      onRetry={() => void agentsQuery.refetch()}
-                    />
-                  ) : (
-                    <AgentDetailPanel
-                      agents={agents?.items ?? []}
-                      roleDescriptions={roleDescriptions}
-                    />
-                  )}
-                </div>
-              )}
-              {activeTab === "mailbox" && (
-                <div className="h-[36rem] min-h-0">
-                  <MailboxPanel
-                    presentation={mailboxPresentation}
-                    hasMore={mailboxQuery.hasNextPage}
-                    isLoadingMore={mailboxQuery.isFetchingNextPage}
-                    loadMoreError={mailboxQuery.isFetchNextPageError}
-                    onLoadMore={() => void mailboxQuery.fetchNextPage()}
-                    isLoading={mailboxQuery.isPending && !mailboxQuery.data}
-                    errorMessage={mailboxErrorMessage}
-                    onRetry={() => void mailboxQuery.refetch()}
-                    onSelectMessage={handleSelectMessage}
-                    selectedDetail={selectedMessageId ? messageDetail : null}
-                    filters={mailboxFilters}
-                    onChangeFilters={setMailboxFilters}
-                  />
-                </div>
-              )}
-              {activeTab === "audit" && (
-                <div className="space-y-3">
-                  {timelineErrorMessage && (
-                    <TabInlineError
-                      message={timelineErrorMessage}
-                      onRetry={() => void timelineQuery.refetch()}
-                    />
-                  )}
-                  <div className="h-[34rem]">
-                    <TimelinePanel
-                      events={timelineItems}
-                      graph={graph}
-                      executions={presentedNodes.flatMap((node) =>
-                        node.current_execution ? [node.current_execution] : [],
-                      )}
-                      hasMore={hasEarlierTimelinePages}
-                      onLoadMore={() => void timelineQuery.fetchNextPage()}
-                      isLoadingMore={timelineQuery.isFetchingNextPage}
-                    />
-                  </div>
-                </div>
-              )}
             </div>
           </section>
         </div>
       </div>
+      {panel && (
+        <Modal
+          open
+          onClose={closePanel}
+          title={
+            panel === "files"
+              ? "Run Files"
+              : panel === "plan"
+                ? "Plan Review"
+                : "Run Details"
+          }
+          size="xl"
+          height="workbench"
+        >
+          {panel === "details" && (
+            <nav
+              aria-label="Run detail sections"
+              className="mb-6 flex flex-wrap gap-2 border-b border-border pb-3"
+            >
+              {(
+                [
+                  ["context", "Brief and Settings"],
+                  ["execution", "Selected Attempt"],
+                  ["mailbox", "Messages"],
+                  ["audit", "Audit"],
+                ] as const
+              ).map(([id, label]) => (
+                <Button
+                  key={id}
+                  variant="ghost"
+                  size="sm"
+                  aria-pressed={detailSection === id}
+                  onClick={() => openPanel("details", id)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </nav>
+          )}
+          {(panel === "files" ||
+            (panel === "details" && detailSection === "execution")) && (
+            <div className="mb-5 space-y-4">
+              <RunExecutionPicker
+                nodes={presentedNodes}
+                attempts={nodeAttempts}
+                selectedNodeId={selectedExecutionNodeId}
+                selectedAttemptId={selectedExecutionId}
+                detail={presentedExecutionDetail}
+                onSelectStep={handleSelectExecutionStep}
+                onSelectAttempt={handleSelectExecutionAttempt}
+                onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
+                hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
+                onLoadMoreAttempts={() =>
+                  void nodeAttemptsQuery.fetchNextPage()
+                }
+                isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
+                isHistoryLoading={
+                  nodeAttemptsQuery.isFetching && !nodeAttemptsQuery.data
+                }
+                historyErrorMessage={
+                  nodeAttemptsQuery.isError
+                    ? queryErrorMessage(
+                        nodeAttemptsQuery.error,
+                        "Attempt history could not be loaded.",
+                      )
+                    : null
+                }
+                onRetryHistory={() => void nodeAttemptsQuery.refetch()}
+              />
+              {panel === "files" && (
+                <p className="text-xs text-foreground-muted">
+                  Publication belongs to the selected attempt. Artifacts below
+                  include the whole run, with each file's lineage retained.
+                </p>
+              )}
+              {panel === "files" &&
+                executionDetailIsFetching &&
+                !presentedExecutionDetail && (
+                  <p className="text-xs text-foreground-muted">
+                    Loading publication…
+                  </p>
+                )}
+              {panel === "files" && selectedExecutionDetailQuery.isError && (
+                <TabError
+                  message={queryErrorMessage(
+                    selectedExecutionDetailQuery.error,
+                    "Publication could not be loaded.",
+                  )}
+                  onRetry={() => void executionDetailQuery.refetch()}
+                />
+              )}
+            </div>
+          )}
+          {panel === "details" && detailSection === "execution" && (
+            <>
+              <RunAttemptProvenance
+                detail={presentedExecutionDetail}
+                history={nodeAttempts.find(
+                  (item) => item.attempt_id === selectedExecutionId,
+                )}
+                currentAttemptId={selectedNode?.current_execution?.attempt_id}
+              />
+              <RunExecutionsPanel
+                detail={presentedExecutionDetail}
+                isDetailLoading={
+                  executionDetailIsFetching && !presentedExecutionDetail
+                }
+                detailErrorMessage={
+                  selectedExecutionDetailQuery.isError
+                    ? queryErrorMessage(
+                        selectedExecutionDetailQuery.error,
+                        "The execution detail could not be loaded.",
+                      )
+                    : null
+                }
+                onRetryDetail={() => void executionDetailQuery.refetch()}
+                failure={
+                  selectedExecutionId ===
+                  selectedNode?.current_execution?.attempt_id
+                    ? selectedNode?.failure
+                    : nodeAttempts.find(
+                        (item) => item.attempt_id === selectedExecutionId,
+                      )?.failure
+                }
+              />
+            </>
+          )}
+
+          {panel === "files" && (
+            <RunOutput
+              runId={runId}
+              attemptId={presentedExecutionDetail?.attempt_id}
+              publication={presentedExecutionDetail?.publication}
+              onRefreshPublication={() => executionDetailQuery.refetch()}
+            />
+          )}
+          {panel === "plan" && (
+            <div className="space-y-5">
+              <GovernanceFocus
+                pendingRef={pendingGovernanceFocus}
+                onFocus={focusGovernanceAction}
+              />
+              <CurrentPlanPanel
+                run={run}
+                approvalSectionRef={planApprovalTargetRef}
+              />
+              {governanceState.isAwaitingFinalApproval && (
+                <GovernanceActions
+                  run={run}
+                  failedNodes={run.failed_nodes}
+                  showNodeActions={false}
+                  finalApprovalCardRef={finalApprovalTargetRef}
+                />
+              )}
+            </div>
+          )}
+          {agentsVisible && (
+            <div className="space-y-5">
+              <WorkOrderPanel run={run} roles={roles?.items ?? []} />
+              <div className="rounded-xl border border-border p-5 text-sm">
+                <h2 className="font-medium">Review and Validation</h2>
+                {skipReviewAndValidation ? (
+                  <p className="mt-2 text-foreground-muted">
+                    Review and validation were skipped for this workflow.
+                  </p>
+                ) : (
+                  <dl className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+                    <div>
+                      <dt className="text-foreground-muted">
+                        Review Rework Requests
+                      </dt>
+                      <dd className="mt-1">
+                        {reviewReworkCycles} · Cap{" "}
+                        {run.max_execution_review_cycles ?? 5}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt className="text-foreground-muted">
+                        Validation Rework Requests
+                      </dt>
+                      <dd className="mt-1">
+                        {validationReworkWaves} · Cap{" "}
+                        {run.max_validation_rework_cycles ?? 5}
+                      </dd>
+                    </div>
+                    {reviewAutoSucceededCount > 0 && (
+                      <div>
+                        <dt>Review Auto-Succeeded at Cap</dt>
+                        <dd>{reviewAutoSucceededCount}</dd>
+                      </div>
+                    )}
+                    {validationAutoSucceededCount > 0 && (
+                      <div>
+                        <dt>Validation Auto-Succeeded at Cap</dt>
+                        <dd>{validationAutoSucceededCount}</dd>
+                      </div>
+                    )}
+                  </dl>
+                )}
+              </div>
+              {agentsQuery.isError ? (
+                <TabError
+                  message={queryErrorMessage(
+                    agentsQuery.error,
+                    "Run agents could not be loaded.",
+                  )}
+                  onRetry={() => void agentsQuery.refetch()}
+                />
+              ) : (
+                <AgentDetailPanel
+                  agents={agents?.items ?? []}
+                  roleDescriptions={roleDescriptions}
+                />
+              )}
+            </div>
+          )}
+          {mailboxVisible && (
+            <div className="h-[36rem] min-h-0">
+              <MailboxPanel
+                presentation={mailboxPresentation}
+                hasMore={mailboxQuery.hasNextPage}
+                isLoadingMore={mailboxQuery.isFetchingNextPage}
+                loadMoreError={mailboxQuery.isFetchNextPageError}
+                onLoadMore={() => void mailboxQuery.fetchNextPage()}
+                isLoading={mailboxQuery.isPending && !mailboxQuery.data}
+                errorMessage={mailboxErrorMessage}
+                onRetry={() => void mailboxQuery.refetch()}
+                onSelectMessage={handleSelectMessage}
+                selectedDetail={selectedMessageId ? messageDetail : null}
+                filters={mailboxFilters}
+                onChangeFilters={setMailboxFilters}
+              />
+            </div>
+          )}
+          {timelineVisible && (
+            <div className="space-y-3">
+              {timelineErrorMessage && (
+                <TabInlineError
+                  message={timelineErrorMessage}
+                  onRetry={() => void timelineQuery.refetch()}
+                />
+              )}
+              <div className="h-[34rem]">
+                <TimelinePanel
+                  events={timelineItems}
+                  graph={graph}
+                  executions={presentedNodes.flatMap((node) =>
+                    node.current_execution ? [node.current_execution] : [],
+                  )}
+                  hasMore={hasEarlierTimelinePages}
+                  onLoadMore={() => void timelineQuery.fetchNextPage()}
+                  isLoadingMore={timelineQuery.isFetchingNextPage}
+                />
+              </div>
+            </div>
+          )}
+        </Modal>
+      )}
       <CancelRunDialog
         open={cancelDialogVisible}
         runTitle={run.work_order_title}
@@ -1597,4 +1746,22 @@ function CancelRunDialog({
       </p>
     </ConfirmDialog>
   );
+}
+
+function GovernanceFocus({
+  pendingRef,
+  onFocus,
+}: {
+  pendingRef: { current: boolean };
+  onFocus: () => void;
+}) {
+  // Mount inside the portal: the plan targets do not exist when the page's
+  // effect first sees the route change.
+  useEffect(() => {
+    if (pendingRef.current) {
+      pendingRef.current = false;
+      onFocus();
+    }
+  }, [pendingRef, onFocus]);
+  return null;
 }
