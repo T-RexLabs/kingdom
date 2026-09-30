@@ -13,6 +13,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/mailboxview"
+	"kingdom/internal/sqlitex"
 )
 
 type MailboxMessageType string
@@ -102,7 +103,7 @@ func (s *MailboxStore) SendMessage(ctx context.Context, req SendMailboxMessageRe
 		messageID = generated
 	}
 
-	message := MailboxMessage{
+	candidate := MailboxMessage{
 		MessageID:   messageID,
 		RunID:       req.RunID,
 		FromAgentID: req.FromAgentID,
@@ -114,70 +115,63 @@ func (s *MailboxStore) SendMessage(ctx context.Context, req SendMailboxMessageRe
 		CreatedAt:   req.CreatedAt,
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return MailboxMessage{}, fmt.Errorf("begin mailbox transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
+	var persisted MailboxMessage
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		// Identity is generated once, but mutable state must be reloaded after
+		// a competing WAL writer invalidates a transaction's read snapshot.
+		message := candidate
+		existing, found, err := loadMailboxMessageTx(ctx, tx, message.MessageID)
+		if err != nil {
+			return err
 		}
-	}()
-
-	existing, found, err := loadMailboxMessageTx(ctx, tx, message.MessageID)
-	if err != nil {
-		return MailboxMessage{}, err
-	}
-	if found {
-		if mailboxMessagesEquivalent(existing, message) {
-			if err := tx.Commit(); err != nil {
-				return MailboxMessage{}, fmt.Errorf("commit mailbox transaction: %w", err)
+		if found {
+			if mailboxMessagesEquivalent(existing, message) {
+				persisted = existing
+				return nil
 			}
-			committed = true
-			return existing, nil
+			message.ReadAt = existing.ReadAt
+			if _, err := tx.ExecContext(ctx, `DELETE FROM mailbox_messages WHERE message_id = ?`, message.MessageID); err != nil {
+				return fmt.Errorf("delete superseded mailbox message: %w", err)
+			}
 		}
-		message.ReadAt = existing.ReadAt
-		if _, err := tx.ExecContext(ctx, `DELETE FROM mailbox_messages WHERE message_id = ?`, message.MessageID); err != nil {
-			return MailboxMessage{}, fmt.Errorf("delete superseded mailbox message: %w", err)
-		}
-	}
 
-	if _, err := tx.ExecContext(ctx,
-		`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		message.MessageID,
-		message.RunID,
-		message.FromAgentID,
-		message.ToAgentID,
-		message.ThreadID,
-		message.MessageType,
-		message.Priority,
-		message.PayloadJSON,
-		message.CreatedAt,
-		nullableMailboxSQLString(message.ReadAt),
-	); err != nil {
-		return MailboxMessage{}, fmt.Errorf("insert mailbox message: %w", err)
-	}
-	if err := upsertRunParticipantTx(ctx, tx, message.RunID, message.FromAgentID, message.CreatedAt); err != nil {
-		return MailboxMessage{}, err
-	}
-	if err := upsertRunParticipantTx(ctx, tx, message.RunID, message.ToAgentID, message.CreatedAt); err != nil {
-		return MailboxMessage{}, err
-	}
-	messageVersion, err := nextMailboxMessageVersionTx(ctx, tx, message.MessageID)
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			message.MessageID,
+			message.RunID,
+			message.FromAgentID,
+			message.ToAgentID,
+			message.ThreadID,
+			message.MessageType,
+			message.Priority,
+			message.PayloadJSON,
+			message.CreatedAt,
+			nullableMailboxSQLString(message.ReadAt),
+		); err != nil {
+			return fmt.Errorf("insert mailbox message: %w", err)
+		}
+		if err := upsertRunParticipantTx(ctx, tx, message.RunID, message.FromAgentID, message.CreatedAt); err != nil {
+			return err
+		}
+		if err := upsertRunParticipantTx(ctx, tx, message.RunID, message.ToAgentID, message.CreatedAt); err != nil {
+			return err
+		}
+		messageVersion, err := nextMailboxMessageVersionTx(ctx, tx, message.MessageID)
+		if err != nil {
+			return err
+		}
+		if err := s.recordMailboxEventTx(ctx, tx, message, messageVersion); err != nil {
+			return err
+		}
+
+		persisted = message
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
 		return MailboxMessage{}, err
 	}
-	if err := s.recordMailboxEventTx(ctx, tx, message, messageVersion); err != nil {
-		return MailboxMessage{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return MailboxMessage{}, fmt.Errorf("commit mailbox transaction: %w", err)
-	}
-	committed = true
-
-	return message, nil
+	return persisted, nil
 }
 
 func (s *MailboxStore) MarkRead(ctx context.Context, req MarkMailboxMessageReadRequest) error {
