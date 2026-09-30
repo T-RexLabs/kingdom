@@ -997,10 +997,6 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
                 {gitWorktreeStatus ? <p className="text-xs text-foreground-muted">{gitWorktreeStatus}</p> : null}
               </div>
               <details className="text-sm">
-                <summary className="min-h-10 cursor-pointer text-foreground-muted">Project Location <span className="ml-2 text-foreground">{workspace.split(/[\\/]/).filter(Boolean).at(-1)}</span></summary>
-                <p className="pb-3 break-all font-mono text-xs text-foreground-muted">{workspace}</p>
-              </details>
-              <details className="text-sm">
                 <summary className="min-h-10 cursor-pointer text-foreground-muted">
                   <span>Review Options</span>
                   <span className="ml-2 text-foreground">{skipReviewsAndValidations ? "Skipped" : runUntilAllApprove ? "Until All Approve" : `${maxExecutionReviewCyclesInput} Review / ${maxValidationReworkCyclesInput} Validation Cycles`}</span>

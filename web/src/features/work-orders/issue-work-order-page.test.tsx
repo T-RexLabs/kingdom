@@ -2,7 +2,7 @@ import { render } from "./planning-test-render";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { ApiError, setCSRFToken } from "@/api/client";
 import { IssueWorkOrderPage } from "./issue-work-order-page";
 
@@ -10,6 +10,7 @@ const createWorkOrderMutate = vi.fn<(request: Record<string, unknown>) => Promis
 const createRunMutate = vi.fn<(request: Record<string, unknown>) => Promise<Record<string, unknown>>>();
 const mockUseProviderModels = vi.fn();
 const refreshProviderModelsMutate = vi.fn();
+const navigate = vi.fn();
 let mockSearch: Record<string, string> = {};
 
 function makeWorkOrderResult(overrides: Record<string, unknown> = {}) {
@@ -66,6 +67,7 @@ let mockWorkspaceCapabilities = {
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: { children: ReactNode }) => <a href="#" {...props}>{children}</a>,
   useSearch: () => mockSearch,
+  useNavigate: () => (...args: unknown[]) => navigate(...args),
 }));
 
 vi.mock("@/features/connections/issue-picker", () => ({
@@ -111,7 +113,6 @@ vi.mock("@/api/hooks", async () => ({
     isLoading: false,
     error: null,
   }),
-  useRuns: () => ({ data: { items: [] }, isLoading: false }),
   useRoles: () => ({
     data: {
       items: [
@@ -146,6 +147,7 @@ describe("issue work order page", () => {
     setCSRFToken("token", "same-binding");
     createWorkOrderMutate.mockReset();
     createRunMutate.mockReset();
+    navigate.mockReset();
     createWorkOrderMutate.mockResolvedValue(makeWorkOrderResult());
     createRunMutate.mockResolvedValue(makeRunResult());
     mockSearch = {
@@ -199,6 +201,56 @@ describe("issue work order page", () => {
     await user.click(screen.getByRole("combobox", { name: /Global Model/ }));
     await user.click(screen.getByRole("option", { name: "GitHub Copilot - GPT-5.3-Codex" }));
   }
+
+  it("keeps creation focused without project location, recent runs, or success ID cards", () => {
+    render(<IssueWorkOrderPage />);
+    expect(screen.queryByText("Project Location")).not.toBeInTheDocument();
+    expect(screen.queryByText("Recent Runs")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "Recent Work Order Runs" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Use Git Worktree" })).toBeVisible();
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it("opens the confirmed run exactly once after clearing the draft, including StrictMode rerenders", async () => {
+    const user = userEvent.setup();
+    let persistedTitleAtNavigation: unknown;
+    navigate.mockImplementation(() => {
+      const key = Object.keys(sessionStorage).find((candidate) =>
+        candidate.startsWith("kingdom:work-order-draft:"),
+      );
+      persistedTitleAtNavigation = key
+        ? JSON.parse(sessionStorage.getItem(key)!).title
+        : undefined;
+    });
+    const view = render(
+      <StrictMode>
+        <IssueWorkOrderPage />
+      </StrictMode>,
+    );
+    await selectGlobalModel(user);
+    await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/runs/$runId",
+        params: { runId: "run-1" },
+        replace: true,
+      }),
+    );
+    expect(persistedTitleAtNavigation).toBe("");
+    expect(screen.queryByText("Work Order Dispatched")).not.toBeInTheDocument();
+    expect(screen.queryByText("work order-1")).not.toBeInTheDocument();
+    expect(screen.queryByText("run-1")).not.toBeInTheDocument();
+    view.rerender(
+      <StrictMode>
+        <IssueWorkOrderPage />
+      </StrictMode>,
+    );
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(createWorkOrderMutate).toHaveBeenCalledOnce();
+    expect(createRunMutate).toHaveBeenCalledOnce();
+  });
 
   it("keeps model and approval decisions visible while advanced controls stay optional", async () => {
     const user = userEvent.setup();
@@ -293,14 +345,18 @@ describe("issue work order page", () => {
 
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(1);
     expect(createRunMutate).not.toHaveBeenCalled();
+    expect(navigate).not.toHaveBeenCalled();
 
     pendingWorkOrder.resolve(makeWorkOrderResult());
     await waitFor(() => expect(createRunMutate).toHaveBeenCalledTimes(1));
   });
 
-  it("clears work order inputs after a successful dispatch so another work order can be issued immediately", async () => {
+  it("clears the issued draft when returning to creation after opening the run", async () => {
     const user = userEvent.setup();
-    renderWithReviewOptions(<IssueWorkOrderPage />);
+    const view = renderWithReviewOptions(<IssueWorkOrderPage />);
+    createRunMutate
+      .mockResolvedValueOnce(makeRunResult())
+      .mockResolvedValueOnce(makeRunResult({ run_id: "run-2" }));
 
     await selectGlobalModel(user);
     await user.clear(screen.getByLabelText("Title"));
@@ -309,7 +365,10 @@ describe("issue work order page", () => {
     await user.type(screen.getByLabelText("Work Brief"), "First work order body");
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
 
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
+
+    view.unmount();
+    renderWithReviewOptions(<IssueWorkOrderPage />);
 
     expect(screen.getByLabelText("Title")).toHaveValue("");
     expect(screen.getByLabelText("Work Brief")).toHaveValue("");
@@ -319,6 +378,13 @@ describe("issue work order page", () => {
     await user.type(screen.getByLabelText("Work Brief"), "Second work order body");
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
 
+    await waitFor(() =>
+      expect(navigate).toHaveBeenLastCalledWith({
+        to: "/runs/$runId",
+        params: { runId: "run-2" },
+        replace: true,
+      }),
+    );
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(2);
     expect(createRunMutate).toHaveBeenCalledTimes(2);
   });
@@ -350,7 +416,7 @@ describe("issue work order page", () => {
     await user.type(screen.getByLabelText("Max Review Cycles"), "7");
     await user.click(screen.getByRole("button", { name: "Start Run" }));
 
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
 
     expect(createRunMutate).toHaveBeenCalledTimes(2);
     const firstRunRequest = createRunMutate.mock.calls[0][0] as { body: { work_order_id: string; max_execution_review_cycles: number }; key: string };
@@ -382,7 +448,7 @@ describe("issue work order page", () => {
     expect(screen.getByLabelText("Max Review Cycles")).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: "Start Run" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
 
     expect(createRunMutate).toHaveBeenCalledTimes(2);
     const firstRunRequest = createRunMutate.mock.calls[0][0] as { key: string };
@@ -405,6 +471,7 @@ describe("issue work order page", () => {
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
 
     await screen.findByText(/may have accepted this work order, but the connection dropped before the response arrived/i);
+    expect(navigate).not.toHaveBeenCalled();
 
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(1);
     expect(createRunMutate).not.toHaveBeenCalled();
@@ -415,7 +482,7 @@ describe("issue work order page", () => {
     expect(screen.getByLabelText("Max Review Cycles")).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Resolve Work Order Request" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
 
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(2);
     expect(createRunMutate).toHaveBeenCalledTimes(1);
@@ -441,6 +508,7 @@ describe("issue work order page", () => {
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
 
     await screen.findByText(/connection dropped before Kingdom could confirm whether the run started/i);
+    expect(navigate).not.toHaveBeenCalled();
 
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("button", { name: "Retry Run Start" })).toBeEnabled();
@@ -450,7 +518,13 @@ describe("issue work order page", () => {
     expect(screen.getByLabelText("Max Review Cycles")).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith({
+        to: "/runs/$runId",
+        params: { runId: "run-2" },
+        replace: true,
+      }),
+    );
 
     expect(createRunMutate).toHaveBeenCalledTimes(2);
     const firstRunRequest = createRunMutate.mock.calls[0][0] as { body: { work_order_id: string }; key: string };
@@ -473,9 +547,10 @@ describe("issue work order page", () => {
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
 
     await screen.findByText(/run start remains pending/i);
+    expect(navigate).not.toHaveBeenCalled();
     expect(screen.queryByRole("button", { name: "Discard Recovery" })).not.toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
 
     const firstRunRequest = createRunMutate.mock.calls[0][0] as { key: string };
     const secondRunRequest = createRunMutate.mock.calls[1][0] as { key: string };
@@ -489,13 +564,14 @@ describe("issue work order page", () => {
     await selectGlobalModel(user);
     await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
     await screen.findByText(/connection dropped before Kingdom could confirm whether the run started/i);
+    expect(navigate).not.toHaveBeenCalled();
     const originalRun = createRunMutate.mock.calls[0][0];
     expect(screen.queryByRole("button", { name: "Discard Recovery" })).not.toBeInTheDocument();
     view.unmount();
     renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByLabelText("Title")).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Retry Run Start" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
     expect(createWorkOrderMutate).toHaveBeenCalledTimes(1);
     expect(createRunMutate.mock.calls[1][0]).toEqual(originalRun);
   });
@@ -521,7 +597,7 @@ describe("issue work order page", () => {
     expect(screen.getByLabelText("Max Review Cycles")).toBeEnabled();
 
     await user.click(screen.getByRole("button", { name: "Start Run" }));
-    await screen.findByText("Work Order Dispatched");
+    await waitFor(() => expect(navigate).toHaveBeenCalled());
 
     expect(createRunMutate).toHaveBeenCalledTimes(2);
     const firstRunRequest = createRunMutate.mock.calls[0][0] as { body: { work_order_id: string }; key: string };
@@ -529,83 +605,6 @@ describe("issue work order page", () => {
     expect(firstRunRequest.body.work_order_id).toBe("work order-1");
     expect(secondRunRequest.body.work_order_id).toBe("work order-1");
     expect(firstRunRequest.key).not.toBe(secondRunRequest.key);
-  });
-
-  it("scrolls smoothly to the dispatch confirmation after a successful dispatch", async () => {
-    const user = userEvent.setup();
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(Element.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-    renderWithReviewOptions(<IssueWorkOrderPage />);
-
-    await selectGlobalModel(user);
-    scrollIntoView.mockClear();
-    await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
-
-    await screen.findByText("Work Order Dispatched");
-
-    const confirmationRegion = screen.getByRole("region", { name: "Work Order Dispatched" });
-    const scrollTarget = scrollIntoView.mock.instances[scrollIntoView.mock.instances.length - 1];
-
-    expect(screen.getByText("Work Order Dispatched")).not.toHaveFocus();
-    expect(scrollTarget).toBe(confirmationRegion);
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "smooth", block: "start", inline: "nearest" });
-    const viewRun = screen.getAllByRole("link", { name: "View Run" });
-    expect(viewRun).toHaveLength(1);
-    expect(viewRun[0].querySelector("button")).toBeNull();
-    expect(screen.queryByRole("button", { name: "View Run" })).not.toBeInTheDocument();
-  });
-
-  it("renders the dispatch confirmation before recent runs", async () => {
-    const user = userEvent.setup();
-    renderWithReviewOptions(<IssueWorkOrderPage />);
-
-    await selectGlobalModel(user);
-    await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
-
-    await screen.findByText("Work Order Dispatched");
-
-    const confirmationHeading = screen.getByText("Work Order Dispatched");
-    const recentRunsHeading = screen.getByRole("heading", { name: "Recent Work Order Runs" });
-    expect(confirmationHeading.compareDocumentPosition(recentRunsHeading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it("uses instant confirmation scrolling when reduced motion is enabled", async () => {
-    const user = userEvent.setup();
-    const scrollIntoView = vi.fn();
-    Object.defineProperty(Element.prototype, "scrollIntoView", {
-      configurable: true,
-      value: scrollIntoView,
-    });
-    Object.defineProperty(window, "matchMedia", {
-      configurable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: query === "(prefers-reduced-motion: reduce)",
-        media: query,
-        onchange: null,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-        addListener: vi.fn(),
-        removeListener: vi.fn(),
-        dispatchEvent: vi.fn(),
-      })),
-    });
-    renderWithReviewOptions(<IssueWorkOrderPage />);
-
-    await selectGlobalModel(user);
-    scrollIntoView.mockClear();
-    await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
-
-    await screen.findByText("Work Order Dispatched");
-
-    const confirmationRegion = screen.getByRole("region", { name: "Work Order Dispatched" });
-    const scrollTarget = scrollIntoView.mock.instances[scrollIntoView.mock.instances.length - 1];
-
-    expect(screen.getByText("Work Order Dispatched")).not.toHaveFocus();
-    expect(scrollTarget).toBe(confirmationRegion);
-    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: "auto", block: "start", inline: "nearest" });
   });
 
   it("renders a git worktree toggle with repository guidance", () => {
