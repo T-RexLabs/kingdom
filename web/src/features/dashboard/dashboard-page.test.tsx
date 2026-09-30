@@ -10,7 +10,7 @@ vi.mock("@/api/client", async () => ({
   ...(await vi.importActual("@/api/client")),
   apiFetch: (...args: unknown[]) => api(...args),
 }));
-vi.mock("@/theme", () => ({ useThemeCopy: () => "Your Workspace" }));
+vi.mock("@/theme", () => ({ useThemeCopy: (slot: string) => slot === "workOrder.singular" ? "Decree" : "Your Workspace" }));
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
     children,
@@ -194,7 +194,7 @@ describe("operational Overview", () => {
       ),
     ).toHaveAttribute("href", "/runs?state_filter=failed");
     expect(
-      screen.getByRole("link", { name: "New Work Order" }),
+      screen.getByRole("link", { name: "New Decree" }),
     ).toHaveAttribute("href", "/work-orders/new");
   });
 });

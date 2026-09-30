@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { PageContent, PageHeader } from "./page-layout";
 
 describe("page layout", () => {
-  it("uses fixed chrome height so header separator aligns with sidebar", () => {
+  it("keeps header chrome compact on narrow screens", () => {
     render(
       <PageHeader>
         <div>Header content</div>
@@ -11,7 +11,7 @@ describe("page layout", () => {
     );
 
     const header = screen.getByText("Header content").closest("header");
-    expect(header).toHaveClass("h-[76px]");
+    expect(header).toHaveClass("h-12", "sm:h-[76px]", "shrink-0");
     expect(header).not.toHaveClass("min-h-[76px]");
   });
 

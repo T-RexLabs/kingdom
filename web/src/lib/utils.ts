@@ -1,19 +1,4 @@
 import { type ClassValue, clsx } from "clsx";
-import type { LucideIcon } from "lucide-react";
-import {
-  Axe,
-  Bird,
-  ClipboardList,
-  Crown,
-  Flame,
-  Landmark,
-  ScrollText,
-  Search,
-  Shield,
-  ShieldCheck,
-  Store,
-  Wheat,
-} from "lucide-react";
 import { twMerge } from "tailwind-merge";
 import { statusBadgeClass } from "./status-system";
 import { formatRelativeTime } from "./date-time";
@@ -26,24 +11,29 @@ export function cn(...inputs: ClassValue[]) {
  * Format a UTC timestamp string into a human-readable relative or absolute time.
  */
 export function formatTimestamp(iso: string): string {
-	return formatTimestampAt(iso, Date.now());
+  return formatTimestampAt(iso, Date.now());
 }
 
 export function formatTimestampAt(iso: string, nowMs: number): string {
   return formatRelativeTime(iso, nowMs);
 }
 
-export function formatElapsedDuration(startIso: string, endIso: string): string | null {
-	const start = new Date(startIso).getTime();
-	const end = new Date(endIso).getTime();
-	const diffMs = end - start;
-	if (diffMs < 0 || Number.isNaN(diffMs)) return null;
-	if (diffMs < 1000) return "<1s";
-	const seconds = Math.floor(diffMs / 1000);
-	if (seconds < 60) return `${seconds}s`;
-	const minutes = Math.floor(seconds / 60);
-	const remainingSeconds = seconds % 60;
-	return remainingSeconds > 0 ? `${minutes}m ${remainingSeconds}s` : `${minutes}m`;
+export function formatElapsedDuration(
+  startIso: string,
+  endIso: string,
+): string | null {
+  const start = new Date(startIso).getTime();
+  const end = new Date(endIso).getTime();
+  const diffMs = end - start;
+  if (diffMs < 0 || Number.isNaN(diffMs)) return null;
+  if (diffMs < 1000) return "<1s";
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+  return remainingSeconds > 0
+    ? `${minutes}m ${remainingSeconds}s`
+    : `${minutes}m`;
 }
 
 /**
@@ -68,84 +58,8 @@ export const AGENT_STATUS_ORDER: AgentStatus[] = [
   "failed",
 ];
 
-// ---------------------------------------------------------------------------
-// Heartbeat
-// ---------------------------------------------------------------------------
-
-/**
- * Classify a heartbeat timestamp as alive (< 30 s), stale (≥ 30 s), or none.
- */
-
-// ---------------------------------------------------------------------------
-// Role helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Map a role_id to its display-friendly color class.
- */
-export function getRoleColor(roleId: string): string {
-  const map: Record<string, string> = {
-    allfather: "text-gold",
-    king: "text-role-king",
-    chancellor: "text-role-chancellor",
-    "council-member": "text-role-council",
-    "noble-delegate": "text-role-noble",
-    "clergy-delegate": "text-role-clergy",
-    "burgher-delegate": "text-role-burgher",
-    "peasant-delegate": "text-role-peasant",
-    "builder-berserker": "text-role-berserker",
-    "reviewer-shieldmaiden": "text-role-shieldmaiden",
-    "intelligence-qa-scout": "text-role-scout",
-    "intelligence-nightraven": "text-role-nightraven",
-    "intelligence-loki-chaos": "text-role-loki",
-  };
-  return map[roleId] ?? "text-foreground-muted";
-}
-
-/**
- * Inline style object setting --glow-color to the role's CSS variable.
- * Use with .animate-glow-pulse or .animate-glow-pulse-subtle.
- */
-export function getRoleGlowStyle(roleId: string): Record<string, string> {
-  const map: Record<string, string> = {
-    allfather: "var(--color-gold)",
-    king: "var(--color-role-king)",
-    chancellor: "var(--color-role-chancellor)",
-    "council-member": "var(--color-role-council)",
-    "noble-delegate": "var(--color-role-noble)",
-    "clergy-delegate": "var(--color-role-clergy)",
-    "burgher-delegate": "var(--color-role-burgher)",
-    "peasant-delegate": "var(--color-role-peasant)",
-    "builder-berserker": "var(--color-role-berserker)",
-    "reviewer-shieldmaiden": "var(--color-role-shieldmaiden)",
-    "intelligence-qa-scout": "var(--color-role-scout)",
-    "intelligence-nightraven": "var(--color-role-nightraven)",
-    "intelligence-loki-chaos": "var(--color-role-loki)",
-  };
-  return { "--glow-color": map[roleId] ?? "var(--color-foreground-muted)" };
-}
-
-export function getRoleIcon(roleId: string): LucideIcon {
-  const map: Record<string, LucideIcon> = {
-    allfather: Crown,
-    king: Crown,
-    chancellor: ScrollText,
-    "council-member": ClipboardList,
-    "noble-delegate": Landmark,
-    "clergy-delegate": ShieldCheck,
-    "burgher-delegate": Store,
-    "peasant-delegate": Wheat,
-    "builder-berserker": Axe,
-    "reviewer-shieldmaiden": Shield,
-    "intelligence-qa-scout": Search,
-    "intelligence-nightraven": Bird,
-    "intelligence-loki-chaos": Flame,
-  };
-  return map[roleId] ?? Crown;
-}
-
 export function isAgentRole(roleId: string): boolean {
-  return (roleId ?? "").trim() !== "allfather";
+  return (roleId ?? "").trim() !== "operator";
 }
 
 /**
@@ -159,18 +73,18 @@ export function getStatusBg(status: string): string {
  * Role hierarchy for sorting — lower number = higher rank.
  */
 export const ROLE_HIERARCHY_ORDER: Record<string, number> = {
-  king: 0,
-  chancellor: 1,
-  "council-member": 2,
-  "noble-delegate": 3,
-  "clergy-delegate": 4,
-  "burgher-delegate": 5,
-  "peasant-delegate": 6,
-  "builder-berserker": 7,
-  "reviewer-shieldmaiden": 8,
-  "intelligence-qa-scout": 9,
-  "intelligence-nightraven": 10,
-  "intelligence-loki-chaos": 11,
+  governance: 0,
+  coordinator: 1,
+  "plan-author": 2,
+  "architecture-advisor": 3,
+  "risk-advisor": 4,
+  "systems-advisor": 5,
+  "usability-advisor": 6,
+  builder: 7,
+  reviewer: 8,
+  "qa-validator": 9,
+  "security-validator": 10,
+  "resilience-validator": 11,
 };
 
 // ---------------------------------------------------------------------------
@@ -181,8 +95,8 @@ export const ROLE_HIERARCHY_ORDER: Record<string, number> = {
 export const UPPERCASE_WORDS = new Set(["qa", "api", "ui", "id"]);
 
 const EXECUTION_MODE_LABELS = {
-  runtime_owned: "Crown-handled",
-  provider_backed: "Agent-executed",
+  runtime_owned: "Runtime-Handled",
+  provider_backed: "Agent-Executed",
 } as const;
 
 export interface NodeExecutionSemantics {
@@ -192,7 +106,7 @@ export interface NodeExecutionSemantics {
 
 /**
  * Convert a role ID to a display-friendly title
- * (e.g. "builder-berserker" → "Builder Berserker", "intelligence-qa-scout" → "Intelligence QA Scout").
+ * (e.g. "builder" → "Builder", "qa-validator" → "QA Validator").
  */
 export function roleTitle(roleId: string): string {
   const trimmed = (roleId ?? "").trim();
@@ -207,12 +121,17 @@ export function roleTitle(roleId: string): string {
     .join(" ");
 }
 
-export function nodeExecutionSemantics(ownership: string, roleId: string): NodeExecutionSemantics {
+export function nodeExecutionSemantics(
+  ownership: string,
+  roleId: string,
+): NodeExecutionSemantics {
   const normalizedOwnership = (ownership ?? "").trim();
 
   return {
     executionModeLabel:
-      EXECUTION_MODE_LABELS[normalizedOwnership as keyof typeof EXECUTION_MODE_LABELS] ?? "Execution mode unknown",
+      EXECUTION_MODE_LABELS[
+        normalizedOwnership as keyof typeof EXECUTION_MODE_LABELS
+      ] ?? "Unknown Execution Mode",
     roleLabel: roleTitle(roleId),
   };
 }
@@ -238,7 +157,10 @@ export function nodeLabel(nodeId: string): string {
  * "Unknown Role" placeholder at the very start of a run, when execution records can
  * briefly lack a required_role.
  */
-export function agentLabelForExecution(requiredRole: string | undefined, nodeId: string): string {
+export function agentLabelForExecution(
+  requiredRole: string | undefined,
+  nodeId: string,
+): string {
   const role = (requiredRole ?? "").trim();
   return role ? roleTitle(role) : nodeLabel(nodeId);
 }

@@ -25,6 +25,7 @@ export function DashboardPage() {
   const query = useDashboardSnapshot();
   const snapshot = query.data;
   const title = useThemeCopy("overview.welcome");
+  const workOrderName = useThemeCopy("workOrder.singular");
   const trend = useMemo(
     () => snapshot?.run_trend.map((point) => point.run_count) ?? [],
     [snapshot?.run_trend],
@@ -47,7 +48,7 @@ export function DashboardPage() {
             to="/work-orders/new"
             className="rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-foreground hover:bg-accent-bright"
           >
-            New Work Order
+            New {workOrderName}
           </Link>
         </>
       }
