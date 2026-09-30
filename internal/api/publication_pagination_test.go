@@ -140,7 +140,7 @@ func TestPublicationPaginationRejectsChangedRevisionAndCrossScope(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`INSERT INTO run_publication_entries(publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,status,created_at) VALUES ('batch-one-late','batch-one',?,'attempt-one','late.txt','write','published','2026-04-30T12:06:00Z')`, runID); err != nil {
+	if _, err := tx.Exec(`INSERT INTO run_publication_entries(publication_entry_id,publication_batch_id,run_id,attempt_id,path,action,mode_bits,status,created_at) VALUES ('batch-one-late','batch-one',?,'attempt-one','late.txt','write',420,'published','2026-04-30T12:06:00Z')`, runID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := tx.Exec(`UPDATE run_publication_batches SET entries_revision=entries_revision+1 WHERE publication_batch_id='batch-one'`); err != nil {
