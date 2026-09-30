@@ -22,57 +22,14 @@ func (workspaceHandoffBlockedError) Error() string {
 	return "another workspace-owning attempt is still active"
 }
 
-func (o *orchestrationLoop) drainAttemptCancelOutbox(ctx context.Context) (int, error) {
-	if o == nil || o.executionStore == nil {
-		return 0, nil
-	}
-	o.attemptCancelMu.Lock()
-	defer o.attemptCancelMu.Unlock()
-	ctx = firstNonNilContext(ctx)
-
-	const batchSize = 64
-	if o.attemptCancelHighWatermark.CancelOutboxID == "" {
-		end, err := o.executionStore.PendingAttemptCancelHighWatermark(ctx)
-		if err != nil || end.CancelOutboxID == "" {
-			return 0, err
-		}
-		o.attemptCancelHighWatermark = end
-	}
-	pending, err := o.executionStore.ListPendingAttemptCancels(ctx, o.attemptCancelCursor, o.attemptCancelHighWatermark, batchSize)
-	if err != nil {
-		return 0, err
-	}
-	publishedAt := o.now().UTC().Format(time.RFC3339)
-	processed := 0
-	for _, rec := range pending {
-		if err := ctx.Err(); err != nil {
-			return processed, err
-		}
-		completed, err := o.drainAttemptCancel(ctx, rec, publishedAt)
-		if err != nil {
-			return processed, err
-		}
-		// Waiting rows retain their durable eligibility without monopolizing the
-		// first batch on every dispatch tick. The cursor is only a scan position.
-		o.attemptCancelCursor = executionstore.AttemptCancelCursor{CreatedAt: rec.CreatedAt, CancelOutboxID: rec.CancelOutboxID}
-		if completed {
-			processed++
-		}
-	}
-	if len(pending) < batchSize || o.attemptCancelCursor == o.attemptCancelHighWatermark {
-		o.attemptCancelCursor = executionstore.AttemptCancelCursor{}
-		o.attemptCancelHighWatermark = executionstore.AttemptCancelCursor{}
-	}
-	return processed, nil
-}
-
-func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
+func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
+	o.cancelExecutionPreparation(rec.AttemptID)
 	quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
 	if err != nil {
 		return false, err
 	}
 	if quiescent || rec.ExecutionMode != executionstore.ExecutionModeProviderBacked || strings.TrimSpace(rec.SessionID) == "" {
-		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+		return true, nil
 	}
 	if rec.HandoffState == "guardian_evidence_recovery_requested" {
 		quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
@@ -82,10 +39,10 @@ func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executio
 		if !quarantined {
 			return false, fmt.Errorf("guardian evidence recovery for attempt %q no longer has a durable absence quarantine", rec.AttemptID)
 		}
-		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+		return true, nil
 	}
 	if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
-		return false, o.recordAttemptCancelFailure(ctx, rec, publishedAt)
+		return false, o.recordAttemptCancelFailure(ctx, *rec, publishedAt)
 	}
 	if o.adapter == nil {
 		return false, fmt.Errorf("execution adapter is not configured")
@@ -100,10 +57,10 @@ func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executio
 		return false, err
 	}
 	if quiescent {
-		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+		return true, nil
 	}
 	cancelCtx, cancel := context.WithTimeout(ctx, defaultDuration(o.cancelGrace, 5*time.Second))
-	cancelErr := o.adapter.Cancel(cancelCtx, attemptCancelRequest(rec, publishedAt))
+	cancelErr := o.adapter.Cancel(cancelCtx, attemptCancelRequest(*rec, publishedAt))
 	cancel()
 	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
 	if err != nil {
@@ -112,7 +69,7 @@ func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executio
 	// Durable guardian proof is authoritative even if the bounded stop request
 	// returned an error. The local worker is a separate handoff gate below.
 	if quiescent {
-		return o.completeAttemptCancelHandoff(ctx, rec, publishedAt)
+		return true, nil
 	}
 	if ctx.Err() != nil && (errors.Is(cancelErr, context.Canceled) || errors.Is(cancelErr, context.DeadlineExceeded)) {
 		return false, ctx.Err()
@@ -121,7 +78,7 @@ func (o *orchestrationLoop) drainAttemptCancel(ctx context.Context, rec executio
 		cancelErr = fmt.Errorf("managed provider process quiescence has not been proven")
 	}
 	slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", cancelErr)
-	return false, o.recordAttemptCancelFailure(ctx, rec, publishedAt)
+	return false, o.recordAttemptCancelFailure(ctx, *rec, o.now().UTC().Format(time.RFC3339Nano))
 }
 
 func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
@@ -135,6 +92,7 @@ func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, re
 		return false, o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom is waiting for the provider worker to finish before completing cancellation.", handoffState, publishedAt)
 	}
 	if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
+		publishedAt = o.now().UTC().Format(time.RFC3339Nano)
 		slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
 		var blocked workspaceHandoffBlockedError
 		if errors.As(restoreErr, &blocked) {
@@ -148,6 +106,7 @@ func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, re
 		}
 		return false, o.recordAttemptWorkspaceRestoreFailure(ctx, rec, publishedAt)
 	}
+	publishedAt = o.now().UTC().Format(time.RFC3339Nano)
 	if rec.ReasonCode == "agent_unresponsive" {
 		released, err := o.transitionService().ReleaseFencedStaleRetryAfterCancellation(ctx, rec.AttemptID, publishedAt)
 		if err != nil || released {
@@ -165,27 +124,36 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 		return nil
 	}
 	spec := executionSpecForNode(rec.NodeID, rec.NodeClass)
-	if !spec.RequiresWorkspace {
+	if spec.WorkspaceKind != workspaceCanonical {
 		return nil
 	}
 	if o.fsStore == nil {
 		return fmt.Errorf("runtime filesystem store is required for workspace restoration")
 	}
 	baseSnapshotID := strings.TrimSpace(rec.BaseSnapshotID)
-	if baseSnapshotID == "" {
-		return fmt.Errorf("workspace-owning attempt has no trusted base snapshot")
+	unlock, acquired := o.tryReserveCompletionWorkspace(ctx, rec.RunID)
+	if !acquired {
+		return workspaceHandoffBlockedError{}
 	}
-	unlock := o.lockRunWorkspace(rec.RunID)
 	defer unlock()
 	if o.executionAttemptInflight(rec.AttemptID) {
 		return workspaceHandoffBlockedError{}
+	}
+	if baseSnapshotID == "" {
+		unprepared, err := o.cancelledAttemptHasNoWorkspaceOwnership(ctx, rec)
+		if err != nil {
+			return err
+		}
+		if !unprepared {
+			return fmt.Errorf("workspace-owning attempt has no trusted base snapshot")
+		}
 	}
 	activeAttempts, err := o.executionStore.ListActiveRunAttempts(ctx, rec.RunID, rec.AttemptID)
 	if err != nil {
 		return err
 	}
 	for _, active := range activeAttempts {
-		if !executionSpecForNode(active.NodeID, active.NodeClass).RequiresWorkspace {
+		if executionSpecForNode(active.NodeID, active.NodeClass).WorkspaceKind != workspaceCanonical {
 			continue
 		}
 		if !active.CancellationPending {
@@ -202,10 +170,19 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 
 	target, err := o.fsStore.GetExecutionTarget(ctx, rec.RunID)
 	if errors.Is(err, sql.ErrNoRows) {
+		if baseSnapshotID == "" {
+			return nil
+		}
 		return fmt.Errorf("workspace-owning attempt has no execution target")
 	}
 	if err != nil {
 		return fmt.Errorf("load execution target for cancellation handoff: %w", err)
+	}
+	if baseSnapshotID == "" {
+		if target.State != "trusted" {
+			return fmt.Errorf("unprepared cancellation found an untrusted execution target without a base snapshot")
+		}
+		return nil
 	}
 	if strings.TrimSpace(target.ExecutionRoot) == "" {
 		return fmt.Errorf("workspace-owning attempt has no execution root")
@@ -214,6 +191,26 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 		return fmt.Errorf("restore trusted workspace after cancellation: %w", err)
 	}
 	return nil
+}
+
+// Before preparation pins a base, a queued attempt has never owned the mutable
+// target. Missing metadata after invocation or launch is not that safe case.
+func (o *orchestrationLoop) cancelledAttemptHasNoWorkspaceOwnership(ctx context.Context, rec executionstore.AttemptCancelRecord) (bool, error) {
+	var unprepared bool
+	err := o.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1 FROM attempt_executions ae
+		WHERE ae.attempt_id = ? AND ae.run_id = ? AND ae.node_run_id = ?
+		  AND ae.execution_mode = 'provider_backed'
+		  AND ae.state IN ('queued', 'committed_cancelled', 'committed_failure')
+		  AND COALESCE(ae.base_snapshot_id, '') = '' AND COALESCE(ae.result_snapshot_id, '') = ''
+		  AND COALESCE(ae.launch_started_at, '') = '' AND COALESCE(ae.started_at, '') = ''
+		  AND COALESCE(ae.active_provider_invocation_id, '') = '' AND COALESCE(ae.provider_session_id, '') = ''
+		  AND NOT EXISTS (SELECT 1 FROM provider_invocations pi WHERE pi.attempt_id = ae.attempt_id)
+	)`, rec.AttemptID, rec.RunID, rec.NodeRunID).Scan(&unprepared)
+	if err != nil {
+		return false, fmt.Errorf("inspect unprepared cancellation ownership: %w", err)
+	}
+	return unprepared, nil
 }
 
 func (o *orchestrationLoop) publishAttemptCancelAfterProjection(ctx context.Context, rec executionstore.AttemptCancelRecord, publishedAt string) error {

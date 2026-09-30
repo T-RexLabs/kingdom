@@ -118,7 +118,6 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	if o == nil || o.executionStore == nil || strings.TrimSpace(result.providerInvocationID) == "" {
 		return fmt.Errorf("provider invocation identity is required for completion settlement")
 	}
-	ctx = context.WithoutCancel(ctx)
 	canonical, alreadySettled, err := o.executionStore.GetProviderCompletionSettlementByInvocation(ctx, result.providerInvocationID)
 	if err != nil {
 		return err
@@ -253,7 +252,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	// local settlement must not acquire an implicit content-size ceiling from
 	// the old five-second whole-transaction deadline. SQLite contention retains
 	// its bounded retry policy, and guardian/lease fences remain transactional.
-	settleCtx := context.WithoutCancel(ctx)
+	settleCtx := ctx
 	committed, err := o.transitionService().SettleProviderExecution(settleCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement:               settlement,
 		StreamObservation:        &result.providerStreamObservation,

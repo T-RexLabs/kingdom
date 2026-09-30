@@ -89,32 +89,23 @@ func (o *orchestrationLoop) persistExecutionArtifact(ctx context.Context, run ru
 		return o.republishPersistedArtifacts(ctx, run, node, attempt, attemptID)
 	}
 
-	var (
-		discoveredArtifacts   []executionArtifact
-		artifactContentByPath map[string][]byte
-	)
-	switch {
-	case executionSpec.ArtifactPersistence == nodeArtifactPersistenceDirect:
+	if executionSpec.ArtifactPersistence == nodeArtifactPersistenceDirect {
 		if isImplementationRole(node.RequiredRole) {
 			return fmt.Errorf("direct artifact persistence is unsupported for implementation role %q", node.RequiredRole)
 		}
 		return o.persistResponseSnapshotArtifact(ctx, run, node, attempt, attemptID, now, outputText)
-	case strings.TrimSpace(workspacePath) == "":
-		return fmt.Errorf("workspace path is required for artifact persistence")
-	case isImplementationRole(node.RequiredRole):
-		baseSnapshotID, resultSnapshotID, snapshotErr := o.loadAttemptSnapshotIDs(ctx, attemptID)
-		if snapshotErr != nil {
-			if !errors.Is(snapshotErr, sql.ErrNoRows) {
-				return snapshotErr
-			}
-		}
-		return o.persistArtifactSource(ctx, run, node, attempt, attemptID, workspacePath, now, o.builderArtifactSource(node, workspacePath, baseSnapshotID, resultSnapshotID), nil, nil, projectArtifacts)
-	default:
-		snapshotArtifact, snapshotBody := buildNonBuilderResponseSnapshot(node.NodeID, outputText)
-		discoveredArtifacts = []executionArtifact{snapshotArtifact}
-		artifactContentByPath = map[string][]byte{snapshotArtifact.Path: snapshotBody}
 	}
-	return o.persistDiscoveredArtifacts(ctx, run, node, attempt, attemptID, workspacePath, now, outputText, discoveredArtifacts, artifactContentByPath, nil, projectArtifacts)
+	if strings.TrimSpace(workspacePath) == "" {
+		return fmt.Errorf("workspace path is required for artifact persistence")
+	}
+	if !isImplementationRole(node.RequiredRole) {
+		return fmt.Errorf("workspace artifact persistence is unsupported for role %q", node.RequiredRole)
+	}
+	baseSnapshotID, resultSnapshotID, snapshotErr := o.loadAttemptSnapshotIDs(ctx, attemptID)
+	if snapshotErr != nil && !errors.Is(snapshotErr, sql.ErrNoRows) {
+		return snapshotErr
+	}
+	return o.persistArtifactSource(ctx, run, node, attempt, attemptID, workspacePath, now, o.builderArtifactSource(node, workspacePath, baseSnapshotID, resultSnapshotID), nil, nil, projectArtifacts)
 }
 
 func (o *orchestrationLoop) republishPersistedArtifacts(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID string) error {

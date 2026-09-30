@@ -76,12 +76,15 @@ type orchestrationLoop struct {
 	sleep                              func(time.Duration)
 	providerLeaseHeartbeatInterval     time.Duration
 	newProviderLeaseTicker             func(time.Duration) providerLeaseTicker
+	preparationLimit                   int
+	preparations                       map[string]*providerAttemptPreparation
+	lastPreparationRunID               string
+	maintenance                        maintenanceState
 	execMu                             sync.Mutex
 	eventSeqMu                         sync.Mutex
 	attemptCancelMu                    sync.Mutex
 	attemptCancelCursor                executionstore.AttemptCancelCursor
 	attemptCancelHighWatermark         executionstore.AttemptCancelCursor
-	terminalHandoffMu                  sync.Mutex
 	terminalHandoffFileLocks           keyedLock
 	terminalHandoffCursor              string
 	terminalHandoffFileCursor          string
@@ -162,14 +165,16 @@ func (o *orchestrationLoop) canonicalExecutionStore() *executionstore.Store {
 	return executionstore.New(o.db)
 }
 
-func (o *orchestrationLoop) lockRunWorkspace(runID string) func() {
+func (o *orchestrationLoop) tryLockRunWorkspace(runID string) (func(), bool) {
 	if o == nil || strings.TrimSpace(runID) == "" {
-		return func() {}
+		return func() {}, true
 	}
 	value, _ := o.workspaceLocks.LoadOrStore(runID, &sync.Mutex{})
 	lock := value.(*sync.Mutex)
-	lock.Lock()
-	return lock.Unlock
+	if !lock.TryLock() {
+		return nil, false
+	}
+	return lock.Unlock, true
 }
 
 func (o *orchestrationLoop) executionAttemptInflight(attemptID string) bool {
@@ -183,14 +188,18 @@ func (o *orchestrationLoop) executionAttemptInflight(attemptID string) bool {
 }
 
 func (o *orchestrationLoop) hasInflightRunExecution(runID string) bool {
+	return o.hasInflightRunExecutionExcept(runID, "")
+}
+
+func (o *orchestrationLoop) hasInflightRunExecutionExcept(runID, attemptID string) bool {
 	if o == nil || strings.TrimSpace(runID) == "" {
 		return false
 	}
 	runID = strings.TrimSpace(runID)
 	o.execMu.Lock()
 	defer o.execMu.Unlock()
-	for _, inflightRunID := range o.inflightRunIDs {
-		if inflightRunID == runID {
+	for inflightAttemptID, inflightRunID := range o.inflightRunIDs {
+		if inflightRunID == runID && inflightAttemptID != attemptID {
 			return true
 		}
 	}
@@ -407,13 +416,10 @@ func defaultDuration(value time.Duration, fallback time.Duration) time.Duration 
 }
 
 func (o *orchestrationLoop) Tick(ctx context.Context) error {
-	if _, err := o.drainAttemptCancelOutbox(ctx); err != nil {
+	if _, err := o.scheduleAttemptCancellations(ctx); err != nil {
 		return err
 	}
 	if err := o.scheduleRunWorktreeCleanup(ctx); err != nil {
-		return err
-	}
-	if err := o.drainRunWorktreeCleanup(ctx); err != nil {
 		return err
 	}
 
@@ -422,7 +428,18 @@ func (o *orchestrationLoop) Tick(ctx context.Context) error {
 		return err
 	}
 
-	for _, run := range runs {
+	o.execMu.Lock()
+	lastAdmittedRun := o.lastPreparationRunID
+	o.execMu.Unlock()
+	start := 0
+	for i, run := range runs {
+		if run.RunID == lastAdmittedRun {
+			start = (i + 1) % len(runs)
+			break
+		}
+	}
+	for offset := range runs {
+		run := runs[(start+offset)%len(runs)]
 		if err := o.processRun(ctx, run); err != nil {
 			return fmt.Errorf("process run %q: %w", run.RunID, err)
 		}
@@ -936,8 +953,11 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 func (o *orchestrationLoop) nextEventSeq(ctx context.Context, attemptID string) int {
 	var seq int
 	err := o.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE attempt_id = ?`,
-		attemptID,
+		`SELECT MAX(seq) FROM (
+			SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE attempt_id = ?
+			UNION ALL
+			SELECT COALESCE(MAX(seq), 0) AS seq FROM attempt_event_log WHERE attempt_id = ?
+		)`, attemptID, attemptID,
 	).Scan(&seq)
 	if err != nil {
 		return 1

@@ -7,10 +7,21 @@ import (
 
 type nodeArtifactPersistenceMode string
 
+// Workspace kind is fixed by the canonical node class, never provider input.
+// Only canonical workspaces can change the run's trusted implementation tree.
+type executionWorkspaceKind string
+
+const (
+	workspaceNone            executionWorkspaceKind = "none"
+	workspaceCanonical       executionWorkspaceKind = "canonical"
+	workspacePrivateSource   executionWorkspaceKind = "private_source"
+	workspacePrivateSnapshot executionWorkspaceKind = "private_snapshot"
+)
+
 type nodeExecutionSpec struct {
 	Mode                executionstore.ExecutionMode
 	CompletionMode      executionstore.ProviderCompletionMode
-	RequiresWorkspace   bool
+	WorkspaceKind       executionWorkspaceKind
 	ArtifactPersistence nodeArtifactPersistenceMode
 	ProjectArtifacts    bool
 }
@@ -32,10 +43,21 @@ func executionSpecForNode(nodeID, nodeClass string) nodeExecutionSpec {
 	if behavior.ArtifactPersistence == coreworkflow.NodeArtifactPersistenceDirect {
 		persistence = nodeArtifactPersistenceDirect
 	}
+	workspaceKind := workspacePrivateSource
+	if mode == executionstore.ExecutionModeRuntimeOwned {
+		workspaceKind = workspaceNone
+	} else {
+		switch coreworkflow.ResolveNodeClass(nodeID, nodeClass) {
+		case coreworkflow.NodeClassDelegatedExecution:
+			workspaceKind = workspaceCanonical
+		case coreworkflow.NodeClassExecutionReview, coreworkflow.NodeClassValidationGates:
+			workspaceKind = workspacePrivateSnapshot
+		}
+	}
 	return nodeExecutionSpec{
 		Mode:                mode,
 		CompletionMode:      completionMode,
-		RequiresWorkspace:   behavior.RequiresWorkspace,
+		WorkspaceKind:       workspaceKind,
 		ArtifactPersistence: persistence,
 		ProjectArtifacts:    behavior.ProjectArtifacts,
 	}

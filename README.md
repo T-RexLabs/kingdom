@@ -50,6 +50,8 @@ What that means in practice:
 
 Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
 
+Builders work in the run's execution target. Advisors and planners receive private project copies, while reviewers and validators receive independent copies of the implementation snapshot selected for their attempt. Validation setup and test side effects stay in those disposable copies. Generated dependency and cache directories are excluded from implementation snapshots and deliverables; validators may need to run the project's documented dependency setup before testing. Ordinary project files remain included even when Git ignores them.
+
 ## Quickstart Guide
 
 ### Prerequisites

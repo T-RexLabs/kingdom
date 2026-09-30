@@ -90,6 +90,19 @@ func (o *orchestrationLoop) buildNodePromptFrame(ctx context.Context, runID, nod
 	if trimmedConstraints := strings.TrimSpace(protectedRuntimePaths); trimmedConstraints != "" {
 		rulesBlocks = append(rulesBlocks, renderPromptSection("Protected Runtime Paths", trimmedConstraints))
 	}
+	if classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
+		inspectionRules := []string{
+			"- Inspect this attempt's private copy of the implementation pinned when the attempt was admitted. Other attempts cannot change this copy.",
+			"- Report findings in your response; changes in this workspace are discarded and do not repair the implementation.",
+		}
+		if classID == workflow.NodeClassValidationGates {
+			inspectionRules = append(inspectionRules,
+				"- Generated dependencies and caches are not implementation content and may be absent. Use the project's documented setup and test commands to prepare this private environment when required.",
+				"- Record the checks actually run and their results. Explain any environment limitation that prevents validation; do not report an unexecuted check as passing.",
+			)
+		}
+		rulesBlocks = append(rulesBlocks, renderPromptSection("Inspection Workspace", strings.Join(inspectionRules, "\n")))
+	}
 	if responseContract != "" {
 		rulesBlocks = append(rulesBlocks, renderPromptSection("Response Format Requirements", responseContract))
 	}

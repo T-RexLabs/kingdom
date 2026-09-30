@@ -53,26 +53,13 @@ func (o *orchestrationLoop) dispatchReadyNodes(ctx context.Context, run runSnaps
 	return nil
 }
 
-func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, now string) error {
-	pendingTerminalHandoff, err := o.runHasPendingTerminalHandoff(ctx, run.RunID)
-	if err != nil {
-		return err
-	}
-	if pendingTerminalHandoff {
-		return nil
-	}
-	autoSucceededAtCap, err := o.maybeAutoSucceedLoopCappedReadyNode(ctx, run, node, attempt, now)
-	if err != nil {
-		return err
-	}
-	if autoSucceededAtCap {
-		return nil
-	}
+func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, now string, preparation *providerAttemptPreparation) error {
 	executionSpec := executionSpecForNode(node.NodeID, node.NodeClass)
-	if executionSpec.RequiresWorkspace {
-		unlockWorkspace := o.lockRunWorkspace(run.RunID)
+	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked && preparation == nil {
+		return fmt.Errorf("provider preparation requires an admitted queued lease")
+	}
+	if executionSpec.WorkspaceKind == workspaceCanonical {
 		workspaceErr := o.recoverQuarantinedExecutionTargetBeforeDispatch(ctx, run.RunID, attempt.NodeRunID)
-		unlockWorkspace()
 		if errors.Is(workspaceErr, errExecutionTargetRecoveryInProgress) {
 			return nil
 		}
@@ -82,59 +69,20 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	}
 	attemptID := composeAttemptID(run.RunID, attempt.NodeID, attempt.Attempt)
 	sessionID := ""
-	providerTimeout := int64(0)
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
 		sessionID = sessionIDForAttempt(attemptID)
-		providerTimeout = o.providerTimeoutMillisForNode(node.NodeID, node.NodeClass)
 	}
-	if o.executionStore == nil {
-		return fmt.Errorf("execution store is required for dispatch")
-	}
-	if err := o.executionStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
-		AttemptID:             attemptID,
-		RunID:                 run.RunID,
-		NodeRunID:             attempt.NodeRunID,
-		ExecutionMode:         executionSpec.Mode,
-		CompletionMode:        executionSpec.CompletionMode,
-		ProviderTimeoutMillis: providerTimeout,
-		SessionRef:            sessionID,
-		CreatedAt:             now,
-	}); err != nil {
-		return fmt.Errorf("enqueue durable attempt execution %q: %w", attemptID, err)
-	}
-	attempt.ExecutionMode = executionSpec.Mode
-	attempt.CompletionMode = executionSpec.CompletionMode
-	attempt.ProviderTimeoutMillis = providerTimeout
-	attempt.SessionRef = sessionID
 	providerLeaseDuration := time.Duration(0)
 	expectedLeaseExpiresAt := ""
-
-	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
-		leaseOwner, err := generateExecutionLeaseOwner()
+	if preparation == nil {
+		var err error
+		attempt, err = o.enqueueDispatchAttempt(ctx, run, node, attempt, now)
 		if err != nil {
 			return err
 		}
-		providerLeaseDuration = o.providerExecutionLeaseDuration(node.NodeID, node.NodeClass)
-		if providerLeaseDuration <= 0 {
-			return fmt.Errorf("provider execution lease duration is required for node %q", node.NodeID)
-		}
-		claimedAt := o.now().UTC()
-		claim, acquired, err := o.executionStore.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{
-			AttemptID:  attemptID,
-			LeaseOwner: leaseOwner,
-			LeaseUntil: claimedAt.Add(providerLeaseDuration).Format(time.RFC3339Nano),
-			ClaimedAt:  claimedAt.Format(time.RFC3339Nano),
-		})
-		if err != nil {
-			return fmt.Errorf("claim provider-backed attempt %q: %w", attemptID, err)
-		}
-		if !acquired {
-			return nil
-		}
-		attempt.DurableState = claim.State
-		attempt.LeaseOwner = claim.LeaseOwner
-		attempt.LeaseVersion = claim.LeaseVersion
-		expectedLeaseExpiresAt = claim.LeaseExpiresAt
+	} else {
+		providerLeaseDuration = preparation.leaseDuration
+		expectedLeaseExpiresAt = preparation.leaseExpiresAt
 	}
 
 	delegateID := deterministicAgentIDForRole(node.RequiredRole)
@@ -145,7 +93,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		if delegatorRole != "" {
 			ensuredDelegatorID, err := o.ensureAgentForRole(ctx, delegatorRole, now)
 			if err != nil {
-				return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "ensure delegator agent", err, now)
+				return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "ensure delegator agent", err)
 			}
 			delegatorID = ensuredDelegatorID
 		}
@@ -175,7 +123,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			OccurredAt:       now,
 		})
 		if err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record delegation", err, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "record delegation", err)
 		}
 		_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 			MessageID:         fmt.Sprintf("msg_comm_%s_%s_%d_delegation_result", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
@@ -193,7 +141,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			OccurredAt:        now,
 		})
 		if decision.Outcome != state.DelegationOutcomeSuccess {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "record delegation", fmt.Errorf("delegation outcome %s: %s", decision.Outcome, decision.ReasonCode), now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "record delegation", fmt.Errorf("delegation outcome %s: %s", decision.Outcome, decision.ReasonCode))
 		}
 	}
 
@@ -205,18 +153,15 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	scopedDelegatorInstruction := ""
 	agentForRole := ""
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
-		if err := o.ensureSessionLease(ctx, sessionID, attempt.AgentID, now); err != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "ensure provider session lease", err, now)
-		}
 		resolvedModel, resolvedVariant, modelSource = o.resolveModelForRole(run, node.RequiredRole)
 		prepared, scoped, promptErr := o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
 		if promptErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare provider prompt", promptErr, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider prompt", promptErr)
 		}
 		ref, promptErr := state.PersistExecutionPrompt(ctx, o.db, state.ExecutionPromptRequest{AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LeaseOwner: attempt.LeaseOwner, LeaseVersion: attempt.LeaseVersion, CreatedAt: o.now().UTC().Format(time.RFC3339Nano), Source: state.RequestContentSource{Reader: io.NewSectionReader(prepared.File, 0, prepared.size), SizeBytes: prepared.size, SHA256: prepared.sha}})
 		closeErr := prepared.Close()
 		if promptErr = errors.Join(promptErr, closeErr); promptErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "persist provider prompt", promptErr, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "persist provider prompt", promptErr)
 		}
 		scopedDelegatorInstruction = scoped
 		providerPromptRef = &ref
@@ -232,7 +177,7 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		"resolution_source":        modelSource,
 	})
 	if payloadErr != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "marshal execution start payload", payloadErr, now)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "marshal execution start payload", payloadErr)
 	}
 	startingPayloadRaw, payloadErr := marshalExecutionAttemptEventPayload(attemptID, attempt.NodeID, attempt.NodeRunID, attempt.Attempt, "orchestration_progress", map[string]any{
 		"state":                    "starting",
@@ -242,10 +187,10 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		"resolution_source":        modelSource,
 	})
 	if payloadErr != nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "marshal execution starting payload", payloadErr, now)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "marshal execution starting payload", payloadErr)
 	}
 	if executionSpec.Mode == executionstore.ExecutionModeRuntimeOwned && o.executionStore == nil {
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "queue runtime-owned execution", fmt.Errorf("execution store is required for runtime-owned execution"), now)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "queue runtime-owned execution", fmt.Errorf("execution store is required for runtime-owned execution"))
 	}
 
 	if o.registry != nil {
@@ -265,12 +210,12 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			if errors.As(err, &outcomeUnknown) {
 				return fmt.Errorf("runtime-owned execution start outcome is unresolved for attempt %q: %w", attemptID, err)
 			}
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node running", err, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "mark node running", err)
 		}
 		attempt.NodeStatus = "running"
 		responseText, responseErr := o.runtimeOwnedNodeResponse(ctx, run, node, attempt)
 		if responseErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve runtime-owned response", responseErr, now)
+			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "resolve runtime-owned response", responseErr)
 		}
 		if err := o.commitRuntimeOwnedCompletion(ctx, asyncExecutionResult{
 			run:        run,
@@ -286,57 +231,42 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		return nil
 	}
 
-	workspaceCtx := executionWorkspaceContext{}
 	workspacePath := ""
 	projectRootBoundary := ""
 	baseSnapshotID := ""
 	ephemeralWorkspace := false
 	responseOnlyWorkspaceCleanupMarkedAt := ""
-	responseOnlyWorkspaceDispatched := false
-	defer func() {
-		if ephemeralWorkspace && !responseOnlyWorkspaceDispatched && o.fsStore != nil {
-			unlockWorkspace := o.lockRunWorkspace(run.RunID)
-			defer unlockWorkspace()
-			cleanupCtx, cancelCleanup := detachedTimeoutContext(ctx, 5*time.Second)
-			defer cancelCleanup()
-			if err := o.removeResponseOnlyWorkspaceAndClear(cleanupCtx, run.RunID, attemptID, responseOnlyWorkspaceCleanupMarkedAt); err != nil {
-				slog.Warn("failed to remove unlaunched response-only workspace", "attempt_id", attemptID, "error", err)
-			}
+	o.emitPreparationProgress(ctx, run, node, attempt, attemptID, "workspace_preparing", preparedNodeWorkspace{})
+	preparedWorkspace, workspaceErr := o.prepareNodeWorkspace(ctx, run, node, attempt, attemptID)
+	if workspaceErr != nil {
+		if errors.Is(workspaceErr, errWorkspaceBusy) {
+			return nil
 		}
-	}()
-	if executionSpec.RequiresWorkspace {
-		unlockWorkspace := o.lockRunWorkspace(run.RunID)
-		defer unlockWorkspace()
-		workspaceCtx, workspaceCtxErr := o.resolveExecutionWorkspaceContextForMode(ctx, run.RunID, run.PublishMode)
-		if workspaceCtxErr == nil && strings.TrimSpace(workspaceCtx.ExecutionRoot) == "" {
-			workspaceCtxErr = fmt.Errorf("execution root is required for execution")
-		}
-		if workspaceCtxErr == nil {
-			workspaceCtxErr = o.prepareExecutionWorkspaceContext(ctx, workspaceCtx.ExecutionRoot, workspaceCtx)
-		}
-		if workspaceCtxErr == nil {
-			workspaceCtxErr = o.recordAttemptSnapshotBase(ctx, attemptID, workspaceCtx.TrustedSnapshotID)
-		}
-		if workspaceCtxErr == nil {
-			workspaceCtxErr = o.fsStore.UpdateExecutionTargetState(ctx, run.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", now)
-		}
-		if workspaceCtxErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "prepare execution workspace", workspaceCtxErr, now)
-		}
-		workspacePath = strings.TrimSpace(workspaceCtx.ExecutionRoot)
-		projectRootBoundary = strings.TrimSpace(workspaceCtx.ProjectRootBoundary)
-		baseSnapshotID = strings.TrimSpace(workspaceCtx.TrustedSnapshotID)
-	} else {
-		responseWorkspacePath, cleanupMarkedAt, responseWorkspaceErr := o.resolveResponseOnlyWorkspacePath(ctx, run.RunID, attemptID, run.PublishMode)
-		if responseWorkspaceErr != nil {
-			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "resolve response-only workspace", responseWorkspaceErr, now)
-		}
-		workspacePath = strings.TrimSpace(responseWorkspacePath)
-		ephemeralWorkspace = normalizePublishMode(run.PublishMode) == PublishModeDirect && o.fsStore != nil
-		responseOnlyWorkspaceCleanupMarkedAt = cleanupMarkedAt
-		if o.fsStore != nil || normalizePublishMode(run.PublishMode) == PublishModeGitWorktree {
-			projectRootBoundary = workspacePath
-		}
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare execution workspace", workspaceErr)
+	}
+	o.emitPreparationProgress(ctx, run, node, attempt, attemptID, "workspace_prepared", preparedWorkspace)
+	workspacePath = preparedWorkspace.WorkspacePath
+	projectRootBoundary = preparedWorkspace.ProjectRootBoundary
+	baseSnapshotID = preparedWorkspace.BaseSnapshotID
+	responseOnlyWorkspaceCleanupMarkedAt = preparedWorkspace.CleanupMarkedAt
+	ephemeralWorkspace = responseOnlyWorkspaceCleanupMarkedAt != ""
+	heartbeatResult := preparation.heartbeat.stopAndWait()
+	preparation.heartbeat = nil
+	if heartbeatResult.err != nil {
+		return heartbeatResult.err
+	}
+	if heartbeatResult.authorityLost {
+		return fmt.Errorf("provider preparation lost its execution lease")
+	}
+	expectedLeaseExpiresAt = heartbeatResult.leaseExpiresAt
+	now = o.now().UTC().Format(time.RFC3339Nano)
+	launchJob := asyncExecutionResult{run: run, node: node, attempt: attempt, attemptID: attemptID, expectedLeaseOwner: attempt.LeaseOwner, expectedLeaseVersion: attempt.LeaseVersion, expectedLeaseExpiresAt: expectedLeaseExpiresAt, providerLeaseDuration: providerLeaseDuration}
+	if err := o.preparationMayLaunch(ctx, &launchJob); err != nil {
+		return err
+	}
+	expectedLeaseExpiresAt = launchJob.expectedLeaseExpiresAt
+	if err := o.ensureSessionLease(ctx, sessionID, attempt.AgentID, now); err != nil {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "ensure provider session lease", err)
 	}
 	providerInvocationID, providerInvocationAt, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
 	if invocationErr != nil {
@@ -344,12 +274,9 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
 		}
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "create provider invocation", invocationErr, now)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr)
 	}
 
-	if executionSpec.RequiresWorkspace {
-		o.emitWorkspacePreparedEvent(ctx, run, node, attempt, attemptID, workspacePath, workspaceCtx, now)
-	}
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
 		MessageID:         fmt.Sprintf("msg_comm_%s_%s_%d_instruction", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
 		RunID:             run.RunID,
@@ -377,6 +304,8 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 			ProviderInvocationID: providerInvocationID,
 			InvalidReason:        "execution_start_persistence_failed",
 			UpdatedAt:            now,
+			ExpectedLeaseOwner:   attempt.LeaseOwner,
+			ExpectedLeaseVersion: attempt.LeaseVersion,
 		})
 		cancelRollback()
 		if rollbackErr != nil {
@@ -385,11 +314,11 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 				fmt.Errorf("invalidate unlaunched provider invocation: %w", rollbackErr),
 			)
 		}
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, sessionID, "mark node starting", err, now)
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "mark node starting", err)
 	}
 	attempt.NodeStatus = "starting"
 
-	started := o.startAsyncExecution(ctx, asyncExecutionResult{
+	job := asyncExecutionResult{
 		run:                                  run,
 		node:                                 node,
 		attempt:                              attempt,
@@ -414,8 +343,12 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 		variant:                              resolvedVariant,
 		agent:                                agentForRole,
 		occurredAt:                           now,
-	})
-	responseOnlyWorkspaceDispatched = started
+	}
+	if err := o.preparationMayLaunch(ctx, &job); err != nil {
+		return err
+	}
+	preparation.transferred = true
+	o.startOwnedAsyncExecution(preparation.ctx, job, preparation.cancel)
 
 	return nil
 }
@@ -709,7 +642,11 @@ func (o *orchestrationLoop) failRuntimeOwnedCompletionHandoff(ctx context.Contex
 	return nil
 }
 
-func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, sessionID, step string, cause error, now string) error {
+func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, step string, cause error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	now := o.now().UTC().Format(time.RFC3339Nano)
 	if cause == nil {
 		cause = fmt.Errorf("unknown setup failure")
 	}
@@ -733,11 +670,7 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 	if err != nil {
 		return fmt.Errorf("marshal setup failure payload: %w", err)
 	}
-	if strings.TrimSpace(sessionID) != "" {
-		if closeErr := o.closeSessionLease(ctx, sessionID, now); closeErr != nil {
-			slog.Warn("failed to close session lease after setup failure", "session_id", sessionID, "error", closeErr)
-		}
-	}
+
 	fromState := strings.TrimSpace(attempt.NodeStatus)
 	if fromState == "" {
 		fromState = "ready"
@@ -765,7 +698,7 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 		PayloadJSON:     string(payloadRaw),
 	}
 	if !resourceLimitFailure {
-		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition})
+		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
 	}
 	retry, planned, err := o.planAutomaticDecreeRetry(ctx, asyncExecutionResult{
 		run:       run,
@@ -777,25 +710,23 @@ func (o *orchestrationLoop) failNodeAttemptSetup(ctx context.Context, run runSna
 		return fmt.Errorf("plan resource-limit setup retry disposition: %w", err)
 	}
 	if !planned {
-		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition})
+		return o.transition.RecordDirectExecutionTerminal(ctx, state.DirectExecutionTerminalRequest{Transition: transition, ExpectedLeaseOwner: attempt.LeaseOwner, ExpectedLeaseVersion: attempt.LeaseVersion})
 	}
 	return o.transition.RecordDirectExecutionTerminalWithRetry(ctx, state.DirectExecutionTerminalWithRetryRequest{
 		Transition:            transition,
 		Decision:              retry,
 		EscalationFromAgentID: attempt.AgentID,
+		ExpectedLeaseOwner:    attempt.LeaseOwner,
+		ExpectedLeaseVersion:  attempt.LeaseVersion,
 	})
 }
 
-func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncExecutionResult) bool {
-	if !o.markExecutionInflight(job.attemptID, job.run.RunID) {
-		return false
-	}
-
+func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job asyncExecutionResult, releasePreparationContext context.CancelFunc) {
 	go func() {
-		defer o.clearExecutionInflight(job.attemptID)
-		if job.ephemeralWorkspace {
-			defer o.cleanupResponseOnlyWorkspace(job)
+		if releasePreparationContext != nil {
+			defer releasePreparationContext()
 		}
+		defer o.clearExecutionInflight(job.attemptID)
 		executionCtx, cancelExecution := context.WithCancel(firstNonNilContext(ctx))
 		defer cancelExecution()
 		heartbeat := o.startProviderLeaseHeartbeat(executionCtx, cancelExecution, job)
@@ -914,31 +845,16 @@ func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncEx
 				if recoveryMarkerErr != nil {
 					return
 				}
-				if settleErr := o.commitRecoveredGuardFailure(ctx, job); settleErr != nil {
-					o.recordProviderTerminalHandoffError(job, settleErr)
-				}
 				return
 			}
 		}
 		o.publishExecutionResult(job.attemptID, job)
-		if !hasSettlementAuthority {
-			return
-		}
-
-		if o.executionStore != nil {
-			// Async completions must outlive the dispatch tick context because the
-			// execution store is the durable handoff into the canonical completion path.
-			if err := o.commitExecutionCompletionWithRetryDetached(ctx, job); err != nil {
-				if !o.forceCloseActive() {
-					o.emitCompletionLifecycleObservation(context.WithoutCancel(ctx), job, "exec_outbox_enqueue_failed", o.now().UTC().Format(time.RFC3339Nano), map[string]any{"error": err.Error()})
-				}
-				slog.Warn("failed to queue execution completion outbox", "attempt_id", job.attemptID, "error", err)
-			} else {
-				return
-			}
+		// The durable terminal handoff is the worker's final responsibility.
+		// Initial execution and restart replay share the bounded finalizer.
+		if o.notifyCompletionReady != nil {
+			o.notifyCompletionReady()
 		}
 	}()
-	return true
 }
 
 func (o *orchestrationLoop) recordProviderTerminalHandoffError(job asyncExecutionResult, err error) {
@@ -1216,41 +1132,6 @@ func (o *orchestrationLoop) executionTerminalized(ctx context.Context, attemptID
 	}
 }
 
-func (o *orchestrationLoop) emitWorkspacePreparedEvent(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, workspacePath string, workspaceCtx executionWorkspaceContext, occurredAt string) {
-	if o == nil || o.events == nil || strings.TrimSpace(attemptID) == "" {
-		return
-	}
-	payloadRaw, err := marshalExecutionAttemptEventPayload(attemptID, node.NodeID, attempt.NodeRunID, attempt.Attempt, "workspace_prepared", map[string]any{
-		"workspace_path":   strings.TrimSpace(workspacePath),
-		"seed_root":        strings.TrimSpace(workspaceCtx.SeedRoot),
-		"publish_root":     strings.TrimSpace(workspaceCtx.PublishRoot),
-		"workspace_empty":  workspaceCtx.WorkspaceEmpty,
-		"is_git_repo":      workspaceCtx.IsGitRepo,
-		"use_git_worktree": workspaceCtx.UseGitWorktree,
-	})
-	if err != nil {
-		return
-	}
-	_, _ = o.events.Ingest(ctx, state.AttemptEventIngestionRequest{
-		EventID:         fmt.Sprintf("evt_orch_%s_%s_%d_workspace_prepared", sanitizeFileToken(run.RunID), sanitizeFileToken(node.NodeID), attempt.Attempt),
-		RunID:           run.RunID,
-		NodeRunID:       sql.NullString{String: attempt.NodeRunID, Valid: strings.TrimSpace(attempt.NodeRunID) != ""},
-		AttemptID:       attemptID,
-		SchemaVersion:   "v1",
-		EventType:       "attempt.progress",
-		Seq:             o.nextEventSeq(ctx, attemptID),
-		PayloadJSON:     string(payloadRaw),
-		ActorID:         "runtime_orchestrator",
-		RoleID:          node.RequiredRole,
-		AuthoritySource: "runtime.orchestrator",
-		ReasonCode:      "workspace_prepared",
-		ReasonText:      "execution workspace prepared",
-		CorrelationID:   "corr_orch_" + run.RunID,
-		CausationID:     fmt.Sprintf("caus_orch_%s_%s_workspace_prepared", run.RunID, attempt.NodeRunID),
-		CreatedAt:       occurredAt,
-	})
-}
-
 func (o *orchestrationLoop) markExecutionInflight(attemptID, runID string) bool {
 	o.execMu.Lock()
 	defer o.execMu.Unlock()
@@ -1261,6 +1142,9 @@ func (o *orchestrationLoop) markExecutionInflight(attemptID, runID string) bool 
 		o.inflightRunIDs = make(map[string]string)
 	}
 	if _, exists := o.inflightExec[attemptID]; exists {
+		return false
+	}
+	if _, reserved := o.maintenance.active[attemptID]; reserved {
 		return false
 	}
 	o.inflightExec[attemptID] = struct{}{}

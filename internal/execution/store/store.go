@@ -267,6 +267,12 @@ type OutboxRecord struct {
 	PublishCount  int
 	FailureCode   string
 	FailureText   string
+	CreatedAt     string
+}
+
+type OutboxCursor struct {
+	CreatedAt string
+	OutboxID  string
 }
 
 type AttemptCancelRecord struct {
@@ -1169,7 +1175,30 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 	return claim, claimed, nil
 }
 
-// RenewProviderAttemptLease extends an active provider execution lease without
+// ReleaseQueuedProviderAttemptLease relinquishes only this worker's unlaunched
+// claim. It cannot clear another generation or an activated provider invocation.
+func (s *Store) ReleaseQueuedProviderAttemptLease(ctx context.Context, attemptID, owner string, version int64, releasedAt string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("store database is required")
+	}
+	if strings.TrimSpace(attemptID) == "" || strings.TrimSpace(owner) == "" || version <= 0 {
+		return fmt.Errorf("attempt_id and complete lease lineage are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, releasedAt); err != nil {
+		return fmt.Errorf("parse released_at: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET lease_owner = '', lease_expires_at = NULL, updated_at = ?
+		WHERE attempt_id = ? AND execution_mode = 'provider_backed' AND state = 'queued'
+		  AND lease_owner = ? AND lease_version = ?
+		  AND COALESCE(active_provider_invocation_id, '') = ''`, releasedAt, attemptID, owner, version)
+	if err != nil {
+		return fmt.Errorf("release queued provider preparation lease: %w", err)
+	}
+	return nil
+}
+
+// RenewProviderAttemptLease extends a preparing or active provider execution lease without
 // changing its generation. A missing, cleared, expired, or replaced lease is
 // reported as a lost renewal rather than being recreated.
 func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProviderAttemptLeaseRequest) (bool, error) {
@@ -1210,7 +1239,7 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 			FROM attempt_executions
 			WHERE attempt_id = ?
 			  AND execution_mode = 'provider_backed'
-			  AND state IN ('starting', 'running')
+			  AND state IN ('queued', 'starting', 'running')
 			  AND lease_owner = ?
 			  AND lease_version = ?
 			  AND lease_expires_at IS NOT NULL`, attemptID, owner, req.LeaseVersion).Scan(&currentExpiry)
@@ -1231,7 +1260,7 @@ func (s *Store) RenewProviderAttemptLease(ctx context.Context, req RenewProvider
 		SET lease_expires_at = ?
 		WHERE attempt_id = ?
 		  AND execution_mode = 'provider_backed'
-		  AND state IN ('starting', 'running')
+		  AND state IN ('queued', 'starting', 'running')
 		  AND lease_owner = ?
 		  AND lease_version = ?
 		  AND lease_expires_at IS NOT NULL
@@ -2006,6 +2035,22 @@ func firstNonEmptyTrimmed(values ...string) string {
 }
 
 func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecord, error) {
+	return s.ListPendingOutboxAfter(ctx, OutboxCursor{}, OutboxCursor{}, limit)
+}
+
+func (s *Store) PendingOutboxHighWatermark(ctx context.Context) (OutboxCursor, error) {
+	var cursor OutboxCursor
+	err := s.db.QueryRowContext(ctx, `SELECT created_at, outbox_id FROM attempt_outbox
+		WHERE status = 'pending' ORDER BY created_at DESC, outbox_id DESC LIMIT 1`).Scan(&cursor.CreatedAt, &cursor.OutboxID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return OutboxCursor{}, nil
+	}
+	return cursor, err
+}
+
+// A finite scan continues past busy rows without letting newly arriving work
+// postpone revisiting older records indefinitely.
+func (s *Store) ListPendingOutboxAfter(ctx context.Context, after, through OutboxCursor, limit int) ([]OutboxRecord, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store database is required")
 	}
@@ -2013,8 +2058,7 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 		limit = 1
 	}
 
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT ao.outbox_id,
+	query := `SELECT ao.outbox_id,
 		        ao.attempt_id,
 		        ao.run_id,
 		        ao.node_run_id,
@@ -2025,14 +2069,25 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 		        ao.status,
 		        ao.publish_attempts,
 		        COALESCE(ae.failure_code, ''),
-		        COALESCE(ae.failure_text, '')
+		        COALESCE(ae.failure_text, ''),
+		        ao.created_at
 		 FROM attempt_outbox ao
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = ao.attempt_id
-		 WHERE ao.status = 'pending'
-		 ORDER BY ao.created_at ASC, ao.outbox_id ASC
-		 LIMIT ?`,
-		limit,
-	)
+		 WHERE ao.status = 'pending'`
+	args := make([]any, 0, 5)
+	// Keep cursor predicates unconditional when present so SQLite can seek
+	// directly into the compound index instead of rescanning each prior page.
+	if after.OutboxID != "" {
+		query += ` AND (ao.created_at, ao.outbox_id) > (?, ?)`
+		args = append(args, after.CreatedAt, after.OutboxID)
+	}
+	if through.OutboxID != "" {
+		query += ` AND (ao.created_at, ao.outbox_id) <= (?, ?)`
+		args = append(args, through.CreatedAt, through.OutboxID)
+	}
+	query += ` ORDER BY ao.created_at ASC, ao.outbox_id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list pending outbox records: %w", err)
 	}
@@ -2041,7 +2096,7 @@ func (s *Store) ListPendingOutbox(ctx context.Context, limit int) ([]OutboxRecor
 	records := make([]OutboxRecord, 0)
 	for rows.Next() {
 		var rec OutboxRecord
-		if err := rows.Scan(&rec.OutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.TerminalSeq, &rec.TerminalState, &rec.AttemptState, &rec.PayloadJSON, &rec.Status, &rec.PublishCount, &rec.FailureCode, &rec.FailureText); err != nil {
+		if err := rows.Scan(&rec.OutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.TerminalSeq, &rec.TerminalState, &rec.AttemptState, &rec.PayloadJSON, &rec.Status, &rec.PublishCount, &rec.FailureCode, &rec.FailureText, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending outbox record: %w", err)
 		}
 		records = append(records, rec)

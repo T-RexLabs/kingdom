@@ -912,9 +912,7 @@ func TestProviderTerminalHandoffFileBeforeSQLiteReplaySettlesAfterLeaseExpiry(t 
 	}
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 10, 0, 0, time.UTC) }
 
-	if err := (&Runtime{orchestrator: h.loop}).recoverDurableExecutionState(context.Background()); err != nil {
-		t.Fatalf("replay file-only terminal handoff after lease expiry: %v", err)
-	}
+	replayStartupHandoffsThroughMaintenance(t, h)
 	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
 	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeSuccess {
 		t.Fatalf("file-only handoff settlement found=%t settlement=%#v err=%v", found, settlement, err)
@@ -997,7 +995,24 @@ func TestProviderTerminalHandoffMalformedFileFailsClosed(t *testing.T) {
 		t.Fatalf("persist malformed handoff fixture: %v", err)
 	}
 
-	_, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderTerminalHandoffs(context.Background())
+	runtime := &Runtime{orchestrator: h.loop, completionEvery: time.Millisecond}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	defer runtime.stopMaintenance()
+	runtime.beginStartupRecovery()
+	if err := runtime.recoverDurableExecutionState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.loop.waitForMaintenance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if caughtUp, err := runtime.replayPendingStartupRecovery(ctx); err != nil || caughtUp || runtime.pendingStartupRecoveryStage() != startupRecoveryStageHandoffs {
+		t.Fatalf("malformed file released startup authority gate: caught_up=%t stage=%v err=%v", caughtUp, runtime.pendingStartupRecoveryStage(), err)
+	}
+	err := runtime.drainMaintenance(ctx)
+	if waitErr := h.loop.waitForMaintenance(ctx); waitErr != nil {
+		t.Fatal(waitErr)
+	}
 	var infrastructureErr *providerTerminalHandoffInfrastructureError
 	if !errors.As(err, &infrastructureErr) {
 		t.Fatalf("malformed handoff error=%v, want fail-closed infrastructure error", err)
@@ -1115,9 +1130,7 @@ func TestStartupReplaysFileOnlyHandoffBeforeLostHandoffFailure(t *testing.T) {
 	h.persistHandoffFileOnly(t, invocation, 1, "2026-03-01T12:00:02Z")
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC) }
 
-	if err := (&Runtime{orchestrator: h.loop}).recoverDurableExecutionState(context.Background()); err != nil {
-		t.Fatalf("recover startup state with a file-only handoff: %v", err)
-	}
+	replayStartupHandoffsThroughMaintenance(t, h)
 	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
 	if err != nil || !found {
 		t.Fatalf("load startup handoff settlement: found=%t err=%v", found, err)
@@ -1130,50 +1143,28 @@ func TestStartupReplaysFileOnlyHandoffBeforeLostHandoffFailure(t *testing.T) {
 	}
 }
 
-func TestStartupReplayBoundsProviderTerminalHandoffs(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		items    int
-		deferred bool
-	}{
-		{name: "exact budget", items: providerlimits.StartupReplayMaxItems},
-		{name: "one item overflow", items: providerlimits.StartupReplayMaxItems + 1, deferred: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
+func TestStartupHandoffAuthorityDoesNotWaitForSnapshotFinalization(t *testing.T) {
+	for _, items := range []int{providerlimits.StartupReplayMaxItems, providerlimits.StartupReplayMaxItems + 1} {
+		t.Run(fmt.Sprintf("items_%d", items), func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			for index := 1; index <= tc.items; index++ {
+			for index := 1; index <= items; index++ {
 				invocation := h.addInvocation(t, index)
 				h.persistHandoffJob(t, invocation, index)
 			}
 			runtime := &Runtime{orchestrator: h.loop}
-
+			unlock := h.loop.lockRunWorkspace("run_terminal_handoff")
 			deferred, err := runtime.replayStartupProviderTerminalHandoffs(context.Background())
-			if err != nil {
-				t.Fatalf("replay startup provider handoffs: %v", err)
+			admitted, admissionErr := h.loop.scheduleProviderTerminalFinalization(context.Background())
+			unlock()
+			if err != nil || deferred || admissionErr != nil || admitted != 0 {
+				t.Fatalf("durable authority scan depended on filesystem finalization: deferred=%t admitted=%d err=%v admission_err=%v", deferred, admitted, err, admissionErr)
 			}
-			if deferred != tc.deferred {
-				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
+			if settled := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_completion_settlements`); settled != 0 {
+				t.Fatalf("startup synchronously settled %d handoffs", settled)
 			}
-			settled := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
-			remaining := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_terminal_handoffs`)
-			wantSettled := min(tc.items, providerlimits.StartupReplayMaxItems)
-			if settled != wantSettled || remaining != tc.items-wantSettled {
-				t.Fatalf("bounded startup handoff replay settled=%d remaining=%d, want %d/%d", settled, remaining, wantSettled, tc.items-wantSettled)
-			}
-			if deferred {
-				for {
-					visited, err := h.loop.convergeProviderTerminalHandoffs(context.Background())
-					if err != nil {
-						t.Fatalf("normal handoff loop did not continue deferred startup work: %v", err)
-					}
-					if visited == 0 {
-						break
-					}
-				}
-				settled = countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
-				if settled != tc.items {
-					t.Fatalf("normal handoff loop settled %d items, want %d", settled, tc.items)
-				}
+			finalizePendingHandoffsThroughMaintenance(t, h)
+			if settled := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_completion_settlements`); settled != items {
+				t.Fatalf("bounded finalizer settled %d items, want %d", settled, items)
 			}
 		})
 	}
@@ -1504,7 +1495,6 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 		t.Helper()
 		mustExec(t, h.db, `DROP TRIGGER fail_recovery_guard`)
 	}
-	handoffArm, handoffDrop := trigger("fail_recovery_handoff", "provider_completion_settlements", "NEW.provider_invocation_id = 'pinv_terminal_handoff_001'")
 	lostArm, lostDrop := trigger("fail_recovery_lost_handoff", "provider_completion_settlements", "NEW.provider_invocation_id = 'pinv_terminal_handoff_001'")
 
 	for _, tc := range []recoveryPass{
@@ -1528,29 +1518,6 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 			cursor: func(rt *Runtime, _ terminalHandoffHarness) string { return rt.startupGuardCursor },
 			count: func(t *testing.T, h terminalHandoffHarness) int {
 				return countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`)
-			},
-		},
-		{
-			name: "terminal handoff",
-			seed: func(t *testing.T, h terminalHandoffHarness) {
-				for index := 1; index <= 2; index++ {
-					invocation := h.addInvocation(t, index)
-					h.persistHandoffJob(t, invocation, index)
-				}
-			},
-			arm:  handoffArm,
-			drop: handoffDrop,
-			normal: func(ctx context.Context, h terminalHandoffHarness) (string, error) {
-				_, err := h.loop.convergeProviderTerminalHandoffsWithLimit(ctx, providerTerminalHandoffPassLimit)
-				return h.loop.terminalHandoffCursor, err
-			},
-			deferred: func(rt *Runtime) startupRecoveryStage {
-				rt.setStartupRecoveryPending(false, true, true)
-				return startupRecoveryStageHandoffs
-			},
-			cursor: func(_ *Runtime, h terminalHandoffHarness) string { return h.loop.terminalHandoffCursor },
-			count: func(t *testing.T, h terminalHandoffHarness) int {
-				return countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
 			},
 		},
 		{
@@ -1745,4 +1712,87 @@ func countTestRows(t *testing.T, db *sql.DB, query string, args ...any) int {
 		t.Fatalf("count test rows: %v", err)
 	}
 	return count
+}
+
+// Exercise the production asynchronous authority scan before finalization, so
+// tests cannot accidentally settle file-only evidence ahead of lost recovery.
+func replayStartupHandoffsThroughMaintenance(t *testing.T, h terminalHandoffHarness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	runtime := &Runtime{orchestrator: h.loop}
+	runtime.beginStartupRecovery()
+	if err := runtime.recoverDurableExecutionState(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for runtime.startupRecoveryPending() {
+		if err := ctx.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.loop.waitForMaintenance(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if caughtUp, err := runtime.replayPendingStartupRecovery(ctx); err != nil {
+			t.Fatal(err)
+		} else if caughtUp {
+			break
+		}
+	}
+	if err := h.loop.waitForMaintenance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	finalizePendingHandoffsThroughMaintenance(t, h)
+}
+
+func finalizePendingHandoffsThroughMaintenance(t *testing.T, h terminalHandoffHarness) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for {
+		pending, err := h.store.ListPendingProviderTerminalHandoffs(ctx, "", 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(pending) == 0 {
+			return
+		}
+		if _, err := h.loop.scheduleProviderTerminalFinalization(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if err := h.loop.waitForMaintenance(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestTerminalFinalizationFailureRetainsDurableRetryAfterStartupAuthority(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	first := h.addInvocation(t, 1)
+	second := h.addInvocation(t, 2)
+	h.persistHandoffJob(t, first, 1)
+	h.persistHandoffJob(t, second, 2)
+	mustExec(t, h.db, `CREATE TRIGGER fail_async_finalization BEFORE INSERT ON provider_completion_settlements WHEN NEW.provider_invocation_id = 'pinv_terminal_handoff_001' BEGIN SELECT RAISE(FAIL, 'forced finalization failure'); END`)
+	runtime := &Runtime{orchestrator: h.loop}
+	if deferred, err := runtime.replayStartupProviderTerminalHandoffs(context.Background()); err != nil || deferred {
+		t.Fatalf("persisted authority was blocked by deferred finalization: deferred=%t err=%v", deferred, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if _, err := h.loop.scheduleProviderTerminalFinalization(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.loop.waitForMaintenance(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, first.ProviderInvocationID); err != nil || found {
+		t.Fatalf("failed finalizer settled first invocation: found=%t err=%v", found, err)
+	}
+	if pending := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_terminal_handoffs WHERE provider_invocation_id=?`, first.ProviderInvocationID); pending != 1 {
+		t.Fatal("failed finalizer lost durable retry record")
+	}
+	mustExec(t, h.db, `DROP TRIGGER fail_async_finalization`)
+	finalizePendingHandoffsThroughMaintenance(t, h)
+	if settled := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_completion_settlements`); settled != 2 {
+		t.Fatalf("finalization retry settled %d invocations", settled)
+	}
 }

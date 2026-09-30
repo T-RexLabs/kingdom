@@ -1785,8 +1785,13 @@ func TestRunWorktreeCleanupReclaimsOwnerThatExitedAfterStartup(t *testing.T) {
 
 	secondRuntime := workspace.NewRunWorktreeStore(db)
 	loop := orchestrationLoop{db: db, runWorktrees: secondRuntime, now: func() time.Time { return now }}
-	if err := loop.drainRunWorktreeCleanup(context.Background()); err != nil {
-		t.Fatalf("drain cleanup after owner exit: %v", err)
+	if err := loop.scheduleMaintenancePass(context.Background()); err != nil {
+		t.Fatalf("schedule maintenance after owner exit: %v", err)
+	}
+	waitCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := loop.waitForMaintenance(waitCtx); err != nil {
+		t.Fatalf("wait for maintenance after owner exit: %v", err)
 	}
 	current, err := secondRuntime.GetByRun(context.Background(), "run_1")
 	if err != nil {

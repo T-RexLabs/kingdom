@@ -56,6 +56,9 @@ func TestQuiescentCancellationWaitsForWorkerAndResumes(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
+				if err := h.fsStore.UpdateExecutionTargetState(ctx, invocation.RunID, "attempt_dirty", target.TrustedSnapshotID, invocation.AttemptID, "2026-03-01T12:01:00Z"); err != nil {
+					t.Fatal(err)
+				}
 				workspaceFile := filepath.Join(target.ExecutionRoot, "README.md")
 				if err := os.WriteFile(workspaceFile, []byte("provider worker still cleaning up\n"), 0o644); err != nil {
 					t.Fatal(err)
@@ -101,6 +104,12 @@ func TestQuiescentCancellationWaitsForWorkerAndResumes(t *testing.T) {
 						t.Fatal(err)
 					}
 					if err := runtime.finishStartupRecovery(ctx, false); err != nil {
+						t.Fatal(err)
+					}
+					drainCtx, cancelDrain := context.WithTimeout(ctx, 5*time.Second)
+					defer cancelDrain()
+					defer runtime.stopMaintenance()
+					if err := runtime.drainMaintenance(drainCtx); err != nil {
 						t.Fatal(err)
 					}
 				} else if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
@@ -183,6 +192,12 @@ func TestCancellationRecoveryResumesInterruptedDispatchFromGuardianProof(t *test
 			if err := runtime.finishStartupRecovery(ctx, false); err != nil {
 				t.Fatal(err)
 			}
+			drainCtx, cancelDrain := context.WithTimeout(ctx, 5*time.Second)
+			defer cancelDrain()
+			defer runtime.stopMaintenance()
+			if err := runtime.drainMaintenance(drainCtx); err != nil {
+				t.Fatal(err)
+			}
 			assertCancellationHandoff(t, h, invocation.AttemptID, "published", "released")
 			if calls := adapter.cancelCalls(); calls != 0 {
 				t.Fatalf("startup replayed interrupted external stop: calls=%d", calls)
@@ -230,11 +245,13 @@ func testCancellationBatchFairness(t *testing.T, arrivalsDuringScan int) {
 		runID := fmt.Sprintf("run_cancel_batch_%03d", index)
 		nodeRunID := fmt.Sprintf("nr_cancel_batch_%03d", index)
 		attemptID := fmt.Sprintf("%s:delegated_execution_berserker:1", runID)
-		baseSnapshotID := ""
+		// These attempts already owned a snapshot, but their targets are
+		// missing. A genuinely unprepared cancellation now safely needs no
+		// restoration, so it cannot serve as persistent cleanup debt.
+		baseSnapshotID := h.baselineSnapshotID
 		if index == 64 {
 			runID = "run_terminal_handoff"
 			attemptID = runID + ":delegated_execution_berserker:1"
-			baseSnapshotID = h.baselineSnapshotID
 		} else {
 			mustExec(t, h.db, fmt.Sprintf(`INSERT INTO workflow_runs(run_id,decree_id,workflow_definition_id,run_status,plan_state,row_version,created_at,updated_at) VALUES(%q,'decree_terminal_handoff','wfdef_terminal_handoff','cancelled','approved',1,'2026-03-01T12:00:00Z','2026-03-01T12:00:00Z')`, runID))
 		}

@@ -20,3 +20,6 @@ ADD COLUMN cleanup_fence INTEGER NOT NULL DEFAULT 0 CHECK (cleanup_fence >= 0);
 
 ALTER TABLE run_worktrees
 ADD COLUMN cleanup_started INTEGER NOT NULL DEFAULT 0 CHECK (cleanup_started IN (0, 1));
+
+CREATE INDEX idx_run_worktrees_claimed_run
+ON run_worktrees (run_id) WHERE cleanup_owner <> '';

@@ -510,6 +510,10 @@ ON attempt_executions (active_provider_invocation_id);
 CREATE INDEX idx_attempt_executions_canonical_settlement
 ON attempt_executions (canonical_settlement_id);
 
+CREATE INDEX idx_attempt_executions_snapshot_lineage
+ON attempt_executions (run_id, result_snapshot_id, base_snapshot_id)
+WHERE result_snapshot_id <> '';
+
 CREATE TABLE provider_invocations (
   provider_invocation_id TEXT PRIMARY KEY,
   attempt_id TEXT NOT NULL,
@@ -714,7 +718,7 @@ CREATE TABLE attempt_outbox (
 );
 
 CREATE INDEX idx_attempt_outbox_status_created
-ON attempt_outbox (status, created_at);
+ON attempt_outbox (status, created_at, outbox_id);
 
 CREATE TABLE attempt_cancel_outbox (
   cancel_outbox_id TEXT PRIMARY KEY,

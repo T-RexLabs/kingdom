@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -31,6 +30,7 @@ func (o *orchestrationLoop) git() gitCommandRunner {
 }
 
 type executionWorkspaceContext struct {
+	WorkspaceKind       executionWorkspaceKind
 	SeedRoot            string
 	ExecutionRoot       string
 	ProjectRootBoundary string
@@ -204,7 +204,13 @@ func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx
 	if err != nil {
 		return runtimefs.RunExecutionTarget{}, err
 	}
-	if !quiescent || o.hasInflightRunExecution(runID) {
+	var preparingAttemptID string
+	if o.db != nil {
+		if err := o.db.QueryRowContext(ctx, `SELECT attempt_id FROM attempt_executions WHERE node_run_id = ? AND state = 'queued'`, nodeRunID).Scan(&preparingAttemptID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return runtimefs.RunExecutionTarget{}, err
+		}
+	}
+	if !quiescent || o.hasInflightRunExecutionExcept(runID, preparingAttemptID) {
 		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target recovery is waiting for provider process quiescence")
 	}
 	var recovered runtimefs.RunExecutionTarget
@@ -353,8 +359,12 @@ func (o *orchestrationLoop) prepareExecutionWorkspaceContext(ctx context.Context
 			return fmt.Errorf("open execution destination: %w", err)
 		}
 		defer destination.Close()
+		writeFile := destination.ReplaceRegularFrom
+		if workspaceCtx.WorkspaceKind == workspacePrivateSource {
+			writeFile = destination.MaterializeRegularFrom
+		}
 		if err := trackedfs.VisitTrackedFilesRoot(ctx, seedRoot, func(file trackedfs.TrackedFile) error {
-			return destination.ReplaceRegularFrom(ctx, file.RelativePath, func(w io.Writer) error {
+			return writeFile(ctx, file.RelativePath, func(w io.Writer) error {
 				_, info, err := seedRoot.CopyRegular(ctx, file.RelativePath, w)
 				if err != nil {
 					return err
@@ -571,10 +581,6 @@ func sameOpenCodeProjectRoot(left, right string) bool {
 }
 
 func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context, runID, attemptID, publishMode string) (string, string, error) {
-	if o != nil {
-		unlock := o.lockRunWorkspace(runID)
-		defer unlock()
-	}
 	if o == nil {
 		return "", "", fmt.Errorf("orchestration loop is required")
 	}
@@ -585,27 +591,7 @@ func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context
 	projectRoot := strings.TrimSpace(o.yoloRoot)
 	targetMode := normalizePublishMode(publishMode)
 	if targetMode == PublishModeGitWorktree {
-		if projectRoot == "" {
-			return "", "", fmt.Errorf("project root is required for git worktree publish mode")
-		}
-		worktreeCtx, err := o.ensureRunWorktree(ctx, projectRoot, runID)
-		if err != nil {
-			return "", "", err
-		}
-		workspacePath := strings.TrimSpace(worktreeCtx.ProjectRoot)
-		if workspacePath == "" {
-			return "", "", fmt.Errorf("response-only workspace path is required")
-		}
-		if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-			return "", "", fmt.Errorf("prepare response-only workspace root: %w", err)
-		}
-		if err := o.ensureOpenCodeProjectBoundary(ctx, workspacePath, true); err != nil {
-			return "", "", fmt.Errorf("prepare response-only OpenCode project boundary: %w", err)
-		}
-		if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(workspacePath), false); err != nil {
-			return "", "", fmt.Errorf("install managed opencode overlay into response-only workspace: %w", err)
-		}
-		return workspacePath, "", nil
+		return o.preparePrivateGitWorkspace(ctx, runID, attemptID, "")
 	}
 	if o.fsStore == nil {
 		return "", "", fmt.Errorf("runtime filesystem store is required for an isolated response-only workspace")
@@ -621,6 +607,7 @@ func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context
 		return "", "", err
 	}
 	workspaceCtx := executionWorkspaceContext{
+		WorkspaceKind:       workspacePrivateSource,
 		SeedRoot:            projectRoot,
 		ExecutionRoot:       workspacePath,
 		ProjectRootBoundary: workspacePath,
@@ -629,34 +616,11 @@ func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context
 		WorkspaceEmpty:      projectRoot == "",
 	}
 	if err := o.prepareExecutionWorkspaceContext(ctx, workspacePath, workspaceCtx); err != nil {
-		cleanupCtx, cancelCleanup := detachedTimeoutContext(ctx, 5*time.Second)
-		cleanupErr := o.removeResponseOnlyWorkspaceAndClear(cleanupCtx, runID, attemptID, markedAt)
-		cancelCleanup()
-		return "", "", errors.Join(fmt.Errorf("prepare response-only workspace: %w", err), cleanupErr)
+		// Preparation owns the attempt until it unwinds. Its durable cleanup
+		// marker lets maintenance remove partial copies after that reservation.
+		return "", "", fmt.Errorf("prepare response-only workspace: %w", err)
 	}
 	return workspacePath, markedAt, nil
-}
-
-func (o *orchestrationLoop) cleanupResponseOnlyWorkspace(job asyncExecutionResult) {
-	if o == nil || o.fsStore == nil || o.executionStore == nil {
-		return
-	}
-	unlock := o.lockRunWorkspace(job.run.RunID)
-	defer unlock()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, job.attemptID)
-	if err != nil {
-		slog.Warn("response-only workspace cleanup deferred because process quiescence is unknown", "attempt_id", job.attemptID, "error", err)
-		return
-	}
-	if !quiescent {
-		slog.Warn("response-only workspace cleanup deferred until process quiescence", "attempt_id", job.attemptID)
-		return
-	}
-	if err := o.removeResponseOnlyWorkspaceAndClear(ctx, job.run.RunID, job.attemptID, job.responseOnlyWorkspaceCleanupMarkedAt); err != nil {
-		slog.Warn("response-only workspace cleanup deferred", "attempt_id", job.attemptID, "error", err)
-	}
 }
 
 func (o *orchestrationLoop) removeResponseOnlyWorkspaceAndClear(ctx context.Context, runID, attemptID, markedAt string) error {
@@ -678,57 +642,10 @@ func (o *orchestrationLoop) removeResponseOnlyWorkspaceAndClear(ctx context.Cont
 
 func (o *orchestrationLoop) resetResponseOnlyWorkspaceCleanupCursor() {
 	if o != nil {
+		o.maintenance.scanMu.Lock()
 		o.responseOnlyWorkspaceCleanupCursor = ""
+		o.maintenance.scanMu.Unlock()
 	}
-}
-
-func (o *orchestrationLoop) recoverResponseOnlyWorkspaceCleanupsWithLimit(ctx context.Context, limit int) (int, error) {
-	if o == nil || o.fsStore == nil || o.executionStore == nil {
-		return 0, nil
-	}
-	if limit <= 0 {
-		return 0, fmt.Errorf("limit must be positive")
-	}
-	candidates, err := o.fsStore.ListPendingResponseOnlyWorkspaceCleanups(ctx, o.responseOnlyWorkspaceCleanupCursor, limit)
-	if err != nil {
-		return 0, err
-	}
-	visited := 0
-	for _, candidate := range candidates {
-		func() {
-			unlock := o.lockRunWorkspace(candidate.RunID)
-			defer unlock()
-			if o.executionAttemptInflight(candidate.AttemptID) {
-				o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID
-				visited++
-				return
-			}
-			quiescent, quiescenceErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, candidate.AttemptID)
-			if quiescenceErr != nil {
-				slog.Warn("response-only workspace cleanup replay deferred because process quiescence is unknown", "attempt_id", candidate.AttemptID, "error", quiescenceErr)
-				o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID
-				visited++
-				return
-			}
-			if !quiescent {
-				o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID
-				visited++
-				return
-			}
-			if err := o.removeResponseOnlyWorkspaceAndClear(ctx, candidate.RunID, candidate.AttemptID, candidate.MarkedAt); err != nil {
-				slog.Warn("response-only workspace cleanup replay deferred", "attempt_id", candidate.AttemptID, "error", err)
-				o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID
-				visited++
-				return
-			}
-			o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID
-			visited++
-		}()
-	}
-	if visited < limit {
-		o.responseOnlyWorkspaceCleanupCursor = ""
-	}
-	return visited, nil
 }
 
 func directoryIsEmpty(path string) (bool, error) {

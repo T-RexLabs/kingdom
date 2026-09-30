@@ -429,6 +429,8 @@ type InvalidateUnlaunchedProviderInvocationRequest struct {
 	ProviderInvocationID string
 	InvalidReason        string
 	UpdatedAt            string
+	ExpectedLeaseOwner   string
+	ExpectedLeaseVersion int64
 }
 
 type ProviderSettlementError struct {
@@ -2490,8 +2492,12 @@ func (s *Store) InvalidateProviderInvocation(ctx context.Context, req Invalidate
 
 // InvalidateUnlaunchedProviderInvocation rolls back invocation authority when
 // durable node-start publication fails before the provider launch gate opens.
-// The invocation and its queued attempt lease are invalidated atomically.
+// The queued preparation lease is retained for the caller's fenced setup
+// failure transition; another worker's lease cannot be invalidated.
 func (s *Store) InvalidateUnlaunchedProviderInvocation(ctx context.Context, req InvalidateUnlaunchedProviderInvocationRequest) error {
+	if strings.TrimSpace(req.ExpectedLeaseOwner) == "" || req.ExpectedLeaseVersion <= 0 {
+		return fmt.Errorf("unlaunched invocation rollback requires complete lease lineage")
+	}
 	normalized, err := normalizeInvalidateProviderInvocationRequest(InvalidateProviderInvocationRequest{
 		ProviderInvocationID: req.ProviderInvocationID,
 		InvalidReason:        req.InvalidReason,
@@ -2501,12 +2507,12 @@ func (s *Store) InvalidateUnlaunchedProviderInvocation(ctx context.Context, req 
 		return err
 	}
 	_, err = sqlitex.Retry(ctx, func() error {
-		return s.invalidateUnlaunchedProviderInvocationOnce(ctx, normalized)
+		return s.invalidateUnlaunchedProviderInvocationOnce(ctx, normalized, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
 	}, sqlitex.Options{})
 	return err
 }
 
-func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, req InvalidateProviderInvocationRequest) error {
+func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, req InvalidateProviderInvocationRequest, owner string, version int64) error {
 	if s == nil || s.db == nil {
 		return fmt.Errorf("store database is required")
 	}
@@ -2542,12 +2548,11 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 	}
 	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET active_provider_invocation_id = NULL,
-		    lease_owner = '',
-		    lease_expires_at = NULL,
 		    updated_at = ?
 		WHERE attempt_id = ? AND run_id = ? AND node_run_id = ?
 		  AND active_provider_invocation_id = ?
 		  AND state = 'queued'
+		  AND lease_owner = ? AND lease_version = ?
 		  AND launch_started_at IS NULL AND started_at IS NULL
 		  AND canonical_settlement_id IS NULL`,
 		req.UpdatedAt,
@@ -2555,6 +2560,7 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 		invocation.RunID,
 		invocation.NodeRunID,
 		invocation.ProviderInvocationID,
+		owner, version,
 	)
 	if err != nil {
 		return fmt.Errorf("clear unlaunched provider invocation from attempt %q: %w", invocation.AttemptID, err)
