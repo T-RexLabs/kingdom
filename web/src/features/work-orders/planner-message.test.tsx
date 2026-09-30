@@ -432,7 +432,7 @@ describe("PlannerMessageCard", () => {
     expect(await screen.findByText(/First reasoning step/)).toBeInTheDocument();
     expect(
       await screen.findByText(
-        "The provider did not expose this content.",
+        /The provider did not expose this reasoning\./,
       ),
     ).toBeInTheDocument();
   });
@@ -497,8 +497,10 @@ describe("PlannerMessageCard", () => {
 
     await waitFor(() => expect(screen.getByText("Fetching https://example.com")).toBeVisible());
     expect(screen.getByRole("link", { name: /example\.com/ })).toHaveAttribute("href", "https://example.com");
-    expect(screen.getByLabelText("Tool running")).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("Fetching https://example.com");
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
+    expect(screen.queryByText("Searching ACP activity handlers")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(
       await screen.findByText("Searching ACP activity handlers"),
     ).toBeInTheDocument();
@@ -525,10 +527,12 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    await waitFor(() =>
-      expect(screen.getAllByText(/^Fetched https:/)).toHaveLength(3),
-    );
+    expect(screen.getByRole("status")).toHaveTextContent("Fetched https://bigshotsgolf.com/");
+    expect(screen.getAllByText(/^Fetched https:/)).toHaveLength(1);
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
+    const history = screen.getByRole("region", { name: "Provider activity history" });
+    await waitFor(() => expect(within(history).getAllByText(/^Fetched https:/)).toHaveLength(3));
     expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
-    expect(screen.getByRole("status")).toHaveTextContent("Processing");
+    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
   });
 });

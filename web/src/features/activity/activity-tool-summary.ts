@@ -21,6 +21,7 @@ export function activityToolSummary(item: ActivityItem): string {
   if (!item.toolName) return item.label.split(/\r?\n/)[0];
   const name = item.toolName.toLowerCase();
   const action = actions[name] ?? item.toolName;
+  if (["bash", "shell"].includes(name) && item.toolTitle && item.toolTitle.length <= 120 && !/[\r\n]/.test(item.toolTitle)) return item.toolTitle;
   if (["webfetch", "websearch", "glob", "grep"].includes(name)) return item.label.split(/\r?\n/)[0];
   if (!["read", "write", "edit"].includes(name)) return action;
   try {

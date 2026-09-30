@@ -43,6 +43,9 @@ describe("quiet tool summaries", () => {
       ),
     ).toBe("Run Command");
   });
+  it("uses a concise provider-supplied command title", () => {
+    expect(activityToolSummary(tool({ toolName: "bash", toolTitle: "Verify the package tests" }))).toBe("Verify the package tests");
+  });
   it("keeps unnamed tools and incomplete inputs honest without inventing a filename", () => {
     expect(
       activityToolSummary(

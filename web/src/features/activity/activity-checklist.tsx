@@ -1,13 +1,27 @@
-import { useMemo } from "react";
-import { CheckCircle2, Circle, CircleDot, CircleSlash } from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import {
+  CheckCircle2,
+  ChevronDown,
+  Circle,
+  CircleDot,
+  CircleSlash,
+} from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import type { ActivityContent } from "./activity-view";
 
 type ReportedTask = { content: string; status: string };
 
 /** A readable projection of one complete provider snapshot, never inferred task state. */
-export function ActivityChecklist({ content }: { content: ActivityContent }) {
+export function ActivityChecklist({
+  content,
+  collapsible = false,
+}: {
+  content: ActivityContent;
+  collapsible?: boolean;
+}) {
   const tasks = useMemo(() => readReportedTasks(content), [content]);
+  const [open, setOpen] = useState(false);
+  const panelId = useId();
   if (!tasks) return null;
   const completed = tasks.filter((task) => task.status === "completed").length;
   return (
@@ -16,26 +30,48 @@ export function ActivityChecklist({ content }: { content: ActivityContent }) {
       role="group"
       aria-label="Reported checklist"
     >
-      <p className="text-xs font-medium text-foreground-muted">
-        {completed} of {tasks.length} Completed
-      </p>
-      {tasks.length > 8 ? (
-        <div role="list" aria-label="Reported tasks">
-          <Virtuoso
-            style={{ height: 256 }}
-            aria-label="Scrollable reported tasks"
-            data={tasks}
-            defaultItemHeight={52}
-            itemContent={(_, task) => <ReportedTaskRow task={task} />}
+      {collapsible ? (
+        <button
+          type="button"
+          aria-expanded={open}
+          aria-controls={panelId}
+          onClick={() => setOpen((current) => !current)}
+          className="flex min-h-9 items-center gap-2 text-xs font-medium text-foreground-muted"
+        >
+          <span>Checklist</span>
+          <span>
+            {completed}/{tasks.length}
+          </span>
+          <ChevronDown
+            aria-hidden="true"
+            className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
           />
-        </div>
+        </button>
       ) : (
-        <div role="list" aria-label="Reported tasks" className="space-y-2">
-          {tasks.map((task, index) => (
-            <ReportedTaskRow key={index} task={task} />
-          ))}
-        </div>
+        <p className="text-xs font-medium text-foreground-muted">
+          {completed} of {tasks.length} Completed
+        </p>
       )}
+      <div id={panelId} hidden={collapsible && !open}>
+        {(!collapsible || open) &&
+          (tasks.length > 8 ? (
+            <div role="list" aria-label="Reported tasks">
+              <Virtuoso
+                style={{ height: 256 }}
+                aria-label="Scrollable reported tasks"
+                data={tasks}
+                defaultItemHeight={52}
+                itemContent={(_, task) => <ReportedTaskRow task={task} />}
+              />
+            </div>
+          ) : (
+            <div role="list" aria-label="Reported tasks" className="space-y-2">
+              {tasks.map((task, index) => (
+                <ReportedTaskRow key={index} task={task} />
+              ))}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
@@ -67,7 +103,9 @@ function ReportedTaskRow({ task }: { task: ReportedTask }) {
         aria-hidden="true"
         className={`mt-0.5 h-3.5 w-3.5 shrink-0 ${task.status === "in_progress" ? "text-accent" : "text-foreground-muted"}`}
       />
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words text-foreground">
+      <span
+        className={`min-w-0 flex-1 whitespace-pre-wrap break-words ${["completed", "cancelled"].includes(task.status) ? "text-foreground-muted line-through" : "text-foreground"}`}
+      >
         {task.content || "(Empty task)"}
       </span>
       <span className="max-w-[35%] break-words text-[10px] text-foreground-muted">

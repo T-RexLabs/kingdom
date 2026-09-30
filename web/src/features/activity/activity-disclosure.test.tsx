@@ -54,7 +54,7 @@ describe("shared activity disclosure", () => {
     ]} gaps={[]} isLoadingMore={false} loadError={null} loadMore={vi.fn()} />);
     await waitFor(() => expect(screen.getByText("Searching the exact question")).toBeVisible());
     expect(screen.queryByText("Opening provider session")).not.toBeInTheDocument();
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Searching the exact question");
   });
 
   it("shows changing live reasoning and collapses only for a canonical planner response", async () => {
@@ -69,19 +69,20 @@ describe("shared activity disclosure", () => {
     view.rerender(<ActivityDisclosure {...settledPlanner} {...props} isLive={false} hasFinalResponse={false} items={nextItems} />);
     expect(screen.getByText("Revised provider thought")).toBeVisible();
     view.rerender(<ActivityDisclosure {...settledPlanner} {...props} isLive={false} hasFinalResponse items={nextItems} />);
-    expect(screen.getByText("Revised provider thought")).not.toBeVisible();
+    expect(screen.queryByText("Revised provider thought")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Show Activity" })).toHaveAttribute("aria-expanded", "false");
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
-    expect(screen.getByText("Revised provider thought")).toBeVisible();
+    await waitFor(() => expect(screen.getByText("Revised provider thought")).toBeVisible());
   });
 
-  it("opens completed run activity initially and preserves manual visibility through refresh", async () => {
+  it("shows the completed run preview while keeping exact history manual through refresh", async () => {
     const props = { scopeKey: "run-complete", isLive: false, hasFinalResponse: true, completionBehavior: "keep-open" as const, gaps: [], isLoadingMore: false, loadError: null, loadMore: vi.fn(), items: [{ id: "thought", eventId: "e", sequence: 1, kind: "thinking" as const, label: "Thinking", reasoningContent: availableActivityContent("Saved provider thought") }] };
     const view = render(<ActivityDisclosure {...settledPlanner} {...props} />, { wrapper: Wrapper });
     await waitFor(() => expect(screen.getByText("Saved provider thought")).toBeVisible());
-    await userEvent.click(screen.getByRole("button", { name: "Hide Activity" }));
+    expect(screen.getByRole("button", { name: "Show Activity" })).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("region", { name: "Provider activity history" })).not.toBeInTheDocument();
     view.rerender(<ActivityDisclosure {...settledPlanner} {...props} items={[...props.items]} />);
-    expect(screen.getByText("Saved provider thought")).not.toBeVisible();
+    expect(screen.getByText("Saved provider thought")).toBeVisible();
   });
 
   it("shows the real read and observed message without surrounding provider lifecycle rows", async () => {
