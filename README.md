@@ -110,8 +110,8 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 2. Open **Planning** to develop a brief, or create new work directly.
 3. Choose a model from the models OpenCode exposes.
 4. Review the brief, approval choice, and delivery location before issuing it.
-5. Follow the run under **Runs** through **Workflow** and **Agent Activity**. **Show Activity** reveals real provider reasoning, tools, and reported checklists above the response, using the same presentation as planning. **Instructions** shows the complete stored dispatch body for the selected attempt; **Final Response** appears when a settled response exists, which also remains inline in the conversation.
-6. Open **Run Files** for deliverables or **Run Details** for the work order, settings, and audit history. Exact attempt evidence is available under **Audit**.
+5. Follow the run under **Runs** through **Workflow** and **Agent Activity**. Real provider reasoning, tools, and reported checklists appear above the response and remain visible after completion. Planning uses the same live presentation, then collapses activity when the saved reply arrives. **Instructions** shows the complete stored dispatch body for the selected attempt; **Final Response** appears when a settled response exists, which also remains inline in the conversation.
+6. Review and validation rework counts and limits appear in the run header. Open **Run Files** for deliverables or **Run Details** for the work order, inline settings, and audit history. Exact attempt evidence is available under **Audit**.
 
 Planning-session lists load history in pages. Use **Load More Sessions** in the planning rail or **Load Older Sessions** beside **From Plan** to continue through older history. Provider activity has independent bounded history and exact-content reads.
 

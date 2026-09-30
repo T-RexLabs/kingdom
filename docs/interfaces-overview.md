@@ -75,7 +75,7 @@ Capabilities:
 
 Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
 
-Planner user messages align to the right. **Show Activity** opens recorded provider thinking, tools, checklist snapshots, and observed message inspection above the canonical assistant response. Short activity trails fit their content, while long histories retain bounded scrolling and earlier-page access. Raw event identifiers sit behind **Event Details**.
+Planner user messages align to the right. While a reply is running, activity appears automatically above it: the current observed action, muted provider thinking, tool calls, reported checklists, and sources. After the canonical reply arrives, activity collapses behind **Show Activity**. Short trails fit their content, while long histories retain bounded scrolling and earlier-page access. Conversation activity has no per-event metadata panels.
 
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
@@ -102,14 +102,16 @@ Run detail starts in **Workflow**, which displays the stored workflow DAG. The t
 - **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** reads the complete immutable prompt body prepared for the selected attempt, without reconstructing it from the issued brief. **Final Response** appears when a canonical settled response exists and also remains inline in the conversation.
 - **View Plan**: the plan and its review history, with current approval/rework controls where applicable.
 - **Run Files**: artifact downloads and publication results.
-- **Run Details**: the full issued work order, source context, settings, and audit history.
+- **Run Details**: the full issued work order, source context, inline settings, and audit history. Settings do not open a second dialog.
+
+Review and validation rework counts and limits appear in the main run header, including skipped stages and uncapped runs.
 
 The run surface is also where operators handle manual approvals when approvals are not autonomous.
 
 Activity semantics:
 
 - Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
-- Agent Activity shares the planner’s Show Activity disclosure for actual reasoning, tools, reported checklists, and observed messages; it has no user composer or display filters
+- Agent Activity shares the planner’s presentation for actual reasoning, tools, reported checklists, and observed messages, but activity remains open after a final response arrives; it has no user composer or display filters
 - provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
