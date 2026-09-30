@@ -75,6 +75,8 @@ Capabilities:
 
 Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
 
+Planner user messages align to the right. Real provider thinking and tool activity precede the canonical assistant response; **View Options** exposes routine lifecycle events and observed message inspection without duplicating the settled reply. Short activity trails fit their content, while long histories retain bounded scrolling and earlier-page access. Raw event identifiers sit behind **Event Details**.
+
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
 ### `New Work Order` (`/work-orders/new`)
@@ -97,7 +99,7 @@ Capabilities:
 Run detail starts in **Workflow**, which displays the stored workflow DAG. The two primary views are **Workflow** and **Agent Activity**. Quiet contextual actions keep supporting material available without competing with the conversation:
 
 - **Workflow**: actual topology, live execution state, and node selection.
-- **Agent Activity**: the selected agent and attempt's conversation, provider reasoning, compact tool actions, and canonical final response.
+- **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** opens the original issued work brief without placing it in the conversation.
 - **View Plan**: the plan and its review history, with current approval/rework controls where applicable.
 - **Run Files**: artifact downloads and publication results.
 - **Run Details**: issued brief/source context, execution diagnostics, messages, and audit history.
@@ -111,7 +113,7 @@ Activity semantics:
 - provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
-- attempt detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
+- a collapsed **Diagnostics** disclosure in **Run Details** carries selected-attempt failure, settlement, identity, and retry evidence without duplicating its conversation response
 - The conversation keeps canonical settled responses distinct from observed or provisional evidence; neither activity nor an observed response implies success
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
 - all provider-backed work order attempts settle from a valid server-observed terminal response and node-specific output validation
