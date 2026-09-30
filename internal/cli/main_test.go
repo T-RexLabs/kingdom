@@ -25,6 +25,14 @@ func TestMain(m *testing.M) {
 }
 
 func runPackageTests(m *testing.M) int {
+	// The marked child runs only TestCLIProcessHelper and is forcibly terminated
+	// by its parent. It does not access the summon registry, so avoid creating a
+	// temporary registry root that would be left behind when the process is
+	// killed.
+	if isCLIProcessHelperInvocation() {
+		return m.Run()
+	}
+
 	root, err := os.MkdirTemp("", "kingdom-cli-tests-")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create test cache root: %v\n", err)

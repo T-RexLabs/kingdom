@@ -51,8 +51,6 @@ func attemptExecutionProgressMarkerForEvent(eventType, reasonCode, nodeState str
 			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 10}, true
 		case "provider_invoked":
 			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 30}, true
-		case "provider_empty_output_retry", "provider_output_recovered":
-			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 40}, true
 		case "runtime_completion_observation":
 			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 50}, true
 		default:
@@ -75,11 +73,7 @@ func attemptExecutionProgressMarkerForEvent(eventType, reasonCode, nodeState str
 		}
 	case "attempt.started":
 		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: "", Rank: 25}, true
-	case "attempt.retrying", "attempt.retry_recovered":
-		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 40}, true
-	case "attempt.recovered", "attempt.retry_exhausted":
-		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: "", Rank: 60}, true
-	case "attempt.retry_queued", "attempt.rerun_queued":
+	case "attempt.retry_queued", "attempt.rerun_queued", "attempt.final_rework_queued":
 		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: "", Rank: 15}, true
 	default:
 		return attemptExecutionProgressMarker{}, false

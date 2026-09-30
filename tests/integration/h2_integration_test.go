@@ -226,8 +226,8 @@ func TestIntegrationReconcilerReassignsStaleAttemptAndReconcilesLeases(t *testin
 	if got := queryString(t, db, `SELECT node_status FROM node_runs WHERE node_run_id = ?`, "nr_1"); got != "blocked" {
 		t.Fatalf("expected stale node blocked, got %q", got)
 	}
-	if got := queryString(t, db, `SELECT node_status FROM node_runs WHERE node_run_id = ?`, "nr_1_retry_2"); got != "ready" {
-		t.Fatalf("expected reassigned node ready for orchestrator dispatch, got %q", got)
+	if got := queryString(t, db, `SELECT node_status FROM node_runs WHERE node_run_id = ?`, "nr_1_retry_2"); got != "pending" {
+		t.Fatalf("expected delayed reassigned node pending before dispatch, got %q", got)
 	}
 	if got := queryNullableString(t, db, `SELECT started_at FROM node_runs WHERE node_run_id = ?`, "nr_1_retry_2"); got != "" {
 		t.Fatalf("expected reassigned node started_at empty before dispatch, got %q", got)
@@ -270,7 +270,7 @@ func TestIntegrationSchedulerDispatchOrderDeterministicAcrossInputPermutations(t
 	}
 }
 
-func TestIntegrationReconcilerFailurePathPersistsEscalationAuditEvent(t *testing.T) {
+func TestIntegrationReconcilerFailurePathDoesNotUseNodeAttemptOrdinalForExhaustion(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
@@ -289,19 +289,16 @@ func TestIntegrationReconcilerFailurePathPersistsEscalationAuditEvent(t *testing
 	if err != nil {
 		t.Fatalf("reconcile failure path: %v", err)
 	}
-	if result.AttemptsFailed != 1 {
-		t.Fatalf("expected one failed attempt recovery, got %+v", result)
+	if result.AttemptsReassigned != 0 || result.AttemptsFailed != 1 {
+		t.Fatalf("expected stale failure without an available replacement, got %+v", result)
 	}
 
-	if got := queryInt(t, db, `SELECT COUNT(1) FROM events WHERE run_id = ? AND event_type = 'escalation.raised' AND reason_code = 'agent_unresponsive'`, "run_1"); got != 1 {
-		t.Fatalf("expected one escalation event, got %d", got)
-	}
-	if got := queryString(t, db, `SELECT authority_source FROM events WHERE run_id = ? AND event_type = 'escalation.raised' ORDER BY created_at DESC, event_id DESC LIMIT 1`, "run_1"); got != "system.reconciler" {
-		t.Fatalf("expected reconciler authority source, got %q", got)
+	if got := queryInt(t, db, `SELECT COUNT(1) FROM events WHERE run_id = ? AND event_type = 'escalation.raised' AND reason_code = 'agent_unresponsive'`, "run_1"); got != 0 {
+		t.Fatalf("expected no ordinal-derived escalation event, got %d", got)
 	}
 }
 
-func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTargets(t *testing.T) {
+func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithIsolatedResponseWorkspace(t *testing.T) {
 	t.Parallel()
 
 	db := openDB(t)
@@ -337,7 +334,13 @@ func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithoutWorkspaceTarg
 				return fmt.Errorf("expected persisted artifacts for dispatch run, got %d", artifacts)
 			}
 			if targets := queryInt(t, db, `SELECT COUNT(1) FROM run_execution_targets WHERE run_id = ?`, "run_dispatch"); targets != 0 {
-				return fmt.Errorf("expected response-first dispatch run to avoid execution targets, got %d", targets)
+				return fmt.Errorf("response-only dispatch persisted %d execution targets before workspace ownership", targets)
+			}
+			if snapshots := queryInt(t, db, `SELECT COUNT(1) FROM filesystem_snapshots WHERE run_id = ? AND snapshot_kind = 'baseline'`, "run_dispatch"); snapshots != 0 {
+				return fmt.Errorf("response-only dispatch persisted %d filesystem snapshots before workspace ownership", snapshots)
+			}
+			if cleanup := queryInt(t, db, `SELECT COUNT(1) FROM attempt_executions WHERE run_id = ? AND response_only_workspace_cleanup_pending_at IS NOT NULL`, "run_dispatch"); cleanup != 0 {
+				return fmt.Errorf("response-only dispatch left %d workspace cleanup markers", cleanup)
 			}
 			return nil
 		}

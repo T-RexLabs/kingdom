@@ -1,6 +1,8 @@
 package opencode
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +20,7 @@ func observeActivityFromWire(t *testing.T, line string) (ExecuteActivityObservat
 	var observed ExecuteActivityObservation
 	emitted := false
 	emitActivityObservation(ExecuteRequest{
+		CompletionMode: CompletionModeServerResponse,
 		OnActivity: func(activity ExecuteActivityObservation) {
 			observed = activity
 			emitted = true
@@ -89,12 +92,6 @@ func TestEmitActivityObservationStreamsToolUse(t *testing.T) {
 	}
 }
 
-func TestEmitActivityObservationSkipsInternalCompletionTool(t *testing.T) {
-	if _, emitted := observeActivityFromWire(t, `{"type":"tool_use","sessionID":"ses_1","part":{"type":"tool","tool":"kingdom_complete_attempt","id":"prt_done_1","state":{"status":"completed"}}}`); emitted {
-		t.Fatal("expected internal kingdom_complete_attempt tool to be skipped as live activity")
-	}
-}
-
 func TestEmitActivityObservationEmitsProgressForStepStart(t *testing.T) {
 	observed, emitted := observeActivityFromWire(t, `{"type":"step_start","sessionID":"ses_1","part":{"type":"step-start","id":"prt_step_1"}}`)
 	if !emitted {
@@ -108,13 +105,57 @@ func TestEmitActivityObservationEmitsProgressForStepStart(t *testing.T) {
 	}
 }
 
-func TestEmitActivityObservationIgnoresTextAndStepFinish(t *testing.T) {
-	for _, line := range []string{
-		`{"type":"text","sessionID":"ses_1","part":{"type":"text","id":"prt_text_1","text":"final answer"}}`,
-		`{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","id":"prt_step_2","reason":"stop"}}`,
+func TestEmitActivityObservationEmitsProgressForTokenBearingStepFinish(t *testing.T) {
+	observed, emitted := observeActivityFromWire(t, `{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","id":"prt_step_2","reason":"stop","time":{"start":1781275082000,"end":1781275082480},"tokens":{"total":12,"input":12,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`)
+	if !emitted {
+		t.Fatal("expected token-bearing provider step completion to emit progress")
+	}
+	if observed.Kind != ExecuteActivityKindProgress {
+		t.Fatalf("expected progress activity kind, got %q", observed.Kind)
+	}
+	if observed.Label != "Provider Step Completed" {
+		t.Fatalf("expected operator-facing progress label, got %q", observed.Label)
+	}
+	if observed.ProviderPartID != "prt_step_2" {
+		t.Fatalf("expected provider part id from part.id, got %q", observed.ProviderPartID)
+	}
+	if observed.OccurredAt != "2026-06-12T14:38:02Z" {
+		t.Fatalf("expected occurred-at from the observed part timestamp, got %q", observed.OccurredAt)
+	}
+	if observed.RawText != "" || observed.Summary != "" || observed.ToolName != "" {
+		t.Fatalf("token-only progress unexpectedly included text or tool activity: %+v", observed)
+	}
+	raw, err := json.Marshal(observed)
+	if err != nil {
+		t.Fatalf("marshal activity observation: %v", err)
+	}
+	if strings.Contains(strings.ToLower(string(raw)), "token") {
+		t.Fatalf("activity observation exposed token usage: %s", raw)
+	}
+}
+
+func TestEmitActivityObservationIgnoresTextAndStepFinishWithoutTokenUsage(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		line string
+	}{
+		{
+			name: "text",
+			line: `{"type":"text","sessionID":"ses_1","part":{"type":"text","id":"prt_text_1","text":"final answer"}}`,
+		},
+		{
+			name: "step finish without token data",
+			line: `{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","id":"prt_step_3","reason":"stop"}}`,
+		},
+		{
+			name: "step finish with zero token usage",
+			line: `{"type":"step_finish","sessionID":"ses_1","part":{"type":"step-finish","id":"prt_step_4","reason":"stop","tokens":{"total":0,"input":0,"output":0,"reasoning":0,"cache":{"read":0,"write":0}}}}`,
+		},
 	} {
-		if _, emitted := observeActivityFromWire(t, line); emitted {
-			t.Fatalf("expected no activity for line %q", line)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if _, emitted := observeActivityFromWire(t, tc.line); emitted {
+				t.Fatalf("expected no activity for line %q", tc.line)
+			}
+		})
 	}
 }

@@ -61,6 +61,12 @@ type Snapshot = {
   optimistic: PlannerOperationState | null;
 };
 
+type ReplySubmission = {
+  text: string;
+  answer?: AnswerPayload;
+  parentMessageId?: string;
+};
+
 export function usePlannerSessionController(session: PlanningSessionDetail | undefined) {
   const queryClient = useQueryClient();
   const sessionId = session?.planning_session_id ?? "";
@@ -108,6 +114,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
 
   useEffect(() => {
     if (!canonicalOperation || !isPlannerOperationTerminal(canonicalOperation.status)) return;
+    if (canonicalOperation.status === "done" && !canonicalOperation.activityReconciled) return;
 
     // Failed and cancelled runs stay query-backed for their notice. Successful
     // runs release local tracking after the stream hook reconciles the canonical
@@ -136,6 +143,57 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
     },
   }), [activeOperationQuery, operationId]);
 
+  const runReplyOperation = useCallback(async (
+    { text, answer, parentMessageId }: ReplySubmission,
+    run: () => Promise<{ run_id: string }>,
+  ) => {
+    if (!session) throw new Error("Planning session is required");
+    requestSeqRef.current += 1;
+    const seq = requestSeqRef.current;
+    const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
+    const now = new Date().toISOString();
+    // The new user message branches off the explicit parent (editing an
+    // earlier message) or, by default, the session's active leaf (a normal
+    // reply). Nothing is truncated; the server moves the active leaf so the
+    // new branch loads on the next messages refetch.
+    const branchParentId = parentMessageId ?? session.active_leaf_message_id ?? undefined;
+    setOptimisticOperation({
+      kind: "reply",
+      operationId: `pending-operation-${seq}`,
+      status: "pending",
+      lastEventSeq: 0,
+      parentMessageId: branchParentId,
+      userMessageId: `pending-user-${seq}`,
+      userCreatedAt: now,
+      assistantMessageId: `pending-assistant-${seq}`,
+      assistantCreatedAt: now,
+      pendingReply: { contentMarkdown: text, answer },
+      replyText: "",
+      formalizeText: "",
+      error: null,
+      activityReconciled: false,
+      events: [],
+      activityItems: [],
+    });
+    applyPlanningSessionFields(queryClient, session.planning_session_id, {
+      conversation_state: "processing",
+    });
+
+    try {
+      const created = await run();
+      if (seq !== requestSeqRef.current) return;
+      setOptimisticOperation(null);
+      setActiveOperationId(created.run_id);
+      // The server appended the user message and moved the active leaf;
+      // refetch so the new branch (user turn) replaces the optimistic ghost.
+      void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(session.planning_session_id) });
+    } catch (err) {
+      if (seq !== requestSeqRef.current) return;
+      restoreSnapshot(queryClient, snap, setOptimisticOperation);
+      throw err;
+    }
+  }, [optimisticOperation, queryClient, session, setActiveOperationId]);
+
   const state = useMemo(
     () => ({
       activeOperation,
@@ -145,60 +203,39 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
       setActiveOperationId,
       createOperation,
       recoveryKind,
-      submitReply: async ({ text, answer, parentMessageId }: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => {
+      submitReply: async ({ text, answer, parentMessageId }: ReplySubmission) => {
         if (!session) throw new Error("Planning session is required");
-        if (recoveryKind && recoveryKind !== "reply") throw new Error(`Retry the pending ${recoveryKind} request before starting another planner operation`);
-        requestSeqRef.current += 1;
-        const seq = requestSeqRef.current;
-        const snap = takeSnapshot(queryClient, session.planning_session_id, ["conversation_state"], optimisticOperation);
-        const now = new Date().toISOString();
-        // The new user message branches off the explicit parent (editing an
-        // earlier message) or, by default, the session's active leaf (a normal
-        // reply). Nothing is truncated; the server moves the active leaf so the
-        // new branch loads on the next messages refetch.
-        const branchParentId = parentMessageId ?? session.active_leaf_message_id ?? undefined;
-        setOptimisticOperation({
-          kind: "reply",
-          operationId: `pending-operation-${seq}`,
-          status: "pending",
-          lastEventSeq: 0,
-          parentMessageId: branchParentId,
-          userMessageId: `pending-user-${seq}`,
-          userCreatedAt: now,
-          assistantMessageId: `pending-assistant-${seq}`,
-          assistantCreatedAt: now,
-          pendingReply: { contentMarkdown: text, answer },
-          replyText: "",
-          formalizeText: "",
-          error: null,
-          events: [],
-          activityItems: [],
-        });
-        applyPlanningSessionFields(queryClient, session.planning_session_id, {
-          conversation_state: "processing",
-        });
-
-        try {
-          const created = await recoverableReply.mutateAsync({
-              agent_name: "planner-reply",
-              planning_session_id: session.planning_session_id,
-              reply: {
-                content_markdown: text,
-                ...(answer ? { answer_payload: answer } : {}),
-                ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
-              },
-            } satisfies CreateAcpRunRequest);
-          if (seq !== requestSeqRef.current) return;
-          setOptimisticOperation(null);
-          setActiveOperationId(created.run_id);
-          // The server appended the user message and moved the active leaf;
-          // refetch so the new branch (user turn) replaces the optimistic ghost.
-          void queryClient.invalidateQueries({ queryKey: plannerKeys.messages(session.planning_session_id) });
-        } catch (err) {
-          if (seq !== requestSeqRef.current) return;
-          restoreSnapshot(queryClient, snap, setOptimisticOperation);
-          throw err;
+        if (recoveryKind === "reply") {
+          throw new Error("Retry the pending reply request before sending another reply");
         }
+        if (recoveryKind) {
+          throw new Error(`Retry the pending ${recoveryKind} request before starting another planner operation`);
+        }
+        const request = {
+          agent_name: "planner-reply",
+          planning_session_id: session.planning_session_id,
+          reply: {
+            content_markdown: text,
+            ...(answer ? { answer_payload: answer } : {}),
+            ...(parentMessageId ? { parent_message_id: parentMessageId } : {}),
+          },
+        } satisfies CreateAcpRunRequest;
+        await runReplyOperation({ text, answer, parentMessageId }, () => recoverableReply.mutateAsync(request));
+      },
+      retryReplyRecovery: async () => {
+        if (!session) throw new Error("Planning session is required");
+        const retainedReply = recoverableReply.pendingRequest?.reply;
+        if (recoveryKind !== "reply" || !recoverableReply.hasPendingRecovery || !retainedReply) {
+          throw new Error("No pending reply recovery request is available");
+        }
+        await runReplyOperation(
+          {
+            text: retainedReply.content_markdown,
+            answer: retainedReply.answer_payload,
+            parentMessageId: retainedReply.parent_message_id,
+          },
+          () => recoverableReply.retry(),
+        );
       },
       regenerate: async ({ messageId, parentMessageId }: { messageId: string; parentMessageId?: string }) => {
         if (!session) throw new Error("Planning session is required");
@@ -221,6 +258,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          activityReconciled: false,
           events: [],
           activityItems: [],
         });
@@ -277,6 +315,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
           replyText: "",
           formalizeText: "",
           error: null,
+          activityReconciled: false,
           events: [],
           activityItems: [],
         });
@@ -300,7 +339,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
         }
       },
     }),
-    [activeOperation, activeOperationId, connection, createOperation, operationQueryState, optimisticOperation, queryClient, recoverableFormalize, recoverableRegenerate, recoverableReply, recoveryKind, session, setActiveOperationId],
+    [activeOperation, activeOperationId, connection, createOperation, operationQueryState, optimisticOperation, queryClient, recoverableFormalize, recoverableRegenerate, recoverableReply, recoveryKind, runReplyOperation, session, setActiveOperationId],
   );
 
   return state;

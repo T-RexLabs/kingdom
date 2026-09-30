@@ -8,7 +8,99 @@ import (
 	"testing"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/dbmigrations"
 )
+
+func TestPlanningContentMigrationPreservesHistoricalSnapshotBytes(t *testing.T) {
+	db := openTestDB(t)
+	raw, err := dbmigrations.Read("0001_initial_schema.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+	at := "2026-04-21T16:14:00Z"
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{PlanningSessionID: "historical-content", Title: "Historical", TitleState: "custom", LifecycleState: PlanningSessionLifecycleStateActive, ConversationState: PlanningSessionConversationStateReady, ProjectRoot: "/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO planning_context_snapshots(planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES('historical-snapshot','historical-content','Original summary',?,?,?)`, `[{"path":" leading 界.go ","size_bytes":123}]`, `[{"path":".env","reason":"secret"}]`, at); err != nil {
+		t.Fatal(err)
+	}
+	before, err := store.GetContextSnapshot(ctx, "historical-snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err = dbmigrations.Read("0009_planning_content.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	after, err := store.GetContextSnapshot(ctx, before.PlanningContextSnapshotID)
+	if err != nil || after != before {
+		t.Fatalf("migration rewrote historical snapshot: %v", err)
+	}
+	entries, cursor, err := store.ListContextEntriesPage(ctx, before.PlanningContextSnapshotID, "included", -1, 1)
+	if err != nil || len(entries) != 1 || cursor != 0 || entries[0].Path != " leading 界.go " || entries[0].Size != 123 {
+		t.Fatalf("historical included entry: %#v %d %v", entries, cursor, err)
+	}
+	entries, cursor, err = store.ListContextEntriesPage(ctx, before.PlanningContextSnapshotID, "excluded", -1, 1)
+	if err != nil || len(entries) != 1 || cursor != 1 || entries[0].Reason != "secret" {
+		t.Fatalf("historical excluded entry: %#v %d %v", entries, cursor, err)
+	}
+}
+
+func TestPlanningMessagePagesPreserveDeepPathAndRejectCycles(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+	at := "2026-04-21T16:14:00Z"
+	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{PlanningSessionID: "deep-messages", Title: "Deep", TitleState: "custom", LifecycleState: PlanningSessionLifecycleStateActive, ConversationState: PlanningSessionConversationStateReady, ProjectRoot: "/project", ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	parent := ""
+	for i := 0; i < 305; i++ {
+		id := fmt.Sprintf("message-%03d", 304-i) // Parent order, not lexical order.
+		if _, err := store.AppendMessage(ctx, AppendPlanningMessageRequest{PlanningMessageID: id, PlanningSessionID: "deep-messages", ParentMessageID: parent, Role: PlanningMessageRoleUser, ContentMarkdown: fmt.Sprintf("turn-%d", i), QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+		parent = id
+	}
+	if err := store.UpdateSession(ctx, UpdatePlanningSessionRequest{PlanningSessionID: "deep-messages", ActiveLeafMessageID: &parent, UpdatedAt: at}); err != nil {
+		t.Fatal(err)
+	}
+	before, total := 305, 0
+	for before > 0 {
+		page, err := store.ListMessagesPage(ctx, "deep-messages", 41, &before)
+		if err != nil || page.TotalCount != 305 {
+			t.Fatalf("message page: %v", err)
+		}
+		for i, message := range page.Items {
+			if message.ContentMarkdown != fmt.Sprintf("turn-%d", page.FirstItemIndex+i) {
+				t.Fatal("page reordered ancestry")
+			}
+		}
+		total += len(page.Items)
+		before = page.FirstItemIndex
+	}
+	if total != 305 {
+		t.Fatalf("paged %d messages", total)
+	}
+	if _, err := db.Exec(`UPDATE planning_messages SET parent_message_id='message-000' WHERE planning_message_id='message-304'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ListMessages(ctx, "deep-messages"); err == nil {
+		t.Fatal("cyclic history returned a hidden partial transcript")
+	}
+	if _, err := descendToLeaf(ctx, db, "deep-messages", "message-000"); err == nil {
+		t.Fatal("cyclic descendants returned a hidden partial branch")
+	}
+}
 
 func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	t.Parallel()
@@ -61,6 +153,167 @@ func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	}
 	if fetched.LifecycleState != PlanningSessionLifecycleStateActive {
 		t.Fatalf("expected active lifecycle state, got %q", fetched.LifecycleState)
+	}
+}
+
+func TestValidatePlanningContextSnapshotCreatePreservesFullFileJSON(t *testing.T) {
+	t.Parallel()
+
+	valid := CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: "pcs_bounds",
+		PlanningSessionID:         "ps_bounds",
+		SummaryMarkdown:           "context",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-21T16:14:00Z",
+	}
+	tests := []struct {
+		name    string
+		edit    func(*CreatePlanningContextSnapshotRequest)
+		invalid bool
+	}{
+		{
+			name: "more than 200 excluded entries",
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.ExcludedFilesJSON = "[" + strings.Repeat(`{"path":".env","reason":"secret"},`, 250) + `{"path":".env","reason":"secret"}]`
+			},
+		},
+		{
+			name: "oversized included json",
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.IncludedFilesJSON = `[{"path":"` + strings.Repeat("a", 1<<20) + `","reason":"` + strings.Repeat("r", 256) + `"}]`
+				req.SummaryMarkdown = strings.Repeat("summary", 10000)
+			},
+		},
+		{
+			name:    "malformed excluded json",
+			invalid: true,
+			edit: func(req *CreatePlanningContextSnapshotRequest) {
+				req.ExcludedFilesJSON = `not-json`
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := valid
+			tt.edit(&req)
+			if err := validatePlanningContextSnapshotCreate(req); (err != nil) != tt.invalid {
+				t.Fatalf("validation error=%v, want invalid=%v", err, tt.invalid)
+			}
+		})
+	}
+}
+
+func TestPlanningContentBundleRollsBackAndSealsCompleteEntries(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewPlanningStore(db)
+	ctx := context.Background()
+	at := "2026-04-21T16:14:00Z"
+	req := CreatePlanningSessionBundleRequest{
+		Session:         CreatePlanningSessionRequest{PlanningSessionID: "content-session", Title: "Content", TitleState: "custom", LifecycleState: PlanningSessionLifecycleStateActive, ConversationState: PlanningSessionConversationStateReady, ProjectRoot: t.TempDir(), ModelSelectionJSON: `{}`, CreatedAt: at, UpdatedAt: at},
+		OpeningMessage:  AppendPlanningMessageRequest{PlanningMessageID: "content-opening", PlanningSessionID: "content-session", Role: PlanningMessageRoleAssistant, ContentMarkdown: "Hello", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: at},
+		ContextSnapshot: CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "content-snapshot", PlanningSessionID: "content-session", SummaryMarkdown: strings.Repeat("summary ", 5000), IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: at},
+	}
+	fail := true
+	source := func(ctx context.Context, visit func(string, PlanningContextFileEntry) error) error {
+		for i := 0; i < 250; i++ {
+			if err := visit("included", PlanningContextFileEntry{Path: fmt.Sprintf("path-%03d-%s", i, strings.Repeat("x", 5000)), Reason: strings.Repeat("r", 256), Size: 128 << 10}); err != nil {
+				return err
+			}
+		}
+		if fail {
+			return fmt.Errorf("interrupted content spool")
+		}
+		return nil
+	}
+	req.ContextSnapshot.Entries = source
+	if _, err := store.CreateSessionBundle(ctx, req); err == nil {
+		t.Fatal("failed spool was published")
+	}
+	for _, table := range []string{"planning_sessions", "planning_messages", "planning_context_snapshots", "planning_context_entries"} {
+		var count int
+		if err := db.QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&count); err != nil || count != 0 {
+			t.Fatalf("%s partially committed: %d %v", table, count, err)
+		}
+	}
+	fail = false
+	session, err := store.CreateSessionBundle(ctx, req)
+	if err != nil || session.ContextSnapshotID == nil || *session.ContextSnapshotID != "content-snapshot" {
+		t.Fatalf("atomic publication: %#v %v", session, err)
+	}
+	for _, statement := range []string{
+		`INSERT INTO planning_context_entries VALUES ('content-snapshot',250,'included','injected','',0)`,
+		`UPDATE planning_context_entries SET path='mutated' WHERE snapshot_id='content-snapshot'`,
+		`DELETE FROM planning_context_entries WHERE snapshot_id='content-snapshot'`,
+	} {
+		if _, err := db.Exec(statement); err == nil {
+			t.Fatalf("immutable snapshot accepted %s", statement)
+		}
+	}
+	snapshot, err := store.GetContextSnapshot(ctx, "content-snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.IncludedFilesJSON != "[]" {
+		t.Fatal("summary must not hydrate all entries")
+	}
+	after, count, bytes := -1, 0, 0
+	var lastPath string
+	for {
+		entries, cursor, err := store.ListContextEntriesPage(ctx, snapshot.PlanningContextSnapshotID, "included", after, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			count++
+			bytes += len(entry.Path)
+			lastPath = entry.Path
+		}
+		if len(entries) < 100 {
+			break
+		}
+		after = cursor
+	}
+	if count != 250 || bytes <= 1<<20 || !strings.Contains(lastPath, "path-249-") {
+		t.Fatalf("entry pages lost content: count=%d bytes=%d", count, bytes)
+	}
+}
+
+func TestPlanningActivityContinuationBatchesPreserveLargePayloadAndLeaseFence(t *testing.T) {
+	store, operation := newPlanningActivityReconciliationTestStore(t)
+	ctx := context.Background()
+	now, expiry := "2026-04-21T16:00:00Z", "2026-04-21T16:01:00Z"
+	claimed, ok, err := store.ClaimPlanningActivityReconciliation(ctx, operation.OperationID, "worker", expiry, now)
+	if err != nil || !ok {
+		t.Fatalf("claim: %v", err)
+	}
+	payload := `{"detail":"` + strings.Repeat("x", 300<<10) + `tail"}`
+	for batch := 0; batch < 3; batch++ {
+		events := make([]AppendPlanningOperationEventRequest, 100)
+		for i := range events {
+			events[i] = AppendPlanningOperationEventRequest{EventID: fmt.Sprintf("event-%d-%d", batch, i), OperationID: operation.OperationID, Seq: i + 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now}
+		}
+		if batch == 0 {
+			events[0].PayloadJSON = payload
+		}
+		if err := store.AppendPlanningActivityReconciliationBatch(ctx, claimed, events, now, expiry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CompletePlanningActivityReconciliation(ctx, reconciliationCompletion(operation.OperationID, claimed.LeaseOwner, claimed.LeaseVersion, now, nil)); err != nil {
+		t.Fatal(err)
+	}
+	if count, err := store.PlanningActivityDeliveredCount(ctx, operation.OperationID); err != nil || count != 300 {
+		t.Fatalf("durable continuation count=%d err=%v", count, err)
+	}
+	events, err := store.ListOperationEventsAfterSeqPage(ctx, operation.OperationID, 0, 400)
+	if err != nil || len(events) != 301 || events[0].PayloadJSON != payload || events[300].EventType != "run.activity.reconciled" {
+		t.Fatalf("batched diagnostic replay: count=%d err=%v", len(events), err)
+	}
+	late := AppendPlanningOperationEventRequest{EventID: "late", OperationID: operation.OperationID, Seq: 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now}
+	if err := store.AppendPlanningActivityReconciliationBatch(ctx, claimed, []AppendPlanningOperationEventRequest{late}, now, expiry); !errors.Is(err, ErrPlanningLeaseConflict) {
+		t.Fatalf("completed reconciliation accepted stale writer: %v", err)
 	}
 }
 
@@ -323,7 +576,7 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 		PlanningContextSnapshotID: "pcs_1",
 		PlanningSessionID:         "ps_flow",
 		SummaryMarkdown:           "Scanned 2 files",
-		IncludedFilesJSON:         `["README.md","docs/system-architecture.md"]`,
+		IncludedFilesJSON:         `[{"path":"README.md","size_bytes":1},{"path":"docs/system-architecture.md","size_bytes":1}]`,
 		ExcludedFilesJSON:         `[{"path":".env","reason":"secret"}]`,
 		CreatedAt:                 "2026-04-21T16:14:00Z",
 	})
@@ -345,6 +598,10 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	}
 	if snapshot.PlanningSessionID != "ps_flow" {
 		t.Fatalf("expected context snapshot pcs_1 in ps_flow, got %+v", snapshot)
+	}
+	entries, _, err := store.ListContextEntriesPage(context.Background(), "pcs_1", "included", -1, 100)
+	if err != nil || len(entries) != 2 || entries[1].Path != "docs/system-architecture.md" || snapshot.IncludedFilesJSON != "[]" {
+		t.Fatalf("canonical snapshot path failed to normalize entries: %#v %v", entries, err)
 	}
 
 	conversationState := PlanningSessionConversationStateProcessing

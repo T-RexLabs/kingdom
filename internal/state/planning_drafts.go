@@ -11,10 +11,29 @@ func (s *PlanningStore) CreateDraft(ctx context.Context, req CreatePlanningDraft
 	if err := validatePlanningDraftCreate(req); err != nil {
 		return PlanningDraft{}, err
 	}
-	return insertPlanningDraft(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PlanningDraft{}, err
+	}
+	defer tx.Rollback()
+	draft, err := insertPlanningDraft(ctx, tx, req)
+	if err != nil {
+		return PlanningDraft{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningDraft{}, err
+	}
+	return draft, nil
 }
 
 func insertPlanningDraft(ctx context.Context, exec sqlExecutor, req CreatePlanningDraftRequest) (PlanningDraft, error) {
+	if err := validatePlanningTextContent(ctx, req.TextSource, true); err != nil {
+		return PlanningDraft{}, err
+	}
+	ref, err := persistPlanningText(ctx, exec, PlanningDraftContentID(req.PlanningDraftID), req.TextSource, req.CreatedAt)
+	if err != nil {
+		return PlanningDraft{}, err
+	}
 	row := PlanningDraft{
 		PlanningDraftID:   strings.TrimSpace(req.PlanningDraftID),
 		PlanningSessionID: strings.TrimSpace(req.PlanningSessionID),
@@ -23,15 +42,16 @@ func insertPlanningDraft(ctx context.Context, exec sqlExecutor, req CreatePlanni
 		SummaryJSON:       strings.TrimSpace(req.SummaryJSON),
 		CreatedAt:         strings.TrimSpace(req.CreatedAt),
 	}
-	_, err := exec.ExecContext(ctx,
-		`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?)`,
+	_, err = exec.ExecContext(ctx,
+		`INSERT INTO planning_drafts (planning_draft_id, planning_session_id, decree_title, decree_text, summary_json, created_at,decree_text_content_id)
+		 VALUES (?, ?, ?, ?, ?, ?,?)`,
 		row.PlanningDraftID,
 		row.PlanningSessionID,
 		row.DecreeTitle,
 		row.DecreeText,
 		row.SummaryJSON,
 		row.CreatedAt,
+		planningContentID(ref),
 	)
 	if err != nil {
 		return PlanningDraft{}, fmt.Errorf("insert planning draft: %w", err)
@@ -59,6 +79,9 @@ func (s *PlanningStore) GetDraft(ctx context.Context, planningDraftID string) (P
 	}
 	if err != nil {
 		return PlanningDraft{}, false, fmt.Errorf("get planning draft: %w", err)
+	}
+	if err := s.hydrateDraftText(ctx, &row); err != nil {
+		return PlanningDraft{}, false, err
 	}
 	return row, true, nil
 }
@@ -97,5 +120,24 @@ func (s *PlanningStore) GetLatestDraft(ctx context.Context, planningSessionID st
 	if err != nil {
 		return PlanningDraft{}, false, fmt.Errorf("get latest planning draft: %w", err)
 	}
+	if err := s.hydrateDraftText(ctx, &row); err != nil {
+		return PlanningDraft{}, false, err
+	}
 	return row, true, nil
+}
+
+func (s *PlanningStore) hydrateDraftText(ctx context.Context, draft *PlanningDraft) error {
+	var id sql.NullString
+	if err := s.db.QueryRowContext(ctx, `SELECT decree_text_content_id FROM planning_drafts WHERE planning_draft_id=?`, draft.PlanningDraftID).Scan(&id); err != nil {
+		return err
+	}
+	if !id.Valid {
+		return nil
+	}
+	source, err := s.planningTextSource(ctx, id.String)
+	if err != nil {
+		return err
+	}
+	draft.DecreeText, err = readPlanningText(ctx, source)
+	return err
 }

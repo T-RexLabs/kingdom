@@ -12,7 +12,9 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
@@ -41,41 +43,102 @@ func isImplementationRole(roleID string) bool {
 }
 
 type orchestrationLoop struct {
-	db                    *sql.DB
-	transition            *state.TransitionService
-	registry              *state.AgentRegistry
-	mailbox               *state.MailboxStore
-	delegation            *state.DelegationPolicyEngine
-	scheduler             *workflow.Scheduler
-	sessions              *state.SessionManager
-	events                *state.AttemptEventIngestor
-	adapter               opencode.Adapter
-	fsStore               *runtimefs.Store
-	validator             *state.WorkerOutputValidator
-	tokenUsage            *state.TokenUsageStore
-	planningOutputs       *state.RunPlanningOutputStore
-	executionStore        *executionstore.Store
-	nodeTimeouts          map[string]time.Duration
-	streamInactivity      time.Duration
-	cancelGrace           time.Duration
-	cancelForce           time.Duration
-	yoloRoot              string
-	publishMode           string
-	roleComm              rolecomm.Policy
-	providerPolicy        providerpolicy.Policy
-	governanceMode        string
-	autonomousApprovals   bool
-	runWorktrees          *workspace.RunWorktreeStore
-	worktreeRetention     time.Duration
-	gitRunner             gitCommandRunner
-	now                   func() time.Time
-	sleep                 func(time.Duration)
-	execMu                sync.Mutex
-	eventSeqMu            sync.Mutex
-	inflightExec          map[string]struct{}
-	asyncDrain            *executionDrainTracker
-	notifyCompletionReady func()
-	closeMode             *runtimeCloseMode
+	db                                 *sql.DB
+	transition                         *state.TransitionService
+	registry                           *state.AgentRegistry
+	mailbox                            *state.MailboxStore
+	delegation                         *state.DelegationPolicyEngine
+	scheduler                          *workflow.Scheduler
+	sessions                           *state.SessionManager
+	events                             *state.AttemptEventIngestor
+	adapter                            opencode.Adapter
+	fsStore                            *runtimefs.Store
+	schemas                            *schemas.Set
+	validator                          *state.WorkerOutputValidator
+	tokenUsage                         *state.TokenUsageStore
+	planningOutputs                    *state.RunPlanningOutputStore
+	executionStore                     *executionstore.Store
+	nodeTimeouts                       map[string]time.Duration
+	streamInactivity                   time.Duration
+	cancelGrace                        time.Duration
+	cancelForce                        time.Duration
+	yoloRoot                           string
+	publishMode                        string
+	roleComm                           rolecomm.Policy
+	providerPolicy                     providerpolicy.Policy
+	retryEngine                        *retryengine.Engine
+	governanceMode                     string
+	autonomousApprovals                bool
+	runWorktrees                       *workspace.RunWorktreeStore
+	worktreeRetention                  time.Duration
+	gitRunner                          gitCommandRunner
+	now                                func() time.Time
+	sleep                              func(time.Duration)
+	providerLeaseHeartbeatInterval     time.Duration
+	newProviderLeaseTicker             func(time.Duration) providerLeaseTicker
+	preparationLimit                   int
+	preparations                       map[string]*providerAttemptPreparation
+	lastPreparationRunID               string
+	maintenance                        maintenanceState
+	execMu                             sync.Mutex
+	eventSeqMu                         sync.Mutex
+	attemptCancelMu                    sync.Mutex
+	attemptCancelCursor                executionstore.AttemptCancelCursor
+	attemptCancelHighWatermark         executionstore.AttemptCancelCursor
+	terminalHandoffFileLocks           keyedLock
+	terminalHandoffCursor              string
+	terminalHandoffFileCursor          string
+	terminalHandoffCleanupCursor       string
+	responseOnlyWorkspaceCleanupCursor string
+	workspaceLocks                     sync.Map
+	inflightExec                       map[string]struct{}
+	inflightRunIDs                     map[string]string
+	inflightSettlements                map[string]string
+	executionResults                   map[string]chan asyncExecutionResult
+	asyncDrain                         *executionDrainTracker
+	notifyCompletionReady              func()
+	closeMode                          *runtimeCloseMode
+	processGuardRuntimeRoot            string
+	processGuardAbsent                 func(executionstore.ProviderProcessGuard) bool
+}
+
+type keyedLockEntry struct {
+	mu         sync.Mutex
+	references int
+}
+
+type keyedLock struct {
+	mu      sync.Mutex
+	entries map[string]*keyedLockEntry
+}
+
+func (l *keyedLock) Lock(key string) func() {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return func() {}
+	}
+	l.mu.Lock()
+	if l.entries == nil {
+		l.entries = make(map[string]*keyedLockEntry)
+	}
+	entry := l.entries[key]
+	if entry == nil {
+		entry = &keyedLockEntry{}
+		l.entries[key] = entry
+	}
+	entry.references++
+	l.mu.Unlock()
+
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		l.mu.Lock()
+		entry.references--
+		if entry.references == 0 {
+			delete(l.entries, key)
+		}
+		l.mu.Unlock()
+	}
 }
 
 func (o *orchestrationLoop) transitionService() *state.TransitionService {
@@ -102,7 +165,46 @@ func (o *orchestrationLoop) canonicalExecutionStore() *executionstore.Store {
 	return executionstore.New(o.db)
 }
 
-var emptyOutputRetryBackoffs = []time.Duration{1 * time.Second, 10 * time.Second}
+func (o *orchestrationLoop) tryLockRunWorkspace(runID string) (func(), bool) {
+	if o == nil || strings.TrimSpace(runID) == "" {
+		return func() {}, true
+	}
+	value, _ := o.workspaceLocks.LoadOrStore(runID, &sync.Mutex{})
+	lock := value.(*sync.Mutex)
+	if !lock.TryLock() {
+		return nil, false
+	}
+	return lock.Unlock, true
+}
+
+func (o *orchestrationLoop) executionAttemptInflight(attemptID string) bool {
+	if o == nil || strings.TrimSpace(attemptID) == "" {
+		return false
+	}
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	_, ok := o.inflightExec[strings.TrimSpace(attemptID)]
+	return ok
+}
+
+func (o *orchestrationLoop) hasInflightRunExecution(runID string) bool {
+	return o.hasInflightRunExecutionExcept(runID, "")
+}
+
+func (o *orchestrationLoop) hasInflightRunExecutionExcept(runID, attemptID string) bool {
+	if o == nil || strings.TrimSpace(runID) == "" {
+		return false
+	}
+	runID = strings.TrimSpace(runID)
+	o.execMu.Lock()
+	defer o.execMu.Unlock()
+	for inflightAttemptID, inflightRunID := range o.inflightRunIDs {
+		if inflightRunID == runID && inflightAttemptID != attemptID {
+			return true
+		}
+	}
+	return false
+}
 
 type runSnapshot struct {
 	RunID                 string
@@ -143,42 +245,53 @@ type nodeAttempt struct {
 	HasExecutionRecord    bool
 	DurableState          string
 	ExecutionMode         executionstore.ExecutionMode
+	CompletionMode        executionstore.ProviderCompletionMode
 	ProviderTimeoutMillis int64
 	SessionRef            string
+	ProviderSessionID     string
+	ProviderInvocationID  string
+	LeaseOwner            string
+	LeaseVersion          int64
 }
 
 type asyncExecutionResult struct {
-	run                             runSnapshot
-	node                            nodeDefinition
-	attempt                         nodeAttempt
-	outboxID                        string
-	attemptID                       string
-	sessionID                       string
-	providerSessionID               string
-	providerInvocationID            string
-	providerInvocationAt            string
-	launchObservedAt                string
-	completionCapability            string
-	completionReceiptDir            string
-	completionReceiptEvidenceID     string
-	completionStructuredPayloadJSON string
-	providerDiagnosticsJSON         string
-	baseSnapshotID                  string
-	resultSnapshotID                string
-	workspaceID                     string
-	workspacePath                   string
-	delegator                       string
-	prompt                          string
-	model                           string
-	variant                         string
-	agent                           string
-	occurredAt                      string
-	outputText                      string
-	tokens                          opencode.TokenUsage
-	outcome                         opencode.ExecutionOutcome
-	launchObserved                  bool
-	suppressEmptyOutputRetry        bool
-	err                             error
+	run                                  runSnapshot
+	node                                 nodeDefinition
+	attempt                              nodeAttempt
+	outboxID                             string
+	attemptID                            string
+	sessionID                            string
+	providerSessionID                    string
+	providerInvocationID                 string
+	providerInvocationAt                 string
+	terminalHandoffID                    string
+	launchObservedAt                     string
+	completionMode                       executionstore.ProviderCompletionMode
+	expectedLeaseOwner                   string
+	expectedLeaseVersion                 int64
+	expectedLeaseExpiresAt               string
+	providerLeaseDuration                time.Duration
+	providerDiagnosticsJSON              string
+	providerStreamObservation            opencode.InvocationStreamObservation
+	baseSnapshotID                       string
+	resultSnapshotID                     string
+	workspaceID                          string
+	workspacePath                        string
+	ephemeralWorkspace                   bool
+	responseOnlyWorkspaceCleanupMarkedAt string
+	projectRootBoundary                  string
+	delegator                            string
+	prompt                               string
+	openPrompt                           opencodePromptOpener
+	model                                string
+	variant                              string
+	agent                                string
+	occurredAt                           string
+	outputText                           string
+	tokens                               opencode.TokenUsage
+	outcome                              opencode.ExecutionOutcome
+	launchObserved                       bool
+	err                                  error
 }
 
 type communicationMessageRequest struct {
@@ -197,7 +310,9 @@ type communicationMessageRequest struct {
 	OccurredAt        string
 	DelegatorScoped   string
 	InstructionFull   string
+	InstructionRef    *state.RequestContentReference
 	ResponseFull      string
+	ResponseRef       *providerexecution.ContentReference
 	ResponseRaw       string
 }
 
@@ -225,41 +340,47 @@ func marshalAsyncExecutionAttemptEventPayload(result asyncExecutionResult, reaso
 	return marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 }
 
-func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
+func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, retryEngine *retryengine.Engine, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
-		db:                  db,
-		transition:          state.NewTransitionService(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		registry:            registry,
-		mailbox:             mailbox,
-		delegation:          state.NewDelegationPolicyEngineWithMailbox(db, registry, mailbox),
-		scheduler:           workflow.NewScheduler(workflow.SchedulerConfig{}),
-		sessions:            sessionManager,
-		events:              state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		adapter:             adapter,
-		fsStore:             fsStore,
-		validator:           outputValidator,
-		tokenUsage:          state.NewTokenUsageStore(db),
-		planningOutputs:     state.NewRunPlanningOutputStore(db),
-		executionStore:      executionstore.New(db),
-		nodeTimeouts:        cloneDurationMap(nodeTimeouts),
-		streamInactivity:    streamInactivity,
-		cancelGrace:         defaultDuration(cancelGrace, 5*time.Second),
-		cancelForce:         defaultDuration(cancelForce, 10*time.Second),
-		yoloRoot:            strings.TrimSpace(yoloOutputRoot),
-		publishMode:         normalizePublishMode(publishMode),
-		roleComm:            policy,
-		providerPolicy:      providerPolicy,
-		governanceMode:      normalizeGovernanceMode(governanceMode),
-		autonomousApprovals: autonomousApprovals,
-		runWorktrees:        workspace.NewRunWorktreeStore(db),
-		worktreeRetention:   workspace.NormalizeRunWorktreeRetention(worktreeRetention),
-		now:                 time.Now,
-		sleep:               time.Sleep,
-		inflightExec:        make(map[string]struct{}),
-		asyncDrain:          newExecutionDrainTracker(),
-		closeMode:           closeMode,
+		db:                     db,
+		transition:             state.NewTransitionService(db, eventSchemas).WithRoleCommunicationPolicy(policy),
+		registry:               registry,
+		mailbox:                mailbox,
+		delegation:             state.NewDelegationPolicyEngineWithMailbox(db, registry, mailbox),
+		scheduler:              workflow.NewScheduler(workflow.SchedulerConfig{}),
+		sessions:               sessionManager,
+		events:                 state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
+		adapter:                adapter,
+		fsStore:                fsStore,
+		schemas:                eventSchemas,
+		validator:              outputValidator,
+		tokenUsage:             state.NewTokenUsageStore(db),
+		planningOutputs:        state.NewRunPlanningOutputStore(db),
+		executionStore:         executionstore.New(db),
+		nodeTimeouts:           cloneDurationMap(nodeTimeouts),
+		streamInactivity:       streamInactivity,
+		cancelGrace:            defaultDuration(cancelGrace, 5*time.Second),
+		cancelForce:            defaultDuration(cancelForce, 10*time.Second),
+		yoloRoot:               strings.TrimSpace(yoloOutputRoot),
+		publishMode:            normalizePublishMode(publishMode),
+		roleComm:               policy,
+		providerPolicy:         providerPolicy,
+		retryEngine:            retryEngine,
+		governanceMode:         normalizeGovernanceMode(governanceMode),
+		autonomousApprovals:    autonomousApprovals,
+		runWorktrees:           workspace.NewRunWorktreeStore(db),
+		worktreeRetention:      workspace.NormalizeRunWorktreeRetention(worktreeRetention),
+		now:                    time.Now,
+		sleep:                  time.Sleep,
+		newProviderLeaseTicker: newTimeProviderLeaseTicker,
+		inflightExec:           make(map[string]struct{}),
+		inflightRunIDs:         make(map[string]string),
+		inflightSettlements:    make(map[string]string),
+		executionResults:       make(map[string]chan asyncExecutionResult),
+		asyncDrain:             newExecutionDrainTracker(),
+		closeMode:              closeMode,
 	}
 }
 
@@ -295,13 +416,10 @@ func defaultDuration(value time.Duration, fallback time.Duration) time.Duration 
 }
 
 func (o *orchestrationLoop) Tick(ctx context.Context) error {
-	if _, err := o.drainAttemptCancelOutbox(ctx); err != nil {
+	if _, err := o.scheduleAttemptCancellations(ctx); err != nil {
 		return err
 	}
 	if err := o.scheduleRunWorktreeCleanup(ctx); err != nil {
-		return err
-	}
-	if err := o.drainRunWorktreeCleanup(ctx); err != nil {
 		return err
 	}
 
@@ -310,7 +428,18 @@ func (o *orchestrationLoop) Tick(ctx context.Context) error {
 		return err
 	}
 
-	for _, run := range runs {
+	o.execMu.Lock()
+	lastAdmittedRun := o.lastPreparationRunID
+	o.execMu.Unlock()
+	start := 0
+	for i, run := range runs {
+		if run.RunID == lastAdmittedRun {
+			start = (i + 1) % len(runs)
+			break
+		}
+	}
+	for offset := range runs {
+		run := runs[(start+offset)%len(runs)]
 		if err := o.processRun(ctx, run); err != nil {
 			return fmt.Errorf("process run %q: %w", run.RunID, err)
 		}
@@ -326,7 +455,7 @@ func (o *orchestrationLoop) waitForAsyncDrain(ctx context.Context) error {
 }
 
 func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) error {
-	now := o.now().UTC().Format(time.RFC3339)
+	now := o.now().UTC().Format(time.RFC3339Nano)
 
 	if run.RunStatus == "pending" {
 		if err := o.transition.Apply(ctx, state.TransitionRequest{
@@ -387,6 +516,13 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.enforceRunningAttemptTimeouts(ctx, run, latestAttempts, now); err != nil {
 		return err
 	}
+	if _, err := o.transitionService().ReleaseDueDecreeRetries(ctx, run.RunID, now); err != nil {
+		return err
+	}
+	latestAttempts, err = o.loadLatestAttempts(ctx, run.RunID)
+	if err != nil {
+		return err
+	}
 
 	if err := o.promoteReadyNodes(ctx, run, nodes, edges, latestAttempts, now); err != nil {
 		return err
@@ -409,7 +545,6 @@ func (o *orchestrationLoop) processRun(ctx context.Context, run runSnapshot) err
 	if err := o.enforceRunningAttemptTimeouts(ctx, run, latestAttempts, now); err != nil {
 		return err
 	}
-
 	if err := o.dispatchReadyNodes(ctx, run, nodes, latestAttempts, now); err != nil {
 		return err
 	}
@@ -774,8 +909,13 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 		        CASE WHEN ae.attempt_id IS NULL THEN 0 ELSE 1 END AS has_execution_record,
 		        COALESCE(ae.state, '') AS durable_state,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
+		        COALESCE(ae.completion_mode, '') AS completion_mode,
 		        COALESCE(ae.provider_timeout_ms, 0) AS provider_timeout_ms,
-		        COALESCE(ae.session_ref, '') AS session_ref
+		        COALESCE(ae.session_ref, '') AS session_ref,
+		        COALESCE(ae.provider_session_id, '') AS provider_session_id,
+		        COALESCE(ae.active_provider_invocation_id, '') AS active_provider_invocation_id,
+		        COALESCE(ae.lease_owner, '') AS lease_owner,
+		        COALESCE(ae.lease_version, 0) AS lease_version
 		 FROM node_runs nr
 		 JOIN canonical_attempts latest ON latest.node_run_id = nr.node_run_id AND latest.canonical_rank = 1
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = nr.run_id || ':' || nr.node_id || ':' || nr.attempt
@@ -793,13 +933,14 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 	attempts := make(map[string]nodeAttempt)
 	for rows.Next() {
 		var attempt nodeAttempt
-		var executionMode string
+		var executionMode, completionMode string
 		var hasExecutionRecord int
-		if err := rows.Scan(&attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.Wave, &attempt.NodeStatus, &attempt.TransitionReasonCode, &attempt.TransitionAuthority, &attempt.RequiredRole, &attempt.AgentID, &attempt.StartedAt, &hasExecutionRecord, &attempt.DurableState, &executionMode, &attempt.ProviderTimeoutMillis, &attempt.SessionRef); err != nil {
+		if err := rows.Scan(&attempt.NodeRunID, &attempt.NodeID, &attempt.Attempt, &attempt.Wave, &attempt.NodeStatus, &attempt.TransitionReasonCode, &attempt.TransitionAuthority, &attempt.RequiredRole, &attempt.AgentID, &attempt.StartedAt, &hasExecutionRecord, &attempt.DurableState, &executionMode, &completionMode, &attempt.ProviderTimeoutMillis, &attempt.SessionRef, &attempt.ProviderSessionID, &attempt.ProviderInvocationID, &attempt.LeaseOwner, &attempt.LeaseVersion); err != nil {
 			return nil, err
 		}
 		attempt.HasExecutionRecord = hasExecutionRecord != 0
 		attempt.ExecutionMode = executionstore.NormalizeExecutionMode(executionMode)
+		attempt.CompletionMode = executionstore.ProviderCompletionMode(completionMode)
 		attempts[attempt.NodeID] = attempt
 	}
 	if err := rows.Err(); err != nil {
@@ -812,8 +953,11 @@ func (o *orchestrationLoop) loadLatestAttempts(ctx context.Context, runID string
 func (o *orchestrationLoop) nextEventSeq(ctx context.Context, attemptID string) int {
 	var seq int
 	err := o.db.QueryRowContext(ctx,
-		`SELECT COALESCE(MAX(seq), 0) FROM events WHERE attempt_id = ?`,
-		attemptID,
+		`SELECT MAX(seq) FROM (
+			SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE attempt_id = ?
+			UNION ALL
+			SELECT COALESCE(MAX(seq), 0) AS seq FROM attempt_event_log WHERE attempt_id = ?
+		)`, attemptID, attemptID,
 	).Scan(&seq)
 	if err != nil {
 		return 1
@@ -845,6 +989,16 @@ func (o *orchestrationLoop) emitCommunicationMessage(ctx context.Context, req co
 		"instruction_full":             req.InstructionFull,
 		"response_full":                req.ResponseFull,
 		"response_raw":                 req.ResponseRaw,
+	}
+	if req.InstructionRef != nil {
+		delete(payload, "instruction_full")
+		payload["instruction_full_ref"] = map[string]any{"content_id": req.InstructionRef.ContentID, "sha256": req.InstructionRef.SHA256, "size_bytes": req.InstructionRef.SizeBytes}
+	}
+	if req.ResponseRef != nil {
+		delete(payload, "response_full")
+		delete(payload, "response_raw")
+		payload["response_full_ref"] = req.ResponseRef
+		payload["response_preview"] = req.ResponseFull
 	}
 	senderRoleID := o.roleIDForAgent(ctx, req.FromAgentID)
 	if strings.TrimSpace(senderRoleID) == "" {

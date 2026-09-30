@@ -12,6 +12,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
+	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
 
@@ -117,6 +118,54 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 	writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run cancellation is not allowed", "api.cancel_run", map[string]any{"run_id": runID})
 }
 
+func (s *Server) handleRetryExecutionStop(w http.ResponseWriter, r *http.Request) {
+	runID := strings.TrimSpace(r.PathValue("id"))
+	attemptID := strings.TrimSpace(r.PathValue("attemptId"))
+	if runID == "" || attemptID == "" {
+		s.writeBadRequest(w, "run id and attempt id are required")
+		return
+	}
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.retry_execution_stop")
+	if !ok {
+		return
+	}
+	if !s.runExists(r.Context(), runID) {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run not found", "api.retry_execution_stop", map[string]any{"run_id": runID})
+		return
+	}
+	_, found, err := executionstore.New(s.db).GetRunExecutionDetail(r.Context(), runID, attemptID)
+	if err != nil {
+		s.writeInternalError(w, "get run execution failed")
+		return
+	}
+	if !found {
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "run execution not found", "api.retry_execution_stop", map[string]any{"run_id": runID, "attempt_id": attemptID})
+		return
+	}
+	if err := s.transitionService.RequestAttemptStopRetry(r.Context(), state.AttemptStopRetryRequest{
+		RunID:      runID,
+		AttemptID:  attemptID,
+		ActorID:    actorID,
+		RoleID:     roleID,
+		OccurredAt: s.now().UTC().Format(time.RFC3339),
+		GenerateID: s.idGenerator,
+	}); err != nil {
+		var unavailable *state.AttemptStopRetryUnavailableError
+		if errors.As(err, &unavailable) {
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "stop retry is not available for this execution", "api.retry_execution_stop", map[string]any{"run_id": runID, "attempt_id": attemptID})
+			return
+		}
+		s.writeInternalError(w, "request execution stop retry failed")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, gen.RetryExecutionStopResult{
+		RunId:              runID,
+		AttemptId:          attemptID,
+		StopRetryRequested: true,
+	})
+}
+
 func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 	runID := strings.TrimSpace(r.PathValue("id"))
 	nodeKey := strings.TrimSpace(r.PathValue("nodeKey"))
@@ -160,7 +209,6 @@ func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 		RunEventType:    "run.retry_reopened",
 		RunReasonCode:   "manual_retry_requested",
 		NodeEventType:   "attempt.retry_queued",
-		NodeReasonCode:  "internal_error",
 		EventPrefix:     "retry",
 		OccurredAt:      s.now().UTC().Format(time.RFC3339),
 		GenerateID:      s.idGenerator,
@@ -228,7 +276,6 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		RunEventType:    "run.rerun_reopened",
 		RunReasonCode:   "manual_rerun_requested",
 		NodeEventType:   "attempt.rerun_queued",
-		NodeReasonCode:  "internal_error",
 		EventPrefix:     "rerun",
 		OccurredAt:      s.now().UTC().Format(time.RFC3339),
 		GenerateID:      s.idGenerator,
@@ -636,9 +683,12 @@ func (s *Server) writeRunTransitionApplyError(w http.ResponseWriter, err error, 
 	var stateConflictErr *state.StateConflictError
 	var replayWaveActiveErr *state.ReplayWaveActiveError
 	var replayNotQuiescentErr *state.ReplayNotQuiescentError
+	var worktreeCleanupInProgressErr *state.RunWorktreeCleanupInProgressError
 	switch {
 	case errors.As(err, &replayNotQuiescentErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, replayNotQuiescentErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"settling": replayNotQuiescentErr.Blockers}))
+	case errors.As(err, &worktreeCleanupInProgressErr):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, worktreeCleanupInProgressErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"cleanup_started": true}))
 	case errors.As(err, &illegalTransitionErr), errors.As(err, &stateConflictErr), errors.As(err, &replayWaveActiveErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, blockedMessage, operation, details)
 	default:

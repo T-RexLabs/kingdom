@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
-	"time"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 	gen "kingdom/internal/apigen"
@@ -27,7 +27,14 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req gen.CreatePlanningSessionRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/title")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	titleSource, err := planningRequestText(r.Context(), texts["/title"], true)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
@@ -42,32 +49,52 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 		modelSelectionJSON = string(raw)
 	}
 
-	title := ""
-	if req.Title != nil {
-		title = *req.Title
-	}
-	session, err := s.planningService.CreateSession(r.Context(), title, modelSelectionJSON)
+	session, err := s.planningService.CreateSessionWithText(r.Context(), titleSource, modelSelectionJSON)
 	if err != nil {
+		var commitErr *state.CommitOutcomeUnknownError
+		var projectionErr *state.PostCommitProjectionError
+		if errors.As(err, &commitErr) || errors.As(err, &projectionErr) {
+			resourceID := ""
+			if commitErr != nil {
+				resourceID = commitErr.ResourceID
+			} else {
+				resourceID = projectionErr.ResourceID
+			}
+			result, persisted, readbackErr := s.readBackPlanningSessionCreation(r.Context(), resourceID)
+			if readbackErr != nil {
+				slog.Warn("planning session creation commit outcome unresolved", "planning_session_id", resourceID, "commit_error", err, "readback_error", readbackErr)
+				writeCommitOutcomePending(w, r, "api.create_planning_session",
+					"planning session creation outcome is still being confirmed; retry later with the same idempotency key",
+					map[string]any{"planning_session_id": resourceID})
+				return
+			}
+			if !persisted {
+				s.writeInternalError(w, "create planning session failed")
+				return
+			}
+			writeJSON(w, http.StatusCreated, result)
+			return
+		}
 		handlePlanningError(w, err, "api.create_planning_session")
 		return
 	}
 
 	presentedSession, err := s.presentPlanningSessionDetail(r.Context(), session)
 	if err != nil {
-		s.writeInternalError(w, "evaluate planning session title eligibility failed")
+		s.retryPlanningSessionCreationResponse(w, r, session.PlanningSessionID, err)
 		return
 	}
 	result := gen.CreatePlanningSessionResult{Session: presentedSession}
 	if optionalTrimmedString(session.ActiveLeafMessageID) != nil {
 		messages, listErr := s.planningStore.ListMessagesPage(r.Context(), session.PlanningSessionID, 1, nil)
 		if listErr != nil {
-			s.writeInternalError(w, "list planning session messages failed")
+			s.retryPlanningSessionCreationResponse(w, r, session.PlanningSessionID, listErr)
 			return
 		}
 		if len(messages.Items) > 0 {
 			opening, presentErr := planningMessageFromState(messages.Items[0])
 			if presentErr != nil {
-				s.writeInternalError(w, "decode planning session messages failed")
+				s.retryPlanningSessionCreationResponse(w, r, session.PlanningSessionID, presentErr)
 				return
 			}
 			result.OpeningMessage = &opening
@@ -77,21 +104,104 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 	writeJSON(w, http.StatusCreated, result)
 }
 
+func (s *Server) retryPlanningSessionCreationResponse(w http.ResponseWriter, r *http.Request, planningSessionID string, assemblyErr error) {
+	result, persisted, readbackErr := s.readBackPlanningSessionCreation(r.Context(), planningSessionID)
+	if readbackErr == nil && persisted {
+		writeJSON(w, http.StatusCreated, result)
+		return
+	}
+	if readbackErr == nil {
+		readbackErr = fmt.Errorf("created planning session was not found during response readback")
+	}
+	trimmedSessionID := strings.TrimSpace(planningSessionID)
+	slog.Warn("planning session creation response outcome unresolved", "planning_session_id", trimmedSessionID, "assembly_error", assemblyErr, "readback_error", readbackErr)
+	writeCommitOutcomePending(w, r, "api.create_planning_session",
+		"planning session creation outcome is still being confirmed; retry later with the same idempotency key",
+		map[string]any{"planning_session_id": trimmedSessionID})
+}
+
+func (s *Server) readBackPlanningSessionCreation(ctx context.Context, planningSessionID string) (gen.CreatePlanningSessionResult, bool, error) {
+	trimmedSessionID := strings.TrimSpace(planningSessionID)
+	if trimmedSessionID == "" {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("planning session response readback omitted resource id")
+	}
+	readbackCtx, cancel := commitOutcomeReadbackContext(ctx)
+	defer cancel()
+
+	session, found, err := s.planningStore.GetSession(readbackCtx, trimmedSessionID)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session: %w", err)
+	}
+	if !found {
+		return gen.CreatePlanningSessionResult{}, false, nil
+	}
+	activeLeafID := optionalTrimmedString(session.ActiveLeafMessageID)
+	contextSnapshotID := optionalTrimmedString(session.ContextSnapshotID)
+	if activeLeafID == nil || contextSnapshotID == nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("persisted planning session creation bundle is incomplete")
+	}
+	openingMessage, err := s.planningStore.GetMessageInSession(readbackCtx, trimmedSessionID, *activeLeafID)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session opening message: %w", err)
+	}
+	if openingMessage.ParentMessageID != nil || openingMessage.Role != state.PlanningMessageRoleAssistant {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("persisted planning session opening message is invalid")
+	}
+	snapshot, err := s.planningStore.GetContextSnapshot(readbackCtx, *contextSnapshotID)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session context snapshot: %w", err)
+	}
+	if snapshot.PlanningSessionID != trimmedSessionID {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("persisted planning session context snapshot belongs to another session")
+	}
+
+	autoTitleEligible, err := s.presentPlanningSessionAutoTitleEligible(readbackCtx, session)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session title eligibility: %w", err)
+	}
+	presentedRuns, err := s.presentPlanningSessionRuns(readbackCtx, session)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session run state: %w", err)
+	}
+	links, err := s.externalStore.GetLinksForTarget(readbackCtx, "planning_session", trimmedSessionID)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("read back planning session external sources: %w", err)
+	}
+	presentedSession := planningSessionDetailFromState(session, autoTitleEligible, presentedRuns)
+	presentedSession.ExternalSources = externalProvenanceListFromState(links, true)
+	presentedOpening, err := planningMessageFromState(openingMessage)
+	if err != nil {
+		return gen.CreatePlanningSessionResult{}, false, fmt.Errorf("present planning session opening message: %w", err)
+	}
+	return gen.CreatePlanningSessionResult{Session: presentedSession, OpeningMessage: &presentedOpening}, true, nil
+}
+
 func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Request) {
 	if _, _, ok := s.requirePrincipal(w, r, "api.list_planning_sessions"); !ok {
 		return
 	}
-	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 100)
+	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 50)
 	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
-	items, err := s.planningStore.ListSessions(r.Context(), limit)
+	cursor, err := s.decodeHistoryCursor("planning-sessions", "", strings.TrimSpace(r.URL.Query().Get("cursor")))
+	if err != nil {
+		s.writeBadRequest(w, "invalid cursor")
+		return
+	}
+	items, err := s.planningStore.ListSessionsPage(r.Context(), limit+1, cursor.OrderedAt, cursor.ID)
 	if err != nil {
 		s.writeInternalError(w, "list planning sessions failed")
 		return
 	}
 	response := gen.PlanningSessionListResponse{Items: make([]gen.PlanningSessionSummary, 0, len(items))}
+	if len(items) > limit {
+		last := items[limit-1]
+		next := s.encodeHistoryCursor("planning-sessions", "", last.UpdatedAt, last.PlanningSessionID)
+		response.NextCursor = &next
+		items = items[:limit]
+	}
 	for _, item := range items {
 		presentedRuns, resolveErr := s.presentPlanningSessionRuns(r.Context(), item)
 		if resolveErr != nil {
@@ -144,12 +254,19 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	var req gen.UpdatePlanningSessionRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/title")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	titleSource, err := planningRequestText(r.Context(), texts["/title"], true)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
 
-	input := planning.UpdateSessionInput{Title: req.Title}
+	input := planning.UpdateSessionInput{TitleSource: titleSource}
 	if req.ModelSelection != nil {
 		raw, err := json.Marshal(req.ModelSelection)
 		if err != nil {
@@ -162,6 +279,12 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 
 	updated, err := s.planningService.UpdateSession(r.Context(), planningSessionID, input)
 	if err != nil {
+		var unknown *state.CommitOutcomeUnknownError
+		var projection *state.PostCommitProjectionError
+		if errors.As(err, &unknown) || errors.As(err, &projection) {
+			writeCommitOutcomePending(w, r, "api.update_planning_session", "planning session update outcome is still being confirmed; retry later with the same idempotency key", map[string]any{"planning_session_id": planningSessionID})
+			return
+		}
 		handlePlanningError(w, err, "api.update_planning_session")
 		return
 	}
@@ -216,8 +339,8 @@ func (s *Server) handleAttachPlanningExternalSource(w http.ResponseWriter, r *ht
 		writeExternalError(w, err, "api.attach_planning_external_source")
 		return
 	}
-	at := s.now().UTC().Format(time.RFC3339Nano)
-	link, err := s.externalStore.AttachPlanningExternalSource(r.Context(), state.AttachPlanningExternalSourceRequest{
+	at := formatFixedUTCTimestamp(s.now())
+	attachRequest := state.AttachPlanningExternalSourceRequest{
 		PlanningSessionID: planningSessionID,
 		Capture:           capture,
 		LinkID:            s.idGenerator("external_link"),
@@ -225,8 +348,18 @@ func (s *Server) handleAttachPlanningExternalSource(w http.ResponseWriter, r *ht
 		AuditEventID:      s.idGenerator("external_audit"),
 		ActorID:           authenticatedActorID(r.Context()),
 		AttachedAt:        at,
-	})
+	}
+	link, err := s.externalStore.AttachPlanningExternalSource(r.Context(), attachRequest)
 	if err != nil {
+		var commitErr *state.CommitOutcomeUnknownError
+		if errors.As(err, &commitErr) {
+			linkID := strings.TrimSpace(commitErr.ResourceID)
+			slog.Warn("planning external source attachment commit outcome unresolved", "planning_session_id", planningSessionID, "link_id", linkID, "adoption_id", attachRequest.AdoptionID, "commit_error", err)
+			writeCommitOutcomePending(w, r, "api.attach_planning_external_source",
+				"planning source attachment outcome is still being confirmed; retry later with the same idempotency key",
+				map[string]any{"planning_session_id": planningSessionID, "link_id": linkID, "adoption_id": attachRequest.AdoptionID})
+			return
+		}
 		switch {
 		case errors.Is(err, state.ErrExternalPlanningSessionNotFound):
 			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "planning session not found", "api.attach_planning_external_source", map[string]any{"planning_session_id": planningSessionID})

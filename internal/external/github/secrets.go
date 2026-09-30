@@ -14,10 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 
 	"kingdom/internal/securefs"
 )
@@ -109,6 +107,7 @@ func (s *KeyStore) WithConnectionLock(connectionID string, fn func() error) erro
 	}
 	defer dir.Close()
 	lock, err := dir.OpenFile(".lifecycle.lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	createdLock := err == nil
 	if errors.Is(err, fs.ErrExist) {
 		lock, err = securefs.OpenRegularFile(dir, ".lifecycle.lock", os.O_RDWR, 0)
 	}
@@ -116,17 +115,23 @@ func (s *KeyStore) WithConnectionLock(connectionID string, fn func() error) erro
 		return err
 	}
 	defer lock.Close()
+	if createdLock {
+		if err := securefs.ProtectCurrentUserOnlyPath(filepath.Join(s.root, "github-apps", connectionID, ".lifecycle.lock")); err != nil {
+			_ = dir.Remove(".lifecycle.lock")
+			return fmt.Errorf("protect github lifecycle lock: %w", err)
+		}
+	}
 	info, err := lock.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+	if err != nil || !info.Mode().IsRegular() || (securefs.EnforcesPOSIXMode() && info.Mode().Perm() != 0o600) {
 		return fmt.Errorf("github lifecycle lock must be a 0600 regular file")
 	}
-	if err = validateOwner(info); err != nil {
+	if err = securefs.ValidateCurrentUserOnly(lock); err != nil {
 		return err
 	}
-	if err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err = lockFile(lock); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck -- best-effort unlock during close
+	defer unlockFile(lock) //nolint:errcheck -- best-effort unlock during close
 	return fn()
 }
 
@@ -167,6 +172,11 @@ func (s *KeyStore) install(connectionID string, generation int, raw []byte, rota
 	if err != nil {
 		return "", err
 	}
+	if err := securefs.ProtectCurrentUserOnlyPath(filepath.Join(s.root, "github-apps", connectionID, tmpName)); err != nil {
+		_ = tmp.Close()
+		_ = dir.Remove(tmpName)
+		return "", fmt.Errorf("protect staged github private key: %w", err)
+	}
 	defer dir.Remove(tmpName) //nolint:errcheck -- cleanup after install or failure
 	_, err = tmp.Write(raw)
 	if err == nil {
@@ -187,12 +197,7 @@ func (s *KeyStore) install(connectionID string, generation int, raw []byte, rota
 		_ = dir.Remove(destination)
 		return "", fmt.Errorf("install github private key: %w", err)
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	if err != nil {
+	if err = securefs.SyncDirectory(dir); err != nil {
 		return "", err
 	}
 	der := x509.MarshalPKCS1PublicKey(&key.PublicKey)
@@ -222,6 +227,12 @@ func (s *KeyStore) Load(connectionID string, generation int) (*rsa.PrivateKey, s
 		return nil, "", err
 	}
 	if err = validatePrivateKeyInfo(info); err != nil {
+		return nil, "", err
+	}
+	if err = securefs.ValidateCurrentUserOnly(file); err != nil {
+		return nil, "", err
+	}
+	if err = validateFileSingleLink(file, "github private key"); err != nil {
 		return nil, "", err
 	}
 	raw, err := io.ReadAll(io.LimitReader(file, maxPrivateKeyBytes+1))
@@ -415,20 +426,15 @@ func removeKeyGenerations(dir *os.Root, selected int) error {
 	if !changed {
 		return nil
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }
 
 func validateReconcileTemp(file *os.File, name string) error {
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if err != nil || !info.Mode().IsRegular() || (securefs.EnforcesPOSIXMode() && info.Mode().Perm() != 0o600) {
 		return fmt.Errorf("%s must be a 0600 regular file", name)
 	}
-	if err := securefs.CurrentUserOwns(info); err != nil {
+	if err := securefs.ValidateCurrentUserOnly(file); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	return nil
@@ -439,7 +445,13 @@ func validatePrivateKeyInfoFromFile(file *os.File) error {
 	if err != nil {
 		return err
 	}
-	return validatePrivateKeyInfo(info)
+	if err := validatePrivateKeyInfo(info); err != nil {
+		return err
+	}
+	if err := securefs.ValidateCurrentUserOnly(file); err != nil {
+		return err
+	}
+	return validateFileSingleLink(file, "github private key")
 }
 
 func parseRSAKey(raw []byte) (*rsa.PrivateKey, error) {
@@ -495,35 +507,12 @@ func validateConnectionID(connectionID string) error {
 	return nil
 }
 
-func validateOwner(info fs.FileInfo) error {
-	if runtime.GOOS == "windows" {
-		return nil
-	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		return fmt.Errorf("cannot verify github key ownership")
-	}
-	if int(stat.Uid) != os.Geteuid() {
-		return fmt.Errorf("github key path must be owned by current user")
-	}
-	return nil
-}
-
 func validatePrivateKeyInfo(info fs.FileInfo) error {
 	if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("github private key must be a regular file")
 	}
-	if info.Mode().Perm() != 0600 {
+	if securefs.EnforcesPOSIXMode() && info.Mode().Perm() != 0o600 {
 		return fmt.Errorf("github private key permissions must be 0600")
-	}
-	if err := validateOwner(info); err != nil {
-		return err
-	}
-	if runtime.GOOS != "windows" {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Nlink != 1 {
-			return fmt.Errorf("github private key must have exactly one link")
-		}
 	}
 	return nil
 }

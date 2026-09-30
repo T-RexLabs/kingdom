@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -26,6 +25,8 @@ import (
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/processguardian"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
@@ -61,22 +62,23 @@ func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
 }
 
 type Config struct {
-	DB                  *sql.DB
-	StartupContext      context.Context
-	StartupReporter     StartupReporter
-	Paths               BootstrapPaths
-	Adapter             opencode.Adapter
-	ProviderEngine      string
-	ProviderStrict      bool
-	GovernanceMode      string
-	AutonomousApprovals *bool
-	PublishMode         string
-	ProviderSession     opencode.SessionAdapterConfig
-	ReconcileInterval   time.Duration
-	DispatchInterval    time.Duration
-	WorkspaceRoot       string
-	YoloOutputRoot      string
-	WorktreeRetention   time.Duration
+	DB                                      *sql.DB
+	StartupContext                          context.Context
+	StartupReporter                         StartupReporter
+	Paths                                   BootstrapPaths
+	Adapter                                 opencode.Adapter
+	ProviderEngine                          string
+	ProviderStrict                          bool
+	GovernanceMode                          string
+	AutonomousApprovals                     *bool
+	PublishMode                             string
+	ProviderSession                         opencode.SessionAdapterConfig
+	ReconcileInterval                       time.Duration
+	DispatchInterval                        time.Duration
+	ProviderExecutionLeaseHeartbeatInterval time.Duration
+	WorkspaceRoot                           string
+	YoloOutputRoot                          string
+	WorktreeRetention                       time.Duration
 }
 
 type StartupPhase string
@@ -86,6 +88,15 @@ const (
 	StartupPhaseCheckingOpenCodeSetup   StartupPhase = "checking_opencode_setup"
 	StartupPhaseValidatingOpenCodeAgent StartupPhase = "validating_opencode_agents"
 	StartupPhaseReady                   StartupPhase = "ready"
+)
+
+type startupRecoveryStage uint8
+
+const (
+	startupRecoveryStageComplete startupRecoveryStage = iota
+	startupRecoveryStageGuards
+	startupRecoveryStageHandoffs
+	startupRecoveryStageLostHandoffs
 )
 
 type StartupEventStatus string
@@ -131,10 +142,11 @@ type Runtime struct {
 
 	sessionManager  *state.SessionManager
 	reconciler      *state.Reconciler
-	budgetGuard     *state.BudgetGuard
 	eventIngestor   *state.AttemptEventIngestor
 	outputValidator *state.WorkerOutputValidator
 	adapter         opencode.Adapter
+	adapterCloseMu  sync.Mutex
+	adapterClosed   bool
 	providerEngine  string
 	orchestrator    *orchestrationLoop
 	dispatchEvery   time.Duration
@@ -142,15 +154,31 @@ type Runtime struct {
 	fsStore         *runtimefs.Store
 	closeMode       *runtimeCloseMode
 
-	mu               sync.Mutex
-	periodicDone     chan error
-	cancelPeriodic   context.CancelFunc
-	dispatchDone     chan error
-	cancelDispatch   context.CancelFunc
-	completionDone   chan error
-	cancelCompletion context.CancelFunc
-	completionWake   chan struct{}
-	started          bool
+	mu                       sync.Mutex
+	periodicDone             chan error
+	cancelPeriodic           context.CancelFunc
+	dispatchDone             chan error
+	cancelDispatch           context.CancelFunc
+	completionDone           chan error
+	cancelCompletion         context.CancelFunc
+	cancelMaintenance        context.CancelFunc
+	completionWake           chan struct{}
+	startupRecoveryGate      chan struct{}
+	startupRecoveryOpen      bool
+	startupRecoveryWait      bool
+	startupGuardWait         bool
+	startupHandoffWait       bool
+	startupLostHandoffWait   bool
+	startupGuardCursor       string
+	startupLostHandoffCursor string
+	started                  bool
+	preDispatchRecovery      func(context.Context) error
+}
+
+func (r *Runtime) SetPreDispatchRecovery(recover func(context.Context) error) {
+	if r != nil {
+		r.preDispatchRecovery = recover
+	}
 }
 
 func NewRuntime(cfg Config) (*Runtime, error) {
@@ -245,7 +273,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider node wall-clock timeouts: %w", err)
 	}
-	firstEventTimeout, streamInactivityTimeout, err := providerCfg.ExecutionTimeouts()
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := providerCfg.ExecutionTimeouts()
 	if err != nil {
 		return nil, fmt.Errorf("parse provider execution timeouts: %w", err)
 	}
@@ -253,23 +281,20 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider strict_startup_total_timeout: %w", err)
 	}
-	completionReconcileTotalTimeout, err := parseCompletionReconcileTotalTimeout(providerCfg.Timeouts.CompletionReconcileTotalTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider completion_reconcile_total_timeout: %w", err)
-	}
-	completionReconcileBackoffSchedule, err := providerCfg.CompletionReconcileBackoffDurations()
-	if err != nil {
-		return nil, fmt.Errorf("parse provider completion_reconcile_backoff_schedule: %w", err)
-	}
-	cancelGraceTimeout, cancelForceTimeout, err := parseProviderCancelTimeouts(providerCfg.Timeouts.CancelGraceTimeout, providerCfg.Timeouts.CancelForceTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider cancellation timeouts: %w", err)
+	if cfg.ProviderSession.Runner == nil {
+		providerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
+			RuntimeRoot: workspaceRoot,
+			CancelGrace: cancelGraceTimeout,
+			CancelForce: cancelForceTimeout,
+		})
+		if runnerErr != nil {
+			return nil, fmt.Errorf("initialize provider process guardian: %w", runnerErr)
+		}
+		cfg.ProviderSession.Runner = providerRunner
 	}
 
 	cfg.ProviderSession.FirstEventTimeout = firstEventTimeout
 	cfg.ProviderSession.StreamInactivityTimeout = streamInactivityTimeout
-	cfg.ProviderSession.ReconcileTotalTimeout = completionReconcileTotalTimeout
-	cfg.ProviderSession.ReconcileBackoffSchedule = completionReconcileBackoffSchedule
 	providerWorkDir := strings.TrimSpace(cfg.ProviderSession.WorkDir)
 	providerConfigDir := bootstrapassets.ManagedOpenCodeRoot(providerWorkDir)
 	providerEngineName := strings.ToLower(strings.TrimSpace(cfg.ProviderEngine))
@@ -300,6 +325,8 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	}
 	closeMode := newRuntimeCloseMode()
 
+	orchestrator := newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
+	orchestrator.processGuardRuntimeRoot = workspaceRoot
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
 		paths:           cfg.Paths,
@@ -312,17 +339,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		policyGuard:     guard,
 		sessionManager:  sessionManager,
 		reconciler:      state.NewReconcilerWithRoleCommunicationPolicy(cfg.DB, sessionManager, retryPlanEngine, roleCommPolicy, schemaSet),
-		budgetGuard:     state.NewBudgetGuardWithRoleCommunicationPolicy(cfg.DB, roleCommPolicy, schemaSet),
 		eventIngestor:   state.NewAttemptEventIngestor(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		outputValidator: outputValidator,
 		adapter:         adapter,
 		providerEngine:  providerEngine,
-		orchestrator:    newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode),
+		orchestrator:    orchestrator,
 		fsStore:         fsStore,
 		closeMode:       closeMode,
 		completionWake:  make(chan struct{}, 1),
 	}
 	runtimeInstance.orchestrator.notifyCompletionReady = runtimeInstance.signalCompletionReady
+	runtimeInstance.orchestrator.providerLeaseHeartbeatInterval = cfg.ProviderExecutionLeaseHeartbeatInterval
 	return runtimeInstance, nil
 }
 
@@ -351,7 +378,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 		if cfg.ProviderStrict {
 			validationCtx, cancelValidation := context.WithTimeout(startupCtx, strictStartupTotalTimeout)
 			defer cancelValidation()
-			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
+			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.Runner, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
 				return nil, "", err
 			}
 		}
@@ -361,7 +388,7 @@ func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg provider
 	}
 }
 
-func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
+func validateOpenCodeAgentResolution(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
 	resolvedBinary := strings.TrimSpace(binaryPath)
 	if resolvedBinary == "" {
 		resolvedBinary = "opencode"
@@ -386,10 +413,10 @@ func validateOpenCodeAgentResolution(ctx context.Context, binaryPath string, wor
 		agents = append(agents, agent)
 	}
 	sort.Strings(agents)
-	return validateOpenCodeAgentsConcurrently(ctx, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
+	return validateOpenCodeAgentsConcurrently(ctx, runner, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
 }
 
-func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
+func validateOpenCodeAgentsConcurrently(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
 	if len(agents) == 0 {
 		return nil
 	}
@@ -423,12 +450,16 @@ func validateOpenCodeAgentsConcurrently(ctx context.Context, binaryPath string, 
 				if !ok {
 					return
 				}
-				if err := validateOpenCodeAgent(ctx, binaryPath, workDir, configDir, databasePath, agent); err != nil {
+				if err := validateOpenCodeAgent(ctx, runner, binaryPath, workDir, configDir, databasePath, agent); err != nil {
 					reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusFailed, CurrentItem: agent, Total: len(agents), Message: err.Error()})
 					select {
 					case errCh <- err:
 						cancel()
 					default:
+						var diagnostic *opencode.HelperCommandError
+						if errors.As(err, &diagnostic) {
+							_ = diagnostic.Close()
+						}
 					}
 					return
 				}
@@ -472,30 +503,27 @@ func reportStartup(reporter StartupReporter, event StartupEvent) {
 	reporter.Report(event)
 }
 
-func validateOpenCodeAgent(ctx context.Context, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
-	cmd := exec.CommandContext(ctx, binaryPath, "debug", "agent", agent)
-	if workDir != "" {
-		cmd.Dir = workDir
-	}
-	cmd.Env = append(os.Environ(), opencode.ConfigDirEnvironment(configDir)...)
+func validateOpenCodeAgent(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
 	isolatedDBPath, cleanupDBPath, err := isolatedValidationDatabasePath(databasePath)
 	if err != nil {
 		return fmt.Errorf("prepare isolated validation database for %q: %w", agent, err)
 	}
 	defer cleanupDBPath()
-	cmd.Env = append(cmd.Env, opencode.DatabasePathEnvironment(isolatedDBPath)...)
-	output, err := cmd.CombinedOutput()
+	output, err := runGuardedValidationCommand(ctx, runner, processguardian.Command{Path: binaryPath, Args: []string{"debug", "agent", agent}, Dir: workDir, Env: append(os.Environ(), append(opencode.ConfigDirEnvironment(configDir), opencode.DatabasePathEnvironment(isolatedDBPath)...)...)})
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, ctxErr)
+			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, output.DiagnosticError(errors.Join(ctxErr, err)))
 		}
-		detail := strings.TrimSpace(string(output))
-		if detail != "" {
-			return fmt.Errorf("provider agent %q is not resolvable: %s", agent, detail)
-		}
-		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, err)
+		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, output.DiagnosticError(err))
 	}
-	return nil
+	return output.Close()
+}
+
+func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRunner, command processguardian.Command) (*opencode.HelperCommandOutput, error) {
+	if runner == nil {
+		return nil, fmt.Errorf("process guardian runner is required")
+	}
+	return opencode.RunHelperCommand(ctx, runner, command)
 }
 
 func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
@@ -513,7 +541,7 @@ func isolatedValidationDatabasePath(databasePath string) (string, func(), error)
 	return filepath.Join(tmpDir, filepath.Base(trimmed)), cleanup, nil
 }
 
-func (r *Runtime) Start(ctx context.Context) error {
+func (r *Runtime) Start(ctx context.Context) (startErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -527,16 +555,32 @@ func (r *Runtime) Start(ctx context.Context) error {
 		return fmt.Errorf("runtime already started")
 	}
 	r.mu.Unlock()
+	if err := r.ensureMaintenanceContext(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		if startErr != nil {
+			r.stopMaintenance()
+		}
+	}()
+	r.beginStartupRecovery()
+	if r.orchestrator != nil && r.orchestrator.runWorktrees != nil {
+		reclaimedAt := time.Now().UTC()
+		if r.orchestrator.now != nil {
+			reclaimedAt = r.orchestrator.now().UTC()
+		}
+		if err := r.orchestrator.runWorktrees.ReclaimAbandonedCleanupClaims(ctx, reclaimedAt.Format(time.RFC3339)); err != nil {
+			return fmt.Errorf("startup run worktree cleanup claim recovery: %w", err)
+		}
+	}
 
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
 	}
-
-	if _, err := r.reconciler.RunStartup(ctx); err != nil {
-		return fmt.Errorf("startup reconcile: %w", err)
-	}
-	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339)); err != nil {
-		return fmt.Errorf("startup run repair: %w", err)
+	if !r.startupRecoveryPending() {
+		if err := r.finishStartupRecovery(ctx, false); err != nil {
+			return err
+		}
 	}
 
 	r.mu.Lock()
@@ -592,6 +636,9 @@ func (r *Runtime) signalCompletionReady() {
 }
 
 func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) error {
+	if err := r.awaitStartupRecovery(ctx); err != nil {
+		return nil
+	}
 	if interval <= 0 {
 		interval = state.DefaultReconcileInterval
 	}
@@ -603,11 +650,11 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 		case <-ctx.Done():
 			return nil
 		case tickAt := <-ticker.C:
-			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339)}); err != nil {
+			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)}); err != nil {
 				slog.Warn("periodic reconcile failed", "error", err)
 				continue
 			}
-			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339)); err != nil {
+			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				slog.Warn("periodic failed-run repair failed", "error", err)
 			}
 		}
@@ -615,6 +662,9 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 }
 
 func (r *Runtime) runDispatchLoop(ctx context.Context, interval time.Duration) error {
+	if err := r.awaitStartupRecovery(ctx); err != nil {
+		return nil
+	}
 	if interval <= 0 {
 		interval = DefaultDispatchInterval
 	}
@@ -651,11 +701,57 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 	defer ticker.Stop()
 
 	for {
-		if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
-			if errors.Is(err, context.Canceled) {
-				return nil
+		startupRecoveryPending := r.startupRecoveryPending()
+		terminalRecoveryReady := false
+		if startupRecoveryPending {
+			caughtUp, err := r.replayPendingStartupRecovery(ctx)
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("deferred startup recovery failed", "error", err)
+			} else if caughtUp {
+				if err := r.finishStartupRecovery(ctx, true); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return nil
+					}
+					slog.Warn("deferred startup recovery failed", "error", err)
+				}
 			}
-			slog.Warn("completion projection loop failed", "error", err)
+		} else {
+			if guardErr := r.orchestrator.ingestPendingProviderProcessGuards(ctx); guardErr != nil {
+				if errors.Is(guardErr, context.Canceled) {
+					return nil
+				}
+				slog.Warn("provider process guard ingestion loop failed", "error", guardErr)
+			} else {
+				_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerTerminalHandoffPassLimit)
+				if err != nil {
+					slog.Warn("provider terminal handoff file admission failed", "error", err)
+				} else {
+					terminalRecoveryReady = caughtUp
+				}
+			}
+		}
+		if r.startupRecoveryIsOpen() && !startupRecoveryPending {
+			// A bounded recovery pass must finish file replay and SQLite
+			// convergence before missing-handoff failures can be committed.
+			if terminalRecoveryReady {
+				if err := r.orchestrator.settleLostProviderTerminalHandoffs(ctx, true); err != nil {
+					if errors.Is(err, context.Canceled) {
+						return nil
+					}
+					slog.Warn("lost provider terminal handoff recovery loop failed", "error", err)
+				}
+			}
+		}
+		if r.pendingStartupRecoveryStage() != startupRecoveryStageGuards {
+			if err := r.orchestrator.scheduleMaintenancePass(ctx); err != nil {
+				if errors.Is(err, context.Canceled) {
+					return nil
+				}
+				slog.Warn("durable maintenance admission failed", "error", err)
+			}
 		}
 
 		select {
@@ -667,44 +763,147 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 	}
 }
 
-func (r *Runtime) drainExecutionOutboxUntilIdle(ctx context.Context) error {
-	if r == nil || r.orchestrator == nil {
-		return nil
-	}
-	for {
-		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
+// replayPendingStartupRecovery advances exactly one bounded prerequisite stage.
+// Stages stay ordered across completion-loop iterations so process guard
+// evidence is authoritative before terminal recovery proceeds.
+func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error) {
+	switch r.pendingStartupRecoveryStage() {
+	case startupRecoveryStageGuards:
+		result, err := r.replayPendingProviderProcessGuards(ctx)
 		if err != nil {
-			return err
+			return false, fmt.Errorf("replay provider process guards: %w", err)
 		}
-		if processed == 0 {
-			return nil
+		if result.Blocked {
+			return false, nil
 		}
+		if result.Visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageGuards), nil
+		}
+	case startupRecoveryStageHandoffs:
+		_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerlimits.StartupReplayBatchItems)
+		if err != nil {
+			return false, fmt.Errorf("admit provider terminal handoff files: %w", err)
+		}
+		if caughtUp {
+			return r.completeStartupRecoveryStage(startupRecoveryStageHandoffs), nil
+		}
+	case startupRecoveryStageLostHandoffs:
+		visited, err := r.replayPendingLostProviderTerminalHandoffs(ctx)
+		if err != nil {
+			return false, fmt.Errorf("settle lost provider terminal handoffs: %w", err)
+		}
+		if visited < providerlimits.StartupReplayBatchItems {
+			return r.completeStartupRecoveryStage(startupRecoveryStageLostHandoffs), nil
+		}
+	case startupRecoveryStageComplete:
+		return true, nil
 	}
+	return false, nil
 }
 
-func (r *Runtime) drainExecutionOutboxUntilDrained(ctx context.Context) error {
+// replayStartupWork bounds one startup recovery category. Deferred durable work
+// is left untouched for the normal completion loop.
+func replayStartupWork(ctx context.Context, replay func(context.Context, int) (int, error), pending func(context.Context) (bool, error)) (bool, error) {
+	visitedItems := 0
+	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
+		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
+		visited, err := replay(ctx, limit)
+		if err != nil {
+			return false, err
+		}
+		visitedItems += visited
+		if visited < limit {
+			return false, nil
+		}
+	}
+	return pending(ctx)
+}
+
+func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.processGuardRuntimeRoot) == "" {
+		return false, nil
+	}
+	visitedItems := 0
+	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
+		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
+		result, err := r.replayPendingProviderProcessGuardsWithLimit(ctx, limit)
+		if err != nil {
+			return false, err
+		}
+		if result.Blocked {
+			return true, nil
+		}
+		visitedItems += result.Visited
+		if result.Visited < limit {
+			return false, nil
+		}
+	}
+	guards, err := r.orchestrator.executionStore.ListPendingProviderProcessGuards(ctx, "", 1)
+	if err != nil {
+		return false, err
+	}
+	return len(guards) > 0, nil
+}
+
+func (r *Runtime) replayStartupProviderTerminalHandoffs(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil {
+		return false, nil
+	}
+	_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerlimits.StartupReplayBatchItems)
+	return !caughtUp, err
+}
+
+func (r *Runtime) replayStartupLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.db == nil {
+		return false, nil
+	}
+	return replayStartupWork(ctx, func(ctx context.Context, limit int) (int, error) {
+		return r.replayPendingLostProviderTerminalHandoffsWithLimit(ctx, limit)
+	}, r.orchestrator.hasLostProviderTerminalHandoffs)
+}
+
+func (r *Runtime) replayPendingProviderProcessGuards(ctx context.Context) (providerProcessGuardPassResult, error) {
+	return r.replayPendingProviderProcessGuardsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+}
+
+func (r *Runtime) replayPendingProviderProcessGuardsWithLimit(ctx context.Context, limit int) (providerProcessGuardPassResult, error) {
+	r.mu.Lock()
+	cursor := r.startupGuardCursor
+	r.mu.Unlock()
+	result, err := r.orchestrator.ingestPendingProviderProcessGuardsPass(ctx, cursor, limit, true)
+	r.mu.Lock()
+	r.startupGuardCursor = result.NextCursor
+	r.mu.Unlock()
+	return result, err
+}
+
+func (r *Runtime) replayPendingLostProviderTerminalHandoffs(ctx context.Context) (int, error) {
+	return r.replayPendingLostProviderTerminalHandoffsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+}
+
+func (r *Runtime) replayPendingLostProviderTerminalHandoffsWithLimit(ctx context.Context, limit int) (int, error) {
+	r.mu.Lock()
+	cursor := r.startupLostHandoffCursor
+	r.mu.Unlock()
+	nextCursor, visited, err := r.orchestrator.settleLostProviderTerminalHandoffsPass(ctx, false, cursor, limit)
+	r.mu.Lock()
+	r.startupLostHandoffCursor = nextCursor
+	r.mu.Unlock()
+	return visited, err
+}
+
+func (r *Runtime) replayStartupExecutionOutbox(ctx context.Context) (bool, error) {
 	if r == nil || r.orchestrator == nil {
-		return nil
+		return false, nil
 	}
-	for {
-		processed, err := r.orchestrator.drainExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		pending, err := r.hasPendingExecutionOutbox(ctx)
-		if err != nil {
-			return err
-		}
-		if !pending {
-			return nil
-		}
-		if processed > 0 {
-			continue
-		}
-		if err := sleepWithContext(ctx, nil, r.completionProjectionInterval()); err != nil {
-			return err
-		}
+	if _, err := r.orchestrator.scheduleExecutionOutbox(ctx); err != nil {
+		return false, err
 	}
+	return r.hasPendingExecutionOutbox(ctx)
+}
+
+func logDeferredStartupReplay(resource string) {
+	slog.Warn("startup recovery deferred; completion loop will continue", "resource", resource, "max_passes", providerlimits.StartupReplayMaxPasses, "max_items", providerlimits.StartupReplayMaxItems)
 }
 
 func (r *Runtime) hasPendingExecutionOutbox(ctx context.Context) (bool, error) {
@@ -729,15 +928,77 @@ func (r *Runtime) Close() error {
 	return r.GracefulClose(context.Background())
 }
 
+// Filesystem finalization outlives dispatch/completion loop cancellation. Its
+// one runtime-owned context is cancelled explicitly on graceful or forced stop.
+func (r *Runtime) ensureMaintenanceContext(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closeMode != nil && r.closeMode.IsForced() {
+		return context.Canceled
+	}
+	if r.orchestrator == nil {
+		return nil
+	}
+	r.orchestrator.execMu.Lock()
+	defer r.orchestrator.execMu.Unlock()
+	if r.cancelMaintenance != nil {
+		current := r.orchestrator.maintenance.runtimeCtx
+		if current != nil && current.Err() == nil {
+			return nil
+		}
+		// A timed-out close may be retried once its cancelled workers have
+		// unwound. Never strand durable work behind a cancelled generation.
+		if len(r.orchestrator.maintenance.active) != 0 {
+			return context.Canceled
+		}
+	}
+	maintenanceCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+	r.cancelMaintenance = cancel
+	r.orchestrator.maintenance.runtimeCtx = maintenanceCtx
+	return nil
+}
+
+func (r *Runtime) stopMaintenance() {
+	r.mu.Lock()
+	cancel := r.cancelMaintenance
+	r.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
 // GracefulClose stops runtime loops and waits for runtime-owned durable
 // handoff goroutines to finish within the supplied context.
 func (r *Runtime) GracefulClose(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	// A forced stop must not restart an unbounded graceful wait or retire
+	// staging still owned by an interrupted handoff consumer.
+	if r.closeMode != nil && r.closeMode.IsForced() {
+		return nil
+	}
+	r.adapterCloseMu.Lock()
+	alreadyClosed := r.adapterClosed
+	r.adapterCloseMu.Unlock()
+	if alreadyClosed {
+		return nil
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	defer r.stopMaintenance()
 	cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, ok := r.stopHandles(false)
-	if !ok {
-		return nil
+	if !ok && done == nil && dispatchDone == nil && completionDone == nil {
+		if r.orchestrator != nil {
+			if err := r.orchestrator.waitForAsyncDrain(ctx); err != nil {
+				return err
+			}
+		}
+		if err := r.drainMaintenance(ctx); err != nil {
+			return err
+		}
+		return r.closeProviderAdapter(ctx)
 	}
 
 	if cancel != nil {
@@ -747,28 +1008,62 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		cancelDispatch()
 	}
 	var closeErr error
-	if err := waitForRuntimeLoopDrain(ctx, done, "periodic runtime loop"); err != nil {
+	consumersDrained := true
+	if drained, err := waitForRuntimeLoopDrain(ctx, done, "periodic runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
-	if err := waitForRuntimeLoopDrain(ctx, dispatchDone, "dispatch runtime loop"); err != nil {
+	if drained, err := waitForRuntimeLoopDrain(ctx, dispatchDone, "dispatch runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
 	if r.orchestrator != nil {
 		if err := r.orchestrator.waitForAsyncDrain(ctx); err != nil {
 			closeErr = errors.Join(closeErr, err)
 		}
+		if tracker := r.orchestrator.asyncDrain; tracker != nil {
+			tracker.mu.Lock()
+			consumersDrained = consumersDrained && tracker.active == 0
+			tracker.mu.Unlock()
+		}
 	}
 	if cancelCompletion != nil {
 		cancelCompletion()
 	}
-	if err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
+	if drained, err := waitForRuntimeLoopDrain(ctx, completionDone, "completion runtime loop"); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = consumersDrained && drained
 	}
-	if err := r.drainExecutionOutboxUntilDrained(ctx); err != nil {
+	if err := r.drainMaintenance(ctx); err != nil {
 		closeErr = errors.Join(closeErr, err)
+		consumersDrained = false
 	}
-
+	if consumersDrained {
+		closeErr = errors.Join(closeErr, r.closeProviderAdapter(ctx))
+	}
 	return closeErr
+}
+
+func (r *Runtime) closeProviderAdapter(ctx context.Context) error {
+	if r == nil {
+		return nil
+	}
+	r.adapterCloseMu.Lock()
+	defer r.adapterCloseMu.Unlock()
+	if r.adapterClosed {
+		return nil
+	}
+	if closer, ok := r.adapter.(interface{ CloseContext(context.Context) error }); ok {
+		if err := closer.CloseContext(ctx); err != nil {
+			return err
+		}
+	} else if closer, ok := r.adapter.(interface{ Close() error }); ok {
+		if err := closer.Close(); err != nil {
+			return err
+		}
+	}
+	r.adapterClosed = true
+	return nil
 }
 
 // ForceClose is the hard-stop runtime path used when summon receives
@@ -777,7 +1072,8 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 // and best-effort cancels tracked provider attempts without waiting for
 // the runtime loops to drain.
 func (r *Runtime) ForceClose() error {
-	cancel, cancelDispatch, cancelCompletion, _, _, _, ok := r.stopHandles(true)
+	cancel, cancelDispatch, cancelCompletion, _, _, _, _ := r.stopHandles(true)
+	r.stopMaintenance()
 	if cancel != nil {
 		cancel()
 	}
@@ -787,9 +1083,7 @@ func (r *Runtime) ForceClose() error {
 	if cancelCompletion != nil {
 		cancelCompletion()
 	}
-	if ok {
-		r.cancelInflightAttempts()
-	}
+	r.cancelInflightAttempts()
 	return nil
 }
 
@@ -797,12 +1091,159 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
+	guardsDeferred, err := r.replayStartupProviderProcessGuards(ctx)
+	if err != nil {
+		return fmt.Errorf("replay provider process guards: %w", err)
+	}
+	if guardsDeferred {
+		logDeferredStartupReplay("provider_process_guards")
+		// Guard evidence must settle before terminal handoffs can authorize
+		// recovery, so defer each later stage to the completion loop.
+		r.setStartupRecoveryPending(true, true, true)
+		return nil
+	}
+	handoffsDeferred, err := r.replayStartupProviderTerminalHandoffs(ctx)
+	if err != nil {
+		return fmt.Errorf("converge provider terminal handoffs: %w", err)
+	}
+	if handoffsDeferred {
+		logDeferredStartupReplay("provider_terminal_handoffs")
+		r.setStartupRecoveryPending(false, true, true)
+		return nil
+	}
+	lostHandoffsDeferred, err := r.replayStartupLostProviderTerminalHandoffs(ctx)
+	if err != nil {
+		return fmt.Errorf("settle lost provider terminal handoffs: %w", err)
+	}
+	if lostHandoffsDeferred {
+		logDeferredStartupReplay("lost_provider_terminal_handoffs")
+		r.setStartupRecoveryPending(false, false, true)
+		return nil
+	}
+	r.setStartupRecoveryPending(false, false, false)
 	if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
 		return err
 	}
-	if _, err := r.orchestrator.drainAttemptCancelOutbox(ctx); err != nil {
-		slog.Warn("startup attempt-cancel replay will retry during runtime", "error", err)
+	return nil
+}
+
+func (r *Runtime) beginStartupRecovery() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.startupRecoveryGate = make(chan struct{})
+	r.startupRecoveryOpen = false
+	r.startupRecoveryWait = false
+	r.startupGuardWait = false
+	r.startupHandoffWait = false
+	r.startupLostHandoffWait = false
+	r.startupGuardCursor = ""
+	r.startupLostHandoffCursor = ""
+	if r.orchestrator != nil {
+		r.orchestrator.resetProviderTerminalHandoffFileRecoveryCursor()
+		r.orchestrator.resetResponseOnlyWorkspaceCleanupCursor()
 	}
+}
+
+func (r *Runtime) setStartupRecoveryPending(guardsPending, handoffsPending, lostHandoffsPending bool) {
+	r.mu.Lock()
+	r.startupGuardWait = guardsPending
+	r.startupHandoffWait = handoffsPending
+	r.startupLostHandoffWait = lostHandoffsPending
+	r.startupRecoveryWait = guardsPending || handoffsPending || lostHandoffsPending
+	r.mu.Unlock()
+}
+
+func (r *Runtime) startupRecoveryPending() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startupRecoveryWait
+}
+
+func (r *Runtime) startupRecoveryIsOpen() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.startupRecoveryOpen
+}
+
+func (r *Runtime) awaitStartupRecovery(ctx context.Context) error {
+	r.mu.Lock()
+	gate := r.startupRecoveryGate
+	open := r.startupRecoveryOpen
+	r.mu.Unlock()
+	if gate == nil || open {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-gate:
+		return nil
+	}
+}
+
+func (r *Runtime) pendingStartupRecoveryStage() startupRecoveryStage {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch {
+	case r.startupGuardWait:
+		return startupRecoveryStageGuards
+	case r.startupHandoffWait:
+		return startupRecoveryStageHandoffs
+	case r.startupLostHandoffWait:
+		return startupRecoveryStageLostHandoffs
+	default:
+		return startupRecoveryStageComplete
+	}
+}
+
+func (r *Runtime) completeStartupRecoveryStage(stage startupRecoveryStage) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	switch stage {
+	case startupRecoveryStageGuards:
+		r.startupGuardWait = false
+	case startupRecoveryStageHandoffs:
+		r.startupHandoffWait = false
+	case startupRecoveryStageLostHandoffs:
+		r.startupLostHandoffWait = false
+	}
+	// Keep the gate pending until finishStartupRecovery succeeds, so a
+	// retryable finalization failure cannot bypass the startup barriers.
+	return !r.startupGuardWait && !r.startupHandoffWait && !r.startupLostHandoffWait
+}
+
+// finishStartupRecovery preserves startup ordering after bounded provider
+// replay: only completion processing may release reconciliation and dispatch.
+func (r *Runtime) finishStartupRecovery(ctx context.Context, replayDeferred bool) error {
+	if replayDeferred {
+		if err := r.recoverExecutionOutboxStartup(ctx); err != nil {
+			return err
+		}
+	}
+	if _, err := r.reconciler.RunStartup(ctx); err != nil {
+		return fmt.Errorf("startup reconcile: %w", err)
+	}
+	if _, err := r.orchestrator.scheduleAttemptCancellations(ctx); err != nil {
+		return fmt.Errorf("startup stale cancellation replay: %w", err)
+	}
+	if err := r.orchestrator.repairRecoverableFailedRuns(ctx, r.orchestrator.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("startup run repair: %w", err)
+	}
+	if r.preDispatchRecovery != nil {
+		if err := r.preDispatchRecovery(ctx); err != nil {
+			return fmt.Errorf("startup pre-dispatch recovery: %w", err)
+		}
+	}
+	r.mu.Lock()
+	if !r.startupRecoveryOpen {
+		r.startupGuardWait = false
+		r.startupHandoffWait = false
+		r.startupLostHandoffWait = false
+		r.startupRecoveryWait = false
+		r.startupRecoveryOpen = true
+		close(r.startupRecoveryGate)
+	}
+	r.mu.Unlock()
 	return nil
 }
 
@@ -810,34 +1251,31 @@ func (r *Runtime) recoverExecutionOutboxStartup(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	if err := r.drainExecutionOutboxUntilIdle(ctx); err != nil {
-		return err
-	}
-	pending, err := r.hasPendingExecutionOutbox(ctx)
+	deferred, err := r.replayStartupExecutionOutbox(ctx)
 	if err != nil {
 		return err
 	}
-	if pending {
-		slog.Warn("startup execution outbox recovery left retryable rows pending; completion loop will retry")
+	if deferred {
+		logDeferredStartupReplay("execution_outbox")
 	}
 	return nil
 }
 
-func waitForRuntimeLoopDrain(ctx context.Context, done <-chan error, label string) error {
+func waitForRuntimeLoopDrain(ctx context.Context, done <-chan error, label string) (bool, error) {
 	if done == nil {
-		return nil
+		return true, nil
 	}
 	select {
 	case err, ok := <-done:
 		if !ok {
-			return nil
+			return true, nil
 		}
 		if err != nil {
-			return err
+			return true, err
 		}
-		return nil
+		return true, nil
 	case <-ctx.Done():
-		return fmt.Errorf("wait for %s: %w", strings.TrimSpace(label), ctx.Err())
+		return false, fmt.Errorf("wait for %s: %w", strings.TrimSpace(label), ctx.Err())
 	}
 }
 
@@ -848,7 +1286,7 @@ func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFun
 		r.closeMode.MarkForced()
 	}
 	if !r.started {
-		return nil, nil, nil, nil, nil, nil, false
+		return r.cancelPeriodic, r.cancelDispatch, r.cancelCompletion, r.periodicDone, r.dispatchDone, r.completionDone, false
 	}
 	cancel := r.cancelPeriodic
 	cancelDispatch := r.cancelDispatch
@@ -857,12 +1295,6 @@ func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFun
 	dispatchDone := r.dispatchDone
 	completionDone := r.completionDone
 	r.started = false
-	r.cancelPeriodic = nil
-	r.cancelDispatch = nil
-	r.cancelCompletion = nil
-	r.periodicDone = nil
-	r.dispatchDone = nil
-	r.completionDone = nil
 	return cancel, cancelDispatch, cancelCompletion, done, dispatchDone, completionDone, true
 }
 
@@ -894,10 +1326,6 @@ func (r *Runtime) cancelInflightAttempts() {
 				OccurredAt: occurredAt,
 			})
 			if err == nil {
-				return
-			}
-			var missing *opencode.AttemptNotFoundError
-			if errors.As(err, &missing) {
 				return
 			}
 			slog.Warn("runtime force close failed to cancel attempt", "attempt_id", attemptID, "error", err)
@@ -1033,10 +1461,6 @@ func (r *Runtime) ValidateAndPersistWorkerOutput(ctx context.Context, req state.
 	return r.outputValidator.ValidateAndPersist(ctx, req)
 }
 
-func (r *Runtime) EnforceRunBudget(ctx context.Context, req state.EnforceRunBudgetRequest) (state.EnforceRunBudgetResult, error) {
-	return r.budgetGuard.EnforceRunBudget(ctx, req)
-}
-
 func (r *Runtime) RetryEngine() *retryengine.Engine {
 	return r.retryEngine
 }
@@ -1045,7 +1469,6 @@ func (r *Runtime) ProviderPolicy() providerpolicy.Policy {
 	copy := r.providerPolicy
 	copy.AgentPolicy.RoleAgents = cloneStringMap(r.providerPolicy.AgentPolicy.RoleAgents)
 	copy.Timeouts.NodeWallClock = cloneStringMap(r.providerPolicy.Timeouts.NodeWallClock)
-	copy.RetryBoundaries.HardFailCodes = append([]string(nil), r.providerPolicy.RetryBoundaries.HardFailCodes...)
 	return copy
 }
 
@@ -1137,6 +1560,12 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"worktree_name",
 			"seed_commit_oid",
 			"state",
+			"cleanup_cursor",
+			"cleanup_owner",
+			"cleanup_owner_pid",
+			"cleanup_owner_identity_token",
+			"cleanup_fence",
+			"cleanup_started",
 			"created_at",
 			"last_used_at",
 			"cleanup_after",
@@ -1144,10 +1573,46 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 			"failure_reason",
 		},
 		"provider_invocations": {
-			"receipt_seen_count",
-			"first_receipt_seen_at",
-			"last_receipt_seen_at",
-			"last_receipt_disposition",
+			"completion_mode",
+			"settled_at",
+			"superseded_by_invocation_id",
+			"invalid_reason",
+		},
+		"provider_terminal_handoffs": nil,
+		"provider_process_guards": {
+			"guard_id",
+			"owner_kind",
+			"owner_id",
+			"provider_invocation_id",
+			"attempt_id",
+			"run_id",
+			"node_run_id",
+			"command_ordinal",
+			"lifecycle",
+			"platform",
+			"guardian_pid",
+			"guardian_identity_token",
+			"child_pid",
+			"child_identity_token",
+			"tree_id",
+			"tree_identity_token",
+			"quiescence_capability_hash",
+			"lease_owner",
+			"lease_version",
+			"started_at",
+			"acknowledged_at",
+			"termination_requested_at",
+			"exited_at",
+			"quiescent_at",
+			"exit_code",
+			"exit_signal",
+			"termination_forced",
+			"failure_code",
+			"failure_text",
+			"quiescence_evidence_sha256",
+			"quiescence_evidence_json",
+			"created_at",
+			"updated_at",
 		},
 	}
 	tableNames := []string{
@@ -1158,6 +1623,8 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"attempt_outbox",
 		"attempt_cancel_outbox",
 		"provider_invocations",
+		"provider_terminal_handoffs",
+		"provider_process_guards",
 		"run_worktrees",
 		"run_execution_targets",
 		"filesystem_snapshots",
@@ -1270,47 +1737,4 @@ func parseStrictStartupTotalTimeout(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("strict_startup_total_timeout must be > 0")
 	}
 	return timeout, nil
-}
-
-func parseCompletionReconcileTotalTimeout(raw string) (time.Duration, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout is required")
-	}
-	timeout, err := time.ParseDuration(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout parse failed: %w", err)
-	}
-	if timeout <= 0 {
-		return 0, fmt.Errorf("completion_reconcile_total_timeout must be > 0")
-	}
-	return timeout, nil
-}
-
-func parseProviderCancelTimeouts(graceRaw, forceRaw string) (time.Duration, time.Duration, error) {
-	graceTimeout := strings.TrimSpace(graceRaw)
-	if graceTimeout == "" {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout is required")
-	}
-	grace, err := time.ParseDuration(graceTimeout)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout parse failed: %w", err)
-	}
-	if grace <= 0 {
-		return 0, 0, fmt.Errorf("cancel_grace_timeout must be > 0")
-	}
-
-	forceTimeout := strings.TrimSpace(forceRaw)
-	if forceTimeout == "" {
-		return 0, 0, fmt.Errorf("cancel_force_timeout is required")
-	}
-	force, err := time.ParseDuration(forceTimeout)
-	if err != nil {
-		return 0, 0, fmt.Errorf("cancel_force_timeout parse failed: %w", err)
-	}
-	if force <= 0 {
-		return 0, 0, fmt.Errorf("cancel_force_timeout must be > 0")
-	}
-
-	return grace, force, nil
 }

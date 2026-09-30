@@ -3,8 +3,10 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -73,6 +75,8 @@ type PlanningSession struct {
 }
 
 type PlanningMessage struct {
+	ContentSource       *PlanningTextSource
+	AnswerTextSource    *PlanningTextSource
 	PlanningMessageID   string
 	PlanningSessionID   string
 	ParentMessageID     *string
@@ -137,6 +141,9 @@ type PlanningOperation struct {
 	CreatedAt                  string
 	StartedAt                  *string
 	FinishedAt                 *string
+	// AutomaticRetry is populated only by a due retry claim. It is not stored
+	// on planning_operations; retry_decisions remains durable authority.
+	AutomaticRetry bool
 }
 
 type PlanningOperationEvent struct {
@@ -146,6 +153,103 @@ type PlanningOperationEvent struct {
 	EventType   string
 	PayloadJSON string
 	CreatedAt   string
+}
+
+type PlanningActivityReconciliationStatus string
+
+const (
+	PlanningActivityReconciliationStatusPending   PlanningActivityReconciliationStatus = "pending"
+	PlanningActivityReconciliationStatusCompleted PlanningActivityReconciliationStatus = "completed"
+)
+
+// PlanningActivityReconciliation is a post-settlement diagnostic activity
+// delivery lifecycle. It is deliberately independent of the operation lease.
+type PlanningActivityReconciliation struct {
+	PlanningOperationID          string
+	PlanningProviderInvocationID string
+	Status                       PlanningActivityReconciliationStatus
+	LeaseOwner                   string
+	LeaseExpiresAt               *string
+	LeaseVersion                 int
+	CreatedAt                    string
+	CompletedAt                  *string
+}
+
+type CompletePlanningActivityReconciliationRequest struct {
+	PlanningOperationID string
+	LeaseOwner          string
+	LeaseVersion        int
+	CompletedAt         string
+	ActivityEvents      []AppendPlanningOperationEventRequest
+	MarkerEvent         AppendPlanningOperationEventRequest
+}
+
+// AppendPlanningActivityReconciliationBatch commits diagnostic continuation
+// without completing the reconciliation. A crash leaves the row pending and
+// durable activity available for replay de-duplication. The lease fence and its
+// renewal commit with the events; canonical operation settlement is untouched.
+func (s *PlanningStore) AppendPlanningActivityReconciliationBatch(ctx context.Context, claimed PlanningActivityReconciliation, events []AppendPlanningOperationEventRequest, now, expiresAt string) error {
+	if len(events) == 0 {
+		return nil
+	}
+	if len(events) > MaxPlanningActivityReconciliationEvents {
+		return fmt.Errorf("activity batch exceeds %d events", MaxPlanningActivityReconciliationEvents)
+	}
+	now, err := canonicalPlanningActivityReconciliationTimestamp(now)
+	if err != nil {
+		return err
+	}
+	expiresAt, err = canonicalPlanningActivityReconciliationTimestamp(expiresAt)
+	if err != nil {
+		return err
+	}
+	if expiresAt <= now {
+		return fmt.Errorf("activity lease expiry must follow current time")
+	}
+	for _, event := range events {
+		if err := validatePlanningOperationEventAppend(event); err != nil {
+			return err
+		}
+		if event.OperationID != claimed.PlanningOperationID {
+			return fmt.Errorf("activity batch operation mismatch")
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE planning_activity_reconciliations SET lease_expires_at=?,delivered_activity_count=delivered_activity_count+?
+		WHERE planning_operation_id=? AND status='pending' AND lease_owner=? AND lease_version=? AND lease_expires_at>?
+		AND EXISTS (SELECT 1 FROM planning_operations WHERE operation_id=planning_operation_id AND status='succeeded')`,
+		expiresAt, len(events), claimed.PlanningOperationID, claimed.LeaseOwner, claimed.LeaseVersion, now)
+	if err != nil {
+		return err
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrPlanningLeaseConflict
+	}
+	var seq int
+	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM planning_operation_events WHERE operation_id=?`, claimed.PlanningOperationID).Scan(&seq); err != nil {
+		return err
+	}
+	for _, event := range events {
+		event.Seq = seq
+		event.EventID = fmt.Sprintf("%s:%d", claimed.PlanningOperationID, seq)
+		if _, err := insertPlanningOperationEvent(ctx, tx, event); err != nil {
+			return err
+		}
+		seq++
+	}
+	return tx.Commit()
+}
+
+func (s *PlanningStore) PlanningActivityDeliveredCount(ctx context.Context, operationID string) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT delivered_activity_count FROM planning_activity_reconciliations WHERE planning_operation_id=?`, operationID).Scan(&count)
+	return count, err
 }
 
 type PlanningOperationTelemetrySample struct {
@@ -159,6 +263,7 @@ type PlanningOperationTelemetrySample struct {
 }
 
 type CreatePlanningSessionRequest struct {
+	TitleSource             *PlanningTextSource
 	PlanningSessionID       string
 	Title                   string
 	TitleState              string
@@ -176,6 +281,8 @@ type CreatePlanningSessionRequest struct {
 }
 
 type UpdatePlanningSessionRequest struct {
+	TitleContentID          string
+	TitleSource             *PlanningTextSource
 	PlanningSessionID       string
 	Title                   *string
 	TitleState              *string
@@ -191,6 +298,8 @@ type UpdatePlanningSessionRequest struct {
 }
 
 type AppendPlanningMessageRequest struct {
+	ContentSource       *PlanningTextSource
+	AnswerTextSource    *PlanningTextSource
 	PlanningMessageID   string
 	PlanningSessionID   string
 	ParentMessageID     string
@@ -202,6 +311,7 @@ type AppendPlanningMessageRequest struct {
 }
 
 type CreatePlanningDraftRequest struct {
+	TextSource        *PlanningTextSource
 	PlanningDraftID   string
 	PlanningSessionID string
 	DecreeTitle       string
@@ -211,6 +321,7 @@ type CreatePlanningDraftRequest struct {
 }
 
 type CreatePlanningContextSnapshotRequest struct {
+	Entries                   PlanningContextEntrySource
 	PlanningContextSnapshotID string
 	PlanningSessionID         string
 	SummaryMarkdown           string
@@ -258,6 +369,7 @@ type UpdatePlanningOperationRequest struct {
 }
 
 type AppendPlanningOperationEventRequest struct {
+	TextRefs    map[string]string
 	EventID     string
 	OperationID string
 	Seq         int
@@ -272,6 +384,14 @@ type CancelQueuedPlanningOperationRequest struct {
 	UpdatedAt     string
 	FinishedAt    string
 	TerminalEvent *AppendPlanningOperationEventRequest
+}
+
+type FailQueuedPlanningOperationRequest struct {
+	OperationID   string
+	ErrorMessage  string
+	UpdatedAt     string
+	FinishedAt    string
+	TerminalEvent AppendPlanningOperationEventRequest
 }
 
 type CreatePlanningSessionBundleRequest struct {
@@ -351,6 +471,9 @@ type FinalizeOperationRequest struct {
 	OperationID  string
 	LeaseOwner   string // owner from claim — required to fence the terminal write
 	LeaseVersion int    // version from claim — required to fence the terminal write
+	// AllowExpiredLease is reserved for the stale-operation recovery authority.
+	// Normal worker finalization must only settle an unexpired lease.
+	AllowExpiredLease bool
 
 	ConversationState PlanningSessionConversationState
 	UpdatedAt         string
@@ -371,7 +494,11 @@ type FinalizeOperationRequest struct {
 	ErrorMessage       string // FinalizeFail / FinalizeCancel only
 	ObservedOutputText string
 	ProviderSettlement *FinalizePlanningProviderSettlementRequest
-	TerminalEvent      *AppendPlanningOperationEventRequest
+	// MessageCompletedEvent is committed atomically with the canonical message,
+	// draft, or title, provider settlement, and terminal run event. Streamed
+	// message.part events remain provisional until this boundary commits.
+	MessageCompletedEvent *AppendPlanningOperationEventRequest
+	TerminalEvent         *AppendPlanningOperationEventRequest
 }
 
 // FinalizeGenerateTitleRequest settles a successful generated-title operation
@@ -383,21 +510,23 @@ type FinalizeGenerateTitleRequest struct {
 	LeaseOwner   string
 	LeaseVersion int
 
-	UpdatedAt          string
-	FinishedAt         string
-	GeneratedTitle     string
-	ObservedOutputText string
-	ProviderSettlement *FinalizePlanningProviderSettlementRequest
-	TerminalEvent      *AppendPlanningOperationEventRequest
+	UpdatedAt             string
+	FinishedAt            string
+	GeneratedTitle        string
+	ObservedOutputText    string
+	ProviderSettlement    *FinalizePlanningProviderSettlementRequest
+	MessageCompletedEvent *AppendPlanningOperationEventRequest
+	TerminalEvent         *AppendPlanningOperationEventRequest
 }
 
 // FinalizeGenerateTitleAbortRequest terminates a generated-title operation as
 // failed or cancelled without touching the interactive session lane.
 type FinalizeGenerateTitleAbortRequest struct {
-	SessionID    string
-	OperationID  string
-	LeaseOwner   string
-	LeaseVersion int
+	SessionID         string
+	OperationID       string
+	LeaseOwner        string
+	LeaseVersion      int
+	AllowExpiredLease bool
 
 	Status             PlanningOperationStatus
 	UpdatedAt          string
@@ -409,7 +538,14 @@ type FinalizeGenerateTitleAbortRequest struct {
 }
 
 type PlanningStore struct {
-	db *sql.DB
+	db                      *sql.DB
+	processGuardRuntimeRoot string
+}
+
+func (s *PlanningStore) SetProcessGuardRuntimeRoot(root string) {
+	if s != nil {
+		s.processGuardRuntimeRoot = strings.TrimSpace(root)
+	}
 }
 
 type sqlExecutor interface {
@@ -436,7 +572,7 @@ func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {
 	if strings.TrimSpace(req.PlanningSessionID) == "" {
 		return fmt.Errorf("planning session id is required")
 	}
-	if strings.TrimSpace(req.Title) == "" {
+	if strings.TrimSpace(req.Title) == "" && (req.TitleSource == nil || req.TitleSource.SizeBytes <= 0) {
 		return fmt.Errorf("planning session title is required")
 	}
 	if !isValidPlanningSessionTitleState(req.TitleState) {
@@ -570,7 +706,7 @@ func validatePlanningMessageAppend(req AppendPlanningMessageRequest) error {
 	if !isValidPlanningMessageRole(req.Role) {
 		return fmt.Errorf("invalid planning message role: %q", req.Role)
 	}
-	if strings.TrimSpace(req.ContentMarkdown) == "" && !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON) {
+	if strings.TrimSpace(req.ContentMarkdown) == "" && (req.ContentSource == nil || req.ContentSource.SizeBytes == 0) && !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON) {
 		return fmt.Errorf("planning message content is required")
 	}
 	if strings.TrimSpace(req.QuestionPayloadJSON) == "" || strings.TrimSpace(req.AnswerPayloadJSON) == "" {
@@ -601,7 +737,7 @@ func validatePlanningDraftCreate(req CreatePlanningDraftRequest) error {
 	if strings.TrimSpace(req.DecreeTitle) == "" {
 		return fmt.Errorf("planning draft decree title is required")
 	}
-	if strings.TrimSpace(req.DecreeText) == "" {
+	if strings.TrimSpace(req.DecreeText) == "" && (req.TextSource == nil || req.TextSource.SizeBytes == 0) {
 		return fmt.Errorf("planning draft decree text is required")
 	}
 	if strings.TrimSpace(req.SummaryJSON) == "" {
@@ -626,10 +762,130 @@ func validatePlanningContextSnapshotCreate(req CreatePlanningContextSnapshotRequ
 	if strings.TrimSpace(req.IncludedFilesJSON) == "" || strings.TrimSpace(req.ExcludedFilesJSON) == "" {
 		return fmt.Errorf("planning context file json fields are required")
 	}
+	if err := validatePlanningContextSnapshotFilesJSON("included", req.IncludedFilesJSON); err != nil {
+		return err
+	}
+	if err := validatePlanningContextSnapshotFilesJSON("excluded", req.ExcludedFilesJSON); err != nil {
+		return err
+	}
 	if strings.TrimSpace(req.CreatedAt) == "" {
 		return fmt.Errorf("planning context created_at is required")
 	}
 	return nil
+}
+
+type PlanningContextFileEntry struct {
+	Path   string `json:"path"`
+	Reason string `json:"reason,omitempty"`
+	Size   int64  `json:"size_bytes,omitempty"`
+}
+
+func validatePlanningContextSnapshotFilesJSON(kind, raw string) error {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "[") {
+		return fmt.Errorf("%s planning context file json must be an array", kind)
+	}
+	decoder := json.NewDecoder(strings.NewReader(trimmed))
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	for decoder.More() {
+		var entry PlanningContextFileEntry
+		if err := decoder.Decode(&entry); err != nil {
+			return err
+		}
+		if len(entry.Path) == 0 {
+			return fmt.Errorf("%s planning context path is required", kind)
+		}
+		if entry.Size < 0 {
+			return fmt.Errorf("%s planning context file size must not be negative", kind)
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		return fmt.Errorf("%s planning context file json has trailing data", kind)
+	}
+	return nil
+}
+
+// PlanningContextEntrySource replays a completed scan from disk, one entry at a
+// time. Returning an error rolls back both the content and its publication.
+type PlanningContextEntrySource func(context.Context, func(string, PlanningContextFileEntry) error) error
+
+func insertPlanningContextEntries(ctx context.Context, tx *sql.Tx, req CreatePlanningContextSnapshotRequest) error {
+	if req.Entries != nil && (strings.TrimSpace(req.IncludedFilesJSON) != "[]" || strings.TrimSpace(req.ExcludedFilesJSON) != "[]") {
+		return fmt.Errorf("streamed planning context entries must not also supply JSON lists")
+	}
+	source := req.Entries
+	if source == nil {
+		source = func(ctx context.Context, visit func(string, PlanningContextFileEntry) error) error {
+			for _, list := range []struct{ kind, raw string }{{"included", req.IncludedFilesJSON}, {"excluded", req.ExcludedFilesJSON}} {
+				decoder := json.NewDecoder(strings.NewReader(list.raw))
+				if _, err := decoder.Token(); err != nil {
+					return err
+				}
+				for decoder.More() {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
+					var entry PlanningContextFileEntry
+					if err := decoder.Decode(&entry); err != nil {
+						return err
+					}
+					if err := visit(list.kind, entry); err != nil {
+						return err
+					}
+				}
+				if _, err := decoder.Token(); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO planning_context_entries(snapshot_id,ordinal,kind,path,reason,size_bytes) VALUES(?,?,?,?,?,?)`)
+	if err != nil {
+		return err
+	}
+	defer stmt.Close()
+	ordinal := 0
+	err = source(ctx, func(kind string, entry PlanningContextFileEntry) error {
+		if kind != "included" && kind != "excluded" || entry.Path == "" || entry.Size < 0 {
+			return fmt.Errorf("invalid planning context entry")
+		}
+		_, err := stmt.ExecContext(ctx, req.PlanningContextSnapshotID, ordinal, kind, entry.Path, entry.Reason, entry.Size)
+		ordinal++
+		return err
+	})
+	return err
+}
+
+// ListContextEntriesPage uses an immutable ordinal cursor; a batch size bounds
+// work, never the number of entries retained in a snapshot.
+func (s *PlanningStore) ListContextEntriesPage(ctx context.Context, snapshotID, kind string, afterOrdinal, limit int) ([]PlanningContextFileEntry, int, error) {
+	if strings.TrimSpace(snapshotID) == "" || (kind != "included" && kind != "excluded") || afterOrdinal < -1 {
+		return nil, afterOrdinal, fmt.Errorf("invalid planning context entry page")
+	}
+	if limit <= 0 || limit > 1000 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ordinal,path,reason,size_bytes FROM planning_context_entries WHERE snapshot_id=? AND kind=? AND ordinal>? ORDER BY ordinal LIMIT ?`, snapshotID, kind, afterOrdinal, limit)
+	if err != nil {
+		return nil, afterOrdinal, err
+	}
+	defer rows.Close()
+	entries := make([]PlanningContextFileEntry, 0, limit)
+	for rows.Next() {
+		var entry PlanningContextFileEntry
+		if err := rows.Scan(&afterOrdinal, &entry.Path, &entry.Reason, &entry.Size); err != nil {
+			return nil, afterOrdinal, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, afterOrdinal, rows.Err()
 }
 
 func validatePlanningOperationCreate(req CreatePlanningOperationRequest) error {

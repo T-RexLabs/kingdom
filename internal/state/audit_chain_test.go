@@ -48,6 +48,39 @@ func TestAuditChainPopulationAndVerification(t *testing.T) {
 	}
 }
 
+func TestAuditChainOrdersMixedRFC3339TimestampPrecisionByInstant(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+
+	transition := NewTransitionService(db, nil)
+	first := baseTransitionRequest(EntityTypeRun, "running", "awaiting_human_confirmation")
+	first.TransitionID = "tr_whole_second"
+	first.EventID = "evt_whole_second"
+	first.AttemptID = "att_whole_second"
+	first.EventSeq = 1
+	first.OccurredAt = "2026-03-01T12:30:00Z"
+	if err := transition.Apply(context.Background(), first); err != nil {
+		t.Fatalf("apply whole-second transition: %v", err)
+	}
+
+	second := baseTransitionRequest(EntityTypeRun, "awaiting_human_confirmation", "succeeded")
+	second.TransitionID = "tr_fractional_second"
+	second.EventID = "evt_fractional_second"
+	second.AttemptID = "att_fractional_second"
+	second.EventSeq = 1
+	second.OccurredAt = "2026-03-01T12:30:00.100000000Z"
+	if err := transition.Apply(context.Background(), second); err != nil {
+		t.Fatalf("apply fractional-second transition: %v", err)
+	}
+
+	if err := NewAuditIntegrityVerifier(db).VerifyOrError(context.Background()); err != nil {
+		t.Fatalf("verify chain after transitions with mixed RFC3339 precision: %v", err)
+	}
+}
+
 func TestAuditChainCorruptionDetection(t *testing.T) {
 	t.Parallel()
 

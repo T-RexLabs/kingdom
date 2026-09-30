@@ -267,7 +267,7 @@ func (c *SetupClient) ValidatePrivateKeyInstallation(ctx context.Context, raw []
 type setupInstallation struct {
 	ID                  int64             `json:"id"`
 	AppID               int64             `json:"app_id"`
-	ClientID            string            `json:"client_id"`
+	ClientID            string            `json:"client_id"` // GitHub's installation schema makes this optional.
 	AppSlug             string            `json:"app_slug"`
 	TargetID            int64             `json:"target_id"`
 	Permissions         map[string]string `json:"permissions"`
@@ -294,11 +294,11 @@ func normalizedRepositorySelection(selection string) string {
 func validateSetupInstallation(in setupInstallation, expected SetupInstallation) (SetupInstallation, error) {
 	accountLogin := strings.TrimSpace(in.Account.Login)
 	actual := SetupInstallation{
-		InstallationID: strconv.FormatInt(in.ID, 10), AppID: strconv.FormatInt(in.AppID, 10), ClientID: in.ClientID, AppSlug: in.AppSlug,
+		InstallationID: strconv.FormatInt(in.ID, 10), AppID: strconv.FormatInt(in.AppID, 10), ClientID: expected.ClientID, AppSlug: in.AppSlug,
 		AccountID: strconv.FormatInt(in.Account.ID, 10), AccountLogin: accountLogin,
 		RepositorySelection: normalizedRepositorySelection(in.RepositorySelection),
 	}
-	if actual.InstallationID != expected.InstallationID || actual.AppID != expected.AppID || actual.ClientID != expected.ClientID || actual.AppSlug != expected.AppSlug || in.TargetID <= 0 || in.Account.ID != in.TargetID || accountLogin == "" || len(accountLogin) > 100 || !validText(accountLogin, false) || in.SuspendedAt != nil || !allowedPermissions(in.Permissions) || len(in.Events) != 0 {
+	if actual.InstallationID != expected.InstallationID || actual.AppID != expected.AppID || (in.ClientID != "" && in.ClientID != expected.ClientID) || actual.AppSlug != expected.AppSlug || in.TargetID <= 0 || in.Account.ID != in.TargetID || accountLogin == "" || len(accountLogin) > 100 || !validText(accountLogin, false) || in.SuspendedAt != nil || !allowedPermissions(in.Permissions) || len(in.Events) != 0 {
 		return SetupInstallation{}, ErrSetupValidation
 	}
 	if expected.AccountID != "" && (actual.AccountID != expected.AccountID || actual.AccountLogin != expected.AccountLogin) {

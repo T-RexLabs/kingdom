@@ -1,15 +1,22 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+
+	"kingdom/internal/processguardian"
+	"kingdom/internal/providers/opencode"
 
 	gen "kingdom/internal/apigen"
 
@@ -53,7 +60,7 @@ type openCodeProviderModelCatalog struct {
 	now          func() time.Time
 	ttl          time.Duration
 	fetchTimeout time.Duration
-	execVerbose  func(ctx context.Context, binaryPath string, refresh bool) ([]byte, error)
+	execVerbose  func(ctx context.Context, binaryPath string, refresh bool) (*opencode.HelperCommandOutput, error)
 
 	mu         sync.Mutex
 	cachedAt   time.Time
@@ -164,7 +171,7 @@ func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh boo
 // cache could answer at all.
 func (c *openCodeProviderModelCatalog) cachedSnapshot() (ProviderModelCatalogSnapshot, bool) {
 	c.mu.Lock()
-	if len(c.cachedRows) == 0 {
+	if c.cachedAt.IsZero() {
 		c.mu.Unlock()
 		return ProviderModelCatalogSnapshot{}, false
 	}
@@ -228,11 +235,12 @@ func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refres
 		rows, fetchErr := c.fetch(ctx, refresh)
 		if fetchErr != nil {
 			unavailableErr := classifyProviderModelCatalogError(fetchErr)
-			servingCachedModels := len(cachedRows) > 0 && !cachedAt.IsZero()
+			c.mu.Lock()
+			retireCatalogFailure(c.lastFailure)
+			c.lastFailure = unavailableErr
+			c.mu.Unlock()
+			servingCachedModels := !cachedAt.IsZero()
 			if servingCachedModels {
-				c.mu.Lock()
-				c.lastFailure = unavailableErr
-				c.mu.Unlock()
 				return ProviderModelCatalogSnapshot{
 					Items:          cachedRows,
 					Status:         ProviderModelCatalogStatusStale,
@@ -253,6 +261,7 @@ func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refres
 		c.mu.Lock()
 		c.cachedRows = cloneProviderModels(rows)
 		c.cachedAt = c.now()
+		retireCatalogFailure(c.lastFailure)
 		c.lastFailure = nil
 		resolvedCachedAt := c.cachedAt
 		c.mu.Unlock()
@@ -279,8 +288,9 @@ func (c *openCodeProviderModelCatalog) fetch(ctx context.Context, refresh bool) 
 
 	output, err := c.execVerbose(fetchCtx, c.binaryPath, refresh)
 	if err != nil {
+		err = output.DiagnosticError(err)
 		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
-			return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonTimeout, cause: context.DeadlineExceeded}
+			return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonTimeout, cause: errors.Join(context.DeadlineExceeded, err)}
 		}
 		if errors.Is(fetchCtx.Err(), context.Canceled) {
 			return nil, fmt.Errorf("list provider models canceled: %w", err)
@@ -290,11 +300,29 @@ func (c *openCodeProviderModelCatalog) fetch(ctx context.Context, refresh bool) 
 		}
 		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonCommandFailed, cause: err}
 	}
-	rows, parseErr := parseOpenCodeVerboseModels(output)
+	reader, err := output.OpenStdout()
+	if err != nil {
+		return nil, output.DiagnosticError(err)
+	}
+	defer reader.Close()
+	rows, parseErr := parseOpenCodeVerboseModels(reader)
 	if parseErr != nil {
-		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: parseErr}
+		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: output.DiagnosticError(parseErr)}
+	}
+	if err := reader.Close(); err != nil {
+		return nil, output.DiagnosticError(err)
+	}
+	if err := output.Close(); err != nil {
+		return nil, err
 	}
 	return rows, nil
+}
+
+func retireCatalogFailure(err error) {
+	var diagnostic *opencode.HelperCommandError
+	if errors.As(err, &diagnostic) {
+		_ = diagnostic.Close()
+	}
 }
 
 // operatorCatalogFailureMessage turns a catalog failure into something an
@@ -346,46 +374,51 @@ func classifyProviderModelCatalogError(err error) *providerModelCatalogUnavailab
 	return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonCommandFailed, cause: err}
 }
 
-func executeOpenCodeVerboseModels(ctx context.Context, binaryPath string, refresh bool) ([]byte, error) {
+func executeOpenCodeVerboseModels(ctx context.Context, binaryPath string, refresh bool) (*opencode.HelperCommandOutput, error) {
 	args := []string{"models", "--verbose"}
 	if refresh {
 		args = append(args, "--refresh")
 	}
-	cmd := exec.CommandContext(ctx, binaryPath, args...)
-	return cmd.Output()
+	runner, err := processguardian.NewRunner(processguardian.Config{})
+	if err != nil {
+		return nil, err
+	}
+	handle, err := runner.Start(ctx, processguardian.Command{Path: binaryPath, Args: args, Env: os.Environ()}, nil)
+	if err != nil {
+		return nil, err
+	}
+	return collectOpenCodeVerboseModelOutput(ctx, handle)
 }
 
-func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
+func collectOpenCodeVerboseModelOutput(ctx context.Context, handle processguardian.Handle) (*opencode.HelperCommandOutput, error) {
+	return opencode.CollectHelperCommandOutput(ctx, handle)
+}
+
+func parseOpenCodeVerboseModels(output io.Reader) ([]gen.ProviderModel, error) {
 	models := make([]gen.ProviderModel, 0)
 	seen := make(map[string]struct{})
-	rawOutput := strings.TrimSpace(string(output))
-	lines := strings.Split(string(output), "\n")
-	var (
-		collecting bool
-		depth      int
-		builder    strings.Builder
-	)
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		if !collecting {
-			if !strings.HasPrefix(trimmedLine, "{") {
-				continue
+	reader := bufio.NewReader(output)
+	nonEmpty := false
+	for {
+		first, _, err := reader.ReadRune()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read provider model catalog: %w", err)
+		}
+		if unicode.IsSpace(first) {
+			continue
+		}
+		nonEmpty = true
+		if first != '{' {
+			if err := finishModelCatalogLine(reader, false); err != nil {
+				return nil, err
 			}
-			collecting = true
-			depth = 0
-			builder.Reset()
-		}
-		builder.WriteString(line)
-		builder.WriteByte('\n')
-		depth += strings.Count(line, "{")
-		depth -= strings.Count(line, "}")
-		if collecting && depth > 0 {
 			continue
 		}
-		collecting = false
-		trimmed := strings.TrimSpace(builder.String())
-		if trimmed == "" {
-			continue
+		if err := reader.UnreadRune(); err != nil {
+			return nil, err
 		}
 		var row struct {
 			ID         string `json:"id"`
@@ -395,8 +428,12 @@ func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
 				ReasoningEffort string `json:"reasoningEffort"`
 			} `json:"variants"`
 		}
-		if err := json.Unmarshal([]byte(trimmed), &row); err != nil {
+		decoder := json.NewDecoder(&modelCatalogObjectReader{reader: reader})
+		if err := decoder.Decode(&row); err != nil {
 			return nil, fmt.Errorf("decode provider model row: %w", err)
+		}
+		if err := finishModelCatalogLine(reader, true); err != nil {
+			return nil, err
 		}
 		providerID := strings.TrimSpace(row.ProviderID)
 		modelID := strings.TrimSpace(row.ID)
@@ -429,14 +466,70 @@ func parseOpenCodeVerboseModels(output []byte) ([]gen.ProviderModel, error) {
 		return left < right
 	})
 
-	if collecting || depth != 0 {
-		return nil, fmt.Errorf("decode provider model row: incomplete json object")
-	}
-	if rawOutput != "" && len(models) == 0 {
+	if nonEmpty && len(models) == 0 {
 		return nil, fmt.Errorf("decode provider model rows: non-empty output did not yield any valid rows")
 	}
 
 	return models, nil
+}
+
+func finishModelCatalogLine(reader *bufio.Reader, whitespaceOnly bool) error {
+	for {
+		r, _, err := reader.ReadRune()
+		if err == io.EOF || (err == nil && r == '\n') {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("read provider model catalog line: %w", err)
+		}
+		if whitespaceOnly && !unicode.IsSpace(r) {
+			return fmt.Errorf("decode provider model row: invalid content after json object")
+		}
+	}
+}
+
+// Frame one JSON object without buffering it or letting json.Decoder read the
+// next catalog heading. The decoder remains responsible for JSON validation.
+type modelCatalogObjectReader struct {
+	reader                *bufio.Reader
+	depth                 int
+	quoted, escaped, done bool
+}
+
+func (r *modelCatalogObjectReader) Read(p []byte) (int, error) {
+	if r.done {
+		return 0, io.EOF
+	}
+	for i := range p {
+		b, err := r.reader.ReadByte()
+		if err != nil {
+			return i, err
+		}
+		p[i] = b
+		if r.quoted {
+			if r.escaped {
+				r.escaped = false
+			} else if b == '\\' {
+				r.escaped = true
+			} else if b == '"' {
+				r.quoted = false
+			}
+			continue
+		}
+		switch b {
+		case '"':
+			r.quoted = true
+		case '{':
+			r.depth++
+		case '}':
+			r.depth--
+			if r.depth == 0 {
+				r.done = true
+				return i + 1, io.EOF
+			}
+		}
+	}
+	return len(p), nil
 }
 
 func parseThinkingEffortOptions(variants map[string]struct {

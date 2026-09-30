@@ -13,13 +13,12 @@ import (
 )
 
 type Policy struct {
-	Version         string          `yaml:"version" json:"version"`
-	PolicyID        string          `yaml:"policy_id" json:"policy_id"`
-	ModelPolicy     ModelPolicy     `yaml:"model_policy" json:"model_policy"`
-	AgentPolicy     AgentPolicy     `yaml:"agent_policy" json:"agent_policy"`
-	Timeouts        Timeouts        `yaml:"timeouts" json:"timeouts"`
-	RetryBoundaries RetryBoundaries `yaml:"retry_boundaries" json:"retry_boundaries"`
-	Escalation      Escalation      `yaml:"escalation" json:"escalation"`
+	Version     string      `yaml:"version" json:"version"`
+	PolicyID    string      `yaml:"policy_id" json:"policy_id"`
+	ModelPolicy ModelPolicy `yaml:"model_policy" json:"model_policy"`
+	AgentPolicy AgentPolicy `yaml:"agent_policy" json:"agent_policy"`
+	Timeouts    Timeouts    `yaml:"timeouts" json:"timeouts"`
+	Escalation  Escalation  `yaml:"escalation" json:"escalation"`
 }
 
 type ModelPolicy struct {
@@ -33,24 +32,12 @@ type AgentPolicy struct {
 }
 
 type Timeouts struct {
-	StrictStartupTotalTimeout          string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
-	CompletionReconcileTotalTimeout    string            `yaml:"completion_reconcile_total_timeout" json:"completion_reconcile_total_timeout"`
-	CompletionReconcileBackoffSchedule []string          `yaml:"completion_reconcile_backoff_schedule" json:"completion_reconcile_backoff_schedule"`
-	DispatchAckTimeout                 string            `yaml:"dispatch_ack_timeout" json:"dispatch_ack_timeout"`
-	FirstEventTimeout                  string            `yaml:"first_event_timeout" json:"first_event_timeout"`
-	StreamInactivityTimeout            string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
-	CancelGraceTimeout                 string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
-	CancelForceTimeout                 string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
-	NodeWallClock                      map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
-}
-
-type RetryBoundaries struct {
-	PolicySource              string   `yaml:"policy_source" json:"policy_source"`
-	ProviderRetryClass        string   `yaml:"provider_retry_class" json:"provider_retry_class"`
-	InternalRuntimeRetryClass string   `yaml:"internal_runtime_retry_class" json:"internal_runtime_retry_class"`
-	ConditionalRetryClass     string   `yaml:"conditional_retry_class" json:"conditional_retry_class"`
-	NonRetryableClass         string   `yaml:"non_retryable_class" json:"non_retryable_class"`
-	HardFailCodes             []string `yaml:"hard_fail_codes" json:"hard_fail_codes"`
+	StrictStartupTotalTimeout string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
+	FirstEventTimeout         string            `yaml:"first_event_timeout" json:"first_event_timeout"`
+	StreamInactivityTimeout   string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
+	CancelGraceTimeout        string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
+	CancelForceTimeout        string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
+	NodeWallClock             map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
 }
 
 type Escalation struct {
@@ -89,11 +76,6 @@ func normalizeAndValidate(policy *Policy) error {
 	policy.PolicyID = strings.TrimSpace(policy.PolicyID)
 	policy.ModelPolicy.FallbackStrategy = strings.TrimSpace(policy.ModelPolicy.FallbackStrategy)
 	policy.AgentPolicy.DefaultAgent = strings.TrimSpace(policy.AgentPolicy.DefaultAgent)
-	policy.RetryBoundaries.PolicySource = strings.TrimSpace(policy.RetryBoundaries.PolicySource)
-	policy.RetryBoundaries.ProviderRetryClass = strings.TrimSpace(policy.RetryBoundaries.ProviderRetryClass)
-	policy.RetryBoundaries.InternalRuntimeRetryClass = strings.TrimSpace(policy.RetryBoundaries.InternalRuntimeRetryClass)
-	policy.RetryBoundaries.ConditionalRetryClass = strings.TrimSpace(policy.RetryBoundaries.ConditionalRetryClass)
-	policy.RetryBoundaries.NonRetryableClass = strings.TrimSpace(policy.RetryBoundaries.NonRetryableClass)
 	policy.Escalation.RetryExhaustedTargetRole = strings.TrimSpace(policy.Escalation.RetryExhaustedTargetRole)
 	policy.Escalation.UnresolvedStrategicTargetRole = strings.TrimSpace(policy.Escalation.UnresolvedStrategicTargetRole)
 
@@ -128,22 +110,6 @@ func normalizeAndValidate(policy *Policy) error {
 	if err := validateTimeout(policy.Timeouts.StrictStartupTotalTimeout, "strict_startup_total_timeout"); err != nil {
 		return err
 	}
-	if err := validateTimeout(policy.Timeouts.DispatchAckTimeout, "dispatch_ack_timeout"); err != nil {
-		return err
-	}
-	if err := validateTimeout(policy.Timeouts.CompletionReconcileTotalTimeout, "completion_reconcile_total_timeout"); err != nil {
-		return err
-	}
-	if len(policy.Timeouts.CompletionReconcileBackoffSchedule) == 0 {
-		return fmt.Errorf("provider policy timeouts.completion_reconcile_backoff_schedule is required")
-	}
-	for i, raw := range policy.Timeouts.CompletionReconcileBackoffSchedule {
-		trimmed := strings.TrimSpace(raw)
-		policy.Timeouts.CompletionReconcileBackoffSchedule[i] = trimmed
-		if err := validateTimeout(trimmed, fmt.Sprintf("timeouts.completion_reconcile_backoff_schedule[%d]", i)); err != nil {
-			return err
-		}
-	}
 	if err := validateTimeout(policy.Timeouts.FirstEventTimeout, "first_event_timeout"); err != nil {
 		return err
 	}
@@ -168,30 +134,6 @@ func normalizeAndValidate(policy *Policy) error {
 		}
 	}
 
-	if policy.RetryBoundaries.PolicySource == "" {
-		return fmt.Errorf("provider policy retry_boundaries.policy_source is required")
-	}
-	if policy.RetryBoundaries.ProviderRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.provider_retry_class is required")
-	}
-	if policy.RetryBoundaries.InternalRuntimeRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.internal_runtime_retry_class is required")
-	}
-	if policy.RetryBoundaries.ConditionalRetryClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.conditional_retry_class is required")
-	}
-	if policy.RetryBoundaries.NonRetryableClass == "" {
-		return fmt.Errorf("provider policy retry_boundaries.non_retryable_class is required")
-	}
-	if len(policy.RetryBoundaries.HardFailCodes) == 0 {
-		return fmt.Errorf("provider policy retry_boundaries.hard_fail_codes is required")
-	}
-	for i, code := range policy.RetryBoundaries.HardFailCodes {
-		if strings.TrimSpace(code) == "" {
-			return fmt.Errorf("provider policy retry_boundaries.hard_fail_codes[%d] is empty", i)
-		}
-	}
-
 	if policy.Escalation.RetryExhaustedTargetRole == "" {
 		return fmt.Errorf("provider policy escalation.retry_exhausted_target_role is required")
 	}
@@ -204,20 +146,24 @@ func normalizeAndValidate(policy *Policy) error {
 
 	return nil
 }
-func (p Policy) CompletionReconcileBackoffDurations() ([]time.Duration, error) {
-	return parseDurationSchedule(p.Timeouts.CompletionReconcileBackoffSchedule, "completion reconcile backoff schedule")
-}
-
-func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, error) {
+func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, time.Duration, time.Duration, error) {
 	firstEventTimeout, err := parseDuration(p.Timeouts.FirstEventTimeout, "first_event_timeout")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
 	streamInactivityTimeout, err := parseDuration(p.Timeouts.StreamInactivityTimeout, "stream_inactivity_timeout")
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, 0, err
 	}
-	return firstEventTimeout, streamInactivityTimeout, nil
+	cancelGraceTimeout, err := parseDuration(p.Timeouts.CancelGraceTimeout, "cancel_grace_timeout")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	cancelForceTimeout, err := parseDuration(p.Timeouts.CancelForceTimeout, "cancel_force_timeout")
+	if err != nil {
+		return 0, 0, 0, 0, err
+	}
+	return firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, nil
 }
 
 func (p Policy) AgentForRole(roleID string) string {

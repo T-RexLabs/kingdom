@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -19,19 +20,23 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/planning"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
@@ -41,6 +46,9 @@ const (
 	defaultAPIBasePath   = "/api/v1"
 	defaultTimelineLimit = 50
 	maxTimelineLimit     = 200
+	// fixedUTCTimestampLayout preserves chronological order when SQLite compares
+	// provenance timestamps as text.
+	fixedUTCTimestampLayout = "2006-01-02T15:04:05.000000000Z"
 )
 
 var generatedIDCounter uint64
@@ -60,10 +68,12 @@ type ServerConfig struct {
 	RoleCommPolicyPath         string
 	RoleCommSchemaPath         string
 	ProjectRoot                string
+	RuntimeRoot                string
 	DefaultPublishMode         string
 	Now                        func() time.Time
 	IDGenerator                func(prefix string) string
 	PlannerAgent               planning.Agent
+	RetryEngine                *retryengine.Engine
 	ExternalAdapter            external.Adapter
 	GitHubKeyStore             *githubexternal.KeyStore
 	GitHubUserTokenStore       *githubexternal.UserTokenStore
@@ -101,6 +111,8 @@ type Server struct {
 	externalRegistry        *external.Registry
 	githubKeys              *githubexternal.KeyStore
 	githubUserTokens        *githubexternal.UserTokenStore
+	appKeyLifecycle         connectionCredentialLifecycleStore
+	userTokenLifecycle      connectionCredentialLifecycleStore
 	githubSetup             *githubexternal.SetupClient
 	githubDeviceOAuth       *githubexternal.DeviceOAuthClient
 	githubSharedAppSlug     string
@@ -114,14 +126,26 @@ type Server struct {
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
 	// shutdown.
-	handler http.Handler
+	handler               http.Handler
+	plannerAdapterCloser  interface{ Close() error }
+	plannerAdapterCloseMu sync.Mutex
+	plannerAdapterClosed  bool
 }
 
 // ServeHTTP delegates to the composed mux/middleware tree. Having Server
 // implement http.Handler directly means callers don't need a parallel
 // handler reference — the same object exposes serving and Close().
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.handler.ServeHTTP(w, r)
+	// The request context remains the parent, so client disconnects and request
+	// deadlines retain their normal cancellation behavior. Server.Close also
+	// cancels this derived context, allowing graceful HTTP shutdown to drain
+	// long-lived handlers such as SSE streams.
+	ctx, cancel := context.WithCancel(r.Context())
+	stopLifecycleCancel := context.AfterFunc(s.lifecycleCtx, cancel)
+	defer cancel()
+	defer stopLifecycleCancel()
+
+	s.handler.ServeHTTP(w, r.WithContext(ctx))
 }
 
 // Close releases resources owned by the server. The recovery goroutine in
@@ -139,7 +163,30 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.planningService != nil {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
+	// The planning service owns its agent/adapter lifecycle, including force
+	// escalation and consumer drain. Do not close that adapter a second time
+	// after a forced service wait has intentionally left consumers running.
+	if s.planningService == nil && closeErr == nil && s.plannerAdapterCloser != nil {
+		closeErr = errors.Join(closeErr, s.closePlannerAdapter(ctx))
+	}
 	return closeErr
+}
+
+func (s *Server) closePlannerAdapter(ctx context.Context) error {
+	s.plannerAdapterCloseMu.Lock()
+	defer s.plannerAdapterCloseMu.Unlock()
+	if s.plannerAdapterClosed || s.plannerAdapterCloser == nil {
+		return nil
+	}
+	if closer, ok := s.plannerAdapterCloser.(interface{ CloseContext(context.Context) error }); ok {
+		if err := closer.CloseContext(ctx); err != nil {
+			return err
+		}
+	} else if err := s.plannerAdapterCloser.Close(); err != nil {
+		return err
+	}
+	s.plannerAdapterClosed = true
+	return nil
 }
 
 // providerModelCatalogTTL is how long a listed model catalog stays fresh
@@ -289,6 +336,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
+	plannerRuntimeRoot := strings.TrimSpace(cfg.RuntimeRoot)
+	if plannerRuntimeRoot == "" {
+		plannerRuntimeRoot = filepath.Join(projectRoot, ".kingdom", "runtime")
+	}
+	planningStore.SetProcessGuardRuntimeRoot(plannerRuntimeRoot)
 	rawDefaultPublishMode := strings.ToLower(strings.TrimSpace(cfg.DefaultPublishMode))
 	if rawDefaultPublishMode != "" && !workspace.IsSupportedPublishMode(rawDefaultPublishMode) {
 		return nil, fmt.Errorf("unsupported default publish mode %q", cfg.DefaultPublishMode)
@@ -303,6 +355,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if sharedSlug != "" && (!appSlugPatternAPI.MatchString(sharedSlug) || !githubClientIDPattern.MatchString(sharedClientID)) {
 		return nil, fmt.Errorf("github shared app slug or client id is invalid")
 	}
+	externalStore := state.NewExternalStore(cfg.DB)
 	if githubKeys == nil && projectRoot != "" {
 		githubKeys, err = githubexternal.NewKeyStore(filepath.Join(projectRoot, ".kingdom", "secrets"))
 		if err != nil {
@@ -328,6 +381,16 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		clientConfig := githubexternal.ClientConfig{Keys: githubKeys, Now: now}
 		if sharedSlug != "" {
 			clientConfig.UserTokens, clientConfig.DeviceOAuth, clientConfig.SharedClientID = githubUserTokens, githubDeviceOAuth, sharedClientID
+			clientConfig.UserCredentialGeneration = func(ctx context.Context, connectionID string) (int, error) {
+				publication, err := externalStore.GetCredentialPublication(ctx, connectionID)
+				if err != nil {
+					return 0, err
+				}
+				if publication.CredentialStrategy != "user_access_token" {
+					return 0, nil
+				}
+				return publication.CredentialGeneration, nil
+			}
 		}
 		externalAdapter, err = githubexternal.NewClient(clientConfig)
 		if err != nil {
@@ -357,10 +420,12 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		artifactService:            state.NewArtifactService(cfg.DB),
 		tokenUsageStore:            state.NewTokenUsageStore(cfg.DB),
 		planningStore:              planningStore,
-		externalStore:              state.NewExternalStore(cfg.DB),
+		externalStore:              externalStore,
 		externalRegistry:           external.NewRegistry(adapters),
 		githubKeys:                 githubKeys,
 		githubUserTokens:           githubUserTokens,
+		appKeyLifecycle:            githubKeys,
+		userTokenLifecycle:         githubUserTokens,
 		githubSetup:                githubSetup,
 		githubDeviceOAuth:          githubDeviceOAuth,
 		githubSharedAppSlug:        sharedSlug,
@@ -410,15 +475,13 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			return nil, fmt.Errorf("list connections for removal reconciliation: %w", listErr)
 		}
 		for _, connection := range connections {
+			lifecycleStore, storeErr := s.connectionCredentialLifecycleStore(connection.CredentialStrategy)
+			if storeErr != nil {
+				return nil, fmt.Errorf("reconcile connection removal: %w", storeErr)
+			}
 			reconcile := func() error {
-				var removeErr error
-				if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
-					removeErr = githubUserTokens.RemoveAllWhileLocked(connection.ConnectionID)
-				} else if githubKeys != nil {
-					removeErr = githubKeys.RemoveAllWhileLocked(connection.ConnectionID)
-				}
-				if removeErr != nil {
-					return removeErr
+				if err := lifecycleStore.RemoveAllWhileLocked(connection.ConnectionID); err != nil {
+					return err
 				}
 				if connection.Lifecycle == "removed" {
 					return nil
@@ -426,13 +489,7 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 				at := now().UTC().Format(time.RFC3339Nano)
 				return s.externalStore.UpdateConnectionStateAudited(startupCtx, connection.ConnectionID, "removed", "removed", "", at, false, "system", idGenerator("external_audit"), "connection.removal_reconciled")
 			}
-			var reconcileErr error
-			if connection.CredentialStrategy == "user_access_token" && githubUserTokens != nil {
-				reconcileErr = githubUserTokens.WithConnectionLock(connection.ConnectionID, reconcile)
-			} else if githubKeys != nil {
-				reconcileErr = githubKeys.WithConnectionLock(connection.ConnectionID, reconcile)
-			}
-			if reconcileErr != nil {
+			if reconcileErr := lifecycleStore.WithConnectionLock(connection.ConnectionID, reconcile); reconcileErr != nil {
 				return nil, fmt.Errorf("reconcile connection removal: %w", reconcileErr)
 			}
 		}
@@ -456,9 +513,17 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		firstEventTimeout, streamInactivityTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
+		firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
 		if timeoutErr != nil {
 			return nil, fmt.Errorf("parse provider execution timeouts: %w", timeoutErr)
+		}
+		plannerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
+			RuntimeRoot: plannerRuntimeRoot,
+			CancelGrace: cancelGraceTimeout,
+			CancelForce: cancelForceTimeout,
+		})
+		if runnerErr != nil {
+			return nil, fmt.Errorf("init planner process guardian: %w", runnerErr)
 		}
 		plannerAdapter, adapterErr := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
 			BinaryPath:              cfg.OpenCodeBinaryPath,
@@ -470,16 +535,18 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 			SkipPermissions:         true,
 			FirstEventTimeout:       firstEventTimeout,
 			StreamInactivityTimeout: streamInactivityTimeout,
+			Runner:                  plannerRunner,
 		})
 		if adapterErr != nil {
 			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
 		}
 		s.plannerRuntimeWarmer = plannerAdapter
+		s.plannerAdapterCloser = plannerAdapter
 		plannerAgent = planning.NewOpenCodeAgent(plannerAdapter, idGenerator)
 	}
-	s.planningService = planning.NewService(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
-		return now().UTC().Format(time.RFC3339)
-	}, idGenerator)
+	s.planningService = planning.NewServiceWithRetryEngine(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
+		return now().UTC().Format(time.RFC3339Nano)
+	}, idGenerator, cfg.RetryEngine)
 	// Lifecycle ownership: from this point on, NewHandler owns
 	// s.planningService and must close it on any subsequent error
 	// path. Without this, a downstream constructor failure
@@ -498,9 +565,6 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		defer cancel()
 		_ = s.planningService.Close(closeCtx)
 	}()
-	if err := s.planningService.RecoverOperations(startupCtx); err != nil {
-		return nil, fmt.Errorf("recover planning operations: %w", err)
-	}
 	if s.providerModelCatalog == nil {
 		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
 	}
@@ -530,10 +594,21 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	mux.Handle("GET "+basePath+"/acp/runs/{runId}/events", http.StripPrefix(basePath, wrappedStreaming))
 	mux.Handle(basePath+"/", http.StripPrefix(basePath, wrapped))
 
-	s.handler = limitRequestBody(mux)
+	s.handler = mux
 	constructorOK = true
 	lifecycleTransferred = true
 	return s, nil
+}
+
+func (s *Server) RecoverPlanningOperations(ctx context.Context) error {
+	if s == nil || s.planningService == nil {
+		return nil
+	}
+	if err := s.planningService.RecoverOperations(ctx); err != nil {
+		return err
+	}
+	s.planningService.StartRecoveryLoop()
+	return nil
 }
 
 func (s *Server) registerRoutes(mux *http.ServeMux) {
@@ -601,12 +676,14 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /planning-sessions/{id}/messages/{messageId}/variants", s.handleListPlanningMessageVariants)
 	mux.HandleFunc("GET /planning-sessions/{id}/plan", s.handleGetPlanningSessionPlan)
 	mux.HandleFunc("POST /planning-sessions/{id}/context/refresh", s.handleRefreshPlanningSessionContext)
+	mux.HandleFunc("GET /planning-sessions/{id}/context/{snapshotId}/entries", s.handleListPlanningContextEntries)
 	mux.HandleFunc("POST /workflows/publish", s.handlePublishWorkflow)
 	mux.HandleFunc("POST /runs", s.handleCreateRun)
 	mux.HandleFunc("GET /runs", s.handleListRuns)
 	mux.HandleFunc("GET /runs/events/stream", s.handleStreamRunCollectionEvents)
 	mux.HandleFunc("GET /runs/{id}", s.handleGetRun)
 	mux.HandleFunc("POST /runs/{id}/cancel", s.handleCancelRun)
+	mux.HandleFunc("POST /runs/{id}/executions/{attemptId}/stop-retry", s.handleRetryExecutionStop)
 	mux.HandleFunc("GET /runs/{id}/plan", s.handleGetRunPlan)
 	mux.HandleFunc("GET /runs/{id}/plan-reviews", s.handleListRunPlanReviews)
 	mux.HandleFunc("GET /runs/{id}/governance-decisions", s.handleListRunGovernanceDecisions)
@@ -616,10 +693,12 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}/activity", s.handleGetRunExecutionActivity)
 	mux.HandleFunc("GET /runs/{id}/executions/{attemptId}", s.handleGetRunExecution)
 	mux.HandleFunc("GET /runs/{id}/executions", s.handleListRunExecutions)
+	mux.HandleFunc("GET /runs/{id}/nodes/{nodeId}/attempts", s.handleListRunNodeAttempts)
 	mux.HandleFunc("GET /runs/{id}/agents", s.handleListRunAgents)
 	mux.HandleFunc("GET /runs/{id}/timeline", s.handleGetRunTimeline)
 	mux.HandleFunc("GET /runs/{id}/mailbox/messages", s.handleListRunMailboxMessages)
 	mux.HandleFunc("GET /runs/{id}/mailbox/messages/{messageId}", s.handleGetRunMailboxMessage)
+	mux.HandleFunc("GET /runs/{id}/mailbox/messages/{messageId}/content", s.handleGetRunMailboxMessageContent)
 	mux.HandleFunc("POST /runs/{id}/mailbox/messages/{messageId}/read", s.handleMarkRunMailboxMessageRead)
 	mux.HandleFunc("POST /runs/{id}/nodes/{nodeKey}/retry", s.handleRetryNode)
 	mux.HandleFunc("POST /runs/{id}/rerun-from/{nodeKey}", s.handleRerunFromNode)
@@ -660,11 +739,6 @@ type runAgentsResponse struct {
 	Items []runParticipantItem `json:"items"`
 }
 
-type runExecutionsResponse struct {
-	RunID string             `json:"run_id"`
-	Items []runExecutionItem `json:"items"`
-}
-
 type agentsResponse struct {
 	Items []agentItem `json:"items"`
 }
@@ -690,29 +764,30 @@ type agentItem struct {
 }
 
 type runExecutionItem struct {
-	AttemptID               string     `json:"attempt_id"`
-	NodeRunID               string     `json:"node_run_id"`
-	NodeID                  string     `json:"node_id"`
-	Attempt                 int        `json:"attempt"`
-	AgentID                 string     `json:"agent_id"`
-	RequiredRole            string     `json:"required_role"`
-	ExecutionMode           string     `json:"execution_mode"`
-	Status                  string     `json:"status"`
-	LogicalSessionID        *string    `json:"logical_session_id,omitempty"`
-	ProviderSessionID       *string    `json:"provider_session_id,omitempty"`
-	QueuedAt                time.Time  `json:"queued_at"`
-	ActivityAt              time.Time  `json:"activity_at"`
-	ProgressEventType       *string    `json:"progress_event_type,omitempty"`
-	ProgressReasonCode      *string    `json:"progress_reason_code,omitempty"`
-	ProgressAt              *time.Time `json:"progress_at,omitempty"`
-	LaunchStartedAt         *time.Time `json:"launch_started_at,omitempty"`
-	StartedAt               *time.Time `json:"started_at,omitempty"`
-	UpdatedAt               time.Time  `json:"updated_at"`
-	TerminalObservedAt      *time.Time `json:"terminal_observed_at,omitempty"`
-	CommittedAt             *time.Time `json:"committed_at,omitempty"`
-	FailureCode             *string    `json:"failure_code,omitempty"`
-	FailureText             *string    `json:"failure_text,omitempty"`
-	CompletionInvalidReason *string    `json:"completion_invalid_reason,omitempty"`
+	AttemptID          string     `json:"attempt_id"`
+	NodeRunID          string     `json:"node_run_id"`
+	NodeID             string     `json:"node_id"`
+	Attempt            int        `json:"attempt"`
+	AgentID            string     `json:"agent_id"`
+	RequiredRole       string     `json:"required_role"`
+	ExecutionMode      string     `json:"execution_mode"`
+	Status             string     `json:"status"`
+	LogicalSessionID   *string    `json:"logical_session_id,omitempty"`
+	ProviderSessionID  *string    `json:"provider_session_id,omitempty"`
+	QueuedAt           time.Time  `json:"queued_at"`
+	ActivityAt         time.Time  `json:"activity_at"`
+	ProgressEventType  *string    `json:"progress_event_type,omitempty"`
+	ProgressReasonCode *string    `json:"progress_reason_code,omitempty"`
+	ProgressAt         *time.Time `json:"progress_at,omitempty"`
+	LaunchStartedAt    *time.Time `json:"launch_started_at,omitempty"`
+	StartedAt          *time.Time `json:"started_at,omitempty"`
+	UpdatedAt          time.Time  `json:"updated_at"`
+	TerminalObservedAt *time.Time `json:"terminal_observed_at,omitempty"`
+	CommittedAt        *time.Time `json:"committed_at,omitempty"`
+	FailureCode        *string    `json:"failure_code,omitempty"`
+	FailureText        *string    `json:"failure_text,omitempty"`
+	HandoffState       *string    `json:"handoff_state,omitempty"`
+	StopRetryAvailable bool       `json:"stop_retry_available"`
 }
 
 type runExecutionSettlementDetailItem struct {
@@ -759,9 +834,9 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 	var metadataJSON string
 	err := s.db.QueryRowContext(
 		r.Context(),
-		`SELECT decree_id, decree_title, decree_text, metadata_json, created_at FROM decrees WHERE decree_id = ?`,
+		`SELECT decree_id, decree_title, metadata_json, created_at FROM decrees WHERE decree_id = ?`,
 		decreeID,
-	).Scan(&detail.DecreeId, &detail.DecreeTitle, &detail.DecreeText, &metadataJSON, &createdAt)
+	).Scan(&detail.DecreeId, &detail.DecreeTitle, &metadataJSON, &createdAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "decree not found", "api.get_decree", map[string]any{"decree_id": decreeID})
 		return
@@ -785,7 +860,45 @@ func (s *Server) handleGetDecree(w http.ResponseWriter, r *http.Request) {
 	}
 	detail.ExternalSources = externalProvenanceListFromState(links, false)
 
-	writeJSON(w, http.StatusOK, detail)
+	text, err := state.OpenDecreeText(r.Context(), s.db, decreeID)
+	if err != nil {
+		s.writeInternalError(w, "fetch decree text failed")
+		return
+	}
+	defer text.Close()
+	metadata, err := json.Marshal(detail)
+	if err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(metadata, &fields); err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	delete(fields, "decree_text")
+	prefix, err := json.Marshal(fields)
+	if err != nil {
+		s.writeInternalError(w, "encode decree metadata failed")
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	err = writeExternalResponse(w, func(out io.Writer) error {
+		if _, err := out.Write(prefix[:len(prefix)-1]); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(out, `,"decree_text":`); err != nil {
+			return err
+		}
+		if err := providerexecution.WriteJSONString(r.Context(), out, text); err != nil {
+			return err
+		}
+		_, err := io.WriteString(out, "}")
+		return err
+	})
+	if err != nil {
+		s.writeInternalError(w, "stream decree failed")
+	}
 }
 
 func externalProvenanceListFromState(links []state.ExternalLinkSummary, planning bool) []gen.ExternalProvenanceSummary {
@@ -949,11 +1062,15 @@ func decodeStrictJSON(r *http.Request, target any) error {
 }
 
 func mustParseRFC3339(value string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, value)
+	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil {
 		return time.Unix(0, 0).UTC()
 	}
 	return parsed.UTC()
+}
+
+func formatFixedUTCTimestamp(value time.Time) string {
+	return value.UTC().Format(fixedUTCTimestampLayout)
 }
 
 func parseLimitQuery(raw string, fallback int) (int, error) {

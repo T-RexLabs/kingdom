@@ -8,14 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/idempotency"
+	"kingdom/internal/securefs"
 	"kingdom/internal/state"
 )
 
@@ -28,6 +29,24 @@ const (
 )
 
 var errIdempotencyPending = errors.New("idempotency request is still pending")
+
+type idempotencyOutcomeMarkerKey struct{}
+
+type idempotencyOutcomeMarker struct {
+	indeterminate atomic.Bool
+}
+
+// markIdempotencyOutcomeIndeterminate leaves the request's durable reservation
+// pending so retries cannot re-execute a mutation whose side effect is unknown.
+func markIdempotencyOutcomeIndeterminate(ctx context.Context) {
+	if ctx == nil {
+		return
+	}
+	marker, ok := ctx.Value(idempotencyOutcomeMarkerKey{}).(*idempotencyOutcomeMarker)
+	if ok {
+		marker.indeterminate.Store(true)
+	}
+}
 
 type sensitiveIdempotencyResponse struct {
 	status      int
@@ -72,7 +91,7 @@ func newIdempotencyMiddleware(store *state.IdempotencyStore, now func() time.Tim
 }
 
 func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return spoolRequestBody(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isMutatingMethod(r.Method) {
 			next.ServeHTTP(w, r)
 			return
@@ -101,20 +120,28 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 		clientKey = key.Raw
 
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			writeCatalogError(w, http.StatusBadRequest, errorcatalog.CodePolicyViolation, "read request body")
-			return
-		}
-		r.Body = io.NopCloser(bytes.NewReader(body))
-
 		route := normalizedMutationRoute(next, r)
 		requestTarget := r.URL.EscapedPath()
 		if query := r.URL.Query().Encode(); query != "" {
 			requestTarget += "?" + query
 		}
 		requestTarget += "\x00auth=" + idempotencyAuthenticationBinding(r.Context())
-		reqHash := requestHash(r.Method, requestTarget, body)
+		hash := sha256.New()
+		_, _ = fmt.Fprintf(hash, "%s\n%s\n", r.Method, requestTarget)
+		if r.Body != nil {
+			if _, err := securefs.Copy(r.Context(), hash, r.Body); err != nil {
+				writeCatalogError(w, 400, errorcatalog.CodePolicyViolation, "read request body")
+				return
+			}
+			if r.GetBody != nil {
+				r.Body, err = r.GetBody()
+				if err != nil {
+					writeCatalogError(w, 500, errorcatalog.CodeInternalError, "replay request body failed")
+					return
+				}
+			}
+		}
+		reqHash := hex.EncodeToString(hash.Sum(nil))
 		now := m.now().UTC().Format(time.RFC3339Nano)
 		record := state.IdempotencyRecord{
 			ID:          requestHash("idempotency", route, []byte(actorID+":"+clientKey+":"+reqHash)),
@@ -172,7 +199,14 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		capture := newResponseCapture()
-		next.ServeHTTP(capture, r)
+		outcome := &idempotencyOutcomeMarker{}
+		requestCtx := context.WithValue(r.Context(), idempotencyOutcomeMarkerKey{}, outcome)
+		next.ServeHTTP(capture, r.WithContext(requestCtx))
+		if outcome.indeterminate.Load() {
+			// Write the owner's response without completing the reservation.
+			capture.WriteTo(w)
+			return
+		}
 
 		sensitiveResponse := isSensitiveIdempotencyResponse(r)
 		sensitiveExpiresAt := time.Time{}
@@ -210,7 +244,7 @@ func (m *IdempotencyMiddleware) Wrap(next http.Handler) http.Handler {
 		}
 
 		capture.WriteTo(w)
-	})
+	}))
 }
 
 func (m *IdempotencyMiddleware) sensitiveResponseExpiry(ctx context.Context, headers http.Header, body []byte) time.Time {
@@ -409,8 +443,10 @@ func isMutatingMethod(method string) bool {
 }
 
 func requestHash(method, route string, body []byte) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n%s\n%s", method, route, string(body))))
-	return hex.EncodeToString(sum[:])
+	hash := sha256.New()
+	_, _ = fmt.Fprintf(hash, "%s\n%s\n", method, route)
+	_, _ = hash.Write(body)
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func marshalHeaders(headers http.Header) (string, error) {

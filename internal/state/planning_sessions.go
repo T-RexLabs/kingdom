@@ -11,14 +11,34 @@ func (s *PlanningStore) CreateSession(ctx context.Context, req CreatePlanningSes
 	if err := validatePlanningSessionCreate(req); err != nil {
 		return PlanningSession{}, err
 	}
-	row, err := insertPlanningSession(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return PlanningSession{}, err
+	}
+	defer tx.Rollback()
+	row, err := insertPlanningSession(ctx, tx, req)
+	if err != nil {
+		return PlanningSession{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return PlanningSession{}, &CommitOutcomeUnknownError{Operation: "create planning session", ResourceID: req.PlanningSessionID, Cause: err}
+	}
+	if req.TitleSource != nil {
+		if err := s.hydrateSessionTitle(ctx, &row); err != nil {
+			return PlanningSession{}, &PostCommitProjectionError{Operation: "create planning session", ResourceID: row.PlanningSessionID, Cause: err}
+		}
 	}
 	return row, nil
 }
 
 func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlanningSessionRequest) (PlanningSession, error) {
+	if err := validatePlanningTextContent(ctx, req.TitleSource, true); err != nil {
+		return PlanningSession{}, err
+	}
+	ref, err := persistPlanningText(ctx, exec, "planning-session:"+req.PlanningSessionID+":title", req.TitleSource, req.CreatedAt)
+	if err != nil {
+		return PlanningSession{}, err
+	}
 	row := PlanningSession{
 		PlanningSessionID:       strings.TrimSpace(req.PlanningSessionID),
 		Title:                   strings.TrimSpace(req.Title),
@@ -35,7 +55,10 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 		CreatedAt:               strings.TrimSpace(req.CreatedAt),
 		UpdatedAt:               strings.TrimSpace(req.UpdatedAt),
 	}
-	_, err := exec.ExecContext(ctx,
+	if ref != nil {
+		row.Title = ""
+	}
+	_, err = exec.ExecContext(ctx,
 		`INSERT INTO planning_sessions (
 			planning_session_id, title, title_state, lifecycle_state, conversation_state,
 			active_leaf_message_id, current_operation_id, current_title_operation_id,
@@ -60,6 +83,11 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 	if err != nil {
 		return PlanningSession{}, fmt.Errorf("insert planning session: %w", err)
 	}
+	if ref != nil {
+		if _, err := exec.ExecContext(ctx, `UPDATE planning_sessions SET title_content_id=? WHERE planning_session_id=?`, ref.ContentID, row.PlanningSessionID); err != nil {
+			return PlanningSession{}, err
+		}
+	}
 	return row, nil
 }
 
@@ -69,6 +97,9 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 // every planner operation the session can ever run: a committed session is
 // therefore always immediately usable.
 func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlanningSessionBundleRequest) (PlanningSession, error) {
+	if req.Session.PlanningSessionID != req.ContextSnapshot.PlanningSessionID || req.Session.PlanningSessionID != req.OpeningMessage.PlanningSessionID {
+		return PlanningSession{}, fmt.Errorf("planning bundle session mismatch")
+	}
 	if err := validatePlanningSessionCreate(req.Session); err != nil {
 		return PlanningSession{}, err
 	}
@@ -103,14 +134,30 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 		return PlanningSession{}, rollbackPlanningTx(tx, "create planning session bundle", err)
 	}
 	if err := tx.Commit(); err != nil {
-		return PlanningSession{}, fmt.Errorf("commit create planning session bundle: %w", err)
+		return PlanningSession{}, &CommitOutcomeUnknownError{Operation: "create planning session bundle", ResourceID: strings.TrimSpace(req.Session.PlanningSessionID), Cause: err}
 	}
 	session.ContextSnapshotID = &adopted
+	if req.Session.TitleSource != nil {
+		if err := s.hydrateSessionTitle(ctx, &session); err != nil {
+			return PlanningSession{}, &PostCommitProjectionError{Operation: "create planning session bundle", ResourceID: session.PlanningSessionID, Cause: err}
+		}
+	}
 	return session, nil
 }
 
 func (s *PlanningStore) UpdateSession(ctx context.Context, req UpdatePlanningSessionRequest) error {
-	return updatePlanningSession(ctx, s.db, req)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := updatePlanningSession(ctx, tx, req); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return &CommitOutcomeUnknownError{Operation: "update planning session", ResourceID: req.PlanningSessionID, Cause: err}
+	}
+	return nil
 }
 
 func updatePlanningSession(ctx context.Context, exec sqlExecutor, req UpdatePlanningSessionRequest) error {
@@ -137,8 +184,22 @@ func updatePlanningSession(ctx context.Context, exec sqlExecutor, req UpdatePlan
 	}
 
 	builder := newUpdateBuilder("planning_sessions")
-	if title := trimOptionalString(req.Title); title != nil {
+	if req.TitleSource != nil {
+		if err := validatePlanningTextContent(ctx, req.TitleSource, true); err != nil {
+			return err
+		}
+		if req.TitleSource.SizeBytes <= 0 {
+			return fmt.Errorf("planning session title is required")
+		}
+		ref, err := persistPlanningText(ctx, exec, req.TitleContentID, req.TitleSource, req.UpdatedAt)
+		if err != nil {
+			return err
+		}
+		builder.Set("title", "")
+		builder.Set("title_content_id", ref.ContentID)
+	} else if title := trimOptionalString(req.Title); title != nil {
 		builder.Set("title", *title)
+		builder.Set("title_content_id", nil)
 	}
 	if titleState := trimOptionalString(req.TitleState); titleState != nil {
 		builder.Set("title_state", *titleState)
@@ -194,23 +255,33 @@ func (s *PlanningStore) GetSession(ctx context.Context, planningSessionID string
 	if err != nil {
 		return PlanningSession{}, false, fmt.Errorf("get planning session: %w", err)
 	}
+	if err := s.hydrateSessionTitle(ctx, &row); err != nil {
+		return PlanningSession{}, false, err
+	}
 	return row, true, nil
 }
 
 func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]PlanningSession, error) {
+	return s.ListSessionsPage(ctx, limit, "", "")
+}
+
+func (s *PlanningStore) ListSessionsPage(ctx context.Context, limit int, beforeUpdatedAt, beforeID string) ([]PlanningSession, error) {
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
+	query := `SELECT planning_session_id, title, title_state, lifecycle_state, conversation_state,
 		        active_leaf_message_id, current_operation_id, current_title_operation_id,
 		        current_draft_id, context_snapshot_id,
 		        project_root, model_selection_json, created_at, updated_at
-		 FROM planning_sessions
-		 ORDER BY updated_at DESC, planning_session_id DESC
-		 LIMIT ?`,
-		limit,
-	)
+		 FROM planning_sessions`
+	args := make([]any, 0, 3)
+	if beforeID != "" {
+		query += ` WHERE (updated_at, planning_session_id) < (?, ?)`
+		args = append(args, beforeUpdatedAt, beforeID)
+	}
+	query += ` ORDER BY updated_at DESC, planning_session_id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("list planning sessions: %w", err)
 	}
@@ -227,47 +298,13 @@ func (s *PlanningStore) ListSessions(ctx context.Context, limit int) ([]Planning
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate planning sessions: %w", err)
 	}
-	return items, nil
-}
-
-// ListSessionsMissingContextSnapshotPage returns sessions whose adopted
-// context snapshot does not resolve. Sessions are now created with their
-// snapshot in one transaction, so this only ever finds rows left behind by
-// the removed asynchronous bootstrap: they can never enqueue a planner
-// operation until a snapshot is published for them.
-func (s *PlanningStore) ListSessionsMissingContextSnapshotPage(ctx context.Context, afterPlanningSessionID string, limit int) ([]PlanningSession, error) {
-	if limit <= 0 {
-		limit = DefaultPlanningOperationListLimit
-	}
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT s.planning_session_id, s.title, s.title_state, s.lifecycle_state, s.conversation_state,
-		        s.active_leaf_message_id, s.current_operation_id, s.current_title_operation_id,
-		        s.current_draft_id, s.context_snapshot_id,
-		        s.project_root, s.model_selection_json, s.created_at, s.updated_at
-		 FROM planning_sessions s
-		 LEFT JOIN planning_context_snapshots snapshot
-		   ON snapshot.planning_context_snapshot_id = s.context_snapshot_id
-		  AND snapshot.planning_session_id = s.planning_session_id
-		 WHERE s.planning_session_id > ?
-		   AND snapshot.planning_context_snapshot_id IS NULL
-		 ORDER BY s.planning_session_id ASC
-		 LIMIT ?`,
-		strings.TrimSpace(afterPlanningSessionID),
-		limit,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("list planning sessions missing context snapshot: %w", err)
-	}
-	defer rows.Close()
-	out := make([]PlanningSession, 0, limit)
-	for rows.Next() {
-		var row PlanningSession
-		if err := scanPlanningSession(rows, &row); err != nil {
+	rows.Close()
+	for i := range items {
+		if err := s.hydrateSessionTitle(ctx, &items[i]); err != nil {
 			return nil, err
 		}
-		out = append(out, row)
 	}
-	return out, rows.Err()
+	return items, nil
 }
 
 func (s *PlanningStore) ListAutoTitleEligibleSessionsPage(ctx context.Context, afterPlanningSessionID string, limit int, userMessageThreshold int) ([]PlanningSession, error) {

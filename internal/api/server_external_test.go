@@ -72,6 +72,8 @@ type externalAPITestAdapter struct {
 	repositoryCursor string
 	installations    []external.Installation
 	validation       []state.ConnectionInstallation
+	fetchRequests    []external.IssueRequest
+	onEvict          func(string)
 }
 
 func TestExternalProviderErrorsExposeOnlySafeRetryTime(t *testing.T) {
@@ -127,30 +129,35 @@ func TestGitHubAuthenticationFailuresAreDependenciesNotLocalUnauthorized(t *test
 	}
 }
 
-func TestPresentIssueResultBoundsTransientCommentBodies(t *testing.T) {
+func TestPresentIssueResultPreservesAllTransientCommentBodies(t *testing.T) {
 	t.Parallel()
-	comments := make([]state.ExternalComment, state.MaxExternalComments+1)
+	comments := make(state.ExternalCommentList, 205)
 	for i := range comments {
-		comments[i] = state.ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", state.MaxExternalCommentBytes+1)}
+		comments[i] = state.ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", 40<<10) + "界-tail"}
 	}
 
-	presented := presentIssueResult(external.IssueResult{Comments: comments})
-	bounded, ok := presented["comments"].([]state.ExternalComment)
-	if !ok {
-		t.Fatalf("expected typed comments, got %T", presented["comments"])
+	var out strings.Builder
+	if err := presentIssueResult(context.Background(), &out, external.IssueResult{Comments: comments, Profile: state.ExternalImportProfile{IncludeComments: true}}); err != nil {
+		t.Fatal(err)
 	}
-	if len(bounded) > state.MaxExternalComments {
-		t.Fatalf("expected at most %d comments, got %d", state.MaxExternalComments, len(bounded))
+	var presented struct {
+		Comments []state.ExternalComment `json:"comments"`
+	}
+	if err := json.Unmarshal([]byte(out.String()), &presented); err != nil {
+		t.Fatal(err)
+	}
+	if len(presented.Comments) != len(comments) {
+		t.Fatalf("lost comments: %d", len(presented.Comments))
 	}
 	total := 0
-	for _, comment := range bounded {
+	for i, comment := range presented.Comments {
 		total += comment.RetainedBytes
-		if comment.RetainedBytes > state.MaxExternalCommentBytes {
-			t.Fatalf("comment exceeded byte limit: %d", comment.RetainedBytes)
+		if comment.Body != comments[i].Body || comment.RetainedBytes != len(comment.Body) {
+			t.Fatalf("comment changed: %d", i)
 		}
 	}
-	if total > state.MaxExternalCommentsBytes {
-		t.Fatalf("comments exceeded aggregate byte limit: %d", total)
+	if total <= 128<<10 {
+		t.Fatalf("test did not cross former aggregate limit: %d", total)
 	}
 }
 
@@ -162,8 +169,8 @@ func TestCompareExternalResultReportsTransferredCoordinates(t *testing.T) {
 	result.Issue.CanonicalURL = "https://github.com/owner/new/issues/9"
 	result.Issue.UpdatedAt = "2026-08-12T11:00:00Z"
 
-	changes := compareExternalResult(old, nil, result)
-	if !changes.Repository || !changes.IssueNumber || !changes.CanonicalUrl || !changes.UpdatedAt || sameExternalResult(old, nil, result) {
+	changes, same, err := compareExternalResult(context.Background(), old, nil, result)
+	if err != nil || !changes.Repository || !changes.IssueNumber || !changes.CanonicalUrl || !changes.UpdatedAt || same {
 		t.Fatalf("transfer comparison was not coherent: %#v", changes)
 	}
 }
@@ -251,10 +258,107 @@ func (a *externalAPITestAdapter) FetchIssue(_ context.Context, request external.
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.calls++
+	a.fetchRequests = append(a.fetchRequests, request)
 	if result, ok := a.results[request.IssueNumber]; ok {
 		return result, a.fetchErr
 	}
 	return a.result, a.fetchErr
+}
+
+func TestExternalSourceRefreshUsesPersistedInstallationSix(t *testing.T) {
+	adapter := &externalAPITestAdapter{result: external.IssueResult{NotModified: true}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-refresh-six", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "6"}}, CredentialHandle: "github-app:conn-refresh-six", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-six-create"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-refresh-six-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{{InstallationID: "6", AccountID: "16", AccountLogin: "owner"}}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh-six", SnapshotID: "snapshot-refresh-six", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "600", RepositoryInstallationID: "6", Issue: state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/six", IssueNumber: 7, CanonicalURL: "https://github.com/owner/six/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{DecreeID: "decree-refresh-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-refresh-six" }, ActorID: "local-operator"}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh-six/refreshes", idempotencyKey: "refresh-six"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.fetchRequests) != 1 || adapter.fetchRequests[0].RepositoryID != "600" || adapter.fetchRequests[0].RepositoryInstallationID != "6" {
+		t.Fatalf("refresh requests=%#v", adapter.fetchRequests)
+	}
+}
+
+func TestExternalRefreshCapturesResolvedRepositoryInstallation(t *testing.T) {
+	at := "2026-08-12T10:00:00Z"
+	updatedAt := "2026-08-12T11:00:00Z"
+	adapter := &externalAPITestAdapter{result: external.IssueResult{
+		RepositoryID: "700", RepositoryInstallationID: "7", NativeID: "100",
+		Issue:   state.NormalizedExternalIssue{Title: "Moved Issue", Body: "updated body", State: "open", Repository: "owner/new", IssueNumber: 9, CanonicalURL: "https://github.com/owner/new/issues/9", CreatedAt: at, UpdatedAt: updatedAt},
+		Profile: state.ExternalImportProfile{}, Transferred: true,
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{
+		ConnectionID: "conn-refresh-transfer", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations: []state.ConnectionInstallation{{InstallationID: "6"}, {InstallationID: "7"}}, CredentialHandle: "github-app:conn-refresh-transfer", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-refresh-transfer-create",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-refresh-transfer-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionState(ctx, connection.ConnectionID, "enabled", "healthy", "", at, true, []state.ConnectionInstallation{
+		{InstallationID: "6", AccountID: "16", AccountLogin: "old-owner"},
+		{InstallationID: "7", AccountID: "17", AccountLogin: "new-owner"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{
+		SourceID: "source-refresh-transfer", SnapshotID: "snapshot-refresh-transfer", ConnectionID: connection.ConnectionID, ProviderNativeID: "100",
+		RepositoryNativeID: "600", RepositoryInstallationID: "6",
+		Issue:   state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/old", IssueNumber: 7, CanonicalURL: "https://github.com/owner/old/issues/7", CreatedAt: at, UpdatedAt: at},
+		Profile: state.ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, state.CreateDecreeRequest{
+		DecreeID: "decree-refresh-transfer", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID,
+		NewLinkID: func() string { return "link-refresh-transfer" }, ActorID: "local-operator",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh-transfer/refreshes", idempotencyKey: "refresh-transfer"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	basis, err := store.GetRefreshBasis(ctx, "link-refresh-transfer")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if basis.FetchRepositoryNativeID != "700" || basis.FetchRepositoryInstallationID != "7" || basis.LatestSnapshot.Issue.Repository != "owner/new" || basis.LatestSnapshot.Issue.IssueNumber != 9 {
+		t.Fatalf("refresh did not persist resolved destination coordinates: repository=%q installation=%q issue=%#v", basis.FetchRepositoryNativeID, basis.FetchRepositoryInstallationID, basis.LatestSnapshot.Issue)
+	}
+	adapter.mu.Lock()
+	defer adapter.mu.Unlock()
+	if len(adapter.fetchRequests) != 1 || adapter.fetchRequests[0].RepositoryID != "600" || adapter.fetchRequests[0].RepositoryInstallationID != "6" {
+		t.Fatalf("refresh requests=%#v", adapter.fetchRequests)
+	}
 }
 
 func publishExternalTestCredential(t *testing.T, db *sql.DB, connectionID, auditID, at string) {
@@ -424,6 +528,467 @@ func TestConnectionTombstoneRemovesEveryCredentialGeneration(t *testing.T) {
 	}
 }
 
+func TestDeleteConnectionFailsClosedOnInitialLookupFailure(t *testing.T) {
+	keys, err := githubexternal.NewKeyStore(filepath.Join(t.TempDir(), "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &externalAPITestAdapter{}
+	server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{GitHubKeyStore: keys, ExternalAdapter: adapter})
+	handler := http.Handler(server)
+	connection := seedDeleteTestConnection(t, server, "delete-initial-lookup")
+
+	connector.failNextQuery("select connection_id,provider,credential_strategy")
+	response := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID,
+		idempotencyKey: "delete-initial-lookup-failure",
+	})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("delete after lookup failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "internal_error")
+
+	stored, err := state.NewExternalStore(db).GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || stored.Lifecycle != "enabled" {
+		t.Fatalf("connection after initial lookup failure=%#v err=%v", stored, err)
+	}
+	if _, _, err := keys.Load(connection.ConnectionID, 1); err != nil {
+		t.Fatalf("initial lookup failure removed the selected key: %v", err)
+	}
+}
+
+func TestDeleteConnectionFailsClosedOnCallbackLookupFailure(t *testing.T) {
+	keys, err := githubexternal.NewKeyStore(filepath.Join(t.TempDir(), "secrets"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &externalAPITestAdapter{}
+	server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{GitHubKeyStore: keys, ExternalAdapter: adapter})
+	handler := http.Handler(server)
+	connection := seedDeleteTestConnection(t, server, "delete-callback-lookup")
+	adapter.onEvict = func(string) {
+		connector.failNextQuery("select connection_id,provider,credential_strategy")
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID,
+		idempotencyKey: "delete-callback-lookup-failure",
+	})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("delete after callback lookup failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "internal_error")
+
+	stored, err := state.NewExternalStore(db).GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || stored.Lifecycle != "removal_pending" {
+		t.Fatalf("connection after callback lookup failure=%#v err=%v", stored, err)
+	}
+	if _, _, err := keys.Load(connection.ConnectionID, 1); err != nil {
+		t.Fatalf("callback lookup failure removed the selected key: %v", err)
+	}
+}
+
+func TestConnectionCredentialPublicationRetriesTransientReadbackFailure(t *testing.T) {
+	server, _, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{})
+	connection, err := server.externalStore.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{
+		CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+			ConnectionID: "connection_publication_retry", CredentialStrategy: "app_private_key", DisplayName: "App",
+			AppID: "1", ClientID: "Iv1", AppSlug: "app",
+			Installations:    []state.ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "owner"}},
+			CredentialHandle: "github-app:connection_publication_retry", ActorID: "local-operator",
+			CreatedAt: "2026-09-26T10:00:00Z", AuditEventID: "audit_connection_publication_retry",
+		},
+	})
+	if err != nil {
+		t.Fatalf("create credential publication fixture: %v", err)
+	}
+	connector.failNextQuery("select credential_strategy,lifecycle,credential_generation from external_connections where connection_id=?")
+
+	published, err := server.connectionCredentialPublished(context.Background(), connection.ConnectionID, "app_private_key", 1)
+	if err != nil || !published {
+		t.Fatalf("publication after transient readback error: published=%t err=%v", published, err)
+	}
+}
+
+func TestDeleteSharedConnectionFailsClosedOnCallbackLookupFailure(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "secrets")
+	keys, err := githubexternal.NewKeyStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := githubexternal.NewUserTokenStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapter := &externalAPITestAdapter{}
+	server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{
+		GitHubKeyStore: keys, GitHubUserTokenStore: tokens, ExternalAdapter: adapter,
+	})
+	connection := seedSharedDeleteTestConnection(t, state.NewExternalStore(db), "delete-shared-callback-lookup", "2026-09-01T10:00:00Z")
+	current := time.Now().UTC()
+	if err := tokens.Store(connection.ConnectionID, 1, githubexternal.UserTokens{
+		AccessToken: "access-before-delete", RefreshToken: "refresh-before-delete",
+		AccessExpiresAt: current.Add(time.Hour), RefreshExpiresAt: current.Add(180 * 24 * time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	adapter.onEvict = func(string) {
+		connector.failNextQuery("select connection_id,provider,credential_strategy")
+	}
+
+	response := performJSONRequest(t, server, requestSpec{
+		method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID,
+		idempotencyKey: "delete-shared-callback-lookup-failure",
+	})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("shared delete after callback lookup failure status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "internal_error")
+
+	stored, err := state.NewExternalStore(db).GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || stored.Lifecycle != "removal_pending" {
+		t.Fatalf("shared connection after callback lookup failure=%#v err=%v", stored, err)
+	}
+	if _, err := tokens.Load(connection.ConnectionID, 1); err != nil {
+		t.Fatalf("callback lookup failure removed the shared token: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "github-apps", connection.ConnectionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("callback lookup failure fell through to app-key cleanup: %v", err)
+	}
+}
+
+func TestDeleteConnectionDoesNotGuessStoreWhenConnectionIsMissing(t *testing.T) {
+	keysRoot := filepath.Join(t.TempDir(), "secrets")
+	keys, err := githubexternal.NewKeyStore(keysRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server, _, _ := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{GitHubKeyStore: keys})
+	handler := http.Handler(server)
+	response := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodDelete, path: "/api/v1/connections/missing-delete-connection",
+		idempotencyKey: "delete-missing-connection",
+	})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("missing connection delete status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "dependency_blocked")
+	if _, err := os.Stat(filepath.Join(keysRoot, "github-apps", "missing-delete-connection")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("missing connection created an app-key lifecycle directory: %v", err)
+	}
+}
+
+func TestDeleteSharedConnectionRequiresUserTokenStore(t *testing.T) {
+	keysRoot := filepath.Join(t.TempDir(), "secrets")
+	keys, err := githubexternal.NewKeyStore(keysRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openAPIServerTestDB(t)
+	server, err := NewHandler(ServerConfig{
+		DB: db, GitHubKeyStore: keys, ExternalAdapter: &externalAPITestAdapter{},
+		OperatorCredential: []byte(apiTestOperatorCredential), ProviderEngine: "opencode",
+		ProviderModelCatalog: staticProviderModelCatalog{items: defaultTestProviderModels()}, PlannerAgent: &testPlannerAgent{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Close(closeCtx); err != nil {
+			t.Errorf("close API server: %v", err)
+		}
+	})
+	handler := http.Handler(server)
+	connection, err := state.NewExternalStore(db).FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{
+		CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+			ConnectionID: "delete-shared-without-token-store", CredentialStrategy: "user_access_token", DisplayName: "Shared",
+			AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+			Installations:    []state.ConnectionInstallation{{InstallationID: "delete-shared-installation", AccountID: "10", AccountLogin: "owner"}},
+			CredentialHandle: "github-user:delete-shared-without-token-store", ActorID: "local-operator",
+			CreatedAt: "2026-09-01T10:00:00Z", AuditEventID: "audit-delete-shared-without-token-store",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID,
+		idempotencyKey: "delete-shared-without-token-store",
+	})
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("delete without the required user-token store status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "internal_error")
+	stored, err := state.NewExternalStore(db).GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || stored.Lifecycle != "enabled" {
+		t.Fatalf("shared connection after missing-store delete=%#v err=%v", stored, err)
+	}
+	if _, err := os.Stat(filepath.Join(keysRoot, "github-apps", connection.ConnectionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("delete guessed the app-key store for a shared connection: %v", err)
+	}
+}
+
+func TestStartupRemovalReconciliationRequiresMatchingCredentialStore(t *testing.T) {
+	db := openAPIServerTestDB(t)
+	keysRoot := filepath.Join(t.TempDir(), "secrets")
+	keys, err := githubexternal.NewKeyStore(keysRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewExternalStore(db)
+	const at = "2026-09-01T10:00:00Z"
+	connection, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{
+		CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+			ConnectionID: "startup-shared-without-token-store", CredentialStrategy: "user_access_token", DisplayName: "Shared",
+			AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+			Installations:    []state.ConnectionInstallation{{InstallationID: "startup-shared-installation", AccountID: "10", AccountLogin: "owner"}},
+			CredentialHandle: "github-user:startup-shared-without-token-store", ActorID: "local-operator",
+			CreatedAt: at, AuditEventID: "audit-startup-shared-created",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionStateAudited(context.Background(), connection.ConnectionID, "removal_pending", "removal_pending", "", at, false, "local-operator", "audit-startup-shared-removal-pending", "connection.removal_pending"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = NewHandler(ServerConfig{
+		DB: db, GitHubKeyStore: keys, ExternalAdapter: &externalAPITestAdapter{},
+		OperatorCredential: []byte(apiTestOperatorCredential), PlannerAgent: &testPlannerAgent{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "github user-token lifecycle store is not configured") {
+		t.Fatalf("startup reconciliation without the matching user-token store error=%v", err)
+	}
+	connection, err = store.GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || connection.Lifecycle != "removal_pending" {
+		t.Fatalf("shared connection after failed startup reconciliation=%#v err=%v", connection, err)
+	}
+	if _, err := os.Stat(filepath.Join(keysRoot, "github-apps", connection.ConnectionID)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("startup guessed the app-key store for a shared connection: %v", err)
+	}
+}
+
+func seedDeleteTestConnection(t *testing.T, server *Server, connectionID string) state.ExternalConnection {
+	t.Helper()
+	ctx := context.Background()
+	store := state.NewExternalStore(server.db)
+	at := "2026-09-01T10:00:00Z"
+	connection, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{
+		ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: "Delete Test",
+		AppID: "1", ClientID: "Iv1", AppSlug: "app",
+		Installations:    []state.ConnectionInstallation{{InstallationID: connectionID + "-installation"}},
+		CredentialHandle: "github-app:" + connectionID, ActorID: "local-operator", CreatedAt: at,
+		AuditEventID: "audit-" + connectionID + "-created",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordCredentialEvent(ctx, connection.ConnectionID, connection.RowVersion, 1, "local-operator", "audit-"+connectionID+"-credential", "credential.provisioned", at); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.githubKeys.Provision(connection.ConnectionID, 1, apiTestPrivateKey(t)); err != nil {
+		t.Fatal(err)
+	}
+	connection, err = store.GetConnection(ctx, connection.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func seedSharedDeleteTestConnection(t *testing.T, store *state.ExternalStore, connectionID, at string) state.ExternalConnection {
+	t.Helper()
+	connection, err := store.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{
+		CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+			ConnectionID: connectionID, CredentialStrategy: "user_access_token", DisplayName: "Shared Delete Test",
+			AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+			Installations:    []state.ConnectionInstallation{{InstallationID: connectionID + "-installation", AccountID: "10", AccountLogin: "owner"}},
+			CredentialHandle: githubexternal.UserCredentialHandle(connectionID), ActorID: "local-operator",
+			CreatedAt: at, AuditEventID: "audit-" + connectionID + "-created",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return connection
+}
+
+func TestDeleteSharedConnectionSerializesRefreshBeforeTombstone(t *testing.T) {
+	now := time.Now().UTC()
+	root := filepath.Join(t.TempDir(), "secrets")
+	keys, err := githubexternal.NewKeyStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := githubexternal.NewUserTokenStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db := openAPIServerTestDB(t)
+	store := state.NewExternalStore(db)
+	connection := seedSharedDeleteTestConnection(t, store, "delete-shared-refresh-race", "2026-09-01T10:00:00Z")
+	initial := githubexternal.UserTokens{
+		AccessToken: "access-before-refresh", RefreshToken: "refresh-before-refresh",
+		AccessExpiresAt: now.Add(time.Minute), RefreshExpiresAt: now.Add(180 * 24 * time.Hour),
+	}
+	if err := tokens.Store(connection.ConnectionID, 1, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	refreshStarted := make(chan struct{})
+	allowRefreshResponse := make(chan struct{})
+	var refreshStartOnce sync.Once
+	refreshTokensUsed := make(chan string, 2)
+	apiTokensUsed := make(chan string, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, "invalid form", http.StatusBadRequest)
+				return
+			}
+			refreshTokensUsed <- r.Form.Get("refresh_token")
+			refreshStartOnce.Do(func() { close(refreshStarted) })
+			select {
+			case <-allowRefreshResponse:
+				_, _ = w.Write([]byte(`{"access_token":"access-after-refresh","refresh_token":"refresh-after-refresh","token_type":"bearer","scope":"","expires_in":3600,"refresh_token_expires_in":15811200}`))
+			case <-r.Context().Done():
+			}
+		case "/user/installations/" + connection.Installations[0].InstallationID + "/repositories":
+			apiTokensUsed <- r.Header.Get("Authorization")
+			_, _ = w.Write([]byte(`{"repositories":[]}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer provider.Close()
+	oauth, err := githubexternal.NewDeviceOAuthClient(githubexternal.DeviceOAuthClientConfig{
+		HTTPClient: provider.Client(), APIBaseURL: provider.URL, WebBaseURL: provider.URL,
+		AllowTestEndpoints: true, Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	githubClient, err := githubexternal.NewClient(githubexternal.ClientConfig{
+		UserTokens: tokens, DeviceOAuth: oauth, SharedClientID: connection.ClientID,
+		UserCredentialGeneration: func(ctx context.Context, connectionID string) (int, error) {
+			publication, err := store.GetCredentialPublication(ctx, connectionID)
+			return publication.CredentialGeneration, err
+		},
+		HTTPClient: provider.Client(), BaseURL: provider.URL, AllowTestEndpoint: true,
+		Now: func() time.Time { return now },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiHandler, _ := newAPIServerForTestWithConfig(t, ServerConfig{
+		DB: db, GitHubKeyStore: keys, GitHubUserTokenStore: tokens, ExternalAdapter: githubClient,
+	})
+	server, ok := apiHandler.(*Server)
+	if !ok {
+		t.Fatalf("api handler has type %T, want *Server", apiHandler)
+	}
+	registeredAdapter, ok := server.externalRegistry.Adapter("github")
+	if !ok {
+		t.Fatal("GitHub adapter is not registered")
+	}
+
+	deleteLockEntered := make(chan struct{})
+	refreshObservedBeforeRemoval := make(chan githubexternal.UserTokens, 1)
+	server.userTokenLifecycle = &observedConnectionCredentialLifecycleStore{
+		connectionCredentialLifecycleStore: tokens,
+		entered:                            deleteLockEntered,
+		onAcquired: func(connectionID string) {
+			observed, err := tokens.Load(connectionID, 1)
+			if err != nil {
+				refreshObservedBeforeRemoval <- githubexternal.UserTokens{}
+				return
+			}
+			refreshObservedBeforeRemoval <- observed
+		},
+	}
+	releaseRefresh := sync.OnceFunc(func() { close(allowRefreshResponse) })
+	defer releaseRefresh()
+
+	refreshDone := make(chan error, 1)
+	go func() {
+		page, err := registeredAdapter.ListRepositories(context.Background(), connection, "", "")
+		if err == nil && len(page.Items) != 0 {
+			err = fmt.Errorf("refresh request returned unexpected repositories: %#v", page.Items)
+		}
+		refreshDone <- err
+	}()
+	select {
+	case <-refreshStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("GitHub adapter did not begin the shared-token refresh")
+	}
+	if got := <-refreshTokensUsed; got != initial.RefreshToken {
+		t.Fatalf("refresh used token %q, want %q", got, initial.RefreshToken)
+	}
+
+	deleteDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		deleteDone <- performJSONRequest(t, apiHandler, requestSpec{
+			method: http.MethodDelete, path: "/api/v1/connections/" + connection.ConnectionID,
+			idempotencyKey: "delete-shared-refresh-race",
+		})
+	}()
+	select {
+	case <-deleteLockEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("delete did not enter the shared-token lifecycle lock")
+	}
+	releaseRefresh()
+	if err := <-refreshDone; err != nil {
+		t.Fatalf("GitHub adapter refresh: %v", err)
+	}
+	if got := <-apiTokensUsed; got != "Bearer access-after-refresh" {
+		t.Fatalf("GitHub API request used authorization %q, want rotated access token", got)
+	}
+	var removed *httptest.ResponseRecorder
+	select {
+	case removed = <-deleteDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("delete did not finish after refresh released the token lifecycle lock")
+	}
+	if removed.Code != http.StatusNoContent {
+		t.Fatalf("delete status=%d body=%s", removed.Code, removed.Body.String())
+	}
+	observed := <-refreshObservedBeforeRemoval
+	if observed.AccessToken != "access-after-refresh" || observed.RefreshToken != "refresh-after-refresh" {
+		t.Fatalf("delete acquired the token lifecycle lock before the refresh was durable: %#v", observed)
+	}
+	connection, err = store.GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil || connection.Lifecycle != "removed" {
+		t.Fatalf("shared connection tombstone=%#v err=%v", connection, err)
+	}
+	if _, err := tokens.Load(connection.ConnectionID, 1); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("token generation remained after tombstone: %v", err)
+	}
+}
+
+type observedConnectionCredentialLifecycleStore struct {
+	connectionCredentialLifecycleStore
+	entered    chan struct{}
+	onAcquired func(connectionID string)
+	once       sync.Once
+}
+
+func (s *observedConnectionCredentialLifecycleStore) WithConnectionLock(connectionID string, fn func() error) error {
+	s.once.Do(func() { close(s.entered) })
+	return s.connectionCredentialLifecycleStore.WithConnectionLock(connectionID, func() error {
+		if s.onAcquired != nil {
+			s.onAcquired(connectionID)
+		}
+		return fn()
+	})
+}
+
 func TestConnectionPresentationLoadsOnlyDatabaseSelectedGeneration(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "secrets")
 	keys, _ := githubexternal.NewKeyStore(root)
@@ -578,6 +1143,14 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 	if unchanged != 1 {
 		t.Fatalf("adopting one source changed %d unaffected bindings: first=%v second=%v", 2-unchanged, firstBindings, secondBindings)
 	}
+	var unaffectedSnapshotID string
+	for _, first := range firstBindings {
+		for _, second := range secondBindings {
+			if first == second {
+				unaffectedSnapshotID = first
+			}
+		}
+	}
 	if got := planningBindingIDsForAcpRun(t, db, firstRun.RunId.String()); strings.Join(got, ",") != strings.Join(firstBindings, ",") {
 		t.Fatalf("later adoption mutated prior operation bindings: before=%v after=%v", firstBindings, got)
 	}
@@ -586,6 +1159,38 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 	if detach.Code != http.StatusCreated {
 		t.Fatalf("detach status=%d body=%s", detach.Code, detach.Body.String())
 	}
+	var detachedAdoptionsBefore, detachedAuditEventsBefore int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, firstLink).Scan(&detachedAdoptionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&detachedAuditEventsBefore); err != nil {
+		t.Fatal(err)
+	}
+	detachedAdopt := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + firstLink + "/adoptions", idempotencyKey: "attach-adopt-detached-first"})
+	if detachedAdopt.Code != http.StatusConflict {
+		t.Fatalf("adopt detached source status=%d body=%s", detachedAdopt.Code, detachedAdopt.Body.String())
+	}
+	if envelope := decodeCanonicalErrorEnvelope(t, detachedAdopt.Body.Bytes()); envelope.Error.Code != "idempotency_conflict" {
+		t.Fatalf("adopt detached source error code=%q, want idempotency_conflict", envelope.Error.Code)
+	}
+	var detachedAdoptionsAfter, detachedAuditEventsAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, firstLink).Scan(&detachedAdoptionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&detachedAuditEventsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if detachedAdoptionsAfter != detachedAdoptionsBefore || detachedAuditEventsAfter != detachedAuditEventsBefore {
+		t.Fatalf("rejected detached adoption changed durable history: adoptions=%d (before %d), audit events=%d (before %d)", detachedAdoptionsAfter, detachedAdoptionsBefore, detachedAuditEventsAfter, detachedAuditEventsBefore)
+	}
+	if got := planningBindingIDsForAcpRun(t, db, firstRun.RunId.String()); strings.Join(got, ",") != strings.Join(firstBindings, ",") {
+		t.Fatalf("detach or rejected adoption mutated prior operation bindings: before=%v after=%v", firstBindings, got)
+	}
+	detachedRun := createRun("attach-operation-after-rejected-adopt")
+	if bindings := planningBindingIDsForAcpRun(t, db, detachedRun.RunId.String()); len(bindings) != 1 || bindings[0] != unaffectedSnapshotID {
+		t.Fatalf("operation after rejected detached adoption bindings=%v, want only unaffected snapshot %q", bindings, unaffectedSnapshotID)
+	}
+
 	adapter.mu.Lock()
 	adapter.results[7] = issueResult(7, "First reattached", "2026-08-12T12:00:00Z")
 	adapter.mu.Unlock()
@@ -662,6 +1267,140 @@ func TestPlanningExternalSourcesAttachThroughPublicAPIAndBindExactAdoptions(t *t
 		if got != want {
 			t.Fatalf("disabled attach changed %s count from %d to %d", table, want, got)
 		}
+	}
+}
+
+func TestPlanningExternalProvenanceTimestampsPreserveNanosecondReattachmentOrder(t *testing.T) {
+	base := time.Date(2026, time.August, 12, 10, 0, 0, 0, time.UTC)
+	now := base
+	adapter := &externalAPITestAdapter{result: external.IssueResult{
+		NativeID:     "issue-fixed-timestamp",
+		RepositoryID: "200",
+		Issue: state.NormalizedExternalIssue{
+			Title: "Initial", Body: "initial body", State: "open", Repository: "owner/repo", IssueNumber: 7,
+			CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: base.Format(fixedUTCTimestampLayout), UpdatedAt: base.Format(fixedUTCTimestampLayout),
+		},
+		Profile: state.ExternalImportProfile{},
+	}}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter, Now: func() time.Time { return now }})
+
+	connectionResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections", idempotencyKey: "fixed-timestamp-connection", body: map[string]any{"provider": "github", "credential_strategy": "app_private_key", "display_name": "Fixed Timestamp", "app_id": "1", "client_id": "Iv1", "app_slug": "app", "installation_id": "2"}})
+	if connectionResponse.Code != http.StatusCreated {
+		t.Fatalf("create connection status=%d body=%s", connectionResponse.Code, connectionResponse.Body.String())
+	}
+	var connection gen.Connection
+	if err := json.Unmarshal(connectionResponse.Body.Bytes(), &connection); err != nil {
+		t.Fatal(err)
+	}
+	publishExternalTestCredential(t, db, connection.ConnectionId, "audit-fixed-timestamp-credential", base.Format(fixedUTCTimestampLayout))
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionId + "/health-checks", idempotencyKey: "fixed-timestamp-health"}); response.Code != http.StatusOK {
+		t.Fatalf("health status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	sessionResponse := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "fixed-timestamp-session", body: map[string]any{"title": "Fixed Timestamp"}})
+	if sessionResponse.Code != http.StatusCreated {
+		t.Fatalf("create planning session status=%d body=%s", sessionResponse.Code, sessionResponse.Body.String())
+	}
+	var session gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(sessionResponse.Body.Bytes(), &session); err != nil {
+		t.Fatal(err)
+	}
+
+	intake := map[string]any{"connection_id": connection.ConnectionId, "repository_id": "200", "issue_number": 7, "include_comments": false}
+	attached := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId + "/external-sources", idempotencyKey: "fixed-timestamp-attach", body: intake})
+	if attached.Code != http.StatusCreated {
+		t.Fatalf("initial attach status=%d body=%s", attached.Code, attached.Body.String())
+	}
+	var initial gen.ExternalProvenanceSummary
+	if err := json.Unmarshal(attached.Body.Bytes(), &initial); err != nil {
+		t.Fatal(err)
+	}
+
+	adapter.mu.Lock()
+	adapter.result.Issue.Title = "Reattached"
+	adapter.result.Issue.Body = "reattached body"
+	adapter.result.Issue.UpdatedAt = base.Add(time.Minute).Format(fixedUTCTimestampLayout)
+	adapter.mu.Unlock()
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/refreshes", idempotencyKey: "fixed-timestamp-refresh"}); response.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/adoptions", idempotencyKey: "fixed-timestamp-adopt"}); response.Code != http.StatusCreated {
+		t.Fatalf("adopt status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + initial.LinkId + "/detachments", idempotencyKey: "fixed-timestamp-detach"}); response.Code != http.StatusCreated {
+		t.Fatalf("detach status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	now = base.Add(time.Nanosecond)
+	reattached := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId + "/external-sources", idempotencyKey: "fixed-timestamp-reattach", body: intake})
+	if reattached.Code != http.StatusCreated {
+		t.Fatalf("reattach status=%d body=%s", reattached.Code, reattached.Body.String())
+	}
+	var fresh gen.ExternalProvenanceSummary
+	if err := json.Unmarshal(reattached.Body.Bytes(), &fresh); err != nil {
+		t.Fatal(err)
+	}
+
+	wantExactSecond := base.Format(fixedUTCTimestampLayout)
+	wantNanosecondLater := now.Format(fixedUTCTimestampLayout)
+	assertProvenanceTimestamp := func(table, column string) {
+		t.Helper()
+		rows, err := db.Query(`SELECT `+column+` FROM `+table+` WHERE link_id=?`, initial.LinkId)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rows.Close()
+		found := map[string]bool{}
+		for rows.Next() {
+			var value string
+			if err := rows.Scan(&value); err != nil {
+				t.Fatal(err)
+			}
+			found[value] = true
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatal(err)
+		}
+		if !found[wantExactSecond] || !found[wantNanosecondLater] {
+			t.Fatalf("%s.%s timestamps=%v, want both %q and %q", table, column, found, wantExactSecond, wantNanosecondLater)
+		}
+	}
+	assertProvenanceTimestamp("planning_external_source_adoptions", "adopted_at")
+	assertProvenanceTimestamp("external_source_link_attachment_changes", "changed_at")
+
+	detail := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/planning-sessions/" + session.Session.PlanningSessionId})
+	if detail.Code != http.StatusOK {
+		t.Fatalf("planning detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var planningDetail gen.PlanningSessionDetail
+	if err := json.Unmarshal(detail.Body.Bytes(), &planningDetail); err != nil {
+		t.Fatal(err)
+	}
+	activeSnapshotID := ""
+	latestSnapshotID := ""
+	for _, source := range planningDetail.ExternalSources {
+		if source.LinkId == initial.LinkId {
+			latestSnapshotID = source.LatestSnapshotId
+			if source.ActiveSnapshotId != nil {
+				activeSnapshotID = *source.ActiveSnapshotId
+			}
+		}
+	}
+	if activeSnapshotID != fresh.LatestSnapshotId || latestSnapshotID != fresh.LatestSnapshotId {
+		t.Fatalf("latest active snapshot was not reattached: active=%q latest=%q fresh=%q", activeSnapshotID, latestSnapshotID, fresh.LatestSnapshotId)
+	}
+
+	operation := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/acp/runs", idempotencyKey: "fixed-timestamp-operation", body: map[string]any{"agent_name": "planner-formalize", "planning_session_id": session.Session.PlanningSessionId}})
+	if operation.Code != http.StatusCreated {
+		t.Fatalf("create ACP run status=%d body=%s", operation.Code, operation.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(operation.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	awaitAcpRun(t, handler, run.RunId.String(), 2*time.Second)
+	if bindings := planningBindingIDsForAcpRun(t, db, run.RunId.String()); len(bindings) != 1 || bindings[0] != fresh.LatestSnapshotId {
+		t.Fatalf("next planning operation bound stale snapshot: bindings=%v fresh=%q", bindings, fresh.LatestSnapshotId)
 	}
 }
 
@@ -914,12 +1653,16 @@ func TestRepositoryCursorTracksActualInstallationSetChanges(t *testing.T) {
 func (a *externalAPITestAdapter) Evict(id string) {
 	a.mu.Lock()
 	a.evicted = append(a.evicted, id)
+	onEvict := a.onEvict
 	a.mu.Unlock()
+	if onEvict != nil {
+		onEvict(id)
+	}
 }
 
 func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *testing.T) {
 	adapter := &externalAPITestAdapter{}
-	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
+	server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{ExternalAdapter: adapter})
 	store := state.NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -934,7 +1677,7 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 		t.Fatal(err)
 	}
 	issue := state.NormalizedExternalIssue{Title: "Original", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
-	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh", SnapshotID: "snapshot-refresh", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`, ProviderCommentCount: 1, FetchedCommentCount: 1, FetchedCommentPages: 1, Comments: []state.ExternalComment{{ProviderCommentID: "comment-1", Author: "octo", Body: "retained body", CanonicalURL: "https://github.com/comment/1", CreatedAt: at, UpdatedAt: at}}})
+	snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-refresh", SnapshotID: "snapshot-refresh", ConnectionID: connection.ConnectionID, ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ETag: `"issue-v1"`, CommentsETag: `"comments-v1"`, ProviderCommentCount: 1, FetchedCommentCount: 1, FetchedCommentPages: 1, Comments: state.ExternalCommentList{{ProviderCommentID: "comment-1", Author: "octo", Body: "retained body", CanonicalURL: "https://github.com/comment/1", CreatedAt: at, UpdatedAt: at}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -944,7 +1687,10 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	issue.Title, issue.UpdatedAt = "Changed", "2026-08-12T11:00:00Z"
 	adapter.result = external.IssueResult{RepositoryID: "200", NativeID: "100", Issue: issue, Profile: state.ExternalImportProfile{IncludeComments: true}, ProviderCommentCount: 1, ETag: `"issue-v2"`, CommentsETag: `"comments-v1"`, CommentsNotModified: true}
 
-	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh/refreshes", idempotencyKey: "refresh-comments-304"})
+	// Fail the post-commit link projection. Comments now replay from immutable
+	// storage during capture rather than being cached in a whole-list basis.
+	connector.failQueryAfter("WITH link_view AS (", 1)
+	response := performJSONRequest(t, server, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/link-refresh/refreshes", idempotencyKey: "refresh-comments-304"})
 	if response.Code != http.StatusOK {
 		t.Fatalf("refresh status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -958,8 +1704,12 @@ func TestExternalRefreshPreservesCommentsWhenOnlyCommentPageIsNotModified(t *tes
 	if !payload.SnapshotCreated || payload.Link.LatestSnapshotID == snapshot.SnapshotID {
 		t.Fatalf("changed issue did not create snapshot: %s", response.Body.String())
 	}
-	latest, comments, err := store.GetSnapshot(ctx, payload.Link.LatestSnapshotID)
+	latest, err := store.GetSnapshotMetadata(ctx, payload.Link.LatestSnapshotID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	var comments []state.ExternalComment
+	if err := store.SnapshotComments(latest.SnapshotID).Replay(ctx, func(c state.ExternalComment) error { comments = append(comments, c); return nil }); err != nil {
 		t.Fatal(err)
 	}
 	if latest.Issue.Title != "Changed" || latest.FetchedCommentCount != 1 || len(comments) != 1 || comments[0].Body != "retained body" {

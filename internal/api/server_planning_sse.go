@@ -74,9 +74,16 @@ func (s *Server) writePlanningOperationEvents(w http.ResponseWriter, r *http.Req
 		if !ok {
 			return
 		}
-		if operation.Status == state.PlanningOperationStatusSucceeded || operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
+		if operation.Status == state.PlanningOperationStatusFailed || operation.Status == state.PlanningOperationStatusCancelled {
 			_ = catchUp()
 			return
+		}
+		if operation.Status == state.PlanningOperationStatusSucceeded {
+			pending, err := s.planningService.PlanningActivityReconciliationPending(r.Context(), operationID)
+			if err != nil || !pending {
+				_ = catchUp()
+				return
+			}
 		}
 
 		select {

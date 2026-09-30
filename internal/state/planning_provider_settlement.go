@@ -2,12 +2,14 @@ package state
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+
+	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/timestamporder"
 )
 
 type PlanningProviderInvocationState string
@@ -21,13 +23,15 @@ const (
 	PlanningProviderInvocationStateSuperseded       PlanningProviderInvocationState = "superseded"
 )
 
+type PlanningProviderCompletionMode string
+
+const PlanningProviderCompletionModeServerResponse PlanningProviderCompletionMode = "server_response"
+
 type PlanningProviderCompletionEvidenceKind string
 
 const (
-	PlanningProviderCompletionEvidenceKindCompletionReceipt PlanningProviderCompletionEvidenceKind = "completion_receipt"
 	PlanningProviderCompletionEvidenceKindStreamObservation PlanningProviderCompletionEvidenceKind = "stream_observation"
 	PlanningProviderCompletionEvidenceKindExportDiagnostic  PlanningProviderCompletionEvidenceKind = "export_diagnostic"
-	PlanningProviderCompletionEvidenceKindRepairDiagnostic  PlanningProviderCompletionEvidenceKind = "repair_diagnostic"
 )
 
 type PlanningProviderCompletionOutcome string
@@ -45,9 +49,7 @@ type PlanningProviderInvocation struct {
 	LogicalSessionID             string
 	ProviderSessionID            string
 	InvocationState              PlanningProviderInvocationState
-	CompletionCapabilityHash     string
-	CompletionCapabilityIssuedAt string
-	CompletionCapabilityUsedAt   string
+	CompletionMode               PlanningProviderCompletionMode
 	OpenedAt                     string
 	SettledAt                    string
 	FailureReasonCode            string
@@ -68,6 +70,7 @@ type PlanningProviderCompletionEvidence struct {
 }
 
 type PlanningProviderCompletionSettlement struct {
+	FinalTextRef                 *providerexecution.ContentReference
 	SettlementID                 string
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
@@ -87,9 +90,9 @@ type CreatePlanningProviderInvocationRequest struct {
 	PlanningOperationID          string
 	PlanningSessionID            string
 	LogicalSessionID             string
-	CompletionCapability         string
-	IssuedAt                     string
 	CreatedAt                    string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type MarkPlanningProviderInvocationOpenRequest struct {
@@ -97,6 +100,8 @@ type MarkPlanningProviderInvocationOpenRequest struct {
 	PlanningOperationID          string
 	ProviderSessionID            string
 	OpenedAt                     string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
@@ -105,13 +110,15 @@ type ActivatePlanningProviderInvocationRequest struct {
 	PlanningSessionID            string
 	LogicalSessionID             string
 	ProviderSessionID            string
-	CompletionCapability         string
-	IssuedAt                     string
 	CreatedAt                    string
 	OpenedAt                     string
+	LeaseOwner                   string
+	LeaseVersion                 int
 }
 
 type FinalizePlanningProviderSettlementRequest struct {
+	FinalTextRef                 *providerexecution.ContentReference
+	StagedContent                []providerexecution.StagedContent `json:"-"`
 	SettlementID                 string
 	PlanningProviderInvocationID string
 	PrimaryEvidenceID            string
@@ -124,6 +131,7 @@ type FinalizePlanningProviderSettlementRequest struct {
 	FailureReasonCode            string
 	FailureReasonText            string
 	SettledAt                    string
+	RequiresProcessGuard         bool
 }
 
 type planningProviderSettlementError struct {
@@ -165,7 +173,7 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
 	}
-	normalized, capabilityHash, err := normalizeCreatePlanningProviderInvocationRequest(req)
+	normalized, err := normalizeCreatePlanningProviderInvocationRequest(req)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -179,20 +187,30 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 			_ = tx.Rollback()
 		}
 	}()
-	invocation, err := createPlanningProviderInvocationTx(ctx, tx, normalized, capabilityHash)
+	invocation, err := createPlanningProviderInvocationTx(ctx, tx, normalized)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE planning_operations
+	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = CASE
 			WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
 			ELSE active_provider_invocation_id
 		END
 		WHERE operation_id = ?
-		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
+		  AND planning_session_id = ?
+		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
+		invocation.PlanningSessionID,
 		invocation.PlanningProviderInvocationID,
+		normalized.LeaseOwner,
+		normalized.LeaseVersion,
+		normalized.CreatedAt,
 	)
 	if err != nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("link planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
@@ -215,7 +233,7 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
 	}
-	createReq, capabilityHash, openReq, err := normalizeActivatePlanningProviderInvocationRequest(req)
+	createReq, openReq, err := normalizeActivatePlanningProviderInvocationRequest(req)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -230,7 +248,7 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 		}
 	}()
 
-	invocation, err := createPlanningProviderInvocationTx(ctx, tx, createReq, capabilityHash)
+	invocation, err := createPlanningProviderInvocationTx(ctx, tx, createReq)
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
@@ -286,36 +304,29 @@ func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, 
 	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, normalized.ProviderSessionID, string(invocation.InvocationState), "mark_planning_provider_invocation_open"); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
+	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, normalized); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
+		result, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
 			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
-			WHERE planning_provider_invocation_id = ?`,
+			WHERE planning_provider_invocation_id = ? AND invocation_state = 'issued'`,
 			normalized.ProviderSessionID,
 			normalized.ProviderSessionID,
 			normalized.OpenedAt,
 			normalized.OpenedAt,
 			invocation.PlanningProviderInvocationID,
-		); err != nil {
+		)
+		if err != nil {
 			return PlanningProviderInvocation{}, fmt.Errorf("mark planning provider invocation %q open: %w", invocation.PlanningProviderInvocationID, err)
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_operations
-			SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-			    active_provider_invocation_id = CASE
-			      WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
-			      ELSE active_provider_invocation_id
-			    END
-			WHERE operation_id = ?
-			  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
-			normalized.ProviderSessionID,
-			normalized.ProviderSessionID,
-			invocation.PlanningProviderInvocationID,
-			invocation.PlanningOperationID,
-			invocation.PlanningProviderInvocationID,
-		); err != nil {
-			return PlanningProviderInvocation{}, fmt.Errorf("link planning operation %q provider session: %w", invocation.PlanningOperationID, err)
+		if affected, err := result.RowsAffected(); err != nil {
+			return PlanningProviderInvocation{}, fmt.Errorf("read planning provider invocation %q open rows affected: %w", invocation.PlanningProviderInvocationID, err)
+		} else if affected != 1 {
+			return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 	}
 	invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
@@ -337,6 +348,21 @@ func (s *PlanningStore) GetPlanningProviderInvocation(ctx context.Context, plann
 		return PlanningProviderInvocation{}, false, fmt.Errorf("planning store database is required")
 	}
 	return getPlanningProviderInvocation(ctx, s.db, planningProviderInvocationID)
+}
+
+func (s *PlanningStore) RequirePlanningProviderProcessGuard(ctx context.Context, invocationID, operationID string) error {
+	result, err := s.db.ExecContext(ctx, `UPDATE planning_provider_invocations SET process_guard_required = 1 WHERE planning_provider_invocation_id = ? AND planning_operation_id = ? AND invocation_state IN ('issued','open')`, strings.TrimSpace(invocationID), strings.TrimSpace(operationID))
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows != 1 {
+		return fmt.Errorf("require planning provider process guard: invocation authority conflict")
+	}
+	return nil
 }
 
 func (s *PlanningStore) GetLatestReusablePlanningProviderInvocation(ctx context.Context, logicalSessionID string) (PlanningProviderInvocation, bool, error) {
@@ -389,6 +415,67 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if invocation.PlanningOperationID != strings.TrimSpace(operationID) || invocation.PlanningSessionID != strings.TrimSpace(sessionID) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, operationID, string(invocation.InvocationState))
 	}
+	observation, observationErr := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
+	if observationErr != nil && (normalized.Outcome == PlanningProviderCompletionOutcomeSuccess || len(normalized.StagedContent) > 0) {
+		return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	}
+	if observationErr == nil {
+		refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)
+		if observation.CanonicalTerminalTextRef != nil {
+			refs = append(refs, *observation.CanonicalTerminalTextRef)
+		}
+		for _, ref := range refs {
+			if err := importPlanningProviderContent(ctx, tx, invocation.PlanningProviderInvocationID, ref, normalized.StagedContent); err != nil {
+				return "", err
+			}
+		}
+		if observation.CanonicalTerminalTextRef != nil {
+			ref := *observation.CanonicalTerminalTextRef
+			observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
+				return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
+			}
+		}
+	}
+	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
+		if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		if normalized.FinalText == "" && normalized.FinalTextRef == nil {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		var activeInvocationID string
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(active_provider_invocation_id, '') FROM planning_operations WHERE operation_id = ? AND planning_session_id = ? AND status = 'running'`, invocation.PlanningOperationID, invocation.PlanningSessionID).Scan(&activeInvocationID); err != nil {
+			if err == sql.ErrNoRows {
+				return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+			}
+			return "", err
+		}
+		if strings.TrimSpace(activeInvocationID) != invocation.PlanningProviderInvocationID {
+			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_open_active_invocation", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+		textMatches := strings.TrimSpace(observation.CanonicalTerminalText) == normalized.FinalText
+		if observation.CanonicalTerminalTextRef != nil {
+			if normalized.FinalTextRef != nil {
+				textMatches = *normalized.FinalTextRef == *observation.CanonicalTerminalTextRef
+			} else {
+				textMatches = providerexecution.ReferenceText(invocation.PlanningProviderInvocationID, normalized.FinalText) == *observation.CanonicalTerminalTextRef
+			}
+		}
+		if observationErr != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || !textMatches {
+			return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
+	}
+	var invocationGuardRequired bool
+	if err := tx.QueryRowContext(ctx, `SELECT process_guard_required FROM planning_provider_invocations WHERE planning_provider_invocation_id = ?`, invocation.PlanningProviderInvocationID).Scan(&invocationGuardRequired); err != nil {
+		return "", err
+	}
+	var guardTotal, guardUnresolved int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0) FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND provider_invocation_id = ? AND planning_operation_id = ?`, invocation.PlanningProviderInvocationID, invocation.PlanningOperationID).Scan(&guardTotal, &guardUnresolved); err != nil {
+		return "", err
+	}
+	if guardUnresolved != 0 || ((invocationGuardRequired || normalized.RequiresProcessGuard) && guardTotal == 0 && normalized.Outcome == PlanningProviderCompletionOutcomeSuccess) {
+		return "", planningProviderError("finalize_planning_provider_settlement", "provider_process_guard_not_quiescent", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	}
 	primaryEvidenceID := normalized.PrimaryEvidenceID
 	if normalized.PrimaryEvidencePayloadJSON != "" {
 		if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO planning_provider_completion_evidence (
@@ -422,6 +509,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		return "", planningProviderError("finalize_planning_provider_settlement", "primary_evidence_invocation_mismatch", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	candidateSettlement := PlanningProviderCompletionSettlement{
+		FinalTextRef:                 normalized.FinalTextRef,
 		SettlementID:                 normalized.SettlementID,
 		PlanningProviderInvocationID: invocation.PlanningProviderInvocationID,
 		PlanningOperationID:          invocation.PlanningOperationID,
@@ -437,13 +525,12 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	}
 	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
 		// Planner success is settled server-side from the provider's terminal
-		// stop signal; the durable proof is a stream observation, not a
-		// model-invoked completion receipt. FinalText is the runtime-assembled
-		// output text carried on the settlement request.
+		// stop signal. The durable proof is the runtime-owned stream observation
+		// and its assembled final text.
 		if evidence.EvidenceKind != PlanningProviderCompletionEvidenceKindStreamObservation {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_stream_observation_evidence", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-		if candidateSettlement.FinalText == "" {
+		if candidateSettlement.FinalText == "" && candidateSettlement.FinalTextRef == nil {
 			return "", planningProviderError("finalize_planning_provider_settlement", "success_requires_final_text", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 		candidateSettlement.FailureReasonCode = ""
@@ -462,7 +549,8 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		failure_reason_text,
 		settled_at,
 		created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		,final_text_ref_json
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?)`,
 		candidateSettlement.SettlementID,
 		candidateSettlement.PlanningProviderInvocationID,
 		candidateSettlement.PlanningOperationID,
@@ -475,6 +563,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		candidateSettlement.FailureReasonText,
 		candidateSettlement.SettledAt,
 		candidateSettlement.CreatedAt,
+		planningProviderReferenceJSON(candidateSettlement.FinalTextRef),
 	)
 	if err != nil {
 		return "", fmt.Errorf("insert planning provider settlement %q: %w", normalized.SettlementID, err)
@@ -521,6 +610,19 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	return settlement.SettlementID, nil
 }
 
+func planningProviderTerminalStreamObservation(payloadJSON string) (providerexecution.InvocationStreamObservation, error) {
+	var payload struct {
+		StreamObservation *providerexecution.InvocationStreamObservation `json:"stream_observation"`
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
+		return providerexecution.InvocationStreamObservation{}, err
+	}
+	if payload.StreamObservation == nil {
+		return providerexecution.InvocationStreamObservation{}, fmt.Errorf("stream observation is required")
+	}
+	return *payload.StreamObservation, nil
+}
+
 func planningProviderError(operation, reason, invocationID, operationID, state string) error {
 	return &planningProviderSettlementError{
 		Operation:                    operation,
@@ -531,26 +633,26 @@ func planningProviderError(operation, reason, invocationID, operationID, state s
 	}
 }
 
-func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, string, error) {
+func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, error) {
 	normalized := CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		PlanningSessionID:            strings.TrimSpace(req.PlanningSessionID),
 		LogicalSessionID:             strings.TrimSpace(req.LogicalSessionID),
-		CompletionCapability:         strings.TrimSpace(req.CompletionCapability),
-		IssuedAt:                     strings.TrimSpace(req.IssuedAt),
 		CreatedAt:                    strings.TrimSpace(req.CreatedAt),
+		LeaseOwner:                   strings.TrimSpace(req.LeaseOwner),
+		LeaseVersion:                 req.LeaseVersion,
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" || normalized.PlanningSessionID == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider invocation, operation, and session ids are required")
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation, operation, and session ids are required")
 	}
-	if normalized.CompletionCapability == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider completion capability is required")
+	if normalized.CreatedAt == "" {
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation created_at is required")
 	}
-	if normalized.IssuedAt == "" || normalized.CreatedAt == "" {
-		return CreatePlanningProviderInvocationRequest{}, "", fmt.Errorf("planning provider invocation timestamps are required")
+	if normalized.LeaseOwner == "" || normalized.LeaseVersion < 1 {
+		return CreatePlanningProviderInvocationRequest{}, fmt.Errorf("planning provider invocation requires an active operation lease")
 	}
-	return normalized, hashPlanningProviderCapability(normalized.CompletionCapability), nil
+	return normalized, nil
 }
 
 func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProviderInvocationOpenRequest) (MarkPlanningProviderInvocationOpenRequest, error) {
@@ -559,6 +661,8 @@ func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProvider
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		ProviderSessionID:            strings.TrimSpace(req.ProviderSessionID),
 		OpenedAt:                     strings.TrimSpace(req.OpenedAt),
+		LeaseOwner:                   strings.TrimSpace(req.LeaseOwner),
+		LeaseVersion:                 req.LeaseVersion,
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" {
 		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation id and planning operation id are required")
@@ -566,35 +670,40 @@ func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProvider
 	if normalized.OpenedAt == "" {
 		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation opened_at is required")
 	}
+	if normalized.LeaseOwner == "" || normalized.LeaseVersion < 1 {
+		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation open requires an active operation lease")
+	}
 	return normalized, nil
 }
 
-func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, string, MarkPlanningProviderInvocationOpenRequest, error) {
-	createReq, capabilityHash, err := normalizeCreatePlanningProviderInvocationRequest(CreatePlanningProviderInvocationRequest{
+func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, MarkPlanningProviderInvocationOpenRequest, error) {
+	createReq, err := normalizeCreatePlanningProviderInvocationRequest(CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: req.PlanningProviderInvocationID,
 		PlanningOperationID:          req.PlanningOperationID,
 		PlanningSessionID:            req.PlanningSessionID,
 		LogicalSessionID:             req.LogicalSessionID,
-		CompletionCapability:         req.CompletionCapability,
-		IssuedAt:                     req.IssuedAt,
 		CreatedAt:                    req.CreatedAt,
+		LeaseOwner:                   req.LeaseOwner,
+		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, "", MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
 	}
 	openReq, err := normalizeMarkPlanningProviderInvocationOpenRequest(MarkPlanningProviderInvocationOpenRequest{
 		PlanningProviderInvocationID: createReq.PlanningProviderInvocationID,
 		PlanningOperationID:          createReq.PlanningOperationID,
 		ProviderSessionID:            req.ProviderSessionID,
-		OpenedAt:                     firstNonEmptyPlanningProvider(req.OpenedAt, createReq.IssuedAt),
+		OpenedAt:                     firstNonEmptyPlanningProvider(req.OpenedAt, createReq.CreatedAt),
+		LeaseOwner:                   req.LeaseOwner,
+		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, "", MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
 	}
-	return createReq, capabilityHash, openReq, nil
+	return createReq, openReq, nil
 }
 
-func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreatePlanningProviderInvocationRequest, capabilityHash string) (PlanningProviderInvocation, error) {
+func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreatePlanningProviderInvocationRequest) (PlanningProviderInvocation, error) {
 	res, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO planning_provider_invocations (
 		planning_provider_invocation_id,
 		planning_operation_id,
@@ -602,18 +711,16 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 		logical_session_id,
 		provider_session_id,
 		invocation_state,
-		completion_capability_hash,
-		completion_capability_issued_at,
+		completion_mode,
 		created_at,
 		updated_at
-	) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, '', ?, ?, ?, ?)`,
 		req.PlanningProviderInvocationID,
 		req.PlanningOperationID,
 		req.PlanningSessionID,
 		req.LogicalSessionID,
 		string(PlanningProviderInvocationStateIssued),
-		capabilityHash,
-		req.IssuedAt,
+		string(PlanningProviderCompletionModeServerResponse),
 		req.CreatedAt,
 		req.CreatedAt,
 	)
@@ -631,7 +738,7 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 	if !found {
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_not_found", req.PlanningProviderInvocationID, req.PlanningOperationID, "")
 	}
-	if rows == 0 && !samePlanningProviderInvocationCreate(invocation, req, capabilityHash) {
+	if rows == 0 && !samePlanningProviderInvocationCreate(invocation, req) {
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_identity_conflict", req.PlanningProviderInvocationID, req.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return invocation, nil
@@ -641,62 +748,104 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 	if err := ensurePlanningProviderInvocationStateForOpen(invocation); err != nil {
 		return err
 	}
-	var activeInvocationID sql.NullString
-	err := tx.QueryRowContext(ctx, `SELECT NULLIF(TRIM(active_provider_invocation_id), '') FROM planning_operations WHERE operation_id = ?`, invocation.PlanningOperationID).Scan(&activeInvocationID)
-	if err != nil {
-		if err == sql.ErrNoRows {
-			return planningProviderError("activate_planning_provider_invocation", "operation_not_found", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-		return fmt.Errorf("load planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
-	}
-	if activeInvocationID.Valid && strings.TrimSpace(activeInvocationID.String) != "" && strings.TrimSpace(activeInvocationID.String) != invocation.PlanningProviderInvocationID {
-		return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
 	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, openReq.ProviderSessionID, string(invocation.InvocationState), "activate_planning_provider_invocation"); err != nil {
 		return err
 	}
+	if err := linkPlanningOperationActiveInvocationTx(ctx, tx, invocation, openReq); err != nil {
+		return err
+	}
+	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, openReq); err != nil {
+		return err
+	}
 	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
-		if _, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
+		result, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
 			SET invocation_state = 'open',
 			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
 			    opened_at = COALESCE(opened_at, ?),
 			    updated_at = ?
-			WHERE planning_provider_invocation_id = ?`,
+			WHERE planning_provider_invocation_id = ? AND invocation_state = 'issued'`,
 			openReq.ProviderSessionID,
 			openReq.ProviderSessionID,
 			openReq.OpenedAt,
 			openReq.OpenedAt,
 			invocation.PlanningProviderInvocationID,
-		); err != nil {
+		)
+		if err != nil {
 			return fmt.Errorf("mark planning provider invocation %q open during activation: %w", invocation.PlanningProviderInvocationID, err)
 		}
+		if affected, err := result.RowsAffected(); err != nil {
+			return fmt.Errorf("read planning provider invocation %q activation rows affected: %w", invocation.PlanningProviderInvocationID, err)
+		} else if affected != 1 {
+			return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+		}
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE planning_operations
-		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-		    active_provider_invocation_id = ?
+	return nil
+}
+
+func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+	query := fmt.Sprintf(`UPDATE planning_operations
+		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
-		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)`,
-		openReq.ProviderSessionID,
-		openReq.ProviderSessionID,
+		  AND COALESCE(TRIM(active_provider_invocation_id), '') = ''
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
 		invocation.PlanningProviderInvocationID,
 		invocation.PlanningOperationID,
-		invocation.PlanningProviderInvocationID,
+		req.LeaseOwner,
+		req.LeaseVersion,
+		req.OpenedAt,
 	)
 	if err != nil {
-		return fmt.Errorf("link planning operation %q active invocation during activation: %w", invocation.PlanningOperationID, err)
+		return fmt.Errorf("link planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
 	}
-	rows, err := res.RowsAffected()
+	rows, err := result.RowsAffected()
 	if err != nil {
 		return fmt.Errorf("read planning operation active invocation rows affected for %q: %w", invocation.PlanningOperationID, err)
 	}
-	if rows == 0 {
-		return planningProviderError("activate_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	if rows != 1 {
+		return planningProviderError("activate_planning_provider_invocation", "active_invocation_or_lease_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
+	}
+	return nil
+}
+
+func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+	query := fmt.Sprintf(`UPDATE planning_operations
+		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END
+		WHERE operation_id = ?
+		  AND active_provider_invocation_id = ?
+		  AND status = 'running'
+		  AND lease_owner = ?
+		  AND lease_version = ?
+		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
+	result, err := tx.ExecContext(ctx, query,
+		req.ProviderSessionID,
+		req.ProviderSessionID,
+		invocation.PlanningOperationID,
+		invocation.PlanningProviderInvocationID,
+		req.LeaseOwner,
+		req.LeaseVersion,
+		req.OpenedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("fence planning operation %q provider session: %w", invocation.PlanningOperationID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("read planning operation provider session rows affected for %q: %w", invocation.PlanningOperationID, err)
+	}
+	if rows != 1 {
+		return planningProviderError("fence_planning_operation_provider_session", "active_invocation_or_lease_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return nil
 }
 
 func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProviderSettlementRequest) (FinalizePlanningProviderSettlementRequest, error) {
 	normalized := FinalizePlanningProviderSettlementRequest{
+		FinalTextRef:                 req.FinalTextRef,
+		StagedContent:                req.StagedContent,
 		SettlementID:                 strings.TrimSpace(req.SettlementID),
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PrimaryEvidenceID:            strings.TrimSpace(req.PrimaryEvidenceID),
@@ -709,6 +858,7 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 		FailureReasonCode:            strings.TrimSpace(req.FailureReasonCode),
 		FailureReasonText:            strings.TrimSpace(req.FailureReasonText),
 		SettledAt:                    strings.TrimSpace(req.SettledAt),
+		RequiresProcessGuard:         req.RequiresProcessGuard,
 	}
 	if normalized.SettlementID == "" || normalized.PlanningProviderInvocationID == "" || normalized.PrimaryEvidenceID == "" {
 		return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning provider settlement id, invocation id, and primary evidence id are required")
@@ -718,6 +868,15 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 	}
 	if normalized.SettledAt == "" {
 		return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning provider settlement settled_at is required")
+	}
+	if normalized.FinalTextRef != nil {
+		if err := normalized.FinalTextRef.Validate(normalized.PlanningProviderInvocationID); err != nil {
+			return FinalizePlanningProviderSettlementRequest{}, err
+		}
+		if normalized.FinalText != "" && providerexecution.ReferenceText(normalized.PlanningProviderInvocationID, normalized.FinalText) != *normalized.FinalTextRef {
+			return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning terminal text conflicts with its content reference")
+		}
+		normalized.FinalText = ""
 	}
 	structuredPayloadJSON, err := canonicalizePlanningProviderJSONDocument(normalized.StructuredPayloadJSON, "{}")
 	if err != nil {
@@ -733,11 +892,6 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 		}
 	}
 	return normalized, nil
-}
-
-func hashPlanningProviderCapability(capability string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(capability)))
-	return hex.EncodeToString(sum[:])
 }
 
 func planningProviderInvocationStateForOutcome(outcome PlanningProviderCompletionOutcome) PlanningProviderInvocationState {
@@ -816,7 +970,6 @@ func loadPlanningProviderCompletionEvidenceTx(ctx context.Context, query sqlQuer
 func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, bool, error) {
 	var item PlanningProviderInvocation
 	var providerSessionID sql.NullString
-	var completionCapabilityUsedAt sql.NullString
 	var openedAt sql.NullString
 	var settledAt sql.NullString
 	err := row.Scan(
@@ -826,9 +979,7 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 		&item.LogicalSessionID,
 		&providerSessionID,
 		&item.InvocationState,
-		&item.CompletionCapabilityHash,
-		&item.CompletionCapabilityIssuedAt,
-		&completionCapabilityUsedAt,
+		&item.CompletionMode,
 		&openedAt,
 		&settledAt,
 		&item.FailureReasonCode,
@@ -843,7 +994,6 @@ func scanPlanningProviderInvocation(row scannable) (PlanningProviderInvocation, 
 		return PlanningProviderInvocation{}, false, err
 	}
 	item.ProviderSessionID = strings.TrimSpace(providerSessionID.String)
-	item.CompletionCapabilityUsedAt = strings.TrimSpace(completionCapabilityUsedAt.String)
 	item.OpenedAt = strings.TrimSpace(openedAt.String)
 	item.SettledAt = strings.TrimSpace(settledAt.String)
 	return item, true, nil
@@ -872,6 +1022,7 @@ func scanPlanningProviderCompletionEvidence(row scannable) (PlanningProviderComp
 
 func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCompletionSettlement, bool, error) {
 	var item PlanningProviderCompletionSettlement
+	var referenceJSON string
 	err := row.Scan(
 		&item.SettlementID,
 		&item.PlanningProviderInvocationID,
@@ -885,6 +1036,7 @@ func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCo
 		&item.FailureReasonText,
 		&item.SettledAt,
 		&item.CreatedAt,
+		&referenceJSON,
 	)
 	if err == sql.ErrNoRows {
 		return PlanningProviderCompletionSettlement{}, false, nil
@@ -892,16 +1044,25 @@ func scanPlanningProviderCompletionSettlement(row scannable) (PlanningProviderCo
 	if err != nil {
 		return PlanningProviderCompletionSettlement{}, false, err
 	}
+	if referenceJSON != "" {
+		if err := json.Unmarshal([]byte(referenceJSON), &item.FinalTextRef); err != nil {
+			return PlanningProviderCompletionSettlement{}, false, err
+		}
+		if item.FinalTextRef == nil {
+			return PlanningProviderCompletionSettlement{}, false, fmt.Errorf("planning terminal content reference is missing")
+		}
+		if err := item.FinalTextRef.Validate(item.PlanningProviderInvocationID); err != nil {
+			return PlanningProviderCompletionSettlement{}, false, err
+		}
+	}
 	return item, true, nil
 }
 
-func samePlanningProviderInvocationCreate(invocation PlanningProviderInvocation, req CreatePlanningProviderInvocationRequest, capabilityHash string) bool {
+func samePlanningProviderInvocationCreate(invocation PlanningProviderInvocation, req CreatePlanningProviderInvocationRequest) bool {
 	return invocation.PlanningProviderInvocationID == req.PlanningProviderInvocationID &&
 		invocation.PlanningOperationID == req.PlanningOperationID &&
 		invocation.PlanningSessionID == req.PlanningSessionID &&
-		invocation.LogicalSessionID == req.LogicalSessionID &&
-		invocation.CompletionCapabilityHash == capabilityHash &&
-		invocation.CompletionCapabilityIssuedAt == req.IssuedAt
+		invocation.LogicalSessionID == req.LogicalSessionID
 }
 
 func samePlanningProviderSettlement(existing, candidate PlanningProviderCompletionSettlement) bool {
@@ -910,6 +1071,7 @@ func samePlanningProviderSettlement(existing, candidate PlanningProviderCompleti
 		existing.Outcome == candidate.Outcome &&
 		existing.PrimaryEvidenceID == candidate.PrimaryEvidenceID &&
 		existing.FinalText == candidate.FinalText &&
+		planningProviderReferenceJSON(existing.FinalTextRef) == planningProviderReferenceJSON(candidate.FinalTextRef) &&
 		existing.StructuredPayloadJSON == candidate.StructuredPayloadJSON &&
 		existing.FailureReasonCode == candidate.FailureReasonCode &&
 		existing.FailureReasonText == candidate.FailureReasonText
@@ -917,10 +1079,8 @@ func samePlanningProviderSettlement(existing, candidate PlanningProviderCompleti
 
 func isValidPlanningProviderCompletionEvidenceKind(kind PlanningProviderCompletionEvidenceKind) bool {
 	switch kind {
-	case PlanningProviderCompletionEvidenceKindCompletionReceipt,
-		PlanningProviderCompletionEvidenceKindStreamObservation,
-		PlanningProviderCompletionEvidenceKindExportDiagnostic,
-		PlanningProviderCompletionEvidenceKindRepairDiagnostic:
+	case PlanningProviderCompletionEvidenceKindStreamObservation,
+		PlanningProviderCompletionEvidenceKindExportDiagnostic:
 		return true
 	default:
 		return false
@@ -962,9 +1122,7 @@ const planningProviderInvocationSelect = `SELECT
 	logical_session_id,
 	provider_session_id,
 	invocation_state,
-	completion_capability_hash,
-	completion_capability_issued_at,
-	completion_capability_used_at,
+	completion_mode,
 	opened_at,
 	settled_at,
 	failure_reason_code,
@@ -996,8 +1154,8 @@ const planningProviderCompletionSettlementSelect = `SELECT
 	failure_reason_code,
 	failure_reason_text,
 	settled_at,
-	created_at
-FROM planning_provider_completion_settlements`
+	created_at,final_text_ref_json
+	FROM planning_provider_completion_settlements`
 
 func firstNonEmptyPlanningProvider(values ...string) string {
 	for _, value := range values {

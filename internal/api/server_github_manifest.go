@@ -59,13 +59,21 @@ func (s *Server) handleStartGitHubManifestFlow(w http.ResponseWriter, r *http.Re
 		return
 	}
 	principal, _ := authenticatedPrincipal(r.Context())
-	flow, err := s.manifestFlows.Create(sessionID, origin, principal.ExpiresAt)
+	flow, created, err := s.manifestFlows.ReserveStart(sessionID, origin, input.OwnerType, input.Organization, principal.ExpiresAt)
 	if err != nil {
-		if errors.Is(err, errManifestFlowCapacity) {
+		switch {
+		case errors.Is(err, errManifestFlowCapacity):
 			writeCanonicalError(w, http.StatusTooManyRequests, errorcatalog.CodeDependencyBlocked, "too many GitHub setup flows are active; finish or wait for an existing flow to expire", "api.github_manifest.start", nil)
-			return
+		case errors.Is(err, errManifestFlowIntentConflict):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "another GitHub App setup is already active in this browser session; resume or discard it first", "api.github_manifest.start", nil)
+		default:
+			s.writeInternalError(w, "create GitHub setup flow failed")
 		}
-		s.writeInternalError(w, "create GitHub setup flow failed")
+		return
+	}
+	if !created {
+		setSensitiveIdempotencyExpiry(w, flow.ExpiresAt)
+		writeJSON(w, http.StatusOK, statusFromManifestFlow(flow))
 		return
 	}
 	manifestCallback := origin + s.basePath + "/connections/github/manifest-flows/manifest-callback"
@@ -132,6 +140,10 @@ func (s *Server) handleDiscardGitHubManifestFlow(w http.ResponseWriter, r *http.
 		return
 	}
 	if err := s.manifestFlows.Discard(r.PathValue("id"), sessionID, origin); err != nil {
+		if errors.Is(err, errManifestFlowInFlight) {
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "GitHub setup is still completing. Wait for it to finish before discarding it.", "api.github_manifest.discard", nil)
+			return
+		}
 		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "GitHub setup flow is unavailable", "api.github_manifest.discard", nil)
 		return
 	}
@@ -150,7 +162,7 @@ func (s *Server) handleConvertGitHubManifestFlow(w http.ResponseWriter, r *http.
 		return
 	}
 	defer zeroSecret(lease.Code)
-	conversionCtx, cancel := contextWithFlowDeadline(r.Context(), s.now, lease.ExpiresAt)
+	conversionCtx, cancel := contextWithFlowDeadline(s.lifecycleCtx, s.now, lease.ExpiresAt)
 	defer cancel()
 	converted, err := s.githubSetup.ConvertManifest(conversionCtx, string(lease.Code))
 	if err != nil {
@@ -226,7 +238,7 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 		zeroSecret(completion.OAuthCode)
 		zeroSecret(completion.OAuthVerifier)
 	}()
-	completionCtx, cancel := contextWithFlowDeadline(r.Context(), s.now, completion.ExpiresAt)
+	completionCtx, cancel := contextWithFlowDeadline(s.lifecycleCtx, s.now, completion.ExpiresAt)
 	defer cancel()
 	callback := origin + s.basePath + "/connections/github/manifest-flows/oauth-callback"
 	userToken, err := s.githubSetup.ExchangeOAuthCode(completionCtx, completion.ClientID, completion.ClientSecret, completion.OAuthCode, completion.OAuthVerifier, callback)
@@ -259,10 +271,30 @@ func (s *Server) handleCompleteGitHubManifestFlow(w http.ResponseWriter, r *http
 			// through PUT /connections/{id}/installations.
 			CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{ConnectionID: connectionID, CredentialStrategy: "app_private_key", DisplayName: completion.AppName, AppID: completion.AppID, ClientID: completion.ClientID, AppSlug: completion.AppSlug, Installations: []state.ConnectionInstallation{{InstallationID: completion.InstallationID, AccountID: proved.AccountID, AccountLogin: proved.AccountLogin}}, CredentialHandle: githubexternal.CredentialHandle(connectionID), ActorID: authenticatedActorID(r.Context()), CreatedAt: at, AuditEventID: s.idGenerator("external_audit")},
 		})
+		if finalizeErr != nil {
+			published, publicationErr := s.connectionCredentialPublished(completionCtx, connectionID, "app_private_key", 1)
+			if publicationErr == nil && published {
+				return nil
+			}
+			if connection.ConnectionID == connectionID && !errors.Is(publicationErr, state.ErrExternalNotFound) {
+				return &state.CommitOutcomeUnknownError{
+					Operation: "finalize GitHub manifest connection", ResourceID: connectionID,
+					Cause: errors.Join(finalizeErr, publicationErr),
+				}
+			}
+		}
 		return finalizeErr
 	})
 	if err != nil {
-		s.manifestFlows.Fail(flowID, "Kingdom could not save the validated connection. Start a new setup flow.")
+		s.manifestFlows.Fail(flowID, "The connection outcome could not be confirmed. Check saved connections before starting a new setup flow.")
+		var commitErr *state.CommitOutcomeUnknownError
+		if errors.As(err, &commitErr) {
+			connectionID := strings.TrimSpace(commitErr.ResourceID)
+			writeCommitOutcomePending(w, r, "api.github_manifest.complete",
+				"GitHub connection outcome is still being confirmed; retry later with the same idempotency key",
+				map[string]any{"connection_id": connectionID})
+			return
+		}
 		if isUniqueConstraintError(err) {
 			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, "this GitHub installation is already connected", "api.github_manifest.complete", nil)
 			return

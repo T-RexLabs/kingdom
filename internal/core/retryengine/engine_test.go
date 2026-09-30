@@ -42,7 +42,7 @@ func TestPlanAppliesBackoffAndFullJitterForRetryableCodes(t *testing.T) {
 
 	engine := loadEngineWithRandom(t, fixedRandom{value: 0.5})
 
-	first, err := engine.Plan(errorcatalog.CodeTransientTransport, 0)
+	first, err := engine.Plan(errorcatalog.CodeLLMRateLimited, 0)
 	if err != nil {
 		t.Fatalf("plan first retry: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestPlanAppliesBackoffAndFullJitterForRetryableCodes(t *testing.T) {
 		t.Fatalf("unexpected first delay: got %s want 500ms", first.NextDelay)
 	}
 
-	second, err := engine.Plan(errorcatalog.CodeTransientTransport, 1)
+	second, err := engine.Plan(errorcatalog.CodeLLMRateLimited, 1)
 	if err != nil {
 		t.Fatalf("plan second retry: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestPlanAppliesBackoffAndFullJitterForRetryableCodes(t *testing.T) {
 		t.Fatalf("unexpected second delay: got %s want 1s", second.NextDelay)
 	}
 
-	third, err := engine.Plan(errorcatalog.CodeTransientTransport, 2)
+	third, err := engine.Plan(errorcatalog.CodeLLMRateLimited, 2)
 	if err != nil {
 		t.Fatalf("plan third retry: %v", err)
 	}
@@ -119,6 +119,33 @@ func TestPlanFastFailsNonRetryables(t *testing.T) {
 	}
 }
 
+func TestCanonicalRetryBudgets(t *testing.T) {
+	t.Parallel()
+
+	engine := loadEngineWithRandom(t, fixedRandom{value: 0.5})
+	tests := []struct {
+		code       errorcatalog.Code
+		maxRetries int
+	}{
+		{code: errorcatalog.CodeTransientTransport, maxRetries: 1},
+		{code: errorcatalog.CodeTimeout, maxRetries: 1},
+		{code: errorcatalog.CodeLLMRateLimited, maxRetries: 3},
+		{code: errorcatalog.CodeLLMModelUnavailable, maxRetries: 3},
+		{code: errorcatalog.CodeLLMUsageLimitReached, maxRetries: 0},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.code), func(t *testing.T) {
+			result, err := engine.Plan(tt.code, 0)
+			if err != nil {
+				t.Fatalf("plan retry budget: %v", err)
+			}
+			if result.MaxRetries != tt.maxRetries {
+				t.Fatalf("max retries=%d, want %d", result.MaxRetries, tt.maxRetries)
+			}
+		})
+	}
+}
+
 func TestPlanEmitsDeadLetterEscalationOnExhaustion(t *testing.T) {
 	t.Parallel()
 
@@ -163,6 +190,9 @@ func TestPerCodeRetryBehaviorSuite(t *testing.T) {
 				t.Fatalf("missing policy class for %q", code)
 			}
 			class := engine.classes[className]
+			if className != profile.RetryClass {
+				t.Fatalf("policy class=%q, want catalog class %q", className, profile.RetryClass)
+			}
 
 			first, err := engine.Plan(code, 0)
 			if err != nil {
@@ -189,6 +219,9 @@ func TestPerCodeRetryBehaviorSuite(t *testing.T) {
 				t.Fatalf("did not expect dead-letter escalation for fast-fail code %q", code)
 			}
 		})
+	}
+	if len(engine.codeToClass) != len(errorcatalog.AllCodes()) {
+		t.Fatalf("policy mappings=%d, catalog codes=%d", len(engine.codeToClass), len(errorcatalog.AllCodes()))
 	}
 }
 

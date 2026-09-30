@@ -12,6 +12,7 @@ function buildOperation(overrides: Partial<PlannerOperationState>): PlannerOpera
     replyText: "",
     formalizeText: "",
     error: null,
+    activityReconciled: false,
     events: [],
     activityItems: [],
     ...overrides,
@@ -309,7 +310,7 @@ describe("planner transcript view model", () => {
         assistantCreatedAt: "2026-04-21T10:00:01Z",
         pendingReply: { contentMarkdown: "abandoned" },
         replyText: "partial stream that never finished",
-        error: "missing completion receipt evidence id",
+        error: "provider operation did not settle",
       }),
     });
 

@@ -24,15 +24,6 @@ agent_policy:
 
 timeouts:
   strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-    - 1s
-    - 2s
-    - 3s
-    - 5s
-  dispatch_ack_timeout: 5s
   first_event_timeout: 60s
   stream_inactivity_timeout: 10m
   cancel_grace_timeout: 5s
@@ -43,21 +34,6 @@ timeouts:
     plan_drafting: 15m
     delegated_execution: 20m
     validation_gates: 20m
-
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - invalid_output_schema
-    - policy_violation
-    - idempotency_conflict
-    - idempotency_key_expired
-    - dependency_blocked
-    - llm_invalid_response
-    - llm_context_overflow
 
 escalation:
   retry_exhausted_target_role: chancellor

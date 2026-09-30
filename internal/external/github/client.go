@@ -1,6 +1,7 @@
 package github
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -33,17 +34,18 @@ const (
 )
 
 type ClientConfig struct {
-	HTTPClient        *http.Client
-	Keys              *KeyStore
-	UserTokens        *UserTokenStore
-	DeviceOAuth       *DeviceOAuthClient
-	SharedClientID    string
-	Now               func() time.Time
-	BaseURL           string
-	AllowTestEndpoint bool
-	GlobalConcurrency int
-	RetryDelay        func(attempt int) time.Duration
-	OperationTimeout  time.Duration
+	HTTPClient               *http.Client
+	Keys                     *KeyStore
+	UserTokens               *UserTokenStore
+	DeviceOAuth              *DeviceOAuthClient
+	SharedClientID           string
+	UserCredentialGeneration func(context.Context, string) (int, error)
+	Now                      func() time.Time
+	BaseURL                  string
+	AllowTestEndpoint        bool
+	GlobalConcurrency        int
+	RetryDelay               func(attempt int) time.Duration
+	OperationTimeout         time.Duration
 }
 type cachedToken struct {
 	value   string
@@ -54,29 +56,30 @@ type tokenCacheKey struct {
 	credentialGeneration                                       int
 }
 type Client struct {
-	http              *http.Client
-	keys              *KeyStore
-	userTokens        *UserTokenStore
-	deviceOAuth       *DeviceOAuthClient
-	sharedClientID    string
-	now               func() time.Time
-	base              string
-	tokensMu          sync.Mutex
-	tokens            map[tokenCacheKey]cachedToken
-	mintMu            sync.Mutex
-	mints             map[tokenCacheKey]*tokenMint
-	epochs            map[string]uint64
-	gateMu            sync.Mutex
-	gates             map[string]chan struct{}
-	global            chan struct{}
-	retryDelay        func(int) time.Duration
-	operationTimeout  time.Duration
-	strategiesMu      sync.RWMutex
-	strategies        map[string]string
-	userRefreshMu     sync.Mutex
-	userRefreshLocks  map[string]*sync.Mutex
-	repositoryIndexMu sync.Mutex
-	repositoryIndex   map[string]*connectionRepositoryIndex
+	http                     *http.Client
+	keys                     *KeyStore
+	userTokens               *UserTokenStore
+	deviceOAuth              *DeviceOAuthClient
+	sharedClientID           string
+	userCredentialGeneration func(context.Context, string) (int, error)
+	now                      func() time.Time
+	base                     string
+	tokensMu                 sync.Mutex
+	tokens                   map[tokenCacheKey]cachedToken
+	mintMu                   sync.Mutex
+	mints                    map[tokenCacheKey]*tokenMint
+	epochs                   map[string]uint64
+	gateMu                   sync.Mutex
+	gates                    map[string]chan struct{}
+	global                   chan struct{}
+	retryDelay               func(int) time.Duration
+	operationTimeout         time.Duration
+	strategiesMu             sync.RWMutex
+	strategies               map[string]string
+	userRefreshMu            sync.Mutex
+	userRefreshLocks         map[string]*sync.Mutex
+	repositoryIndexMu        sync.Mutex
+	repositoryIndex          map[string]*connectionRepositoryIndex
 }
 
 const (
@@ -99,6 +102,7 @@ const (
 type connectionRepositoryIndex struct {
 	rowVersion int
 	byID       map[string]external.Repository
+	order      []string
 }
 
 type tokenMint struct {
@@ -111,8 +115,8 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if cfg.Keys == nil && cfg.UserTokens == nil {
 		return nil, fmt.Errorf("github credential store is required")
 	}
-	if cfg.UserTokens != nil && (cfg.DeviceOAuth == nil || !clientIDPattern.MatchString(cfg.SharedClientID)) {
-		return nil, fmt.Errorf("github user token refresh requires shared client id and device oauth client")
+	if cfg.UserTokens != nil && (cfg.DeviceOAuth == nil || !clientIDPattern.MatchString(cfg.SharedClientID) || cfg.UserCredentialGeneration == nil) {
+		return nil, fmt.Errorf("github user token refresh requires shared client id, device oauth client, and credential generation selector")
 	}
 	base := strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/")
 	if base == "" {
@@ -157,7 +161,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	if opTimeout <= 0 {
 		opTimeout = operationTimeout
 	}
-	return &Client{http: hc, keys: cfg.Keys, userTokens: cfg.UserTokens, deviceOAuth: cfg.DeviceOAuth, sharedClientID: cfg.SharedClientID, now: now, base: base, tokens: map[tokenCacheKey]cachedToken{}, mints: map[tokenCacheKey]*tokenMint{}, epochs: map[string]uint64{}, gates: map[string]chan struct{}{}, global: make(chan struct{}, globalConcurrency), retryDelay: retryDelay, operationTimeout: opTimeout, strategies: map[string]string{}, userRefreshLocks: map[string]*sync.Mutex{}}, nil
+	return &Client{http: hc, keys: cfg.Keys, userTokens: cfg.UserTokens, deviceOAuth: cfg.DeviceOAuth, sharedClientID: cfg.SharedClientID, userCredentialGeneration: cfg.UserCredentialGeneration, now: now, base: base, tokens: map[tokenCacheKey]cachedToken{}, mints: map[tokenCacheKey]*tokenMint{}, epochs: map[string]uint64{}, gates: map[string]chan struct{}{}, global: make(chan struct{}, globalConcurrency), retryDelay: retryDelay, operationTimeout: opTimeout, strategies: map[string]string{}, userRefreshLocks: map[string]*sync.Mutex{}}, nil
 }
 func safeRedirectForOrigin(origin *url.URL) func(*http.Request, []*http.Request) error {
 	return func(req *http.Request, via []*http.Request) error {
@@ -231,7 +235,7 @@ func (c *Client) Validate(ctx context.Context, conn state.ExternalConnection) (e
 	if conn.CredentialStrategy == "user_access_token" {
 		return c.validateSharedInstallations(ctx, conn)
 	}
-	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
+	if conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return external.ConnectionValidation{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	return c.validateAppKeyInstallations(ctx, conn)
@@ -245,6 +249,15 @@ func (c *Client) assertRepositoriesBelongToInstallation(ctx context.Context, con
 	items, _, err := c.installationRepositoryPage(ctx, conn, installationID, 1)
 	if err != nil {
 		return err
+	}
+	return assertRepositoriesBelongToAccount(items, accountID)
+}
+
+// Health validation supplies an unpinned candidate account ID; repository
+// listing supplies the saved, already-pinned installation identity.
+func assertRepositoriesBelongToAccount(items []external.Repository, accountID string) error {
+	if accountID == "" {
+		return &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	for _, repository := range items {
 		if repository.AccountID == "" || repository.AccountID != accountID {
@@ -479,6 +492,13 @@ func (c *Client) userAccessToken(ctx context.Context, connectionID string, gener
 			token = current.AccessToken
 			return nil
 		}
+		selected, err := c.userCredentialGeneration(ctx, connectionID)
+		if err != nil {
+			return fmt.Errorf("load github user credential publication: %w", err)
+		}
+		if selected != generation {
+			return &external.ProviderError{Class: external.FailureAuthentication}
+		}
 		rotated, err := c.deviceOAuth.Refresh(ctx, c.sharedClientID, current.RefreshToken)
 		if err != nil {
 			return err
@@ -531,9 +551,10 @@ func (c *Client) installationRepositoryPage(ctx context.Context, conn state.Exte
 
 // ListRepositories walks the connection's installations in a stable order,
 // accumulating a Kingdom page rather than handing back whatever one provider
-// page happened to hold. The cursor carries which installation it is on as well
-// as the page within it, so paging cannot repeat or skip a grant when a
-// connection covers several accounts.
+// page happened to hold. The cursor carries the installation, provider page,
+// and position within that page, so the bounded result can resume without
+// repeating or skipping the remainder when a connection covers several
+// accounts.
 //
 // One provider page per request was a leaked implementation detail with two
 // operator-visible costs. A connection covering several accounts that each
@@ -553,7 +574,7 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 	if len(installations) == 0 {
 		return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureAuthentication}
 	}
-	index, page := decodeRepositoryCursor(cursor)
+	index, page, offset := decodeRepositoryCursor(cursor)
 	query := strings.ToLower(strings.TrimSpace(search))
 
 	out := external.RepositoryPage{Items: make([]external.Repository, 0, repositoryPageSize)}
@@ -563,8 +584,8 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 	// malformed response, so it is absorbed rather than failed.
 	seen := make(map[string]struct{}, repositoryPageSize)
 	for requests := 0; index < len(installations); {
-		if requests >= repositoryRequestBudget || len(out.Items) >= repositoryPageSize {
-			out.NextCursor = encodeRepositoryCursor(index, page)
+		if requests >= repositoryRequestBudget {
+			out.NextCursor = encodeRepositoryCursor(index, page, offset)
 			return out, nil
 		}
 		installation := installations[index]
@@ -572,9 +593,19 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 		if err != nil {
 			return external.RepositoryPage{}, err
 		}
+		if err := assertRepositoriesBelongToAccount(items, installation.AccountID); err != nil {
+			return external.RepositoryPage{}, err
+		}
 		requests++
 		c.rememberRepositories(conn, items)
-		for _, item := range items {
+		if offset > len(items) {
+			offset = len(items)
+		}
+		for itemIndex := 0; itemIndex < offset; itemIndex++ {
+			seen[items[itemIndex].ID] = struct{}{}
+		}
+		for itemIndex := offset; itemIndex < len(items); itemIndex++ {
+			item := items[itemIndex]
 			if _, duplicate := seen[item.ID]; duplicate {
 				continue
 			}
@@ -582,16 +613,31 @@ func (c *Client) ListRepositories(ctx context.Context, conn state.ExternalConnec
 			if query == "" || strings.Contains(strings.ToLower(item.Locator), query) {
 				out.Items = append(out.Items, item)
 			}
+			if len(out.Items) == repositoryPageSize {
+				nextIndex, nextPage, nextOffset := index, page, itemIndex+1
+				if nextOffset >= len(items) {
+					nextOffset = 0
+					if more {
+						nextPage++
+					} else {
+						nextIndex++
+						nextPage = 1
+					}
+				}
+				if nextIndex < len(installations) {
+					out.NextCursor = encodeRepositoryCursor(nextIndex, nextPage, nextOffset)
+				}
+				return out, nil
+			}
 		}
 		if more {
-			if page >= 100 {
-				return external.RepositoryPage{}, &external.ProviderError{Class: external.FailureOversizedResponse}
-			}
 			page++
+			offset = 0
 			continue
 		}
 		index++
 		page = 1
+		offset = 0
 	}
 	return out, nil
 }
@@ -615,10 +661,14 @@ func (c *Client) rememberRepositories(conn state.ExternalConnection, items []ext
 		index = &connectionRepositoryIndex{rowVersion: conn.RowVersion, byID: map[string]external.Repository{}}
 		c.repositoryIndex[conn.ConnectionID] = index
 	}
-	if len(index.byID) >= maxIndexedRepositories {
-		return
-	}
 	for _, item := range items {
+		if _, exists := index.byID[item.ID]; !exists {
+			if len(index.order) == maxIndexedRepositories {
+				delete(index.byID, index.order[0])
+				index.order = index.order[1:]
+			}
+			index.order = append(index.order, item.ID)
+		}
 		index.byID[item.ID] = item
 	}
 }
@@ -637,41 +687,59 @@ func (c *Client) indexedRepository(conn state.ExternalConnection, id string) (ex
 }
 
 // repository resolves a repository ID back to the locator and installation that
-// grants it.
-//
-// Every issue listing and every preview goes through here, and the fallback is
-// a walk of the connection's entire grant. Remembering what the picker's own
-// repository listing already learned turns that walk into a map read for the
-// path an operator actually takes — select a repository, then read its issues —
-// while leaving the walk in place for cold callers such as a refresh after
-// restart.
-func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id string) (external.Repository, error) {
+// grants it. The cache is the normal picker-to-issue path; a cold lookup checks
+// one bounded discovery page before probing every covered installation through
+// GitHub's direct repository endpoint. A shared user token is probed once and
+// its returned owner is rebound to the matching installation in the saved set.
+func (c *Client) repository(ctx context.Context, conn state.ExternalConnection, id, installationID string) (external.Repository, error) {
+	if installationID != "" {
+		repository, err := c.directRepository(ctx, conn, id, "", installationID)
+		if err == nil || !isProviderNotFound(err) || strings.TrimSpace(conn.CredentialStrategy) == "user_access_token" {
+			return repository, err
+		}
+		lastNotFound := err
+		// The stored installation is the first choice, but a transferred
+		// repository may now be visible only through another installation in
+		// this validated connection. Never broaden the search beyond that set.
+		for _, installation := range conn.Installations {
+			if installation.InstallationID == installationID {
+				continue
+			}
+			repository, err = c.directRepository(ctx, conn, id, "", installation.InstallationID)
+			if err == nil {
+				return repository, nil
+			}
+			if !isProviderNotFound(err) {
+				return external.Repository{}, err
+			}
+			lastNotFound = err
+		}
+		return external.Repository{}, lastNotFound
+	}
 	if item, ok := c.indexedRepository(conn, id); ok {
 		return item, nil
 	}
-	cursor := ""
-	for pages := 0; pages < 100; pages++ {
-		p, err := c.ListRepositories(ctx, conn, "", cursor)
-		if err != nil {
-			return external.Repository{}, err
-		}
-		for _, r := range p.Items {
-			if r.ID == id {
-				return r, nil
-			}
-		}
-		if p.NextCursor == "" {
-			break
-		}
-		cursor = p.NextCursor
+	page, err := c.ListRepositories(ctx, conn, "", "")
+	if err != nil {
+		return external.Repository{}, err
 	}
-	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+	for _, item := range page.Items {
+		if item.ID == id {
+			return item, nil
+		}
+	}
+	return c.directRepository(ctx, conn, id, "", "")
+}
+
+func isProviderNotFound(err error) bool {
+	var providerErr *external.ProviderError
+	return errors.As(err, &providerErr) && providerErr.Class == external.FailureInaccessibleOrMissing && providerErr.Status == http.StatusNotFound
 }
 
 func (c *Client) ListIssues(ctx context.Context, conn state.ExternalConnection, repositoryID, stateFilter, search, cursor string) (external.IssuePage, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	repo, err := c.repository(ctx, conn, repositoryID)
+	repo, err := c.repository(ctx, conn, repositoryID, "")
 	if err != nil {
 		return external.IssuePage{}, err
 	}
@@ -747,7 +815,7 @@ type githubIssue struct {
 func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (external.IssueResult, error) {
 	ctx, cancel := c.operationContext(ctx)
 	defer cancel()
-	repo, err := c.repository(ctx, req.Connection, req.RepositoryID)
+	repo, err := c.repository(ctx, req.Connection, req.RepositoryID, req.RepositoryInstallationID)
 	if err != nil {
 		return external.IssueResult{}, err
 	}
@@ -763,16 +831,16 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 		if providerError && pe.Status == 304 {
 			profile := req.Profile
 			if !profile.IncludeComments {
-				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
+				return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
 			comments, fetched, fetchedPages, omitted, omittedPages, commentETag, commentsUnchanged, commentErr := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, repo.Locator, req.IssueNumber, req.CommentsETag, req.CurrentCommentCount)
 			if commentErr != nil {
 				return external.IssueResult{}, commentErr
 			}
 			if commentsUnchanged {
-				return external.IssueResult{NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
+				return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, NotModified: true, Profile: profile, ETag: req.ETag, CommentsETag: req.CommentsETag}, nil
 			}
-			return external.IssueResult{RepositoryID: req.RepositoryID, NativeID: req.ProviderNativeID, Issue: req.CurrentIssue, Profile: profile, Comments: comments, ProviderCommentCount: req.CurrentCommentCount, FetchedCommentCount: fetched, FetchedCommentPages: fetchedPages, OmittedCommentCount: omitted, OmittedCommentPages: omittedPages, ETag: req.ETag, CommentsETag: commentETag}, nil
+			return external.IssueResult{RepositoryID: repo.ID, RepositoryInstallationID: repo.InstallationID, NativeID: req.ProviderNativeID, Issue: req.CurrentIssue, Profile: profile, Comments: comments, ProviderCommentCount: req.CurrentCommentCount, FetchedCommentCount: fetched, FetchedCommentPages: fetchedPages, OmittedCommentCount: omitted, OmittedCommentPages: omittedPages, ETag: req.ETag, CommentsETag: commentETag}, nil
 		}
 		if providerError && pe.Status >= 300 && pe.Status < 400 {
 			return external.IssueResult{}, &external.ProviderError{Class: external.FailureMalformedResponse}
@@ -853,8 +921,11 @@ func (c *Client) FetchIssue(ctx context.Context, req external.IssueRequest) (ext
 	if err := validateResponseValidators(response.Header.Get("ETag"), response.Header.Get("Last-Modified")); err != nil {
 		return external.IssueResult{}, err
 	}
-	out := external.IssueResult{RepositoryID: destination.ID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
+	out := external.IssueResult{RepositoryID: destination.ID, RepositoryInstallationID: destination.InstallationID, NativeID: item.NativeID, Issue: item.Issue, Profile: req.Profile, ProviderCommentCount: issue.Comments, ETag: response.Header.Get("ETag"), LastModified: response.Header.Get("Last-Modified"), Transferred: redirected}
 	if out.Profile.IncludeComments {
+		if req.ProviderNativeID != "" && req.CurrentCommentCount != issue.Comments {
+			commentETag = ""
+		}
 		comments, fetched, fetchedPages, omitted, omittedPages, fetchedCommentETag, unchanged, e := c.fetchComments(ctx, req.Connection.ConnectionID, req.Connection.CredentialGeneration, token, destination.Locator, issue.Number, commentETag, issue.Comments)
 		if e != nil {
 			return out, e
@@ -932,131 +1003,232 @@ func (c *Client) permanentTransferLocation(response responseMetadata) (*url.URL,
 }
 
 func (c *Client) repositoryByLocator(ctx context.Context, conn state.ExternalConnection, locator string) (external.Repository, error) {
-	cursor := ""
-	for pages := 0; pages < 100; pages++ {
-		page, err := c.ListRepositories(ctx, conn, "", cursor)
+	page, err := c.ListRepositories(ctx, conn, "", "")
+	if err != nil {
+		return external.Repository{}, err
+	}
+	for _, item := range page.Items {
+		if strings.EqualFold(item.Locator, locator) {
+			return item, nil
+		}
+	}
+	return c.directRepository(ctx, conn, "", locator, "")
+}
+
+// directRepository resolves one stable repository coordinate without replaying a
+// paginated grant walk. App installation credentials must be tried in stable
+// order because GitHub scopes each token to one installation. This cannot stop
+// at the discovery budget: a cold source coordinate may belong to any covered
+// installation. Shared user credentials cover every installation and need only
+// one request.
+func (c *Client) directRepository(ctx context.Context, conn state.ExternalConnection, id, locator, installationID string) (external.Repository, error) {
+	var path string
+	if id != "" {
+		parsedID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || parsedID <= 0 || strconv.FormatInt(parsedID, 10) != id {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+		path = "/repositories/" + id
+	} else {
+		validatedLocator, err := validateRepositoryLocator(locator)
+		if err != nil {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+		locator = validatedLocator
+		path = "/repos/" + locator
+	}
+	if len(conn.Installations) == 0 {
+		return external.Repository{}, &external.ProviderError{Class: external.FailureAuthentication}
+	}
+	installations := conn.Installations
+	strategy := conn.CredentialStrategy
+	if strategy == "" {
+		strategy = "app_private_key"
+	}
+	if strategy == "user_access_token" {
+		// A shared user token is not scoped to one installation. Use it once,
+		// then bind the returned repository to whichever saved grant currently
+		// owns the account (which may have changed after a repository transfer).
+		installations = installations[:1]
+	} else if installationID != "" {
+		installations = nil
+		for _, installation := range conn.Installations {
+			if installation.InstallationID == installationID {
+				installations = append(installations, installation)
+				break
+			}
+		}
+		if len(installations) == 0 {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		}
+	}
+	var lastNotFound error
+	for _, installation := range installations {
+		token, err := c.accessToken(ctx, conn, installation.InstallationID)
 		if err != nil {
 			return external.Repository{}, err
 		}
-		for _, item := range page.Items {
-			if item.Locator == locator {
-				return item, nil
+		var response githubRepository
+		if _, err = c.doJSON(ctx, conn.ConnectionID, conn.CredentialGeneration, http.MethodGet, path, token, nil, &response, ""); err != nil {
+			if isProviderNotFound(err) {
+				lastNotFound = err
+				continue
 			}
+			return external.Repository{}, err
 		}
-		if page.NextCursor == "" {
-			return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
+		items, err := normalizeRepositories([]githubRepository{response})
+		if err != nil {
+			return external.Repository{}, err
 		}
-		cursor = page.NextCursor
+		repository := items[0]
+		if id != "" && repository.ID != id || locator != "" && !strings.EqualFold(repository.Locator, locator) {
+			return external.Repository{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+		}
+		if strategy == "user_access_token" {
+			for _, granted := range conn.Installations {
+				if strings.TrimSpace(granted.AccountID) != "" && granted.AccountID == repository.AccountID {
+					repository.InstallationID = granted.InstallationID
+					break
+				}
+			}
+			if repository.InstallationID == "" {
+				return external.Repository{}, &external.ProviderError{Class: external.FailureAuthentication}
+			}
+		} else {
+			if installation.AccountID != "" && repository.AccountID != installation.AccountID {
+				return external.Repository{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			repository.InstallationID = installation.InstallationID
+		}
+		c.rememberRepositories(conn, []external.Repository{repository})
+		return repository, nil
 	}
-	return external.Repository{}, &external.ProviderError{Class: external.FailureOversizedResponse}
+	if lastNotFound != nil {
+		return external.Repository{}, lastNotFound
+	}
+	return external.Repository{}, &external.ProviderError{Class: external.FailureInaccessibleOrMissing}
 }
 
-func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) ([]state.ExternalComment, int, int, int, int, string, bool, error) {
-	firstPage, lastPage := retainedCommentPageWindow(providerCount)
+func (c *Client) fetchComments(ctx context.Context, connectionID string, generation int, token, repo string, number int, etag string, providerCount int) (state.ExternalCommentSource, int, int, int, int, string, bool, error) {
+	firstPage, lastPage := completeCommentPageWindow(providerCount)
 	priorValidators := decodeCommentValidators(etag)
 	reuseValidators := commentValidatorWindowMatches(priorValidators, firstPage, lastPage)
-	lastValidator := ""
+	var firstResponse *commentPage
+	defer func() {
+		if firstResponse != nil {
+			_ = firstResponse.Close()
+		}
+	}()
 	if reuseValidators {
-		lastValidator = priorValidators[lastPage]
+		allUnchanged := true
+		for page := firstPage; page <= lastPage; page++ {
+			item, err := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, page, priorValidators[page])
+			if err != nil {
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			linkedLast, hasLast, err := commentLinkPage(item.headers, "last")
+			if err != nil {
+				_ = item.Close()
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			next, hasNext, err := commentLinkPage(item.headers, "next")
+			if err != nil {
+				_ = item.Close()
+				return nil, 0, 0, 0, 0, "", false, err
+			}
+			if !item.notModified || (hasLast && linkedLast != lastPage) || (hasNext && next != page+1) || (page == lastPage && hasNext) {
+				if page == 1 && !item.notModified {
+					firstResponse = &item
+				} else {
+					_ = item.Close()
+				}
+				allUnchanged = false
+				break
+			}
+		}
+		if allUnchanged {
+			return nil, 0, 0, 0, 0, encodeCommentValidators(priorValidators), true, nil
+		}
 	}
-	pages := map[int]commentPage{}
-	last, err := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, lastValidator)
+	spool, err := state.NewExternalCommentSpool()
 	if err != nil {
 		return nil, 0, 0, 0, 0, "", false, err
 	}
-	if !last.notModified {
-		if linkedLast, ok, parseErr := commentLinkPage(last.headers, "last"); parseErr != nil {
-			return nil, 0, 0, 0, 0, "", false, parseErr
-		} else if ok && linkedLast != lastPage {
-			lastPage = linkedLast
-			reuseValidators = false
-			last, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, lastPage, "")
-			if err != nil {
-				return nil, 0, 0, 0, 0, "", false, err
-			}
+	success := false
+	defer func() {
+		if !success {
+			_ = spool.Close()
 		}
-	}
-	pages[lastPage] = last
-	tailCount := providerCount - (lastPage-1)*100
-	if !last.notModified {
-		tailCount = len(last.raw)
-	}
-	firstPage = lastPage
-	if lastPage > 1 && tailCount < 100 {
-		firstPage = lastPage - 1
-	}
-	if !commentValidatorWindowMatches(priorValidators, firstPage, lastPage) {
-		reuseValidators = false
-	}
-	if firstPage != lastPage {
-		previousValidator := ""
-		if reuseValidators {
-			previousValidator = priorValidators[firstPage]
-		}
-		previous, fetchErr := c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, firstPage, previousValidator)
-		if fetchErr != nil {
-			return nil, 0, 0, 0, 0, "", false, fetchErr
-		}
-		pages[firstPage] = previous
-	}
-
-	allUnchanged := true
-	for _, page := range pages {
-		allUnchanged = allUnchanged && page.notModified
-	}
-	validators := make(map[int]string, len(pages))
-	if allUnchanged && reuseValidators {
-		for page := firstPage; page <= lastPage; page++ {
-			validators[page] = priorValidators[page]
-		}
-		return nil, 0, 0, 0, 0, encodeCommentValidators(validators), true, nil
-	}
-
-	combined := make([]state.ExternalComment, 0, 200)
-	for page := firstPage; page <= lastPage; page++ {
-		item := pages[page]
-		if item.notModified {
+	}()
+	validators := make(map[int]string)
+	fetched, fetchedPages := 0, 0
+	var previousID int64
+	for page := 1; ; page++ {
+		var item commentPage
+		var err error
+		if page == 1 && firstResponse != nil {
+			item = *firstResponse
+			firstResponse = nil
+		} else {
 			item, err = c.fetchCommentPage(ctx, connectionID, generation, token, repo, number, page, "")
-			if err != nil {
-				return nil, 0, 0, 0, 0, "", false, err
-			}
+		}
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if item.notModified {
+			_ = item.Close()
+			return nil, 0, 0, 0, 0, "", false, malformedResponse()
 		}
 		validators[page] = item.etag
-		combined = append(combined, item.comments...)
-	}
-	for i := 1; i < len(combined); i++ {
-		previous, previousErr := strconv.ParseInt(combined[i-1].ProviderCommentID, 10, 64)
-		current, currentErr := strconv.ParseInt(combined[i].ProviderCommentID, 10, 64)
-		if previousErr != nil || currentErr != nil || current <= previous {
-			return nil, 0, 0, 0, 0, "", false, &external.ProviderError{Class: external.FailureMalformedResponse}
+		replayErr := state.ReplayExternalComments(ctx, item.comments, func(comment state.ExternalComment) error {
+			id, err := strconv.ParseInt(comment.ProviderCommentID, 10, 64)
+			if err != nil || id <= previousID {
+				return malformedResponse()
+			}
+			previousID = id
+			if err := spool.Append(comment); err != nil {
+				return err
+			}
+			fetched++
+			return nil
+		})
+		if err := errors.Join(replayErr, item.Close()); err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if item.count > 0 {
+			fetchedPages++
+		}
+		next, hasNext, err := commentLinkPage(item.headers, "next")
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if hasNext && next != page+1 {
+			return nil, 0, 0, 0, 0, "", false, malformedResponse()
+		}
+		linkedLast, hasLast, err := commentLinkPage(item.headers, "last")
+		if err != nil {
+			return nil, 0, 0, 0, 0, "", false, err
+		}
+		if hasLast {
+			lastPage = linkedLast
+		}
+		if !hasNext && !(item.count == 100 && page < lastPage) {
+			break
 		}
 	}
-	if len(combined) > 100 {
-		combined = combined[len(combined)-100:]
+	if err := spool.Seal(); err != nil {
+		return nil, 0, 0, 0, 0, "", false, err
 	}
-	fetched := len(combined)
-	omitted := providerCount - fetched
-	if omitted < 0 {
-		omitted = 0
-	}
-	fetchedPages := len(pages)
-	if providerCount == 0 && fetched == 0 {
-		fetchedPages = 0
-	}
-	omittedPages := (omitted + 99) / 100
-	return combined, fetched, fetchedPages, omitted, omittedPages, encodeCommentValidators(validators), false, nil
+	success = true
+	return spool, fetched, fetchedPages, 0, 0, encodeCommentValidators(validators), false, nil
 }
 
-func retainedCommentPageWindow(providerCount int) (int, int) {
-	lastPage := (providerCount + 99) / 100
-	if lastPage < 1 {
-		lastPage = 1
+func completeCommentPageWindow(providerCount int) (int, int) {
+	lastPage := 1
+	if providerCount > 0 {
+		lastPage = 1 + (providerCount-1)/100
 	}
-	firstPage := lastPage
-	if lastPage > 1 && providerCount-(lastPage-1)*100 < 100 {
-		firstPage--
-	}
-	return firstPage, lastPage
+	return 1, lastPage
 }
 
 func commentValidatorWindowMatches(validators map[int]string, firstPage, lastPage int) bool {
@@ -1072,30 +1244,86 @@ func commentValidatorWindowMatches(validators map[int]string, firstPage, lastPag
 }
 
 type commentPage struct {
-	raw         []githubComment
-	comments    []state.ExternalComment
+	comments    state.ExternalCommentSource
+	count       int
 	headers     http.Header
 	etag        string
 	notModified bool
 }
 
+func (p commentPage) Close() error { return state.CloseExternalComments(p.comments) }
+
+type commentResponseStream struct {
+	repo          string
+	number, count int
+	spool         *state.ExternalCommentSpool
+}
+
+func (s *commentResponseStream) DecodeJSON(decoder *json.Decoder) error {
+	token, err := decoder.Token()
+	if err != nil {
+		return err
+	}
+	if token != json.Delim('[') {
+		return malformedResponse()
+	}
+	s.spool, err = state.NewExternalCommentSpool()
+	if err != nil {
+		return err
+	}
+	var previous int64
+	for decoder.More() {
+		if s.count >= 100 {
+			return malformedResponse()
+		} // Upstream per_page contract, not an import ceiling.
+		var raw githubComment
+		if err := decoder.Decode(&raw); err != nil {
+			return err
+		}
+		comments, err := normalizeComments([]githubComment{raw}, s.repo, s.number)
+		if err != nil {
+			return err
+		}
+		if raw.ID <= previous {
+			return malformedResponse()
+		}
+		previous = raw.ID
+		if err := s.spool.Append(comments[0]); err != nil {
+			return err
+		}
+		s.count++
+	}
+	if _, err := decoder.Token(); err != nil {
+		return err
+	}
+	return s.spool.Seal()
+}
+
 func (c *Client) fetchCommentPage(ctx context.Context, connectionID string, generation int, token, repo string, number, page int, etag string) (commentPage, error) {
-	var raw []githubComment
-	response, err := c.doJSONResponse(ctx, connectionID, generation, http.MethodGet, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, nil, &raw, etag)
+	stream := &commentResponseStream{repo: repo, number: number}
+	keep := false
+	defer func() {
+		if !keep && stream.spool != nil {
+			_ = stream.spool.Close()
+		}
+	}()
+	// A transfer between issue and comment requests must be revalidated through
+	// issue intake, not followed with a credential into an unchecked repository.
+	response, err := c.doIssueJSONResponse(ctx, connectionID, generation, fmt.Sprintf("/repos/%s/issues/%d/comments?per_page=100&page=%d", repo, number, page), token, stream, etag)
 	if err != nil {
 		if pe, ok := err.(*external.ProviderError); ok && pe.Status == http.StatusNotModified {
 			return commentPage{headers: response.Header, etag: etag, notModified: true}, nil
 		}
 		return commentPage{}, err
 	}
+	if response.Status != http.StatusOK {
+		return commentPage{}, malformedResponse()
+	}
 	if err := validateResponseValidators(response.Header.Get("ETag"), response.Header.Get("Last-Modified")); err != nil {
 		return commentPage{}, err
 	}
-	comments, err := normalizeComments(raw, repo, number)
-	if err != nil {
-		return commentPage{}, err
-	}
-	return commentPage{raw: raw, comments: comments, headers: response.Header, etag: response.Header.Get("ETag")}, nil
+	keep = true
+	return commentPage{comments: stream.spool, count: stream.count, headers: response.Header, etag: response.Header.Get("ETag")}, nil
 }
 
 type commentValidatorEnvelope struct {
@@ -1236,6 +1464,41 @@ func (c *Client) doJSONResponseMode(ctx context.Context, connectionID string, ge
 			}
 			return responseMetadata{}, &external.ProviderError{Class: external.FailureUnavailable}
 		}
+		// Issue and comment content has its own transport path. Decode directly
+		// from the body instead of copying it through the credential/setup byte
+		// ceiling. All other responses retain that ceiling, including failures.
+		if method == http.MethodGet && resp.StatusCode >= 200 && resp.StatusCode < 300 && isIssueContentPath(path) {
+			decoder := json.NewDecoder(resp.Body)
+			var decodeErr error
+			if streamed, ok := out.(interface{ DecodeJSON(*json.Decoder) error }); ok {
+				decodeErr = streamed.DecodeJSON(decoder)
+			} else {
+				decodeErr = decoder.Decode(out)
+			}
+			if decodeErr == nil {
+				remaining := bufio.NewReader(io.MultiReader(decoder.Buffered(), resp.Body))
+				for {
+					b, err := remaining.ReadByte()
+					if err == io.EOF {
+						break
+					}
+					if err != nil {
+						decodeErr = err
+						break
+					}
+					if b != ' ' && b != '\t' && b != '\r' && b != '\n' {
+						decodeErr = errors.New("trailing issue JSON")
+						break
+					}
+				}
+			}
+			_ = resp.Body.Close()
+			release()
+			if decodeErr != nil {
+				return responseMetadata{}, &external.ProviderError{Class: external.FailureMalformedResponse}
+			}
+			return responseMetadata{Header: resp.Header, FinalURL: resp.Request.URL, Status: resp.StatusCode}, nil
+		}
 		limited := io.LimitReader(resp.Body, maxResponseBytes+1)
 		raw, readErr := io.ReadAll(limited)
 		_ = resp.Body.Close()
@@ -1296,6 +1559,15 @@ func (c *Client) doJSONResponseMode(ctx context.Context, connectionID string, ge
 		}
 		return metadata, nil
 	}
+}
+
+func isIssueContentPath(path string) bool {
+	path, _, _ = strings.Cut(path, "?")
+	if path == "/search/issues" {
+		return true
+	}
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	return len(parts) >= 4 && len(parts) <= 6 && parts[0] == "repos" && parts[3] == "issues" && (len(parts) < 6 || parts[5] == "comments")
 }
 
 func (c *Client) isUserStrategy(connectionID string) bool {
@@ -1381,24 +1653,24 @@ func decodeCursor(v string) int {
 }
 
 // Repository paging walks the connection's installations as well as the pages
-// within each, so its cursor carries both.
-func encodeRepositoryCursor(index, page int) string {
-	raw, _ := json.Marshal(map[string]int{"installation": index, "page": page})
+// within each, so its cursor carries the installation, page, and item offset.
+func encodeRepositoryCursor(index, page, offset int) string {
+	raw, _ := json.Marshal(map[string]int{"installation": index, "page": page, "offset": offset})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
-func decodeRepositoryCursor(v string) (index int, page int) {
+func decodeRepositoryCursor(v string) (index int, page int, offset int) {
 	if v == "" {
-		return 0, 1
+		return 0, 1, 0
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(v)
 	if err != nil {
-		return 0, 1
+		return 0, 1, 0
 	}
 	var p map[string]int
-	if json.Unmarshal(raw, &p) != nil || p["page"] < 1 || p["installation"] < 0 {
-		return 0, 1
+	if json.Unmarshal(raw, &p) != nil || p["page"] < 1 || p["installation"] < 0 || p["offset"] < 0 || p["offset"] > repositoryPageSize {
+		return 0, 1, 0
 	}
-	return p["installation"], p["page"]
+	return p["installation"], p["page"], p["offset"]
 }
 func hasNext(h http.Header) bool { return strings.Contains(h.Get("Link"), `rel="next"`) }
 func transferredIssueCoordinates(v *url.URL) (string, int, error) {
@@ -1445,7 +1717,7 @@ func (c *Client) ListInstallations(ctx context.Context, conn state.ExternalConne
 		}
 		return out, nil
 	}
-	if conn.CredentialStrategy != "" && conn.CredentialStrategy != "app_private_key" || c.keys == nil {
+	if conn.CredentialStrategy != "app_private_key" || c.keys == nil {
 		return nil, &external.ProviderError{Class: external.FailureAuthentication}
 	}
 	key, _, err := c.keys.Load(conn.ConnectionID, conn.CredentialGeneration)

@@ -11,19 +11,20 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
 )
 
 type Store struct {
-	db       *sql.DB
-	root     string
-	blobRoot string
-	tempRoot string
+	db          *sql.DB
+	root        string
+	blobRoot    string
+	tempRoot    string
+	syncBlobDir func(string) error
 }
 
 type RunExecutionTarget struct {
@@ -36,9 +37,18 @@ type RunExecutionTarget struct {
 	TrustedSnapshotID   string
 	PublishedSnapshotID string
 	State               string
+	CleanupCursor       string
 	CreatedAt           string
 	UpdatedAt           string
 }
+
+type ResponseOnlyWorkspaceCleanupCandidate struct {
+	RunID     string
+	AttemptID string
+	MarkedAt  string
+}
+
+const executionTargetRemovalBatchSize = 128
 
 type SnapshotRecord struct {
 	SnapshotID       string
@@ -105,11 +115,179 @@ func NewStore(db *sql.DB, root string) (*Store, error) {
 			return nil, fmt.Errorf("create runtime fs path %q: %w", path, err)
 		}
 	}
-	return &Store{db: db, root: cleanRoot, blobRoot: blobRoot, tempRoot: tempRoot}, nil
+	store := &Store{db: db, root: cleanRoot, blobRoot: blobRoot, tempRoot: tempRoot}
+	store.syncBlobDir = store.syncBlobDirectoryDurably
+	return store, nil
 }
 
 func (s *Store) RunTargetRoot(runID string) string {
 	return filepath.Join(s.root, "run-targets", sanitizeToken(runID), "target")
+}
+
+func (s *Store) ResponseOnlyWorkspaceRoot(runID, attemptID string) string {
+	if s == nil || strings.TrimSpace(s.root) == "" {
+		return ""
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(s.root, filepath.FromSlash(relative))
+}
+
+// PrepareResponseOnlyWorkspace records cleanup debt before resetting an
+// attempt-scoped isolated copy path. It deliberately creates no execution
+// target or filesystem snapshot rows.
+func (s *Store) PrepareResponseOnlyWorkspace(ctx context.Context, runID, attemptID, markedAt string) (string, error) {
+	if s == nil || s.db == nil || strings.TrimSpace(s.root) == "" {
+		return "", fmt.Errorf("runtime fs store is required")
+	}
+	runID = strings.TrimSpace(runID)
+	attemptID = strings.TrimSpace(attemptID)
+	markedAt = strings.TrimSpace(markedAt)
+	if runID == "" || attemptID == "" || markedAt == "" {
+		return "", fmt.Errorf("run_id, attempt_id, and cleanup marker time are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, markedAt); err != nil {
+		return "", fmt.Errorf("parse response-only workspace cleanup marker time: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET response_only_workspace_cleanup_pending_at = ?, updated_at = ?
+		WHERE attempt_id = ? AND run_id = ? AND execution_mode = 'provider_backed'
+		  AND state IN ('queued', 'starting', 'running')`, markedAt, markedAt, attemptID, runID)
+	if err != nil {
+		return "", fmt.Errorf("mark response-only workspace cleanup pending: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", fmt.Errorf("read response-only workspace cleanup marker: %w", err)
+	}
+	if rows != 1 {
+		return "", fmt.Errorf("attempt %q is not active for a response-only workspace", attemptID)
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return "", err
+	}
+	root, err := securefs.OpenRoot(s.root)
+	if err != nil {
+		return "", fmt.Errorf("open runtime fs root for response-only workspace: %w", err)
+	}
+	defer root.Close()
+	if err := removeResponseOnlyWorkspaceTree(ctx, root, relative); err != nil {
+		return "", err
+	}
+	if err := root.EnsureDir(relative, 0o700); err != nil {
+		return "", fmt.Errorf("create response-only workspace: %w", err)
+	}
+	if err := root.SyncDir(filepath.Dir(relative)); err != nil {
+		return "", fmt.Errorf("sync response-only workspace parent: %w", err)
+	}
+	return s.ResponseOnlyWorkspaceRoot(runID, attemptID), nil
+}
+
+// Private workspace cleanup follows durable terminalization and projection. It
+// must not reserve an attempt ahead of its finalizer or cancellation handoff.
+func (s *Store) ListPendingResponseOnlyWorkspaceCleanups(ctx context.Context, afterAttemptID string, limit int) ([]ResponseOnlyWorkspaceCleanupCandidate, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("runtime fs store is required")
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT ae.run_id, ae.attempt_id, ae.response_only_workspace_cleanup_pending_at
+		FROM attempt_executions ae
+		WHERE ae.attempt_id > ? AND ae.response_only_workspace_cleanup_pending_at IS NOT NULL
+		  AND ae.state IN ('committed_success', 'committed_failure', 'committed_cancelled')
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attempt_outbox ao WHERE ao.attempt_id = ae.attempt_id AND ao.status = 'pending'
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
+		  )
+	ORDER BY ae.attempt_id ASC
+	LIMIT ?`, strings.TrimSpace(afterAttemptID), limit)
+	if err != nil {
+		return nil, fmt.Errorf("list pending response-only workspace cleanups: %w", err)
+	}
+	defer rows.Close()
+	candidates := make([]ResponseOnlyWorkspaceCleanupCandidate, 0, limit)
+	for rows.Next() {
+		var candidate ResponseOnlyWorkspaceCleanupCandidate
+		if err := rows.Scan(&candidate.RunID, &candidate.AttemptID, &candidate.MarkedAt); err != nil {
+			return nil, fmt.Errorf("scan response-only workspace cleanup candidate: %w", err)
+		}
+		candidates = append(candidates, candidate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate response-only workspace cleanup candidates: %w", err)
+	}
+	return candidates, nil
+}
+
+func (s *Store) ClearResponseOnlyWorkspaceCleanupPending(ctx context.Context, attemptID, expectedMarkedAt, updatedAt string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	attemptID = strings.TrimSpace(attemptID)
+	expectedMarkedAt = strings.TrimSpace(expectedMarkedAt)
+	updatedAt = strings.TrimSpace(updatedAt)
+	if attemptID == "" || expectedMarkedAt == "" || updatedAt == "" {
+		return fmt.Errorf("attempt_id, expected marker time, and updated_at are required")
+	}
+	if _, err := time.Parse(time.RFC3339Nano, expectedMarkedAt); err != nil {
+		return fmt.Errorf("parse expected response-only workspace cleanup marker time: %w", err)
+	}
+	if _, err := time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return fmt.Errorf("parse response-only workspace cleanup update time: %w", err)
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE attempt_executions
+		SET response_only_workspace_cleanup_pending_at = NULL, updated_at = ?
+		WHERE attempt_id = ? AND response_only_workspace_cleanup_pending_at = ?`, updatedAt, attemptID, expectedMarkedAt)
+	if err != nil {
+		return fmt.Errorf("clear response-only workspace cleanup marker: %w", err)
+	}
+	return nil
+}
+
+// RemoveResponseOnlyWorkspaceContext removes one attempt-scoped isolated copy without
+// following provider-created links.
+func (s *Store) RemoveResponseOnlyWorkspaceContext(ctx context.Context, runID, attemptID string) error {
+	if s == nil || strings.TrimSpace(s.root) == "" {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	relative, err := responseOnlyWorkspaceRelativePath(runID, attemptID)
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(s.root)
+	if err != nil {
+		return fmt.Errorf("open runtime fs root for response-only workspace cleanup: %w", err)
+	}
+	defer root.Close()
+	if err := removeResponseOnlyWorkspaceTree(ctx, root, relative); err != nil {
+		return err
+	}
+	if err := root.SyncDir(filepath.Dir(relative)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("sync response-only workspace cleanup: %w", err)
+	}
+	return nil
+}
+
+func responseOnlyWorkspaceRelativePath(runID, attemptID string) (string, error) {
+	runID = strings.TrimSpace(runID)
+	attemptID = strings.TrimSpace(attemptID)
+	if runID == "" || attemptID == "" {
+		return "", fmt.Errorf("run_id and attempt_id are required for a response-only workspace")
+	}
+	return filepath.ToSlash(filepath.Join("response-only", sanitizeToken(runID), sanitizeToken(attemptID))), nil
+}
+
+func removeResponseOnlyWorkspaceTree(ctx context.Context, root *securefs.Root, relative string) error {
+	if err := root.RemoveTree(ctx, relative, executionTargetRemovalBatchSize); err != nil {
+		return fmt.Errorf("remove stale response-only workspace: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) EnsureExecutionTarget(ctx context.Context, req EnsureExecutionTargetRequest) (RunExecutionTarget, error) {
@@ -147,6 +325,7 @@ ON CONFLICT(run_id) DO UPDATE SET
   trusted_snapshot_id = CASE WHEN TRIM(excluded.trusted_snapshot_id) = '' THEN run_execution_targets.trusted_snapshot_id ELSE excluded.trusted_snapshot_id END,
   published_snapshot_id = CASE WHEN TRIM(excluded.published_snapshot_id) = '' THEN run_execution_targets.published_snapshot_id ELSE excluded.published_snapshot_id END,
   state = excluded.state,
+  cleanup_cursor = CASE WHEN excluded.state = 'unknown' THEN run_execution_targets.cleanup_cursor ELSE '' END,
   updated_at = excluded.updated_at`,
 		record.RunID,
 		record.TargetMode,
@@ -171,7 +350,7 @@ func (s *Store) GetExecutionTarget(ctx context.Context, runID string) (RunExecut
 		return RunExecutionTarget{}, fmt.Errorf("runtime fs store is required")
 	}
 	var record RunExecutionTarget
-	err := s.db.QueryRowContext(ctx, `SELECT run_id, target_mode, source_root, execution_root, publish_root, source_snapshot_id, trusted_snapshot_id, published_snapshot_id, state, created_at, updated_at FROM run_execution_targets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(
+	err := s.db.QueryRowContext(ctx, `SELECT run_id, target_mode, source_root, execution_root, publish_root, source_snapshot_id, trusted_snapshot_id, published_snapshot_id, state, cleanup_cursor, created_at, updated_at FROM run_execution_targets WHERE run_id = ?`, strings.TrimSpace(runID)).Scan(
 		&record.RunID,
 		&record.TargetMode,
 		&record.SourceRoot,
@@ -181,6 +360,7 @@ func (s *Store) GetExecutionTarget(ctx context.Context, runID string) (RunExecut
 		&record.TrustedSnapshotID,
 		&record.PublishedSnapshotID,
 		&record.State,
+		&record.CleanupCursor,
 		&record.CreatedAt,
 		&record.UpdatedAt,
 	)
@@ -199,12 +379,109 @@ UPDATE run_execution_targets
 SET state = ?,
     trusted_snapshot_id = CASE WHEN TRIM(?) = '' THEN trusted_snapshot_id ELSE ? END,
     published_snapshot_id = CASE WHEN TRIM(?) = '' THEN published_snapshot_id ELSE ? END,
+    cleanup_cursor = CASE WHEN ? = 'unknown' THEN cleanup_cursor ELSE '' END,
     updated_at = ?
-WHERE run_id = ?`, strings.TrimSpace(state), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(updatedAt), strings.TrimSpace(runID))
+WHERE run_id = ?`, strings.TrimSpace(state), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(trustedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(publishedSnapshotID), strings.TrimSpace(state), strings.TrimSpace(updatedAt), strings.TrimSpace(runID))
 	if err != nil {
 		return fmt.Errorf("update execution target state: %w", err)
 	}
 	return nil
+}
+
+func (s *Store) UpdateExecutionTargetCleanupCursor(ctx context.Context, runID, cursor string) error {
+	if s == nil || s.db == nil {
+		return fmt.Errorf("runtime fs store is required")
+	}
+	result, err := s.db.ExecContext(ctx, `
+UPDATE run_execution_targets
+SET cleanup_cursor = ?
+WHERE run_id = ? AND state = 'unknown'`, cursor, strings.TrimSpace(runID))
+	if err != nil {
+		return fmt.Errorf("persist execution target cleanup cursor: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("verify execution target cleanup cursor: %w", err)
+	}
+	if updated != 1 {
+		return fmt.Errorf("execution target %q is not quarantined for cleanup", strings.TrimSpace(runID))
+	}
+	return nil
+}
+
+// RecoverQuarantinedExecutionTarget securely discards an unsafe provider-owned
+// direct target, then recreates it from trusted runtime-owned bytes. Terminal
+// attempt and target records are the durable quarantine evidence; provider
+// filesystem content is never retained.
+func (s *Store) RecoverQuarantinedExecutionTarget(ctx context.Context, runID, restoredAt string) (RunExecutionTarget, error) {
+	record, err := s.GetExecutionTarget(ctx, runID)
+	if err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("load quarantined execution target: %w", err)
+	}
+	if strings.TrimSpace(record.State) != "unknown" {
+		return record, nil
+	}
+	if strings.TrimSpace(record.TargetMode) != "direct" || filepath.Clean(record.ExecutionRoot) != filepath.Clean(s.RunTargetRoot(record.RunID)) {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target is not a runtime-owned direct target")
+	}
+	if strings.TrimSpace(record.TrustedSnapshotID) == "" {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target has no trusted snapshot")
+	}
+	quiescent, err := s.runProviderProcessGuardsQuiescent(ctx, record.RunID)
+	if err != nil {
+		return RunExecutionTarget{}, err
+	}
+	if !quiescent {
+		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target recovery is waiting for provider process quiescence")
+	}
+	if err := s.RecoverMissingSnapshotBlobs(ctx, record.TrustedSnapshotID, record.PublishRoot, record.SourceRoot); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("recover trusted snapshot blobs: %w", err)
+	}
+
+	runRoot, err := securefs.OpenRoot(filepath.Dir(s.RunTargetRoot(record.RunID)))
+	if err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("open runtime target root: %w", err)
+	}
+	defer runRoot.Close()
+	progress, err := runRoot.RemoveTreeBatch("target", record.CleanupCursor, executionTargetRemovalBatchSize)
+	if err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("discard unsafe execution target: %w", err)
+	}
+	if err := s.UpdateExecutionTargetCleanupCursor(ctx, record.RunID, progress.Cursor); err != nil {
+		return RunExecutionTarget{}, err
+	}
+	record.CleanupCursor = progress.Cursor
+	if !progress.Complete {
+		return record, nil
+	}
+	if err := runRoot.EnsureDir("target", 0o755); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("create fresh execution target: %w", err)
+	}
+	if err := runRoot.SyncDir("."); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("sync fresh execution target root: %w", err)
+	}
+	if err := s.RestoreSnapshot(ctx, record.TrustedSnapshotID, record.ExecutionRoot); err != nil {
+		return RunExecutionTarget{}, fmt.Errorf("restore fresh execution target: %w", err)
+	}
+	if err := s.UpdateExecutionTargetState(ctx, record.RunID, "trusted", record.TrustedSnapshotID, "", restoredAt); err != nil {
+		return RunExecutionTarget{}, err
+	}
+	record.State = "trusted"
+	record.UpdatedAt = strings.TrimSpace(restoredAt)
+	return record, nil
+}
+
+func (s *Store) runProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
+	var pending int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
+		SELECT 1
+		FROM provider_process_guards ppg
+		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
+		WHERE ae.run_id = ? AND ppg.owner_kind = 'decree_attempt' AND ppg.lifecycle <> 'quiescent'
+	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
+		return false, fmt.Errorf("load direct target provider process guard quiescence: %w", err)
+	}
+	return pending == 0, nil
 }
 
 func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest) (SnapshotRecord, error) {
@@ -222,44 +499,69 @@ func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest)
 	if record.SnapshotID == "" || record.RunID == "" || record.SnapshotKind == "" || record.CreatedAt == "" || rootPath == "" {
 		return SnapshotRecord{}, fmt.Errorf("snapshot capture fields are required")
 	}
-	baseManifest, err := s.ResolveSnapshotManifest(ctx, record.ParentSnapshotID)
+	index, err := s.newWorkspaceIndex(ctx)
 	if err != nil {
 		return SnapshotRecord{}, err
+	}
+	defer index.Close()
+	parentDepth, err := s.loadSnapshotIndex(ctx, index, 0, record.ParentSnapshotID)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	compact := parentDepth >= providerlimits.SnapshotLineageDepth
+	if compact {
+		// A full manifest cuts the immutable overlay chain without changing the
+		// snapshot's resolved filesystem state.
+		record.ParentSnapshotID = ""
 	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
 	if err != nil {
 		return SnapshotRecord{}, fmt.Errorf("open snapshot root: %w", err)
 	}
 	defer secureRoot.Close()
-	currentFiles, err := trackedfs.WalkTrackedFilesRoot(secureRoot)
+	// Index metadata privately during filesystem I/O; publish only after every
+	// blob is durable. Neither the parent nor current tree lives in a Go map.
+	insertEntry := func(entry SnapshotEntry) error {
+		return index.put(ctx, 1, entry)
+	}
+	verifier, err := s.newBlobVerifier()
 	if err != nil {
 		return SnapshotRecord{}, err
 	}
-	entries := make([]SnapshotEntry, 0)
-	seen := make(map[string]struct{}, len(currentFiles))
-	for _, file := range currentFiles {
-		seen[file.RelativePath] = struct{}{}
-		base, hasBase := baseManifest[file.RelativePath]
-		var blobID string
-		var metadata trackedfs.Metadata
-		if hasBase && base.EntryType == "file" {
-			blobID, metadata, err = digestTrackedFile(secureRoot, file.RelativePath)
-			if err != nil {
-				return SnapshotRecord{}, err
-			}
-			if sameSnapshotContentAndMode(base, blobID, metadata) {
-				continue
-			}
-			if blobID != base.BlobID {
-				blobID, metadata, err = s.writeBlobFromTrackedFile(secureRoot, file.RelativePath)
-			}
-		} else {
-			blobID, metadata, err = s.writeBlobFromTrackedFile(secureRoot, file.RelativePath)
-		}
+	defer verifier.root.Close()
+	err = trackedfs.VisitTrackedFilesRoot(ctx, secureRoot, func(file trackedfs.TrackedFile) error {
+		base, hasBase, err := index.get(ctx, 0, file.RelativePath)
 		if err != nil {
-			return SnapshotRecord{}, err
+			return err
 		}
-		entries = append(entries, SnapshotEntry{
+		if hasBase {
+			if err := index.remove(ctx, 0, file.RelativePath); err != nil {
+				return err
+			}
+		}
+		blobID, metadata, err := digestTrackedFile(ctx, secureRoot, file.RelativePath)
+		if err != nil {
+			return err
+		}
+		if hasBase && base.EntryType == "file" {
+			if sameSnapshotContentAndMode(base, blobID, metadata) {
+				if compact {
+					return insertEntry(base)
+				}
+				return nil
+			}
+		}
+		exists, err := verifier.verify(ctx, blobID, metadata.SizeBytes, true)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			blobID, metadata, err = s.writeBlobFromTrackedFile(ctx, secureRoot, file.RelativePath, blobID)
+			if err != nil {
+				return err
+			}
+		}
+		return insertEntry(SnapshotEntry{
 			Path:       file.RelativePath,
 			EntryType:  "file",
 			BlobID:     blobID,
@@ -267,108 +569,86 @@ func (s *Store) CaptureSnapshot(ctx context.Context, req CaptureSnapshotRequest)
 			ModeBits:   metadata.ModeBits,
 			ModifiedNS: metadata.ModifiedNS,
 		})
+	})
+	if err != nil {
+		return SnapshotRecord{}, err
 	}
-	for path := range baseManifest {
-		if _, ok := seen[path]; ok {
-			continue
+	if err := index.visit(ctx, 0, func(e SnapshotEntry) error {
+		if e.EntryType == "delete" {
+			return nil
 		}
-		entries = append(entries, SnapshotEntry{Path: path, EntryType: "delete"})
+		return insertEntry(SnapshotEntry{Path: e.Path, EntryType: "delete"})
+	}); err != nil {
+		return SnapshotRecord{}, err
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].Path < entries[j].Path })
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return SnapshotRecord{}, fmt.Errorf("begin snapshot transaction: %w", err)
 	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
+	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES (?, ?, NULLIF(?, ''), ?, ?)`, record.SnapshotID, record.RunID, record.ParentSnapshotID, record.SnapshotKind, record.CreatedAt); err != nil {
 		return SnapshotRecord{}, fmt.Errorf("insert snapshot: %w", err)
 	}
-	for _, entry := range entries {
-		if _, err := tx.ExecContext(ctx, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES (?, ?, ?, ?, ?, ?, ?)`, record.SnapshotID, entry.Path, entry.EntryType, entry.BlobID, entry.SizeBytes, entry.ModeBits, entry.ModifiedNS); err != nil {
-			return SnapshotRecord{}, fmt.Errorf("insert snapshot entry %q: %w", entry.Path, err)
+	entryStmt, err := tx.PrepareContext(ctx, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	defer entryStmt.Close()
+	blobStmt, err := tx.PrepareContext(ctx, `INSERT OR IGNORE INTO filesystem_blobs (blob_id, size_bytes, created_at) VALUES (?, ?, ?)`)
+	if err != nil {
+		return SnapshotRecord{}, err
+	}
+	defer blobStmt.Close()
+	err = index.visit(ctx, 1, func(entry SnapshotEntry) error {
+		if _, err := entryStmt.ExecContext(ctx, record.SnapshotID, entry.Path, entry.EntryType, entry.BlobID, entry.SizeBytes, entry.ModeBits, entry.ModifiedNS); err != nil {
+			return fmt.Errorf("insert snapshot entry %q: %w", entry.Path, err)
 		}
 		if entry.EntryType == "file" {
-			if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO filesystem_blobs (blob_id, size_bytes, created_at) VALUES (?, ?, ?)`, entry.BlobID, entry.SizeBytes, record.CreatedAt); err != nil {
-				return SnapshotRecord{}, fmt.Errorf("insert snapshot blob %q: %w", entry.BlobID, err)
+			if _, err := blobStmt.ExecContext(ctx, entry.BlobID, entry.SizeBytes, record.CreatedAt); err != nil {
+				return fmt.Errorf("insert snapshot blob %q: %w", entry.BlobID, err)
 			}
 		}
+		return nil
+	})
+	if err != nil {
+		return SnapshotRecord{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return SnapshotRecord{}, fmt.Errorf("commit snapshot transaction: %w", err)
 	}
-	committed = true
 	return record, nil
 }
 
-func (s *Store) ResolveSnapshotManifest(ctx context.Context, snapshotID string) (map[string]SnapshotEntry, error) {
-	manifest, _, err := s.resolveSnapshotState(ctx, snapshotID)
-	return manifest, err
-}
+func (s *Store) snapshotLineage(ctx context.Context, snapshotID string) ([]string, error) {
+	currentSnapshotID := strings.TrimSpace(snapshotID)
+	lineage := make([]string, 0, providerlimits.SnapshotLineageDepth)
+	seen := make(map[string]struct{}, providerlimits.SnapshotLineageDepth)
+	for currentSnapshotID != "" {
+		if len(lineage) >= providerlimits.SnapshotLineageDepth {
+			return nil, &providerlimits.DepthExceededError{Resource: "snapshot lineage", Limit: providerlimits.SnapshotLineageDepth}
+		}
+		if _, exists := seen[currentSnapshotID]; exists {
+			return nil, fmt.Errorf("snapshot lineage cycle at %q", currentSnapshotID)
+		}
+		seen[currentSnapshotID] = struct{}{}
+		lineage = append(lineage, currentSnapshotID)
 
-func (s *Store) resolveSnapshotState(ctx context.Context, snapshotID string) (map[string]SnapshotEntry, map[string]struct{}, error) {
-	manifest := make(map[string]SnapshotEntry)
-	deleted := make(map[string]struct{})
-	if s == nil || s.db == nil {
-		return manifest, deleted, fmt.Errorf("runtime fs store is required")
-	}
-	trimmedSnapshotID := strings.TrimSpace(snapshotID)
-	if trimmedSnapshotID == "" {
-		return manifest, deleted, nil
-	}
-	var parentSnapshotID string
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, trimmedSnapshotID).Scan(&parentSnapshotID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load snapshot %q: %w", trimmedSnapshotID, err)
-	}
-	if strings.TrimSpace(parentSnapshotID) != "" {
-		parentManifest, parentDeleted, err := s.resolveSnapshotState(ctx, parentSnapshotID)
-		if err != nil {
-			return nil, nil, err
+		var parentSnapshotID string
+		if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, currentSnapshotID).Scan(&parentSnapshotID); err != nil {
+			return nil, fmt.Errorf("load snapshot %q: %w", currentSnapshotID, err)
 		}
-		for path, entry := range parentManifest {
-			manifest[path] = entry
-		}
-		for path := range parentDeleted {
-			deleted[path] = struct{}{}
-		}
+		currentSnapshotID = strings.TrimSpace(parentSnapshotID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns FROM filesystem_snapshot_entries WHERE snapshot_id = ? ORDER BY path ASC`, trimmedSnapshotID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("load snapshot entries %q: %w", trimmedSnapshotID, err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var entry SnapshotEntry
-		if err := rows.Scan(&entry.Path, &entry.EntryType, &entry.BlobID, &entry.SizeBytes, &entry.ModeBits, &entry.ModifiedNS); err != nil {
-			return nil, nil, fmt.Errorf("scan snapshot entry %q: %w", trimmedSnapshotID, err)
-		}
-		if trackedfs.IsProtectedRelativePath(entry.Path) {
-			delete(manifest, entry.Path)
-			delete(deleted, entry.Path)
-			continue
-		}
-		if entry.EntryType == "delete" {
-			delete(manifest, entry.Path)
-			deleted[entry.Path] = struct{}{}
-			continue
-		}
-		manifest[entry.Path] = entry
-		delete(deleted, entry.Path)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, nil, fmt.Errorf("iterate snapshot entries %q: %w", trimmedSnapshotID, err)
-	}
-	return manifest, deleted, nil
+	return lineage, nil
 }
 
 func (s *Store) CountChangesAgainstSnapshot(ctx context.Context, rootPath, snapshotID string) (int, error) {
-	baseManifest, err := s.ResolveSnapshotManifest(ctx, snapshotID)
+	index, err := s.newWorkspaceIndex(ctx)
 	if err != nil {
+		return 0, err
+	}
+	defer index.Close()
+	if _, err := s.loadSnapshotIndex(ctx, index, 0, snapshotID); err != nil {
 		return 0, err
 	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
@@ -376,71 +656,44 @@ func (s *Store) CountChangesAgainstSnapshot(ctx context.Context, rootPath, snaps
 		return 0, fmt.Errorf("open change-count root: %w", err)
 	}
 	defer secureRoot.Close()
-	currentFiles, err := trackedfs.WalkTrackedFilesRoot(secureRoot)
+	count := 0
+	err = trackedfs.VisitTrackedFilesRoot(ctx, secureRoot, func(file trackedfs.TrackedFile) error {
+		base, ok, err := index.get(ctx, 0, file.RelativePath)
+		if err != nil {
+			return err
+		}
+		if ok {
+			if err := index.remove(ctx, 0, file.RelativePath); err != nil {
+				return err
+			}
+		}
+		blobID, metadata, err := digestTrackedFile(ctx, secureRoot, file.RelativePath)
+		if err != nil {
+			return err
+		}
+		if ok && base.EntryType == "file" && sameSnapshotContentAndMode(base, blobID, metadata) {
+			return nil
+		}
+		count++
+		return nil
+	})
 	if err != nil {
 		return 0, err
 	}
-	count := 0
-	seen := make(map[string]struct{}, len(currentFiles))
-	for _, file := range currentFiles {
-		seen[file.RelativePath] = struct{}{}
-		blobID, metadata, err := digestTrackedFile(secureRoot, file.RelativePath)
-		if err != nil {
-			return 0, err
-		}
-		if base, ok := baseManifest[file.RelativePath]; ok && base.EntryType == "file" && sameSnapshotContentAndMode(base, blobID, metadata) {
-			continue
-		}
-		count++
+	var deleted int
+	if err := index.tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM entries WHERE space = 0 AND entry_type = 'file'`).Scan(&deleted); err != nil {
+		return 0, err
 	}
-	for path := range baseManifest {
-		if _, ok := seen[path]; !ok {
-			count++
-		}
-	}
-	return count, nil
-}
-
-func (s *Store) DiffSnapshots(ctx context.Context, leftSnapshotID, rightSnapshotID string) ([]SnapshotDiffEntry, error) {
-	leftManifest, err := s.ResolveSnapshotManifest(ctx, leftSnapshotID)
-	if err != nil {
-		return nil, err
-	}
-	rightManifest, err := s.ResolveSnapshotManifest(ctx, rightSnapshotID)
-	if err != nil {
-		return nil, err
-	}
-	paths := make(map[string]struct{}, len(leftManifest)+len(rightManifest))
-	for path := range leftManifest {
-		paths[path] = struct{}{}
-	}
-	for path := range rightManifest {
-		paths[path] = struct{}{}
-	}
-	sortedPaths := make([]string, 0, len(paths))
-	for path := range paths {
-		sortedPaths = append(sortedPaths, path)
-	}
-	sort.Strings(sortedPaths)
-	diffs := make([]SnapshotDiffEntry, 0)
-	for _, path := range sortedPaths {
-		left, leftOK := leftManifest[path]
-		right, rightOK := rightManifest[path]
-		switch {
-		case !leftOK && rightOK:
-			diffs = append(diffs, SnapshotDiffEntry(pathEntry(right)))
-		case leftOK && !rightOK:
-			diffs = append(diffs, SnapshotDiffEntry{Path: path, EntryType: "delete"})
-		case leftOK && rightOK && !sameSnapshotEntries(left, right):
-			diffs = append(diffs, SnapshotDiffEntry(pathEntry(right)))
-		}
-	}
-	return diffs, nil
+	return count + deleted, nil
 }
 
 func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string) error {
-	manifest, deleted, err := s.resolveSnapshotState(ctx, snapshotID)
+	index, err := s.newWorkspaceIndex(ctx)
 	if err != nil {
+		return err
+	}
+	defer index.Close()
+	if _, err := s.loadSnapshotIndex(ctx, index, 0, snapshotID); err != nil {
 		return err
 	}
 	secureRoot, err := securefs.OpenRoot(rootPath)
@@ -448,102 +701,113 @@ func (s *Store) RestoreSnapshot(ctx context.Context, snapshotID, rootPath string
 		return fmt.Errorf("open restore root: %w", err)
 	}
 	defer secureRoot.Close()
-	currentFiles, err := trackedfs.WalkTrackedFilesRoot(secureRoot)
+	verifier, err := s.newBlobVerifier()
 	if err != nil {
 		return err
 	}
-	current := make(map[string]struct{}, len(currentFiles))
-	for _, file := range currentFiles {
-		current[file.RelativePath] = struct{}{}
-	}
-	manifestPaths := make([]string, 0, len(manifest))
-	manifestParents := make(map[string]struct{})
-	for path := range manifest {
-		manifestPaths = append(manifestPaths, path)
-		for separator := strings.LastIndexByte(path, '/'); separator >= 0; separator = strings.LastIndexByte(path[:separator], '/') {
-			manifestParents[path[:separator]] = struct{}{}
+	defer verifier.root.Close()
+	if err := index.visit(ctx, 0, func(entry SnapshotEntry) error {
+		if entry.EntryType == "delete" {
+			return nil
 		}
+		path := entry.Path
+		blobID, metadata, digestErr := digestTrackedFile(ctx, secureRoot, path)
+		if digestErr == nil && sameSnapshotContentAndMode(entry, blobID, metadata) {
+			// Canonical bytes must be valid even when the destination matches.
+			if exists, err := verifier.verify(ctx, entry.BlobID, entry.SizeBytes, false); err != nil {
+				return err
+			} else if !exists {
+				return fmt.Errorf("snapshot blob %q is missing", entry.BlobID)
+			}
+			return nil
+		}
+		modifiedAt := time.Unix(0, entry.ModifiedNS)
+		if err := secureRoot.ReplaceRegularFrom(ctx, path, func(w io.Writer) error { return s.copySnapshotBlob(ctx, entry, w) }, os.FileMode(entry.ModeBits), 0o755, modifiedAt); err != nil {
+			return fmt.Errorf("write restored file %q: %w", path, err)
+		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	sort.Strings(manifestPaths)
-	for _, path := range manifestPaths {
-		entry := manifest[path]
-		raw, err := s.ReadBlob(entry.BlobID)
+	if err := index.visit(ctx, 0, func(entry SnapshotEntry) error {
+		if entry.EntryType != "delete" {
+			return nil
+		}
+		path := entry.Path
+		requiredParent, err := index.hasLiveDescendant(ctx, 0, path)
 		if err != nil {
 			return err
 		}
-		_, listed := current[path]
-		if listed {
-			blobID, metadata, digestErr := digestTrackedFile(secureRoot, path)
-			if digestErr == nil && sameSnapshotContentAndMode(entry, blobID, metadata) {
-				continue
+		if requiredParent {
+			current, err := secureRoot.ReadEntry(path)
+			if err != nil {
+				return fmt.Errorf("inspect restored parent %q: %w", path, err)
 			}
+			if current.Type == securefs.EntryTypeDirectory {
+				// This tombstone deletes the old file, not the directory that
+				// now contains live files in the resolved snapshot.
+				return nil
+			}
+			return fmt.Errorf("restored parent %q is no longer a directory", path)
 		}
-		modifiedAt := time.Unix(0, entry.ModifiedNS)
-		if err := secureRoot.ReplaceRegular(path, raw, os.FileMode(entry.ModeBits), 0o755, modifiedAt); err != nil {
-			return fmt.Errorf("write restored file %q: %w", path, err)
-		}
-	}
-	deletedPaths := make([]string, 0, len(deleted))
-	for path := range deleted {
-		deletedPaths = append(deletedPaths, path)
-	}
-	sort.Strings(deletedPaths)
-	for _, path := range deletedPaths {
 		if err := secureRoot.RemoveEntry(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove snapshot deletion %q: %w", path, err)
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
-	currentPaths := make([]string, 0, len(current))
-	for path := range current {
-		currentPaths = append(currentPaths, path)
-	}
-	sort.Strings(currentPaths)
-	for _, path := range currentPaths {
-		_, requiredFile := manifest[path]
-		_, requiredParent := manifestParents[path]
-		if requiredFile || requiredParent {
-			continue
+	return trackedfs.VisitTrackedEntriesRoot(ctx, secureRoot, func(entry trackedfs.TrackedEntry) error {
+		path := entry.RelativePath
+		expected, required, err := index.get(ctx, 0, path)
+		if err != nil {
+			return err
 		}
-		if err := secureRoot.RemoveEntry(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		if required && expected.EntryType == "file" {
+			return nil
+		}
+		if err := secureRoot.RemoveEntryIfIdentity(path, entry.Type, entry.Identity); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return fmt.Errorf("remove restored file %q: %w", path, err)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *Store) RecoverMissingSnapshotBlobs(ctx context.Context, snapshotID string, sourceRoots ...string) error {
-	manifest, err := s.ResolveSnapshotManifest(ctx, snapshotID)
-	if err != nil {
-		return err
-	}
-	for path, entry := range manifest {
+	return s.VisitSnapshotManifest(ctx, snapshotID, func(entry SnapshotEntry) error {
+		path := entry.Path
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		hasBlob, err := s.hasBlob(entry.BlobID)
 		if err != nil {
 			return err
 		}
 		if hasBlob {
-			continue
+			return nil
 		}
 		recovered := false
 		for _, sourceRoot := range sourceRoots {
 			if strings.TrimSpace(sourceRoot) == "" {
 				continue
 			}
-			resolved, resolveErr := trackedfs.ResolveWithinRoot(sourceRoot, path)
-			if resolveErr != nil {
+			root, openErr := securefs.OpenRoot(sourceRoot)
+			if openErr != nil {
 				continue
 			}
-			raw, readErr := os.ReadFile(resolved)
+			blobID, metadata, readErr := s.writeBlobFromTrackedFile(ctx, root, path, entry.BlobID)
+			closeErr := root.Close()
 			if readErr != nil {
+				if err := ctx.Err(); err != nil {
+					return err
+				}
 				continue
 			}
-			sum := sha256.Sum256(raw)
-			if hex.EncodeToString(sum[:]) != entry.BlobID {
-				continue
+			if closeErr != nil {
+				return fmt.Errorf("close snapshot recovery source: %w", closeErr)
 			}
-			blobID, writeErr := s.writeBlob(raw)
-			if writeErr != nil {
-				return fmt.Errorf("recover snapshot blob for %q: %w", path, writeErr)
+			if metadata.SizeBytes != entry.SizeBytes {
+				continue
 			}
 			if blobID != entry.BlobID {
 				return fmt.Errorf("recovered snapshot blob mismatch for %q", path)
@@ -554,8 +818,8 @@ func (s *Store) RecoverMissingSnapshotBlobs(ctx context.Context, snapshotID stri
 		if !recovered {
 			return fmt.Errorf("recover missing snapshot blob %q for %q: no source matched its digest", entry.BlobID, path)
 		}
-	}
-	return nil
+		return nil
+	})
 }
 
 func (s *Store) hasBlob(blobID string) (bool, error) {
@@ -572,24 +836,31 @@ func (s *Store) hasBlob(blobID string) (bool, error) {
 	return false, nil
 }
 
-func (s *Store) ReadBlob(blobID string) ([]byte, error) {
+// CopyBlob streams canonical bytes, verifying both stable identity and digest.
+// The destination must remain staged until this method succeeds.
+func (s *Store) CopyBlob(ctx context.Context, blobID string, dst io.Writer) (int64, error) {
 	trimmedBlobID := strings.TrimSpace(blobID)
 	if trimmedBlobID == "" {
-		return nil, fmt.Errorf("blob id is required")
+		return 0, fmt.Errorf("blob id is required")
 	}
-	blobPath, err := s.blobPath(trimmedBlobID)
+	_, err := s.blobPath(trimmedBlobID)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
-	raw, err := os.ReadFile(blobPath)
+	root, err := securefs.OpenRoot(s.blobRoot)
 	if err != nil {
-		return nil, fmt.Errorf("read blob %q: %w", trimmedBlobID, err)
+		return 0, fmt.Errorf("open blob root: %w", err)
 	}
-	sum := sha256.Sum256(raw)
-	if actual := hex.EncodeToString(sum[:]); actual != trimmedBlobID {
-		return nil, fmt.Errorf("read blob %q: digest mismatch (got %s)", trimmedBlobID, actual)
+	defer root.Close()
+	relativePath := filepath.Join(trimmedBlobID[:2], trimmedBlobID[2:4], trimmedBlobID)
+	identity, _, err := root.CopyRegular(ctx, relativePath, dst)
+	if err != nil {
+		return 0, fmt.Errorf("read blob %q: %w", trimmedBlobID, err)
 	}
-	return raw, nil
+	if actual := identity.ContentSHA256; actual != trimmedBlobID {
+		return 0, fmt.Errorf("read blob %q: digest mismatch (got %s)", trimmedBlobID, actual)
+	}
+	return identity.SizeBytes, nil
 }
 
 func (s *Store) blobPath(blobID string) (string, error) {
@@ -600,61 +871,7 @@ func (s *Store) blobPath(blobID string) (string, error) {
 	return filepath.Join(s.blobRoot, blobID[:2], blobID[2:4], blobID), nil
 }
 
-func (s *Store) writeBlob(raw []byte) (string, error) {
-	sum := sha256.Sum256(raw)
-	blobID := hex.EncodeToString(sum[:])
-	blobPath, err := s.blobPath(blobID)
-	if err != nil {
-		return "", err
-	}
-	if _, err := os.Stat(blobPath); err == nil {
-		return blobID, nil
-	} else if !os.IsNotExist(err) {
-		return "", fmt.Errorf("stat blob %q: %w", blobID, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
-		return "", fmt.Errorf("create blob directory %q: %w", blobID, err)
-	}
-	tempFile, err := os.CreateTemp(s.tempRoot, "blob-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp blob: %w", err)
-	}
-	tempPath := tempFile.Name()
-	if _, err := tempFile.Write(raw); err != nil {
-		_ = tempFile.Close()
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("write temp blob %q: %w", blobID, err)
-	}
-	if err := tempFile.Sync(); err != nil {
-		_ = tempFile.Close()
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("sync temp blob %q: %w", blobID, err)
-	}
-	if err := tempFile.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("close temp blob %q: %w", blobID, err)
-	}
-	if err := os.Rename(tempPath, blobPath); err != nil {
-		if _, statErr := os.Stat(blobPath); statErr == nil {
-			_ = os.Remove(tempPath)
-			return blobID, nil
-		}
-		_ = os.Remove(tempPath)
-		return "", fmt.Errorf("commit blob %q: %w", blobID, err)
-	}
-	return blobID, nil
-}
-
-func (s *Store) writeBlobFromTrackedFile(root *securefs.Root, path string) (string, trackedfs.Metadata, error) {
-	file, err := root.OpenRegular(path)
-	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("open tracked file %q: %w", path, err)
-	}
-	defer file.Close()
-	before, err := file.Stat()
-	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("stat tracked file %q: %w", path, err)
-	}
+func (s *Store) writeBlobFromTrackedFile(ctx context.Context, root *securefs.Root, path, expectedDigest string) (string, trackedfs.Metadata, error) {
 	tempFile, err := os.CreateTemp(s.tempRoot, "blob-*")
 	if err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("create temp blob: %w", err)
@@ -667,18 +884,29 @@ func (s *Store) writeBlobFromTrackedFile(root *securefs.Root, path string) (stri
 			_ = os.Remove(tempPath)
 		}
 	}()
-	hasher := sha256.New()
-	written, err := io.Copy(io.MultiWriter(tempFile, hasher), file)
+	identity, info, err := root.CopyRegular(ctx, path, tempFile)
 	if err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("read tracked file %q: %w", path, err)
 	}
-	after, err := file.Stat()
-	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("restat tracked file %q: %w", path, err)
+	metadata := trackedfs.MetadataFromInfo(info)
+	blobID := identity.ContentSHA256
+	if expectedDigest != "" && blobID != expectedDigest {
+		return "", trackedfs.Metadata{}, fmt.Errorf("tracked file %q: digest mismatch", path)
 	}
-	metadata := trackedfs.MetadataFromInfo(after)
-	if !sameTrackedFileState(before, after) || written != metadata.SizeBytes {
-		return "", trackedfs.Metadata{}, fmt.Errorf("tracked file %q changed while capturing", path)
+	blobPath, err := s.blobPath(blobID)
+	if err != nil {
+		return "", trackedfs.Metadata{}, err
+	}
+	if _, err := os.Stat(blobPath); err == nil {
+		if _, err := s.CopyBlob(ctx, blobID, io.Discard); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
+		if err := s.syncBlobDirectory(blobID); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
+		return blobID, metadata, nil
+	} else if !os.IsNotExist(err) {
+		return "", trackedfs.Metadata{}, fmt.Errorf("stat blob %q: %w", blobID, err)
 	}
 	if err := tempFile.Sync(); err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("sync temp blob for %q: %w", path, err)
@@ -686,76 +914,102 @@ func (s *Store) writeBlobFromTrackedFile(root *securefs.Root, path string) (stri
 	if err := tempFile.Close(); err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("close temp blob for %q: %w", path, err)
 	}
-	blobID := hex.EncodeToString(hasher.Sum(nil))
-	blobPath, err := s.blobPath(blobID)
-	if err != nil {
-		return "", trackedfs.Metadata{}, err
-	}
-	if _, err := os.Stat(blobPath); err == nil {
-		return blobID, metadata, nil
-	} else if !os.IsNotExist(err) {
-		return "", trackedfs.Metadata{}, fmt.Errorf("stat blob %q: %w", blobID, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+	if err := s.ensureBlobDirectory(blobID); err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("create blob directory %q: %w", blobID, err)
 	}
 	if err := os.Rename(tempPath, blobPath); err != nil {
 		if _, statErr := os.Stat(blobPath); statErr != nil {
 			return "", trackedfs.Metadata{}, fmt.Errorf("commit blob %q: %w", blobID, err)
 		}
+		if _, err := s.CopyBlob(ctx, blobID, io.Discard); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
+		if err := s.syncBlobDirectory(blobID); err != nil {
+			return "", trackedfs.Metadata{}, err
+		}
 		return blobID, metadata, nil
 	}
 	committed = true
+	if err := s.syncBlobDirectory(blobID); err != nil {
+		return "", trackedfs.Metadata{}, err
+	}
 	return blobID, metadata, nil
 }
 
-func digestTrackedFile(root *securefs.Root, path string) (string, trackedfs.Metadata, error) {
-	file, err := root.OpenRegular(path)
-	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("open tracked file %q: %w", path, err)
+func (s *Store) syncBlobDirectory(blobID string) error {
+	if s.syncBlobDir == nil {
+		return s.syncBlobDirectoryDurably(blobID)
 	}
-	defer file.Close()
-	before, err := file.Stat()
-	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("stat tracked file %q: %w", path, err)
+	return s.syncBlobDir(blobID)
+}
+
+func (s *Store) ensureBlobDirectory(blobID string) error {
+	if _, err := s.blobPath(blobID); err != nil {
+		return err
 	}
-	hasher := sha256.New()
-	read, err := io.Copy(hasher, file)
+	root, err := securefs.OpenRoot(s.blobRoot)
+	if err != nil {
+		return fmt.Errorf("open snapshot blob root: %w", err)
+	}
+	defer root.Close()
+	path := filepath.Join(blobID[:2], blobID[2:4])
+	if err := root.EnsureDir(path, 0o755); err != nil {
+		return fmt.Errorf("create snapshot blob directory for %q: %w", blobID, err)
+	}
+	return nil
+}
+
+func (s *Store) syncBlobDirectoryDurably(blobID string) error {
+	if _, err := s.blobPath(blobID); err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(s.blobRoot)
+	if err != nil {
+		return fmt.Errorf("open snapshot blob root: %w", err)
+	}
+	defer root.Close()
+	path := filepath.Join(blobID[:2], blobID[2:4])
+	if err := root.SyncDir(path); err != nil {
+		return fmt.Errorf("sync snapshot blob directory for %q: %w", blobID, err)
+	}
+	return nil
+}
+
+func digestTrackedFile(ctx context.Context, root *securefs.Root, path string) (string, trackedfs.Metadata, error) {
+	identity, info, err := root.CopyRegular(ctx, path, io.Discard)
 	if err != nil {
 		return "", trackedfs.Metadata{}, fmt.Errorf("hash tracked file %q: %w", path, err)
 	}
-	after, err := file.Stat()
+	return identity.ContentSHA256, trackedfs.MetadataFromInfo(info), nil
+}
+
+func validateSnapshotEntry(entry SnapshotEntry) error {
+	if !fs.ValidPath(entry.Path) || entry.Path == "." || (entry.EntryType != "file" && entry.EntryType != "delete") || entry.SizeBytes < 0 {
+		return fmt.Errorf("invalid snapshot entry %q", entry.Path)
+	}
+	if entry.EntryType == "delete" {
+		return nil
+	}
+	digest, err := hex.DecodeString(entry.BlobID)
+	if err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != entry.BlobID {
+		return fmt.Errorf("invalid snapshot digest for %q", entry.Path)
+	}
+	return nil
+}
+
+func (s *Store) copySnapshotBlob(ctx context.Context, entry SnapshotEntry, dst io.Writer) error {
+	n, err := s.CopyBlob(ctx, entry.BlobID, dst)
 	if err != nil {
-		return "", trackedfs.Metadata{}, fmt.Errorf("restat tracked file %q: %w", path, err)
+		return err
 	}
-	metadata := trackedfs.MetadataFromInfo(after)
-	if !sameTrackedFileState(before, after) || read != metadata.SizeBytes {
-		return "", trackedfs.Metadata{}, fmt.Errorf("tracked file %q changed while hashing", path)
+	if n != entry.SizeBytes {
+		return fmt.Errorf("read blob %q: size mismatch", entry.BlobID)
 	}
-	return hex.EncodeToString(hasher.Sum(nil)), metadata, nil
-}
-
-func sameTrackedFileState(left, right fs.FileInfo) bool {
-	return left.Size() == right.Size() && left.Mode() == right.Mode() && left.ModTime().Equal(right.ModTime())
-}
-
-func pathEntry(entry SnapshotEntry) SnapshotDiffEntry {
-	return SnapshotDiffEntry{
-		Path:       entry.Path,
-		EntryType:  entry.EntryType,
-		BlobID:     entry.BlobID,
-		SizeBytes:  entry.SizeBytes,
-		ModeBits:   entry.ModeBits,
-		ModifiedNS: entry.ModifiedNS,
-	}
+	return nil
 }
 
 func sameSnapshotContentAndMode(entry SnapshotEntry, blobID string, metadata trackedfs.Metadata) bool {
 	return entry.BlobID == blobID && entry.ModeBits == metadata.ModeBits
-}
-
-func sameSnapshotEntries(left, right SnapshotEntry) bool {
-	return left.Path == right.Path && left.EntryType == right.EntryType && left.BlobID == right.BlobID && left.SizeBytes == right.SizeBytes && left.ModeBits == right.ModeBits && left.ModifiedNS == right.ModifiedNS
 }
 
 func firstNonEmpty(values ...string) string {

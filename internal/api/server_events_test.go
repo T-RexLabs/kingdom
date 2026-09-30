@@ -1,16 +1,105 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 )
+
+func TestServerCloseDrainsFollowStreamDuringHTTPShutdown(t *testing.T) {
+	handler, _ := newAPIServerForTest(t)
+	apiServer := handler.(*Server)
+	runID := seedRunViaAPI(t, handler)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	httpServer := NewHTTPServer(listener.Addr().String(), apiServer)
+	serveDone := make(chan error, 1)
+	go func() {
+		serveDone <- httpServer.Serve(listener)
+	}()
+	t.Cleanup(func() {
+		_ = httpServer.Close()
+	})
+
+	req, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/api/v1/events/stream?run_id="+runID+"&follow=true&poll_ms=200", nil)
+	if err != nil {
+		t.Fatalf("create stream request: %v", err)
+	}
+	authenticateAPITestRequest(req)
+	response, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("open stream: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected stream status 200, got %d", response.StatusCode)
+	}
+	stream := bufio.NewReader(response.Body)
+	if line, readErr := stream.ReadString('\n'); readErr != nil || line != ": keepalive\n" {
+		t.Fatalf("expected established SSE keepalive, line=%q err=%v", line, readErr)
+	}
+
+	shutdownStarted := make(chan struct{})
+	httpServer.RegisterOnShutdown(func() { close(shutdownStarted) })
+	shutdownDone := make(chan error, 1)
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancelShutdown()
+	go func() {
+		shutdownDone <- httpServer.Shutdown(shutdownCtx)
+	}()
+	select {
+	case <-shutdownStarted:
+	case <-shutdownCtx.Done():
+		t.Fatal("HTTP shutdown did not start")
+	}
+	select {
+	case err := <-shutdownDone:
+		t.Fatalf("HTTP shutdown returned before API server close: %v", err)
+	default:
+	}
+
+	closeCtx, cancelClose := context.WithTimeout(context.Background(), time.Second)
+	defer cancelClose()
+	if err := apiServer.Close(closeCtx); err != nil {
+		t.Fatalf("close API server: %v", err)
+	}
+
+	streamDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(stream)
+		streamDone <- err
+	}()
+	select {
+	case err := <-streamDone:
+		if err != nil {
+			t.Fatalf("expected stream EOF, got %v", err)
+		}
+	case <-shutdownCtx.Done():
+		t.Fatal("stream did not reach EOF before shutdown deadline")
+	}
+	select {
+	case err := <-shutdownDone:
+		if err != nil {
+			t.Fatalf("HTTP shutdown: %v", err)
+		}
+	case <-shutdownCtx.Done():
+		t.Fatal("HTTP shutdown did not return before deadline")
+	}
+	if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+		t.Fatalf("serve result = %v, want %v", err, http.ErrServerClosed)
+	}
+}
 
 func TestServerCookieStreamEndsAtSessionExpiryWithoutPostExpiryDelivery(t *testing.T) {
 	handler, db := newAPIServerForTest(t)

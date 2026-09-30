@@ -1300,7 +1300,7 @@ describe("useRunEventStream", () => {
 		expect(projection?.["nr-workspace-prepared"]?.live_label).toBe("Workspace prepared");
 	});
 
-	it("projects provider retry activity as running instead of queued", async () => {
+	it("maps scheduled retries without replacing the source attempt status", async () => {
 		const invocations: Array<{
 			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
 		}> = [];
@@ -1317,34 +1317,37 @@ describe("useRunEventStream", () => {
 
 		await expect(
 			invocations[0].onEvent({
-				id: "evt-attempt-retrying",
+				id: "evt-retry-scheduled",
 				type: "message",
 				data: JSON.stringify({
-					event_id: "evt-attempt-retrying",
-					event_type: "attempt.retrying",
-					reason_code: "provider_empty_output_retry",
+					event_id: "evt-retry-scheduled",
+					event_type: "attempt.retry_scheduled",
+					reason_code: "provider_empty_output",
 					run_event_seq: 1,
 					attempt_seq: 4,
-					node_run_id: "nr-attempt-retrying",
+					node_run_id: "nr-retry-scheduled",
 					created_at: "2026-03-01T10:11:00Z",
 					payload_json: {
 						node_id: "delegated_execution_berserker",
-						node_run_id: "nr-attempt-retrying",
+						node_run_id: "nr-retry-scheduled",
 						attempt_id: "run-1:delegated_execution_berserker:1",
 						attempt: 1,
+						recovery_trigger: "automatic_retry",
+						recovery_phase: "scheduled",
+						error_code: "provider_empty_output",
 						retry_index: 2,
 						retry_max: 3,
+						scheduled_at: "2026-03-01T10:11:10Z",
 					},
 				}),
 			}),
 		).resolves.toBe(true);
 
 		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
-			"nr-attempt-retrying": {
-				node_run_id: "nr-attempt-retrying",
+			"nr-retry-scheduled": {
+				node_run_id: "nr-retry-scheduled",
 				activity_at: "2026-03-01T10:11:00Z",
-				status: "running",
-				live_label: "Retrying provider",
+				live_label: "Retry scheduled",
 			},
 		});
 	});
@@ -1370,7 +1373,7 @@ describe("useRunEventStream", () => {
 				type: "message",
 				data: JSON.stringify({
 					event_id: "evt-attempt-blocked",
-					event_type: "attempt.recovered",
+					event_type: "node.state_changed",
 					reason_code: "agent_unresponsive",
 					run_event_seq: 1,
 					attempt_seq: 4,
@@ -1396,58 +1399,7 @@ describe("useRunEventStream", () => {
 				node_run_id: "nr-attempt-blocked",
 				activity_at: "2026-03-01T10:12:00Z",
 				status: "blocked",
-				live_label: "Blocked for retry",
-			},
-		});
-	});
-
-	it("projects retry exhausted as blocked after execution stops", async () => {
-		const invocations: Array<{
-			onEvent: (event: { id: string; type: string; data: string }) => boolean | Promise<boolean>;
-		}> = [];
-
-		subscribeSSEMock.mockImplementation((args) => {
-			invocations.push(args);
-			return new Promise<void>(() => undefined);
-		});
-
-		renderHook(() => useRunEventStream("run-1"), {
-			wrapper: makeWrapper(),
-		});
-		await flush();
-
-		await expect(
-			invocations[0].onEvent({
-				id: "evt-attempt-retry-exhausted",
-				type: "message",
-				data: JSON.stringify({
-					event_id: "evt-attempt-retry-exhausted",
-					event_type: "attempt.retry_exhausted",
-					reason_code: "provider_empty_output_exhausted",
-					run_event_seq: 1,
-					attempt_seq: 5,
-					node_run_id: "nr-attempt-retry-exhausted",
-					created_at: "2026-03-01T10:13:00Z",
-					payload_json: {
-						node_id: "delegated_execution_berserker",
-						node_run_id: "nr-attempt-retry-exhausted",
-						attempt_id: "run-1:delegated_execution_berserker:1",
-						attempt: 1,
-						retry_max: 2,
-					},
-					node_id: "delegated_execution_berserker",
-					attempt_id: "run-1:delegated_execution_berserker:1",
-					attempt: 1,
-				}),
-			}),
-		).resolves.toBe(true);
-
-		expect(queryClient.getQueryData(liveExecutionProjectionKey("run-1"))).toMatchObject({
-			"nr-attempt-retry-exhausted": {
-				node_run_id: "nr-attempt-retry-exhausted",
-				activity_at: "2026-03-01T10:13:00Z",
-				status: "blocked",
-				live_label: "Retry exhausted",
+				live_label: "Blocked",
 			},
 		});
 	});

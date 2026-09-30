@@ -402,7 +402,6 @@ func TestDelegationHardFailWritesEscalationMailboxMessage(t *testing.T) {
 		DelegateAgentID:  "agent_council_2",
 		DelegateRoleID:   "council-member",
 		MaxSpawnDepth:    3,
-		MaxActiveAgents:  12,
 		OccurredAt:       "2026-03-01T17:00:00Z",
 	})
 	if err != nil {

@@ -124,12 +124,19 @@ export function PlanningSessionPage() {
 	const messagePages = usePlannerMessagePages(sessionId);
   const userMessageCount = messagePages.messages.filter((m) => m.role === "user").length;
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const { activeOperation, activeOperationId, connection, operationQueryState, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
+  const { activeOperation, activeOperationId, connection, operationQueryState, recoveryKind, retryReplyRecovery, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
-  const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
-  const titleOperationQuery = usePlanningOperation(session?.current_title_run_id);
-  usePlannerOperation(titleOperationQuery.data ?? null);
+	const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
+	const [titleStreamRunID, setTitleStreamRunID] = useState<string | undefined>(session?.current_title_run_id);
+	if (session?.current_title_run_id && session.current_title_run_id !== titleStreamRunID) {
+		setTitleStreamRunID(session.current_title_run_id);
+	}
+	const titleOperationQuery = usePlanningOperation(titleStreamRunID);
+	const { operation: titleStreamOperation } = usePlannerOperation(titleOperationQuery.data ?? null);
+	if (titleStreamRunID && !session?.current_title_run_id && titleStreamOperation && (titleStreamOperation.status === "error" || titleStreamOperation.status === "cancelled" || (titleStreamOperation.status === "done" && titleStreamOperation.activityReconciled))) {
+		setTitleStreamRunID(undefined);
+	}
   usePlanningSessionAutoTitleCatchup(sessionId, session);
 
   // Title persistence is rooted in the explicit commit event (Enter,
@@ -429,7 +436,10 @@ export function PlanningSessionPage() {
 	const isPlaceholderHeaderTitle = Boolean(session) && hasPlaceholderTitle(session) && displayTitle.trim().length === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-border/80 bg-surface">
+    <div
+      data-testid="planning-session-content"
+      className="flex min-h-[28rem] flex-col rounded-xl border border-border/80 bg-surface xl:h-full xl:min-h-0 xl:overflow-hidden"
+    >
       <div className="relative z-20 shrink-0 space-y-3 border-b border-border/50 bg-surface-raised/20 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -631,6 +641,8 @@ export function PlanningSessionPage() {
         operation={activeOperation}
         connection={connection}
         operationQueryState={operationQueryState}
+        replyRecoveryPending={recoveryKind === "reply"}
+        onRetryReplyRecovery={retryReplyRecovery}
         onSubmitReply={({ text, answer, parentMessageId }) =>
           submitReply({ text, answer, parentMessageId })
         }

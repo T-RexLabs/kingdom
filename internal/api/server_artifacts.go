@@ -2,14 +2,22 @@ package api
 
 import (
 	"archive/zip"
+	"compress/flate"
+	"context"
+	"database/sql"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/crc32"
+	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
+	"path/filepath"
+	"strconv"
 	"strings"
-	"time"
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/errorcatalog"
@@ -29,14 +37,10 @@ type runArtifactItem struct {
 	MIME           string `json:"mime"`
 	Path           string `json:"path"`
 	SizeBytes      int64  `json:"size_bytes"`
+	ModeBits       *int64 `json:"mode_bits,omitempty"`
 	SHA256         string `json:"sha256,omitempty"`
 	CreatedAt      string `json:"created_at"`
 	DownloadURL    string `json:"download_url,omitempty"`
-}
-
-type artifactDeletionArchive struct {
-	Version string                         `json:"version"`
-	Entries []artifactDeletionArchiveEntry `json:"entries"`
 }
 
 type artifactDeletionArchiveEntry struct {
@@ -79,6 +83,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 			MIME:           record.MIME,
 			Path:           record.Path,
 			SizeBytes:      record.SizeBytes,
+			ModeBits:       record.ModeBits,
 			SHA256:         record.SHA256,
 			CreatedAt:      record.CreatedAt,
 			DownloadURL:    downloadURL,
@@ -99,24 +104,83 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	records, err := s.artifactService.ListRunArtifacts(r.Context(), runID)
+	directory, err := os.MkdirTemp("", "kingdom-archive-*")
 	if err != nil {
-		s.writeInternalError(w, "list run artifacts failed")
+		s.writeInternalError(w, "stage artifact archive failed")
 		return
 	}
-
-	type archiveEntry struct {
-		record state.ArtifactRecord
-		name   string
-		body   []byte
+	defer os.RemoveAll(directory)
+	staged, err := os.Create(filepath.Join(directory, "archive.zip"))
+	if err != nil {
+		s.writeInternalError(w, "stage artifact archive failed")
+		return
 	}
-
-	entries := make([]archiveEntry, 0, len(records))
-	usedNames := make(map[string]struct{}, len(records))
-	deletions := make([]artifactDeletionArchiveEntry, 0)
-	for _, record := range records {
+	defer staged.Close()
+	central, err := os.Create(filepath.Join(directory, "central"))
+	if err != nil {
+		s.writeInternalError(w, "stage archive directory failed")
+		return
+	}
+	defer central.Close()
+	archiveWriter := &stagedZIP{file: staged, central: central}
+	// Name collision state and deletion metadata also spill to disk; neither the
+	// ZIP directory nor the number of artifacts grows a Go in-memory inventory.
+	names, err := sql.Open("sqlite", filepath.Join(directory, "names.sqlite"))
+	if err != nil {
+		s.writeInternalError(w, "stage archive names failed")
+		return
+	}
+	defer names.Close()
+	names.SetMaxOpenConns(1)
+	if _, err := names.ExecContext(r.Context(), `PRAGMA journal_mode=OFF; PRAGMA synchronous=OFF; PRAGMA cache_size=-1024; CREATE TABLE names (name TEXT PRIMARY KEY) WITHOUT ROWID; CREATE TABLE inventory (ordinal INTEGER PRIMARY KEY, record TEXT NOT NULL)`); err != nil {
+		s.writeInternalError(w, "stage archive names failed")
+		return
+	}
+	// Snapshot metadata before reading any content. A concurrent atomic artifact
+	// batch must be included in full or excluded, never straddled by keyset pages.
+	err = s.artifactService.WalkRunArtifacts(r.Context(), runID, func(record state.ArtifactRecord) error {
+		raw, err := json.Marshal(record)
+		if err != nil {
+			return err
+		}
+		_, err = names.ExecContext(r.Context(), `INSERT INTO inventory(record) VALUES (?)`, string(raw))
+		return err
+	})
+	if err != nil {
+		s.writeInternalError(w, "stage artifact inventory failed")
+		return
+	}
+	reserve := func(name string) (bool, error) {
+		result, err := names.ExecContext(r.Context(), `INSERT OR IGNORE INTO names VALUES (?)`, name)
+		if err != nil {
+			return false, err
+		}
+		n, err := result.RowsAffected()
+		return n == 1, err
+	}
+	deletions, err := os.Create(filepath.Join(directory, "deletions.json"))
+	if err != nil {
+		s.writeInternalError(w, "stage archive deletions failed")
+		return
+	}
+	defer deletions.Close()
+	if _, err := io.WriteString(deletions, `{"version":"v1","entries":[`); err != nil {
+		s.writeInternalError(w, "stage archive deletions failed")
+		return
+	}
+	deletionCount := 0
+	err = walkStagedArchiveInventory(r.Context(), names, func(record state.ArtifactRecord) error {
+		if _, err := normalizeArchiveRelativePath(record.Path, record.Name, record.ArtifactID); err != nil {
+			return err
+		}
 		if strings.TrimSpace(record.ArtifactAction) == "delete" {
-			deletions = append(deletions, artifactDeletionArchiveEntry{
+			if deletionCount > 0 {
+				if _, err := io.WriteString(deletions, ","); err != nil {
+					return err
+				}
+			}
+			deletionCount++
+			return json.NewEncoder(deletions).Encode(artifactDeletionArchiveEntry{
 				ArtifactID:     record.ArtifactID,
 				Path:           record.Path,
 				ArtifactKind:   record.ArtifactKind,
@@ -124,104 +188,264 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 				ProducerRole:   record.ProducerRole,
 				CreatedAt:      record.CreatedAt,
 			})
-			continue
 		}
-		_, content, contentErr := s.artifactService.GetArtifactContent(r.Context(), record.ArtifactID)
-		if contentErr != nil {
-			var notFoundErr *state.ArtifactNotFoundError
-			var unavailableErr *state.ArtifactContentUnavailableError
-			switch {
-			case errors.As(contentErr, &notFoundErr):
-				writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "artifact not found", "api.get_run_artifacts_archive", map[string]any{"artifact_id": record.ArtifactID})
-			case errors.As(contentErr, &unavailableErr):
-				writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, unavailableErr.Error(), "api.get_run_artifacts_archive", map[string]any{"artifact_id": record.ArtifactID})
-			default:
-				s.writeInternalError(w, "resolve artifact content failed")
-			}
-			return
-		}
-
-		entryName, nameErr := buildArchiveEntryName(record, usedNames)
+		entryName, nameErr := reserveArchiveName(record, reserve)
 		if nameErr != nil {
-			s.writeBadRequest(w, nameErr.Error())
-			return
+			return nameErr
 		}
-
-		entries = append(entries, archiveEntry{record: record, name: entryName, body: content})
-	}
-	if len(deletions) > 0 {
-		body, err := json.MarshalIndent(artifactDeletionArchive{Version: "v1", Entries: deletions}, "", "  ")
-		if err != nil {
-			s.writeInternalError(w, "marshal artifact deletions archive failed")
-			return
-		}
-		metadataName := reserveArchiveMetadataName(usedNames, "deletions.json")
-		entries = append(entries, archiveEntry{
-			record: state.ArtifactRecord{
-				ArtifactID: "run-deletions-metadata",
-				Name:       metadataName,
-				Path:       metadataName,
-				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-			},
-			name: metadataName,
-			body: body,
+		header := &zip.FileHeader{Name: entryName, Method: zip.Deflate}
+		header.SetMode(os.FileMode(*record.ModeBits))
+		header.Modified = mustParseRFC3339(record.CreatedAt)
+		return archiveWriter.Add(header, func(dst io.Writer) error {
+			_, err := s.artifactService.CopyArtifactContent(r.Context(), record.ArtifactID, dst)
+			return err
 		})
+	})
+	if err == nil && deletionCount > 0 {
+		_, err = io.WriteString(deletions, "]}")
+		if err == nil {
+			_, err = deletions.Seek(0, io.SeekStart)
+		}
+		var name string
+		if err == nil {
+			name, err = reserveArchiveName(state.ArtifactRecord{ArtifactID: "metadata", Path: "deletions.json"}, reserve)
+		}
+		if err == nil {
+			header := &zip.FileHeader{Name: name}
+			header.SetMode(0o644)
+			err = archiveWriter.Add(header, func(dst io.Writer) error { _, err := io.Copy(dst, deletions); return err })
+		}
 	}
-
+	if err == nil {
+		err = archiveWriter.Close()
+	}
+	if err != nil {
+		writeArchiveContentError(w, runID, err)
+		return
+	}
+	info, err := staged.Stat()
+	if err != nil {
+		s.writeInternalError(w, "stat artifact archive failed")
+		return
+	}
+	if _, err := staged.Seek(0, io.SeekStart); err != nil {
+		s.writeInternalError(w, "rewind artifact archive failed")
+		return
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", runID+"-artifacts.zip"))
+	w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(http.StatusOK)
-
-	archiveWriter := zip.NewWriter(w)
-	for _, entry := range entries {
-		header := &zip.FileHeader{Name: entry.name, Method: zip.Deflate}
-		header.SetMode(0o644)
-		header.Modified = mustParseRFC3339(entry.record.CreatedAt)
-		fileWriter, writeErr := archiveWriter.CreateHeader(header)
-		if writeErr != nil {
-			_ = archiveWriter.Close()
-			return
-		}
-		if _, writeErr := fileWriter.Write(entry.body); writeErr != nil {
-			_ = archiveWriter.Close()
-			return
-		}
+	if _, err := io.Copy(w, staged); err != nil {
+		panic(http.ErrAbortHandler)
 	}
-	_ = archiveWriter.Close()
 }
 
-func reserveArchiveMetadataName(used map[string]struct{}, candidate string) string {
-	name := strings.TrimSpace(candidate)
-	if name == "" {
-		name = "metadata.json"
+func walkStagedArchiveInventory(ctx context.Context, db *sql.DB, visit func(state.ArtifactRecord) error) error {
+	var after int64
+	for {
+		rows, err := db.QueryContext(ctx, `SELECT ordinal, record FROM inventory WHERE ordinal > ? ORDER BY ordinal LIMIT 128`, after)
+		if err != nil {
+			return err
+		}
+		var page []state.ArtifactRecord
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&after, &raw); err != nil {
+				rows.Close()
+				return err
+			}
+			var record state.ArtifactRecord
+			if err := json.Unmarshal([]byte(raw), &record); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, record)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		for _, record := range page {
+			if err := visit(record); err != nil {
+				return err
+			}
+		}
+		if len(page) < 128 {
+			return nil
+		}
 	}
-	if _, exists := used[name]; !exists {
-		used[name] = struct{}{}
-		return name
-	}
-	fallback := appendArtifactIDSuffix(name, "metadata")
-	used[fallback] = struct{}{}
-	return fallback
 }
 
-func buildArchiveEntryName(record state.ArtifactRecord, used map[string]struct{}) (string, error) {
-	entryPath, err := normalizeArchiveRelativePath(record.Path, record.Name, record.ArtifactID)
+func reserveArchiveName(record state.ArtifactRecord, reserve func(string) (bool, error)) (string, error) {
+	name, err := normalizeArchiveRelativePath(record.Path, record.Name, record.ArtifactID)
 	if err != nil {
 		return "", err
 	}
-	if _, exists := used[entryPath]; !exists {
-		used[entryPath] = struct{}{}
-		return entryPath, nil
+	if ok, err := reserve(name); err != nil || ok {
+		return name, err
 	}
+	name = appendArtifactIDSuffix(name, record.ArtifactID)
+	if ok, err := reserve(name); err != nil || ok {
+		return name, err
+	}
+	return "", fmt.Errorf("archive entry collision for artifact %q", record.ArtifactID)
+}
 
-	renamed := appendArtifactIDSuffix(entryPath, record.ArtifactID)
-	if _, exists := used[renamed]; exists {
-		return "", fmt.Errorf("archive entry collision for artifact %q", record.ArtifactID)
+// stagedZIP emits ZIP64 local records incrementally and spools central records
+// separately. archive/zip.Writer retains every FileHeader until Close; using it
+// for an uncapped export would make entry count an unbounded heap allocation.
+// ZIP's 16-bit name length remains a format constraint, not an export budget.
+type stagedZIP struct {
+	file, central *os.File
+	count         uint64
+	compressor    *flate.Writer
+}
+
+func (z *stagedZIP) Add(header *zip.FileHeader, produce func(io.Writer) error) error {
+	if len(header.Name) > 65535 {
+		return fmt.Errorf("artifact name exceeds ZIP format capacity")
 	}
-	used[renamed] = struct{}{}
-	return renamed, nil
+	offset, err := z.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	if !header.Modified.IsZero() {
+		header.SetModTime(header.Modified)
+	}
+	local := make([]byte, 30+len(header.Name)+20)
+	binary.LittleEndian.PutUint32(local, 0x04034b50)
+	binary.LittleEndian.PutUint16(local[4:], 45)
+	binary.LittleEndian.PutUint16(local[6:], 0x808) // UTF-8, trailing descriptor
+	binary.LittleEndian.PutUint16(local[8:], zip.Deflate)
+	binary.LittleEndian.PutUint16(local[10:], header.ModifiedTime)
+	binary.LittleEndian.PutUint16(local[12:], header.ModifiedDate)
+	binary.LittleEndian.PutUint32(local[18:], 0xffffffff)
+	binary.LittleEndian.PutUint32(local[22:], 0xffffffff)
+	binary.LittleEndian.PutUint16(local[26:], uint16(len(header.Name)))
+	binary.LittleEndian.PutUint16(local[28:], 20)
+	copy(local[30:], header.Name)
+	extra := local[30+len(header.Name):]
+	binary.LittleEndian.PutUint16(extra, 1)
+	binary.LittleEndian.PutUint16(extra[2:], 16)
+	if _, err := z.file.Write(local); err != nil {
+		return err
+	}
+	if z.compressor == nil {
+		z.compressor, err = flate.NewWriter(z.file, flate.DefaultCompression)
+		if err != nil {
+			return err
+		}
+	} else {
+		z.compressor.Reset(z.file)
+	}
+	compressor := z.compressor
+	crc := crc32.NewIEEE()
+	counter := &archiveByteCounter{writer: io.MultiWriter(compressor, crc)}
+	err = produce(counter)
+	closeErr := compressor.Close()
+	if err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		return err
+	}
+	end, err := z.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	compressed := uint64(end - offset - int64(len(local)))
+	descriptor := make([]byte, 24)
+	binary.LittleEndian.PutUint32(descriptor, 0x08074b50)
+	binary.LittleEndian.PutUint32(descriptor[4:], crc.Sum32())
+	binary.LittleEndian.PutUint64(descriptor[8:], compressed)
+	binary.LittleEndian.PutUint64(descriptor[16:], counter.size)
+	if _, err := z.file.Write(descriptor); err != nil {
+		return err
+	}
+	central := make([]byte, 46+len(header.Name)+28)
+	binary.LittleEndian.PutUint32(central, 0x02014b50)
+	binary.LittleEndian.PutUint16(central[4:], 3<<8|45) // Unix creator
+	binary.LittleEndian.PutUint16(central[6:], 45)
+	copy(central[8:16], local[6:14])
+	binary.LittleEndian.PutUint32(central[16:], crc.Sum32())
+	binary.LittleEndian.PutUint32(central[20:], 0xffffffff)
+	binary.LittleEndian.PutUint32(central[24:], 0xffffffff)
+	binary.LittleEndian.PutUint16(central[28:], uint16(len(header.Name)))
+	binary.LittleEndian.PutUint16(central[30:], 28)
+	binary.LittleEndian.PutUint32(central[38:], header.ExternalAttrs)
+	binary.LittleEndian.PutUint32(central[42:], 0xffffffff)
+	copy(central[46:], header.Name)
+	extra = central[46+len(header.Name):]
+	binary.LittleEndian.PutUint16(extra, 1)
+	binary.LittleEndian.PutUint16(extra[2:], 24)
+	binary.LittleEndian.PutUint64(extra[4:], counter.size)
+	binary.LittleEndian.PutUint64(extra[12:], compressed)
+	binary.LittleEndian.PutUint64(extra[20:], uint64(offset))
+	if _, err := z.central.Write(central); err != nil {
+		return err
+	}
+	z.count++
+	return nil
+}
+
+type archiveByteCounter struct {
+	writer io.Writer
+	size   uint64
+}
+
+func (c *archiveByteCounter) Write(p []byte) (int, error) {
+	n, err := c.writer.Write(p)
+	c.size += uint64(n)
+	return n, err
+}
+
+func (z *stagedZIP) Close() error {
+	offset, err := z.file.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return err
+	}
+	if _, err := z.central.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	size, err := io.Copy(z.file, z.central)
+	if err != nil {
+		return err
+	}
+	end := make([]byte, 56+20+22)
+	binary.LittleEndian.PutUint32(end, 0x06064b50)
+	binary.LittleEndian.PutUint64(end[4:], 44)
+	binary.LittleEndian.PutUint16(end[12:], 45)
+	binary.LittleEndian.PutUint16(end[14:], 45)
+	binary.LittleEndian.PutUint64(end[24:], z.count)
+	binary.LittleEndian.PutUint64(end[32:], z.count)
+	binary.LittleEndian.PutUint64(end[40:], uint64(size))
+	binary.LittleEndian.PutUint64(end[48:], uint64(offset))
+	binary.LittleEndian.PutUint32(end[56:], 0x07064b50)
+	binary.LittleEndian.PutUint64(end[64:], uint64(offset+size))
+	binary.LittleEndian.PutUint32(end[72:], 1)
+	binary.LittleEndian.PutUint32(end[76:], 0x06054b50)
+	binary.LittleEndian.PutUint16(end[84:], 0xffff)
+	binary.LittleEndian.PutUint16(end[86:], 0xffff)
+	binary.LittleEndian.PutUint32(end[88:], 0xffffffff)
+	binary.LittleEndian.PutUint32(end[92:], 0xffffffff)
+	_, err = z.file.Write(end)
+	return err
+}
+
+func writeArchiveContentError(w http.ResponseWriter, artifactID string, err error) {
+	var notFoundErr *state.ArtifactNotFoundError
+	var unavailableErr *state.ArtifactContentUnavailableError
+	switch {
+	case errors.As(err, &notFoundErr):
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "artifact not found", "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	case errors.As(err, &unavailableErr):
+		writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, unavailableErr.Error(), "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	default:
+		writeCanonicalError(w, http.StatusInternalServerError, errorcatalog.CodeInternalError, "resolve artifact content failed", "api.get_run_artifacts_archive", map[string]any{"artifact_id": artifactID})
+	}
 }
 
 func normalizeArchiveRelativePath(candidatePath string, fallbackName string, artifactID string) (string, error) {
@@ -323,6 +547,8 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	if record.ArtifactAction != "delete" {
 		sha256 := record.SHA256
 		downloadURL := s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content"
+		mode := int(*record.ModeBits)
+		response.ModeBits = &mode
 		response.Sha256 = &sha256
 		response.DownloadUrl = &downloadURL
 	}
@@ -335,7 +561,7 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 	}
 
 	artifactID := strings.TrimSpace(r.PathValue("id"))
-	record, content, err := s.artifactService.GetArtifactContent(r.Context(), artifactID)
+	record, content, err := s.artifactService.StageArtifactContent(r.Context(), artifactID)
 	if err != nil {
 		var notFoundErr *state.ArtifactNotFoundError
 		var unavailableErr *state.ArtifactContentUnavailableError
@@ -349,6 +575,8 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 		}
 		return
 	}
+	defer os.Remove(content.Name())
+	defer content.Close()
 
 	mime := strings.TrimSpace(record.MIME)
 	if mime == "" {
@@ -358,6 +586,9 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", record.Name))
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Length", strconv.FormatInt(record.SizeBytes, 10))
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(content)
+	if _, err := io.Copy(w, content); err != nil {
+		panic(http.ErrAbortHandler)
+	}
 }

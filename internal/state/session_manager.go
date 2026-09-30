@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"kingdom/internal/timestamporder"
 )
 
 type SessionLeaseStatus string
@@ -47,12 +49,11 @@ func (e *SessionLeaseStateConflictError) Error() string {
 }
 
 type SessionLeaseExpiredError struct {
-	Code      string
 	SessionID string
 }
 
 func (e *SessionLeaseExpiredError) Error() string {
-	return fmt.Sprintf("%s: session lease expired for %q", e.Code, e.SessionID)
+	return fmt.Sprintf("session lease expired for %q", e.SessionID)
 }
 
 type SessionLifecycleMetrics struct {
@@ -333,7 +334,7 @@ func (m *SessionManager) ExpireLease(ctx context.Context, req ExpireSessionLease
 	}
 
 	m.metrics.RecordExpired(req.ReasonClass)
-	return lease, &SessionLeaseExpiredError{Code: "session_lease_expired", SessionID: req.SessionID}
+	return lease, &SessionLeaseExpiredError{SessionID: req.SessionID}
 }
 
 func (m *SessionManager) CloseLease(ctx context.Context, req CloseSessionLeaseRequest) (SessionLease, error) {
@@ -384,7 +385,7 @@ func (m *SessionManager) FindStaleLeases(ctx context.Context, req FindStaleSessi
 		return nil, err
 	}
 
-	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339)
+	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339Nano)
 	query := fmt.Sprintf(`SELECT session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at
 		 FROM session_leases
 		 WHERE status = 'active'
@@ -394,7 +395,7 @@ func (m *SessionManager) FindStaleLeases(ctx context.Context, req FindStaleSessi
 	rows, err := m.db.QueryContext(ctx,
 		query,
 		cutoff,
-		nowTime.UTC().Format(time.RFC3339),
+		nowTime.UTC().Format(time.RFC3339Nano),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("find stale session leases: %w", err)
@@ -432,10 +433,14 @@ func staleActiveSessionLeaseConditionSQL(tableAlias string) string {
 	}
 	return fmt.Sprintf(`(
 		COALESCE(TRIM(%[1]s.last_heartbeat_at), '') = '' OR
-		%[1]s.last_heartbeat_at <= ? OR
+		%[2]s OR
 		COALESCE(TRIM(%[1]s.lease_expires_at), '') = '' OR
-		%[1]s.lease_expires_at <= ?
-	)`, trimmedAlias)
+		%[3]s
+	)`,
+		trimmedAlias,
+		timestamporder.ComparisonSQL(trimmedAlias+".last_heartbeat_at", "?", "<="),
+		timestamporder.ComparisonSQL(trimmedAlias+".lease_expires_at", "?", "<="),
+	)
 }
 
 func (m *SessionManager) ReconcileStaleLeases(ctx context.Context, req FindStaleSessionLeasesRequest) ([]SessionLease, error) {
@@ -453,8 +458,8 @@ func (m *SessionManager) ReconcileStaleLeases(ctx context.Context, req FindStale
 	for _, lease := range staleLeases {
 		expired, expireErr := m.ExpireLease(ctx, ExpireSessionLeaseRequest{
 			SessionID:      lease.SessionID,
-			LeaseExpiresAt: nowTime.UTC().Format(time.RFC3339),
-			UpdatedAt:      nowTime.UTC().Format(time.RFC3339),
+			LeaseExpiresAt: nowTime.UTC().Format(time.RFC3339Nano),
+			UpdatedAt:      nowTime.UTC().Format(time.RFC3339Nano),
 			ReasonClass:    "stale_heartbeat",
 		})
 		if expireErr != nil {

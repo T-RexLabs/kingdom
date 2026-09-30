@@ -161,17 +161,38 @@ CREATE TABLE node_runs (
   required_role TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   row_version INTEGER NOT NULL DEFAULT 1 CHECK (row_version >= 1),
-  started_at TEXT,
+   handoff_source_attempt_id TEXT NOT NULL DEFAULT '',
+   started_at TEXT,
   finished_at TEXT,
   superseded_at TEXT,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (required_role) REFERENCES roles(role_id),
   FOREIGN KEY (agent_id) REFERENCES agents(agent_id),
+	UNIQUE (node_run_id, run_id),
   UNIQUE (run_id, node_id, attempt)
 );
 
 CREATE INDEX idx_node_runs_run_node_wave
 ON node_runs(run_id, node_id, wave, attempt);
+
+CREATE INDEX idx_node_runs_run_node_visible
+ON node_runs(run_id, node_id, node_status, superseded_at, attempt DESC, node_run_id DESC);
+
+CREATE TABLE node_attempt_recoveries (
+  target_node_run_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  node_id TEXT NOT NULL,
+  source_attempt_id TEXT NOT NULL,
+  source_node_run_id TEXT NOT NULL,
+  trigger TEXT NOT NULL CHECK (trigger IN ('operator_retry', 'operator_rerun')),
+  reason_code TEXT NOT NULL,
+  scheduled_at TEXT NOT NULL,
+  FOREIGN KEY (target_node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
+  FOREIGN KEY (source_attempt_id, run_id, source_node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id)
+);
+
+CREATE INDEX idx_node_attempt_recoveries_run_node_scheduled
+ON node_attempt_recoveries(run_id, node_id, scheduled_at DESC, target_node_run_id DESC);
 
 CREATE INDEX idx_workflow_runs_active_created
 ON workflow_runs(created_at, run_id)
@@ -442,6 +463,7 @@ CREATE TABLE attempt_executions (
   node_run_id TEXT NOT NULL,
   state TEXT NOT NULL CHECK (state IN ('queued', 'starting', 'running', 'terminal_observed', 'committed_success', 'committed_failure', 'committed_cancelled')),
   execution_mode TEXT NOT NULL DEFAULT 'provider_backed' CHECK (execution_mode IN ('provider_backed', 'runtime_owned')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode IN ('not_applicable', 'server_response')),
   provider_timeout_ms INTEGER NOT NULL DEFAULT 0 CHECK (provider_timeout_ms >= 0),
   lease_owner TEXT NOT NULL DEFAULT '',
   lease_expires_at TEXT,
@@ -465,9 +487,11 @@ CREATE TABLE attempt_executions (
   updated_at TEXT NOT NULL,
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
+	FOREIGN KEY (node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
   FOREIGN KEY (active_provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
   FOREIGN KEY (canonical_settlement_id) REFERENCES provider_completion_settlements(settlement_id),
-  UNIQUE (attempt_id, node_run_id)
+	UNIQUE (attempt_id, node_run_id),
+	UNIQUE (attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_attempt_executions_state_lease
@@ -486,6 +510,10 @@ ON attempt_executions (active_provider_invocation_id);
 CREATE INDEX idx_attempt_executions_canonical_settlement
 ON attempt_executions (canonical_settlement_id);
 
+CREATE INDEX idx_attempt_executions_snapshot_lineage
+ON attempt_executions (run_id, result_snapshot_id, base_snapshot_id)
+WHERE result_snapshot_id <> '';
+
 CREATE TABLE provider_invocations (
   provider_invocation_id TEXT PRIMARY KEY,
   attempt_id TEXT NOT NULL,
@@ -493,28 +521,25 @@ CREATE TABLE provider_invocations (
   node_run_id TEXT NOT NULL,
   logical_session_id TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
-  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalid_handshake')),
-  completion_capability_hash TEXT NOT NULL DEFAULT '',
-  completion_capability_issued_at TEXT NOT NULL,
-  completion_capability_used_at TEXT,
-  completion_capability_revoked_at TEXT,
+  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalidated')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
   opened_at TEXT,
-  receipt_seen_count INTEGER NOT NULL DEFAULT 0 CHECK (receipt_seen_count >= 0),
-  first_receipt_seen_at TEXT,
-  last_receipt_seen_at TEXT,
-  last_receipt_disposition TEXT NOT NULL DEFAULT '' CHECK (last_receipt_disposition IN ('', 'accepted', 'rejected', 'invalidated', 'idempotent_duplicate', 'error')),
-  receipt_persisted_at TEXT,
   settled_at TEXT,
   superseded_by_invocation_id TEXT,
   invalid_reason TEXT NOT NULL DEFAULT '',
   failure_reason_code TEXT NOT NULL DEFAULT '',
   failure_reason_text TEXT NOT NULL DEFAULT '',
+  terminal_handoff_pending_at TEXT,
+  terminal_recovery_required_at TEXT,
+  terminal_handoff_file_cleanup_pending_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
-  FOREIGN KEY (superseded_by_invocation_id) REFERENCES provider_invocations(provider_invocation_id)
+	FOREIGN KEY (attempt_id, run_id, node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id),
+	FOREIGN KEY (superseded_by_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
+	UNIQUE (provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_provider_invocations_attempt_created
@@ -526,6 +551,81 @@ ON provider_invocations (invocation_state, updated_at DESC, provider_invocation_
 CREATE INDEX idx_provider_invocations_run_node_created
 ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocation_id);
 
+CREATE TABLE provider_process_guards (
+  guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
+  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('decree_attempt', 'planning_operation')),
+  owner_id TEXT NOT NULL CHECK (TRIM(owner_id) <> ''),
+  provider_invocation_id TEXT NOT NULL,
+  attempt_id TEXT NOT NULL DEFAULT '',
+  run_id TEXT NOT NULL DEFAULT '',
+  node_run_id TEXT NOT NULL DEFAULT '',
+  planning_operation_id TEXT NOT NULL DEFAULT '',
+  planning_session_id TEXT NOT NULL DEFAULT '',
+  command_ordinal INTEGER NOT NULL CHECK (command_ordinal >= 1),
+  lifecycle TEXT NOT NULL CHECK (lifecycle IN ('acknowledged', 'quiescent')),
+  platform TEXT NOT NULL CHECK (platform IN ('unix_process_group', 'windows_job_object')),
+  guardian_pid INTEGER NOT NULL CHECK (guardian_pid >= 1),
+  guardian_identity_token TEXT NOT NULL DEFAULT '',
+  child_pid INTEGER NOT NULL CHECK (child_pid >= 1),
+  child_identity_token TEXT NOT NULL DEFAULT '',
+  tree_id TEXT NOT NULL CHECK (TRIM(tree_id) <> ''),
+  tree_identity_token TEXT NOT NULL DEFAULT '',
+  quiescence_capability_hash TEXT NOT NULL CHECK (LENGTH(quiescence_capability_hash) = 64 AND quiescence_capability_hash NOT GLOB '*[^0-9a-f]*'),
+  lease_owner TEXT NOT NULL CHECK (TRIM(lease_owner) <> ''),
+  lease_version INTEGER NOT NULL CHECK (lease_version >= 1),
+  started_at TEXT NOT NULL,
+  acknowledged_at TEXT NOT NULL,
+  termination_requested_at TEXT,
+  exited_at TEXT,
+  quiescent_at TEXT,
+  exit_code INTEGER,
+  exit_signal INTEGER,
+  termination_forced INTEGER NOT NULL DEFAULT 0 CHECK (termination_forced IN (0, 1)),
+  failure_code TEXT NOT NULL DEFAULT '',
+  failure_text TEXT NOT NULL DEFAULT '',
+  quiescence_evidence_sha256 TEXT NOT NULL DEFAULT '' CHECK (quiescence_evidence_sha256 = '' OR (LENGTH(quiescence_evidence_sha256) = 64 AND quiescence_evidence_sha256 NOT GLOB '*[^0-9a-f]*')),
+  quiescence_evidence_json TEXT NOT NULL DEFAULT '{}',
+  quiescence_evidence_lost_at TEXT,
+  evidence_cleaned_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  CHECK (
+    (owner_kind = 'decree_attempt' AND owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> '' AND planning_operation_id = '' AND planning_session_id = '')
+    OR
+    (owner_kind = 'planning_operation' AND owner_id = planning_operation_id AND planning_operation_id <> '' AND planning_session_id <> '' AND attempt_id = '' AND run_id = '' AND node_run_id = '')
+  ),
+  CHECK (
+    (lifecycle = 'acknowledged' AND quiescent_at IS NULL AND quiescence_evidence_sha256 = '')
+    OR
+    (lifecycle = 'quiescent' AND quiescent_at IS NOT NULL AND quiescence_evidence_sha256 <> '')
+  ),
+  UNIQUE (provider_invocation_id, command_ordinal)
+);
+
+CREATE INDEX idx_provider_process_guards_pending
+ON provider_process_guards (lifecycle, guard_id)
+WHERE lifecycle = 'acknowledged';
+
+CREATE INDEX idx_provider_process_guards_invocation
+ON provider_process_guards (provider_invocation_id, command_ordinal);
+
+CREATE TABLE provider_terminal_handoffs (
+  handoff_id TEXT PRIMARY KEY,
+  provider_invocation_id TEXT NOT NULL UNIQUE,
+  attempt_id TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  node_run_id TEXT NOT NULL,
+  expected_lease_owner TEXT NOT NULL CHECK (TRIM(expected_lease_owner) <> ''),
+  expected_lease_version INTEGER NOT NULL CHECK (expected_lease_version >= 1),
+  stream_observation_json TEXT NOT NULL CHECK (TRIM(stream_observation_json) <> ''),
+  payload_json TEXT NOT NULL CHECK (TRIM(payload_json) <> '' AND LENGTH(CAST(payload_json AS BLOB)) <= 33554432),
+  created_at TEXT NOT NULL,
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
+);
+
+CREATE INDEX idx_provider_terminal_handoffs_pending
+ON provider_terminal_handoffs (provider_invocation_id ASC);
+
 CREATE TABLE provider_completion_evidence (
   provider_evidence_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   evidence_id TEXT NOT NULL UNIQUE,
@@ -533,13 +633,14 @@ CREATE TABLE provider_completion_evidence (
   attempt_id TEXT NOT NULL,
   run_id TEXT NOT NULL,
   node_run_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'completion_receipt_attempt', 'stream_observation', 'export_diagnostic', 'repair_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (provider_invocation_id) REFERENCES provider_invocations(provider_invocation_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
-  FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id)
+	FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_provider_completion_evidence_invocation_seq
@@ -567,7 +668,8 @@ CREATE TABLE provider_completion_settlements (
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
-  FOREIGN KEY (primary_evidence_id) REFERENCES provider_completion_evidence(evidence_id)
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id),
+	FOREIGN KEY (primary_evidence_id) REFERENCES provider_completion_evidence(evidence_id)
 );
 
 CREATE INDEX idx_provider_completion_settlements_attempt_settled
@@ -616,7 +718,7 @@ CREATE TABLE attempt_outbox (
 );
 
 CREATE INDEX idx_attempt_outbox_status_created
-ON attempt_outbox (status, created_at);
+ON attempt_outbox (status, created_at, outbox_id);
 
 CREATE TABLE attempt_cancel_outbox (
   cancel_outbox_id TEXT PRIMARY KEY,
@@ -628,6 +730,7 @@ CREATE TABLE attempt_cancel_outbox (
   reason_text TEXT NOT NULL DEFAULT '',
   requested_at TEXT NOT NULL,
   status TEXT NOT NULL CHECK (status IN ('pending', 'published')),
+  handoff_state TEXT NOT NULL DEFAULT 'cancellation_requested' CHECK (handoff_state IN ('cancellation_requested', 'cancellation_dispatched', 'awaiting_quiescence', 'stop_retry_requested', 'stop_retry_dispatched', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed', 'released')),
   publish_attempts INTEGER NOT NULL DEFAULT 0 CHECK (publish_attempts >= 0),
   last_error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
@@ -640,7 +743,7 @@ CREATE TABLE attempt_cancel_outbox (
 );
 
 CREATE INDEX idx_attempt_cancel_outbox_status_created
-ON attempt_cancel_outbox (status, created_at);
+ON attempt_cancel_outbox (status, created_at, cancel_outbox_id);
 
 CREATE TABLE artifacts (
   artifact_id TEXT PRIMARY KEY,
@@ -654,8 +757,10 @@ CREATE TABLE artifacts (
   path TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   size_bytes INTEGER NOT NULL CHECK (size_bytes >= 0),
+  mode_bits INTEGER,
   producer_role TEXT NOT NULL,
   created_at TEXT NOT NULL,
+  CHECK ((artifact_action = 'write' AND mode_bits IS NOT NULL AND mode_bits BETWEEN 0 AND 511) OR (artifact_action = 'delete' AND mode_bits IS NULL)),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
   FOREIGN KEY (producer_role) REFERENCES roles(role_id)
@@ -805,7 +910,11 @@ CREATE TABLE run_publication_entries (
   blob_id TEXT NOT NULL DEFAULT '',
   expected_sha256 TEXT NOT NULL DEFAULT '',
   observed_sha256 TEXT NOT NULL DEFAULT '',
+  mode_bits INTEGER CHECK (mode_bits IS NULL OR mode_bits BETWEEN 0 AND 511),
+  expected_mode_bits INTEGER CHECK (expected_mode_bits IS NULL OR expected_mode_bits BETWEEN 0 AND 511),
+  observed_mode_bits INTEGER CHECK (observed_mode_bits IS NULL OR observed_mode_bits BETWEEN 0 AND 511),
   created_at TEXT NOT NULL,
+  CHECK ((action = 'write' AND mode_bits IS NOT NULL) OR (action = 'delete' AND mode_bits IS NULL)),
   FOREIGN KEY (publication_batch_id) REFERENCES run_publication_batches(publication_batch_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id)
@@ -820,7 +929,9 @@ CREATE TABLE run_publication_paths (
   artifact_action TEXT NOT NULL CHECK (artifact_action IN ('write', 'delete')),
   blob_id TEXT NOT NULL DEFAULT '',
   sha256 TEXT NOT NULL DEFAULT '',
+  mode_bits INTEGER,
   updated_at TEXT NOT NULL,
+  CHECK ((artifact_action = 'write' AND mode_bits IS NOT NULL AND mode_bits BETWEEN 0 AND 511) OR (artifact_action = 'delete' AND mode_bits IS NULL)),
   PRIMARY KEY (run_id, path),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id)
 );
@@ -994,6 +1105,7 @@ CREATE TABLE token_usage (
   run_id             TEXT NOT NULL REFERENCES workflow_runs(run_id),
   node_run_id        TEXT NOT NULL REFERENCES node_runs(node_run_id),
   attempt_id         TEXT NOT NULL,
+  provider_invocation_id TEXT REFERENCES provider_invocations(provider_invocation_id),
   required_role      TEXT NOT NULL,
   model              TEXT NOT NULL DEFAULT '',
   variant            TEXT NOT NULL DEFAULT '',
@@ -1002,13 +1114,19 @@ CREATE TABLE token_usage (
   total_tokens       INTEGER NOT NULL DEFAULT 0,
   reasoning_tokens   INTEGER NOT NULL DEFAULT 0,
   cache_read_tokens  INTEGER NOT NULL DEFAULT 0,
-  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-  created_at         TEXT NOT NULL
+	cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+	created_at         TEXT NOT NULL,
+	FOREIGN KEY (provider_invocation_id, attempt_id, run_id, node_run_id) REFERENCES provider_invocations(provider_invocation_id, attempt_id, run_id, node_run_id)
 );
 
 CREATE INDEX idx_token_usage_run ON token_usage(run_id);
 CREATE INDEX idx_token_usage_created ON token_usage(created_at);
-CREATE UNIQUE INDEX idx_token_usage_attempt_unique ON token_usage(run_id, node_run_id, attempt_id);
+CREATE UNIQUE INDEX idx_token_usage_attempt_without_invocation_unique
+ON token_usage(run_id, node_run_id, attempt_id)
+WHERE provider_invocation_id IS NULL;
+CREATE UNIQUE INDEX idx_token_usage_provider_invocation_unique
+ON token_usage(provider_invocation_id)
+WHERE provider_invocation_id IS NOT NULL;
 
 CREATE TABLE planning_sessions (
   planning_session_id TEXT PRIMARY KEY,
@@ -1128,6 +1246,22 @@ ON planning_operations (canonical_settlement_id);
 CREATE INDEX idx_planning_operations_context_snapshot
 ON planning_operations (planning_context_snapshot_id);
 
+CREATE TABLE planning_activity_reconciliations (
+  planning_operation_id TEXT PRIMARY KEY,
+  planning_provider_invocation_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
+  lease_owner TEXT NOT NULL DEFAULT '',
+  lease_expires_at TEXT,
+  lease_version INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
+  FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id)
+);
+
+CREATE INDEX idx_planning_activity_reconciliations_claim
+ON planning_activity_reconciliations (status, lease_expires_at, planning_operation_id);
+
 CREATE TRIGGER planning_operation_context_binding_immutable
 BEFORE UPDATE OF planning_context_snapshot_id ON planning_operations
 WHEN NEW.planning_context_snapshot_id IS NOT OLD.planning_context_snapshot_id
@@ -1147,20 +1281,18 @@ CREATE TABLE planning_provider_invocations (
   planning_session_id TEXT NOT NULL,
   logical_session_id TEXT NOT NULL DEFAULT '',
   provider_session_id TEXT NOT NULL DEFAULT '',
-  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'receipt_persisted', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded', 'invalid_handshake')),
-  completion_capability_hash TEXT NOT NULL DEFAULT '',
-  completion_capability_issued_at TEXT NOT NULL,
-  completion_capability_used_at TEXT,
+  invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded')),
+  completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
+  process_guard_required INTEGER NOT NULL DEFAULT 0 CHECK (process_guard_required IN (0, 1)),
   opened_at TEXT,
-  receipt_persisted_at TEXT,
   settled_at TEXT,
-  invalid_reason TEXT NOT NULL DEFAULT '',
   failure_reason_code TEXT NOT NULL DEFAULT '',
   failure_reason_text TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
-  FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE
+  FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
+  UNIQUE (planning_provider_invocation_id, planning_operation_id)
 );
 
 CREATE INDEX idx_planning_provider_invocations_operation_created
@@ -1169,13 +1301,134 @@ ON planning_provider_invocations (planning_operation_id, created_at DESC, planni
 CREATE INDEX idx_planning_provider_invocations_state_updated
 ON planning_provider_invocations (invocation_state, updated_at DESC, planning_provider_invocation_id);
 
+CREATE TABLE retry_decisions (
+  retry_decision_id TEXT PRIMARY KEY CHECK (TRIM(retry_decision_id) <> ''),
+  subject_kind TEXT NOT NULL CHECK (subject_kind IN ('decree_attempt', 'planning_invocation')),
+  run_id TEXT,
+  node_id TEXT,
+  node_run_id TEXT,
+  planning_operation_id TEXT,
+  source_attempt_id TEXT,
+  source_planning_invocation_id TEXT,
+  target_node_run_id TEXT,
+  policy_id TEXT NOT NULL CHECK (TRIM(policy_id) <> ''),
+  retry_class TEXT NOT NULL CHECK (TRIM(retry_class) <> ''),
+  error_code TEXT NOT NULL CHECK (TRIM(error_code) <> ''),
+  operator_text TEXT NOT NULL,
+  meaningful_progress INTEGER NOT NULL CHECK (meaningful_progress IN (0, 1)),
+  decision TEXT NOT NULL CHECK (decision IN ('retry', 'fail_fast', 'exhausted')),
+  retry_index INTEGER NOT NULL CHECK (retry_index >= 0),
+  max_retries INTEGER NOT NULL CHECK (max_retries >= 0),
+  policy_delay_ns INTEGER NOT NULL CHECK (policy_delay_ns >= 0),
+  provider_retry_at TEXT,
+  due_at TEXT NOT NULL,
+  dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('pending', 'dispatched', 'not_applicable')),
+  dispatched_at TEXT,
+  escalation_target TEXT NOT NULL CHECK (TRIM(escalation_target) <> ''),
+  resolution TEXT NOT NULL CHECK (resolution IN ('pending', 'recovered', 'failed', 'escalated', 'not_applicable', 'cancelled')),
+  resolved_at TEXT,
+  created_at TEXT NOT NULL,
+  CHECK (
+    (subject_kind = 'decree_attempt'
+      AND run_id IS NOT NULL AND TRIM(run_id) <> ''
+      AND node_id IS NOT NULL AND TRIM(node_id) <> ''
+      AND node_run_id IS NOT NULL AND TRIM(node_run_id) <> ''
+      AND source_attempt_id IS NOT NULL AND TRIM(source_attempt_id) <> ''
+      AND planning_operation_id IS NULL AND source_planning_invocation_id IS NULL)
+    OR
+    (subject_kind = 'planning_invocation'
+      AND planning_operation_id IS NOT NULL AND TRIM(planning_operation_id) <> ''
+      AND source_planning_invocation_id IS NOT NULL AND TRIM(source_planning_invocation_id) <> ''
+      AND run_id IS NULL AND node_id IS NULL AND node_run_id IS NULL AND source_attempt_id IS NULL AND target_node_run_id IS NULL)
+  ),
+  CHECK (
+    (decision = 'retry' AND (dispatch_state IN ('pending', 'dispatched') OR (dispatch_state = 'not_applicable' AND resolution = 'cancelled'))
+      AND ((subject_kind = 'decree_attempt' AND target_node_run_id IS NOT NULL AND TRIM(target_node_run_id) <> '')
+        OR subject_kind = 'planning_invocation'))
+    OR
+    (decision IN ('fail_fast', 'exhausted') AND target_node_run_id IS NULL AND dispatch_state = 'not_applicable')
+  ),
+  CHECK (
+    (dispatch_state = 'pending' AND dispatched_at IS NULL AND resolution = 'pending' AND resolved_at IS NULL)
+    OR
+    (dispatch_state = 'dispatched' AND dispatched_at IS NOT NULL AND resolution IN ('pending', 'recovered', 'failed', 'cancelled')
+	  AND ((resolution = 'pending' AND resolved_at IS NULL) OR (resolution IN ('recovered', 'failed', 'cancelled') AND resolved_at IS NOT NULL)))
+    OR
+    (dispatch_state = 'not_applicable' AND dispatched_at IS NULL
+	  AND ((resolution = 'not_applicable' AND decision = 'fail_fast' AND resolved_at IS NULL)
+	    OR (resolution = 'escalated' AND decision = 'exhausted' AND resolved_at IS NOT NULL)
+	    OR (resolution = 'cancelled' AND decision = 'retry' AND resolved_at IS NOT NULL)))
+  ),
+  FOREIGN KEY (source_attempt_id, run_id, node_run_id) REFERENCES attempt_executions(attempt_id, run_id, node_run_id),
+  FOREIGN KEY (target_node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
+  FOREIGN KEY (source_planning_invocation_id, planning_operation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id, planning_operation_id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_retry_decisions_source_decree_attempt
+ON retry_decisions (source_attempt_id)
+WHERE subject_kind = 'decree_attempt';
+
+CREATE UNIQUE INDEX idx_retry_decisions_source_planning_invocation
+ON retry_decisions (source_planning_invocation_id)
+WHERE subject_kind = 'planning_invocation';
+
+CREATE UNIQUE INDEX idx_retry_decisions_pending_decree_node
+ON retry_decisions (run_id, node_id)
+WHERE subject_kind = 'decree_attempt' AND decision = 'retry' AND dispatch_state = 'pending';
+
+CREATE UNIQUE INDEX idx_retry_decisions_pending_planning_operation
+ON retry_decisions (planning_operation_id)
+WHERE subject_kind = 'planning_invocation' AND decision = 'retry' AND dispatch_state = 'pending';
+
+CREATE UNIQUE INDEX idx_retry_decisions_target_node_run
+ON retry_decisions (target_node_run_id)
+WHERE target_node_run_id IS NOT NULL;
+
+CREATE TRIGGER retry_decisions_validate_decree_lineage_insert
+BEFORE INSERT ON retry_decisions
+FOR EACH ROW
+WHEN NEW.subject_kind = 'decree_attempt'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision source node lineage mismatch') END;
+  SELECT CASE WHEN NEW.decision = 'retry' AND NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.target_node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision target node lineage mismatch') END;
+END;
+
+CREATE TRIGGER retry_decisions_validate_decree_lineage_update
+BEFORE UPDATE OF subject_kind, run_id, node_id, node_run_id, target_node_run_id, decision ON retry_decisions
+FOR EACH ROW
+WHEN NEW.subject_kind = 'decree_attempt'
+BEGIN
+  SELECT CASE WHEN NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision source node lineage mismatch') END;
+  SELECT CASE WHEN NEW.decision = 'retry' AND NOT EXISTS (
+    SELECT 1 FROM node_runs
+    WHERE node_run_id = NEW.target_node_run_id
+      AND run_id = NEW.run_id
+      AND node_id = NEW.node_id
+  ) THEN RAISE(ABORT, 'retry decision target node lineage mismatch') END;
+END;
+
 CREATE TABLE planning_provider_completion_evidence (
   planning_provider_evidence_seq INTEGER PRIMARY KEY AUTOINCREMENT,
   evidence_id TEXT NOT NULL UNIQUE,
   planning_provider_invocation_id TEXT NOT NULL,
   planning_operation_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
-  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('completion_receipt', 'stream_observation', 'export_diagnostic', 'repair_diagnostic')),
+  evidence_kind TEXT NOT NULL CHECK (evidence_kind IN ('stream_observation', 'export_diagnostic')),
   payload_json TEXT NOT NULL,
   created_at TEXT NOT NULL,
   FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),
@@ -1188,10 +1441,6 @@ ON planning_provider_completion_evidence (planning_provider_invocation_id, plann
 
 CREATE INDEX idx_planning_provider_completion_evidence_operation_kind_created
 ON planning_provider_completion_evidence (planning_operation_id, evidence_kind, created_at DESC, evidence_id);
-
-CREATE UNIQUE INDEX idx_planning_provider_completion_receipt_invocation
-ON planning_provider_completion_evidence (planning_provider_invocation_id)
-WHERE evidence_kind = 'completion_receipt';
 
 CREATE TABLE planning_provider_completion_settlements (
   settlement_id TEXT PRIMARY KEY,

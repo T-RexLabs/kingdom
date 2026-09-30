@@ -1,11 +1,17 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
 import { PlanningSessionList } from "./planning-session-list";
 
 const navigate = vi.fn();
 const deleteMutate = vi.fn(async () => undefined);
+const pagination = { hasNextPage: false, isFetchingNextPage: false, fetchNextPage: vi.fn() };
+beforeEach(() => {
+  pagination.hasNextPage = false;
+  pagination.isFetchingNextPage = false;
+  pagination.fetchNextPage.mockReset();
+});
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: { children: ReactNode }) => <a href="#" {...props}>{children}</a>,
@@ -15,6 +21,7 @@ vi.mock("@tanstack/react-router", () => ({
 
 vi.mock("@/api/hooks", () => ({
   usePlanningSessions: () => ({
+    ...pagination,
     data: {
       items: [
         {
@@ -52,6 +59,20 @@ vi.mock("@/api/hooks", () => ({
 }));
 
 describe("planning session list", () => {
+  it("loads older sessions inside the rail and disables duplicate requests", async () => {
+    pagination.hasNextPage = true;
+    const { rerender } = render(<PlanningSessionList />);
+    await userEvent.click(screen.getByRole("button", { name: "Load More Sessions" }));
+    expect(pagination.fetchNextPage).toHaveBeenCalledOnce();
+    expect(screen.getByText("Session one")).toBeInTheDocument();
+    pagination.isFetchingNextPage = true;
+    rerender(<PlanningSessionList />);
+    expect(screen.getByRole("button", { name: "Loading sessions..." })).toBeDisabled();
+    pagination.isFetchingNextPage = false;
+    pagination.hasNextPage = false;
+    rerender(<PlanningSessionList />);
+    expect(screen.queryByRole("button", { name: "Load More Sessions" })).not.toBeInTheDocument();
+  });
   it("renders session titles", () => {
     render(<PlanningSessionList />);
 

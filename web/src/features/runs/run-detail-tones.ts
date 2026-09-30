@@ -15,6 +15,7 @@ export type RunStatusTone =
   | "ready"
   | "pending"
   | "blocked"
+	| "paused"
   | "cancelled"
   | "skipped"
   | "rework"
@@ -38,6 +39,7 @@ export const RUN_STATUS_HEX: Record<Exclude<RunStatusTone, "neutral">, string> =
 	ready: STATUS_TONE_HEX.attention,
 	pending: STATUS_TONE_HEX.neutral,
 	blocked: STATUS_TONE_HEX.attention,
+	paused: STATUS_TONE_HEX.attention,
 	cancelled: STATUS_TONE_HEX.cancelled,
 	skipped: STATUS_TONE_HEX.neutral,
 	rework: STATUS_TONE_HEX.rework,

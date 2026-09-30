@@ -1,8 +1,12 @@
 package runtimefs
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +14,7 @@ import (
 	"time"
 
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 
 	_ "modernc.org/sqlite"
@@ -59,7 +64,7 @@ func TestCaptureRestoreAndDiffSnapshots(t *testing.T) {
 		t.Fatalf("capture result snapshot: %v", err)
 	}
 
-	diffs, err := store.DiffSnapshots(context.Background(), base.SnapshotID, result.SnapshotID)
+	diffs, err := readTestDiff(store, base.SnapshotID, result.SnapshotID)
 	if err != nil {
 		t.Fatalf("diff snapshots: %v", err)
 	}
@@ -90,6 +95,324 @@ func TestCaptureRestoreAndDiffSnapshots(t *testing.T) {
 	}
 }
 
+func TestResponseOnlyWorkspaceIsAttemptScopedAndSafelyRemoved(t *testing.T) {
+	t.Parallel()
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+
+	const runID = "run_response_only"
+	seedRuntimeFSRun(t, db, runID)
+	if _, err := db.Exec(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('advisor', 'Advisor', 0, '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only role: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, spawn_depth, created_at, updated_at) VALUES ('agent_response_only', 'advisor', 'idle', 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only agent: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_response_only', 'wfdef_runtimefs', 'advisor_node', 'advisor', 'advisor_consultation', '2026-03-01T12:00:00Z')`); err != nil {
+		t.Fatalf("insert response-only workflow node: %v", err)
+	}
+	for index, attemptID := range []string{"run_response_only:advisor:1", "run_response_only:advisor:2"} {
+		nodeRunID := fmt.Sprintf("nr_response_only_%d", index+1)
+		if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, started_at) VALUES (?, ?, 'advisor_node', ?, 1, 'ready', 'advisor', 'agent_response_only', NULL)`, nodeRunID, runID, index+1); err != nil {
+			t.Fatalf("insert response-only node run %d: %v", index+1, err)
+		}
+		if _, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, created_at, updated_at) VALUES (?, ?, ?, 'queued', 'provider_backed', 'server_response', 'session_response_only', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`, attemptID, runID, nodeRunID); err != nil {
+			t.Fatalf("insert response-only attempt %d: %v", index+1, err)
+		}
+	}
+	markedAt := "2026-03-01T12:00:01Z"
+	workspaceRoot, err := store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:1", markedAt)
+	if err != nil {
+		t.Fatalf("prepare response-only workspace: %v", err)
+	}
+	if filepath.Clean(workspaceRoot) != filepath.Clean(store.ResponseOnlyWorkspaceRoot(runID, "run_response_only:advisor:1")) {
+		t.Fatalf("prepared workspace root=%q, want %q", workspaceRoot, store.ResponseOnlyWorkspaceRoot(runID, "run_response_only:advisor:1"))
+	}
+	otherAttemptRoot, err := store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:2", "2026-03-01T12:00:02Z")
+	if err != nil {
+		t.Fatalf("prepare second response-only workspace: %v", err)
+	}
+	if filepath.Clean(workspaceRoot) == filepath.Clean(otherAttemptRoot) {
+		t.Fatalf("different attempts share a response-only workspace: %q", workspaceRoot)
+	}
+	if err := store.RemoveResponseOnlyWorkspaceContext(context.Background(), runID, "run_response_only:advisor:2"); err != nil {
+		t.Fatalf("remove second response-only workspace: %v", err)
+	}
+	if err := store.ClearResponseOnlyWorkspaceCleanupPending(context.Background(), "run_response_only:advisor:2", "2026-03-01T12:00:02Z", "2026-03-01T12:00:04Z"); err != nil {
+		t.Fatalf("clear second response-only cleanup debt: %v", err)
+	}
+
+	writeTestFile(t, workspaceRoot, "stale.txt", "stale")
+	markedAt = "2026-03-01T12:00:03Z"
+	workspaceRoot, err = store.PrepareResponseOnlyWorkspace(context.Background(), runID, "run_response_only:advisor:1", markedAt)
+	if err != nil {
+		t.Fatalf("reset response-only workspace: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(workspaceRoot, "stale.txt")); !os.IsNotExist(err) {
+		t.Fatalf("reused attempt workspace retained stale content: %v", err)
+	}
+
+	externalFile := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(externalFile, []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write external sentinel: %v", err)
+	}
+	if err := os.Symlink(externalFile, filepath.Join(workspaceRoot, "escape")); err != nil {
+		t.Fatalf("create provider-workspace symlink: %v", err)
+	}
+	if err := store.RemoveResponseOnlyWorkspaceContext(context.Background(), runID, "run_response_only:advisor:1"); err != nil {
+		t.Fatalf("remove response-only workspace: %v", err)
+	}
+	if err := store.ClearResponseOnlyWorkspaceCleanupPending(context.Background(), "run_response_only:advisor:1", markedAt, "2026-03-01T12:00:04Z"); err != nil {
+		t.Fatalf("clear response-only workspace cleanup debt: %v", err)
+	}
+	if _, err := os.Lstat(workspaceRoot); !os.IsNotExist(err) {
+		t.Fatalf("response-only workspace remains after cleanup: %v", err)
+	}
+	if got, err := os.ReadFile(externalFile); err != nil || string(got) != "outside" {
+		t.Fatalf("response-only cleanup changed symlink target: %q err=%v", got, err)
+	}
+	var pending int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_executions WHERE attempt_id = 'run_response_only:advisor:1' AND response_only_workspace_cleanup_pending_at IS NOT NULL`).Scan(&pending); err != nil || pending != 0 {
+		t.Fatalf("response-only workspace cleanup debt remained: pending=%d err=%v", pending, err)
+	}
+}
+
+func TestCaptureSnapshotSyncsPublishedBlobDirectoryBeforeMetadataCommit(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_blob_sync")
+	root := t.TempDir()
+	writeTestFile(t, root, "snapshot.txt", "must be durable before metadata")
+
+	syncErr := errors.New("injected blob directory sync failure")
+	syncCalls := 0
+	store.syncBlobDir = func(blobID string) error {
+		syncCalls++
+		blobPath, pathErr := store.blobPath(blobID)
+		if pathErr != nil {
+			t.Fatalf("resolve published blob path: %v", pathErr)
+		}
+		if _, statErr := os.Stat(blobPath); statErr != nil {
+			t.Fatalf("blob directory sync preceded atomic publish: %v", statErr)
+		}
+		var snapshots int
+		if queryErr := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); queryErr != nil {
+			t.Fatalf("check metadata before directory sync: %v", queryErr)
+		}
+		if snapshots != 0 {
+			t.Fatalf("snapshot metadata committed before blob directory sync: %d", snapshots)
+		}
+		if syncCalls == 1 {
+			return syncErr
+		}
+		return nil
+	}
+
+	_, err = store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_blob_sync", RunID: "run_blob_sync", SnapshotKind: "baseline", RootPath: root, CreatedAt: "2026-03-01T12:00:00Z",
+	})
+	if !errors.Is(err, syncErr) {
+		t.Fatalf("capture error=%v, want injected directory sync failure", err)
+	}
+	var snapshots, entries, blobs int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); err != nil {
+		t.Fatalf("count snapshot metadata: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshot_entries WHERE snapshot_id = 'snap_blob_sync'`).Scan(&entries); err != nil {
+		t.Fatalf("count snapshot entries: %v", err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_blobs`).Scan(&blobs); err != nil {
+		t.Fatalf("count blob metadata: %v", err)
+	}
+	if snapshots != 0 || entries != 0 || blobs != 0 {
+		t.Fatalf("directory sync failure committed snapshot metadata: snapshots=%d entries=%d blobs=%d", snapshots, entries, blobs)
+	}
+
+	if _, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_blob_sync", RunID: "run_blob_sync", SnapshotKind: "baseline", RootPath: root, CreatedAt: "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("retry snapshot capture: %v", err)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("blob directory sync calls=%d, want 2 including preexisting retry", syncCalls)
+	}
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_blob_sync'`).Scan(&snapshots); err != nil {
+		t.Fatalf("count retried snapshot metadata: %v", err)
+	}
+	if snapshots != 1 {
+		t.Fatalf("retried snapshot metadata=%d, want 1", snapshots)
+	}
+}
+
+func TestRecoverQuarantinedExecutionTargetDiscardsDirtyGeneration(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	const runID = "run_quarantined_target"
+	const capturedAt = "2026-03-01T12:00:00Z"
+	seedRuntimeFSRun(t, db, runID)
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "baseline.txt", "trusted baseline")
+	snapshot, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_quarantined_target", RunID: runID, SnapshotKind: "baseline", RootPath: sourceRoot, CreatedAt: capturedAt,
+	})
+	if err != nil {
+		t.Fatalf("capture trusted snapshot: %v", err)
+	}
+	targetRoot := store.RunTargetRoot(runID)
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create runtime target: %v", err)
+	}
+	writeTestFile(t, targetRoot, "dirty.txt", "provider-owned content")
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside stays unchanged"), 0o600); err != nil {
+		t.Fatalf("write outside guard: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(targetRoot, "provider-link")); err != nil {
+		t.Fatalf("create provider symlink: %v", err)
+	}
+	if _, err := store.EnsureExecutionTarget(context.Background(), EnsureExecutionTargetRequest{
+		RunID: runID, TargetMode: "direct", SourceRoot: sourceRoot, ExecutionRoot: targetRoot, PublishRoot: sourceRoot,
+		SourceSnapshotID: snapshot.SnapshotID, TrustedSnapshotID: snapshot.SnapshotID, PublishedSnapshotID: snapshot.SnapshotID,
+		State: "unknown", CreatedAt: capturedAt, UpdatedAt: capturedAt,
+	}); err != nil {
+		t.Fatalf("create quarantined execution target: %v", err)
+	}
+	oldTarget, err := os.Stat(targetRoot)
+	if err != nil {
+		t.Fatalf("stat dirty target: %v", err)
+	}
+
+	recovered, err := store.RecoverQuarantinedExecutionTarget(context.Background(), runID, "2026-03-01T12:01:00Z")
+	if err != nil {
+		t.Fatalf("recover quarantined execution target: %v", err)
+	}
+	if recovered.State != "trusted" || recovered.ExecutionRoot != targetRoot {
+		t.Fatalf("recovered target=%#v, want trusted canonical target", recovered)
+	}
+	assertTestFile(t, targetRoot, "baseline.txt", "trusted baseline")
+	if _, err := os.Lstat(filepath.Join(targetRoot, "dirty.txt")); !os.IsNotExist(err) {
+		t.Fatalf("dirty target content remained in fresh target: %v", err)
+	}
+	newTarget, err := os.Stat(targetRoot)
+	if err != nil {
+		t.Fatalf("stat fresh target: %v", err)
+	}
+	if os.SameFile(oldTarget, newTarget) {
+		t.Fatal("recovery reused the quarantined target directory")
+	}
+	if _, err := os.Lstat(filepath.Join(filepath.Dir(targetRoot), "quarantine")); !os.IsNotExist(err) {
+		t.Fatalf("provider-owned quarantine content was retained: %v", err)
+	}
+	if raw, err := os.ReadFile(outsidePath); err != nil || string(raw) != "outside stays unchanged" {
+		t.Fatalf("recovery touched provider symlink target: bytes=%q err=%v", raw, err)
+	}
+}
+
+func TestRecoverQuarantinedExecutionTargetRemainsUnknownAcrossBatchesAndRestart(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	const runID = "run_quarantined_target_batches"
+	const capturedAt = "2026-03-01T12:00:00Z"
+	seedRuntimeFSRun(t, db, runID)
+	runtimeRoot := t.TempDir()
+	store, err := NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "baseline.txt", "trusted baseline")
+	snapshot, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_quarantined_target_batches", RunID: runID, SnapshotKind: "baseline", RootPath: sourceRoot, CreatedAt: capturedAt,
+	})
+	if err != nil {
+		t.Fatalf("capture trusted snapshot: %v", err)
+	}
+	targetRoot := store.RunTargetRoot(runID)
+	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
+		t.Fatalf("create runtime target: %v", err)
+	}
+	const dirtyFileCount = executionTargetRemovalBatchSize*2 + 7
+	for index := range dirtyFileCount {
+		path := filepath.Join(targetRoot, fmt.Sprintf("provider-%03d.txt", index))
+		if err := os.WriteFile(path, []byte("provider-owned content"), 0o600); err != nil {
+			t.Fatalf("write provider file %d: %v", index, err)
+		}
+	}
+	if _, err := store.EnsureExecutionTarget(context.Background(), EnsureExecutionTargetRequest{
+		RunID: runID, TargetMode: "direct", SourceRoot: sourceRoot, ExecutionRoot: targetRoot, PublishRoot: sourceRoot,
+		SourceSnapshotID: snapshot.SnapshotID, TrustedSnapshotID: snapshot.SnapshotID, PublishedSnapshotID: snapshot.SnapshotID,
+		State: "unknown", CreatedAt: capturedAt, UpdatedAt: capturedAt,
+	}); err != nil {
+		t.Fatalf("create quarantined execution target: %v", err)
+	}
+
+	progressStore, err := NewStore(db, runtimeRoot)
+	if err != nil {
+		t.Fatalf("reopen runtime fs store: %v", err)
+	}
+	recovered, err := progressStore.RecoverQuarantinedExecutionTarget(context.Background(), runID, "2026-03-01T12:01:00Z")
+	if err != nil {
+		t.Fatalf("run first bounded recovery batch: %v", err)
+	}
+	if recovered.State != "unknown" {
+		t.Fatalf("target state after incomplete removal=%q, want unknown", recovered.State)
+	}
+	persisted, err := progressStore.GetExecutionTarget(context.Background(), runID)
+	if err != nil || persisted.State != "unknown" {
+		t.Fatalf("persisted target after incomplete removal=%#v err=%v, want unknown", persisted, err)
+	}
+	remaining, err := os.ReadDir(targetRoot)
+	if err != nil {
+		t.Fatalf("read partially removed target: %v", err)
+	}
+	if len(remaining) == 0 || len(remaining) >= dirtyFileCount {
+		t.Fatalf("first cleanup batch removed %d of %d files; expected bounded partial progress", dirtyFileCount-len(remaining), dirtyFileCount)
+	}
+
+	calls := 1
+	for recovered.State == "unknown" {
+		progressStore, err = NewStore(db, runtimeRoot)
+		if err != nil {
+			t.Fatalf("reopen runtime fs store for recovery: %v", err)
+		}
+		recovered, err = progressStore.RecoverQuarantinedExecutionTarget(context.Background(), runID, "2026-03-01T12:02:00Z")
+		if err != nil {
+			t.Fatalf("resume recovery batch %d: %v", calls+1, err)
+		}
+		calls++
+		if calls > 8 {
+			t.Fatal("quarantined target did not finish within the expected number of batches")
+		}
+	}
+	if calls < 2 || recovered.State != "trusted" {
+		t.Fatalf("recovery calls=%d target=%#v, want multiple batches and final trusted state", calls, recovered)
+	}
+	assertTestFile(t, targetRoot, "baseline.txt", "trusted baseline")
+	entries, err := os.ReadDir(targetRoot)
+	if err != nil {
+		t.Fatalf("read restored target: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "baseline.txt" {
+		t.Fatalf("restored target contains unexpected entries: %#v", entries)
+	}
+}
+
 func TestResolveSnapshotManifestDropsNewlyProtectedHistoricalPaths(t *testing.T) {
 	t.Parallel()
 
@@ -104,7 +427,7 @@ func TestResolveSnapshotManifestDropsNewlyProtectedHistoricalPaths(t *testing.T)
 	mustRuntimeFSExec(t, db, `INSERT INTO filesystem_blobs (blob_id, size_bytes, created_at) VALUES ('missing_protected_blob', 10, '2026-03-01T12:00:00Z')`)
 	mustRuntimeFSExec(t, db, `INSERT INTO filesystem_snapshot_entries (snapshot_id, path, entry_type, blob_id, size_bytes, mode_bits, mtime_ns) VALUES ('snap_protected_history', '.playwright-mcp/page.yml', 'file', 'missing_protected_blob', 10, 420, 0)`)
 
-	manifest, err := store.ResolveSnapshotManifest(context.Background(), "snap_protected_history")
+	manifest, err := readTestManifest(store, "snap_protected_history")
 	if err != nil {
 		t.Fatalf("resolve protected historical manifest: %v", err)
 	}
@@ -116,7 +439,7 @@ func TestResolveSnapshotManifestDropsNewlyProtectedHistoricalPaths(t *testing.T)
 	}
 }
 
-func TestReadBlobRejectsCorruptCanonicalBytes(t *testing.T) {
+func TestCopyBlobRejectsCorruptCanonicalBytes(t *testing.T) {
 	t.Parallel()
 
 	db := openRuntimeFSTestDB(t)
@@ -137,7 +460,7 @@ func TestReadBlobRejectsCorruptCanonicalBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("capture snapshot: %v", err)
 	}
-	manifest, err := store.ResolveSnapshotManifest(context.Background(), "snap_corrupt_blob")
+	manifest, err := readTestManifest(store, "snap_corrupt_blob")
 	if err != nil {
 		t.Fatalf("resolve snapshot: %v", err)
 	}
@@ -149,7 +472,7 @@ func TestReadBlobRejectsCorruptCanonicalBytes(t *testing.T) {
 	if err := os.WriteFile(blobPath, []byte("corrupt snapshot content"), 0o644); err != nil {
 		t.Fatalf("corrupt canonical blob: %v", err)
 	}
-	if _, err := store.ReadBlob(entry.BlobID); err == nil {
+	if _, err := store.CopyBlob(context.Background(), entry.BlobID, io.Discard); err == nil {
 		t.Fatal("expected corrupt canonical blob read to fail")
 	}
 	if err := store.RestoreSnapshot(context.Background(), "snap_corrupt_blob", sourceRoot); err == nil {
@@ -200,16 +523,112 @@ func TestCaptureSnapshotHashesFilesWithMatchingMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture changed snapshot: %v", err)
 	}
-	baseManifest, err := store.ResolveSnapshotManifest(context.Background(), base.SnapshotID)
+	baseManifest, err := readTestManifest(store, base.SnapshotID)
 	if err != nil {
 		t.Fatalf("resolve base manifest: %v", err)
 	}
-	childManifest, err := store.ResolveSnapshotManifest(context.Background(), child.SnapshotID)
+	childManifest, err := readTestManifest(store, child.SnapshotID)
 	if err != nil {
 		t.Fatalf("resolve child manifest: %v", err)
 	}
 	if baseManifest["same.txt"].BlobID == childManifest["same.txt"].BlobID {
 		t.Fatal("matching size, mode, and mtime must not hide changed content")
+	}
+}
+
+func TestCaptureSnapshotCompactsLineageAtDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_lineage_compaction")
+	root := t.TempDir()
+	writeTestFile(t, root, "stable.txt", "stable")
+	writeTestFile(t, root, "removed.txt", "remove me")
+
+	parentSnapshotID := ""
+	for index := 0; index <= providerlimits.SnapshotLineageDepth; index++ {
+		if index == 1 {
+			if err := os.Remove(filepath.Join(root, "removed.txt")); err != nil {
+				t.Fatalf("remove inherited file: %v", err)
+			}
+		}
+		writeTestFile(t, root, "changing.txt", fmt.Sprintf("version-%d", index))
+		snapshot, err := store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+			SnapshotID:       fmt.Sprintf("snap_lineage_%d", index),
+			RunID:            "run_lineage_compaction",
+			ParentSnapshotID: parentSnapshotID,
+			SnapshotKind:     "attempt_result",
+			RootPath:         root,
+			CreatedAt:        "2026-03-01T12:00:00Z",
+		})
+		if err != nil {
+			t.Fatalf("capture snapshot %d: %v", index, err)
+		}
+		parentSnapshotID = snapshot.SnapshotID
+	}
+
+	var compactedParent string
+	if err := db.QueryRow(`SELECT COALESCE(parent_snapshot_id, '') FROM filesystem_snapshots WHERE snapshot_id = ?`, parentSnapshotID).Scan(&compactedParent); err != nil {
+		t.Fatalf("load compacted snapshot parent: %v", err)
+	}
+	if compactedParent != "" {
+		t.Fatalf("compacted snapshot parent=%q, want empty", compactedParent)
+	}
+	manifest, err := readTestManifest(store, parentSnapshotID)
+	if err != nil {
+		t.Fatalf("resolve compacted snapshot: %v", err)
+	}
+	stable := manifest["stable.txt"]
+	if stable.BlobID == "" {
+		t.Fatalf("compacted manifest omitted unchanged file: %#v", manifest)
+	}
+	changing := manifest["changing.txt"]
+	if changing.BlobID == "" {
+		t.Fatalf("compacted manifest omitted changed file: %#v", manifest)
+	}
+	if _, exists := manifest["removed.txt"]; exists {
+		t.Fatalf("compacted manifest retained deleted file: %#v", manifest)
+	}
+	stableBytes, err := readTestBlob(store, stable.BlobID)
+	if err != nil || string(stableBytes) != "stable" {
+		t.Fatalf("compacted stable file=%q err=%v, want stable", stableBytes, err)
+	}
+	changingBytes, err := readTestBlob(store, changing.BlobID)
+	if err != nil || string(changingBytes) != fmt.Sprintf("version-%d", providerlimits.SnapshotLineageDepth) {
+		t.Fatalf("compacted changing file=%q err=%v", changingBytes, err)
+	}
+}
+
+func TestResolveSnapshotManifestRejectsOverLimitLineage(t *testing.T) {
+	t.Parallel()
+
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_lineage_limit")
+
+	parentSnapshotID := ""
+	for index := 0; index <= providerlimits.SnapshotLineageDepth; index++ {
+		snapshotID := fmt.Sprintf("snap_over_limit_%d", index)
+		mustRuntimeFSExec(t, db, fmt.Sprintf(`INSERT INTO filesystem_snapshots (snapshot_id, run_id, parent_snapshot_id, snapshot_kind, created_at) VALUES ('%s', 'run_lineage_limit', NULLIF('%s', ''), 'attempt_result', '2026-03-01T12:00:00Z')`, snapshotID, parentSnapshotID))
+		parentSnapshotID = snapshotID
+	}
+
+	_, err = readTestManifest(store, parentSnapshotID)
+	var depthErr *providerlimits.DepthExceededError
+	if !errors.As(err, &depthErr) {
+		t.Fatalf("resolve over-limit lineage error=%v, want DepthExceededError", err)
+	}
+	if depthErr.Resource != "snapshot lineage" || depthErr.Limit != providerlimits.SnapshotLineageDepth {
+		t.Fatalf("unexpected lineage limit error=%#v", depthErr)
 	}
 }
 
@@ -231,7 +650,7 @@ func TestRestoreSnapshotReplacesMatchingMetadataWithWrongContent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture snapshot: %v", err)
 	}
-	manifest, err := store.ResolveSnapshotManifest(context.Background(), snapshot.SnapshotID)
+	manifest, err := readTestManifest(store, snapshot.SnapshotID)
 	if err != nil {
 		t.Fatalf("resolve manifest: %v", err)
 	}
@@ -362,6 +781,34 @@ func TestRestoreSnapshotDeletionUnlinksSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(restoreRoot, "deleted.txt")); !os.IsNotExist(err) {
 		t.Fatalf("deleted snapshot entry remains: %v", err)
+	}
+	raw, err := os.ReadFile(outsidePath)
+	if err != nil {
+		t.Fatalf("read outside guard: %v", err)
+	}
+	if string(raw) != "outside" {
+		t.Fatalf("outside bytes changed to %q", raw)
+	}
+}
+
+func TestRestoreSnapshotRemovesExtraSymlinkWithoutFollowingIt(t *testing.T) {
+	t.Parallel()
+
+	store, snapshotID := captureRestoreSecurityFixture(t, "run_extra_symlink", "snap_extra_symlink", "file.txt")
+	restoreRoot := t.TempDir()
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside guard: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(restoreRoot, "escape")); err != nil {
+		t.Fatalf("create extra symlink: %v", err)
+	}
+
+	if err := store.RestoreSnapshot(context.Background(), snapshotID, restoreRoot); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(restoreRoot, "escape")); !os.IsNotExist(err) {
+		t.Fatalf("extra symlink remains: %v", err)
 	}
 	raw, err := os.ReadFile(outsidePath)
 	if err != nil {
@@ -521,7 +968,7 @@ func TestRecoverMissingSnapshotBlobsRequiresMatchingSourceDigest(t *testing.T) {
 	}
 }
 
-func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
+func TestCountChangesAgainstSnapshotIgnoresKingdomRuntimePaths(t *testing.T) {
 	t.Parallel()
 
 	db := openRuntimeFSTestDB(t)
@@ -544,7 +991,7 @@ func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("capture base snapshot: %v", err)
 	}
-	writeTestFile(t, root, ".kingdom/provider-completion/receipts/x/receipt.json", "ignored")
+	writeTestFile(t, root, ".kingdom/runtime/provider-completion/handoffs/"+strings.Repeat("a", 64)+".json", "ignored")
 	changes, err := store.CountChangesAgainstSnapshot(context.Background(), root, base.SnapshotID)
 	if err != nil {
 		t.Fatalf("count changes: %v", err)
@@ -554,7 +1001,129 @@ func TestCountChangesAgainstSnapshotIgnoresProtectedRoots(t *testing.T) {
 	}
 }
 
-func openRuntimeFSTestDB(t *testing.T) *sql.DB {
+func TestCaptureRestoreRecoveryAcceptsFormerWorkspaceByteLimits(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_capture_limit")
+	root := t.TempDir()
+	path := filepath.Join(root, "too-large.bin")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatalf("create oversized source: %v", err)
+	}
+	const size = 256*1024*1024 + 1 // Cross both former per-file and aggregate caps.
+	if err := os.Truncate(path, size); err != nil {
+		t.Fatalf("truncate oversized source: %v", err)
+	}
+
+	_, err = store.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_too_large", RunID: "run_capture_limit", SnapshotKind: "baseline", RootPath: root, CreatedAt: "2026-03-01T12:00:00Z",
+	})
+	if err != nil {
+		t.Fatalf("capture beyond former caps: %v", err)
+	}
+	var snapshots int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM filesystem_snapshots WHERE snapshot_id = 'snap_too_large'`).Scan(&snapshots); err != nil {
+		t.Fatalf("count snapshots: %v", err)
+	}
+	if snapshots != 1 {
+		t.Fatalf("persisted %d snapshots", snapshots)
+	}
+	restored := t.TempDir()
+	if err := store.RestoreSnapshot(context.Background(), "snap_too_large", restored); err != nil {
+		t.Fatal(err)
+	}
+	if changes, err := store.CountChangesAgainstSnapshot(context.Background(), restored, "snap_too_large"); err != nil || changes != 0 {
+		t.Fatalf("restored changes=%d error=%v", changes, err)
+	}
+	manifest, err := readTestManifest(store, "snap_too_large")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := manifest["too-large.bin"]
+	if entry.SizeBytes != size {
+		t.Fatalf("size=%d", entry.SizeBytes)
+	}
+	blobPath, err := store.blobPath(entry.BlobID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(blobPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecoverMissingSnapshotBlobs(context.Background(), "snap_too_large", restored); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := store.CopyBlob(context.Background(), entry.BlobID, io.Discard); err != nil || n != size {
+		t.Fatalf("recovered bytes=%d error=%v", n, err)
+	}
+}
+
+func TestCopyBlobChecksDigestBeyondFormerWorkspaceFileLimit(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	store, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	blobID := strings.Repeat("a", 64)
+	blobPath, err := store.blobPath(blobID)
+	if err != nil {
+		t.Fatalf("blob path: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(blobPath), 0o755); err != nil {
+		t.Fatalf("create blob directory: %v", err)
+	}
+	if err := os.WriteFile(blobPath, nil, 0o600); err != nil {
+		t.Fatalf("create oversized blob: %v", err)
+	}
+	if err := os.Truncate(blobPath, 32*1024*1024+1); err != nil {
+		t.Fatalf("truncate oversized blob: %v", err)
+	}
+	_, err = store.CopyBlob(context.Background(), blobID, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "digest mismatch") {
+		t.Fatalf("large corrupt blob error=%v, want digest mismatch", err)
+	}
+}
+
+func TestRecoverMissingSnapshotBlobsDoesNotFollowSourceSymlinks(t *testing.T) {
+	db := openRuntimeFSTestDB(t)
+	applyRuntimeFSMigrations(t, db)
+	originalStore, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new original runtime fs store: %v", err)
+	}
+	seedRuntimeFSRun(t, db, "run_recovery_symlink")
+	sourceRoot := t.TempDir()
+	writeTestFile(t, sourceRoot, "artifact.txt", "canonical")
+	if _, err := originalStore.CaptureSnapshot(context.Background(), CaptureSnapshotRequest{
+		SnapshotID: "snap_recovery_symlink", RunID: "run_recovery_symlink", SnapshotKind: "baseline", RootPath: sourceRoot, CreatedAt: "2026-03-01T12:00:00Z",
+	}); err != nil {
+		t.Fatalf("capture snapshot: %v", err)
+	}
+	durableStore, err := NewStore(db, t.TempDir())
+	if err != nil {
+		t.Fatalf("new durable store: %v", err)
+	}
+	outsidePath := filepath.Join(t.TempDir(), "artifact.txt")
+	if err := os.WriteFile(outsidePath, []byte("canonical"), 0o600); err != nil {
+		t.Fatalf("write external source: %v", err)
+	}
+	if err := os.Remove(filepath.Join(sourceRoot, "artifact.txt")); err != nil {
+		t.Fatalf("remove source file: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(sourceRoot, "artifact.txt")); err != nil {
+		t.Fatalf("replace source with symlink: %v", err)
+	}
+	if err := durableStore.RecoverMissingSnapshotBlobs(context.Background(), "snap_recovery_symlink", sourceRoot); err == nil {
+		t.Fatal("expected recovery through source symlink to fail")
+	}
+}
+
+func openRuntimeFSTestDB(t testing.TB) *sql.DB {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
@@ -568,7 +1137,25 @@ func openRuntimeFSTestDB(t *testing.T) *sql.DB {
 	return db
 }
 
-func applyRuntimeFSMigrations(t *testing.T, db *sql.DB) {
+func readTestBlob(store *Store, blobID string) ([]byte, error) {
+	var data bytes.Buffer
+	_, err := store.CopyBlob(context.Background(), blobID, &data)
+	return data.Bytes(), err
+}
+
+// Small-fixture conveniences only; production APIs never collect metadata.
+func readTestManifest(store *Store, snapshotID string) (map[string]SnapshotEntry, error) {
+	manifest := make(map[string]SnapshotEntry)
+	err := store.VisitSnapshotManifest(context.Background(), snapshotID, func(e SnapshotEntry) error { manifest[e.Path] = e; return nil })
+	return manifest, err
+}
+func readTestDiff(store *Store, left, right string) ([]SnapshotDiffEntry, error) {
+	var diff []SnapshotDiffEntry
+	err := store.VisitSnapshotDiff(context.Background(), left, right, func(e SnapshotDiffEntry) error { diff = append(diff, e); return nil })
+	return diff, err
+}
+
+func applyRuntimeFSMigrations(t testing.TB, db *sql.DB) {
 	t.Helper()
 	entries, err := dbmigrations.List()
 	if err != nil {
@@ -597,7 +1184,7 @@ func mustRuntimeFSExec(t *testing.T, db *sql.DB, statement string) {
 	}
 }
 
-func writeTestFile(t *testing.T, root, relativePath, body string) {
+func writeTestFile(t testing.TB, root, relativePath, body string) {
 	t.Helper()
 	resolved := filepath.Join(root, filepath.FromSlash(relativePath))
 	if err := os.MkdirAll(filepath.Dir(resolved), 0o755); err != nil {
@@ -638,7 +1225,7 @@ func assertTestFile(t *testing.T, root, relativePath, want string) {
 	}
 }
 
-func seedRuntimeFSRun(t *testing.T, db *sql.DB, runID string) {
+func seedRuntimeFSRun(t testing.TB, db *sql.DB, runID string) {
 	t.Helper()
 	stmts := []string{
 		`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_runtimefs', 'Runtime FS', 'text', '{}', '2026-03-01T12:00:00Z')`,

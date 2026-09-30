@@ -8,7 +8,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/acp"
 	"kingdom/internal/state"
 )
 
@@ -33,7 +32,7 @@ func IsStuckOperation(op state.PlanningOperation, now time.Time) bool {
 	if op.LeaseExpiresAt == nil {
 		return false
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*op.LeaseExpiresAt))
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*op.LeaseExpiresAt))
 	if err != nil {
 		return false
 	}
@@ -87,14 +86,34 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 				// A planner turn settles server-side only inside the atomic
 				// FinalizeOperation transaction. An operation still marked
 				// running after a restart never reached that point, so there
-				// is no durable success to replay — finalise it as stuck once
-				// the lease grace expires. The user simply retries the turn.
+				// is no durable success to replay. Once the lease grace expires,
+				// finalise the stuck invocation through normal retry policy using
+				// meaningful progress recovered from durable operation events.
 				if _, err := finaliseIfStuck(ctx, operation.OperationID); err != nil {
 					return fmt.Errorf("finalise-if-stuck %s: %w", operation.OperationID, err)
 				}
 				continue
 			}
-			r.runner.StartRecovered(operation.OperationID)
+			contextVersionMismatch, err := r.deps.store.UnsupportedPlanningOperationExternalContextVersion(ctx, operation.OperationID)
+			if err != nil {
+				return fmt.Errorf("check linked-source context version for queued planning operation %s: %w", operation.OperationID, err)
+			}
+			if contextVersionMismatch != nil {
+				// This immutable binding cannot be repaired by waiting for its retry
+				// due time. Fail the queued operation atomically without creating a
+				// provider invocation or rewriting its historical binding.
+				if err := r.runner.failQueuedUnsupportedExternalContext(ctx, operation, contextVersionMismatch); err != nil {
+					return fmt.Errorf("fail queued planning operation with unsupported linked-source context %s: %w", operation.OperationID, err)
+				}
+				continue
+			}
+			due, err := r.deps.store.PlanningOperationRetryDue(ctx, operation.OperationID, r.deps.nowString())
+			if err != nil {
+				return fmt.Errorf("check queued planning retry due %s: %w", operation.OperationID, err)
+			}
+			if due {
+				r.runner.StartRecovered(operation.OperationID)
+			}
 		}
 		if len(operations) < state.DefaultPlanningOperationListLimit {
 			break
@@ -102,48 +121,7 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 		afterCreatedAt = last.CreatedAt
 		afterOperationID = last.OperationID
 	}
-	if err := r.recoverSessionsMissingContextSnapshot(ctx); err != nil {
-		return err
-	}
 	return r.recoverEligiblePlaceholderTitleSessions(ctx)
-}
-
-// recoverSessionsMissingContextSnapshot repairs sessions that were left
-// without an adopted context snapshot by the removed asynchronous bootstrap.
-// Such a session cannot enqueue any planner operation — every reply, title,
-// and formalize attempt is rejected at bind time — so it stays unusable until
-// a snapshot is published for it. New sessions are created with their snapshot
-// in one transaction, so this pass drains to nothing and stays empty.
-func (r *operationRecovery) recoverSessionsMissingContextSnapshot(ctx context.Context) error {
-	if r == nil || r.deps.store == nil {
-		return nil
-	}
-	afterSessionID := ""
-	for {
-		sessions, err := r.deps.store.ListSessionsMissingContextSnapshotPage(ctx, afterSessionID, state.DefaultPlanningOperationListLimit)
-		if err != nil {
-			return err
-		}
-		if len(sessions) == 0 {
-			return nil
-		}
-		for _, session := range sessions {
-			snapshot, err := r.deps.refreshContextSnapshot(ctx, session.PlanningSessionID)
-			if err != nil {
-				// One unreadable project root must not stall recovery for
-				// every other session; the next cycle retries this one.
-				log.Printf("planner context backfill session_id=%s err=%v", session.PlanningSessionID, err)
-				continue
-			}
-			if _, err := r.deps.store.PublishContextSnapshot(ctx, session.PlanningSessionID, snapshot.PlanningContextSnapshotID, r.deps.nowString()); err != nil {
-				log.Printf("planner context backfill session_id=%s err=%v", session.PlanningSessionID, err)
-			}
-		}
-		if len(sessions) < state.DefaultPlanningOperationListLimit {
-			return nil
-		}
-		afterSessionID = sessions[len(sessions)-1].PlanningSessionID
-	}
 }
 
 func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.Context) error {
@@ -173,22 +151,22 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 	}
 }
 
-// failStuck performs the lease-fenced FinalizeFail with an error message
-// that reports elapsed-since-expiry rather than an attempt count. Callers
-// (recovery + SSE) both go through Service.FinaliseIfStuck which decides
-// whether to call us; this function unconditionally finalises.
+// failStuck performs lease-fenced, retry-aware failure finalization with an
+// error message that reports elapsed-since-expiry rather than an attempt
+// count. Callers (recovery + SSE) both go through Service.FinaliseIfStuck,
+// which decides whether the operation is eligible for this transition.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
-	cause := fmt.Errorf("operation exceeded heartbeat deadline (idle for %s)", idleFor.Round(time.Second))
-	terminalEvent, err := r.runner.buildTerminalEventFromCursor(ctx, op.OperationID, nil, acp.RunFailedEventType, plannerMessagePayload(op, map[string]any{"error": cause.Error()}))
-	if err != nil {
-		return err
-	}
-	now := r.deps.nowString()
-	providerSettlement := providerSettlementForFailure(op, ProviderExecutionMetadata{}, now, cause.Error(), cause, false)
-	// Bootstrap and generated-title operations do not own the interactive
-	// current_operation_id slot, so recovery must finalize them through their
-	// dedicated abort paths rather than the interactive FinalizeOperation fence.
-	finalizeErr := r.runner.finalizeAbortOperation(ctx, op, state.PlanningOperationStatusFailed, now, cause.Error(), "", providerSettlement, terminalEvent)
+	cause := fmt.Errorf("%w (idle for %s)", ErrOperationStuck, idleFor.Round(time.Second))
+	_, finalizeErr := r.runner.finalizeFailureWithRetry(ctx, op, nil, cause, "", true)
+	return r.finishExpiredOperation(op, finalizeErr)
+}
+
+func (r *operationRecovery) failUnsupportedExternalContextVersion(ctx context.Context, op state.PlanningOperation, cause error) error {
+	_, finalizeErr := r.runner.finalizeFailureWithRetry(ctx, op, nil, cause, "", true)
+	return r.finishExpiredOperation(op, finalizeErr)
+}
+
+func (r *operationRecovery) finishExpiredOperation(op state.PlanningOperation, finalizeErr error) error {
 	if finalizeErr != nil {
 		// A concurrent finaliser (e.g. recovery vs SSE-observer) winning
 		// the lease race is benign — the op is terminal either way. The
@@ -218,7 +196,7 @@ func idleFor(op state.PlanningOperation, now time.Time) time.Duration {
 	if op.LeaseExpiresAt == nil {
 		return 0
 	}
-	expiresAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*op.LeaseExpiresAt))
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*op.LeaseExpiresAt))
 	if err != nil {
 		return 0
 	}

@@ -45,13 +45,23 @@ Important behavior:
 - assistant answers can have multiple variants.
 - one assistant variant can be activated as the canonical transcript entry.
 - `formalize` produces the current planning draft.
+- interactive `reply` / `regenerate` output uses the structured-question contract; `formalize` returns a titled Markdown plan without that protocol, and `generate_title` returns only a title line.
 - `generate_title` runs as a durable planner operation through `POST /api/v1/acp/runs`, uses the session's dedicated title-operation lane, and updates the session title only after server-owned settlement succeeds.
 - `generate_title` does not claim the session's interactive `current_operation_id` slot or change `conversation_state`, so title generation can run in the background while interactive planning continues.
 - context refresh exists as an explicit API call on the session.
-- planner stream text is provisional operator feedback; canonical planner state comes from persisted message variants, drafts, and session fields rather than from transient stream output.
+- planner stream text and `message.part` events are provisional operator feedback; `message.completed` is committed atomically with the canonical message, draft, or title, provider settlement, and `run.completed`.
 - provider-backed planner work settles through planner-specific runtime-owned invocation, evidence, and settlement records before canonical planning tables are updated.
-- planner success uses the provider's adjudicated terminal success plus non-empty runtime-assembled output. Planning never uses a `kingdom_complete_attempt` receipt; process exit, provisional stream text, and export output are not success authority.
+- planner success uses the provider's adjudicated terminal success plus non-empty runtime-assembled output; process exit, provisional stream text, and export output are not success authority.
 - planner operations persist canonical state through planning message variants, drafts, and session fields; planner settlement records authorize those writes but do not replace the planning tables as transcript/draft/session truth.
+- stale recovery consults durable ACP operation progress before retrying; observed progress can suppress an automatic retry but cannot create a canonical message or draft without settlement.
+
+### Planning Context and History
+
+Each session starts with a durable context snapshot. Capture records all included/excluded file metadata under the project enumeration rules, without a fixed prefix; it never captures source-file contents. Only the project-shape summary enters the planner prompt. Snapshot responses omit file arrays, and the API exposes included/excluded entries through signed ordinal pagination.
+
+Every provider-backed operation binds the active context snapshot and every active linked-source snapshot when it is enqueued. GitHub comment bodies default off; when enabled, intake captures every page and complete bodies. Source adoption or removal changes future operations only. Prompt assembly reads the immutable bindings and complete canonical transcript text; external evidence stays separately framed as untrusted material.
+
+Canonical planner text is stored through SQLite content manifests and chunks. Session-list pagination continues through retained history rather than imposing a retention ceiling; the web UI exposes **Load More Sessions** and **Load Older Sessions**. Individual text/read responses may still materialize in memory.
 
 ### Planner Streaming and Recovery
 
@@ -202,12 +212,15 @@ Before execution, the runtime resolves one shared execution target for the run.
 - Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<decree-title-slug>-<run_id>/` next to the repository's main worktree root
 - if the configured project root is nested inside the repository, execution is scoped back to that same relative subdirectory inside the linked worktree
 - that scoped project directory becomes the shared execution and publish target for the run
+- terminal worktree cleanup is bounded and resumable; Retry/Rerun cancels cleanup before deletion starts, but returns `409 dependency_blocked` once deletion begins until filesystem removal and Git pruning finish. A later dispatch recreates the checkout from its pinned seed commit.
 
 ### Snapshot Tracking
 
 Kingdom captures runtime-owned filesystem snapshots for tracked files in the execution target.
 
 Those snapshots record the trusted builder baseline and later attempt deltas so the runtime can restore, diff, and publish without per-attempt seeded copies.
+
+Capture, diff, and restoration stream file bytes and traverse metadata incrementally, using digest-addressed blobs and a disposable disk-backed manifest index. There are no fixed file-size, aggregate workspace-byte, entry-count, or directory-depth workload ceilings. Snapshot lineage depth, no-follow path validation, trusted restoration, and resumable cleanup batches remain enforced.
 
 Tracked snapshot capture ignores:
 
@@ -228,17 +241,24 @@ Important runtime behavior:
 
 - `decree_intake`, `execution_kickoff`, `king_plan_decision`, and `royal_closure` are runtime-owned and deterministic; they do not open OpenCode sessions.
 - execution is session-based via `opencode run --format json`
-- runtime creates a provider invocation record and single-use completion capability before dispatching any provider-backed decree execution attempt
+- runtime creates a provider invocation record before dispatching every provider-backed decree execution attempt. Completion mode is a runtime-owned node-class contract, not workflow-authored configuration.
 - strict mode validates managed OpenCode assets, binary availability, and agent resolution
-- runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`
-- every provider-backed decree execution session must call `kingdom_complete_attempt` to request terminal success settlement
-- runtime settles provider-backed decree execution success only after validating the active attempt, invocation, completion capability, and any required node-specific fields from that tool call
-- canonical settled response text is invocation-owned and single-turn; runtime must not concatenate multiple final answers or competing receipts into one settled response body
-- durable decree execution state is stored in `provider_invocations`, `provider_completion_evidence`, `provider_completion_settlements`, `attempt_executions`, `attempt_event_log`, and `attempt_outbox`
-- clean provider-backed decree execution exit without a valid receipt is terminal failure for the provider-backed decree execution attempt
-- stream evidence and `opencode export` remain diagnostic and repair inputs only for provider-backed decree execution; they can add operator-facing context for the active invocation but cannot create canonical success, alter receipt-driven settled output, or become a second authority path
+- runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`; OpenCode can also continue within a command after an intermediate `stop` during compaction or tool use. Completion selects the final completed assistant step after process exit and stream drainage.
+- every provider-backed decree node, including builder execution, uses `server_response`: success requires the strict server-observed terminal response and node-specific output validation.
+- runtime-owned nodes are `not_applicable` and do not have provider completion authority.
+- direct-mode response-only planning and advisory nodes use attempt-scoped isolated copies without durable execution-target or snapshot rows; the first workspace-owning attempt captures its baseline from the then-current project.
+- runtime validates active attempt, invocation, lease, guardian, and node-contract lineage for every settlement.
+- canonical settled response text and identity belong to the same final completed assistant step. Synthetic continuation text and earlier answers cannot fill an empty final step, and runtime must not concatenate multiple answers into one settled response body.
+- every provider terminal observation first commits a lease-fenced SQLite handoff-pending marker, then enters the orchestration-written handoff under `<runtime workspace root>/provider-completion/handoffs/`, then crosses the durable lease-fenced handoff before settlement. If pending or file publication fails, a recovery-required marker records the exact lease generation and is written only after guardian quiescence, provider-reported quiescence, or an unlaunched starting state proves there is no live process to preserve. Startup replays file-only and SQLite handoffs after guardian evidence and before lost-handoff recovery.
+- handoff envelopes reference complete terminal text and invocation diagnostics by invocation ID, digest, and size. Content is durably staged before envelope publication, verified into SQLite chunks during ingestion, and retained there after settlement. Compact envelope limits do not cap the referenced content.
+- workspace-backed execution sessions place an OpenCode `.git` discovery marker at the exact execution root; nested scopes in managed Git worktrees use a `.git` file pointing at the linked worktree's existing metadata, preserving the parent worktree's status and diff behavior. A worktree-root scope retains its linked-worktree marker. `GIT_CEILING_DIRECTORIES` above the root is defense in depth because OpenCode performs its own upward `.git` walk. Its built-in file-tool boundary uses lexical checks and does not confine symlink targets or arbitrary shell commands; it is not OS-level confinement.
+- each provider command has a durable guardian. Its acknowledged ownership and file-backed quiescence evidence are ingested before terminal settlement; cleanup after ingestion is replayable evidence debt, not proof loss.
+- server-response success requires all of: normalized terminal reason `stop`; final turn and step IDs; a positive final stream sequence; non-empty canonical terminal text; no pending or non-terminal tool calls; no events after the terminal response; clean process exit with both output streams drained; and no timeout, cancellation, provider error, malformed stream data, or conflicting terminal evidence.
+- settlement is atomic: it records canonical evidence and settlement, terminal attempt state, token usage, and the durable completion outbox handoff together. Later outbox projection advances the workflow but cannot alter settlement truth.
+- `opencode export` is diagnostic only for provider-backed decree execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
 - `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
 - mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
+- provider output and complete invocation stdout/stderr diagnostics have no fixed byte ceiling; bounded activity/output previews and stderr tails are display projections, not substitutes for canonical content. Provider context-window limits and active timeouts still apply.
 
 ## Artifact Lifecycle
 
@@ -248,7 +268,7 @@ Artifact persistence and publication are separate steps.
 
 Artifact metadata is written to `artifacts`.
 
-Artifact bytes are written to `artifact_contents`.
+Content manifests are written to `artifact_contents`, and canonical bytes to ordered `artifact_content_chunks` in the same transaction as artifact metadata. Downloads, archive exports, and publication stream those chunks.
 
 ### Builder Output
 
@@ -281,6 +301,22 @@ Kingdom exposes two important SSE channels:
 - `GET /api/v1/acp/runs/{runId}/events` for planner operation events
 
 Both are intended to support replay/resume with `Last-Event-ID`.
+
+## Activity and Attempt History
+
+`GET /runs/{id}/executions` returns one canonical logical projection for each workflow node. It is the list used by the run Activity surface, including the visible current execution, attempt count, latest activity, failure, and recovery state.
+
+`GET /runs/{id}/nodes/{nodeId}/attempts` returns paged durable physical attempt history for the selected node, newest first. Its response also identifies the current logical node run and attempt, even when that attempt is not on the requested page.
+
+When stale recovery has queued a replacement but the predecessor is `starting`, `running`, or `blocked`, both projections select that predecessor as current. This preserves the live cancellation/quiescence barrier until the replacement actually starts or runs.
+
+## Cancellation and Automatic Recovery
+
+Cancellation of a launched provider attempt is durable work, not a best-effort side effect. `attempt_cancel_outbox` records the requested stop and its handoff state. Kingdom dispatches a bounded stop through the attempt's guardian, waits for durable quiescence, restores the trusted workspace when the node owns one, then projects terminal state and releases a fenced stale retry.
+
+If quiescence cannot be proven, the node remains `blocked` and the cancellation handoff remains pending. Kingdom does not repeatedly send stops. **Retry Stop** is available only for an `agent_unresponsive` blocked attempt whose guardian remains addressable; it authorizes one additional bounded stop request. Explicit Retry and Rerun reopen failed runs, or cancelled runs only after cancellation, completion projection, attempt settlement, and session leases are quiescent.
+
+Automatic retry decisions are durable. Each `retry_decisions` record retains the failure code, operator-safe reason, meaningful-progress result, retry index and maximum, policy and provider delay, absolute due time, source/target lineage, dispatch state, and resolution. Restart recovery uses the persisted due time and lease-fenced dispatch; it does not recreate a decision or launch early.
 
 ## Terminal States
 

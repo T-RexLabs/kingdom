@@ -40,7 +40,7 @@ func TestSetupClientConvertsManifestAtDeterministicEndpoint(t *testing.T) {
 func TestSetupClientProvesPaginatedUserInstallationAndRejectsSpoofing(t *testing.T) {
 	expected := SetupInstallation{InstallationID: "2", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom-issues"}
 	valid := func() map[string]any {
-		return map[string]any{"id": 2, "app_id": 1, "client_id": "Iv1", "app_slug": "kingdom-issues", "target_id": 10, "account": map[string]any{"id": 10, "login": "octocat"}, "permissions": map[string]string{"metadata": "read", "issues": "read"}, "events": []string{}, "suspended_at": nil}
+		return map[string]any{"id": 2, "app_id": 1, "app_slug": "kingdom-issues", "target_id": 10, "account": map[string]any{"id": 10, "login": "octocat"}, "permissions": map[string]string{"metadata": "read", "issues": "read"}, "events": []string{}, "suspended_at": nil}
 	}
 	for _, tc := range []struct {
 		name       string
@@ -52,6 +52,7 @@ func TestSetupClientProvesPaginatedUserInstallationAndRejectsSpoofing(t *testing
 	}{
 		{name: "valid paginated", paginate: true},
 		{name: "wrong app", mutate: func(v map[string]any) { v["app_id"] = 99 }, wantErr: true},
+		{name: "wrong optional client id", mutate: func(v map[string]any) { v["client_id"] = "IvOther" }, wantErr: true},
 		{name: "wrong user visibility", missing: true, wantErr: true},
 		{name: "wrong account", mutate: func(v map[string]any) { v["target_id"] = 11 }, wantErr: true},
 		{name: "suspended", mutate: func(v map[string]any) { v["suspended_at"] = "2026-08-15T12:00:00Z" }, wantErr: true},
@@ -101,7 +102,7 @@ func TestSetupClientProvesPaginatedUserInstallationAndRejectsSpoofing(t *testing
 			if (err != nil) != tc.wantErr {
 				t.Fatalf("ProveUserInstallation()=%#v err=%v wantErr=%t", proved, err, tc.wantErr)
 			}
-			if err == nil && (proved.AccountID != "10" || proved.AccountLogin != "octocat") {
+			if err == nil && (proved.AccountID != "10" || proved.AccountLogin != "octocat" || proved.ClientID != expected.ClientID) {
 				t.Fatalf("proved identity=%#v", proved)
 			}
 		})
@@ -118,7 +119,7 @@ func TestSetupClientIndependentlyValidatesAppKeyInstallationAndRepositories(t *t
 		case "/app":
 			_, _ = w.Write([]byte(`{"id":1,"client_id":"Iv1","slug":"kingdom-issues","permissions":{"metadata":"read","issues":"read"},"events":[]}`))
 		case "/app/installations/2":
-			_, _ = w.Write([]byte(`{"id":2,"app_id":1,"client_id":"Iv1","app_slug":"kingdom-issues","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"suspended_at":null}`))
+			_, _ = w.Write([]byte(`{"id":2,"app_id":1,"app_slug":"kingdom-issues","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"suspended_at":null}`))
 		case "/app/installations/2/access_tokens":
 			w.WriteHeader(http.StatusCreated)
 			_, _ = fmt.Fprintf(w, `{"token":"installation-token","expires_at":%q,"permissions":{"metadata":"read","issues":"read"}}`, now.Add(time.Hour).Format(time.RFC3339))

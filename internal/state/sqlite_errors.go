@@ -1,11 +1,10 @@
 package state
 
 import (
-	"context"
 	"errors"
 	"strings"
-	"time"
 
+	"kingdom/internal/sqlitex"
 	sqlite "modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -70,53 +69,7 @@ func IsUniqueViolationOn(err error, targets ...string) bool {
 
 // IsSQLiteBusy reports whether err is a SQLite busy/locked condition.
 func IsSQLiteBusy(err error) bool {
-	if err == nil {
-		return false
-	}
-	var serr *sqlite.Error
-	if errors.As(err, &serr) {
-		switch serr.Code() {
-		case sqlite3.SQLITE_BUSY,
-			sqlite3.SQLITE_BUSY_RECOVERY,
-			sqlite3.SQLITE_BUSY_SNAPSHOT,
-			sqlite3.SQLITE_LOCKED,
-			sqlite3.SQLITE_LOCKED_SHAREDCACHE:
-			return true
-		}
-	}
-	message := strings.ToLower(err.Error())
-	return strings.Contains(message, "database is locked") || strings.Contains(message, "sqlite_busy") || strings.Contains(message, "sqlite_locked")
-}
-
-var sqliteBusyRetrySchedule = []time.Duration{0, 50 * time.Millisecond, 150 * time.Millisecond, 400 * time.Millisecond}
-
-func retrySQLiteBusy(ctx context.Context, op func() error) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	var lastErr error
-	for attempt, backoff := range sqliteBusyRetrySchedule {
-		if attempt > 0 && backoff > 0 {
-			timer := time.NewTimer(backoff)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				if !timer.Stop() {
-					<-timer.C
-				}
-				return ctx.Err()
-			}
-		}
-		if err := op(); err != nil {
-			lastErr = err
-			if !IsSQLiteBusy(err) {
-				return err
-			}
-			continue
-		}
-		return nil
-	}
-	return lastErr
+	return sqlitex.IsBusy(err)
 }
 
 func sqliteUniqueConstraintTargets(err error) ([]string, bool) {

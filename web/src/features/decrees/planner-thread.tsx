@@ -30,6 +30,8 @@ export function PlannerThread({
   operation,
   connection,
   operationQueryState,
+  replyRecoveryPending,
+  onRetryReplyRecovery,
   onSubmitReply,
   onRegenerate,
   onActivateVariant,
@@ -44,6 +46,8 @@ export function PlannerThread({
     error: unknown;
     retry: () => void;
   };
+  replyRecoveryPending: boolean;
+  onRetryReplyRecovery: () => Promise<void> | void;
   onSubmitReply: (payload: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => Promise<void> | void;
   onRegenerate: (payload: { messageId: string; parentMessageId?: string }) => Promise<void> | void;
   onActivateVariant: (payload: { messageId: string }) => Promise<void> | void;
@@ -51,6 +55,7 @@ export function PlannerThread({
   const [inputText, setInputText] = useState("");
   const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
   const [followLatestRequest, setFollowLatestRequest] = useState(0);
+  const [retryingReplyRecovery, setRetryingReplyRecovery] = useState(false);
   const messagePages = usePlannerMessagePages(session.planning_session_id);
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -100,7 +105,7 @@ export function PlannerThread({
   const sendingRef = useRef(false);
 
   const sendText = async (text: string, answer?: AnswerPayload, parentMessageId?: string) => {
-    if (sendingRef.current) return;
+    if (replyRecoveryPending || sendingRef.current) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     sendingRef.current = true;
@@ -112,8 +117,23 @@ export function PlannerThread({
       // already restored the snapshot — keep the user's typed text in the
       // box so they can retry without re-typing.
       setInputText("");
+    } catch {
+      // The planner page owns mutation error reporting; keep this draft intact.
     } finally {
       sendingRef.current = false;
+    }
+  };
+
+  const handleRetryReplyRecovery = async () => {
+    if (!replyRecoveryPending || retryingReplyRecovery) return;
+    setRetryingReplyRecovery(true);
+    try {
+      await onRetryReplyRecovery();
+      setFollowLatestRequest((current) => current + 1);
+    } catch {
+      // The planner page surfaces the mutation error; the composer draft stays untouched.
+    } finally {
+      setRetryingReplyRecovery(false);
     }
   };
 
@@ -250,10 +270,30 @@ export function PlannerThread({
         </div>
       ) : null}
 
+      {replyRecoveryPending ? (
+        <div
+          role="status"
+          className="mx-4 mt-2 flex items-center gap-3 rounded-xl border border-border/40 bg-surface-raised/40 p-3 text-sm text-foreground-subtle"
+        >
+          <span className="min-w-0 flex-1">
+            A previous reply could not be confirmed. Retry it with the original request and idempotency key before sending a different reply. Your current draft will be preserved.
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-border/60 bg-surface-raised px-2.5 py-1 text-xs font-medium text-foreground transition-colors hover:bg-surface-overlay disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={retryingReplyRecovery}
+            onClick={() => void handleRetryReplyRecovery()}
+          >
+            {retryingReplyRecovery ? "Retrying..." : "Retry Previous Reply"}
+          </button>
+        </div>
+      ) : null}
+
       <div className="shrink-0 border-t border-border/50 bg-surface/80 px-4 py-3">
         <PlannerComposer
           value={inputText}
           disabled={composerDisabled}
+          sendDisabled={replyRecoveryPending}
           textareaRef={composerTextareaRef}
           onChange={setInputText}
           onSend={() => {

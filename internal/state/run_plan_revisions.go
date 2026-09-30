@@ -7,10 +7,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/nodeattempt"
 )
 
 type RunPlanRevision struct {
@@ -23,13 +26,14 @@ type RunPlanRevision struct {
 }
 
 type RunPlanRevisionComponent struct {
-	NodeID           string `json:"node_id"`
-	PlanningOutputID string `json:"planning_output_id"`
-	NodeRunID        string `json:"node_run_id"`
-	AttemptID        string `json:"attempt_id"`
-	AgentID          string `json:"agent_id"`
-	CreatedAt        string `json:"created_at"`
-	ContentMarkdown  string `json:"content_markdown"`
+	NodeID           string                              `json:"node_id"`
+	PlanningOutputID string                              `json:"planning_output_id"`
+	NodeRunID        string                              `json:"node_run_id"`
+	AttemptID        string                              `json:"attempt_id"`
+	AgentID          string                              `json:"agent_id"`
+	CreatedAt        string                              `json:"created_at"`
+	ContentMarkdown  string                              `json:"content_markdown"`
+	ContentRef       *providerexecution.ContentReference `json:"content_ref,omitempty"`
 }
 
 type CreateRunPlanRevisionRequest struct {
@@ -264,6 +268,7 @@ func buildCurrentRunPlanRevisionTx(ctx context.Context, tx *sql.Tx, runID string
 			AgentID:          output.AgentID,
 			CreatedAt:        output.CreatedAt,
 			ContentMarkdown:  output.ContentMarkdown,
+			ContentRef:       output.ContentRef,
 		})
 		componentIDs = append(componentIDs, output.PlanningOutputID)
 		if latestCreatedAt == "" || strings.TrimSpace(output.CreatedAt) > latestCreatedAt {
@@ -358,13 +363,16 @@ func loadRunPlanRevisionRowTx(ctx context.Context, tx *sql.Tx, planRevisionID st
 }
 
 func validateRunPlanRevisionCreate(req CreateRunPlanRevisionRequest) error {
+	if referencedPlanComponents(req.Components) && req.ContentMarkdown != "" {
+		return fmt.Errorf("referenced plan revision must not repeat composed content inline")
+	}
 	if strings.TrimSpace(req.PlanRevisionID) == "" {
 		return fmt.Errorf("plan revision id is required")
 	}
 	if strings.TrimSpace(req.RunID) == "" {
 		return fmt.Errorf("run id is required")
 	}
-	if strings.TrimSpace(req.ContentMarkdown) == "" {
+	if strings.TrimSpace(req.ContentMarkdown) == "" && !referencedPlanComponents(req.Components) {
 		return fmt.Errorf("content markdown is required")
 	}
 	if len(req.Components) == 0 {
@@ -389,7 +397,14 @@ func validateRunPlanRevisionCreate(req CreateRunPlanRevisionRequest) error {
 		if strings.TrimSpace(component.CreatedAt) == "" {
 			return fmt.Errorf("run plan revision component %d created_at is required", idx)
 		}
-		if strings.TrimSpace(component.ContentMarkdown) == "" {
+		if component.ContentRef != nil {
+			if err := component.ContentRef.Validate(component.ContentRef.InvocationID); err != nil {
+				return err
+			}
+			if component.ContentMarkdown != "" || component.ContentRef.SizeBytes <= 0 {
+				return fmt.Errorf("plan component content authority is invalid")
+			}
+		} else if strings.TrimSpace(component.ContentMarkdown) == "" {
 			return fmt.Errorf("run plan revision component %d content markdown is required", idx)
 		}
 	}
@@ -432,7 +447,7 @@ func latestNodeRunForPlanRevisionTx(ctx context.Context, tx *sql.Tx, runID, node
 		 FROM node_runs
 		 WHERE run_id = ? AND node_id = ?
 		 ORDER BY %s
-		 LIMIT 1`, CanonicalNodeAttemptOrderSQL("node_runs"))
+		 LIMIT 1`, nodeattempt.CanonicalNodeAttemptOrderSQL("node_runs"))
 	err := tx.QueryRowContext(ctx, query, runID, nodeID).Scan(&nodeRunID, &status)
 	if err == sql.ErrNoRows {
 		return "", "", nil
@@ -511,7 +526,7 @@ func planDraftingNodeIDsTx(ctx context.Context, tx *sql.Tx, runID string) ([]str
 func latestRunPlanningOutputForNodeTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, kind RunPlanningOutputKind) (RunPlanningOutput, bool, error) {
 	var item RunPlanningOutput
 	err := scanRunPlanningOutput(tx.QueryRowContext(ctx,
-		`SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at
+		`SELECT planning_output_seq, planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at,content_ref_json
 		 FROM run_planning_outputs
 		 WHERE run_id = ? AND node_id = ? AND kind = ?
 		 ORDER BY planning_output_seq DESC
@@ -530,6 +545,9 @@ func latestRunPlanningOutputForNodeTx(ctx context.Context, tx *sql.Tx, runID, no
 }
 
 func composeRunPlanRevisionContent(components []RunPlanRevisionComponent) string {
+	if referencedPlanComponents(components) {
+		return ""
+	}
 	if len(components) == 0 {
 		return ""
 	}
@@ -559,7 +577,57 @@ func sameRunPlanRevisionProjection(existing, candidate RunPlanRevision) bool {
 		strings.TrimSpace(existing.RunID) == strings.TrimSpace(candidate.RunID) &&
 		strings.TrimSpace(existing.ContentMarkdown) == strings.TrimSpace(candidate.ContentMarkdown) &&
 		strings.TrimSpace(existing.CreatedAt) == strings.TrimSpace(candidate.CreatedAt) &&
-		slices.Equal(existing.Components, candidate.Components)
+		slices.EqualFunc(existing.Components, candidate.Components, func(a, b RunPlanRevisionComponent) bool {
+			return a.NodeID == b.NodeID && a.PlanningOutputID == b.PlanningOutputID && a.NodeRunID == b.NodeRunID && a.AttemptID == b.AttemptID && a.AgentID == b.AgentID && a.CreatedAt == b.CreatedAt && a.ContentMarkdown == b.ContentMarkdown && equalPlanningContentRef(a.ContentRef, b.ContentRef)
+		})
+}
+
+func referencedPlanComponents(components []RunPlanRevisionComponent) bool {
+	for _, component := range components {
+		if component.ContentRef != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *RunPlanRevisionStore) CopyContent(ctx context.Context, revision RunPlanRevision, dst io.Writer) error {
+	if !referencedPlanComponents(revision.Components) {
+		_, err := io.CopyBuffer(dst, struct{ io.Reader }{strings.NewReader(revision.ContentMarkdown)}, make([]byte, 64*1024))
+		return err
+	}
+	if revision.ContentMarkdown != "" {
+		return fmt.Errorf("run plan revision has conflicting content authorities")
+	}
+	for index, component := range revision.Components {
+		if index > 0 {
+			if _, err := io.WriteString(dst, "\n\n"); err != nil {
+				return err
+			}
+		}
+		if len(revision.Components) > 1 {
+			if _, err := fmt.Fprintf(dst, "## %s\n\n", strings.TrimSpace(component.NodeID)); err != nil {
+				return err
+			}
+		}
+		reader, err := NewRunPlanningOutputStore(s.db).OpenContent(ctx, RunPlanningOutput{ContentMarkdown: component.ContentMarkdown, ContentRef: component.ContentRef})
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.CopyBuffer(dst, struct{ io.Reader }{reader}, make([]byte, 64*1024))
+		closeErr := reader.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+	}
+	return nil
+}
+
+func (s *RunPlanRevisionStore) OpenContent(ctx context.Context, revision RunPlanRevision) (io.ReadCloser, error) {
+	return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, dst io.Writer) error { return s.CopyContent(ctx, revision, dst) }), nil
 }
 
 func runPlanRevisionID(runID string, componentIDs []string) string {

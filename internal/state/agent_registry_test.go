@@ -4,8 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func applyAgentRegistrySchema(t *testing.T, db *sql.DB) {
@@ -151,6 +154,52 @@ func TestAgentRegistryReassignRejectsDepthCapOverflow(t *testing.T) {
 	var depthErr *SpawnDepthExceededError
 	if !errors.As(err, &depthErr) {
 		t.Fatalf("expected SpawnDepthExceededError, got %T: %v", err, err)
+	}
+}
+
+func TestAgentRegistryReassignRetriesSQLiteWriterContention(t *testing.T) {
+	dbPath := filepath.ToSlash(filepath.Join(t.TempDir(), "agent-reassign.sqlite"))
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s?_pragma=busy_timeout(1)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)", dbPath))
+	if err != nil {
+		t.Fatalf("open file-backed sqlite: %v", err)
+	}
+	db.SetMaxOpenConns(4)
+	db.SetMaxIdleConns(4)
+	t.Cleanup(func() { _ = db.Close() })
+	applyAgentRegistrySchema(t, db)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES
+		('agent_parent_contention', 'king', 'idle', 'agent_king', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z'),
+		('agent_child_contention', 'king', 'idle', 'agent_king', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+
+	blocker, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin SQLite writer blocker: %v", err)
+	}
+	if _, err := blocker.Exec(`UPDATE agents SET updated_at = '2026-03-01T12:00:01Z' WHERE agent_id = 'agent_king'`); err != nil {
+		_ = blocker.Rollback()
+		t.Fatalf("hold SQLite writer lock: %v", err)
+	}
+	reassigned := make(chan error, 1)
+	go func() {
+		reassigned <- NewAgentRegistry(db).ReassignAgent(context.Background(), ReassignAgentRequest{
+			AgentID: "agent_child_contention", NewParentAgentID: "agent_parent_contention",
+			MaxSpawnDepth: DefaultMaxSpawnDepth, UpdatedAt: "2026-03-01T12:00:02Z",
+		})
+	}()
+	time.Sleep(75 * time.Millisecond)
+	if err := blocker.Commit(); err != nil {
+		t.Fatalf("release SQLite writer lock: %v", err)
+	}
+	select {
+	case err := <-reassigned:
+		if err != nil {
+			t.Fatalf("reassign agent after transient SQLite contention: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reassign agent did not finish after the SQLite writer lock was released")
+	}
+	if got := queryAgentParentID(t, db, "agent_child_contention"); got != "agent_parent_contention" {
+		t.Fatalf("reassigned agent parent=%q, want agent_parent_contention", got)
 	}
 }
 

@@ -1,10 +1,10 @@
-import type { RunExecutionDetail } from "@/api/hooks";
+import type { RunExecutionDetail, RunExecutionFailure } from "@/api/hooks";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useId, useState, type ReactNode } from "react";
-import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
+import { operatorFacingExecutionFailureText } from "./execution-failure-copy";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isExecutionReworkOutcome, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
 import { formatElapsedDuration } from "@/lib/utils";
@@ -17,12 +17,14 @@ export function RunExecutionsPanel({
 	detailErrorMessage,
 	detailPlaceholderMessage,
 	onRetryDetail,
+	failure,
 }: {
 	detail: PresentedExecutionDetail | null;
 	isDetailLoading: boolean;
 	detailErrorMessage: string | null;
 	detailPlaceholderMessage?: string | null;
 	onRetryDetail: () => void;
+	failure?: RunExecutionFailure;
 }) {
 	if (isDetailLoading) {
 		return <SectionPlaceholder label="Outcome" message="Loading the selected step..." />;
@@ -36,7 +38,7 @@ export function RunExecutionsPanel({
 				<button
 					type="button"
 					onClick={onRetryDetail}
-					className="rounded-md border border-status-failed/30 px-3 py-1.5 text-xs font-medium text-status-failed hover:bg-status-failed/10"
+					className="min-h-11 rounded-md border border-status-failed/30 px-3 py-1.5 text-xs font-medium text-status-failed hover:bg-status-failed/10"
 				>
 					Retry
 				</button>
@@ -48,16 +50,17 @@ export function RunExecutionsPanel({
 		return <SectionPlaceholder label="Outcome" message={detailPlaceholderMessage ?? "Select a step to inspect the outcome."} />;
 	}
 
-	return <RunExecutionsPanelContent key={detail.attempt_id} detail={detail} />;
+	return <RunExecutionsPanelContent key={detail.attempt_id} detail={detail} failure={failure} />;
 }
 
-function RunExecutionsPanelContent({ detail }: { detail: PresentedExecutionDetail }) {
+function RunExecutionsPanelContent({ detail, failure }: { detail: PresentedExecutionDetail; failure?: RunExecutionFailure }) {
 	const [outcomeOpen, setOutcomeOpen] = useState(false);
 	const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
 
-	const outcomeBody = outcomeText(detail);
+	const outcomeBody = outcomeText(detail, failure);
 	const outcomeTone = outcomeToneForDetail(detail);
-	const diagnosticsFields = diagnosticsFieldsForDetail(detail);
+	const diagnosticsFields = diagnosticsFieldsForDetail(detail, failure);
+	const outputText = detail.settlement_status === "pending" ? undefined : detail.output_text;
 
 	return (
 		<div className="space-y-3">
@@ -78,9 +81,9 @@ function RunExecutionsPanelContent({ detail }: { detail: PresentedExecutionDetai
 							{outcomeBody.note}
 						</div>
 					) : null}
-					{detail.output_text ? (
+					{outputText ? (
 						<pre className="overflow-x-auto whitespace-pre-wrap rounded-lg border border-border bg-surface px-3 py-3 text-wrap-anywhere text-xs leading-relaxed text-foreground">
-							{detail.output_text}
+							{outputText}
 						</pre>
 					) : null}
 				</div>
@@ -124,7 +127,7 @@ function DisclosureSection({
 				onClick={onToggle}
 				aria-expanded={open}
 				aria-controls={panelId}
-				className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+				className="flex min-h-11 w-full items-center justify-between gap-3 px-4 py-3 text-left"
 			>
 				<div className="text-xs font-medium uppercase tracking-[0.16em] text-foreground-muted">{label}</div>
 				{open ? <ChevronDown className="h-4 w-4 text-foreground-subtle" /> : <ChevronRight className="h-4 w-4 text-foreground-subtle" />}
@@ -155,7 +158,7 @@ function DetailField({ label, tooltip, children }: { label: string; tooltip?: st
 	);
 }
 
-function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ label: string; tooltip?: string; value: ReactNode }> {
+function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail, failure?: RunExecutionFailure): Array<{ label: string; tooltip?: string; value: ReactNode }> {
 	const fields: Array<{ label: string; tooltip?: string; value: ReactNode }> = [];
 	const queuedDuration = queuedDurationForDetail(detail);
 	if (queuedDuration) {
@@ -165,11 +168,11 @@ function diagnosticsFieldsForDetail(detail: PresentedExecutionDetail): Array<{ l
 			value: queuedDuration,
 		});
 	}
-	if (detail.failure_code) {
+	if (failure?.code ?? detail.failure_code) {
 		fields.push({
 			label: "Failure code",
 			tooltip: "The system reason Kingdom recorded for this failed step.",
-			value: detail.failure_code,
+			value: failure?.code ?? detail.failure_code,
 		});
 	}
 	if (detail.launch_started_at) {
@@ -198,7 +201,7 @@ function queuedDurationForDetail(detail: PresentedExecutionDetail): string | nul
 	return formatElapsedDuration(queuedAt, queueEndedAt);
 }
 
-function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: string } {
+function outcomeText(detail: PresentedExecutionDetail, failure?: RunExecutionFailure): { body?: string; note?: string } {
 	const progressLabel = executionProgressLabel(
 		detail.status,
 		detail.progress_reason_code,
@@ -213,29 +216,29 @@ function outcomeText(detail: PresentedExecutionDetail): { body?: string; note?: 
 	}
 	if (detail.settlement_status === "pending") {
 		return {
-			body: detail.output_text ? undefined : operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
-			note: detail.output_text ? "The output below may still change." : undefined,
+			body: operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
+			note: undefined,
 		};
 	}
 	if (isQueuedExecutionStatus(detail.status)) {
 		return {
-			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is queued to start.",
+			body: operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is queued to start.",
 			note: undefined,
 		};
 	}
 	if (isActiveExecutionStatus(detail.status)) {
 		return {
-			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is still running.",
+			body: detail.output_text ? undefined : operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is still running.",
 			note: detail.output_text ? "The output below may still change." : undefined,
 		};
 	}
 	if (isBlockedExecutionStatus(detail.status)) {
 		return {
-			body: operatorExecutionStatusText(detail.status, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
+			body: operatorExecutionStatusText(detail.status, progressLabel, detail.handoff_state) ?? "This step is blocked while Kingdom decides or performs recovery.",
 			note: detail.output_text ? undefined : missingOutputNote(detail),
 		};
 	}
-	const failureText = operatorFacingFailureText(detail);
+	const failureText = failure?.operator_text ?? operatorFacingFailureText(detail);
 	if (failureText) {
 		return {
 			body: failureText,
@@ -265,7 +268,7 @@ function outcomeToneForDetail(detail: PresentedExecutionDetail): "neutral" | "ru
 }
 
 function operatorFacingFailureText(detail: PresentedExecutionDetail): string | null {
-	return operatorFacingExecutionFailureText(detail.failure_code, detail.completion_invalid_reason, detail.failure_text);
+	return operatorFacingExecutionFailureText(detail.failure_code, detail.failure_text);
 }
 
 function missingOutputNote(detail: PresentedExecutionDetail): string | undefined {

@@ -2,14 +2,13 @@ import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/
 import { formatElapsedDuration, nodeLabel } from "@/lib/utils";
 import type { RunStatusTone } from "./run-detail-tones";
 import { attemptEventLabelFragment, executionDisplayStatus, isReworkTimelineEvent, normalizedRunStatusTone, reworkRequestLabel } from "./run-status-semantics";
-import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
+import { operatorFacingExecutionFailureText } from "./execution-failure-copy";
+import { presentRecoveryTimeline, type RecoveryLike } from "./run-execution-presentation";
 import type { Milestone, RawEventLabelResult, TimelineLookups } from "./timeline-types";
 
 const SPECIAL_REASON_LABELS: Record<string, string> = {
   execution_review_cap_auto_succeeded: "Review Cap Auto-Succeeded",
   validation_gate_cap_auto_succeeded: "Validation Cap Auto-Succeeded",
-  provider_empty_output_retry: "Provider Empty Output Retry",
-  provider_output_recovered: "Provider Output Recovered",
   royal_summary_fallback: "Royal Summary Fallback",
   run_cancelled_by_user: "Run Cancelled by User",
 };
@@ -22,6 +21,7 @@ const NOISE_REASON_CODES = new Set(["orchestration_progress"]);
 
 const NODE_LIFECYCLE_EVENT_TYPES = new Set(["node.state_changed"]);
 const RECOVERY_QUEUE_EVENT_TYPES = new Set(["attempt.retry_queued", "attempt.rerun_queued"]);
+const RECOVERY_RUN_REOPEN_EVENT_TYPES = new Set(["run.retry_reopened", "run.rerun_reopened"]);
 
 interface FanOutGroup {
   parentNodeId: string;
@@ -106,6 +106,10 @@ export function buildRawEventLabel(
   }
 
   const name = resolvedNodeId ? nodeLabel(resolvedNodeId) : "";
+	const recoveryTimeline = recoveryTimelineFromEvent(event);
+	if (recoveryTimeline) {
+		return { label: recoveryTimeline.label, detail: name || undefined };
+	}
 
 	if (event.event_type === "node.state_changed") {
 		const state = typeof payload.state === "string" ? payload.state : "";
@@ -151,6 +155,13 @@ export function buildRawEventLabel(
 		};
 	}
 
+	if (event.event_type === "attempt.progress" && typeof payload.text === "string" && payload.text.trim() !== "") {
+		return {
+			label: `${name ? `${name} ` : ""}Provisional Stream Text`,
+			detail: "Not Canonical",
+		};
+	}
+
 	if (event.event_type === "attempt.succeeded") {
 		if (resolvedNodeId) {
 		  return { label: `${name} succeeded` };
@@ -172,21 +183,6 @@ export function buildRawEventLabel(
 		  return { label: `${name} failed`, detail: detail || undefined };
     }
     return { label: "Node failed", detail: detail || undefined };
-  }
-
-  if (event.event_type === "attempt.retrying") {
-    const retryIndex = typeof payload.retry_index === "number" ? payload.retry_index : 0;
-    const retryMax = typeof payload.retry_max === "number" ? payload.retry_max : 0;
-    const delaySec = typeof payload.delay_seconds === "number" ? payload.delay_seconds : 0;
-    const suffix = retryIndex > 0 && retryMax > 0 ? ` (${retryIndex}/${retryMax})` : "";
-    return {
-      label: `${name || "Node"} retrying${suffix}`,
-      detail: delaySec > 0 ? `${delaySec}s delay` : undefined,
-    };
-  }
-
-	if (event.event_type === "attempt.retry_recovered") {
-		return { label: `${name || "Node"} recovered after retry` };
   }
 
   if (event.event_type === "attempt.timeout_warning") {
@@ -267,15 +263,23 @@ export function synthesizeMilestones(
   lookups: TimelineLookups,
 ): Milestone[] {
   const nodeEvents = new Map<string, TimelineEvent[]>();
-  const runEvents: TimelineEvent[] = [];
-  const orphanedAttempts: TimelineEvent[] = [];
+   const runEvents: TimelineEvent[] = [];
+   const orphanedAttempts: TimelineEvent[] = [];
 	const suppressedResponseMilestoneEventIDs = buildSuppressedResponseMilestoneEventIDs(events);
+	const recoveryMilestones: Array<{ event: TimelineEvent; label: string; status: Milestone["status"] }> = [];
 
-  for (const event of events) {
-    if (suppressedResponseMilestoneEventIDs.has(event.event_id)) {
-      continue;
-    }
-    const payload = event.payload_json ?? {};
+	  for (const event of events) {
+	    if (suppressedResponseMilestoneEventIDs.has(event.event_id)) {
+	      continue;
+	    }
+		const recoveryTimeline = recoveryTimelineFromEvent(event);
+		if (recoveryTimeline) {
+			recoveryMilestones.push({ event, label: recoveryTimeline.label, status: recoveryTimeline.status });
+			if (RECOVERY_RUN_REOPEN_EVENT_TYPES.has(event.event_type)) {
+				continue;
+			}
+		}
+	    const payload = event.payload_json ?? {};
     let nodeId = typeof payload.node_id === "string" ? payload.node_id : "";
     if (!nodeId) {
       const nodeRunID = typeof payload.node_run_id === "string" ? payload.node_run_id : "";
@@ -360,9 +364,12 @@ export function synthesizeMilestones(
     } else if (effectiveState === "ready" || effectiveState === "pending" || effectiveState === "neutral") {
       status = effectiveState;
       kind = "node_queued";
-    } else if (effectiveState === "blocked") {
-      status = "blocked";
-      kind = "node_blocked";
+	} else if (effectiveState === "blocked" || effectiveState === "paused") {
+		status = "blocked";
+		if (effectiveState === "paused") {
+			status = "paused";
+		}
+		kind = "node_blocked";
     } else if (effectiveState === "cancelled" || effectiveState === "skipped") {
       status = effectiveState;
       kind = "node_cancelled";
@@ -385,11 +392,19 @@ export function synthesizeMilestones(
 					? "Verifying settlement"
 					: "In progress";
 			detailText = lead;
-    } else if (kind === "node_queued") {
-		  const lead = effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
+	} else if (kind === "node_queued") {
+		  const lead = latestNodeLifecycleEvent(sorted, "attempt.final_rework_queued")
+			? "Final Governance Rework Queued"
+			: effectiveState === "ready" ? "Queued" : effectiveState === "pending" ? "Pending" : "Awaiting update";
 		  detailText = lead;
-    } else if (kind === "node_blocked") {
-		  detailText = "Blocked";
+	} else if (kind === "node_blocked") {
+		  detailText = status === "paused"
+			? execution?.handoff_state === "workspace_restore_failed"
+				? "Step Paused - Trusted Workspace Restoration Failed"
+				: execution?.handoff_state === "awaiting_workspace_quiescence"
+					? "Retry Paused - Shared Workspace Still in Use"
+				: "Retry Paused - Previous Attempt Still Running"
+			: "Blocked";
     } else if (kind === "node_cancelled") {
 		  const lead = effectiveState === "skipped" ? "Skipped" : "Cancelled";
 		  detailText = lead;
@@ -437,6 +452,7 @@ export function synthesizeMilestones(
 	    const ready = statusCounts.ready;
     const pending = statusCounts.pending;
     const blocked = statusCounts.blocked;
+		const paused = statusCounts.paused;
     const cancelled = statusCounts.cancelled;
     const skipped = statusCounts.skipped;
 	    const rework = statusCounts.rework;
@@ -465,9 +481,12 @@ export function synthesizeMilestones(
 	    if (failed > 0) {
 	      status = "failed";
 	      summaryDetail = `${succeeded} of ${total} succeeded, ${failed} failed${active > 0 ? `, ${active} active` : ""}`;
+		} else if (paused > 0 && blocked === 0) {
+			status = "paused";
+			summaryDetail = `${succeeded} of ${total} succeeded, ${paused} ${paused === 1 ? "retry" : "retries"} paused`;
 	    } else if (blocked > 0) {
 	      status = "blocked";
-	      summaryDetail = `${succeeded} of ${total} succeeded, ${blocked} blocked`;
+	      summaryDetail = `${succeeded} of ${total} succeeded, ${blocked} blocked${paused > 0 ? `, ${paused} ${paused === 1 ? "retry" : "retries"} paused` : ""}`;
 	    } else if (rework > 0) {
 	      status = "rework";
 	      summaryDetail = `${total - rework} of ${total} completed, ${rework} requested rework`;
@@ -541,6 +560,18 @@ export function synthesizeMilestones(
       badge,
     });
   }
+
+	for (const recovery of deduplicateRecoveryMilestones(recoveryMilestones, lookups)) {
+		milestones.push({
+			id: `recovery-${recovery.event.event_id}`,
+			kind: "run_event",
+			label: recovery.label,
+			detail: nodeLabelForEvent(recovery.event, lookups),
+			status: recovery.status,
+			timestamp: recovery.event.emitted_at,
+			events: recovery.events,
+		});
+	}
 
   if (orphanedAttempts.length > 0) {
     const specialOrphans: TimelineEvent[] = [];
@@ -655,7 +686,7 @@ function selectMilestoneEventsForVisibleLineage(events: TimelineEvent[], current
 		return events;
 	}
 	const lineageEvents = events.filter((event) => eventNodeRunID(event) === trimmedNodeRunID);
-	if ((visibleLineageState ?? "").trim() !== "blocked") {
+	if ((visibleLineageState ?? "").trim() !== "blocked" && (visibleLineageState ?? "").trim() !== "paused") {
 		return lineageEvents;
 	}
 	const blockedRunEventSeq = latestBlockedRunEventSeq(lineageEvents);
@@ -676,9 +707,6 @@ function latestBlockedRunEventSeq(events: TimelineEvent[]): number | undefined {
 		if (!event) {
 			continue;
 		}
-		if (event.event_type === "attempt.recovered" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
-			return event.run_event_seq;
-		}
 		if (event.event_type === "node.state_changed" && normalizedRunStatusTone(event.payload_json?.state) === "blocked") {
 			return event.run_event_seq;
 		}
@@ -689,6 +717,98 @@ function latestBlockedRunEventSeq(events: TimelineEvent[]): number | undefined {
 function eventNodeRunID(event: TimelineEvent): string {
   const nodeRunID = event.payload_json?.node_run_id;
   return typeof nodeRunID === "string" ? nodeRunID.trim() : "";
+}
+
+// Timeline events remain generic JSON at the API boundary. Decode only the
+// durable recovery payload here, then delegate all operator wording to the mapper.
+function recoveryTimelineFromEvent(event: TimelineEvent) {
+	const payload = event.payload_json;
+	if (!payload || typeof payload !== "object") {
+		return undefined;
+	}
+	const fields = payload as Record<string, unknown>;
+	const phase = fields.recovery_phase;
+	const trigger = fields.recovery_trigger;
+	const reasonCode = fields.error_code ?? event.reason_code;
+	const scheduledAt = fields.scheduled_at;
+	const retryIndex = fields.retry_index;
+	const retryMax = fields.retry_max;
+	if (!isRecoveryPhase(phase) || !isRecoveryTrigger(trigger) || typeof reasonCode !== "string" || typeof scheduledAt !== "string" || typeof retryIndex !== "number" || typeof retryMax !== "number") {
+		return undefined;
+	}
+	return presentRecoveryTimeline({ phase, trigger, reason_code: reasonCode, scheduled_at: scheduledAt, retry_index: retryIndex, retry_max: retryMax } satisfies RecoveryLike);
+}
+
+function nodeLabelForEvent(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const nodeID = recoveryLogicalNodeID(event, lookups);
+	return nodeID ? nodeLabel(nodeID) : undefined;
+}
+
+function deduplicateRecoveryMilestones(
+	recoveryMilestones: Array<{ event: TimelineEvent; label: string; status: Milestone["status"] }>,
+	lookups: TimelineLookups,
+): Array<{ event: TimelineEvent; label: string; status: Milestone["status"]; events: TimelineEvent[] }> {
+	const deduplicated = new Map<string, { event: TimelineEvent; label: string; status: Milestone["status"]; events: TimelineEvent[] }>();
+	for (const recovery of recoveryMilestones) {
+		const identity = recoveryMilestoneIdentity(recovery.event, lookups) ?? `event:${recovery.event.event_id}`;
+		const existing = deduplicated.get(identity);
+		if (!existing || shouldPreferRecoveryEvent(recovery.event, existing.event)) {
+			deduplicated.set(identity, {
+				...recovery,
+				events: existing ? [...existing.events, recovery.event].sort(compareTimelineEventSequence) : [recovery.event],
+			});
+			continue;
+		}
+		existing.events.push(recovery.event);
+		existing.events.sort(compareTimelineEventSequence);
+	}
+	return [...deduplicated.values()];
+}
+
+function recoveryMilestoneIdentity(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const payload = event.payload_json;
+	if (!payload || typeof payload !== "object") {
+		return undefined;
+	}
+	const fields = payload as Record<string, unknown>;
+	const trigger = fields.recovery_trigger;
+	const phase = fields.recovery_phase;
+	const code = fields.error_code ?? event.reason_code;
+	const retryIndex = fields.retry_index;
+	const scheduledAt = fields.scheduled_at;
+	const logicalNodeID = recoveryLogicalNodeID(event, lookups);
+	if (
+		typeof trigger !== "string"
+		|| typeof phase !== "string"
+		|| typeof code !== "string"
+		|| typeof retryIndex !== "number"
+		|| typeof scheduledAt !== "string"
+		|| !logicalNodeID
+	) {
+		return undefined;
+	}
+	return JSON.stringify([trigger, phase, code, logicalNodeID, retryIndex, scheduledAt]);
+}
+
+function recoveryLogicalNodeID(event: TimelineEvent, lookups: TimelineLookups): string | undefined {
+	const nodeID = event.payload_json?.node_id;
+	if (typeof nodeID === "string" && nodeID.trim() !== "") {
+		return nodeID.trim();
+	}
+	const nodeRunID = eventNodeRunID(event);
+	return nodeRunID ? lookups.nridToNodeId.get(nodeRunID) : undefined;
+}
+
+function shouldPreferRecoveryEvent(candidate: TimelineEvent, current: TimelineEvent): boolean {
+	return RECOVERY_QUEUE_EVENT_TYPES.has(candidate.event_type) && !RECOVERY_QUEUE_EVENT_TYPES.has(current.event_type);
+}
+
+function isRecoveryPhase(value: unknown): value is RecoveryLike["phase"] {
+	return value === "scheduled" || value === "paused" || value === "running" || value === "recovered" || value === "exhausted";
+}
+
+function isRecoveryTrigger(value: unknown): value is RecoveryLike["trigger"] {
+	return value === "automatic_retry" || value === "operator_retry" || value === "operator_rerun";
 }
 
 function executionForEvent(event: TimelineEvent, lookups: TimelineLookups): RunExecution | undefined {
@@ -780,13 +900,6 @@ function latestNodeLifecycleState(events: TimelineEvent[], currentNodeRunID?: st
 				case "attempt.retry_queued":
 				case "attempt.rerun_queued":
 					return "ready";
-				case "attempt.recovered": {
-					const recoveredState = normalizedRunStatusTone(event.payload_json?.state);
-					if (recoveredState === "blocked") {
-						return "blocked";
-					}
-					break;
-				}
 				case "attempt.started":
 					return "running";
 				case "attempt.succeeded":
@@ -825,6 +938,8 @@ function executionLifecycleStatus(execution?: RunExecution): RunStatusTone | und
 				return "starting";
 			case "blocked":
 				return "blocked";
+			case "paused":
+				return "paused";
 			case "running":
 			case "verifying":
 				return "running";
@@ -857,6 +972,7 @@ function countMilestoneStatuses(milestones: Milestone[]): Record<RunStatusTone, 
 		ready: 0,
 		pending: 0,
 		blocked: 0,
+		paused: 0,
 		cancelled: 0,
 		skipped: 0,
 		rework: 0,
@@ -933,7 +1049,6 @@ function failureDetailFromEvent(event: TimelineEvent, execution?: RunExecution):
 	const error = typeof event.payload_json?.error === "string" ? event.payload_json.error.trim() : "";
 	const operatorText = operatorFacingExecutionFailureText(
 		reasonCode || execution?.failure_code,
-		execution?.completion_invalid_reason,
 		error,
 		execution?.failure_text,
 	);
@@ -955,7 +1070,6 @@ function failureDetailFromExecution(execution?: RunExecution): string | undefine
 	}
 	return operatorFacingExecutionFailureText(
 		execution.failure_code,
-		execution.completion_invalid_reason,
 		execution.failure_text,
 	) ?? undefined;
 }

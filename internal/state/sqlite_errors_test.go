@@ -1,7 +1,6 @@
 package state
 
 import (
-	"context"
 	"fmt"
 	"testing"
 )
@@ -66,24 +65,5 @@ func TestIsSQLiteBusyMatchesBusyMarkers(t *testing.T) {
 	}
 	if IsSQLiteBusy(fmt.Errorf("constraint failed")) {
 		t.Fatal("did not expect non-busy sqlite error to be classified as busy")
-	}
-}
-
-func TestRetrySQLiteBusyRetriesBusyError(t *testing.T) {
-	t.Parallel()
-
-	attempts := 0
-	err := retrySQLiteBusy(context.Background(), func() error {
-		attempts++
-		if attempts == 1 {
-			return fmt.Errorf("database is locked (5) (SQLITE_BUSY)")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("retry sqlite busy: %v", err)
-	}
-	if attempts != 2 {
-		t.Fatalf("expected 2 attempts, got %d", attempts)
 	}
 }

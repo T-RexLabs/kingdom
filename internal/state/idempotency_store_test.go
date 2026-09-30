@@ -117,7 +117,7 @@ func TestIdempotencyStoreDuplicateScopeDoesNotTakeOwnership(t *testing.T) {
 	}
 }
 
-func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T) {
+func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunesOnlyCompleted(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -180,7 +180,7 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T
 	for id, wantFound := range map[string]bool{
 		"completed_expired": false,
 		"pending_recent":    true,
-		"pending_abandoned": false,
+		"pending_abandoned": true,
 		"completed_live":    true,
 	} {
 		_, found, err := store.Lookup(context.Background(), "/runs", "actor_1", id)
@@ -190,6 +190,62 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunes(t *testing.T
 		if found != wantFound {
 			t.Fatalf("%s found=%v want %v", id, found, wantFound)
 		}
+	}
+}
+
+func TestIdempotencyStoreExpiredPendingReservationPastFormerGraceReturnsPending(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	applyMigration(t, db, "0003_external_sources_and_idempotency_retention.up.sql")
+	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewIdempotencyStore(db)
+	issuedAt := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)
+	rawKey, err := idempotency.GenerateWithReader("test", issuedAt, idempotency.DefaultTTL, bytes.NewReader(make([]byte, 16)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := idempotency.Parse(rawKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := IdempotencyRecord{
+		ID:          "pending_expired",
+		Route:       "/mutations",
+		ActorID:     "actor_1",
+		ClientKey:   rawKey,
+		RequestHash: "request_hash",
+		CreatedAt:   issuedAt.Format(time.RFC3339),
+		UpdatedAt:   issuedAt.Format(time.RFC3339),
+	}
+	owner, _, err := store.ReserveVersioned(context.Background(), record, key, issuedAt)
+	if err != nil || !owner {
+		t.Fatalf("reserve pending record: owner=%v err=%v", owner, err)
+	}
+
+	// Retry two hours after expiry, beyond the former one-hour pending grace.
+	now := key.ExpiresAt.Add(2 * time.Hour)
+	owner, highWater, err := store.ReserveVersioned(context.Background(), record, key, now)
+	if err != nil {
+		t.Fatalf("reserve same expired key: %v", err)
+	}
+	if owner {
+		t.Fatal("same-key retry took ownership of the unresolved mutation")
+	}
+	if !highWater.Equal(now) {
+		t.Fatalf("high water=%s want %s", highWater, now)
+	}
+
+	got, found, err := store.Lookup(context.Background(), record.Route, record.ActorID, rawKey)
+	if err != nil {
+		t.Fatalf("lookup pending reservation: %v", err)
+	}
+	if !found || got.Status != IdempotencyStatusPending {
+		t.Fatalf("pending reservation found=%v status=%q", found, got.Status)
 	}
 }
 

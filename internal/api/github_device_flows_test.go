@@ -934,6 +934,144 @@ func TestFinalizeGitHubDeviceFlowSurvivesRequestCancellation(t *testing.T) {
 	}
 }
 
+func TestReconnectFinalizationDoesNotLeaveUnknownPublicationFlowPinned(t *testing.T) {
+	for _, test := range []struct {
+		name             string
+		readbackFailures int
+		wantStatus       int
+		wantFlowStage    deviceFlowStage
+		wantPending      bool
+	}{
+		{name: "transient publication readback is retried", readbackFailures: 1, wantStatus: http.StatusCreated, wantFlowStage: deviceStageCompleted},
+		{name: "persistent publication readback releases finalize lease", readbackFailures: 2, wantStatus: http.StatusConflict, wantFlowStage: deviceStageFailed, wantPending: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			now := time.Now().UTC().Truncate(time.Second)
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/user":
+					_, _ = w.Write([]byte(`{"id":10,"login":"octocat"}`))
+				case "/user/installations":
+					_, _ = w.Write([]byte(`{"total_count":1,"installations":[{"id":2,"app_id":1,"client_id":"IvShared","app_slug":"kingdom","target_id":10,"account":{"id":10,"login":"octocat"},"permissions":{"metadata":"read","issues":"read"},"events":[],"repository_selection":"selected"}]}`))
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(provider.Close)
+			oauth, err := githubexternal.NewDeviceOAuthClient(githubexternal.DeviceOAuthClientConfig{
+				Now: func() time.Time { return now }, APIBaseURL: provider.URL, WebBaseURL: provider.URL, AllowTestEndpoints: true,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tokenStore, err := githubexternal.NewUserTokenStore(filepath.Join(t.TempDir(), "secrets"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			server, db, connector := newAPIServerForCommitOutcomeTestWithConfig(t, ServerConfig{
+				Now:                 func() time.Time { return now },
+				GitHubSharedAppSlug: "kingdom", GitHubSharedAppClientID: "IvShared",
+				GitHubDeviceOAuthClient: oauth, GitHubUserTokenStore: tokenStore,
+			})
+			connection, err := server.externalStore.FinalizeConnection(context.Background(), state.FinalizeExternalConnectionRequest{
+				CreateExternalConnectionRequest: state.CreateExternalConnectionRequest{
+					ConnectionID:       "connection_reconnect_publication_" + strings.ReplaceAll(test.name, " ", "_"),
+					CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+					Installations:    []state.ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}},
+					CredentialHandle: "github-user:connection_reconnect_publication", ActorID: "local-operator",
+					CreatedAt: now.Format(time.RFC3339Nano), AuditEventID: "audit_reconnect_publication_create_" + strings.ReplaceAll(test.name, " ", "_"),
+				},
+			})
+			if err != nil {
+				t.Fatalf("create reconnect connection: %v", err)
+			}
+			initialTokens := githubexternal.UserTokens{
+				AccessToken: "old-access-token", RefreshToken: "old-refresh-token",
+				AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour),
+			}
+			if err := tokenStore.Store(connection.ConnectionID, 1, initialTokens); err != nil {
+				t.Fatalf("store initial shared tokens: %v", err)
+			}
+			connector.failNextCommitAfterExec("INSERT INTO external_integration_audit_events", &runCreationCommitTestFault{
+				durable: true,
+				afterCommit: func() {
+					connector.failNextQueries("select credential_strategy,lifecycle,credential_generation from external_connections where connection_id=?", test.readbackFailures)
+				},
+			})
+
+			cookie, session := seedBrowserSessionForTest(t, server, "http://127.0.0.1:9090", now.Add(time.Hour))
+			flowID := "flow_reconnect_publication_" + strings.ReplaceAll(test.name, " ", "_")
+			candidate := githubexternal.InstallationCandidate{
+				InstallationID: "2", DisplayName: "octocat", AccountID: "10", AccountLogin: "octocat",
+				AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", RepositorySelection: "selected",
+			}
+			server.deviceFlows.flows[flowID] = &githubDeviceFlow{
+				ID: flowID, SessionID: sessionID(sha256.Sum256([]byte(cookie.Value))), Origin: session.Origin.Serialized,
+				Stage: deviceStageSelecting, ExpiresAt: session.ExpiresAt, ReconnectConnectionID: connection.ConnectionID,
+				Tokens: githubexternal.UserTokens{
+					AccessToken: "new-access-token", RefreshToken: "new-refresh-token",
+					AccessExpiresAt: now.Add(time.Hour), RefreshExpiresAt: now.Add(180 * 24 * time.Hour),
+				},
+				Candidates: []githubexternal.InstallationCandidate{candidate},
+			}
+
+			idempotencyKey := testIdempotencyKey(t, "reconnect-publication-"+strings.ReplaceAll(test.name, " ", "-"), now)
+			request := func() *httptest.ResponseRecorder {
+				req := httptest.NewRequest(http.MethodPost, "http://127.0.0.1:9090/api/v1/connections/github/device-flows/"+flowID+"/finalize", strings.NewReader(`{"installation_ids":["2"],"display_name":"Shared"}`))
+				req.RemoteAddr, req.Host = "127.0.0.1:49152", "127.0.0.1:9090"
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Origin", "http://127.0.0.1:9090")
+				req.Header.Set("X-CSRF-Token", session.CSRFToken)
+				req.Header.Set("Idempotency-Key", idempotencyKey)
+				req.AddCookie(cookie)
+				response := httptest.NewRecorder()
+				server.ServeHTTP(response, req)
+				return response
+			}
+
+			response := request()
+			if response.Code != test.wantStatus {
+				t.Fatalf("reconnect finalize status=%d, want %d; body=%s", response.Code, test.wantStatus, response.Body.String())
+			}
+			if test.wantPending {
+				assertCanonicalError(t, response.Body.Bytes(), "idempotency_pending", "api.github_device.finalize", "control_plane", true)
+				assertPendingCommitReservation(t, db, idempotencyKey)
+			} else {
+				var reservationStatus string
+				var responseStatus int
+				var responseHeaders, responseBody string
+				if err := db.QueryRow(`SELECT status, response_status, response_headers_json, response_body_json FROM idempotency_keys WHERE client_key = ?`, idempotencyKey).Scan(&reservationStatus, &responseStatus, &responseHeaders, &responseBody); err != nil {
+					t.Fatalf("read completed sensitive reconnect reservation: %v", err)
+				}
+				if reservationStatus != state.IdempotencyStatusCompleted || responseStatus != 0 || responseHeaders != "{}" || responseBody != "" {
+					t.Fatalf("sensitive reconnect reservation status=%q response_status=%d headers=%q body=%q", reservationStatus, responseStatus, responseHeaders, responseBody)
+				}
+				if replay := request(); replay.Code != response.Code || replay.Body.String() != response.Body.String() {
+					t.Fatalf("reconnect idempotency replay status=%d body=%s, original status=%d body=%s", replay.Code, replay.Body.String(), response.Code, response.Body.String())
+				}
+			}
+			server.deviceFlows.mu.Lock()
+			flow := server.deviceFlows.flows[flowID]
+			stage, leaseGeneration, storedConnectionID := flow.Stage, flow.LeaseGeneration, flow.ConnectionID
+			server.deviceFlows.mu.Unlock()
+			if stage != test.wantFlowStage || leaseGeneration != "" {
+				t.Fatalf("reconnect flow stage=%q lease=%q, want %q and no lease", stage, leaseGeneration, test.wantFlowStage)
+			}
+			if test.wantFlowStage == deviceStageCompleted && storedConnectionID != connection.ConnectionID {
+				t.Fatalf("completed reconnect connection=%q, want %q", storedConnectionID, connection.ConnectionID)
+			}
+			publication, err := server.externalStore.GetCredentialPublication(context.Background(), connection.ConnectionID)
+			if err != nil || publication.CredentialGeneration != 2 {
+				t.Fatalf("reconnect publication=%#v err=%v, want generation 2", publication, err)
+			}
+			if _, err := tokenStore.Load(connection.ConnectionID, 2); err != nil {
+				t.Fatalf("reconciled shared token generation is missing: %v", err)
+			}
+		})
+	}
+}
+
 func TestPollAndRefreshGitHubDeviceFlowEndpointsSerializeEmptyCandidatesAsArray(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	authorized := false

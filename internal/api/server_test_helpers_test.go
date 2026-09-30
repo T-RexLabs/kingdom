@@ -24,6 +24,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/idempotency"
@@ -34,20 +35,39 @@ import (
 
 type testPlannerAgent struct{}
 
-// apiTestReceiptMetadata models a planner turn that settles server-side: the
+// apiTestTerminalMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
-// final text. There is no model-invoked completion receipt; the API tests just
-// surface the provider session so the invocation opens.
-func apiTestReceiptMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
+// final text. The API tests surface the provider session so the invocation opens.
+func apiTestTerminalMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
 	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		input.ProviderInvocation.OnProviderSession("provider-session-1")
+		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
+			return planning.ProviderExecutionMetadata{}, err
+		}
 	}
 	return planning.ProviderExecutionMetadata{
 		FinalText:                       finalText,
 		ProviderSessionID:               "provider-session-1",
 		OutcomeState:                    "success",
 		CompletionStructuredPayloadJSON: "{}",
+		StreamObservation:               apiTestTerminalStreamObservation(finalText),
 	}, nil
+}
+
+func apiTestTerminalStreamObservation(finalText string) providerexecution.InvocationStreamObservation {
+	exitCode := 0
+	return providerexecution.InvocationStreamObservation{
+		ProviderSessionID:      "provider-session-1",
+		FinalTurnID:            "turn_api_test",
+		FinalStepID:            "step_api_test",
+		FinalSequence:          1,
+		RawFinishReason:        "stop",
+		NormalizedFinishReason: "stop",
+		CanonicalTerminalText:  finalText,
+		ProcessExited:          true,
+		ProcessExitCode:        &exitCode,
+		StdoutDrained:          true,
+		StderrDrained:          true,
+	}
 }
 
 var defaultPlannerAPITestScript = planningfixture.DefaultAPIScript()
@@ -77,7 +97,7 @@ func (a *testPlannerAgent) OpeningTurnStream(_ context.Context, input planning.A
 }
 
 func (a *testPlannerAgent) ContinueTurnStream(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.AgentTurn, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.ContinueContent)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.ContinueContent)
 	if err != nil {
 		return planning.AgentTurn{}, err
 	}
@@ -92,7 +112,7 @@ func (a *testPlannerAgent) ContinueTurnStream(_ context.Context, input planning.
 }
 
 func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.FormalizedPlan, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.FormalizedText)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.FormalizedText)
 	if err != nil {
 		return planning.FormalizedPlan{}, err
 	}
@@ -104,7 +124,7 @@ func (a *testPlannerAgent) FormalizePlanStream(_ context.Context, input planning
 }
 
 func (a *testPlannerAgent) GenerateTitle(_ context.Context, input planning.AgentContext, onChunk func(text string)) (planning.GeneratedTitle, error) {
-	metadata, err := apiTestReceiptMetadata(input, defaultPlannerAPITestScript.GeneratedTitle)
+	metadata, err := apiTestTerminalMetadata(input, defaultPlannerAPITestScript.GeneratedTitle)
 	if err != nil {
 		return planning.GeneratedTitle{}, err
 	}
@@ -131,7 +151,7 @@ func (a *testStreamingPlannerAgent) ContinueTurnStream(_ context.Context, input 
 			onChunk(chunk)
 		}
 	}
-	metadata, err := apiTestReceiptMetadata(input, a.final)
+	metadata, err := apiTestTerminalMetadata(input, a.final)
 	if err != nil {
 		return planning.AgentTurn{}, err
 	}
@@ -1014,10 +1034,11 @@ func seedArtifact(t *testing.T, db *sql.DB, runID string) {
 	body := []byte("seed artifact")
 	sum := sha256.Sum256(body)
 	checksum := hex.EncodeToString(sum[:])
-	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact-1', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'report.txt', 'text/plain', 'artifacts/report.txt', ?, 13, 'council-member', ?)`, runID, checksum, now); err != nil {
 		t.Fatalf("seed artifact: %v", err)
 	}
-	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES ('artifact-1', ?, ?, 13, ?)`, body, checksum, now); err != nil {
+	if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES ('artifact-1', 0, ?)`, body); err != nil { t.Fatal(err) }
+	if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES ('artifact-1', ?, 13, ?)`, checksum, now); err != nil {
 		t.Fatalf("seed artifact content: %v", err)
 	}
 }
@@ -1125,7 +1146,7 @@ func seedPlanOutputForNode(t *testing.T, db *sql.DB, runID, nodeID, content stri
 
 func seedAttemptExecution(t *testing.T, db *sql.DB, attemptID, runID, nodeRunID, occurredAt string) {
 	t.Helper()
-	mustExecSQL(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_success', '', NULL, 0, '', ?, ?, ?, '', '', ?, ?)`,
+	mustExecSQL(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', ?, ?, ?, '', '', ?, ?)`,
 		attemptID,
 		runID,
 		nodeRunID,
@@ -1239,10 +1260,11 @@ func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 		t.Helper()
 		sum := sha256.Sum256([]byte(body))
 		checksum := hex.EncodeToString(sum[:])
-		if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, ?, ?, 'node-run-identity', 'attempt-identity', 'deliverable', 'index.html', 'text/html', 'index.html', ?, ?, 'council-member', ?)`, artifactID, runID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact %s: %v", artifactID, err)
 		}
-		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)`, artifactID, []byte(body), checksum, len(body), createdAt); err != nil {
+		if _, err := db.Exec(`INSERT INTO artifact_content_chunks VALUES (?, 0, ?)`, artifactID, []byte(body)); err != nil { t.Fatal(err) }
+		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?)`, artifactID, checksum, len(body), createdAt); err != nil {
 			t.Fatalf("seed identity artifact content %s: %v", artifactID, err)
 		}
 	}

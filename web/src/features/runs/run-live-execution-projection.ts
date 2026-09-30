@@ -1,5 +1,5 @@
 import { useQuery, type QueryClient } from "@tanstack/react-query";
-import type { RunExecution, RunExecutionDetail } from "@/api/hooks";
+import type { RunExecution, RunExecutionDetail, RunNodeExecution } from "@/api/hooks";
 
 export { liveExecutionLabel } from "./run-status-semantics";
 
@@ -166,7 +166,7 @@ function apiExecutionFreshness(activityAt?: string, updatedAt?: string): string 
 }
 
 export function overlayExecutionItem(item: RunExecution, live: LiveExecutionProjectionEntry | undefined): RunExecution {
-	if (!live) {
+	if (!live || live.node_run_id !== item.node_run_id || (live.attempt_id && live.attempt_id !== item.attempt_id)) {
 		return item;
 	}
 	if (shouldIgnoreLiveExecutionOverlay(item.status, live.status)) {
@@ -202,21 +202,17 @@ export function overlayExecutionItem(item: RunExecution, live: LiveExecutionProj
 	};
 }
 
-export function mergeExecutionItems(executions: RunExecution[], liveProjection: LiveExecutionProjection): RunExecution[] {
-	const merged = executions.map((item) => overlayExecutionItem(item, liveProjection[item.node_run_id]));
-	const seenNodeRunIDs = new Set(merged.map((item) => item.node_run_id));
-	for (const live of Object.values(liveProjection)) {
-		if (seenNodeRunIDs.has(live.node_run_id)) {
-			continue;
+export function mergeRunNodeExecutionItems(nodes: RunNodeExecution[], liveProjection: LiveExecutionProjection): RunNodeExecution[] {
+	return nodes.map((node) => {
+		const current = node.current_execution;
+		if (!current) {
+			return node;
 		}
-		const synthetic = syntheticExecutionItem(live);
-		if (!synthetic) {
-			continue;
-		}
-		merged.push(synthetic);
-	}
-	merged.sort(compareExecutionRecencyDesc);
-	return merged;
+		return {
+			...node,
+			current_execution: overlayExecutionItem(current, liveProjection[current.node_run_id]),
+		};
+	});
 }
 
 export function overlayExecutionDetail(
@@ -227,6 +223,9 @@ export function overlayExecutionDetail(
 		return null;
 	}
 	if (!live) {
+		return detail;
+	}
+	if (live.node_run_id !== detail.node_run_id || (live.attempt_id && live.attempt_id !== detail.attempt_id)) {
 		return detail;
 	}
 	if (shouldIgnoreLiveExecutionOverlay(detail.status, live.status)) {
@@ -261,39 +260,4 @@ export function overlayExecutionDetail(
 			: {}),
 		live_signal: live,
 	};
-}
-
-function syntheticExecutionItem(live: LiveExecutionProjectionEntry): RunExecution | null {
-	if (!live.attempt_id || !live.node_id || typeof live.attempt !== "number" || !live.status) {
-		return null;
-	}
-	return {
-		attempt_id: live.attempt_id,
-		node_run_id: live.node_run_id,
-		node_id: live.node_id,
-		attempt: live.attempt,
-		agent_id: live.agent_id ?? "",
-		required_role: live.required_role ?? "",
-		execution_mode: live.execution_mode ?? "provider_backed",
-		status: live.status,
-		queued_at: live.queued_at ?? live.launch_started_at ?? live.started_at ?? live.activity_at,
-		activity_at: live.activity_at,
-		updated_at: live.activity_at,
-		...(live.launch_started_at ? { launch_started_at: live.launch_started_at } : {}),
-		...(live.started_at ? { started_at: live.started_at } : {}),
-		...(live.terminal_observed_at ? { terminal_observed_at: live.terminal_observed_at } : {}),
-	};
-}
-
-function compareExecutionRecencyDesc(
-	left: Pick<RunExecution, "activity_at" | "attempt" | "attempt_id">,
-	right: Pick<RunExecution, "activity_at" | "attempt" | "attempt_id">,
-): number {
-	if (left.activity_at !== right.activity_at) {
-		return left.activity_at > right.activity_at ? -1 : 1;
-	}
-	if (left.attempt !== right.attempt) {
-		return right.attempt - left.attempt;
-	}
-	return left.attempt_id.localeCompare(right.attempt_id);
 }

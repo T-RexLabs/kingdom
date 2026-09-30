@@ -16,7 +16,7 @@ function displaySessionTitle(session: PlanningSessionSummary): string {
 export function PlanningSessionList() {
   const pathname = useRouterState({ select: (state) => state.location.pathname });
   const navigate = useNavigate();
-  const { data, isLoading, error, refetch } = usePlanningSessions();
+  const { data, isLoading, error, refetch, hasNextPage, fetchNextPage, isFetchingNextPage } = usePlanningSessions();
   const deletePlanningSession = useDeletePlanningSession();
   const recoverableDelete = useRecoverableMutation(
     "planning-delete",
@@ -89,6 +89,12 @@ export function PlanningSessionList() {
             </Link>
           );
         })}
+
+        {hasNextPage ? (
+          <Button className="w-full" variant="ghost" size="sm" disabled={isFetchingNextPage} onClick={() => void fetchNextPage()}>
+            {isFetchingNextPage ? "Loading sessions..." : "Load More Sessions"}
+          </Button>
+        ) : null}
 
         {isLoading && sessions.length === 0 ? (
           <div className="rounded-md border border-dashed border-border px-3 py-4 text-xs text-foreground-subtle">

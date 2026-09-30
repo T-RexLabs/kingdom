@@ -51,7 +51,19 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req gen.CreateAcpRunRequest
-	if err := decodeStrictJSON(r, &req); err != nil {
+	texts, err := DecodeRequestWithText(r, &req, "/reply/content_markdown", "/reply/answer_payload/text")
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	defer texts.Close()
+	replySource, err := planningRequestText(r.Context(), texts["/reply/content_markdown"], true)
+	if err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+	answerSource, err := planningRequestText(r.Context(), texts["/reply/answer_payload/text"], false)
+	if err != nil {
 		s.writeBadRequest(w, err.Error())
 		return
 	}
@@ -63,13 +75,13 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 
 	var (
 		operation state.PlanningOperation
-		err       error
 	)
 	switch strings.TrimSpace(string(req.AgentName)) {
 	case acp.PlannerReplyAgentName:
 		result, createErr := s.planningService.CreateOperation(r.Context(), planningSessionID, planning.CreateOperationInput{
+			ReplySource:       replySource,
+			AnswerTextSource:  answerSource,
 			Type:              state.PlanningOperationTypeReply,
-			ReplyMarkdown:     trimmedReplyMarkdown(req.Reply),
 			AnswerPayloadJSON: answerPayloadJSON(req.Reply),
 			ParentMessageID:   replyParentMessageID(req.Reply),
 		})
@@ -111,10 +123,38 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err != nil {
+		if writeAcpRunCreationPending(w, r, planningSessionID, err) {
+			return
+		}
 		handlePlanningError(w, err, "api.create_acp_run")
 		return
 	}
 	writeJSON(w, http.StatusCreated, acpRunFromOperation(operation))
+}
+
+func writeAcpRunCreationPending(w http.ResponseWriter, r *http.Request, planningSessionID string, err error) bool {
+	var commitErr *state.CommitOutcomeUnknownError
+	var projectionErr *state.PostCommitProjectionError
+	var operationID string
+	switch {
+	case errors.As(err, &commitErr):
+		operationID = strings.TrimSpace(commitErr.ResourceID)
+	case errors.As(err, &projectionErr):
+		operationID = strings.TrimSpace(projectionErr.ResourceID)
+	default:
+		return false
+	}
+	details := map[string]any{"planning_session_id": strings.TrimSpace(planningSessionID)}
+	if operationID != "" {
+		details["operation_id"] = operationID
+		if runID := acp.PlannerRunID(operationID); runID != "" {
+			details["run_id"] = runID
+		}
+	}
+	writeCommitOutcomePending(w, r, "api.create_acp_run",
+		"planner operation creation outcome is still being confirmed; retry later with the same idempotency key",
+		details)
+	return true
 }
 
 func (s *Server) handleGetAcpRun(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +374,7 @@ func acpActivityItemFromPayload(payloadJSON, eventID, createdAt string) (gen.Acp
 		return gen.AcpRunActivityItem{Id: activityID, Kind: gen.Progress, Label: label, OccurredAt: occurredAt}, true
 	case acp.KingdomToolKind:
 		toolName := strings.TrimSpace(stringValue(payload["tool_name"]))
-		if toolName == "" || toolName == "kingdom_complete_attempt" {
+		if toolName == "" {
 			return gen.AcpRunActivityItem{}, false
 		}
 		status := strings.TrimSpace(stringValue(payload["tool_status"]))
@@ -437,13 +477,6 @@ func mustParseOpenAPIUUID(value string) uuid.UUID {
 		return uuid.Nil
 	}
 	return parsed
-}
-
-func trimmedReplyMarkdown(reply *gen.PlanningReplyOperationRequest) string {
-	if reply == nil {
-		return ""
-	}
-	return strings.TrimSpace(reply.ContentMarkdown)
 }
 
 func answerPayloadJSON(reply *gen.PlanningReplyOperationRequest) string {

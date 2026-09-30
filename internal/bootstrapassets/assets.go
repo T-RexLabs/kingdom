@@ -3,6 +3,7 @@ package bootstrapassets
 import (
 	"embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -12,9 +13,10 @@ import (
 	"strings"
 
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/securefs"
 )
 
-//go:embed files/policies/*.yaml files/schemas/*.json files/workflows/*.json files/opencode/agents/*.md files/opencode/tools/*
+//go:embed files/policies/*.yaml files/schemas/*.json files/workflows/*.json files/opencode/agents/*.md
 var embeddedFiles embed.FS
 
 const (
@@ -70,6 +72,11 @@ func WriteScaffold(root string, projectRoot string, force bool) error {
 	if err := WriteManagedOpenCodeAssets(filepath.Join(targetRoot, opencodeDirName), force); err != nil {
 		return err
 	}
+	if force {
+		if err := removeRetiredManagedOpenCodeToolFromRunTargets(targetRoot); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
@@ -124,14 +131,6 @@ func ListManagedOpenCodeAgentProfiles() ([]string, error) {
 	return names, nil
 }
 
-func ListManagedOpenCodeTools() ([]string, error) {
-	names, err := listAssetFiles("files/opencode/tools", "")
-	if err != nil {
-		return nil, fmt.Errorf("list managed opencode tools: %w", err)
-	}
-	return names, nil
-}
-
 func ManagedOpenCodeRoot(projectRoot string) string {
 	trimmed := strings.TrimSpace(projectRoot)
 	if trimmed == "" {
@@ -164,7 +163,10 @@ func WriteManagedOpenCodeAssets(overlayRoot string, force bool) error {
 	if err := WriteManagedOpenCodeAgentProfiles(overlayRoot, force); err != nil {
 		return err
 	}
-	return WriteManagedOpenCodeTools(overlayRoot, force)
+	if force {
+		return removeRetiredManagedOpenCodeTool(overlayRoot)
+	}
+	return nil
 }
 
 func WriteManagedOpenCodeAgentProfiles(overlayRoot string, force bool) error {
@@ -175,27 +177,12 @@ func WriteManagedOpenCodeAgentProfiles(overlayRoot string, force bool) error {
 	return writeDir("files/opencode/agents", "", filepath.Join(resolvedOverlayRoot, "agents"), force)
 }
 
-func WriteManagedOpenCodeTools(overlayRoot string, force bool) error {
-	resolvedOverlayRoot, err := cleanManagedOpenCodeRoot(overlayRoot)
-	if err != nil {
-		return err
-	}
-	return writeDir("files/opencode/tools", "", filepath.Join(resolvedOverlayRoot, "tools"), force)
-}
-
 func ValidateManagedOpenCodeAgentProfiles(overlayRoot string) error {
 	return validateManagedOpenCodeAssets(overlayRoot, "files/opencode/agents", "agents", ListManagedOpenCodeAgentProfiles, "managed opencode agent profile")
 }
 
-func ValidateManagedOpenCodeTools(overlayRoot string) error {
-	return validateManagedOpenCodeAssets(overlayRoot, "files/opencode/tools", "tools", ListManagedOpenCodeTools, "managed opencode tool")
-}
-
 func ValidateManagedOpenCodePlannerAssets(overlayRoot string) error {
-	if err := validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planner.md"}, "managed opencode planner profile"); err != nil {
-		return err
-	}
-	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/tools", "tools", []string{"kingdom_complete_attempt.ts"}, "managed opencode tool")
+	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planner.md"}, "managed opencode planner profile")
 }
 
 func writeDir(sourceDir string, canonicalDir string, targetDir string, force bool) error {
@@ -273,6 +260,52 @@ func cleanManagedOpenCodeRoot(overlayRoot string) (string, error) {
 		return "", fmt.Errorf("managed opencode root is required")
 	}
 	return filepath.Clean(trimmed), nil
+}
+
+const retiredManagedOpenCodeToolName = "kingdom_complete_attempt.ts"
+
+func removeRetiredManagedOpenCodeTool(overlayRoot string) error {
+	resolvedOverlayRoot, err := cleanManagedOpenCodeRoot(overlayRoot)
+	if err != nil {
+		return err
+	}
+	root, err := securefs.OpenRoot(resolvedOverlayRoot)
+	if err != nil {
+		return fmt.Errorf("open managed opencode root for retired tool cleanup: %w", err)
+	}
+	defer root.Close()
+
+	if err := root.RemoveEntry(filepath.Join("tools", retiredManagedOpenCodeToolName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("remove retired managed opencode tool from %q: %w", resolvedOverlayRoot, err)
+	}
+	return nil
+}
+
+func removeRetiredManagedOpenCodeToolFromRunTargets(kingdomHome string) error {
+	root, err := securefs.OpenRoot(kingdomHome)
+	if err != nil {
+		return fmt.Errorf("open kingdom home for run-target asset cleanup: %w", err)
+	}
+	defer root.Close()
+
+	const runTargetsPath = "runtime/run-targets"
+	runTargets, err := root.ReadDir(runTargetsPath)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read run-target directories for retired tool cleanup: %w", err)
+	}
+	for _, runTarget := range runTargets {
+		if !runTarget.IsDir() {
+			continue
+		}
+		relativeToolPath := filepath.Join(runTargetsPath, runTarget.Name(), "target", kingdomDirName, opencodeDirName, "tools", retiredManagedOpenCodeToolName)
+		if err := root.RemoveEntry(relativeToolPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove retired managed opencode tool from run target %q: %w", runTarget.Name(), err)
+		}
+	}
+	return nil
 }
 
 func writeMigrations(targetDir string, force bool) error {

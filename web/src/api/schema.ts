@@ -49,10 +49,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Resume the latest restart-scoped GitHub manifest flow bound to this browser session and origin. */
+        /** Resume the active restart-scoped GitHub manifest flow bound to this browser session and origin. */
         get: operations["getCurrentGitHubManifestFlow"];
         put?: never;
-        /** Start user-owned GitHub App manifest registration for this exact browser session and origin. */
+        /** Start user-owned GitHub App manifest registration or resume the same intent for this exact browser session and origin. */
         post: operations["startGitHubManifestFlow"];
         delete?: never;
         options?: never;
@@ -517,7 +517,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Read bounded immutable snapshot comments with opaque pagination. */
+        /** Read a page of complete immutable snapshot comments with opaque pagination. */
         get: operations["listExternalSourceSnapshotComments"];
         put?: never;
         post?: never;
@@ -647,6 +647,23 @@ export interface paths {
         put?: never;
         /** Create a planning session with the first question ready immediately. */
         post: operations["createPlanningSession"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/planning-sessions/{id}/context/{snapshotId}/entries": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List immutable context entries in capture order. */
+        get: operations["listPlanningContextEntries"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1050,6 +1067,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/runs/{id}/executions/{attemptId}/stop-retry": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Retry stopping a paused stale execution.
+         * @description Requests one further bounded stop attempt for a stale execution whose previous stop could not prove process quiescence. When Kingdom has durably proved process absence but guardian evidence is missing or invalid, this explicitly authorizes cancellation recovery without treating the process as quiescent.
+         */
+        post: operations["retryExecutionStop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/runs/{id}/plan": {
         parameters: {
             query?: never;
@@ -1159,8 +1196,25 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List durable execution attempts for a run. */
+        /** List canonical logical-node execution state for a run. */
         get: operations["listRunExecutions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/nodes/{nodeId}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List paginated durable physical execution attempts for one workflow node. */
+        get: operations["listRunNodeAttempts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1261,8 +1315,28 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Fetch full mailbox message details. */
+        /** Fetch mailbox message details and a lazy full-content pointer. */
         get: operations["getRunMailboxMessage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/runs/{id}/mailbox/messages/{messageId}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download the complete primary mailbox instruction or response.
+         * @description Resolves only the content bound to this visible run/message, validates execution and invocation lineage, and verifies the complete digest and size before streaming. Inline messages retain their complete original text. Responses are attachments with MIME sniffing disabled.
+         */
+        get: operations["getRunMailboxMessageContent"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1299,7 +1373,7 @@ export interface paths {
         put?: never;
         /**
          * Queue a retry for one node.
-         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Retry request.
          */
         post: operations["retryNode"];
         delete?: never;
@@ -1319,7 +1393,7 @@ export interface paths {
         put?: never;
         /**
          * Queue rerun from a node.
-         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
+         * @description Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope. If managed worktree deletion has started, the request returns 409 until cleanup completes; after cleanup, submit a new Rerun request.
          */
         post: operations["rerunFromNode"];
         delete?: never;
@@ -1697,7 +1771,7 @@ export interface components {
         ErrorEnvelope: {
             error: {
                 /** @enum {string} */
-                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "budget_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_cancelled" | "agent_unresponsive" | "session_lease_expired" | "tool_execution_failed" | "container_start_failed" | "container_oom_killed" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
+                code: "transient_transport" | "timeout" | "invalid_output_schema" | "policy_violation" | "dependency_blocked" | "resource_limit_exceeded" | "internal_error" | "llm_rate_limited" | "llm_model_unavailable" | "llm_usage_limit_reached" | "llm_context_overflow" | "llm_invalid_response" | "provider_incomplete_turn" | "provider_empty_output" | "provider_unknown_failure" | "provider_cancelled" | "agent_unresponsive" | "event_sequence_gap" | "idempotency_conflict" | "idempotency_key_expired" | "idempotency_pending";
                 message: string;
                 retryable: boolean;
                 /** @enum {string} */
@@ -1855,7 +1929,9 @@ export interface components {
             next_cursor?: string;
         };
         NormalizedIssue: {
+            /** @description Maximum 1,024 UTF-8 bytes. */
             title: string;
+            /** @description Maximum 1,048,576 UTF-8 bytes. */
             body: string;
             /** @enum {string} */
             state: "open" | "closed";
@@ -1882,7 +1958,7 @@ export interface components {
         };
         ExternalImportProfile: {
             /**
-             * @description The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained.
+             * @description The comment count is always captured. When enabled, comment bodies are retained in full.
              * @default false
              */
             include_comments: boolean;
@@ -1899,10 +1975,13 @@ export interface components {
             updated_at: string;
             original_bytes: number;
             retained_bytes: number;
-            /** @enum {string} */
+            /**
+             * @description Present only on historical snapshots captured with comment truncation. New captures retain complete comment bodies.
+             * @enum {string}
+             */
             truncation_reason?: "comment_byte_limit" | "aggregate_byte_limit";
         };
-        /** @description Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors. */
+        /** @description Transient normalized preview with complete selected comment bodies and fetch metadata. Responses never include credentials, tokens, or provider errors. */
         IssuePreview: {
             native_id: string;
             repository_id: string;
@@ -2210,7 +2289,7 @@ export interface components {
             run_id: string;
             seq: number;
             /** @enum {string} */
-            type: "run.created" | "run.in-progress" | "message.part" | "message.completed" | "run.completed" | "run.failed" | "run.cancelled" | "error" | "generic";
+            type: "run.created" | "run.in-progress" | "message.part" | "message.completed" | "run.completed" | "run.activity.reconciled" | "run.failed" | "run.cancelled" | "error" | "generic";
             payload: {
                 [key: string]: unknown;
             };
@@ -2243,6 +2322,7 @@ export interface components {
             git_worktree_reason?: string;
         };
         PlanningSessionListResponse: {
+            next_cursor?: string;
             items: components["schemas"]["PlanningSessionSummary"][];
         };
         StructuredQuestionOption: {
@@ -2319,12 +2399,15 @@ export interface components {
             reason?: string;
             size_bytes?: number;
         };
+        PlanningContextEntriesResponse: {
+            items: components["schemas"]["PlanningContextFileEntry"][];
+            next_cursor?: string;
+        };
+        /** @description Snapshot summary. Read file entries through the paginated context entries route. */
         PlanningContextSnapshot: {
             planning_context_snapshot_id: string;
             planning_session_id: string;
             summary_markdown: string;
-            included_files: components["schemas"]["PlanningContextFileEntry"][];
-            excluded_files: components["schemas"]["PlanningContextFileEntry"][];
             /** Format: date-time */
             created_at: string;
         };
@@ -2426,13 +2509,6 @@ export interface components {
             publish_mode?: components["schemas"]["RunPublishMode"];
             model_selection?: components["schemas"]["RunModelSelection"];
         };
-        RuntimeRetryStatus: {
-            node_id: string;
-            node_run_id: string;
-            retry_index: number;
-            retry_max: number;
-            delay_seconds: number;
-        };
         /**
          * @example {
          *       "dag_nodes": 6,
@@ -2493,16 +2569,7 @@ export interface components {
          *       "stream_cursor": {
          *         "event_id": "evt_123",
          *         "run_event_seq": 50
-         *       },
-         *       "runtime_retries": [
-         *         {
-         *           "node_id": "delegated_execution_berserker",
-         *           "node_run_id": "nr_123",
-         *           "retry_index": 2,
-         *           "retry_max": 3,
-         *           "delay_seconds": 10
-         *         }
-         *       ]
+         *       }
          *     }
          */
         RunDetailSummary: components["schemas"]["RunSummary"] & {
@@ -2515,7 +2582,6 @@ export interface components {
             validation_auto_succeeded_count: number;
             failed_nodes: components["schemas"]["RunGraphNode"][];
             stream_cursor?: components["schemas"]["RunStreamCursor"];
-            runtime_retries: components["schemas"]["RuntimeRetryStatus"][];
         };
         RunListResponse: {
             items: components["schemas"]["RunSummary"][];
@@ -2649,6 +2715,7 @@ export interface components {
             created_at: string;
         };
         RunPlanReviewsResponse: {
+            next_cursor?: string;
             run_id: string;
             items: components["schemas"]["RunPlanReview"][];
         };
@@ -2668,6 +2735,12 @@ export interface components {
             next_cursor?: string;
         };
         RunMailboxMessageSummary: {
+            /** @description Whether the message carries a complete inline body or a durable full-content reference. */
+            has_full_content?: boolean;
+            /** @description Authenticated run/message-scoped download URL. */
+            full_content_url?: string;
+            /** @description Whether the primary body is stored separately and must be loaded explicitly. */
+            content_is_preview?: boolean;
             message_id: string;
             run_id: string;
             node_id: string;
@@ -2696,10 +2769,17 @@ export interface components {
             format: "markdown" | "plain_text" | "json";
         };
         RunMailboxMessagesResponse: {
+            next_cursor?: string;
             run_id: string;
             items: components["schemas"]["RunMailboxMessageSummary"][];
         };
         RunMailboxMessageDetail: {
+            /** @description Whether the message carries a complete inline body or a durable full-content reference. */
+            has_full_content?: boolean;
+            /** @description Authenticated run/message-scoped download URL. */
+            full_content_url?: string;
+            /** @description When true, content is only a preview and may be empty; full_content_url serves the complete body. */
+            content_is_preview?: boolean;
             message_id: string;
             run_id: string;
             node_id: string;
@@ -2783,7 +2863,7 @@ export interface components {
             /** @enum {string} */
             execution_mode: "provider_backed" | "runtime_owned";
             /** @enum {string} */
-            status: "queued" | "starting" | "running" | "blocked" | "verifying" | "succeeded" | "failed" | "cancelled";
+            status: "queued" | "starting" | "running" | "blocked" | "paused" | "verifying" | "succeeded" | "failed" | "cancelled";
             logical_session_id?: string;
             provider_session_id?: string;
             /** Format: date-time */
@@ -2806,7 +2886,9 @@ export interface components {
             committed_at?: string;
             failure_code?: string;
             failure_text?: string;
-            completion_invalid_reason?: string;
+            /** @enum {string} */
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            stop_retry_available: boolean;
         };
         RunExecutionDetail: components["schemas"]["RunExecution"] & {
             provider_invocation_id?: string;
@@ -2830,7 +2912,125 @@ export interface components {
         };
         RunExecutionsResponse: {
             run_id: string;
-            items: components["schemas"]["RunExecution"][];
+            items: components["schemas"]["RunNodeExecution"][];
+        };
+        RunExecutionFailure: {
+            code: string;
+            classification: string;
+            /** @enum {string} */
+            category: "core" | "provider" | "runtime" | "control_plane";
+            retryable: boolean;
+            operator_text: string;
+        };
+        RunRecoveryState: {
+            /** @enum {string} */
+            phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
+            /** @enum {string} */
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            reason_code: string;
+            source_attempt_id: string;
+            source_node_run_id: string;
+            target_attempt_id?: string;
+            target_node_run_id?: string;
+            retry_index: number;
+            retry_max: number;
+            /** Format: date-time */
+            scheduled_at: string;
+            /** Format: date-time */
+            last_updated_at: string;
+        };
+        RunNodeExecution: {
+            node_id: string;
+            required_role: string;
+            /** @enum {string} */
+            execution_ownership: "provider_backed" | "runtime_owned";
+            /** @enum {string} */
+            status: "pending" | "ready" | "starting" | "running" | "blocked" | "succeeded" | "failed" | "cancelled" | "skipped";
+            current_execution?: components["schemas"]["RunExecution"];
+            attempt_count: number;
+            /** Format: date-time */
+            latest_activity_at?: string;
+            failure?: components["schemas"]["RunExecutionFailure"];
+            recovery?: components["schemas"]["RunRecoveryState"];
+        };
+        RunNodeAttemptsResponse: {
+            run_id: string;
+            node_id: string;
+            current_node_run_id?: string;
+            current_attempt_id?: string;
+            items: components["schemas"]["RunNodeAttemptHistoryItem"][];
+            next_cursor?: string;
+        };
+        RunAttemptTokenUsage: {
+            input_tokens: number;
+            output_tokens: number;
+            total_tokens: number;
+            reasoning_tokens: number;
+            cache_read_tokens: number;
+            cache_write_tokens: number;
+        };
+        RunAttemptRetryRelationship: {
+            /** @enum {string} */
+            direction: "source" | "target";
+            /** @enum {string} */
+            phase: "scheduled" | "paused" | "running" | "recovered" | "exhausted";
+            /** @enum {string} */
+            trigger: "automatic_retry" | "operator_retry" | "operator_rerun";
+            reason_code: string;
+            source_attempt_id: string;
+            source_node_run_id: string;
+            target_attempt_id?: string;
+            target_node_run_id?: string;
+            retry_index: number;
+            retry_max: number;
+            /** Format: date-time */
+            scheduled_at: string;
+            /** Format: date-time */
+            last_updated_at: string;
+        };
+        RunNodeAttemptHistoryItem: {
+            attempt_id: string;
+            node_run_id: string;
+            node_id: string;
+            attempt: number;
+            agent_id: string;
+            required_role: string;
+            /** @enum {string} */
+            execution_mode: "provider_backed" | "runtime_owned";
+            /** @enum {string} */
+            status: "queued" | "starting" | "running" | "blocked" | "paused" | "verifying" | "succeeded" | "failed" | "cancelled";
+            logical_session_id?: string;
+            provider_session_id?: string;
+            /** Format: date-time */
+            queued_at: string;
+            /** Format: date-time */
+            activity_at: string;
+            progress_event_type?: string;
+            progress_reason_code?: string;
+            /** Format: date-time */
+            progress_at?: string;
+            /** Format: date-time */
+            launch_started_at?: string;
+            /** Format: date-time */
+            started_at?: string;
+            /** Format: date-time */
+            updated_at: string;
+            /** Format: date-time */
+            terminal_observed_at?: string;
+            /** Format: date-time */
+            committed_at?: string;
+            failure_code?: string;
+            failure_text?: string;
+            /** @enum {string} */
+            handoff_state?: "cancellation_requested" | "cancellation_dispatched" | "awaiting_quiescence" | "stop_retry_requested" | "stop_retry_dispatched" | "guardian_evidence_lost" | "guardian_evidence_recovery_requested" | "awaiting_workspace_quiescence" | "workspace_restore_failed";
+            stop_retry_available: boolean;
+            superseded: boolean;
+            /** Format: date-time */
+            superseded_at?: string;
+            failure?: components["schemas"]["RunExecutionFailure"];
+            provider_invocation_id?: string;
+            token_usage?: components["schemas"]["RunAttemptTokenUsage"];
+            retry_relationships: components["schemas"]["RunAttemptRetryRelationship"][];
         };
         RunAgentsResponse: {
             run_id: string;
@@ -2863,6 +3063,11 @@ export interface components {
             run_id: string;
             node_key: string;
             retry_enqueued: boolean;
+        };
+        RetryExecutionStopResult: {
+            run_id: string;
+            attempt_id: string;
+            stop_retry_requested: boolean;
         };
         RerunFromNodeRequest: {
             reason: string;
@@ -2906,6 +3111,8 @@ export interface components {
             name: string;
             mime: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: uri */
             download_url?: string;
@@ -2924,6 +3131,8 @@ export interface components {
             mime: string;
             path: string;
             size_bytes: number;
+            /** @description Basic permission bits, present for write artifacts and absent for deletions. */
+            mode_bits?: number;
             sha256?: string;
             /** Format: date-time */
             created_at: string;
@@ -3282,6 +3491,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Safe status for an existing flow with the same owner intent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["GitHubManifestFlowStatus"];
+                };
+            };
             /** @description Transient GitHub form action and manifest. The response is replayable only within the current process and is never persisted. */
             201: {
                 headers: {
@@ -3946,6 +4164,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4174,6 +4393,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4290,6 +4510,7 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -4372,6 +4593,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
             };
             header?: never;
             path?: never;
@@ -4422,6 +4644,38 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listPlanningContextEntries: {
+        parameters: {
+            query?: {
+                kind?: "included" | "excluded";
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["PlanningSessionId"];
+                snapshotId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Context entry page scoped to the session, snapshot, and entry kind. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PlanningContextEntriesResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["ErrorResponse"];
         };
     };
@@ -5169,6 +5423,39 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
+    retryExecutionStop: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                id: components["parameters"]["RunId"];
+                attemptId: components["parameters"]["AttemptId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Stop retry requested. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RetryExecutionStopResult"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
     getRunPlan: {
         parameters: {
             query?: never;
@@ -5196,7 +5483,10 @@ export interface operations {
     };
     listRunPlanReviews: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
+            };
             header?: never;
             path: {
                 id: components["parameters"]["RunId"];
@@ -5335,13 +5625,43 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Run execution attempts ordered by most recent execution activity. */
+            /** @description One canonical logical execution projection for every workflow node. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["RunExecutionsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    listRunNodeAttempts: {
+        parameters: {
+            query?: {
+                cursor?: components["parameters"]["Cursor"];
+                limit?: components["parameters"]["Limit"];
+            };
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                nodeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Physical attempt history ordered newest first. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunNodeAttemptsResponse"];
                 };
             };
             400: components["responses"]["BadRequestError"];
@@ -5463,6 +5783,7 @@ export interface operations {
         parameters: {
             query?: {
                 limit?: components["parameters"]["Limit"];
+                cursor?: components["parameters"]["Cursor"];
                 thread_id?: string;
                 to_agent_id?: string;
                 unread_only?: boolean;
@@ -5514,6 +5835,35 @@ export interface operations {
             };
             400: components["responses"]["BadRequestError"];
             401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    getRunMailboxMessageContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: components["parameters"]["RunId"];
+                messageId: components["parameters"]["MessageId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Verified complete message content, suitable for explicit restricted-Markdown viewing or native browser download. */
+            200: {
+                headers: {
+                    "Content-Disposition"?: string;
+                    "X-Content-Type-Options"?: "nosniff";
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
             default: components["responses"]["ErrorResponse"];
         };
     };

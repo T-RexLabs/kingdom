@@ -18,36 +18,38 @@ type tokenUsageQuerier interface {
 }
 
 type TokenUsageRecord struct {
-	UsageID          string `json:"usage_id"`
-	RunID            string `json:"run_id"`
-	NodeRunID        string `json:"node_run_id"`
-	AttemptID        string `json:"attempt_id"`
-	RequiredRole     string `json:"required_role"`
-	Model            string `json:"model"`
-	Variant          string `json:"variant"`
-	InputTokens      int64  `json:"input_tokens"`
-	OutputTokens     int64  `json:"output_tokens"`
-	TotalTokens      int64  `json:"total_tokens"`
-	ReasoningTokens  int64  `json:"reasoning_tokens"`
-	CacheReadTokens  int64  `json:"cache_read_tokens"`
-	CacheWriteTokens int64  `json:"cache_write_tokens"`
-	CreatedAt        string `json:"created_at"`
+	UsageID              string `json:"usage_id"`
+	RunID                string `json:"run_id"`
+	NodeRunID            string `json:"node_run_id"`
+	AttemptID            string `json:"attempt_id"`
+	ProviderInvocationID string `json:"provider_invocation_id,omitempty"`
+	RequiredRole         string `json:"required_role"`
+	Model                string `json:"model"`
+	Variant              string `json:"variant"`
+	InputTokens          int64  `json:"input_tokens"`
+	OutputTokens         int64  `json:"output_tokens"`
+	TotalTokens          int64  `json:"total_tokens"`
+	ReasoningTokens      int64  `json:"reasoning_tokens"`
+	CacheReadTokens      int64  `json:"cache_read_tokens"`
+	CacheWriteTokens     int64  `json:"cache_write_tokens"`
+	CreatedAt            string `json:"created_at"`
 }
 
 type InsertTokenUsageRequest struct {
-	RunID            string
-	NodeRunID        string
-	AttemptID        string
-	RequiredRole     string
-	Model            string
-	Variant          string
-	InputTokens      int64
-	OutputTokens     int64
-	TotalTokens      int64
-	ReasoningTokens  int64
-	CacheReadTokens  int64
-	CacheWriteTokens int64
-	CreatedAt        string
+	RunID                string
+	NodeRunID            string
+	AttemptID            string
+	ProviderInvocationID string
+	RequiredRole         string
+	Model                string
+	Variant              string
+	InputTokens          int64
+	OutputTokens         int64
+	TotalTokens          int64
+	ReasoningTokens      int64
+	CacheReadTokens      int64
+	CacheWriteTokens     int64
+	CreatedAt            string
 }
 
 type TokenUsageSummary struct {
@@ -119,30 +121,32 @@ func (s *TokenUsageStore) Insert(ctx context.Context, req InsertTokenUsageReques
 	}
 
 	record := TokenUsageRecord{
-		UsageID:          usageID,
-		RunID:            req.RunID,
-		NodeRunID:        req.NodeRunID,
-		AttemptID:        req.AttemptID,
-		RequiredRole:     req.RequiredRole,
-		Model:            req.Model,
-		Variant:          req.Variant,
-		InputTokens:      req.InputTokens,
-		OutputTokens:     req.OutputTokens,
-		TotalTokens:      req.TotalTokens,
-		ReasoningTokens:  req.ReasoningTokens,
-		CacheReadTokens:  req.CacheReadTokens,
-		CacheWriteTokens: req.CacheWriteTokens,
-		CreatedAt:        req.CreatedAt,
+		UsageID:              usageID,
+		RunID:                req.RunID,
+		NodeRunID:            req.NodeRunID,
+		AttemptID:            req.AttemptID,
+		ProviderInvocationID: strings.TrimSpace(req.ProviderInvocationID),
+		RequiredRole:         req.RequiredRole,
+		Model:                req.Model,
+		Variant:              req.Variant,
+		InputTokens:          req.InputTokens,
+		OutputTokens:         req.OutputTokens,
+		TotalTokens:          req.TotalTokens,
+		ReasoningTokens:      req.ReasoningTokens,
+		CacheReadTokens:      req.CacheReadTokens,
+		CacheWriteTokens:     req.CacheWriteTokens,
+		CreatedAt:            req.CreatedAt,
 	}
 
 	_, err = s.db.ExecContext(ctx,
-		`INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		 ON CONFLICT(run_id, node_run_id, attempt_id) DO NOTHING`,
+		`INSERT INTO token_usage (usage_id, run_id, node_run_id, attempt_id, provider_invocation_id, required_role, model, variant, input_tokens, output_tokens, total_tokens, reasoning_tokens, cache_read_tokens, cache_write_tokens, created_at)
+		 VALUES (?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT DO NOTHING`,
 		record.UsageID,
 		record.RunID,
 		record.NodeRunID,
 		record.AttemptID,
+		record.ProviderInvocationID,
 		record.RequiredRole,
 		record.Model,
 		record.Variant,

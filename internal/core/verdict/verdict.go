@@ -1,16 +1,14 @@
 package verdict
 
 import (
-	"encoding/json"
+	"bufio"
 	"errors"
 	"fmt"
+	"io"
 	"regexp"
 	"strings"
-
-	"kingdom/internal/core/workflow"
+	"unicode"
 )
-
-const MaxControlVerdictLines = 12
 
 const (
 	// ReworkReasonCodeExecutionReview and ReworkReasonCodeValidationGate are the
@@ -39,53 +37,113 @@ var (
 	controlVerdictPattern  = regexp.MustCompile(`(?i)^VERDICT:\s*(PASS|REWORK)\s*$`)
 )
 
-type ReceiptDecision struct {
-	Verdict           string
-	FailureReasonCode string
-	FailureReasonText string
-}
-
-type ReceiptContractError struct {
+type VerdictContractError struct {
 	ReasonCode string
 	message    string
 }
 
-func (e *ReceiptContractError) Error() string {
+func (e *VerdictContractError) Error() string {
 	if e == nil {
-		return "receipt contract error"
+		return "verdict contract error"
 	}
 	return e.message
 }
 
 func FindNearTop(outputText string) (string, bool, error) {
-	verdict := ""
-	nonEmptySeen := 0
-	for _, rawLine := range strings.Split(outputText, "\n") {
-		line := strings.TrimSpace(rawLine)
-		if line == "" {
-			continue
+	result, err := ScanReader(strings.NewReader(outputText))
+	if err != nil {
+		return "", false, err
+	}
+	if result.Invalid != nil {
+		return "", false, result.Invalid
+	}
+	return result.Verdict, result.Found, nil
+}
+
+type StreamResult struct {
+	Verdict         string
+	Found, NonEmpty bool
+	Invalid         error
+}
+
+// ScanReader validates all lines, including duplicate controls arbitrarily far
+// into the response. Whitespace runs and non-control lines need constant space.
+// It drains even after a semantic failure so a verifying reader can prove EOF.
+func ScanReader(source io.Reader) (StreamResult, error) {
+	r := bufio.NewReaderSize(source, 64*1024)
+	var result StreamResult
+	var line strings.Builder
+	pending, ascii, overflow, firstBad := false, true, false, false
+	finish := func() {
+		if line.Len() == 0 && !overflow {
+			pending = false
+			ascii = true
+			return
 		}
-		nonEmptySeen++
-		if nonEmptySeen > MaxControlVerdictLines {
+		match := controlVerdictPattern.FindStringSubmatch(line.String())
+		if overflow {
+			match = nil
+		}
+		if !result.NonEmpty {
+			result.NonEmpty = true
+			firstBad = len(match) != 2
+		}
+		if !firstBad && result.Invalid == nil && len(match) == 2 {
+			candidate := strings.ToUpper(match[1])
+			if result.Found {
+				if candidate != result.Verdict {
+					result.Invalid = ErrConflictingVerdicts
+				} else {
+					result.Invalid = ErrMultipleVerdicts
+				}
+			} else {
+				result.Found = true
+				result.Verdict = candidate
+			}
+		}
+		line.Reset()
+		pending = false
+		ascii = true
+		overflow = false
+	}
+	for {
+		ch, _, err := r.ReadRune()
+		if err == io.EOF {
+			finish()
 			break
 		}
-		match := controlVerdictPattern.FindStringSubmatch(line)
-		if len(match) != 2 {
+		if err != nil {
+			return result, err
+		}
+		if ch == '\n' {
+			finish()
 			continue
 		}
-		candidate := strings.ToUpper(strings.TrimSpace(match[1]))
-		if verdict != "" && verdict != candidate {
-			return "", false, ErrConflictingVerdicts
+		if overflow {
+			continue
 		}
-		if verdict != "" {
-			return "", false, ErrMultipleVerdicts
+		if unicode.IsSpace(ch) {
+			if line.Len() > 0 {
+				pending = true
+				ascii = ascii && (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\f')
+			}
+			continue
 		}
-		verdict = candidate
+		if pending {
+			if ascii {
+				line.WriteByte(' ')
+			} else {
+				line.WriteRune('\u00a0')
+			}
+			pending = false
+			ascii = true
+		}
+		line.WriteRune(ch)
+		if line.Len() > 64 {
+			overflow = true
+		}
 	}
-	if verdict == "" {
-		return "", false, nil
-	}
-	return verdict, true, nil
+	return result, nil
 }
 
 func ExtractNearTop(outputText string) string {
@@ -99,62 +157,16 @@ func ExtractNearTop(outputText string) string {
 func ParseRequiredNearTop(outputText, ownerLabel, invalidReasonCode string) (string, error) {
 	resolvedVerdict, found, err := FindNearTop(outputText)
 	if err != nil {
-		return "", &ReceiptContractError{
+		return "", &VerdictContractError{
 			ReasonCode: strings.TrimSpace(invalidReasonCode),
 			message:    fmt.Sprintf("%s response contains invalid verdict lines", strings.TrimSpace(ownerLabel)),
 		}
 	}
 	if !found {
-		return "", &ReceiptContractError{
+		return "", &VerdictContractError{
 			ReasonCode: strings.TrimSpace(invalidReasonCode),
 			message:    fmt.Sprintf("%s response missing required verdict line near top: VERDICT: PASS|REWORK", strings.TrimSpace(ownerLabel)),
 		}
 	}
 	return resolvedVerdict, nil
-}
-
-func ReceiptDecisionForNode(nodeID, nodeClass, structuredPayloadJSON, finalText string) (ReceiptDecision, bool, error) {
-	switch workflow.ResolveNodeClass(nodeID, nodeClass) {
-	case workflow.NodeClassExecutionReview:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "execution review", "invalid_execution_review_verdict", ReworkReasonCodeExecutionReview, "review requested rework")
-		return decision, true, err
-	case workflow.NodeClassValidationGates:
-		decision, err := receiptDecisionForOwner(structuredPayloadJSON, finalText, "validation", "invalid_validation_verdict", ReworkReasonCodeValidationGate, "validation requested rework")
-		return decision, true, err
-	default:
-		return ReceiptDecision{}, false, nil
-	}
-}
-
-func receiptDecisionForOwner(structuredPayloadJSON, finalText, ownerLabel, invalidReasonCode, reworkReasonCode, reworkReasonText string) (ReceiptDecision, error) {
-	resolvedVerdict, err := settledReceiptVerdict(structuredPayloadJSON, finalText, ownerLabel, invalidReasonCode)
-	if err != nil {
-		return ReceiptDecision{}, err
-	}
-	decision := ReceiptDecision{Verdict: resolvedVerdict}
-	if resolvedVerdict == "REWORK" {
-		decision.FailureReasonCode = strings.TrimSpace(reworkReasonCode)
-		decision.FailureReasonText = strings.TrimSpace(reworkReasonText)
-	}
-	return decision, nil
-}
-
-func settledReceiptVerdict(structuredPayloadJSON, finalText, ownerLabel, invalidReasonCode string) (string, error) {
-	trimmedStructured := strings.TrimSpace(structuredPayloadJSON)
-	if trimmedStructured != "" {
-		var payload struct {
-			Verdict string `json:"verdict"`
-		}
-		if err := json.Unmarshal([]byte(trimmedStructured), &payload); err != nil {
-			return "", &ReceiptContractError{
-				ReasonCode: strings.TrimSpace(invalidReasonCode),
-				message:    fmt.Sprintf("decode %s completion receipt structured verdict: %v", strings.TrimSpace(ownerLabel), err),
-			}
-		}
-		resolvedVerdict := strings.ToUpper(strings.TrimSpace(payload.Verdict))
-		if resolvedVerdict == "PASS" || resolvedVerdict == "REWORK" {
-			return resolvedVerdict, nil
-		}
-	}
-	return ParseRequiredNearTop(finalText, ownerLabel, invalidReasonCode)
 }

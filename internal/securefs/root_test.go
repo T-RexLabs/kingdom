@@ -3,6 +3,8 @@
 package securefs
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -130,7 +132,7 @@ func TestReplaceRegularUsesPinnedParentWhenPathIsReplaced(t *testing.T) {
 		t.Fatalf("replace parent path with symlink: %v", err)
 	}
 
-	if err := replaceRegularAt(parentFD, leaf, "nested/file.txt", []byte("restored"), 0o640, time.Unix(1_700_000_000, 0)); err != nil {
+	if err := replaceRegularFromAt(context.Background(), parentFD, leaf, "nested/file.txt", func(w io.Writer) error { _, err := io.WriteString(w, "restored"); return err }, 0o640, 0o755, time.Unix(1_700_000_000, 0)); err != nil {
 		t.Fatalf("replace through pinned parent: %v", err)
 	}
 	assertFileContents(t, filepath.Join(movedPath, "file.txt"), "restored")
@@ -185,6 +187,63 @@ func TestRemoveEntryUnlinksFinalSymlinkWithoutFollowingIt(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(rootPath, "deleted.txt")); !os.IsNotExist(err) {
 		t.Fatalf("deletion symlink remains: %v", err)
+	}
+	assertFileContents(t, outsidePath, "outside")
+}
+
+func TestRemoveTreeUnlinksNestedSymlinksWithoutFollowingThem(t *testing.T) {
+	t.Parallel()
+
+	rootPath := t.TempDir()
+	targetPath := filepath.Join(rootPath, "target")
+	outsidePath := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.MkdirAll(filepath.Join(targetPath, "nested"), 0o755); err != nil {
+		t.Fatalf("create target tree: %v", err)
+	}
+	if err := os.WriteFile(outsidePath, []byte("outside"), 0o644); err != nil {
+		t.Fatalf("write outside guard: %v", err)
+	}
+	if err := os.Symlink(outsidePath, filepath.Join(targetPath, "nested", "outside-link")); err != nil {
+		t.Fatalf("create nested symlink: %v", err)
+	}
+
+	root, err := OpenRoot(rootPath)
+	if err != nil {
+		t.Fatalf("open secure root: %v", err)
+	}
+	defer func() { _ = root.Close() }()
+	cursor := ""
+	complete := false
+	removalCalls := 0
+	for !complete {
+		progress, removeErr := root.RemoveTreeBatch("target", cursor, 2)
+		if removeErr != nil {
+			t.Fatalf("remove target tree batch: %v", removeErr)
+		}
+		if progress.EntriesProcessed > 2 {
+			t.Fatalf("processed %d entries in a two-entry batch", progress.EntriesProcessed)
+		}
+		if !progress.Complete && progress.EntriesProcessed == 0 {
+			t.Fatal("incomplete tree removal made no bounded progress")
+		}
+		removalCalls++
+		cursor = progress.Cursor
+		complete = progress.Complete
+		if !complete {
+			if err := root.Close(); err != nil {
+				t.Fatalf("close secure root between batches: %v", err)
+			}
+			root, err = OpenRoot(rootPath)
+			if err != nil {
+				t.Fatalf("reopen secure root between batches: %v", err)
+			}
+		}
+	}
+	if removalCalls < 2 {
+		t.Fatalf("tree removal calls=%d, want multiple resumable batches", removalCalls)
+	}
+	if _, err := os.Lstat(targetPath); !os.IsNotExist(err) {
+		t.Fatalf("target tree remains: %v", err)
 	}
 	assertFileContents(t, outsidePath, "outside")
 }

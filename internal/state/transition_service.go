@@ -9,10 +9,13 @@ package state
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"kingdom/internal/sqlitex"
 
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
@@ -57,8 +60,45 @@ type ReplayNotQuiescentError struct {
 	Blockers []string
 }
 
+type RunWorktreeCleanupInProgressError struct {
+	RunID string
+}
+
+type AttemptStopRetryUnavailableError struct {
+	RunID     string
+	AttemptID string
+	Reason    string
+}
+
+type ExecutionStartOutcomeUnknownError struct {
+	AttemptID string
+	Cause     error
+}
+
+func (e *ExecutionStartOutcomeUnknownError) Error() string {
+	if e == nil {
+		return "execution start outcome is unknown"
+	}
+	return fmt.Sprintf("execution start outcome is unknown for attempt %q: %v", strings.TrimSpace(e.AttemptID), e.Cause)
+}
+
+func (e *ExecutionStartOutcomeUnknownError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Cause
+}
+
+func (e *AttemptStopRetryUnavailableError) Error() string {
+	return fmt.Sprintf("stop retry is unavailable for attempt %q in run %q: %s", e.AttemptID, e.RunID, e.Reason)
+}
+
 func (e *ReplayNotQuiescentError) Error() string {
 	return fmt.Sprintf("cancelled run %q is still settling: %s", e.RunID, strings.Join(e.Blockers, ", "))
+}
+
+func (e *RunWorktreeCleanupInProgressError) Error() string {
+	return fmt.Sprintf("managed worktree cleanup for run %q has started; wait for cleanup to finish before submitting a new Retry or Rerun request", e.RunID)
 }
 
 func (e *ReplayWaveActiveError) Error() string {
@@ -182,6 +222,7 @@ var legalNodeTransitions = map[string]map[string]struct{}{
 	"starting": {
 		"blocked":   {},
 		"running":   {},
+		"succeeded": {},
 		"failed":    {},
 		"cancelled": {},
 	},
@@ -246,45 +287,21 @@ func (s *TransitionService) applyWithEffects(ctx context.Context, req Transition
 }
 
 func (s *TransitionService) applyWithEffectsWithOptions(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
-	return retrySQLiteBusy(ctx, func() error {
-		return s.applyWithEffectsWithOptionsOnce(ctx, req, effects, opts)
-	})
-}
-
-func (s *TransitionService) applyWithEffectsWithOptionsOnce(ctx context.Context, req TransitionRequest, effects transitionEffectFunc, opts transitionApplyOptions) error {
 	if !bypassesTransitionValidation(req) {
 		if err := validateTransition(req.Entity, req.FromState, req.ToState); err != nil {
 			return err
 		}
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin transition transaction: %w", err)
-	}
-
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := s.applyTxWithOptions(ctx, tx, req, opts); err != nil {
-		return err
-	}
-
-	if effects != nil {
-		if err := effects(ctx, tx); err != nil {
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		if err := s.applyTxWithOptions(ctx, tx, req, opts); err != nil {
 			return err
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit transition transaction: %w", err)
-	}
-	committed = true
-	return nil
+		if effects != nil {
+			return effects(ctx, tx)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
 }
 
 func (s *TransitionService) applyTx(ctx context.Context, tx *sql.Tx, req TransitionRequest) error {
@@ -306,6 +323,9 @@ func (s *TransitionService) applyTxWithOptions(ctx context.Context, tx *sql.Tx, 
 		}
 		req.RunEventSeq = runEventSeq
 	}
+	if err := s.prepareEventPayloadTx(ctx, tx, &req); err != nil {
+		return fmt.Errorf("prepare event payload: %w", err)
+	}
 	_, err := AdvanceRunActivityTx(ctx, tx, RunActivityUpdateRequest{
 		EventID:     req.EventID,
 		EventType:   req.EventType,
@@ -317,10 +337,6 @@ func (s *TransitionService) applyTxWithOptions(ctx context.Context, tx *sql.Tx, 
 	})
 	if err != nil {
 		return fmt.Errorf("advance run activity: %w", err)
-	}
-
-	if err := s.prepareEventPayloadTx(ctx, tx, &req); err != nil {
-		return fmt.Errorf("prepare event payload: %w", err)
 	}
 
 	if err := assignTransitionHashes(ctx, tx, &req); err != nil {
@@ -345,15 +361,81 @@ func (s *TransitionService) applyTxWithOptions(ctx context.Context, tx *sql.Tx, 
 }
 
 func (s *TransitionService) prepareEventPayloadTx(ctx context.Context, tx *sql.Tx, req *TransitionRequest) error {
-	if req == nil || req.EventType != "run.state_changed" {
+	if req == nil {
 		return nil
 	}
-
-	projectedPayload, err := projectRunStateChangedPayloadTx(ctx, tx, req.RunID, req.PayloadJSON)
-	if err != nil {
-		return err
+	if req.EventType == "run.state_changed" {
+		projectedPayload, err := projectRunStateChangedPayloadTx(ctx, tx, req.RunID, req.PayloadJSON)
+		if err != nil {
+			return err
+		}
+		req.PayloadJSON = projectedPayload
 	}
-	req.PayloadJSON = projectedPayload
+	if req.EventType != "attempt.started" || req.Entity != EntityTypeNode || !req.NodeRunID.Valid {
+		return nil
+	}
+	return enrichAutomaticRetryStartPayloadTx(ctx, tx, req)
+}
+
+// enrichAutomaticRetryStartPayloadTx records recovery as running only when the
+// retry target has actually reached the observed attempt.started boundary.
+func enrichAutomaticRetryStartPayloadTx(ctx context.Context, tx *sql.Tx, req *TransitionRequest) error {
+	var recovery retryRecoveryEventPayload
+	err := tx.QueryRowContext(ctx, `SELECT retry_decision_id, node_id, node_run_id, source_attempt_id, target_node_run_id, error_code, retry_index, max_retries, due_at
+		FROM retry_decisions
+		WHERE subject_kind = 'decree_attempt'
+		  AND decision = 'retry'
+		  AND dispatch_state = 'dispatched'
+		  AND resolution = 'pending'
+		  AND run_id = ?
+		  AND target_node_run_id = ?
+		ORDER BY retry_decision_id
+		LIMIT 1`, strings.TrimSpace(req.RunID), strings.TrimSpace(req.NodeRunID.String)).Scan(
+		&recovery.RetryDecisionID,
+		&recovery.NodeID,
+		&recovery.SourceNodeRunID,
+		&recovery.SourceAttemptID,
+		&recovery.TargetNodeRunID,
+		&recovery.ErrorCode,
+		&recovery.RetryIndex,
+		&recovery.RetryMax,
+		&recovery.ScheduledAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load automatic retry for observed execution start: %w", err)
+	}
+	recovery.NodeRunID = strings.TrimSpace(req.NodeRunID.String)
+	recovery.TargetAttemptID = strings.TrimSpace(req.AttemptID)
+	recovery.Decision = string(RetryDecisionRetry)
+	recovery.RecoveryTrigger = "automatic_retry"
+	recovery.RecoveryPhase = "running"
+
+	standardized, err := marshalRetryRecoveryEventPayload(recovery)
+	if err != nil {
+		return fmt.Errorf("marshal automatic retry start payload: %w", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(req.PayloadJSON)), &payload); err != nil {
+		return fmt.Errorf("decode observed execution start payload: %w", err)
+	}
+	if payload == nil {
+		payload = make(map[string]any)
+	}
+	var recoveryFields map[string]any
+	if err := json.Unmarshal([]byte(standardized), &recoveryFields); err != nil {
+		return fmt.Errorf("decode standardized automatic retry start payload: %w", err)
+	}
+	for key, value := range recoveryFields {
+		payload[key] = value
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("encode observed execution start payload: %w", err)
+	}
+	req.PayloadJSON = string(raw)
 	return nil
 }
 

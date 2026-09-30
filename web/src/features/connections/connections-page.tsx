@@ -41,6 +41,12 @@ import { shouldRetainMutationRequest, useRecoverableMutation } from "@/lib/use-r
 
 type Connection = components["schemas"]["Connection"];
 type FlowStatus = components["schemas"]["GitHubManifestFlowStatus"];
+type StartManifestFlowPayload = {
+  flow_id: string;
+  form_action: string;
+  manifest: string;
+  expires_at: string;
+};
 type ConnectionInstallation = components["schemas"]["ConnectionInstallation"];
 type ConnectionForm = Pick<Connection, "display_name" | "app_id" | "client_id"> & {
   installation_id: string;
@@ -1107,33 +1113,35 @@ export function ConnectionsPage() {
     setManifestFailureStage(undefined);
     setManifestRecovery(undefined);
     try {
-      const response = await apiFetch<{
-        flow_id: string;
-        form_action: string;
-        manifest: string;
-        expires_at: string;
-      }>("/connections/github/manifest-flows", {
-        method: "POST",
-        headers: {
-          "Idempotency-Key": setupRequestKey(requestID, "manifest-start"),
+      const response = await apiFetch<StartManifestFlowPayload | FlowStatus>(
+        "/connections/github/manifest-flows",
+        {
+          method: "POST",
+          headers: {
+            "Idempotency-Key": setupRequestKey(requestID, "manifest-start"),
+          },
+          body: JSON.stringify({
+            owner_type: ownerType,
+            ...(ownerType === "organization"
+              ? { organization: organization.trim() }
+              : {}),
+          }),
         },
-        body: JSON.stringify({
-          owner_type: ownerType,
-          ...(ownerType === "organization"
-            ? { organization: organization.trim() }
-            : {}),
-        }),
-      });
+      );
       settleSetupRequest(requestID);
-      postManifestToSetupWindow(response.form_action, response.manifest);
-      // Adopting the started flow is what puts this tab in charge: it shows the
-      // stage and starts watching for GitHub's return instead of waiting for a
-      // reload to discover progress the operator already made.
-      setFlow({
-        flow_id: response.flow_id,
-        stage: "awaiting_app_creation",
-        expires_at: response.expires_at,
-      });
+      if ("form_action" in response) {
+        postManifestToSetupWindow(response.form_action, response.manifest);
+        // Adopting the started flow is what puts this tab in charge: it shows the
+        // stage and starts watching for GitHub's return instead of waiting for a
+        // reload to discover progress the operator already made.
+        setFlow({
+          flow_id: response.flow_id,
+          stage: "awaiting_app_creation",
+          expires_at: response.expires_at,
+        });
+      } else {
+        setFlow(response);
+      }
     } catch (cause) {
       settleSetupRequest(requestID, cause);
       setManifestError(requestError(cause));

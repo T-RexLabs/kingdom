@@ -4,6 +4,7 @@ import {
 	useRun,
 	useRunExecution,
 	useRunExecutions,
+	useInfiniteRunNodeAttempts,
 	useRunGraph,
   useTimeline,
   useRunAgents,
@@ -11,11 +12,11 @@ import {
   useMailbox,
   useMailboxMessage,
 	useCancelRun,
+	useRetryExecutionStop,
 	type MailboxFilters,
 	type CancelRunRequest,
 } from "@/api/hooks";
 import { invalidateRunDetailRecoveryQueries, invalidateRunQuerySurfaces, type RunQuerySurface } from "@/api/hooks-runs";
-import type { RunDetailSummary } from "@/api/hooks-types";
 import { useRunEventStream } from "./use-run-event-stream";
 import { isDegradedRunStreamState, isTerminalRunStatus, RUN_SURFACE_DEGRADED_REFRESH_MS } from "./run-freshness";
 import { ApiError } from "@/api/client";
@@ -38,7 +39,6 @@ import {
   AlertTriangle,
   XCircle,
   CheckCircle2,
-  RotateCw,
 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
@@ -66,16 +66,14 @@ import { PageHeader } from "@/components/page-layout";
 import type { RunDetailTab } from "./run-detail-tabs";
 import { readRunStreamBootstrapState } from "./run-cache-updates";
 import { clearRunQuerySurfacesDirty, markRunQuerySurfacesDirty, useRunSurfaceFreshness } from "./run-surface-freshness";
-import { mergeExecutionItems, overlayExecutionDetail, useLiveExecutionProjection } from "./run-live-execution-projection";
-import { buildActivityStepGroups, type ActivityStepGroup } from "./run-activity-selection";
+import { mergeRunNodeExecutionItems, overlayExecutionDetail, useLiveExecutionProjection } from "./run-live-execution-projection";
 
 const RUN_DETAIL_TIMELINE_PAGE_SIZE = 50;
 
 type SelectedExecutionState = {
 	runId: string;
 	nodeId: string;
-	attemptId: string;
-	source: "auto" | "manual";
+	attemptId: string | null;
 };
 
 const tabs: { id: RunDetailTab; label: string; icon: typeof GitBranch }[] = [
@@ -97,7 +95,7 @@ export function RunDetailPage() {
 	const executionVisible = activeTab === "execution";
 	const graphVisible = activeTab === "graph" || executionVisible || run?.status === "cancelled";
 	const timelineVisible = executionVisible;
-	const executionsQueryActive = executionVisible;
+	const executionsQueryActive = graphVisible;
 	const agentsVisible = activeTab === "agents";
 	const mailboxVisible = activeTab === "mailbox";
 	const hiddenRunQuerySurfaces = useMemo(
@@ -109,7 +107,7 @@ export function RunDetailPage() {
 	const graphIsFetching = graphQuery.isFetching;
 	const refetchGraph = graphQuery.refetch;
 	const executionsQuery = useRunExecutions(runId, { enabled: runReady && executionsQueryActive });
-	const executions = useMemo(() => executionsQuery.data?.items ?? [], [executionsQuery.data?.items]);
+	const nodes = useMemo(() => executionsQuery.data?.items ?? [], [executionsQuery.data?.items]);
 	const executionsAreFetching = executionsQuery.isFetching;
 	const refetchExecutions = executionsQuery.refetch;
 	const liveExecutionProjectionQuery = useLiveExecutionProjection(runId);
@@ -117,13 +115,9 @@ export function RunDetailPage() {
 		() => liveExecutionProjectionQuery.data ?? {},
 		[liveExecutionProjectionQuery.data],
 	);
-	const presentedExecutions = useMemo(
-		() => mergeExecutionItems(executions, liveExecutionProjection),
-		[executions, liveExecutionProjection],
-	);
-	const activityStepGroups = useMemo(
-		() => buildActivityStepGroups(presentedExecutions),
-		[presentedExecutions],
+	const presentedNodes = useMemo(
+		() => mergeRunNodeExecutionItems(nodes, liveExecutionProjection),
+		[liveExecutionProjection, nodes],
 	);
 	const timelineQuery = useTimeline(runId, RUN_DETAIL_TIMELINE_PAGE_SIZE, { enabled: runReady && timelineVisible });
 	const timelineIsPending = timelineQuery.isPending;
@@ -137,31 +131,32 @@ export function RunDetailPage() {
 	const agentsAreFetching = agentsQuery.isFetching;
 	const refetchAgents = agentsQuery.refetch;
 	const [selectedExecution, setSelectedExecution] = useState<SelectedExecutionState | null>(null);
-	const selectedExecutionState = selectedExecution?.runId === runId ? selectedExecution : null;
-	const reconciledSelectedExecution = reconcileSelectedExecution(
-		runId,
-		activityStepGroups,
-		selectedExecutionState,
+	const [attemptHistoryDisclosure, setAttemptHistoryDisclosure] = useState<Record<string, boolean>>({});
+	const storedSelectedExecution = selectedExecution?.runId === runId ? selectedExecution : null;
+	const storedSelectedNode = presentedNodes.find((node) => node.node_id === storedSelectedExecution?.nodeId) ?? null;
+	const selectedNode = storedSelectedNode ?? presentedNodes[0] ?? null;
+	const selectedExecutionNodeId = selectedNode?.node_id ?? null;
+	const attemptHistoryKey = selectedExecutionNodeId ? `${runId}:${selectedExecutionNodeId}` : "";
+	const attemptHistoryOpen = !!attemptHistoryKey && attemptHistoryDisclosure[attemptHistoryKey] === true;
+	const nodeAttemptsQuery = useInfiniteRunNodeAttempts(runId, selectedExecutionNodeId, { enabled: runReady && executionVisible && attemptHistoryOpen && !!selectedExecutionNodeId });
+	const nodeAttempts = useMemo(
+		() => nodeAttemptsQuery.data?.pages.flatMap((page) => page.items) ?? [],
+		[nodeAttemptsQuery.data?.pages],
 	);
-	if (!sameSelectedExecution(selectedExecutionState, reconciledSelectedExecution)) {
-		setSelectedExecution(reconciledSelectedExecution);
-	}
-	const selectedExecutionId = selectedExecutionState?.attemptId ?? null;
-	const selectedExecutionNodeId = selectedExecutionState?.nodeId ?? null;
-	const selectedExecutionIsCanonical = !!selectedExecutionId && executions.some((item) => item.attempt_id === selectedExecutionId);
-	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, { enabled: runReady && executionVisible && !!selectedExecutionId && selectedExecutionIsCanonical });
-	const executionDetailIsFetching = executionDetailQuery.isFetching;
-	const refetchExecutionDetail = executionDetailQuery.refetch;
+	const selectedExecutionId = storedSelectedExecution?.attemptId ?? selectedNode?.current_execution?.attempt_id ?? null;
+	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, {
+		enabled: runReady && executionVisible && !!selectedExecutionId,
+	});
+	const selectedExecutionDetailQuery = executionDetailQuery;
+	const executionDetailIsFetching = selectedExecutionDetailQuery.isFetching;
+	const refetchExecutionDetail = selectedExecutionDetailQuery.refetch;
 	const presentedExecutionDetail = useMemo(
-		() => overlayExecutionDetail(executionDetailQuery.data ?? null, executionDetailQuery.data ? liveExecutionProjection[executionDetailQuery.data.node_run_id] : undefined),
-		[executionDetailQuery.data, liveExecutionProjection],
+		() => selectedExecutionDetailQuery.data?.attempt_id === selectedExecutionId
+			? overlayExecutionDetail(selectedExecutionDetailQuery.data, liveExecutionProjection[selectedExecutionDetailQuery.data.node_run_id])
+			: null,
+		[liveExecutionProjection, selectedExecutionDetailQuery.data, selectedExecutionId],
 	);
-	const liveOnlySelectedExecution = selectedExecutionId && !selectedExecutionIsCanonical
-		? presentedExecutions.find((item) => item.attempt_id === selectedExecutionId) ?? null
-		: null;
-	const detailPlaceholderMessage = liveOnlySelectedExecution
-		? "Live execution details are arriving. Kingdom will show the canonical outcome as soon as it is persisted."
-		: null;
+	const detailPlaceholderMessage = selectedExecutionId && !executionDetailIsFetching ? "The selected attempt could not be loaded." : null;
 	const { data: roles } = useRoles();
 	const [mailboxFilters, setMailboxFilters] = useState<MailboxFilters>({});
 	const mailboxQuery = useMailbox(runId, mailboxFilters, { enabled: runReady && mailboxVisible });
@@ -169,10 +164,16 @@ export function RunDetailPage() {
 	const mailboxIsFetching = mailboxQuery.isFetching;
 	const refetchMailbox = mailboxQuery.refetch;
 	const cancelRun = useCancelRun(runId);
+	const retryExecutionStop = useRetryExecutionStop(runId);
 	const recoverableCancel = useRecoverableMutation(
 		"cancel",
 		(body: CancelRunRequest, key) => cancelRun.mutateAsync({ body, key }),
 		runId,
+	);
+	const recoverableStopRetry = useRecoverableMutation(
+		"retry-execution-stop",
+		(attemptId: string, key) => retryExecutionStop.mutateAsync({ value: attemptId, key }),
+		`${runId}:${selectedExecutionId ?? ""}`,
 	);
 	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const planApprovalTargetRef = useRef<HTMLDivElement | null>(null);
@@ -545,24 +546,46 @@ export function RunDetailPage() {
 	  	}, [agentsVisible, executionsQueryActive, graphVisible, mailboxVisible, queryClient, run, runId, runReady, runStreamState, timelineVisible]);
 
 	const handleSelectExecutionStep = useCallback((nodeId: string) => {
-		const group = activityStepGroups.find((item) => item.nodeId === nodeId);
-		if (!group) {
+		const node = presentedNodes.find((item) => item.node_id === nodeId);
+		if (!node) {
 			return;
 		}
-		setSelectedExecution({ runId, nodeId: group.nodeId, attemptId: group.preferredAttemptId, source: "manual" });
-	}, [activityStepGroups, runId]);
+		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: null });
+	}, [presentedNodes, runId]);
+
+	const handleViewNodeActivity = useCallback((nodeId: string) => {
+		const node = presentedNodes.find((item) => item.node_id === nodeId);
+		if (!node) {
+			return;
+		}
+		setSelectedExecution({ runId, nodeId: node.node_id, attemptId: null });
+		setActiveTab("execution");
+	}, [presentedNodes, runId, setActiveTab]);
 
 	const handleSelectExecutionAttempt = useCallback((attemptId: string) => {
-		const nodeId = selectedExecutionState?.nodeId;
+		const nodeId = selectedExecutionNodeId;
 		if (!nodeId) {
 			return;
 		}
-		const group = activityStepGroups.find((item) => item.nodeId === nodeId);
-		if (!group || !group.attempts.some((item) => item.attempt_id === attemptId)) {
+		if (!nodeAttempts.some((item) => item.attempt_id === attemptId)) {
 			return;
 		}
-		setSelectedExecution({ runId, nodeId, attemptId, source: "manual" });
-	}, [activityStepGroups, runId, selectedExecutionState?.nodeId]);
+		setSelectedExecution({ runId, nodeId, attemptId });
+	}, [nodeAttempts, runId, selectedExecutionNodeId]);
+
+	const handleSelectCurrentExecutionAttempt = useCallback(() => {
+		if (!selectedExecutionNodeId) {
+			return;
+		}
+		setSelectedExecution({ runId, nodeId: selectedExecutionNodeId, attemptId: null });
+	}, [runId, selectedExecutionNodeId]);
+
+	const toggleAttemptHistory = useCallback(() => {
+		if (!attemptHistoryKey) {
+			return;
+		}
+		setAttemptHistoryDisclosure((current) => ({ ...current, [attemptHistoryKey]: !current[attemptHistoryKey] }));
+	}, [attemptHistoryKey]);
 
   const handleSelectMessage = useCallback((messageId: string | null) => {
     if (!messageId) {
@@ -675,15 +698,12 @@ export function RunDetailPage() {
 	const validationAutoSucceededCount = run.validation_auto_succeeded_count;
 	const reviewAutoSucceededLabel = "Review Auto-Succeeded at Cap";
 	const validationAutoSucceededLabel = "Validation Auto-Succeeded at Cap";
-	const runtimeRetries = run.runtime_retries;
-  const showRuntimeRetries = (run.status === "running" || run.status === "pending") && runtimeRetries.length > 0;
   const mailboxErrorMessage = !mailboxQuery.data && mailboxQuery.isError
     ? queryErrorMessage(mailboxQuery.error, "The messages could not be loaded right now.")
     : null;
 	const showHeaderNotices =
 		untilAllApprove ||
 		governanceState.noticeTitle !== null ||
-		showRuntimeRetries ||
 		!!cancelRun.error;
 
 	const activeTabId = `run-tab-${activeTab}`;
@@ -691,9 +711,11 @@ export function RunDetailPage() {
 	// `relative` for the same reason PageContent carries it: a scroll viewport
 	// must be the containing block for its absolutely positioned descendants,
 	// or they escape the clip and grow the document instead.
-	const managedTabPanelClass = activeTab === "graph" || activeTab === "mailbox"
-		? "flex flex-col overflow-hidden"
-		: "relative overflow-auto";
+	const managedTabPanelClass = activeTab === "graph"
+		? "min-h-0 overflow-y-auto lg:flex lg:flex-col lg:overflow-hidden"
+		: activeTab === "mailbox"
+			? "flex flex-col overflow-hidden"
+			: "relative overflow-auto";
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -751,7 +773,7 @@ export function RunDetailPage() {
         </div>
       </PageHeader>
 
-      <RunLiveStatus runId={runId} executions={presentedExecutions} />
+		<RunLiveStatus runId={runId} nodes={presentedNodes} />
 
       {showHeaderNotices && (
         <div data-testid="run-header-notices" className="border-b border-border bg-surface-raised/20 px-page py-2">
@@ -789,7 +811,6 @@ export function RunDetailPage() {
                 <span>Unbounded review/validation mode: run continues until PASS or manual cancel.</span>
               </span>
 	            )}
-	            {showRuntimeRetries && <RuntimeRetryNotice retries={runtimeRetries} />}
 	            {cancelRun.error && (
 	              <div className="rounded-md border border-status-failed/30 bg-status-failed/10 px-2.5 py-2 text-xs text-status-failed">
 	                Failed to cancel run: {cancelRun.error.message}
@@ -799,9 +820,9 @@ export function RunDetailPage() {
         </div>
       )}
 
-      <div className="flex-1 min-h-0 overflow-hidden px-page py-3">
-        <div data-testid="run-detail-layout" className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
-          <section className="order-2 flex min-h-0 flex-col rounded-md border border-border bg-background lg:order-1">
+      <div data-testid="run-detail-content" className="flex-1 min-h-0 overflow-y-auto px-page py-3 lg:overflow-hidden">
+        <div data-testid="run-detail-layout" className="grid min-h-full min-w-0 gap-3 lg:h-full lg:min-h-0 lg:grid-cols-2">
+          <section className="order-2 flex min-h-[28rem] min-w-0 flex-col rounded-md border border-border bg-background lg:order-1 lg:min-h-0">
 	            {(failedNodeCount > 0 || cancelledNodes.length > 0) && (
 	              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
 	                 <GovernanceActions run={run} failedNodes={run.failed_nodes} cancelledNodes={cancelledNodes} showFinalApproval={false} />
@@ -909,7 +930,17 @@ export function RunDetailPage() {
 					managedTabPanelClass,
 				)}
 			>
-	              {activeTab === "graph" && graph && <DAGVisualization graph={graph} />}
+	              {activeTab === "graph" && graph && (
+					<DAGVisualization
+						graph={graph}
+						nodes={presentedNodes}
+						onViewActivity={handleViewNodeActivity}
+						executionsErrorMessage={executionsErrorMessage}
+						onRetryExecutions={() => {
+							void executionsQuery.refetch();
+						}}
+					/>
+				)}
 	              {activeTab === "graph" && graphQuery.isPending && !graph && <TabLoading />}
 	              {activeTab === "graph" && graphQuery.isError && !graph && (
 	                <TabError
@@ -947,8 +978,8 @@ export function RunDetailPage() {
 	              {(activeTab === "execution" && (activitySurfaceState === "ready" || activitySurfaceState === "ready_with_execution_error")) && (
 					<RunExecutionSurface
 						run={run}
-						executions={presentedExecutions}
-						stepGroups={activityStepGroups}
+						nodes={presentedNodes}
+						attempts={nodeAttempts}
 						executionsErrorMessage={executionsErrorMessage}
 					showPrimaryExecutionError={activitySurfaceState === "ready_with_execution_error"}
 					isSummaryLoading={executionSummaryLoading}
@@ -957,16 +988,29 @@ export function RunDetailPage() {
 						}}
 						selectedNodeId={selectedExecutionNodeId}
 						selectedAttemptId={selectedExecutionId}
-						selectedAttemptSource={selectedExecutionState?.source ?? null}
 						onSelectStep={handleSelectExecutionStep}
 						onSelectAttempt={handleSelectExecutionAttempt}
-						detail={presentedExecutionDetail}
-						isDetailLoading={executionDetailQuery.isFetching && !executionDetailQuery.data}
-						detailErrorMessage={executionDetailQuery.isError ? queryErrorMessage(executionDetailQuery.error, "The execution detail could not be loaded right now.") : null}
-						detailPlaceholderMessage={detailPlaceholderMessage}
-						onRetryDetail={() => {
-							void executionDetailQuery.refetch();
+						onSelectCurrentAttempt={handleSelectCurrentExecutionAttempt}
+						historyOpen={attemptHistoryOpen}
+						onToggleHistory={toggleAttemptHistory}
+						hasMoreAttempts={nodeAttemptsQuery.hasNextPage === true}
+						onLoadMoreAttempts={() => {
+							void nodeAttemptsQuery.fetchNextPage();
 						}}
+						isLoadingMoreAttempts={nodeAttemptsQuery.isFetchingNextPage}
+						isHistoryLoading={nodeAttemptsQuery.isPending && !nodeAttemptsQuery.data}
+						detail={presentedExecutionDetail}
+						isDetailLoading={executionDetailIsFetching && !selectedExecutionDetailQuery.data}
+						detailErrorMessage={selectedExecutionDetailQuery.isError ? queryErrorMessage(selectedExecutionDetailQuery.error, "The execution detail could not be loaded right now.") : null}
+						detailPlaceholderMessage={detailPlaceholderMessage}
+							onRetryDetail={() => {
+								void executionDetailQuery.refetch();
+							}}
+							onRetryStop={(attemptId) => {
+								void recoverableStopRetry.mutateAsync(attemptId);
+							}}
+							isStopRetryPending={retryExecutionStop.isPending || recoverableStopRetry.hasPendingRecovery}
+							stopRetryErrorMessage={retryExecutionStop.error ? queryErrorMessage(retryExecutionStop.error, "Kingdom could not retry the stop request.") : null}
 						events={timelineItems}
 						graph={graph}
 						hasMoreEvents={hasEarlierTimelinePages}
@@ -985,6 +1029,10 @@ export function RunDetailPage() {
                 <MailboxPanel
                   key={mailboxPresentation.visibleMessageCount === 0 ? "empty" : "populated"}
                   presentation={mailboxPresentation}
+                  hasMore={mailboxQuery.hasNextPage}
+                  isLoadingMore={mailboxQuery.isFetchingNextPage}
+                  loadMoreError={mailboxQuery.isFetchNextPageError}
+                  onLoadMore={() => void mailboxQuery.fetchNextPage()}
                   isLoading={mailboxQuery.isPending && !mailboxQuery.data}
                   errorMessage={mailboxErrorMessage}
                   onRetry={() => {
@@ -999,9 +1047,9 @@ export function RunDetailPage() {
             </div>
           </section>
 
-          <aside className="order-1 min-h-0 lg:order-2">
-            <div className="h-full lg:sticky lg:top-3">
-              <div data-testid="run-sidebar-scroll" className="h-full overflow-y-auto pr-1 [scrollbar-gutter:stable]">
+          <aside className="order-1 min-h-0 min-w-0 lg:order-2">
+            <div className="lg:sticky lg:top-3 lg:h-full">
+              <div data-testid="run-sidebar-scroll" className="pr-1 lg:h-full lg:overflow-y-auto [scrollbar-gutter:stable]">
                 <div className="space-y-3">
                   <DecreePanel run={run} roles={roles?.items ?? []} />
                   <CurrentPlanPanel run={run} approvalSectionRef={planApprovalTargetRef} />
@@ -1033,35 +1081,6 @@ function CycleInfo({ label, message }: { label: string; message: string }) {
   return (
     <InfoTooltip label={label} message={message} />
   );
-}
-
-type RuntimeRetryNoticeItem = NonNullable<RunDetailSummary["runtime_retries"]>[number];
-
-function RuntimeRetryNotice({ retries }: { retries: RuntimeRetryNoticeItem[] }) {
-	const title = retries.length === 1
-		? "Runtime retrying empty provider output"
-		: `${retries.length} runtime retries in progress`;
-
-	return (
-		<div data-testid="runtime-retry-status" className="inline-flex max-w-full items-start gap-2 rounded-md border border-role-loki/40 bg-role-loki/10 px-2.5 py-2 text-xs text-role-loki">
-			<RotateCw className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-			<div className="space-y-1">
-				<p className="font-medium leading-none">{title}</p>
-				<div className="flex flex-wrap gap-1.5">
-					{retries.map((retry) => (
-						<span
-							key={retry.node_run_id}
-							data-testid={`runtime-retry-status-${retry.node_run_id}`}
-							className="inline-flex items-center gap-1 rounded-md border border-role-loki/30 bg-role-loki/10 px-2 py-1"
-						>
-							<span className="font-mono">{retry.node_id}</span>
-							<span>({retry.retry_index}/{retry.retry_max}) after {retry.delay_seconds}s</span>
-						</span>
-					))}
-				</div>
-			</div>
-		</div>
-	);
 }
 
 function queryErrorMessage(error: unknown, fallback: string): string {
@@ -1115,67 +1134,6 @@ function resolveActivitySurfaceState({
 		return "ready_with_execution_error";
 	}
 	return "ready";
-}
-
-function reconcileSelectedExecution(
-	runId: string,
-	stepGroups: ActivityStepGroup[],
-	current: SelectedExecutionState | null,
-): SelectedExecutionState | null {
-	if (!current || current.runId !== runId) {
-		if (stepGroups.length === 0) {
-			return null;
-		}
-		return autoSelectedExecution(runId, stepGroups);
-	}
-	if (stepGroups.length === 0) {
-		return current.source === "manual" ? current : null;
-	}
-	if (current.source === "auto") {
-		return autoSelectedExecution(runId, stepGroups);
-	}
-	const currentGroup = stepGroups.find((item) => item.nodeId === current.nodeId);
-	if (!currentGroup) {
-		return current;
-	}
-	if (currentGroup.attempts.some((item) => item.attempt_id === current.attemptId)) {
-		return current;
-	}
-	if (currentGroup.preferredAttemptId.trim() === "") {
-		return current;
-	}
-	return {
-		runId,
-		nodeId: currentGroup.nodeId,
-		attemptId: currentGroup.preferredAttemptId,
-		source: "manual",
-	};
-}
-
-function autoSelectedExecution(runId: string, stepGroups: ActivityStepGroup[]): SelectedExecutionState | null {
-	const [preferredGroup] = stepGroups;
-	if (!preferredGroup || preferredGroup.preferredAttemptId.trim() === "") {
-		return null;
-	}
-	return {
-		runId,
-		nodeId: preferredGroup.nodeId,
-		attemptId: preferredGroup.preferredAttemptId,
-		source: "auto",
-	};
-}
-
-function sameSelectedExecution(left: SelectedExecutionState | null, right: SelectedExecutionState | null): boolean {
-	if (left === right) {
-		return true;
-	}
-	if (!left || !right) {
-		return false;
-	}
-	return left.runId === right.runId
-		&& left.nodeId === right.nodeId
-		&& left.attemptId === right.attemptId
-		&& left.source === right.source;
 }
 
 function degradedRunRefreshSurfaces({
@@ -1312,7 +1270,7 @@ function CancelRunDialog({
 			onConfirm={onConfirm}
 			title={runTitle}
 			caption="Cancel Run"
-			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Run" : "Cancel Run"}
+			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Request" : "Cancel Run"}
 			// The only confirm that overrides the default dismiss verb, because
 			// here "Cancel" is the destructive action's own name.
 			dismissLabel="Keep Run Active"

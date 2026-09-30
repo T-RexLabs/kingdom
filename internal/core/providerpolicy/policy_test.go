@@ -42,25 +42,12 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -91,25 +78,12 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: nope
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -141,25 +115,12 @@ agent_policy:
 timeouts:
   session_start_timeout: 30s
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -190,25 +151,12 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -236,25 +184,12 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 60s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king
@@ -284,8 +219,6 @@ func TestLoadPolicyFromFileCoversTimeoutAndFallbackContract(t *testing.T) {
 
 	timeoutValues := []string{
 		policy.Timeouts.StrictStartupTotalTimeout,
-		policy.Timeouts.CompletionReconcileTotalTimeout,
-		policy.Timeouts.DispatchAckTimeout,
 		policy.Timeouts.FirstEventTimeout,
 		policy.Timeouts.StreamInactivityTimeout,
 		policy.Timeouts.CancelGraceTimeout,
@@ -302,24 +235,6 @@ func TestLoadPolicyFromFileCoversTimeoutAndFallbackContract(t *testing.T) {
 		}
 	}
 }
-func TestLoadPolicyFromFileAcceptsCompletionReconcileBackoffSchedule(t *testing.T) {
-	t.Parallel()
-
-	policy, err := LoadPolicyFromFile(
-		repoRootPath(t, "policies", "opencode_provider_policy.yaml"),
-		repoRootPath(t, "contracts", "schemas", "opencode_provider_policy.schema.json"),
-	)
-	if err != nil {
-		t.Fatalf("load provider policy: %v", err)
-	}
-	durations, err := policy.CompletionReconcileBackoffDurations()
-	if err != nil {
-		t.Fatalf("parse completion reconcile backoff schedule: %v", err)
-	}
-	if len(durations) != 6 {
-		t.Fatalf("expected completion reconcile backoff schedule to contain 6 entries, got %d", len(durations))
-	}
-}
 
 func TestPolicyExecutionTimeouts(t *testing.T) {
 	t.Parallel()
@@ -327,8 +242,10 @@ func TestPolicyExecutionTimeouts(t *testing.T) {
 	policy := Policy{Timeouts: Timeouts{
 		FirstEventTimeout:       " 125ms ",
 		StreamInactivityTimeout: "3s",
+		CancelGraceTimeout:      "250ms",
+		CancelForceTimeout:      "4s",
 	}}
-	firstEventTimeout, streamInactivityTimeout, err := policy.ExecutionTimeouts()
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := policy.ExecutionTimeouts()
 	if err != nil {
 		t.Fatalf("parse execution timeouts: %v", err)
 	}
@@ -337,6 +254,12 @@ func TestPolicyExecutionTimeouts(t *testing.T) {
 	}
 	if streamInactivityTimeout != 3*time.Second {
 		t.Fatalf("expected 3s stream-inactivity timeout, got %s", streamInactivityTimeout)
+	}
+	if cancelGraceTimeout != 250*time.Millisecond {
+		t.Fatalf("expected 250ms cancel grace timeout, got %s", cancelGraceTimeout)
+	}
+	if cancelForceTimeout != 4*time.Second {
+		t.Fatalf("expected 4s cancel force timeout, got %s", cancelForceTimeout)
 	}
 }
 
@@ -353,6 +276,8 @@ func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
 			policy: Policy{Timeouts: Timeouts{
 				FirstEventTimeout:       "not-a-duration",
 				StreamInactivityTimeout: "3s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "1s",
 			}},
 			field: "first_event_timeout",
 		},
@@ -361,67 +286,41 @@ func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
 			policy: Policy{Timeouts: Timeouts{
 				FirstEventTimeout:       "1s",
 				StreamInactivityTimeout: "0s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "1s",
 			}},
 			field: "stream_inactivity_timeout",
+		},
+		{
+			name: "cancel grace",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "1s",
+				StreamInactivityTimeout: "1s",
+				CancelGraceTimeout:      "0s",
+				CancelForceTimeout:      "1s",
+			}},
+			field: "cancel_grace_timeout",
+		},
+		{
+			name: "cancel force",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "1s",
+				StreamInactivityTimeout: "1s",
+				CancelGraceTimeout:      "1s",
+				CancelForceTimeout:      "not-a-duration",
+			}},
+			field: "cancel_force_timeout",
 		},
 	}
 	for _, tt := range tests {
 		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, _, err := tt.policy.ExecutionTimeouts()
+			_, _, _, _, err := tt.policy.ExecutionTimeouts()
 			if err == nil || !strings.Contains(err.Error(), tt.field) {
 				t.Fatalf("expected %s validation error, got %v", tt.field, err)
 			}
 		})
-	}
-}
-
-func TestLoadPolicyFromFileRejectsInvalidCompletionReconcileBackoffSchedule(t *testing.T) {
-	t.Parallel()
-
-	policyPath := writeTempProviderPolicy(t, `
-version: v2
-policy_id: provider-policy-test
-model_policy:
-  fallback_enabled: false
-  fallback_strategy: disabled_for_mvp
-agent_policy:
-  default_agent: advisor
-  role_agents:
-    king: king
-timeouts:
-  strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - nope
-  dispatch_ack_timeout: 5s
-  first_event_timeout: 20s
-  stream_inactivity_timeout: 45s
-  cancel_grace_timeout: 5s
-  cancel_force_timeout: 10s
-  node_wall_clock:
-    decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
-escalation:
-  retry_exhausted_target_role: chancellor
-  unresolved_strategic_target_role: king
-  dead_letter_required: true
-`)
-
-	_, err := LoadPolicyFromFile(policyPath, repoRootPath(t, "contracts", "schemas", "opencode_provider_policy.schema.json"))
-	if err == nil {
-		t.Fatal("expected completion reconcile backoff schedule duration parse failure")
-	}
-	if !strings.Contains(err.Error(), "completion_reconcile_backoff_schedule") {
-		t.Fatalf("expected completion reconcile backoff schedule validation error, got %v", err)
 	}
 }
 
@@ -476,25 +375,12 @@ agent_policy:
     king: king
 timeouts:
   strict_startup_total_timeout: 90s
-  completion_reconcile_total_timeout: 20s
-  completion_reconcile_backoff_schedule:
-    - 250ms
-    - 500ms
-  dispatch_ack_timeout: 5s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
   cancel_force_timeout: 10s
   node_wall_clock:
     decree_intake: 5m
-retry_boundaries:
-  policy_source: policies/retry_policy.yaml
-  provider_retry_class: transient_transport_provider_session
-  internal_runtime_retry_class: internal_runtime
-  conditional_retry_class: conditional_limited
-  non_retryable_class: non_retryable
-  hard_fail_codes:
-    - policy_violation
 escalation:
   retry_exhausted_target_role: chancellor
   unresolved_strategic_target_role: king

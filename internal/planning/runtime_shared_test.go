@@ -8,7 +8,76 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"kingdom/internal/state"
 )
+
+func TestPlanningContentCapturePersistsBeyondEnumerationAndEntryCaps(t *testing.T) {
+	root := t.TempDir()
+	const files = 20005
+	for i := 0; i < files; i++ {
+		writeTestFile(t, root, fmt.Sprintf("source/file-%05d.go", i), "package source\n")
+	}
+	writeTestFile(t, root, "large.go", strings.Repeat("x", 128<<10))
+	for i := 0; i < 205; i++ {
+		writeTestFile(t, root, fmt.Sprintf("credentials-%03d.json", i), "secret")
+	}
+	store := state.NewPlanningStore(stateTestDB(t))
+	service := NewService(store, &mockAgent{}, root, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	defer service.Close(context.Background())
+	session, err := service.CreateSession(context.Background(), "Complete capture", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for kind, want := range map[string]int{"included": files + 1, "excluded": 205} {
+		after, count := -1, 0
+		foundLast, foundLarge := false, false
+		for {
+			entries, cursor, err := store.ListContextEntriesPage(context.Background(), *session.ContextSnapshotID, kind, after, 73)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if entry.Path == "source/file-20004.go" {
+					foundLast = true
+				}
+				if entry.Path == "large.go" && entry.Size == 128<<10 {
+					foundLarge = true
+				}
+			}
+			count += len(entries)
+			if len(entries) < 73 {
+				break
+			}
+			if cursor <= after {
+				t.Fatal("entry cursor failed to advance")
+			}
+			after = cursor
+		}
+		if count != want {
+			t.Fatalf("%s count=%d, want %d", kind, count, want)
+		}
+		if kind == "included" && (!foundLast || !foundLarge) {
+			t.Fatal("capture lost the tail or large source file")
+		}
+	}
+}
+
+func TestSnapshotLayoutPreservesEveryLongName(t *testing.T) {
+	counts := make(map[string]int)
+	for i := 0; i < 205; i++ {
+		counts[fmt.Sprintf("directory-%03d-%s", i, strings.Repeat("界", 100))] = i + 1
+	}
+	text := renderSnapshotSummary(205, 0, nil, counts, 205)
+	if len(text) <= 32<<10 {
+		t.Fatal("fixture did not exceed former summary cap")
+	}
+	for name := range counts {
+		if !strings.Contains(text, name) {
+			t.Fatalf("layout omitted %q", name)
+		}
+	}
+}
 
 // One unreadable directory used to abort the whole walk, which failed the
 // snapshot — and therefore the session that depends on it. It must now be
@@ -164,13 +233,11 @@ func TestScanProjectRootPreservesGitPathBytes(t *testing.T) {
 	}
 }
 
-// Enumeration has to stop at the budget rather than walk the rest of the
-// repository to record excluded rows no prompt ever reads.
-func TestScanProjectRootStopsAtTheFileBudget(t *testing.T) {
+func TestScanProjectRootRetainsAllFilesBeyondFormerBudget(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
-	for index := 0; index < defaultMaxSnapshotFiles+50; index++ {
+	for index := 0; index < 250; index++ {
 		writeTestFile(t, root, fmt.Sprintf("file_%03d.go", index), "package main\n")
 	}
 
@@ -178,16 +245,44 @@ func TestScanProjectRootStopsAtTheFileBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scan project root: %v", err)
 	}
-	if len(summary.IncludedFiles) != defaultMaxSnapshotFiles {
-		t.Fatalf("expected the budget to cap captures, got %d", len(summary.IncludedFiles))
+	if len(summary.IncludedFiles) != 250 {
+		t.Fatalf("expected every file, got %d", len(summary.IncludedFiles))
 	}
 	if len(summary.ExcludedFiles) != 0 {
 		t.Fatalf("expected no excluded rows past the budget, got %+v", summary.ExcludedFiles)
 	}
-	// Paths past the capture budget still count towards the shape, so the
-	// summary reports the whole project rather than the prefix it stored.
-	if !strings.Contains(summary.SummaryMarkdown, fmt.Sprintf("- Captured files: %d of %d", defaultMaxSnapshotFiles, defaultMaxSnapshotFiles+50)) {
+	if !strings.Contains(summary.SummaryMarkdown, "- Captured files: 250 of 250") {
 		t.Fatalf("expected the summary to report the full count, got:\n%s", summary.SummaryMarkdown)
+	}
+}
+
+func TestScanProjectRootRetainsAllExcludedPathsAndReasonCounts(t *testing.T) {
+	t.Parallel()
+
+	root := initTestGitRepository(t)
+	for index := 0; index < 250; index++ {
+		writeTestFile(t, root, fmt.Sprintf("credentials_%03d.json", index), "{}\n")
+	}
+
+	summary, err := scanProjectRoot(context.Background(), root)
+	if err != nil {
+		t.Fatalf("scan project root: %v", err)
+	}
+	if len(summary.IncludedFiles) != 0 {
+		t.Fatalf("excluded files were included: %+v", summary.IncludedFiles)
+	}
+	if len(summary.ExcludedFiles) != 250 {
+		t.Fatalf("expected every exclusion, got %d", len(summary.ExcludedFiles))
+	}
+	for _, entry := range summary.ExcludedFiles {
+		if entry.Reason != "secret" {
+			t.Fatalf("unexpected exclusion sample: %+v", entry)
+		}
+	}
+	for _, want := range []string{"- Captured files: 0 of 250", "- Excluded entries: 250", "- Excluded reason counts: secret=250"} {
+		if !strings.Contains(summary.SummaryMarkdown, want) {
+			t.Fatalf("expected %q in summary, got:\n%s", want, summary.SummaryMarkdown)
+		}
 	}
 }
 
@@ -213,12 +308,36 @@ func TestScanProjectRootSummaryDescribesLayout(t *testing.T) {
 	}
 }
 
-func includedPaths(summary SnapshotSummary) map[string]bool {
+func includedPaths(summary testSnapshotSummary) map[string]bool {
 	included := make(map[string]bool, len(summary.IncludedFiles))
 	for _, entry := range summary.IncludedFiles {
 		included[entry.Path] = true
 	}
 	return included
+}
+
+type testSnapshotSummary struct {
+	SummaryMarkdown              string
+	IncludedFiles, ExcludedFiles []SnapshotFileEntry
+}
+
+// Tests materialize small fixtures; production keeps the scan disk-backed.
+func scanProjectRoot(ctx context.Context, root string) (testSnapshotSummary, error) {
+	spool, err := captureProjectRoot(ctx, root)
+	if err != nil {
+		return testSnapshotSummary{}, err
+	}
+	defer spool.Close()
+	summary := testSnapshotSummary{SummaryMarkdown: spool.SummaryMarkdown}
+	err = spool.Entries(ctx, func(kind string, entry SnapshotFileEntry) error {
+		if kind == "included" {
+			summary.IncludedFiles = append(summary.IncludedFiles, entry)
+		} else {
+			summary.ExcludedFiles = append(summary.ExcludedFiles, entry)
+		}
+		return nil
+	})
+	return summary, err
 }
 
 func initTestGitRepository(t *testing.T) string {

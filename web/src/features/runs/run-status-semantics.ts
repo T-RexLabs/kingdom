@@ -27,6 +27,8 @@ export function normalizedRunStatusTone(state: unknown): RunStatusTone | undefin
 		case "skipped":
 		case "rework":
 			return normalizedToken(state) as RunStatusTone;
+		case "paused":
+			return "paused";
 		default:
 			return undefined;
 	}
@@ -62,7 +64,8 @@ export function isQueuedExecutionStatus(status?: string | null): boolean {
 }
 
 export function isBlockedExecutionStatus(status?: string | null): boolean {
-	return normalizedToken(status) === "blocked";
+	const normalized = normalizedToken(status);
+	return normalized === "blocked" || normalized === "paused";
 }
 
 export function isActiveExecutionStatus(status?: string | null): boolean {
@@ -105,12 +108,8 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 			return "This step is queued to retry.";
 		case "Rerun queued":
 			return "This step is queued to rerun.";
-		case "Retrying provider":
-			return "This step is retrying after a provider issue.";
 		case "Recovered for retry":
 			return "This step recovered and is continuing through retry handling.";
-		case "Provider recovered":
-			return "This step recovered and is continuing.";
 		case "Retry exhausted":
 			return "Kingdom exhausted provider retries for this step.";
 		default: {
@@ -120,7 +119,22 @@ export function operatorLiveExecutionLabel(label?: string | null): string | null
 	}
 }
 
-export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null): string | null {
+export function operatorExecutionStatusText(status?: string | null, liveLabel?: string | null, handoffState?: string | null): string | null {
+	if (normalizedToken(status) === "paused") {
+		switch (normalizedToken(handoffState)) {
+			case "stop_retry_requested":
+				return "Kingdom is sending another stop request before retrying this step.";
+			case "cancellation_dispatched":
+			case "stop_retry_dispatched":
+				return "Kingdom is confirming that the previous stop request completed.";
+			case "workspace_restore_failed":
+				return "Kingdom stopped the previous attempt but could not restore the trusted workspace.";
+			case "awaiting_workspace_quiescence":
+				return "Kingdom is waiting for another active step to release the shared workspace.";
+			default:
+				return "Kingdom is waiting for the previous attempt to stop before starting the retry.";
+		}
+	}
 	const liveBody = operatorLiveExecutionLabel(liveLabel);
 	if (liveBody) {
 		return liveBody;
@@ -130,8 +144,8 @@ export function operatorExecutionStatusText(status?: string | null, liveLabel?: 
 				return "This step is launching now.";
 			case "running":
 				return "This step is still running.";
-			case "blocked":
-				return "This step is blocked while Kingdom decides or performs recovery.";
+		case "blocked":
+			return "This step is blocked while Kingdom decides or performs recovery.";
 			case "verifying":
 				return "Kingdom is still confirming the final result for this step.";
 		case "queued":
@@ -181,10 +195,6 @@ export function liveExecutionLabel(
 			return "Completion observed";
 		case "runtime_observation":
 			return "Runtime observation";
-		case "provider_empty_output_retry":
-			return "Retrying provider";
-		case "provider_output_recovered":
-			return "Provider recovered";
 	}
 		switch ((eventType ?? "").trim()) {
 			case "attempt.started":
@@ -202,15 +212,12 @@ export function liveExecutionLabel(
 				}
 		case "attempt.retry_queued":
 			return "Retry queued";
+		case "attempt.retry_scheduled":
+			return "Retry scheduled";
 		case "attempt.rerun_queued":
 			return "Rerun queued";
-		case "attempt.retry_exhausted":
-			return "Retry exhausted";
-		case "attempt.recovered":
-			if ((nodeState ?? "").trim() === "blocked") {
-				return "Blocked for retry";
-			}
-			return "Recovered for retry";
+		case "attempt.final_rework_queued":
+			return "Final Governance Rework Queued";
 		case "attempt.failed":
 			return "Execution failed";
 		case "attempt.succeeded":
@@ -232,17 +239,15 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 			case "attempt.started":
 				return "play";
 		case "attempt.succeeded":
-		case "attempt.retry_recovered":
 			return "check";
 		case "attempt.failed":
 		case "attempt.cancelled":
 			return "x";
-		case "attempt.retrying":
+		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
-		case "attempt.recovered":
+		case "attempt.final_rework_queued":
 			return "rotate";
-			case "attempt.retry_exhausted":
 			case "attempt.timeout_warning":
 				return "alert";
 			case "attempt.progress":
@@ -271,18 +276,14 @@ export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type
 			return "failed";
 		case "attempt.cancelled":
 			return "cancelled";
-		case "attempt.retrying":
-			return "retrying";
-		case "attempt.retry_recovered":
-			return "recovered after retry";
+		case "attempt.retry_scheduled":
+			return "retry scheduled";
 		case "attempt.retry_queued":
 			return "retry queued";
 		case "attempt.rerun_queued":
 			return "rerun queued";
-		case "attempt.retry_exhausted":
-			return "retry exhausted";
-		case "attempt.recovered":
-			return liveLabel ? liveLabel.toLowerCase() : "recovered for retry";
+		case "attempt.final_rework_queued":
+			return "final governance rework queued";
 		case "attempt.progress":
 			return liveLabel ?? "execution update";
 		case "attempt.timeout_warning":
@@ -329,7 +330,7 @@ export function badgeToneForLabel(label: string | undefined, fallbackTone: RunSt
 			case "x":
 				return normalizedToken(event.event_type) === "attempt.cancelled" ? "cancelled" : "failed";
 			case "rotate":
-				return normalizedToken(event.event_type) === "attempt.retry_queued" || normalizedToken(event.event_type) === "attempt.rerun_queued"
+				return normalizedToken(event.event_type) === "attempt.retry_queued" || normalizedToken(event.event_type) === "attempt.rerun_queued" || normalizedToken(event.event_type) === "attempt.final_rework_queued"
 					? "ready"
 					: "blocked";
 			case "alert":

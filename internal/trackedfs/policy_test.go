@@ -1,11 +1,21 @@
 package trackedfs
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"testing"
 
 	"kingdom/internal/securefs"
+)
+
+const (
+	formerWorkspaceEntries   = 10000
+	formerWorkspaceFileBytes = 32 * 1024 * 1024
+	formerWorkspaceBytes     = 256 * 1024 * 1024
+	formerWorkspaceDepth     = 64
 )
 
 func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
@@ -40,7 +50,7 @@ func TestWalkTrackedFilesSkipsProtectedRootsAndNonRegularEntries(t *testing.T) {
 		t.Fatalf("create symlink: %v", err)
 	}
 
-	tracked, err := WalkTrackedFiles(root)
+	tracked, err := collectTrackedFiles(root)
 	if err != nil {
 		t.Fatalf("walk tracked files: %v", err)
 	}
@@ -79,7 +89,7 @@ func TestWalkTrackedFilesRootUsesPinnedNoFollowTraversal(t *testing.T) {
 	if err := os.Symlink(outside, rootPath); err != nil {
 		t.Fatalf("replace root with symlink: %v", err)
 	}
-	files, err := WalkTrackedFilesRoot(root)
+	files, err := collectTrackedFilesRoot(root)
 	if err != nil {
 		t.Fatalf("walk pinned root: %v", err)
 	}
@@ -103,7 +113,7 @@ func TestIsProtectedRelativePath(t *testing.T) {
 		{path: ".playwright-mcp/page.yml", want: true},
 		{path: ".playwright-cli/page.yml", want: true},
 		{path: ".opencode/cache/state", want: true},
-		{path: "web/node_modules/pkg/index.js", want: true},
+		{path: "web/node_modules/pkg/index.js", want: false},
 		{path: "kd-sandbox/run/output.txt", want: true},
 		{path: "build/.tmp/cache", want: true},
 		{path: "src/app.js", want: false},
@@ -130,4 +140,180 @@ func TestResolveWithinRootRejectsEscapes(t *testing.T) {
 	if filepath.Dir(resolved) != filepath.Join(root, "docs") {
 		t.Fatalf("unexpected resolved path %q", resolved)
 	}
+}
+
+func TestWalkTrackedFilesAcceptsFormerWorkspaceEntryAndByteBounds(t *testing.T) {
+	walkers := []struct {
+		name string
+		walk func(string) ([]TrackedFile, error)
+	}{
+		{name: "path", walk: collectTrackedFiles},
+		{name: "root", walk: func(path string) ([]TrackedFile, error) {
+			root, err := securefs.OpenRoot(path)
+			if err != nil {
+				return nil, err
+			}
+			defer root.Close()
+			return collectTrackedFilesRoot(root)
+		}},
+	}
+	for _, walker := range walkers {
+		t.Run(walker.name, func(t *testing.T) {
+			entryRoot := t.TempDir()
+			for index := range formerWorkspaceEntries {
+				if err := os.WriteFile(filepath.Join(entryRoot, fmt.Sprintf("entry-%05d", index)), nil, 0o600); err != nil {
+					t.Fatalf("write entry %d: %v", index, err)
+				}
+			}
+			tracked, err := walker.walk(entryRoot)
+			if err != nil {
+				t.Fatalf("exact entry boundary rejected: %v", err)
+			}
+			if len(tracked) != formerWorkspaceEntries {
+				t.Fatalf("exact entry boundary returned %d files", len(tracked))
+			}
+			if err := os.WriteFile(filepath.Join(entryRoot, "one-too-many"), nil, 0o600); err != nil {
+				t.Fatalf("write overflow entry: %v", err)
+			}
+			if files, err := walker.walk(entryRoot); err != nil || len(files) != 10001 {
+				t.Fatalf("former entry limit: count=%d error=%v", len(files), err)
+			}
+
+			byteRoot := t.TempDir()
+			for index := range int(formerWorkspaceBytes / formerWorkspaceFileBytes) {
+				path := filepath.Join(byteRoot, fmt.Sprintf("file-%d", index))
+				if err := os.WriteFile(path, nil, 0o600); err != nil {
+					t.Fatalf("create exact byte file %d: %v", index, err)
+				}
+				if err := os.Truncate(path, formerWorkspaceFileBytes); err != nil {
+					t.Fatalf("truncate exact byte file %d: %v", index, err)
+				}
+			}
+			if _, err := walker.walk(byteRoot); err != nil {
+				t.Fatalf("exact aggregate-byte boundary rejected: %v", err)
+			}
+			if err := os.WriteFile(filepath.Join(byteRoot, "one-byte-over"), []byte{'x'}, 0o600); err != nil {
+				t.Fatalf("write aggregate overflow: %v", err)
+			}
+			if _, err := walker.walk(byteRoot); err != nil {
+				t.Fatalf("former aggregate limit: %v", err)
+			}
+
+			fileRoot := t.TempDir()
+			path := filepath.Join(fileRoot, "exact-file")
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatalf("create exact file: %v", err)
+			}
+			if err := os.Truncate(path, formerWorkspaceFileBytes); err != nil {
+				t.Fatalf("truncate exact file: %v", err)
+			}
+			if _, err := walker.walk(fileRoot); err != nil {
+				t.Fatalf("exact file boundary rejected: %v", err)
+			}
+			if err := os.Truncate(path, formerWorkspaceFileBytes+1); err != nil {
+				t.Fatalf("truncate one-byte file overflow: %v", err)
+			}
+			if _, err := walker.walk(fileRoot); err != nil {
+				t.Fatalf("former file limit: %v", err)
+			}
+		})
+	}
+}
+
+func TestWalkTrackedFilesAcceptsFormerDirectorySymlinkAndDepthBounds(t *testing.T) {
+	walkers := []struct {
+		name string
+		walk func(string) ([]TrackedFile, error)
+	}{
+		{name: "path", walk: collectTrackedFiles},
+		{name: "root", walk: func(path string) ([]TrackedFile, error) {
+			root, err := securefs.OpenRoot(path)
+			if err != nil {
+				return nil, err
+			}
+			defer root.Close()
+			return collectTrackedFilesRoot(root)
+		}},
+	}
+
+	for _, walker := range walkers {
+		t.Run(walker.name, func(t *testing.T) {
+			for _, tc := range []struct {
+				name  string
+				build func(string) error
+				check func(error) bool
+			}{
+				{
+					name: "directories",
+					build: func(root string) error {
+						for index := 0; index <= formerWorkspaceEntries; index++ {
+							if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("dir-%05d", index)), 0o700); err != nil {
+								return err
+							}
+						}
+						return nil
+					},
+					check: func(err error) bool {
+						return err == nil
+					},
+				},
+				{
+					name: "symlinks",
+					build: func(root string) error {
+						for index := 0; index <= formerWorkspaceEntries; index++ {
+							if err := os.Symlink("missing-target", filepath.Join(root, fmt.Sprintf("link-%05d", index))); err != nil {
+								return err
+							}
+						}
+						return nil
+					},
+					check: func(err error) bool {
+						return err == nil
+					},
+				},
+				{
+					name: "depth",
+					build: func(root string) error {
+						current := root
+						for index := 0; index <= formerWorkspaceDepth; index++ {
+							current = filepath.Join(current, fmt.Sprintf("level-%02d", index))
+							if err := os.Mkdir(current, 0o700); err != nil {
+								return err
+							}
+						}
+						return nil
+					},
+					check: func(err error) bool {
+						return err == nil
+					},
+				},
+			} {
+				t.Run(tc.name, func(t *testing.T) {
+					root := t.TempDir()
+					if err := tc.build(root); err != nil {
+						t.Fatalf("build overflowing workspace: %v", err)
+					}
+					if err := func() error {
+						_, err := walker.walk(root)
+						return err
+					}(); !tc.check(err) {
+						t.Fatalf("former workspace limit rejected: %v", err)
+					}
+				})
+			}
+		})
+	}
+}
+
+func collectTrackedFiles(path string) ([]TrackedFile, error) {
+	var files []TrackedFile
+	err := VisitTrackedFiles(context.Background(), path, func(file TrackedFile) error { files = append(files, file); return nil })
+	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
+	return files, err
+}
+func collectTrackedFilesRoot(root *securefs.Root) ([]TrackedFile, error) {
+	var files []TrackedFile
+	err := VisitTrackedFilesRoot(context.Background(), root, func(file TrackedFile) error { files = append(files, file); return nil })
+	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
+	return files, err
 }

@@ -8,6 +8,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"kingdom/internal/testutil/guardianfixture"
 )
 
 func TestDatabaseStartupGateSerializesSameDatabaseOnly(t *testing.T) {
@@ -75,7 +77,8 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 		go func(index int) {
 			defer wg.Done()
 			_, err := adapter.Execute(context.Background(), ExecuteRequest{
-				SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index),
+				CompletionMode: CompletionModeServerResponse,
+				SessionID:      fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index),
 				WorkspacePath: dir, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z",
 			})
 			errs <- err
@@ -92,72 +95,28 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 
 func TestSessionAdapterRequestDatabaseGateCollidesWithExportDatabase(t *testing.T) {
 	dir := t.TempDir()
-	binary := filepath.Join(dir, "fake-opencode")
-	script := `#!/bin/sh
-lock="$OPENCODE_DB.startup"
-if [ "$1" = "export" ]; then
-  if ! mkdir "$lock" 2>/dev/null; then exit 2; fi
-  : > "$EXPORT_STARTED"
-  while [ ! -f "$EXPORT_RELEASE" ]; do sleep 0.005; done
-  rmdir "$lock"
-  printf '{}\n'
-  exit 0
-fi
-: > "$RUN_STARTED"
-if ! mkdir "$lock" 2>/dev/null; then
-  printf 'database is locked\n' >&2
-  exit 1
-fi
-rmdir "$lock"
-printf '{"type":"text","sessionID":"ses_override","part":{"type":"text","text":"ok"}}\n'
-printf '{"type":"step_finish","sessionID":"ses_override","part":{"type":"step_finish","reason":"stop"}}\n'
-`
-	if err := os.WriteFile(binary, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
 	actualDatabase := filepath.Join(dir, "actual.db")
-	exportStarted := filepath.Join(dir, "export-started")
-	exportRelease := filepath.Join(dir, "export-release")
-	runStarted := filepath.Join(dir, "run-started")
-	t.Setenv("EXPORT_STARTED", exportStarted)
-	t.Setenv("EXPORT_RELEASE", exportRelease)
-	t.Setenv("RUN_STARTED", runStarted)
-	exportDone := make(chan error, 1)
-	go func() {
-		_, err := (cliSessionExporter{binaryPath: binary}).Export(context.Background(), sessionExportRequest{ProviderSessionID: "ses_export", DatabasePath: actualDatabase})
-		exportDone <- err
-	}()
-	deadline := time.Now().Add(time.Second)
-	for {
-		if _, err := os.Stat(exportStarted); err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("export did not acquire the database startup gate")
-		}
-		time.Sleep(5 * time.Millisecond)
+	releaseExport, err := opencodeDatabaseStartupGates.acquire(context.Background(), actualDatabase)
+	if err != nil {
+		t.Fatalf("acquire diagnostic export database gate: %v", err)
 	}
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "adapter-default.db"), FirstEventTimeout: time.Second, StreamInactivityTimeout: time.Second})
+	runner := guardianfixture.NewOutputRunner(successfulProviderEvents("ok"), nil)
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: os.Args[0], DatabasePath: filepath.Join(dir, "adapter-default.db"), FirstEventTimeout: 5 * time.Second, StreamInactivityTimeout: 5 * time.Second, Runner: runner})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runDone := make(chan error, 1)
 	go func() {
-		_, err := adapter.Execute(context.Background(), ExecuteRequest{SessionID: "session-override", AttemptID: "attempt-override", RunID: "run-1", NodeRunID: "node-1", WorkspacePath: dir, DatabasePath: actualDatabase, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
+		_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: "session-override", AttemptID: "attempt-override", RunID: "run-1", NodeRunID: "node-1", WorkspacePath: dir, DatabasePath: actualDatabase, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
 		runDone <- err
 	}()
 	time.Sleep(50 * time.Millisecond)
-	if _, err := os.Stat(runStarted); err == nil {
-		t.Fatal("run started while export held its effective database gate")
+	if starts := runner.Starts(); starts != 0 {
+		t.Fatalf("run started %d times while diagnostic export held its effective database gate", starts)
 	}
-	if err := os.WriteFile(exportRelease, []byte("release"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := <-exportDone; err != nil {
-		t.Fatalf("export failed: %v", err)
-	}
+	releaseExport()
 	if err := <-runDone; err != nil {
-		t.Fatalf("run failed after export released gate: %v", err)
+		t.Fatalf("run failed after diagnostic export released gate: %v", err)
 	}
 }
 
@@ -194,14 +153,14 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 	t.Setenv("DB_TWO", databaseTwo)
 	t.Setenv("DB_ONE_READY", filepath.Join(dir, "one-ready"))
 	t.Setenv("DB_TWO_READY", filepath.Join(dir, "two-ready"))
-	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "shared-default.db"), FirstEventTimeout: 2 * time.Second, StreamInactivityTimeout: time.Second})
+	adapter, err := NewSessionAdapter(SessionAdapterConfig{BinaryPath: binary, DatabasePath: filepath.Join(dir, "shared-default.db"), FirstEventTimeout: 5 * time.Second, StreamInactivityTimeout: 5 * time.Second})
 	if err != nil {
 		t.Fatal(err)
 	}
 	errs := make(chan error, 2)
 	for i, database := range []string{databaseOne, databaseTwo} {
 		go func(index int, databasePath string) {
-			_, err := adapter.Execute(context.Background(), ExecuteRequest{SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
+			_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
 			errs <- err
 		}(i, database)
 	}

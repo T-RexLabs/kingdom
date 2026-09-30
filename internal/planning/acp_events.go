@@ -20,7 +20,17 @@ func plannerAcpRunCreatedEvent(operationID, planningSessionID string, operationT
 	for key, value := range plannerRunCreatedRequestPayload(operationType, request) {
 		payload[key] = value
 	}
-	return plannerAcpEvent(operationID, 1, acp.RunCreatedEventType, payload, createdAt)
+	event := plannerAcpEvent(operationID, 1, acp.RunCreatedEventType, payload, createdAt)
+	if event != nil {
+		event.TextRefs = map[string]string{}
+		if request.ContentReferenceID != "" {
+			event.TextRefs["content_markdown"] = request.ContentReferenceID
+		}
+		if request.AnswerTextReferenceID != "" {
+			event.TextRefs["answer_payload.text"] = request.AnswerTextReferenceID
+		}
+	}
+	return event
 }
 
 func plannerRunCreatedRequestPayload(operationType state.PlanningOperationType, request operationRequest) map[string]any {
@@ -139,4 +149,11 @@ func mustJSON(payload map[string]any) string {
 		return "{}"
 	}
 	return string(raw)
+}
+
+func bindPlannerBodyEvent(event *state.AppendPlanningOperationEventRequest, source *state.PlanningTextSource, id string) {
+	if event == nil || source == nil {
+		return
+	}
+	event.TextRefs = map[string]string{"content_markdown": id, "text": id}
 }

@@ -1,264 +1,181 @@
 package state
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"sort"
 	"strings"
 )
 
-type ArtifactService struct {
-	db *sql.DB
-}
-
-type ArtifactNotFoundError struct {
-	ArtifactID string
-}
-
-type ArtifactContentUnavailableError struct {
-	ArtifactID string
-	Reason     string
-}
+type ArtifactService struct{ db *sql.DB }
+type ArtifactNotFoundError struct{ ArtifactID string }
+type ArtifactContentUnavailableError struct{ ArtifactID, Reason string }
 
 func (e *ArtifactNotFoundError) Error() string {
 	return fmt.Sprintf("artifact not found: %q", e.ArtifactID)
 }
-
 func (e *ArtifactContentUnavailableError) Error() string {
-	if strings.TrimSpace(e.Reason) == "" {
-		return fmt.Sprintf("artifact content unavailable: %q", e.ArtifactID)
-	}
 	return fmt.Sprintf("artifact content unavailable: %q (%s)", e.ArtifactID, e.Reason)
 }
+func NewArtifactService(db *sql.DB) *ArtifactService { return &ArtifactService{db: db} }
 
-func NewArtifactService(db *sql.DB) *ArtifactService {
-	return &ArtifactService{db: db}
+const artifactColumns = `artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, mode_bits, producer_role, created_at`
+
+func scanArtifact(row interface{ Scan(...any) error }) (ArtifactRecord, error) {
+	var r ArtifactRecord
+	err := row.Scan(&r.ArtifactID, &r.RunID, &r.NodeRunID, &r.AttemptID, &r.ArtifactKind, &r.ArtifactAction, &r.Name, &r.MIME, &r.Path, &r.SHA256, &r.SizeBytes, &r.ModeBits, &r.ProducerRole, &r.CreatedAt)
+	if err == nil {
+		err = ValidateArtifactMode(r.ArtifactAction, r.ModeBits)
+	}
+	return r, err
 }
 
-func (s *ArtifactService) GetArtifact(ctx context.Context, artifactID string) (ArtifactRecord, error) {
-	var record ArtifactRecord
-	err := s.db.QueryRowContext(ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
-		 FROM artifacts
-		 WHERE artifact_id = ?`,
-		artifactID,
-	).Scan(
-		&record.ArtifactID,
-		&record.RunID,
-		&record.NodeRunID,
-		&record.AttemptID,
-		&record.ArtifactKind,
-		&record.ArtifactAction,
-		&record.Name,
-		&record.MIME,
-		&record.Path,
-		&record.SHA256,
-		&record.SizeBytes,
-		&record.ProducerRole,
-		&record.CreatedAt,
-	)
+func (s *ArtifactService) GetArtifact(ctx context.Context, id string) (ArtifactRecord, error) {
+	r, err := scanArtifact(s.db.QueryRowContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE artifact_id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
-		return ArtifactRecord{}, &ArtifactNotFoundError{ArtifactID: artifactID}
+		return r, &ArtifactNotFoundError{ArtifactID: id}
 	}
-	if err != nil {
-		return ArtifactRecord{}, fmt.Errorf("query artifact %q: %w", artifactID, err)
-	}
-
-	return record, nil
+	return r, err
 }
 
 func (s *ArtifactService) ListRunArtifacts(ctx context.Context, runID string) ([]ArtifactRecord, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at
-		 FROM artifacts
-		 WHERE run_id = ?
-		 ORDER BY
-		   CASE artifact_kind WHEN 'deliverable' THEN 0 WHEN 'verification' THEN 1 ELSE 2 END,
-		   created_at DESC,
-		   artifact_id ASC`,
-		runID,
-	)
+	var records []ArtifactRecord
+	err := s.WalkRunArtifacts(ctx, runID, func(r ArtifactRecord) error { records = append(records, r); return nil })
+	rank := func(kind string) int {
+		switch kind {
+		case "deliverable":
+			return 0
+		case "verification":
+			return 1
+		default:
+			return 2
+		}
+	}
+	sort.SliceStable(records, func(i, j int) bool {
+		if rank(records[i].ArtifactKind) != rank(records[j].ArtifactKind) {
+			return rank(records[i].ArtifactKind) < rank(records[j].ArtifactKind)
+		}
+		if records[i].CreatedAt != records[j].CreatedAt {
+			return records[i].CreatedAt > records[j].CreatedAt
+		}
+		return records[i].ArtifactID < records[j].ArtifactID
+	})
+	return records, err
+}
+
+// WalkRunArtifacts enumerates one SQLite read snapshot with bounded Go memory.
+// The visitor must not reenter this database (single-connection pools are used).
+// Exports spool this inventory before opening any artifact content readers.
+func (s *ArtifactService) WalkRunArtifacts(ctx context.Context, runID string, visit func(ArtifactRecord) error) error {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE run_id = ? ORDER BY artifact_id`, runID)
 	if err != nil {
-		return nil, fmt.Errorf("list artifacts for run %q: %w", runID, err)
+		return err
 	}
 	defer rows.Close()
-
-	records := make([]ArtifactRecord, 0)
 	for rows.Next() {
-		var record ArtifactRecord
-		if err := rows.Scan(
-			&record.ArtifactID,
-			&record.RunID,
-			&record.NodeRunID,
-			&record.AttemptID,
-			&record.ArtifactKind,
-			&record.ArtifactAction,
-			&record.Name,
-			&record.MIME,
-			&record.Path,
-			&record.SHA256,
-			&record.SizeBytes,
-			&record.ProducerRole,
-			&record.CreatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan artifact row for run %q: %w", runID, err)
+		r, err := scanArtifact(rows)
+		if err != nil {
+			return err
 		}
-		records = append(records, record)
+		if err := visit(r); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// CopyArtifactContent verifies the complete canonical SQLite content. Callers
+// must stage the output before publishing it: a checksum can fail at EOF.
+// Missing/corrupt SQLite content never falls back to a workspace file.
+func (s *ArtifactService) CopyArtifactContent(ctx context.Context, id string, dst io.Writer) (ArtifactRecord, error) {
+	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return ArtifactRecord{}, err
+	}
+	defer tx.Rollback()
+	r, err := scanArtifact(tx.QueryRowContext(ctx, `SELECT `+artifactColumns+` FROM artifacts WHERE artifact_id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return r, &ArtifactNotFoundError{ArtifactID: id}
+	}
+	if err != nil {
+		return r, err
+	}
+	unavailable := func(reason string) (ArtifactRecord, error) {
+		return r, &ArtifactContentUnavailableError{ArtifactID: id, Reason: reason}
+	}
+	if r.ArtifactAction == "delete" {
+		return unavailable("deletion has no content")
+	}
+	var checksum string
+	var size int64
+	err = tx.QueryRowContext(ctx, `SELECT sha256, size_bytes FROM artifact_contents WHERE artifact_id = ?`, id).Scan(&checksum, &size)
+	if errors.Is(err, sql.ErrNoRows) {
+		return unavailable("stored artifact content unavailable")
+	}
+	if err != nil {
+		return r, err
+	}
+	if size != r.SizeBytes || size < 0 || !strings.EqualFold(checksum, r.SHA256) {
+		return unavailable("artifact metadata mismatch")
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT chunk_index, content FROM artifact_content_chunks WHERE artifact_id = ? ORDER BY chunk_index`, id)
+	if err != nil {
+		return r, err
+	}
+	defer rows.Close()
+	hash := sha256.New()
+	var total int64
+	index := 0
+	for rows.Next() {
+		var ordinal int
+		var chunk []byte
+		if err := rows.Scan(&ordinal, &chunk); err != nil {
+			return r, err
+		}
+		if ordinal != index || len(chunk) == 0 || len(chunk) > artifactChunkBytes || int64(len(chunk)) > size-total {
+			return unavailable("stored artifact chunk sequence or size mismatch")
+		}
+		n, err := io.Copy(io.MultiWriter(dst, hash), bytes.NewReader(chunk))
+		if err != nil {
+			return r, err
+		}
+		total += n
+		index++
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate artifact rows for run %q: %w", runID, err)
+		return r, err
 	}
-
-	return records, nil
+	if total != size {
+		return unavailable("stored artifact size mismatch")
+	}
+	if !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), checksum) {
+		return unavailable("stored artifact checksum mismatch")
+	}
+	return r, nil
 }
 
-func (s *ArtifactService) ResolveArtifactContentPath(ctx context.Context, artifactID string) (ArtifactRecord, string, error) {
-	var record ArtifactRecord
-	var workspacePath string
-
-	err := s.db.QueryRowContext(ctx,
-		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.artifact_action, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at, w.workspace_path
-		 FROM artifacts a
-		 JOIN workspaces w ON w.run_id = a.run_id AND w.node_run_id = a.node_run_id
-		 WHERE a.artifact_id = ?
-		 ORDER BY w.created_at DESC
-		 LIMIT 1`,
-		artifactID,
-	).Scan(
-		&record.ArtifactID,
-		&record.RunID,
-		&record.NodeRunID,
-		&record.AttemptID,
-		&record.ArtifactKind,
-		&record.ArtifactAction,
-		&record.Name,
-		&record.MIME,
-		&record.Path,
-		&record.SHA256,
-		&record.SizeBytes,
-		&record.ProducerRole,
-		&record.CreatedAt,
-		&workspacePath,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, lookupErr := s.GetArtifact(ctx, artifactID); lookupErr != nil {
-			return ArtifactRecord{}, "", lookupErr
-		}
-		return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "workspace path unavailable"}
-	}
+// StageArtifactContent returns a private, verified, rewound file. The caller
+// owns Close and Remove. Nothing becomes visible before checksum verification.
+func (s *ArtifactService) StageArtifactContent(ctx context.Context, id string) (ArtifactRecord, *os.File, error) {
+	f, err := os.CreateTemp("", "kingdom-artifact-*")
 	if err != nil {
-		return ArtifactRecord{}, "", fmt.Errorf("resolve artifact content path %q: %w", artifactID, err)
-	}
-
-	absPath, err := resolveArtifactPath(workspacePath, record.Path)
-	if err != nil {
-		return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: err.Error()}
-	}
-
-	if info, statErr := os.Stat(absPath); statErr != nil {
-		if os.IsNotExist(statErr) {
-			return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact file missing"}
-		}
-		return ArtifactRecord{}, "", fmt.Errorf("stat artifact file %q: %w", absPath, statErr)
-	} else if info.IsDir() {
-		return ArtifactRecord{}, "", &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact path resolves to directory"}
-	}
-
-	return record, absPath, nil
-}
-
-func (s *ArtifactService) GetArtifactContent(ctx context.Context, artifactID string) (ArtifactRecord, []byte, error) {
-	record, content, err := s.lookupStoredArtifactContent(ctx, artifactID)
-	if err == nil {
-		return record, content, nil
-	}
-
-	var notFoundErr *ArtifactNotFoundError
-	if errors.As(err, &notFoundErr) {
 		return ArtifactRecord{}, nil, err
 	}
-
-	record, artifactPath, pathErr := s.ResolveArtifactContentPath(ctx, artifactID)
-	if pathErr != nil {
-		return ArtifactRecord{}, nil, pathErr
-	}
-
-	content, readErr := os.ReadFile(artifactPath)
-	if readErr != nil {
-		if os.IsNotExist(readErr) {
-			return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact file missing"}
-		}
-		return ArtifactRecord{}, nil, fmt.Errorf("read artifact file %q: %w", artifactPath, readErr)
-	}
-
-	if checksum := checksumHex(content); !strings.EqualFold(strings.TrimSpace(record.SHA256), checksum) {
-		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact checksum mismatch"}
-	}
-
-	return record, content, nil
-}
-
-func (s *ArtifactService) lookupStoredArtifactContent(ctx context.Context, artifactID string) (ArtifactRecord, []byte, error) {
-	var record ArtifactRecord
-	var content []byte
-	var contentSHA string
-	var contentSize int64
-
-	err := s.db.QueryRowContext(ctx,
-		`SELECT a.artifact_id, a.run_id, a.node_run_id, a.attempt_id, a.artifact_kind, a.artifact_action, a.name, a.mime, a.path, a.sha256, a.size_bytes, a.producer_role, a.created_at,
-		        ac.content, ac.sha256, ac.size_bytes
-		 FROM artifacts a
-		 JOIN artifact_contents ac ON ac.artifact_id = a.artifact_id
-		 WHERE a.artifact_id = ?`,
-		artifactID,
-	).Scan(
-		&record.ArtifactID,
-		&record.RunID,
-		&record.NodeRunID,
-		&record.AttemptID,
-		&record.ArtifactKind,
-		&record.ArtifactAction,
-		&record.Name,
-		&record.MIME,
-		&record.Path,
-		&record.SHA256,
-		&record.SizeBytes,
-		&record.ProducerRole,
-		&record.CreatedAt,
-		&content,
-		&contentSHA,
-		&contentSize,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		if _, lookupErr := s.GetArtifact(ctx, artifactID); lookupErr != nil {
-			return ArtifactRecord{}, nil, lookupErr
-		}
-		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "stored artifact content unavailable"}
+	r, err := s.CopyArtifactContent(ctx, id, f)
+	if err == nil {
+		_, err = f.Seek(0, io.SeekStart)
 	}
 	if err != nil {
-		return ArtifactRecord{}, nil, fmt.Errorf("lookup artifact content %q: %w", artifactID, err)
+		f.Close()
+		os.Remove(f.Name())
+		return r, nil, err
 	}
-
-	if contentSize != int64(len(content)) {
-		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "stored artifact size mismatch"}
-	}
-
-	checksum := checksumHex(content)
-	if !strings.EqualFold(strings.TrimSpace(contentSHA), checksum) {
-		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "stored artifact checksum mismatch"}
-	}
-	if !strings.EqualFold(strings.TrimSpace(record.SHA256), checksum) {
-		return ArtifactRecord{}, nil, &ArtifactContentUnavailableError{ArtifactID: artifactID, Reason: "artifact metadata checksum mismatch"}
-	}
-
-	return record, content, nil
-}
-
-func checksumHex(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+	return r, f, nil
 }

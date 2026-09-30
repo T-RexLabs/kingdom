@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"kingdom/internal/timestamporder"
 )
 
 const executionActivityFutureTolerance = time.Second
@@ -43,13 +45,16 @@ func hasRecentExecutionMatch(ctx context.Context, q ExecutionActivityQuerier, no
 	}
 	cutoff := nowTime.Add(-threshold).UTC().Format(time.RFC3339Nano)
 
-	rows, err := q.QueryContext(ctx,
-		`SELECT created_at, event_type, reason_code, payload_json
+	query := fmt.Sprintf(`SELECT created_at, event_type, reason_code, payload_json
 		 FROM events
 		 WHERE node_run_id = ?
 		   AND event_type IN ('attempt.activity', 'attempt.progress')
-		   AND julianday(created_at) >= julianday(?)
-		 ORDER BY julianday(created_at) DESC, run_event_seq DESC, seq DESC, event_id DESC`,
+		   AND %s
+		 ORDER BY %s, run_event_seq DESC, seq DESC, event_id DESC`,
+		timestamporder.ComparisonSQL("created_at", "?", ">="),
+		timestamporder.OrderBySQL("created_at", true),
+	)
+	rows, err := q.QueryContext(ctx, query,
 		nodeRunID,
 		cutoff,
 	)

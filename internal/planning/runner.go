@@ -2,9 +2,12 @@ package planning
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"strings"
 	"sync"
@@ -13,23 +16,36 @@ import (
 	"kingdom/internal/acp"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/sqlitex"
 	"kingdom/internal/state"
 )
 
 // terminalCancelWriteTimeout bounds the persistence of a cancel-driven
-// terminal row. cancelOperation runs the write under context.WithoutCancel
-// so the cancelled service ctx can't abort the row that records the
-// cancellation. Without an upper bound, a contended SQLite write could
-// outlive the shutdown coordinator's grace window and continue mutating
-// the DB after kingdomd believed the runner had drained — racing
-// db.Close. This timeout is strictly less than the kingdomd shutdown
-// coordinator's 10s grace; SQLite writes here are normally sub-second.
+// terminal row. The runner owns a separate, revocable handoff context for
+// this write because its execution context is already cancelled. Close
+// revokes it at the shutdown deadline, preventing late DB writes.
 const terminalCancelWriteTimeout = 5 * time.Second
 
-const (
-	planningStartMaxClaimAttempts = 4
-	planningStartRetryBaseDelay   = 100 * time.Millisecond
-)
+type planningOperationLeaseTicker interface {
+	C() <-chan time.Time
+	Stop()
+}
+
+type timePlanningOperationLeaseTicker struct {
+	ticker *time.Ticker
+}
+
+func newTimePlanningOperationLeaseTicker(interval time.Duration) planningOperationLeaseTicker {
+	return &timePlanningOperationLeaseTicker{ticker: time.NewTicker(interval)}
+}
+
+func (t *timePlanningOperationLeaseTicker) C() <-chan time.Time {
+	return t.ticker.C
+}
+
+func (t *timePlanningOperationLeaseTicker) Stop() {
+	t.ticker.Stop()
+}
 
 type operationStartSource string
 
@@ -46,6 +62,11 @@ type operationRunner struct {
 	// and exits, allowing Wait() to drain. Sharing it with the recovery
 	// loop means a single recoveryCancel terminates both shutdown paths.
 	ctx context.Context
+	// handoffCtx remains live only long enough to record cancellation terminal
+	// state after ctx is cancelled. Service.Close and ForceClose revoke it when
+	// they can no longer wait for the runner, so it never escapes DB ownership.
+	handoffCtx     context.Context
+	cancelHandoffs context.CancelFunc
 
 	mu            sync.Mutex
 	running       map[string]struct{}
@@ -67,6 +88,9 @@ type operationRunner struct {
 	// Single accumulated error (not a slice cleared in Wait) so
 	// repeated Wait/Close calls remain truthful.
 	cancelDrainErr error
+	// afterExecuteClaimed is a test seam for the narrow interval after the
+	// canonical execution outcome is known and before its heartbeat is stopped.
+	afterExecuteClaimed func()
 	// wg tracks Start-launched goroutines so Service.Close can wait for
 	// them. wg.Add is performed under mu, paired with the ctx-cancelled
 	// guard below, so a goroutine either gets counted or is rejected
@@ -100,16 +124,28 @@ func (c *sequenceCursor) Reserve() int {
 }
 
 func newOperationRunner(deps runtimeDeps, ctx context.Context) *operationRunner {
+	if deps.inspectPlannerProviderSessionActivity == nil {
+		deps.inspectPlannerProviderSessionActivity = inspectPlannerProviderSessionActivity
+	}
 	idle := make(chan struct{})
 	close(idle)
+	handoffCtx, cancelHandoffs := context.WithCancel(context.Background())
 	return &operationRunner{
-		deps:          deps,
-		events:        newOperationEventService(deps),
-		ctx:           ctx,
-		running:       make(map[string]struct{}),
-		cancels:       make(map[string]context.CancelFunc),
-		cancelReasons: make(map[string]string),
-		idle:          idle,
+		deps:           deps,
+		events:         newOperationEventService(deps),
+		ctx:            ctx,
+		handoffCtx:     handoffCtx,
+		cancelHandoffs: cancelHandoffs,
+		running:        make(map[string]struct{}),
+		cancels:        make(map[string]context.CancelFunc),
+		cancelReasons:  make(map[string]string),
+		idle:           idle,
+	}
+}
+
+func (r *operationRunner) abortHandoffs() {
+	if r != nil && r.cancelHandoffs != nil {
+		r.cancelHandoffs()
 	}
 }
 
@@ -151,39 +187,33 @@ func (r *operationRunner) startWithSource(operationID string, source operationSt
 	go func(execCtx context.Context) {
 		defer r.wg.Done()
 		defer r.finish(operationID)
-		if err := r.execute(execCtx, operationID, source); err != nil {
-			if r.shouldRecordCancelDrainFailure(err) {
-				r.recordCancelDrainFailure(operationID, err)
-			}
-			if !errors.Is(err, context.Canceled) && !errors.Is(err, state.ErrPlanningLeaseConflict) {
-				r.observeStartFailure(source, err)
-				log.Printf("planner start source=%s operation_id=%s err=%v", source, operationID, err)
-			}
-		}
+		_ = r.executeAndObserve(execCtx, operationID, source)
 	}(opCtx)
 }
 
-// shouldRecordCancelDrainFailure narrows the recorded set to genuine
-// shutdown-drain failures. Three exclusions:
-//   - r.ctx.Err() == nil → not a shutdown-driven path; ordinary errors
-//     during normal operation have their own surfaces (failureCount
-//     metric, error events, etc.).
-//   - context.Canceled → cancelOperation's clean-success sentinel
-//     (see its return-value contract); the cancel write succeeded.
-//   - state.ErrPlanningLeaseConflict → benign race; another observer
-//     already terminalized the row. Recording would falsely mark a
-//     clean-but-raced cancel as a shutdown failure.
+func (r *operationRunner) executeAndObserve(ctx context.Context, operationID string, source operationStartSource) error {
+	err := r.execute(ctx, operationID, source)
+	if err == nil {
+		return nil
+	}
+	if r.shouldRecordCancelDrainFailure(err) {
+		r.recordCancelDrainFailure(operationID, planningDrainFailure(err))
+	}
+	if !errors.Is(err, context.Canceled) && !errors.Is(err, state.ErrPlanningLeaseConflict) {
+		r.observeStartFailure(source, err)
+		log.Printf("planner start source=%s operation_id=%s err=%v", source, operationID, err)
+	}
+	return err
+}
+
+// Only unresolved drain/cleanup failures belong to shutdown. The service may
+// be cancelled after a failed operation commits but before this worker returns;
+// that timing must not relabel its already-settled execution outcome.
 func (r *operationRunner) shouldRecordCancelDrainFailure(err error) bool {
 	if r.ctx == nil || r.ctx.Err() == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) {
-		return false
-	}
-	if errors.Is(err, state.ErrPlanningLeaseConflict) {
-		return false
-	}
-	return true
+	return planningDrainFailure(err) != nil
 }
 
 func (r *operationRunner) recordCancelDrainFailure(operationID string, err error) {
@@ -269,6 +299,24 @@ func (r *operationRunner) RequestCancel(operationID, reason string) bool {
 	return true
 }
 
+func (r *operationRunner) CancelRecoveredOperation(ctx context.Context, operation state.PlanningOperation, reason string) error {
+	if err := r.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx); err != nil {
+		return err
+	}
+	unresolved, err := r.deps.store.PlanningOperationHasUnresolvedProcessGuard(ctx, operation.OperationID)
+	if err != nil {
+		return err
+	}
+	if unresolved {
+		return fmt.Errorf("planning operation process quiescence is not yet proven")
+	}
+	next, err := r.nextOperationEventSeq(ctx, operation.OperationID)
+	if err != nil {
+		return err
+	}
+	return r.cancelOperation(ctx, operation, newSequenceCursor(next), reason)
+}
+
 func (r *operationRunner) cancelReasonOrNil(operationID string) *string {
 	if r == nil {
 		return nil
@@ -304,16 +352,37 @@ func (r *operationRunner) execute(ctx context.Context, operationID string, sourc
 		return nil
 	}
 
-	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
+	executionCtx, cancelExecution := context.WithCancel(ctx)
+	defer cancelExecution()
+	heartbeatCtx, cancelHeartbeat := context.WithCancel(executionCtx)
 	defer cancelHeartbeat()
-	heartbeatErrCh := r.startHeartbeat(heartbeatCtx, claimed)
+	heartbeatErrCh := r.startHeartbeat(heartbeatCtx, claimed, cancelExecution)
 
-	execErr := r.executeClaimed(ctx, claimed, source)
-	cancelHeartbeat()
-	if heartbeatErr := <-heartbeatErrCh; execErr == nil && heartbeatErr != nil {
-		execErr = heartbeatErr
+	execErr := r.executeClaimed(executionCtx, claimed, source)
+	if r.afterExecuteClaimed != nil {
+		r.afterExecuteClaimed()
 	}
-	return execErr
+	cancelHeartbeat()
+	heartbeatErr := <-heartbeatErrCh
+	if heartbeatErr == nil {
+		return execErr
+	}
+	if execErr != nil {
+		// A heartbeat can cancel an active execution while another execution
+		// error is being returned. Preserve both causes for the caller.
+		return errors.Join(execErr, heartbeatErr)
+	}
+	// A terminal settlement clears its lease in the same transaction. A
+	// renewal that races afterwards must not turn that committed success into
+	// a runner failure, but a stale worker that lost its lease before
+	// settlement must still report the renewal error.
+	// The execution context is cancelled before this read so the heartbeat can
+	// stop. This is read-only and cannot outlive DB mutation ownership.
+	settled, found, lookupErr := r.deps.store.GetOperation(context.WithoutCancel(executionCtx), claimed.OperationID)
+	if lookupErr == nil && found && settled.Status == state.PlanningOperationStatusSucceeded {
+		return nil
+	}
+	return heartbeatErr
 }
 
 func (r *operationRunner) cancelQueuedOperation(ctx context.Context, operationID, reason string) error {
@@ -350,6 +419,36 @@ func (r *operationRunner) cancelQueuedOperation(ctx context.Context, operationID
 	return context.Canceled
 }
 
+func (r *operationRunner) failQueuedUnsupportedExternalContext(ctx context.Context, operation state.PlanningOperation, mismatch *state.UnsupportedPlanningExternalContextVersionError) error {
+	if mismatch == nil {
+		return fmt.Errorf("unsupported linked-source context version error is required")
+	}
+	now := r.deps.nowString()
+	event, err := r.buildTerminalEventFromCursor(ctx, operation.OperationID, nil, acp.RunFailedEventType, plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": mismatch.Error()}))
+	if err != nil {
+		return err
+	}
+	if err := r.deps.store.FailQueuedOperation(ctx, state.FailQueuedPlanningOperationRequest{
+		OperationID:   operation.OperationID,
+		ErrorMessage:  mismatch.Error(),
+		UpdatedAt:     now,
+		FinishedAt:    now,
+		TerminalEvent: *event,
+	}); err != nil {
+		if errors.Is(err, state.ErrPlanningLeaseConflict) {
+			return nil
+		}
+		return err
+	}
+	if r.deps.metrics != nil {
+		r.deps.metrics.failureCount.Add(1)
+	}
+	if r.deps.broker != nil {
+		r.deps.broker.Publish(operation.OperationID)
+	}
+	return nil
+}
+
 func (r *operationRunner) executeClaimed(ctx context.Context, operation state.PlanningOperation, source operationStartSource) error {
 	startSeq, err := r.nextOperationEventSeq(ctx, operation.OperationID)
 	if err != nil {
@@ -367,6 +466,13 @@ func (r *operationRunner) executeClaimed(ctx context.Context, operation state.Pl
 	request, err := decodeOperationRequest(operation.RequestPayloadJSON)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
+	}
+	contextVersionMismatch, err := r.deps.store.UnsupportedPlanningOperationExternalContextVersion(ctx, operation.OperationID)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, fmt.Errorf("validate immutable linked-source context: %w", err))
+	}
+	if contextVersionMismatch != nil {
+		return r.failOperation(ctx, operation, cursor, contextVersionMismatch)
 	}
 
 	startedPayload := map[string]any{
@@ -399,33 +505,51 @@ func (r *operationRunner) executeClaimed(ctx context.Context, operation state.Pl
 	}
 }
 
-func (r *operationRunner) executeReplyOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) error {
+func (r *operationRunner) executeReplyOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) (resultErr error) {
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, !request.ForceNewSession))
+	forceNewSession := request.ForceNewSession || operation.AutomaticRetry
+	providerSessionID := ""
+	if !forceNewSession {
+		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
+		if err != nil {
+			return r.failOperation(ctx, operation, cursor, err)
+		}
+	}
+	// An empty durable id means this invocation must create a new provider
+	// session. Never let the adapter's in-memory cache become implicit reuse
+	// authority for a planner invocation.
+	forceNewSession = forceNewSession || strings.TrimSpace(providerSessionID) == ""
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, forceNewSession)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
-	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
+	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	metadata := resultProviderMetadata(turn.Metadata, err)
+	failAfterProvider := func(cause error) error {
+		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, r.finishProviderContent(operation, metadata, turn.Close))
+	}()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
-		err = flushErr
+		err = executionError(metadata, flushErr)
 	}
 	// Shutdown short-circuit: if the service ctx was cancelled while the
 	// planner was running, finalize as cancelled regardless of how the
@@ -435,17 +559,14 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	// expected to be cancelled would lie. Same pattern repeats after
 	// every long planner call below.
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(turn.Metadata, err))
 	}
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
-	}
-	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
 	}
 	var autoTitleSession *state.PlanningSession
 	autoTitleSession, err = maybeAutoGenerateTitleForReplyFinalize(ctx, r.deps, r, session, messages, request, titleTriggerSourceAutoSecondUserMessageFinalize)
@@ -454,14 +575,15 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 		autoTitleSession = nil
 	}
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	questionPayloadJSON, err := marshalQuestion(turn.Question)
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 
 	assistantMessage := state.AppendPlanningMessageRequest{
+		ContentSource:       turn.ContentSource,
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
 		ParentMessageID:     request.UserMessageID,
@@ -486,9 +608,11 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if autoTitleSession != nil {
 		messageCompletedPayload["session_patch"] = sessionPatchPayload(*autoTitleSession)
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+	messageCompletedEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload)
+	if err != nil {
+		return failAfterProvider(err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, turn.ContentSource, state.PlanningMessageContentID(assistantMessage.PlanningMessageID))
 	runCompletedPayload := plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
@@ -498,86 +622,98 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	}
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, runCompletedPayload)
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	now := r.deps.nowString()
 	// The user message was appended at create time; finalize appends the
 	// assistant under it and moves the active leaf onto the new reply.
 	finalizeReq := state.FinalizeOperationRequest{
-		Kind:                state.FinalizeReply,
-		SessionID:           session.PlanningSessionID,
-		OperationID:         operation.OperationID,
-		LeaseOwner:          operation.LeaseOwner,
-		LeaseVersion:        operation.LeaseVersion,
-		ConversationState:   state.PlanningSessionConversationStateReady,
-		UpdatedAt:           now,
-		FinishedAt:          now,
-		AssistantMessage:    &assistantMessage,
-		ActiveLeafMessageID: request.AssistantMessageID,
-		ResultRef:           request.AssistantMessageID,
-		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:       terminalEvent,
+		Kind:                  state.FinalizeReply,
+		SessionID:             session.PlanningSessionID,
+		OperationID:           operation.OperationID,
+		LeaseOwner:            operation.LeaseOwner,
+		LeaseVersion:          operation.LeaseVersion,
+		ConversationState:     state.PlanningSessionConversationStateReady,
+		UpdatedAt:             now,
+		FinishedAt:            now,
+		AssistantMessage:      &assistantMessage,
+		ActiveLeafMessageID:   request.AssistantMessageID,
+		ResultRef:             request.AssistantMessageID,
+		ProviderSettlement:    providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		MessageCompletedEvent: messageCompletedEvent,
+		TerminalEvent:         terminalEvent,
 	}
 	if err := r.deps.store.FinalizeOperation(ctx, finalizeReq); err != nil {
-		return err
+		return r.failSuccessfulFinalization(ctx, operation, cursor, turn.Metadata, err)
 	}
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
+	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (r *operationRunner) executeRegenerateOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) error {
+func (r *operationRunner) executeRegenerateOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) (resultErr error) {
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
+	// Regenerate starts an independent provider session for the new branch; the
+	// resulting durable provider session becomes the latest reusable reply
+	// session after successful settlement.
+	forceNewSession := true
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, forceNewSession || request.ForceNewSession || operation.AutomaticRetry)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, "")
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
-	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, request.ForceNewSession)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
+	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	metadata := resultProviderMetadata(turn.Metadata, err)
+	failAfterProvider := func(cause error) error {
+		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, r.finishProviderContent(operation, metadata, turn.Close))
+	}()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
-		err = flushErr
+		err = executionError(metadata, flushErr)
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(turn.Metadata, err))
 	}
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
-	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	regenQuestionPayloadJSON, err := marshalQuestion(turn.Question)
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 
 	regenParentID := nilIfEmpty(request.ParentMessageID)
 	assistantMessage := state.AppendPlanningMessageRequest{
+		ContentSource:       turn.ContentSource,
 		PlanningMessageID:   request.AssistantMessageID,
 		PlanningSessionID:   session.PlanningSessionID,
 		ParentMessageID:     request.ParentMessageID,
@@ -599,88 +735,107 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	})
 	messageCompletedPayload = plannerMessagePayload(operation, messageCompletedPayload)
 	messageCompletedPayload["text"] = assistantMessage.ContentMarkdown
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+	messageCompletedEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.MessageDoneEventType, messageCompletedPayload)
+	if err != nil {
+		return failAfterProvider(err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, turn.ContentSource, state.PlanningMessageContentID(assistantMessage.PlanningMessageID))
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":          request.AssistantMessageID,
 		"planning_message_id": request.AssistantMessageID,
 	}))
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	now := r.deps.nowString()
 	if err := r.deps.store.FinalizeOperation(ctx, state.FinalizeOperationRequest{
-		Kind:                state.FinalizeRegenerate,
-		SessionID:           session.PlanningSessionID,
-		OperationID:         operation.OperationID,
-		LeaseOwner:          operation.LeaseOwner,
-		LeaseVersion:        operation.LeaseVersion,
-		ConversationState:   state.PlanningSessionConversationStateReady,
-		UpdatedAt:           now,
-		FinishedAt:          now,
-		AssistantMessage:    &assistantMessage,
-		ActiveLeafMessageID: request.AssistantMessageID,
-		ResultRef:           request.AssistantMessageID,
-		ProviderSettlement:  providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
-		TerminalEvent:       terminalEvent,
+		Kind:                  state.FinalizeRegenerate,
+		SessionID:             session.PlanningSessionID,
+		OperationID:           operation.OperationID,
+		LeaseOwner:            operation.LeaseOwner,
+		LeaseVersion:          operation.LeaseVersion,
+		ConversationState:     state.PlanningSessionConversationStateReady,
+		UpdatedAt:             now,
+		FinishedAt:            now,
+		AssistantMessage:      &assistantMessage,
+		ActiveLeafMessageID:   request.AssistantMessageID,
+		ResultRef:             request.AssistantMessageID,
+		ProviderSettlement:    providerSettlementForSuccess(providerInvocation.InvocationID, turn.Metadata, now),
+		MessageCompletedEvent: messageCompletedEvent,
+		TerminalEvent:         terminalEvent,
 	}); err != nil {
-		return err
+		return r.failSuccessfulFinalization(ctx, operation, cursor, turn.Metadata, err)
 	}
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
+	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) error {
+func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, request operationRequest, cursor *sequenceCursor) (resultErr error) {
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
+	forceNewSession := operation.AutomaticRetry
+	providerSessionID := ""
+	if !forceNewSession {
+		providerSessionID, err = providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, true)
+		if err != nil {
+			return r.failOperation(ctx, operation, cursor, err)
+		}
+	}
+	forceNewSession = forceNewSession || strings.TrimSpace(providerSessionID) == ""
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, forceNewSession)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
-	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
-	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, false)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
+	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	metadata := resultProviderMetadata(plan.Metadata, err)
+	failAfterProvider := func(cause error) error {
+		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, r.finishProviderContent(operation, metadata, plan.Close))
+	}()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
-		err = flushErr
+		err = executionError(metadata, flushErr)
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(plan.Metadata, err))
 	}
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, plan.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(plan.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(plan.Metadata, err), plan.Metadata.FinalText)
 	}
-	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	// Drafts no longer carry a hand-crafted summary placeholder; the Decree
 	// Plan body itself is the canonical summary. We persist an empty JSON
 	// object to satisfy the NOT NULL constraint without lying to the client.
 	summaryJSON := []byte(`{}`)
 	draft := state.CreatePlanningDraftRequest{
+		TextSource:        plan.TextSource,
 		PlanningDraftID:   request.DraftID,
 		PlanningSessionID: session.PlanningSessionID,
 		DecreeTitle:       firstNonEmpty(plan.DecreeTitle, session.Title),
@@ -688,102 +843,110 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 		SummaryJSON:       string(summaryJSON),
 		CreatedAt:         request.DraftCreatedAt,
 	}
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
+	messageCompletedEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
 		"content_markdown":  draft.DecreeText,
 		"text":              draft.DecreeText,
 		"decree_title":      draft.DecreeTitle,
 		"planning_draft_id": draft.PlanningDraftID,
 		"created_at":        draft.CreatedAt,
-	})); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+	}))
+	if err != nil {
+		return failAfterProvider(err)
 	}
+	bindPlannerBodyEvent(messageCompletedEvent, plan.TextSource, state.PlanningDraftContentID(draft.PlanningDraftID))
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":        draft.PlanningDraftID,
 		"planning_draft_id": draft.PlanningDraftID,
 	}))
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	now := r.deps.nowString()
 	if err := r.deps.store.FinalizeOperation(ctx, state.FinalizeOperationRequest{
-		Kind:               state.FinalizeFormalize,
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		ConversationState:  state.PlanningSessionConversationStateReady,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		Draft:              &draft,
-		CurrentDraftID:     draft.PlanningDraftID,
-		ResultRef:          draft.PlanningDraftID,
-		ProviderSettlement: providerSettlementForSuccess(providerInvocation.InvocationID, plan.Metadata, now),
-		TerminalEvent:      terminalEvent,
+		Kind:                  state.FinalizeFormalize,
+		SessionID:             session.PlanningSessionID,
+		OperationID:           operation.OperationID,
+		LeaseOwner:            operation.LeaseOwner,
+		LeaseVersion:          operation.LeaseVersion,
+		ConversationState:     state.PlanningSessionConversationStateReady,
+		UpdatedAt:             now,
+		FinishedAt:            now,
+		Draft:                 &draft,
+		CurrentDraftID:        draft.PlanningDraftID,
+		ResultRef:             draft.PlanningDraftID,
+		ProviderSettlement:    providerSettlementForSuccess(providerInvocation.InvocationID, plan.Metadata, now),
+		MessageCompletedEvent: messageCompletedEvent,
+		TerminalEvent:         terminalEvent,
 	}); err != nil {
-		return err
+		return r.failSuccessfulFinalization(ctx, operation, cursor, plan.Metadata, err)
 	}
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
+	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
+		return err
+	}
 	return nil
 }
 
-func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, cursor *sequenceCursor) error {
+func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, cursor *sequenceCursor) (resultErr error) {
 	if r.deps.planner == nil {
 		return r.failOperation(ctx, operation, cursor, fmt.Errorf("planning agent is not configured"))
 	}
-	messages, err := r.deps.store.ListMessages(ctx, session.PlanningSessionID)
+	messages, err := r.deps.store.ActiveMessageSource(ctx, session.PlanningSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionIDForPlanningInvocation(ctx, r.deps.store, session, operation, false))
+	agentContext, err := r.deps.agentContext(ctx, operation, session, messages, true)
+	if err != nil {
+		return r.failOperation(ctx, operation, cursor, err)
+	}
+	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, "")
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
 	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
-	streamCtx := decoupleCancellation(ctx)
-	r.decorateProviderInvocationContext(streamCtx, operation, cursor, providerInvocation)
-	textWriter := newBufferedOperationTextWriter(streamCtx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
-	agentContext, err := r.deps.titleAgentContext(ctx, operation, session, messages)
-	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
+	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
+	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	metadata := resultProviderMetadata(generatedTitle.Metadata, err)
+	failAfterProvider := func(cause error) error {
+		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
+	}
+	defer func() { resultErr = errors.Join(resultErr, r.retireProviderContent(operation, metadata)) }()
 	if flushErr := textWriter.Close(); err == nil && flushErr != nil {
-		err = flushErr
+		err = executionError(metadata, flushErr)
 	}
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, resultProviderMetadata(generatedTitle.Metadata, err))
 	}
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	persistObservedPlanningProviderSession(providerInvocation, generatedTitle.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(generatedTitle.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(generatedTitle.Metadata, err), generatedTitle.Metadata.FinalText)
 	}
-	if err := r.reconcileProviderSessionActivity(ctx, operation, cursor, providerInvocation); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
-	}
 	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "finalizing", nil)); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	finalTitle := strings.TrimSpace(generatedTitle.Title)
 	if finalTitle == "" {
-		return r.failOperation(ctx, operation, cursor, fmt.Errorf("generated title is empty"))
+		return failAfterProvider(fmt.Errorf("generated title is empty"))
 	}
 	now := r.deps.nowString()
-	if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
+	messageCompletedEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.MessageDoneEventType, plannerMessagePayload(operation, map[string]any{
 		"content_markdown": finalTitle,
 		"text":             finalTitle,
 		"title":            finalTitle,
 		"title_state":      "generated",
 		"created_at":       now,
-	})); err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+	}))
+	if err != nil {
+		return failAfterProvider(err)
 	}
 	terminalEvent, err := r.buildTerminalEvent(operation.OperationID, cursor, acp.RunCompletedEventType, plannerMessagePayload(operation, map[string]any{
 		"result_ref":  finalTitle,
@@ -791,30 +954,86 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 		"title_state": "generated",
 	}))
 	if err != nil {
-		return r.failOperation(ctx, operation, cursor, err)
+		return failAfterProvider(err)
 	}
 	if err := r.deps.store.FinalizeGenerateTitle(ctx, state.FinalizeGenerateTitleRequest{
-		SessionID:          session.PlanningSessionID,
-		OperationID:        operation.OperationID,
-		LeaseOwner:         operation.LeaseOwner,
-		LeaseVersion:       operation.LeaseVersion,
-		UpdatedAt:          now,
-		FinishedAt:         now,
-		GeneratedTitle:     finalTitle,
-		ObservedOutputText: finalTitle,
-		ProviderSettlement: providerSettlementForSuccess(providerInvocation.InvocationID, generatedTitle.Metadata, now),
-		TerminalEvent:      terminalEvent,
+		SessionID:             session.PlanningSessionID,
+		OperationID:           operation.OperationID,
+		LeaseOwner:            operation.LeaseOwner,
+		LeaseVersion:          operation.LeaseVersion,
+		UpdatedAt:             now,
+		FinishedAt:            now,
+		GeneratedTitle:        finalTitle,
+		ObservedOutputText:    finalTitle,
+		ProviderSettlement:    providerSettlementForSuccess(providerInvocation.InvocationID, generatedTitle.Metadata, now),
+		MessageCompletedEvent: messageCompletedEvent,
+		TerminalEvent:         terminalEvent,
 	}); err != nil {
-		return err
+		return r.failSuccessfulFinalization(ctx, operation, cursor, generatedTitle.Metadata, err)
 	}
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
+	}
+	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
+		return err
+	}
+	return nil
+}
+
+// reconcileCompletedActivity is intentionally part of the runner lifecycle.
+// A durable canonical settlement is already independent of this diagnostic
+// work, but shutdown must still observe a bounded reconciliation failure rather
+// than report that the worker drained while it can continue writing SQLite.
+func (r *operationRunner) reconcileCompletedActivity(ctx context.Context, operationID string) error {
+	if r == nil || r.deps.reconcileActivity == nil {
+		return nil
+	}
+	if err := r.deps.reconcileActivity(ctx, operationID); err != nil {
+		// Canonical settlement is complete already. Outside shutdown, a
+		// diagnostic replay failure stays pending for lifecycle recovery instead
+		// of reclassifying the settled operation as a runner failure.
+		if r.ctx == nil || r.ctx.Err() == nil {
+			return nil
+		}
+		// Canonical settlement has completed. Cancelling this optional,
+		// lifecycle-owned diagnostic continuation is an intentional drain.
+		if ctx.Err() == context.Canceled && onlyContextCancellation(err) {
+			return context.Canceled
+		}
+		return fmt.Errorf("reconcile completed planning activity: %w", err)
 	}
 	return nil
 }
 
 func (r *operationRunner) failOperation(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, cause error) error {
 	return r.failOperationWithObservedOutput(ctx, operation, cursor, cause, providerMetadataFromError(cause).FinalText)
+}
+
+func (r *operationRunner) failSuccessfulFinalization(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, metadata ProviderExecutionMetadata, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if operation.ActiveProviderInvocationID != nil {
+		readbackCtx, cancel := context.WithTimeout(r.handoffCtx, planningOperationCommitReadbackTimeout)
+		status, confirmed, err := r.deps.store.ConfirmPlanningProviderContentIngestion(readbackCtx, operation.OperationID, *operation.ActiveProviderInvocationID, metadata.StreamObservation)
+		cancel()
+		if err != nil {
+			return errors.Join(cause, fmt.Errorf("resolve planner finalization outcome: %w", err))
+		}
+		if confirmed && status == state.PlanningOperationStatusSucceeded {
+			if r.deps.broker != nil {
+				r.deps.broker.Publish(operation.OperationID)
+			}
+			return r.reconcileCompletedActivity(ctx, operation.OperationID)
+		}
+	}
+	return r.failOperationWithObservedOutput(
+		ctx,
+		operation,
+		cursor,
+		executionError(metadata, fmt.Errorf("finalize successful planner operation: %w", cause)),
+		metadata.FinalText,
+	)
 }
 
 func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, cause error, observedOutputText string) error {
@@ -829,22 +1048,33 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	// finalises consistently as cancelled instead of leaving the row
 	// in `running` for next-startup recovery to clean up.
 	if reason := r.interruptReasonOrNil(operation.OperationID); reason != nil {
-		return r.cancelOperation(ctx, operation, cursor, *reason)
+		return r.cancelOperationWithMetadata(ctx, operation, cursor, *reason, providerMetadataFromError(cause))
 	}
 	if cause == nil {
 		cause = fmt.Errorf("planner operation failed")
 	}
-	errPayload := plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": cause.Error()})
-	terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, acp.RunFailedEventType, errPayload)
-	if eventErr != nil {
-		return eventErr
-	}
 	now := r.deps.nowString()
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))
+	if observedOutputText != "" && !providerMetadata.StreamObservation.MeaningfulProgress {
+		providerMetadata.FinalText = observedOutputText
+		providerMetadata.StreamObservation.MeaningfulProgress = true
+		cause = executionError(providerMetadata, cause)
+	}
 	observedOutputText = sanitizeObservedPlannerOutput(operation.Type, observedOutputText)
-	providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
-	finalizeErr := r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent)
+	finalizeErr := error(nil)
+	if operation.ActiveProviderInvocationID != nil && r.deps.retryEngine != nil {
+		// Retry-aware finalization chooses and persists its one terminal event
+		// after the durable retry decision is known.
+		_, finalizeErr = r.finalizeFailureWithRetry(ctx, operation, cursor, cause, observedOutputText, false)
+	} else {
+		terminalEvent, eventErr := r.buildTerminalEventFromCursor(ctx, operation.OperationID, cursor, acp.RunFailedEventType, plannerGenericPayload(operation, acp.KingdomProgressKind, map[string]any{"error": cause.Error()}))
+		if eventErr != nil {
+			return eventErr
+		}
+		providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
+		finalizeErr = r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, false)
+	}
 	if finalizeErr != nil {
 		// A concurrent finaliser (recovery vs SSE-observer, or any
 		// other observer that already finalised this op) winning the
@@ -862,7 +1092,7 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
-	return cause
+	return &settledPlanningFailure{cause: cause}
 }
 
 // cancelOperation finalizes an in-flight operation as cancelled (status =
@@ -872,13 +1102,10 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 // not feed the failure metric or land on a UI surface that reads as
 // "something went wrong".
 //
-// The terminal DB write is double-wrapped:
-//   - context.WithoutCancel decouples the write from the cancelled service
-//     ctx so the cancel-driven shutdown can still persist the cancelled
-//     state without aborting itself.
-//   - context.WithTimeout(.., terminalCancelWriteTimeout) bounds the write
-//     so a contended SQLite lock cannot push DB activity past the
-//     shutdown coordinator's grace window.
+// The terminal DB write uses the runner-owned, revocable handoff context plus
+// a bounded deadline. It can record cancellation after execution cancellation,
+// but Service.Close revokes it at its own deadline so it cannot outlive DB
+// ownership.
 //
 // If the bounded write times out, the row stays `running` and this
 // function returns the wrapped DeadlineExceeded. The runner goroutine
@@ -888,14 +1115,22 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 // stuck-finalise path. Operators see the failure on the wire instead of
 // having to scrape logs.
 func (r *operationRunner) cancelOperation(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, reason string) error {
+	return r.cancelOperationWithMetadata(ctx, operation, cursor, reason, ProviderExecutionMetadata{})
+}
+
+func resultProviderMetadata(metadata ProviderExecutionMetadata, err error) ProviderExecutionMetadata {
+	var executionErr *AgentExecutionError
+	if errors.As(err, &executionErr) {
+		return executionErr.Metadata
+	}
+	return metadata
+}
+
+func (r *operationRunner) cancelOperationWithMetadata(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, reason string, metadata ProviderExecutionMetadata) error {
 	if strings.TrimSpace(reason) == "" {
 		reason = "operation cancelled"
 	}
-	// Decouple the terminal write from the cancelled service ctx so the
-	// cancel-driven shutdown can still persist the cancelled state, AND
-	// bound the write so a contended SQLite lock cannot push DB activity
-	// past the shutdown coordinator's grace window.
-	writeCtx, cancelWrite := context.WithTimeout(context.WithoutCancel(ctx), terminalCancelWriteTimeout)
+	writeCtx, cancelWrite := context.WithTimeout(r.handoffCtx, terminalCancelWriteTimeout)
 	defer cancelWrite()
 	payload := plannerMessagePayload(operation, map[string]any{"reason": reason})
 	terminalEvent, eventErr := r.buildTerminalEventFromCursor(writeCtx, operation.OperationID, cursor, acp.RunCancelledEventType, payload)
@@ -903,8 +1138,13 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 		return eventErr
 	}
 	now := r.deps.nowString()
-	providerSettlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, now, reason, nil, true)
-	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent); err != nil {
+	providerSettlement := providerSettlementForFailure(operation, metadata, now, reason, nil, true)
+	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, false); err != nil {
+		// Force/deadline revocation intentionally forbids further handoff
+		// writes. It is distinct from an unsuccessful guardian cancellation.
+		if r.handoffCtx.Err() == context.Canceled && onlyContextCancellation(err) {
+			return context.Canceled
+		}
 		return err
 	}
 	if r.deps.broker != nil {
@@ -916,7 +1156,7 @@ func (r *operationRunner) cancelOperation(ctx context.Context, operation state.P
 	return context.Canceled
 }
 
-func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest) error {
+func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest, allowExpiredLease bool) error {
 	switch operation.Type {
 	case state.PlanningOperationTypeGenerateTitle:
 		return r.deps.store.FinalizeGenerateTitleAbort(ctx, state.FinalizeGenerateTitleAbortRequest{
@@ -929,6 +1169,7 @@ func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation 
 			FinishedAt:         now,
 			ErrorMessage:       reason,
 			ObservedOutputText: observedOutputText,
+			AllowExpiredLease:  allowExpiredLease,
 			ProviderSettlement: providerSettlement,
 			TerminalEvent:      terminalEvent,
 		})
@@ -948,6 +1189,7 @@ func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation 
 			FinishedAt:         now,
 			ErrorMessage:       reason,
 			ObservedOutputText: observedOutputText,
+			AllowExpiredLease:  allowExpiredLease,
 			ProviderSettlement: providerSettlement,
 			TerminalEvent:      terminalEvent,
 		})
@@ -1033,10 +1275,10 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 		return
 	}
 	_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_launching", nil))
-	originalProviderSession := invocation.OnProviderSession
-	invocation.OnProviderSession = func(providerSessionID string) {
-		if originalProviderSession != nil {
-			originalProviderSession(providerSessionID)
+	originalProviderSessionOpened := invocation.OnProviderSessionOpened
+	invocation.OnProviderSessionOpened = func(providerSessionID string) {
+		if originalProviderSessionOpened != nil {
+			originalProviderSessionOpened(providerSessionID)
 		}
 		_, _ = r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, plannerPhasePayload(operation, "provider_session_open", map[string]any{"provider_session_id": strings.TrimSpace(providerSessionID)}))
 	}
@@ -1073,79 +1315,15 @@ func plannerActivityPayload(operation state.PlanningOperation, activityID string
 	})
 }
 
-func (r *operationRunner) reconcileProviderSessionActivity(ctx context.Context, operation state.PlanningOperation, cursor *sequenceCursor, invocation *ProviderInvocationContext) error {
-	if r == nil || r.deps.store == nil || cursor == nil || invocation == nil {
-		return nil
-	}
-	providerSessionID := strings.TrimSpace(invocation.ProviderSessionID)
-	invocationID := strings.TrimSpace(invocation.InvocationID)
-	if providerSessionID == "" || invocationID == "" || strings.TrimSpace(r.deps.projectRoot) == "" {
-		return nil
-	}
-	items, err := inspectPlannerProviderSessionActivity(ctx, r.deps.projectRoot, operation.OperationID, providerSessionID, invocationID, operation.StartedAt, operation.CreatedAt)
-	if err != nil {
-		return nil
-	}
-	if len(items) == 0 {
-		return nil
-	}
-	storedEvents, err := listAllPlanningOperationEvents(ctx, r.deps.store, operation.OperationID)
-	if err != nil {
-		return err
-	}
-	// Live activity events already carry the provider part id as their
-	// `activity_id`, so the durable backstop de-dups primarily on that stable
-	// id. The content signature stays as a secondary guard for the rare event
-	// the provider emits without a part id.
-	seenIDs := make(map[string]struct{}, len(storedEvents))
-	seen := make(map[string]struct{}, len(storedEvents))
-	for _, event := range storedEvents {
-		if activityID, ok := plannerActivityIDFromStoredEvent(event); ok {
-			seenIDs[activityID] = struct{}{}
-		}
-		if signature, ok := plannerActivitySignatureFromStoredEvent(event); ok {
-			seen[signature] = struct{}{}
-		}
-	}
-	for _, item := range items {
-		activity := providerActivityFromSessionActivityItem(item)
-		if activity.Kind == "" {
-			continue
-		}
-		itemID := strings.TrimSpace(item.ID)
-		if itemID != "" {
-			if _, exists := seenIDs[itemID]; exists {
-				continue
-			}
-		}
-		signature := plannerActivitySignature(activity)
-		if _, exists := seen[signature]; exists {
-			continue
-		}
-		payload := plannerActivityPayload(operation, itemID, activity)
-		if len(payload) == 0 {
-			continue
-		}
-		if _, err := r.appendOperationEvent(ctx, operation.OperationID, cursor, acp.GenericEventType, payload); err != nil {
-			return err
-		}
-		if itemID != "" {
-			seenIDs[itemID] = struct{}{}
-		}
-		seen[signature] = struct{}{}
-	}
-	return nil
-}
-
 func inspectPlannerProviderSessionActivity(ctx context.Context, projectRoot, operationID, providerSessionID, invocationID string, startedAt *string, createdAt string) ([]sessionActivityItem, error) {
 	invocationStartedAt := time.Time{}
 	if startedAt != nil && strings.TrimSpace(*startedAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(*startedAt)); err == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*startedAt)); err == nil {
 			invocationStartedAt = parsed.UTC()
 		}
 	}
 	if invocationStartedAt.IsZero() && strings.TrimSpace(createdAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(createdAt)); err == nil {
+		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(createdAt)); err == nil {
 			invocationStartedAt = parsed.UTC()
 		}
 	}
@@ -1224,7 +1402,8 @@ func inferToolActivityFields(item sessionActivityItem) (string, string, string) 
 }
 
 func plannerActivitySignature(activity ProviderActivity) string {
-	return strings.Join([]string{
+	hash := sha256.New()
+	for _, field := range []string{
 		strings.TrimSpace(activity.Kind),
 		strings.TrimSpace(activity.ToolName),
 		strings.TrimSpace(activity.ToolStatus),
@@ -1233,7 +1412,13 @@ func plannerActivitySignature(activity ProviderActivity) string {
 		strings.TrimSpace(activity.Label),
 		strings.TrimSpace(activity.Summary),
 		strings.TrimSpace(activity.OccurredAt),
-	}, "\x00")
+	} {
+		// Length framing avoids both large concatenations and separator
+		// collisions in provider-emitted fields.
+		_, _ = fmt.Fprintf(hash, "%d:", len(field))
+		_, _ = io.WriteString(hash, field)
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func plannerActivityIDFromStoredEvent(event state.PlanningOperationEvent) (string, bool) {
@@ -1294,15 +1479,18 @@ func persistObservedPlanningProviderSession(invocation *ProviderInvocationContex
 	invocation.ProviderSessionID = trimmedProviderSessionID
 }
 
-func providerSessionIDForPlanningInvocation(ctx context.Context, store *state.PlanningStore, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) string {
+func providerSessionIDForPlanningInvocation(ctx context.Context, store *state.PlanningStore, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) (string, error) {
 	if !reuseExistingProviderSession || store == nil {
-		return ""
+		return "", nil
 	}
 	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, planningLogicalSessionID(session.PlanningSessionID, operation.Type))
-	if err != nil || !found {
-		return ""
+	if err != nil {
+		return "", err
 	}
-	return strings.TrimSpace(invocation.ProviderSessionID)
+	if !found {
+		return "", nil
+	}
+	return strings.TrimSpace(invocation.ProviderSessionID), nil
 }
 
 func listAllPlanningOperationEvents(ctx context.Context, store *state.PlanningStore, operationID string) ([]state.PlanningOperationEvent, error) {
@@ -1345,7 +1533,11 @@ func (r *operationRunner) buildTerminalEventFromCursor(ctx context.Context, oper
 
 func (r *operationRunner) claimOperation(ctx context.Context, operationID string) (state.PlanningOperation, bool, error) {
 	now := nowTime(r.deps.nowString())
-	claimed, ok, err := r.deps.store.ClaimOperation(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339), now.Format(time.RFC3339))
+	claimed, ok, err := r.deps.store.ClaimOperationWithObserver(ctx, operationID, r.deps.leaseOwner, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano), func(stats sqlitex.Stats) {
+		if r.deps.metrics != nil && stats.Attempts > 1 {
+			r.deps.metrics.claimRetries.Add(uint64(stats.Attempts - 1))
+		}
+	})
 	if err != nil || !ok {
 		return claimed, ok, err
 	}
@@ -1353,31 +1545,18 @@ func (r *operationRunner) claimOperation(ctx context.Context, operationID string
 }
 
 func (r *operationRunner) claimOperationWithRetry(ctx context.Context, operationID string, source operationStartSource) (state.PlanningOperation, bool, error) {
-	var lastErr error
-	for attempt := 1; attempt <= planningStartMaxClaimAttempts; attempt++ {
-		claimed, ok, err := r.claimOperation(ctx, operationID)
-		if err == nil {
-			if ok {
-				r.observeClaimSuccess(source)
-			}
-			return claimed, ok, nil
-		}
-		lastErr = err
+	claimed, claimedOK, err := r.claimOperation(ctx, operationID)
+	if err != nil {
 		r.observeClaimFailure(source, err)
-		if ctx.Err() != nil || !state.IsSQLiteBusy(err) || attempt == planningStartMaxClaimAttempts {
-			break
-		}
-		r.observeClaimRetry(source)
-		delay := time.Duration(attempt) * planningStartRetryBaseDelay
-		log.Printf("planner claim retry source=%s operation_id=%s attempt=%d delay_ms=%d err=%v", source, operationID, attempt, delay.Milliseconds(), err)
-		if sleepErr := sleepWithContext(ctx, delay); sleepErr != nil {
-			return state.PlanningOperation{}, false, sleepErr
+		return state.PlanningOperation{}, false, err
+	}
+	if claimedOK {
+		r.observeClaimSuccess(source)
+		if r.deps.retryWakeProgress != nil {
+			r.deps.retryWakeProgress()
 		}
 	}
-	if lastErr != nil {
-		return state.PlanningOperation{}, false, lastErr
-	}
-	return state.PlanningOperation{}, false, nil
+	return claimed, claimedOK, nil
 }
 
 func (r *operationRunner) observeStartRequested(source operationStartSource) {
@@ -1411,13 +1590,6 @@ func (r *operationRunner) observeClaimFailure(source operationStartSource, err e
 	r.deps.metrics.claimFailures.Add(1)
 }
 
-func (r *operationRunner) observeClaimRetry(source operationStartSource) {
-	if r == nil || r.deps.metrics == nil {
-		return
-	}
-	r.deps.metrics.claimRetries.Add(1)
-}
-
 func (r *operationRunner) observeStartFailure(source operationStartSource, err error) {
 	if r == nil || r.deps.metrics == nil || err == nil {
 		return
@@ -1429,29 +1601,15 @@ func queueAgeMilliseconds(operation state.PlanningOperation) int64 {
 	if strings.TrimSpace(operation.CreatedAt) == "" || operation.StartedAt == nil || strings.TrimSpace(*operation.StartedAt) == "" {
 		return -1
 	}
-	createdAt, err := time.Parse(time.RFC3339, strings.TrimSpace(operation.CreatedAt))
+	createdAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(operation.CreatedAt))
 	if err != nil {
 		return -1
 	}
-	startedAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*operation.StartedAt))
+	startedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*operation.StartedAt))
 	if err != nil || startedAt.Before(createdAt) {
 		return -1
 	}
 	return startedAt.Sub(createdAt).Milliseconds()
-}
-
-func sleepWithContext(ctx context.Context, delay time.Duration) error {
-	if delay <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
 }
 
 func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, outputText string) string {
@@ -1461,27 +1619,57 @@ func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, ou
 	}
 	switch operationType {
 	case state.PlanningOperationTypeReply, state.PlanningOperationTypeRegenerate:
-		cleaned, _ := parseStructuredQuestion(trimmed)
-		return cleaned
+		// Inline diagnostic observations retain their complete value on a local
+		// staging failure. Referenced provider output bypasses this scalar path.
+		parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: trimmed}, false)
+		if err != nil {
+			return trimmed
+		}
+		defer parsed.Close()
+		reader, err := parsed.body.Open(context.Background())
+		if err != nil {
+			return trimmed
+		}
+		defer reader.Close()
+		var cleaned strings.Builder
+		if _, err := io.Copy(&cleaned, reader); err != nil {
+			return trimmed
+		}
+		return cleaned.String()
 	default:
 		return trimmed
 	}
 }
 
-func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.PlanningOperation) <-chan error {
+func (r *operationRunner) startHeartbeat(ctx context.Context, operation state.PlanningOperation, cancelExecution context.CancelFunc) <-chan error {
 	result := make(chan error, 1)
 	go func() {
 		defer close(result)
-		ticker := time.NewTicker(planningOperationLeaseTTL / 3)
+		tickerFactory := r.deps.newLeaseTicker
+		if tickerFactory == nil {
+			tickerFactory = newTimePlanningOperationLeaseTicker
+		}
+		ticker := tickerFactory(planningOperationLeaseTTL / 3)
+		if ticker == nil {
+			err := fmt.Errorf("planning operation lease ticker is required")
+			if cancelExecution != nil {
+				cancelExecution()
+			}
+			result <- err
+			return
+		}
 		defer ticker.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				result <- nil
 				return
-			case <-ticker.C:
+			case <-ticker.C():
 				now := nowTime(r.deps.nowString())
-				if err := r.deps.store.RenewOperationLease(ctx, operation.OperationID, operation.LeaseOwner, operation.LeaseVersion, now.Add(planningOperationLeaseTTL).Format(time.RFC3339), now.Format(time.RFC3339)); err != nil {
+				if err := r.deps.store.RenewOperationLease(ctx, operation.OperationID, operation.LeaseOwner, operation.LeaseVersion, now.Add(planningOperationLeaseTTL).Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+					if cancelExecution != nil {
+						cancelExecution()
+					}
 					result <- err
 					return
 				}
@@ -1583,17 +1771,9 @@ func answerPayloadMap(raw string) map[string]any {
 }
 
 func nowTime(now string) time.Time {
-	parsed, err := time.Parse(time.RFC3339, now)
+	parsed, err := time.Parse(time.RFC3339Nano, now)
 	if err == nil {
 		return parsed
 	}
 	return time.Now().UTC()
-}
-
-// decoupleCancellation returns a context that carries the parent's values but
-// is not cancelled when the parent is. The streaming agent's onChunk callback
-// uses it so that mid-stream HTTP cancellations do not silently drop the next
-// few SSE events the runner still needs to emit.
-func decoupleCancellation(parent context.Context) context.Context {
-	return context.WithoutCancel(parent)
 }

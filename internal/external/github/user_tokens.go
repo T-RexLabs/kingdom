@@ -11,10 +11,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"kingdom/internal/securefs"
@@ -62,6 +60,7 @@ func validUserToken(value string) bool {
 }
 
 type UserTokenStore struct {
+	root      string
 	anchor    string
 	rootChain []securefs.Directory
 }
@@ -76,7 +75,7 @@ func NewUserTokenStore(secretsRoot string) (*UserTokenStore, error) {
 		return nil, fmt.Errorf("resolve secrets root: %w", err)
 	}
 	parent := filepath.Dir(absRoot)
-	store := &UserTokenStore{anchor: parent, rootChain: []securefs.Directory{{Name: filepath.Base(absRoot), Mode: 0o700, ExactMode: true}}}
+	store := &UserTokenStore{root: absRoot, anchor: parent, rootChain: []securefs.Directory{{Name: filepath.Base(absRoot), Mode: 0o700, ExactMode: true}}}
 	if filepath.Base(absRoot) == "secrets" && filepath.Base(parent) == ".kingdom" {
 		store.anchor = filepath.Dir(parent)
 		store.rootChain = []securefs.Directory{{Name: ".kingdom", Mode: 0o755}, {Name: "secrets", Mode: 0o700, ExactMode: true}}
@@ -174,6 +173,7 @@ func (s *UserTokenStore) WithConnectionLock(connectionID string, fn func() error
 	}
 	defer dir.Close()
 	lock, err := dir.OpenFile(".lifecycle.lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	createdLock := err == nil
 	if errors.Is(err, fs.ErrExist) {
 		lock, err = securefs.OpenRegularFile(dir, ".lifecycle.lock", os.O_RDWR, 0)
 	}
@@ -181,13 +181,19 @@ func (s *UserTokenStore) WithConnectionLock(connectionID string, fn func() error
 		return err
 	}
 	defer lock.Close()
+	if createdLock {
+		if err := securefs.ProtectCurrentUserOnlyPath(filepath.Join(s.tokenRoot(connectionID), ".lifecycle.lock")); err != nil {
+			_ = dir.Remove(".lifecycle.lock")
+			return fmt.Errorf("protect github lifecycle lock: %w", err)
+		}
+	}
 	if err := validateProtectedRegularFile(lock, ".lifecycle.lock"); err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockFile(lock); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck
+	defer unlockFile(lock) //nolint:errcheck
 	return fn()
 }
 
@@ -267,6 +273,11 @@ func (s *UserTokenStore) storeRaw(connectionID string, generation int, raw []byt
 	if err != nil {
 		return err
 	}
+	if err := securefs.ProtectCurrentUserOnlyPath(filepath.Join(s.tokenRoot(connectionID), tmpName)); err != nil {
+		_ = tmp.Close()
+		_ = dir.Remove(tmpName)
+		return fmt.Errorf("protect staged github user tokens: %w", err)
+	}
 	defer dir.Remove(tmpName) //nolint:errcheck
 	if _, err = tmp.Write(raw); err == nil {
 		err = tmp.Sync()
@@ -288,12 +299,7 @@ func (s *UserTokenStore) storeRaw(connectionID string, generation int, raw []byt
 	if err != nil {
 		return fmt.Errorf("install github user tokens: %w", err)
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }
 
 // ReconcileGenerations removes temporary, stale, and unowned token generations.
@@ -372,19 +378,17 @@ func (s *UserTokenStore) openConnection(connectionID string, create bool) (*os.R
 
 func validateProtectedRegularFile(file *os.File, name string) error {
 	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
+	if err != nil || !info.Mode().IsRegular() || (securefs.EnforcesPOSIXMode() && info.Mode().Perm() != 0o600) {
 		return fmt.Errorf("%s must be a 0600 regular file", name)
 	}
-	if err := securefs.CurrentUserOwns(info); err != nil {
+	if err := securefs.ValidateCurrentUserOnly(file); err != nil {
 		return fmt.Errorf("%s: %w", name, err)
 	}
-	if runtime.GOOS != "windows" {
-		stat, ok := info.Sys().(*syscall.Stat_t)
-		if !ok || stat.Nlink != 1 {
-			return fmt.Errorf("%s must have exactly one link", name)
-		}
-	}
-	return nil
+	return validateFileSingleLink(file, name)
+}
+
+func (s *UserTokenStore) tokenRoot(connectionID string) string {
+	return filepath.Join(s.root, "github-user-tokens", connectionID)
 }
 
 func userTokenTempName() (string, error) {
@@ -461,10 +465,5 @@ func removeTokenGenerations(dir *os.Root, selected int) error {
 	if !changed {
 		return nil
 	}
-	d, err := dir.Open(".")
-	if err == nil {
-		err = d.Sync()
-		_ = d.Close()
-	}
-	return err
+	return securefs.SyncDirectory(dir)
 }

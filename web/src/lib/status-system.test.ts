@@ -12,6 +12,7 @@ describe("statusLabel", () => {
 		expect(statusLabel("verifying")).toBe("Verifying");
 		expect(statusLabel("idle")).toBe("Idle");
 		expect(statusLabel("awaiting_plan_decision")).toBe("Awaiting Plan Decision");
+		expect(statusLabel("paused")).toBe("Retry Paused");
 		expect(statusLabel("some_new_state")).toBe("Some New State");
 	});
 });
@@ -37,6 +38,11 @@ describe("status system", () => {
 		expect(statusToneForKey("ready")).toBe("attention");
 		expect(statusBadgeClass("ready")).toContain("bg-status-blocked/10");
 		expect(statusTextClass("ready")).toBe("text-status-blocked");
+	});
+
+	it("treats paused retries as attention", () => {
+		expect(statusToneForKey("paused")).toBe("attention");
+		expect(statusBadgeClass("paused")).toContain("bg-status-blocked/10");
 	});
 
 	it("treats queued as attention so pending work stays visible", () => {

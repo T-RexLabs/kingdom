@@ -3,7 +3,11 @@ package planning
 import (
 	"context"
 	"fmt"
+	"io"
+	"strings"
 
+	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -13,6 +17,10 @@ type Agent interface {
 	FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error)
 	GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error)
 }
+
+// ContextCloser is the optional planner resource lifecycle. Close must honor
+// the caller's deadline; consumers are drained before Service invokes it.
+type ContextCloser interface{ CloseContext(context.Context) error }
 
 type ProviderActivity struct {
 	Kind           string
@@ -28,26 +36,30 @@ type ProviderActivity struct {
 }
 
 type ProviderInvocationContext struct {
-	AttemptID          string
-	LogicalSessionID   string
-	ProviderSessionID  string
-	InvocationID       string
-	InvocationIssuedAt string
-	OnProviderSession  func(sessionID string)
-	OnActivity         func(activity ProviderActivity)
+	AttemptID                string
+	LogicalSessionID         string
+	ProviderSessionID        string
+	InvocationID             string
+	OnProviderSession        func(sessionID string) error
+	OnProviderSessionOpened  func(sessionID string)
+	OnActivity               func(activity ProviderActivity)
+	OnProcessGuardOwnership  func(context.Context, opencode.ProcessGuardOwnership) error
+	OnProcessGuardQuiescence func(context.Context, opencode.ProcessGuardQuiescence) error
 }
 
 type AgentContext struct {
-	SessionID           string
-	Title               string
-	ProjectRoot         string
-	ContextSummary      string
-	ExternalContext     string
-	ExternalSnapshotIDs []string
-	Messages            []state.PlanningMessage
-	ModelSelection      PlannerModelSelection
-	ForceNewSession     bool
-	ProviderInvocation  *ProviderInvocationContext
+	VisitMessages        state.PlanningMessageSource
+	WriteExternalContext func(context.Context, io.Writer) error
+	SessionID            string
+	Title                string
+	ProjectRoot          string
+	ContextSummary       string
+	ExternalContext      string
+	ExternalSnapshotIDs  []string
+	Messages             []state.PlanningMessage
+	ModelSelection       PlannerModelSelection
+	ForceNewSession      bool
+	ProviderInvocation   *ProviderInvocationContext
 }
 
 type ProviderExecutionMetadata struct {
@@ -58,6 +70,7 @@ type ProviderExecutionMetadata struct {
 	OutcomeState                    string
 	FailureReasonCode               string
 	FailureReasonText               string
+	StreamObservation               opencode.InvocationStreamObservation
 }
 
 type AgentExecutionError struct {
@@ -89,27 +102,53 @@ func executionError(metadata ProviderExecutionMetadata, err error) error {
 // requirePlannerTurnSettled gates canonical persistence on the provider's own
 // structural stop signal: the adjudicated terminal outcome must be success and
 // the assembled output text must be non-empty. The planner settles server-side
-// from this signal — there is no model-invoked completion receipt.
+// from this signal.
 func requirePlannerTurnSettled(metadata ProviderExecutionMetadata) error {
 	if metadata.OutcomeState != "success" {
 		return fmt.Errorf("planner provider execution did not settle success")
 	}
-	if metadata.FinalText == "" {
+	if metadata.FinalText == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil {
 		return fmt.Errorf("planner provider execution missing settled final text")
+	}
+	if err := providerexecution.ValidateServerResponseSuccess(metadata.StreamObservation); err != nil {
+		return fmt.Errorf("planner provider execution has invalid terminal stream observation: %w", err)
+	}
+	if metadata.StreamObservation.CanonicalTerminalTextRef == nil && strings.TrimSpace(metadata.StreamObservation.CanonicalTerminalText) != strings.TrimSpace(metadata.FinalText) {
+		return fmt.Errorf("planner provider execution terminal stream output does not match settled final text")
 	}
 	return nil
 }
 
+// AgentTurn owns any parsed text staging until Close, after the caller has
+// finalized its canonical message and terminal events.
 type AgentTurn struct {
+	ContentSource   *state.PlanningTextSource
+	closeContent    func() error
 	ContentMarkdown string
 	Question        *StructuredQuestion
 	Metadata        ProviderExecutionMetadata
 }
 
+// FormalizedPlan owns its parsed body source until Close after finalization.
 type FormalizedPlan struct {
-	DecreeTitle string
-	DecreeText  string
-	Metadata    ProviderExecutionMetadata
+	TextSource   *state.PlanningTextSource
+	closeContent func() error
+	DecreeTitle  string
+	DecreeText   string
+	Metadata     ProviderExecutionMetadata
+}
+
+func (t AgentTurn) Close() error {
+	if t.closeContent != nil {
+		return t.closeContent()
+	}
+	return nil
+}
+func (p FormalizedPlan) Close() error {
+	if p.closeContent != nil {
+		return p.closeContent()
+	}
+	return nil
 }
 
 type GeneratedTitle struct {

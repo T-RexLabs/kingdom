@@ -6,7 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
+
+	"kingdom/internal/processguardian"
 )
 
 // The registry answers "which summons are running on this machine, and where".
@@ -29,12 +30,25 @@ const (
 var summonRegistryPathFunc = defaultSummonRegistryPath
 
 type summonInstanceRecord struct {
-	PID         int    `json:"pid"`
-	ConfigPath  string `json:"config_path"`
-	KingdomHome string `json:"kingdom_home"`
-	Listen      string `json:"listen"`
-	BasePath    string `json:"base_path"`
-	StartedAt   string `json:"started_at"`
+	PID                  int    `json:"pid"`
+	ProcessIdentityToken string `json:"process_identity_token"`
+	StopControlToken     string `json:"stop_control_token"`
+	ConfigPath           string `json:"config_path"`
+	KingdomHome          string `json:"kingdom_home"`
+	Listen               string `json:"listen"`
+	BasePath             string `json:"base_path"`
+	StartedAt            string `json:"started_at"`
+}
+
+func summonProcessIdentityMatches(pid int, expected string) (bool, error) {
+	if pid <= 0 || strings.TrimSpace(expected) == "" {
+		return false, nil
+	}
+	matches, err := processguardian.ProcessIdentityMatches(pid, expected)
+	if err != nil {
+		return false, fmt.Errorf("inspect summon process identity: %w", err)
+	}
+	return matches, nil
 }
 
 type summonInstanceRegistry struct {
@@ -64,7 +78,7 @@ func listActiveSummonInstances() ([]summonInstanceRecord, error) {
 	if err != nil {
 		return nil, err
 	}
-	return liveSummonInstances(stored), nil
+	return liveSummonInstances(stored)
 }
 
 func findSummonInstanceForConfig(configPath, kingdomHome string) (*summonInstanceRecord, bool, error) {
@@ -105,6 +119,26 @@ func findActiveInstallModeSummon() (summonInstanceRecord, bool) {
 }
 
 func registerSummonInstance(record summonInstanceRecord) error {
+	if record.PID <= 0 {
+		return fmt.Errorf("summon process id must be positive")
+	}
+	if strings.TrimSpace(record.ProcessIdentityToken) == "" {
+		identity, err := processguardian.ProcessIdentityToken(record.PID)
+		if err != nil {
+			return fmt.Errorf("identify summon process: %w", err)
+		}
+		record.ProcessIdentityToken = identity
+	}
+	if strings.TrimSpace(record.StopControlToken) == "" {
+		return fmt.Errorf("summon stop control token is required")
+	}
+	matches, err := summonProcessIdentityMatches(record.PID, record.ProcessIdentityToken)
+	if err != nil {
+		return fmt.Errorf("verify summon process identity: %w", err)
+	}
+	if !matches {
+		return fmt.Errorf("summon process identity does not match pid %d", record.PID)
+	}
 	return updateSummonRegistry(func(live []summonInstanceRecord) []summonInstanceRecord {
 		next := make([]summonInstanceRecord, 0, len(live)+1)
 		replaced := false
@@ -123,14 +157,14 @@ func registerSummonInstance(record summonInstanceRecord) error {
 	})
 }
 
-func unregisterSummonInstance(pid int) error {
-	if pid <= 0 {
+func unregisterSummonInstance(pid int, processIdentityToken, stopControlToken string) error {
+	if pid <= 0 || strings.TrimSpace(processIdentityToken) == "" || strings.TrimSpace(stopControlToken) == "" {
 		return nil
 	}
 	return updateSummonRegistry(func(live []summonInstanceRecord) []summonInstanceRecord {
 		next := make([]summonInstanceRecord, 0, len(live))
 		for _, item := range live {
-			if item.PID == pid {
+			if item.PID == pid && item.ProcessIdentityToken == strings.TrimSpace(processIdentityToken) && item.StopControlToken == strings.TrimSpace(stopControlToken) {
 				continue
 			}
 			next = append(next, item)
@@ -152,7 +186,11 @@ func updateSummonRegistry(mutate func(live []summonInstanceRecord) []summonInsta
 		if err != nil {
 			return err
 		}
-		return writeSummonRegistry(path, mutate(liveSummonInstances(stored)))
+		live, err := liveSummonInstances(stored)
+		if err != nil {
+			return err
+		}
+		return writeSummonRegistry(path, mutate(live))
 	})
 }
 
@@ -176,10 +214,10 @@ func withSummonRegistryLock(fn func(path string) error) error {
 		return fmt.Errorf("open summon registry lock: %w", err)
 	}
 	defer lock.Close()
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockSummonFile(lock); err != nil {
 		return fmt.Errorf("lock summon registry: %w", err)
 	}
-	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN) //nolint:errcheck -- best-effort unlock before close
+	defer unlockSummonFile(lock) //nolint:errcheck -- best-effort unlock before close
 	return fn(path)
 }
 
@@ -206,15 +244,29 @@ func readSummonRegistryFile(path string) ([]summonInstanceRecord, error) {
 	return registry.Instances, nil
 }
 
-func liveSummonInstances(items []summonInstanceRecord) []summonInstanceRecord {
+func liveSummonInstances(items []summonInstanceRecord) ([]summonInstanceRecord, error) {
+	return liveSummonInstancesWithIdentity(items, summonProcessIdentityMatches)
+}
+
+func liveSummonInstancesWithIdentity(items []summonInstanceRecord, identityMatches func(int, string) (bool, error)) ([]summonInstanceRecord, error) {
+	if identityMatches == nil {
+		return nil, fmt.Errorf("summon process identity checker is required")
+	}
 	live := make([]summonInstanceRecord, 0, len(items))
 	for _, item := range items {
-		if item.PID <= 0 || !isProcessRunning(item.PID) {
+		if strings.TrimSpace(item.StopControlToken) == "" {
+			continue
+		}
+		matches, err := identityMatches(item.PID, item.ProcessIdentityToken)
+		if err != nil {
+			return nil, fmt.Errorf("inspect summon registry process pid=%d: %w", item.PID, err)
+		}
+		if !matches {
 			continue
 		}
 		live = append(live, item)
 	}
-	return live
+	return live, nil
 }
 
 // writeSummonRegistry replaces the registry atomically.

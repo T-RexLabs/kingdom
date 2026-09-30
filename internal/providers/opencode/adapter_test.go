@@ -5,8 +5,103 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestValidateExecuteRequestRequiresExplicitCompletionMode(t *testing.T) {
+	validServerResponseRequest := func() ExecuteRequest {
+		return ExecuteRequest{
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_1",
+			AttemptID:      "attempt_1",
+			RunID:          "run_1",
+			NodeRunID:      "node_run_1",
+			Prompt:         "complete this work",
+			OccurredAt:     "2026-03-01T12:00:00Z",
+		}
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*ExecuteRequest)
+		want   string
+	}{
+		{
+			name:   "missing mode",
+			mutate: func(req *ExecuteRequest) { req.CompletionMode = "" },
+			want:   "completion mode must be",
+		},
+		{
+			name:   "unknown mode",
+			mutate: func(req *ExecuteRequest) { req.CompletionMode = "unknown" },
+			want:   "completion mode must be",
+		},
+		{
+			name:   "missing session id",
+			mutate: func(req *ExecuteRequest) { req.SessionID = "" },
+			want:   "session id",
+		},
+		{
+			name:   "missing attempt id",
+			mutate: func(req *ExecuteRequest) { req.AttemptID = "" },
+			want:   "attempt id",
+		},
+		{
+			name:   "missing run id",
+			mutate: func(req *ExecuteRequest) { req.RunID = "" },
+			want:   "run id",
+		},
+		{
+			name:   "missing node run id",
+			mutate: func(req *ExecuteRequest) { req.NodeRunID = "" },
+			want:   "node run id",
+		},
+		{
+			name:   "missing prompt",
+			mutate: func(req *ExecuteRequest) { req.Prompt = "" },
+			want:   "prompt",
+		},
+		{
+			name:   "missing occurred at",
+			mutate: func(req *ExecuteRequest) { req.OccurredAt = "" },
+			want:   "occurred_at",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := validServerResponseRequest()
+			test.mutate(&request)
+			err := validateExecuteRequest(request)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("validate execute request error = %v, want %q", err, test.want)
+			}
+		})
+	}
+
+	if err := validateExecuteRequest(validServerResponseRequest()); err != nil {
+		t.Fatalf("expected server-response request to validate: %v", err)
+	}
+}
+
+func TestValidateExecuteRequestAcceptsLongPrompt(t *testing.T) {
+	request := func(prompt string) ExecuteRequest {
+		return ExecuteRequest{
+			CompletionMode: CompletionModeServerResponse,
+			SessionID:      "session_prompt_boundary",
+			AttemptID:      "attempt_prompt_boundary",
+			RunID:          "run_prompt_boundary",
+			NodeRunID:      "node_prompt_boundary",
+			Prompt:         prompt,
+			OccurredAt:     "2026-03-01T12:00:00Z",
+		}
+	}
+	prompt := strings.Repeat("large prompt context ", 4096)
+	if err := validateExecuteRequest(request(prompt)); err != nil {
+		t.Fatalf("long prompt rejected: %v", err)
+	}
+}
 
 func TestMemoryAdapterExecuteCancelAndStreamContract(t *testing.T) {
 	t.Parallel()
@@ -14,13 +109,14 @@ func TestMemoryAdapterExecuteCancelAndStreamContract(t *testing.T) {
 	adapter := NewMemoryAdapter()
 
 	_, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_1",
-		AttemptID:     "attempt_1",
-		RunID:         "run_1",
-		NodeRunID:     "nr_1",
-		WorkspacePath: t.TempDir(),
-		Prompt:        "build it",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_1",
+		AttemptID:      "attempt_1",
+		RunID:          "run_1",
+		NodeRunID:      "nr_1",
+		WorkspacePath:  t.TempDir(),
+		Prompt:         "build it",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -108,13 +204,14 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 	docWorkspace := t.TempDir()
 
 	_, err := adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_doc",
-		AttemptID:     "attempt_doc",
-		RunID:         "run_1",
-		NodeRunID:     "nr_doc",
-		WorkspacePath: docWorkspace,
-		Prompt:        "RoleID: king",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_doc",
+		AttemptID:      "attempt_doc",
+		RunID:          "run_1",
+		NodeRunID:      "nr_doc",
+		WorkspacePath:  docWorkspace,
+		Prompt:         "RoleID: king",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute doc role: %v", err)
@@ -125,13 +222,14 @@ func TestMemoryAdapterRoleAwareArtifactBehavior(t *testing.T) {
 
 	builderWorkspace := t.TempDir()
 	_, err = adapter.Execute(context.Background(), ExecuteRequest{
-		SessionID:     "session_builder",
-		AttemptID:     "attempt_builder",
-		RunID:         "run_1",
-		NodeRunID:     "nr_builder",
-		WorkspacePath: builderWorkspace,
-		Prompt:        "RoleID: builder-berserker",
-		OccurredAt:    "2026-03-01T12:00:00Z",
+		CompletionMode: CompletionModeServerResponse,
+		SessionID:      "session_builder",
+		AttemptID:      "attempt_builder",
+		RunID:          "run_1",
+		NodeRunID:      "nr_builder",
+		WorkspacePath:  builderWorkspace,
+		Prompt:         "RoleID: builder-berserker",
+		OccurredAt:     "2026-03-01T12:00:00Z",
 	})
 	if err != nil {
 		t.Fatalf("execute builder role: %v", err)

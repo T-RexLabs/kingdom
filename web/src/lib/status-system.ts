@@ -27,6 +27,7 @@ export function statusToneForKey(status: string): StatusTone {
 		case "awaiting_plan_decision":
 		case "awaiting_final_decision":
 		case "blocked":
+		case "paused":
 			return "attention";
 		case "succeeded":
 		case "committed_success":
@@ -140,6 +141,7 @@ const STATUS_LABELS: Record<string, string> = {
 	queued: "Queued",
 	ready: "Ready",
 	blocked: "Blocked",
+	paused: "Retry Paused",
 	idle: "Idle",
 	offline: "Offline",
 	pending: "Pending",

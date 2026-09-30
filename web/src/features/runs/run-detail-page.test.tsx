@@ -5,6 +5,7 @@ import userEvent from "@testing-library/user-event";
 import { RunDetailPage } from "./run-detail-page";
 import type { ReactNode, Ref } from "react";
 import { ApiError } from "@/api/client";
+import type { RunExecution, RunExecutionDetail, RunNodeExecution } from "@/api/hooks";
 import { liveExecutionProjectionKey } from "./run-live-execution-projection";
 import { liveTimelineQueryKey, liveTimelineSyncQueryKey } from "./run-live-timeline";
 import { runSurfaceFreshnessQueryKey } from "./run-surface-freshness";
@@ -34,6 +35,8 @@ const timelineRefetchMock = vi.fn();
 const navigateMock = vi.fn();
 const useRunGraphMock = vi.fn();
 const useRunExecutionsMock = vi.fn();
+const dagVisualizationPropsMock = vi.fn();
+const useInfiniteRunNodeAttemptsMock = vi.fn();
 const useRunExecutionMock = vi.fn();
 const useTimelineMock = vi.fn();
 const useRunAgentsMock = vi.fn();
@@ -41,6 +44,7 @@ const useRolesMock = vi.fn();
 const useMailboxMock = vi.fn();
 const useMailboxMessageMock = vi.fn();
 const useCancelRunMock = vi.fn();
+const useRetryExecutionStopMock = vi.fn();
 const agentsRefetchMock = vi.fn();
 const executionsRefetchMock = vi.fn();
 const executionDetailRefetchMock = vi.fn();
@@ -69,13 +73,6 @@ const mockRun = {
   validation_auto_succeeded_count: 0,
   max_execution_review_cycles: 5,
   max_validation_rework_cycles: 5,
-  runtime_retries: [] as Array<{
-    node_id: string;
-    node_run_id: string;
-    retry_index: number;
-    retry_max: number;
-    delay_seconds: number;
-  }>,
 	 tab_counts: {
 	   dag_nodes: 6,
 	   agents: 3,
@@ -100,7 +97,7 @@ let mockRunError: Error | null = null;
 let mockRunPending = false;
 let mockRunDataUpdatedAt = 0;
 let mockMailboxItems: Array<Record<string, unknown>> = [];
-let mockExecutions: Array<Record<string, unknown>> = [];
+let mockExecutions: RunNodeExecution[] = [];
 let mockMailboxPending = false;
 let mockMailboxError: Error | null = null;
 let mockExecutionsPending = false;
@@ -110,6 +107,36 @@ let mockCancelError: Error | null = null;
 const mailboxRefetchMock = vi.fn();
 const cancelMutateAsyncMock = vi.fn().mockResolvedValue(undefined);
 const graphRefetchMock = vi.fn();
+
+function runExecution(overrides: Partial<RunExecution> = {}): RunExecution {
+  return {
+    attempt_id: "attempt-1",
+    node_run_id: "nr-1",
+    node_id: "delegated_execution_berserker",
+    attempt: 1,
+    agent_id: "agent-1",
+    required_role: "builder-berserker",
+    execution_mode: "provider_backed",
+    status: "succeeded",
+    queued_at: "2026-03-06T10:00:00.000Z",
+    activity_at: "2026-03-06T10:01:00.000Z",
+    updated_at: "2026-03-06T10:01:00.000Z",
+    stop_retry_available: false,
+    ...overrides,
+  };
+}
+
+function runNode(current_execution: RunExecution, overrides: Partial<RunNodeExecution> = {}): RunNodeExecution {
+  return {
+    node_id: current_execution.node_id,
+    required_role: current_execution.required_role,
+    execution_ownership: current_execution.execution_mode,
+    status: current_execution.status === "queued" ? "ready" : current_execution.status === "paused" ? "blocked" : current_execution.status === "verifying" ? "running" : current_execution.status as RunNodeExecution["status"],
+    attempt_count: 1,
+    current_execution,
+    ...overrides,
+  };
+}
 
 vi.mock("@tanstack/react-router", () => ({
   useParams: () => mockRouteParams,
@@ -123,7 +150,20 @@ vi.mock("./use-run-event-stream", () => ({
 }));
 
 vi.mock("./dag-visualization", () => ({
-  DAGVisualization: () => <div>graph</div>,
+	DAGVisualization: (props: {
+		nodes: RunNodeExecution[];
+		onViewActivity?: (nodeId: string) => void;
+	}) => {
+		dagVisualizationPropsMock(props);
+		return (
+			<div>
+				<div>graph</div>
+				<button type="button" onClick={() => props.onViewActivity?.("delegated_execution_berserker")}>
+					View Delegated Execution Berserker in Activity
+				</button>
+			</div>
+		);
+	},
 }));
 
 vi.mock("./agent-detail-panel", () => ({
@@ -134,8 +174,7 @@ vi.mock("./run-execution-surface", () => ({
 	RunExecutionSurface: (props: {
 		events: Array<{ event_id: string }>;
 		graph?: unknown;
-		executions: Array<unknown>;
-		stepGroups?: Array<{ nodeId: string; attempts: Array<unknown> }>;
+		nodes: RunNodeExecution[];
 		executionsErrorMessage?: string | null;
 		showPrimaryExecutionError?: boolean;
 		isSummaryLoading?: boolean;
@@ -143,6 +182,8 @@ vi.mock("./run-execution-surface", () => ({
 		selectedAttemptId?: string | null;
 		onSelectStep?: (nodeId: string) => void;
 		onSelectAttempt?: (attemptId: string) => void;
+		onToggleHistory?: () => void;
+		detail?: RunExecutionDetail | null;
 		onRetryExecutions?: () => void;
 		detailPlaceholderMessage?: string | null;
 		hasMoreEvents: boolean;
@@ -153,7 +194,7 @@ vi.mock("./run-execution-surface", () => ({
 		timelinePanelPropsMock({
 			events: props.events,
 			graph: props.graph,
-			executions: props.executions,
+			executions: props.nodes.flatMap((node) => node.current_execution ? [node.current_execution] : []),
 			hasMore: props.hasMoreEvents,
 			onLoadMore: props.onLoadMoreEvents,
 			isLoadingMore: props.isLoadingMoreEvents,
@@ -200,6 +241,7 @@ vi.mock("@/api/hooks", () => ({
   }),
   useRunGraph: (...args: unknown[]) => useRunGraphMock(...args),
   useRunExecutions: (...args: unknown[]) => useRunExecutionsMock(...args),
+  useInfiniteRunNodeAttempts: (...args: unknown[]) => useInfiniteRunNodeAttemptsMock(...args),
   useRunExecution: (...args: unknown[]) => useRunExecutionMock(...args),
   useTimeline: (...args: unknown[]) => useTimelineMock(...args),
   useRunAgents: (...args: unknown[]) => useRunAgentsMock(...args),
@@ -207,6 +249,7 @@ vi.mock("@/api/hooks", () => ({
   useMailbox: (...args: unknown[]) => useMailboxMock(...args),
   useMailboxMessage: (...args: unknown[]) => useMailboxMessageMock(...args),
   useCancelRun: (...args: unknown[]) => useCancelRunMock(...args),
+	useRetryExecutionStop: (...args: unknown[]) => useRetryExecutionStopMock(...args),
   newIdempotencyKey: () => "idem-cancel-test",
 }));
 
@@ -214,6 +257,7 @@ describe("run detail page", () => {
   beforeEach(() => {
     useRunEventStreamMock.mockReset();
     useRunEventStreamMock.mockReturnValue(undefined);
+		dagVisualizationPropsMock.mockReset();
     timelinePanelPropsMock.mockReset();
 		executionSurfacePropsMock.mockReset();
     governanceActionsPropsMock.mockReset();
@@ -232,7 +276,6 @@ describe("run detail page", () => {
     mockRun.review_auto_succeeded_count = 0;
     mockRun.validation_rework_waves = 0;
     mockRun.validation_auto_succeeded_count = 0;
-    mockRun.runtime_retries = [];
     mockRun.tab_counts.dag_nodes = 6;
 	    mockRun.tab_counts.agents = 3;
 	    mockRun.tab_counts.activity_events = 50;
@@ -240,18 +283,7 @@ describe("run detail page", () => {
 	    mockRun.tab_counts.messages = 2;
     mockRun.failed_nodes = [];
     mockTimelineItems.length = 0;
-    mockExecutions = [{
-			attempt_id: "attempt-1",
-			node_run_id: "nr-1",
-			node_id: "delegated_execution_berserker",
-			attempt: 1,
-			agent_id: "agent-1",
-			required_role: "builder-berserker",
-			execution_mode: "provider_backed",
-			status: "succeeded",
-			activity_at: "2026-03-06T10:01:00.000Z",
-			updated_at: "2026-03-06T10:01:00.000Z",
-		}];
+    mockExecutions = [runNode(runExecution())];
     mockTimelineData.items = mockTimelineItems;
     mockTimelineData.next_cursor = undefined;
     mockTimelineData.pages = [{ items: mockTimelineItems }];
@@ -296,25 +328,40 @@ describe("run detail page", () => {
 			isError: mockExecutionsError !== null,
 			error: mockExecutionsError,
 			refetch: executionsRefetchMock,
-		}));
+	}));
+    useInfiniteRunNodeAttemptsMock.mockReset();
+    useInfiniteRunNodeAttemptsMock.mockImplementation(() => ({
+      data: { pages: [{ items: mockExecutions.flatMap((node) => node.current_execution ? [node.current_execution] : []) }] },
+      isSuccess: true,
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      fetchNextPage: vi.fn(),
+    }));
     useRunExecutionMock.mockReset();
     executionDetailRefetchMock.mockReset();
-    useRunExecutionMock.mockImplementation(() => ({
-			data: {
-				...mockExecutions[0],
-				provider_invocation_id: "inv-1",
-				settlement_status: "succeeded",
-				output_status: "settled",
-				output_text: "VERDICT: PASS\n\nCaptured output.",
-				output_verdict: "PASS",
-				output_verdict_status: "settled",
-			},
-			isPending: false,
-			isFetching: false,
-			isError: false,
-			error: null,
-			refetch: executionDetailRefetchMock,
-		}));
+		useRunExecutionMock.mockImplementation((_runId: string, attemptId: string | null, options: { enabled?: boolean }) => {
+			const execution = mockExecutions[0]?.current_execution;
+			const data = options.enabled && attemptId === execution?.attempt_id
+				? {
+					...execution,
+					provider_invocation_id: "inv-1",
+					settlement_status: "succeeded",
+					output_status: "settled",
+					output_text: "VERDICT: PASS\n\nCaptured output.",
+					output_verdict: "PASS",
+					output_verdict_status: "settled",
+				} satisfies RunExecutionDetail
+				: undefined;
+			return {
+				data,
+				isPending: false,
+				isFetching: false,
+				isError: false,
+				isSuccess: data !== undefined,
+				error: null,
+				refetch: executionDetailRefetchMock,
+			};
+		});
     useRunAgentsMock.mockReset();
     agentsRefetchMock.mockReset();
     useRunAgentsMock.mockImplementation(() => ({
@@ -341,6 +388,12 @@ describe("run detail page", () => {
       isPending: mockCancelPending,
       error: mockCancelError,
     }));
+		useRetryExecutionStopMock.mockReset();
+		useRetryExecutionStopMock.mockImplementation(() => ({
+			mutateAsync: vi.fn().mockResolvedValue(undefined),
+			isPending: false,
+			error: null,
+		}));
     mailboxRefetchMock.mockReset();
     cancelMutateAsyncMock.mockClear();
   });
@@ -356,7 +409,7 @@ describe("run detail page", () => {
 
 	it("subscribes the run-detail page to the canonical run SSE hook", () => {
 	  render(<RunDetailPage />);
-	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["executions", "timeline", "agents", "mailbox"]);
+	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["timeline", "agents", "mailbox"]);
 	});
 
 	it("marks the full recovery scope stale while the run stream is retrying", async () => {
@@ -374,12 +427,12 @@ describe("run detail page", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "plan"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "governance-summary"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "governance-decisions", "history"], exact: true, refetchType: "active" });
-		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "executions"], exact: false, refetchType: "active" });
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "nodes"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "graph"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "agents"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "mailbox"], exact: false, refetchType: "active" });
-		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["executions", "timeline", "agents", "mailbox"] });
+		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["timeline", "agents", "mailbox"] });
 	});
 
 	it("bootstrap-refetches the run-detail recovery scope when reopening from stale cache without a resume cursor", async () => {
@@ -410,13 +463,40 @@ describe("run detail page", () => {
 	it("keeps executions lazy while hiding non-active timeline, agent, and mailbox queries on the default graph tab", () => {
 	  render(<RunDetailPage />);
 
-	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: false });
-	  expect(useRunExecutionMock).toHaveBeenCalledWith("run-1", null, { enabled: false });
+	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
+	  expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
+	  expect(useRunExecutionMock).toHaveBeenCalledWith("run-1", "attempt-1", { enabled: false });
 	  expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
 	  expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: false });
 	  expect(useRunAgentsMock).toHaveBeenCalledWith("run-1", { enabled: false });
 	  expect(useMailboxMock).toHaveBeenCalledWith("run-1", {}, { enabled: false });
 	  expect(useMailboxMessageMock).toHaveBeenCalledWith("run-1", null, { enabled: false });
+	});
+
+	it("supplies logical nodes to the graph fallback and opens its node in Activity", async () => {
+		const user = userEvent.setup();
+		navigateMock.mockImplementation(({ search }: { search: { tab: string } }) => {
+			mockSearch.tab = search.tab;
+		});
+		const { rerender } = render(<RunDetailPage />);
+
+		expect(dagVisualizationPropsMock).toHaveBeenLastCalledWith(
+			expect.objectContaining({ nodes: mockExecutions }),
+		);
+
+		await user.click(screen.getByRole("button", { name: "View Delegated Execution Berserker in Activity" }));
+		expect(navigateMock).toHaveBeenCalledWith({
+			to: "/runs/$runId",
+			params: { runId: "run-1" },
+			search: { tab: "execution" },
+			replace: true,
+		});
+
+		rerender(<RunDetailPage />);
+		const activityProps = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedNodeId: string | null;
+		};
+		expect(activityProps.selectedNodeId).toBe("delegated_execution_berserker");
 	});
 
 	it("enables only the active agents tab query for a running run", () => {
@@ -437,7 +517,18 @@ describe("run detail page", () => {
 
 		expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
 		expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
 		expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: true });
+	});
+
+	it("loads node attempts only after the selected node history disclosure opens", async () => {
+		mockSearch.tab = "execution";
+		const { rerender } = render(<RunDetailPage />);
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenLastCalledWith("run-1", "delegated_execution_berserker", { enabled: false });
+		const props = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as { onToggleHistory: () => void };
+		await act(async () => props.onToggleHistory());
+		rerender(<RunDetailPage />);
+		expect(useInfiniteRunNodeAttemptsMock).toHaveBeenLastCalledWith("run-1", "delegated_execution_berserker", { enabled: true });
 	});
 
   it("uses failed-node summaries while still fetching graph context for activity", () => {
@@ -650,7 +741,7 @@ describe("run detail page", () => {
 	it("keeps the execution surface visible when the timeline fails but executions loaded", () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-2",
 				node_run_id: "nr-2",
 				node_id: "execution_review_shieldmaiden",
@@ -661,7 +752,7 @@ describe("run detail page", () => {
 				status: "running",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
+			})),
 		];
 		useTimelineMock.mockImplementation(() => ({
 			data: undefined,
@@ -681,10 +772,10 @@ describe("run detail page", () => {
 		expect(screen.getByText("timeline")).toBeInTheDocument();
 		expect(screen.getByText("Timeline unavailable")).toBeInTheDocument();
 		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
-			executions: Array<{ attempt_id: string }>;
+			nodes: Array<{ current_execution?: { attempt_id: string } }>;
 		};
-		expect(lastCall.executions).toEqual([
-			expect.objectContaining({ attempt_id: "attempt-2" }),
+		expect(lastCall.nodes).toEqual([
+			expect.objectContaining({ current_execution: expect.objectContaining({ attempt_id: "attempt-2" }) }),
 		]);
 	});
 
@@ -698,11 +789,11 @@ describe("run detail page", () => {
 
 		expect(screen.getByText("timeline")).toBeInTheDocument();
 		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
-			executions: Array<unknown>;
+			nodes: Array<unknown>;
 			executionsErrorMessage?: string | null;
 			showPrimaryExecutionError?: boolean;
 		};
-		expect(lastCall.executions).toEqual([]);
+		expect(lastCall.nodes).toEqual([]);
 		expect(lastCall.executionsErrorMessage).toBe("Execution inspector unavailable");
 		expect(lastCall.showPrimaryExecutionError).toBe(true);
 	});
@@ -730,10 +821,10 @@ describe("run detail page", () => {
 		expect(lastCall.showPrimaryExecutionError).toBe(false);
 	});
 
-	it("auto-focuses the most relevant active execution instead of the first returned item", () => {
+	it("uses the first server-provided logical node without browser priority selection", () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-succeeded",
 				node_run_id: "nr-succeeded",
 				node_id: "delegated_execution_berserker",
@@ -744,8 +835,8 @@ describe("run detail page", () => {
 				status: "succeeded",
 				activity_at: "2026-03-06T10:03:00.000Z",
 				updated_at: "2026-03-06T10:03:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-running",
 				node_run_id: "nr-running",
 				node_id: "execution_review_shieldmaiden",
@@ -756,8 +847,8 @@ describe("run detail page", () => {
 				status: "running",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-failed",
 				node_run_id: "nr-failed",
 				node_id: "validation_gates_qa_scout",
@@ -768,7 +859,7 @@ describe("run detail page", () => {
 				status: "failed",
 				activity_at: "2026-03-06T10:04:00.000Z",
 				updated_at: "2026-03-06T10:04:00.000Z",
-			},
+			})),
 		];
 
 		render(<RunDetailPage />);
@@ -776,13 +867,43 @@ describe("run detail page", () => {
 		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
 			selectedAttemptId?: string | null;
 		};
+		expect(lastCall.selectedAttemptId).toBe("attempt-succeeded");
+	});
+
+	it("defaults Activity to the first server-provided active node", () => {
+		mockSearch.tab = "execution";
+		mockExecutions = [
+			runNode(runExecution({
+				attempt_id: "attempt-running",
+				node_run_id: "nr-running",
+				node_id: "execution_review_shieldmaiden",
+				required_role: "reviewer-shieldmaiden",
+				status: "running",
+			})),
+			runNode(runExecution({
+				attempt_id: "attempt-succeeded",
+				node_run_id: "nr-succeeded",
+				node_id: "delegated_execution_berserker",
+				status: "succeeded",
+				activity_at: "2026-03-06T10:04:00.000Z",
+				updated_at: "2026-03-06T10:04:00.000Z",
+			})),
+		];
+
+		render(<RunDetailPage />);
+
+		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedNodeId?: string | null;
+			selectedAttemptId?: string | null;
+		};
+		expect(lastCall.selectedNodeId).toBe("execution_review_shieldmaiden");
 		expect(lastCall.selectedAttemptId).toBe("attempt-running");
 	});
 
-	it("auto-focuses the latest terminal execution when no work is in flight", () => {
+	it("keeps the first server-provided logical node when no work is in flight", () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-failed",
 				node_run_id: "nr-failed",
 				node_id: "execution_review_shieldmaiden",
@@ -793,8 +914,8 @@ describe("run detail page", () => {
 				status: "failed",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-succeeded",
 				node_run_id: "nr-succeeded",
 				node_id: "validation_gates_qa_scout",
@@ -805,7 +926,7 @@ describe("run detail page", () => {
 				status: "succeeded",
 				activity_at: "2026-03-06T10:04:00.000Z",
 				updated_at: "2026-03-06T10:04:00.000Z",
-			},
+			})),
 		];
 
 		render(<RunDetailPage />);
@@ -814,14 +935,14 @@ describe("run detail page", () => {
 			selectedAttemptId?: string | null;
 			selectedNodeId?: string | null;
 		};
-		expect(lastCall.selectedNodeId).toBe("validation_gates_qa_scout");
-		expect(lastCall.selectedAttemptId).toBe("attempt-succeeded");
+		expect(lastCall.selectedNodeId).toBe("execution_review_shieldmaiden");
+		expect(lastCall.selectedAttemptId).toBe("attempt-failed");
 	});
 
 	it("preserves a manual execution selection after the operator changes focus", async () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-running",
 				node_run_id: "nr-running",
 				node_id: "execution_review_shieldmaiden",
@@ -832,8 +953,8 @@ describe("run detail page", () => {
 				status: "running",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-failed",
 				node_run_id: "nr-failed",
 				node_id: "validation_gates_qa_scout",
@@ -844,7 +965,7 @@ describe("run detail page", () => {
 				status: "failed",
 				activity_at: "2026-03-06T10:04:00.000Z",
 				updated_at: "2026-03-06T10:04:00.000Z",
-			},
+			})),
 		];
 
 		const { rerender } = render(<RunDetailPage />);
@@ -867,10 +988,60 @@ describe("run detail page", () => {
 		expect(updatedCall.selectedAttemptId).toBe("attempt-failed");
 	});
 
-	it("keeps a manual execution selection stable through transient refresh gaps and unrelated newer steps", async () => {
+	it("keeps a selected historical attempt through canonical and SSE refreshes", async () => {
+		mockSearch.tab = "execution";
+		mockExecutions = [runNode(runExecution({
+				attempt_id: "attempt-current", node_run_id: "nr-current", node_id: "delegated_execution_berserker", attempt: 2,
+				agent_id: "agent-1", required_role: "builder-berserker", execution_mode: "provider_backed", status: "running",
+				queued_at: "2026-03-06T10:00:00.000Z", activity_at: "2026-03-06T10:02:00.000Z", updated_at: "2026-03-06T10:02:00.000Z", stop_retry_available: false,
+			}), { status: "running", attempt_count: 2 })];
+		const historicalAttempt = runExecution({
+			attempt_id: "attempt-history", node_run_id: "nr-history", node_id: "delegated_execution_berserker", attempt: 1,
+			agent_id: "agent-1", required_role: "builder-berserker", execution_mode: "provider_backed", status: "failed",
+			queued_at: "2026-03-06T09:00:00.000Z", activity_at: "2026-03-06T09:02:00.000Z", updated_at: "2026-03-06T09:02:00.000Z", stop_retry_available: false,
+		});
+		useInfiniteRunNodeAttemptsMock.mockImplementation(() => ({
+			data: { pages: [{ items: [mockExecutions[0].current_execution, historicalAttempt] }] },
+			isSuccess: true,
+			hasNextPage: true,
+			isFetchingNextPage: false,
+			fetchNextPage: fetchNextPageMock,
+		}));
+		useRunExecutionMock.mockImplementation((_runId: string, attemptId: string | null, options: { enabled?: boolean }) => ({
+			data: options.enabled && attemptId === historicalAttempt.attempt_id
+				? { ...historicalAttempt, settlement_status: "failed", output_status: "unavailable" }
+				: undefined,
+			isPending: false, isFetching: false, isError: false, error: null, refetch: executionDetailRefetchMock,
+		}));
+
+		const { queryClient, rerender } = render(<RunDetailPage />);
+		const initial = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as { onSelectAttempt: (attemptId: string) => void };
+		await act(async () => initial.onSelectAttempt(historicalAttempt.attempt_id));
+		await act(async () => rerender(<RunDetailPage />));
+		useInfiniteRunNodeAttemptsMock.mockImplementation(() => ({
+			data: { pages: [{ items: [mockExecutions[0].current_execution] }] },
+			isSuccess: true, hasNextPage: true, isFetchingNextPage: false, fetchNextPage: fetchNextPageMock,
+		}));
+		useRunExecutionMock.mockImplementation(() => ({
+			data: { ...historicalAttempt, settlement_status: "failed", output_status: "unavailable" },
+			isPending: false, isFetching: false, isError: false, error: null, refetch: executionDetailRefetchMock,
+		}));
+		await act(async () => rerender(<RunDetailPage />));
+		await act(async () => {
+			queryClient.setQueryData(liveExecutionProjectionKey("run-1"), {
+				"nr-current": { node_run_id: "nr-current", attempt_id: "attempt-current", activity_at: "2026-03-06T10:03:00.000Z", status: "running" },
+			});
+			rerender(<RunDetailPage />);
+		});
+
+		const refreshed = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as { selectedAttemptId: string | null };
+		expect(refreshed.selectedAttemptId).toBe(historicalAttempt.attempt_id);
+	});
+
+	it("clears a manual selection when its logical node disappears and defaults to the next server node", async () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-review",
 				node_run_id: "nr-review",
 				node_id: "execution_review_shieldmaiden",
@@ -882,8 +1053,8 @@ describe("run detail page", () => {
 				queued_at: "2026-03-06T10:00:00.000Z",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-peasant",
 				node_run_id: "nr-peasant",
 				node_id: "advisor_consultation_peasant",
@@ -895,7 +1066,7 @@ describe("run detail page", () => {
 				queued_at: "2026-03-06T10:00:00.000Z",
 				activity_at: "2026-03-06T10:01:00.000Z",
 				updated_at: "2026-03-06T10:01:00.000Z",
-			},
+			})),
 		];
 
 		const { rerender } = render(<RunDetailPage />);
@@ -916,11 +1087,11 @@ describe("run detail page", () => {
 			selectedNodeId?: string | null;
 			selectedAttemptId?: string | null;
 		};
-		expect(updatedCall.selectedNodeId).toBe("advisor_consultation_peasant");
-		expect(updatedCall.selectedAttemptId).toBe("attempt-peasant");
+		expect(updatedCall.selectedNodeId).toBeNull();
+		expect(updatedCall.selectedAttemptId).toBeNull();
 
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-plan",
 				node_run_id: "nr-plan",
 				node_id: "plan_drafting",
@@ -932,20 +1103,7 @@ describe("run detail page", () => {
 				queued_at: "2026-03-06T10:03:00.000Z",
 				activity_at: "2026-03-06T10:05:00.000Z",
 				updated_at: "2026-03-06T10:05:00.000Z",
-			},
-			{
-				attempt_id: "attempt-peasant",
-				node_run_id: "nr-peasant",
-				node_id: "advisor_consultation_peasant",
-				attempt: 1,
-				agent_id: "agent-peasant",
-				required_role: "peasant-delegate",
-				execution_mode: "provider_backed",
-				status: "succeeded",
-				queued_at: "2026-03-06T10:00:00.000Z",
-				activity_at: "2026-03-06T10:01:00.000Z",
-				updated_at: "2026-03-06T10:01:00.000Z",
-			},
+			})),
 		];
 		await act(async () => {
 			rerender(<RunDetailPage />);
@@ -955,18 +1113,45 @@ describe("run detail page", () => {
 			selectedNodeId?: string | null;
 			selectedAttemptId?: string | null;
 		};
-		expect(updatedCall.selectedNodeId).toBe("advisor_consultation_peasant");
-		expect(updatedCall.selectedAttemptId).toBe("attempt-peasant");
+		expect(updatedCall.selectedNodeId).toBe("plan_drafting");
+		expect(updatedCall.selectedAttemptId).toBe("attempt-plan");
 	});
 
-	it("shows live-only execution activity immediately and defers detail fetch until executions catch up", async () => {
+	it("never passes a detail for a different effective attempt", () => {
+		mockSearch.tab = "execution";
+		const mismatchedDetail = {
+			...runExecution({ attempt_id: "attempt-stale", node_run_id: "nr-stale" }),
+			settlement_status: "succeeded" as const,
+			output_status: "settled" as const,
+		};
+		useRunExecutionMock.mockImplementation(() => ({
+			data: mismatchedDetail,
+			isPending: false,
+			isFetching: false,
+			isError: false,
+			isSuccess: true,
+			error: null,
+			refetch: executionDetailRefetchMock,
+		}));
+
+		render(<RunDetailPage />);
+
+		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
+			selectedAttemptId?: string | null;
+			detail?: RunExecutionDetail | null;
+		};
+		expect(lastCall.selectedAttemptId).toBe("attempt-1");
+		expect(lastCall.detail).toBeNull();
+	});
+
+	it("does not synthesize logical nodes from live execution telemetry", async () => {
 		mockSearch.tab = "execution";
 		mockExecutions = [];
 		mockRun.tab_counts.executions = 0;
 		useRunExecutionMock.mockImplementation((runId: string, attemptId: string | null, options: { enabled?: boolean }) => ({
 			data: options.enabled && attemptId
 				? {
-					...mockExecutions[0],
+					...runExecution(),
 					attempt_id: attemptId,
 					node_run_id: `${runId}-${attemptId}`,
 					provider_invocation_id: "inv-1",
@@ -1008,20 +1193,16 @@ describe("run detail page", () => {
 		});
 
 		const lastCall = executionSurfacePropsMock.mock.calls.at(-1)?.[0] as {
-			executions?: Array<{ attempt_id: string; node_id: string; status: string }>;
+			nodes?: Array<{ node_id: string }>;
 			selectedAttemptId?: string | null;
 			detailPlaceholderMessage?: string | null;
 		};
-		expect(lastCall.executions).toContainEqual(expect.objectContaining({
-			attempt_id: "attempt-live-only",
-			node_id: "delegated_execution_berserker",
-			status: "running",
-		}));
-		expect(lastCall.selectedAttemptId).toBe("attempt-live-only");
-		expect(lastCall.detailPlaceholderMessage).toContain("Live execution details are arriving");
+		expect(lastCall.nodes).toEqual([]);
+		expect(lastCall.selectedAttemptId).toBeNull();
+		expect(lastCall.detailPlaceholderMessage).toBeNull();
 
 		const latestExecutionDetailCall = useRunExecutionMock.mock.calls.at(-1);
-		expect(latestExecutionDetailCall).toEqual(["run-1", "attempt-live-only", { enabled: false }]);
+		expect(latestExecutionDetailCall).toEqual(["run-1", null, { enabled: false }]);
 	});
 
 	it("refetches the canonical timeline when hidden activity outruns the cached page", async () => {
@@ -1181,7 +1362,7 @@ describe("run detail page", () => {
 	      .toBeInTheDocument();
 	    expect(screen.getByRole("link", { name: "Back to runs" })).toBeInTheDocument();
 	    expect(screen.queryByText("Loading run...")).not.toBeInTheDocument();
-	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["executions", "timeline", "agents", "mailbox"]);
+	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["timeline", "agents", "mailbox"]);
   });
 
 	it("transitions from pending to loaded without violating hook order", () => {
@@ -1247,8 +1428,8 @@ describe("run detail page", () => {
 			data: {
 				run_id: runId,
 				items: runId === "run-1"
-					? [{ ...mockExecutions[0], attempt_id: "attempt-run-1" }]
-					: [{ ...mockExecutions[0], attempt_id: "attempt-run-2", node_run_id: "nr-2" }],
+					? [runNode(runExecution({ ...mockExecutions[0]?.current_execution, attempt_id: "attempt-run-1" }))]
+					: [runNode(runExecution({ ...mockExecutions[0]?.current_execution, attempt_id: "attempt-run-2", node_run_id: "nr-2" }))],
 			},
 			isPending: false,
 			isFetching: false,
@@ -1259,7 +1440,7 @@ describe("run detail page", () => {
 		useRunExecutionMock.mockImplementation((runId: string, attemptId: string | null, options: { enabled?: boolean }) => ({
 			data: attemptId
 				? {
-					...mockExecutions[0],
+					...runExecution({ ...mockExecutions[0]?.current_execution }),
 					attempt_id: attemptId,
 					node_run_id: `${runId}-${attemptId}`,
 					provider_invocation_id: "inv-1",
@@ -1289,7 +1470,7 @@ describe("run detail page", () => {
 		rerender(<RunDetailPage />);
 
 		const run2Calls = useRunExecutionMock.mock.calls.filter((call) => call[0] === "run-2");
-		expect(run2Calls[0]).toEqual(["run-2", null, { enabled: false }]);
+		expect(run2Calls).toContainEqual(["run-2", "attempt-run-2", { enabled: true }]);
 	});
 
 	it("shows run tabs in DAG, Activity, Agents, Messages order", () => {
@@ -1603,7 +1784,7 @@ describe("run detail page", () => {
   it("reserves scrollbar gutter space for the right sidebar cards", () => {
     render(<RunDetailPage />);
     const sidebar = screen.getByTestId("run-sidebar-scroll");
-    expect(sidebar).toHaveClass("overflow-y-auto", "pr-1");
+    expect(sidebar).toHaveClass("lg:overflow-y-auto", "pr-1");
     expect(sidebar.className).toContain("[scrollbar-gutter:stable]");
   });
 
@@ -1635,7 +1816,7 @@ describe("run detail page", () => {
 
 	it("does not surface execution recovery notices in the run header", () => {
 		mockExecutions = [
-			{
+			runNode(runExecution({
 				attempt_id: "attempt-recovery-pending",
 				node_run_id: "nr-recovery-pending",
 				node_id: "delegated_execution_berserker",
@@ -1646,8 +1827,8 @@ describe("run detail page", () => {
 				status: "verifying",
 				activity_at: "2026-03-06T10:01:00.000Z",
 				updated_at: "2026-03-06T10:01:00.000Z",
-			},
-			{
+			})),
+			runNode(runExecution({
 				attempt_id: "attempt-recovery-exhausted",
 				node_run_id: "nr-recovery-exhausted",
 				node_id: "delegated_execution_berserker",
@@ -1659,7 +1840,7 @@ describe("run detail page", () => {
 				failure_code: "provider_incomplete_turn",
 				activity_at: "2026-03-06T10:02:00.000Z",
 				updated_at: "2026-03-06T10:02:00.000Z",
-			},
+			})),
 		];
 
 		render(<RunDetailPage />);
@@ -1670,14 +1851,33 @@ describe("run detail page", () => {
 		expect(screen.queryByText(/Response Captured, Verifying:/)).not.toBeInTheDocument();
 	});
 
-  it("uses a managed non-scrolling tab panel for the DAG tab", () => {
-    render(<RunDetailPage />);
+	it("uses one tab-panel scroll owner for the mobile DAG fallback", () => {
+		render(<RunDetailPage />);
 
-    const panel = screen.getByRole("tabpanel");
-    expect(panel).toHaveClass("overflow-hidden");
-    expect(panel).toHaveClass("flex");
-    expect(panel).not.toHaveClass("overflow-auto");
-  });
+		const panel = screen.getByRole("tabpanel");
+		expect(panel).toHaveClass("overflow-y-auto");
+		expect(panel).toHaveClass("lg:overflow-hidden");
+		expect(panel).toHaveClass("lg:flex");
+		expect(panel).not.toHaveClass("overflow-auto");
+	});
+
+	it("allows mobile run-detail columns to shrink within the viewport", () => {
+		render(<RunDetailPage />);
+
+		const layout = screen.getByTestId("run-detail-layout");
+		expect(layout.querySelector(":scope > section")).toHaveClass("min-w-0");
+		expect(layout.querySelector(":scope > aside")).toHaveClass("min-w-0");
+	});
+
+	it("lets the stacked mobile run-detail layout scroll as a page", () => {
+		render(<RunDetailPage />);
+
+		const content = screen.getByTestId("run-detail-content");
+		const layout = screen.getByTestId("run-detail-layout");
+		expect(content).toHaveClass("overflow-y-auto", "lg:overflow-hidden");
+		expect(layout).toHaveClass("min-h-full", "lg:h-full");
+		expect(layout.querySelector(":scope > section")).toHaveClass("min-h-[28rem]", "lg:min-h-0");
+	});
 
   it("keeps the mailbox tab on the managed non-scrolling panel layout", () => {
     mockSearch.tab = "mailbox";
@@ -1763,62 +1963,4 @@ describe("run detail page", () => {
     mockRun.workflow_id = "royal-decree-v1";
   });
 
-  it("shows runtime retry status with exact delay", () => {
-    mockRun.runtime_retries = [{
-      node_id: "delegated_execution_berserker",
-      node_run_id: "nr_builder_1",
-      retry_index: 2,
-      retry_max: 3,
-      delay_seconds: 10,
-    }];
-    render(<RunDetailPage />);
-		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("Runtime retrying empty provider output");
-    expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("(2/3) after 10s");
-  });
-
-  it("hides runtime retry status once retry recovers", () => {
-    render(<RunDetailPage />);
-    expect(screen.queryByTestId("runtime-retry-status")).not.toBeInTheDocument();
-  });
-
-  it("shows runtime retry status on non-activity tabs without timeline data", () => {
-    mockSearch.tab = "agents";
-    mockRun.runtime_retries = [{
-      node_id: "delegated_execution_berserker",
-      node_run_id: "nr_builder_1",
-      retry_index: 1,
-      retry_max: 3,
-      delay_seconds: 5,
-    }];
-
-    render(<RunDetailPage />);
-
-    expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: false });
-    expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("(1/3) after 5s");
-  });
-
-	it("shows every active runtime retry when multiple nodes are retrying", () => {
-		mockRun.runtime_retries = [
-			{
-				node_id: "delegated_execution_berserker",
-				node_run_id: "nr_builder_1",
-				retry_index: 1,
-				retry_max: 3,
-				delay_seconds: 5,
-			},
-			{
-				node_id: "validation_gates_qa_scout",
-				node_run_id: "nr_validator_1",
-				retry_index: 2,
-				retry_max: 4,
-				delay_seconds: 8,
-			},
-		];
-
-		render(<RunDetailPage />);
-
-		expect(screen.getByTestId("runtime-retry-status")).toHaveTextContent("2 runtime retries in progress");
-		expect(screen.getByTestId("runtime-retry-status-nr_builder_1")).toHaveTextContent("delegated_execution_berserker");
-		expect(screen.getByTestId("runtime-retry-status-nr_validator_1")).toHaveTextContent("validation_gates_qa_scout");
-	});
 });

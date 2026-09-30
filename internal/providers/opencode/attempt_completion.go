@@ -1,6 +1,10 @@
 package opencode
 
-import "strings"
+import (
+	"strings"
+
+	"kingdom/internal/core/providerexecution"
+)
 
 type attemptCompletionState string
 
@@ -14,10 +18,7 @@ const (
 type completionEvidenceSource string
 
 const (
-	completionEvidenceSourceStream          completionEvidenceSource = "stream"
-	completionEvidenceSourceExport          completionEvidenceSource = "export"
-	completionEvidenceSourceExportSanitized completionEvidenceSource = "export_sanitized"
-	completionEvidenceSourceReceipt         completionEvidenceSource = "completion_receipt"
+	completionEvidenceSourceStream completionEvidenceSource = "stream"
 )
 
 type stepFinishReasonKind string
@@ -45,41 +46,33 @@ type attemptCompletionEvidence struct {
 	StepFinishSeen              bool
 	LastStepFinish              stepFinishReasonEvidence
 	UpstreamErrorText           string
+	ProviderErrorPresent        bool
+	ProviderErrorCode           string
+	ProviderErrorCategory       string
+	ProviderErrorStatus         int
 	ConflictingTerminalEvidence bool
+	MalformedProtocol           bool
 	CleanEOF                    bool
 	Cancelled                   bool
 	Timeout                     bool
 	ProcessFailed               bool
 	FailureText                 string
+	PendingToolCount            int
+	LaterEventAfterTerminal     bool
 }
 
 type attemptCompletionResult struct {
-	State                           attemptCompletionState
-	ReasonCode                      string
-	FailureText                     string
-	OutputText                      string
-	Tokens                          TokenUsage
-	ProviderSessionID               string
-	EvidenceSource                  completionEvidenceSource
-	SuppressEmptyOutputRetry        bool
-	ProviderInvocationID            string
-	ProviderInvocationAt            string
-	CompletionReceiptAccepted       bool
-	CompletionReceiptEvidenceID     string
-	CompletionStructuredPayloadJSON string
+	State             attemptCompletionState
+	ReasonCode        string
+	FailureText       string
+	OutputText        string
+	Tokens            TokenUsage
+	ProviderSessionID string
+	EvidenceSource    completionEvidenceSource
 }
 
-type exportCheckPolicy string
-
-const (
-	exportCheckPolicyNone     exportCheckPolicy = ""
-	exportCheckPolicyRequired exportCheckPolicy = "required"
-)
-
 type attemptCompletionDecision struct {
-	Result            attemptCompletionResult
-	ExportCheckPolicy exportCheckPolicy
-	ExportCheckReason string
+	Result attemptCompletionResult
 }
 
 type attemptCompletionAdjudicator struct{}
@@ -100,60 +93,81 @@ func (attemptCompletionAdjudicator) Adjudicate(e attemptCompletionEvidence) atte
 	}
 	if e.Timeout {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_timeout"
+		result.ReasonCode = "timeout"
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode run timed out")
 		return attemptCompletionDecision{Result: result}
 	}
-	if strings.TrimSpace(e.UpstreamErrorText) != "" {
+	if e.ProviderErrorPresent || strings.TrimSpace(e.UpstreamErrorText) != "" {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_upstream_error"
+		result.ReasonCode = string(providerexecution.CanonicalProviderErrorCode(e.ProviderErrorCode, e.ProviderErrorCategory, e.ProviderErrorStatus))
 		result.FailureText = strings.TrimSpace(e.UpstreamErrorText)
 		return attemptCompletionDecision{Result: result}
 	}
 	if e.ProcessFailed {
 		result.State = attemptCompletionStateFailed
-		result.ReasonCode = "provider_process_failed"
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_process_failed")
 		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode run failed")
 		return attemptCompletionDecision{Result: result}
 	}
+	if e.MalformedProtocol {
+		result.State = attemptCompletionStateFailed
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_malformed_protocol")
+		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode emitted malformed stream data")
+		return attemptCompletionDecision{Result: result}
+	}
 	if e.ConflictingTerminalEvidence {
-		return attemptCompletionDecision{
-			Result:            result,
-			ExportCheckPolicy: exportCheckPolicyRequired,
-			ExportCheckReason: "conflicting_terminal_evidence",
-		}
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode emitted conflicting terminal evidence"
+		return attemptCompletionDecision{Result: result}
+	}
+	if e.LaterEventAfterTerminal {
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode stream remained active after terminal response"
+		return attemptCompletionDecision{Result: result}
+	}
+	if e.StepFinishSeen && e.LastStepFinish.Class == stepFinishTerminalFailure {
+		result.State = attemptCompletionStateFailed
+		result.ReasonCode = providerexecution.NormalizeAdapterTerminalFailureCode("provider_terminal_failure")
+		result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
+		return attemptCompletionDecision{Result: result}
 	}
 	if e.StepFinishSeen {
 		switch e.LastStepFinish.Class {
 		case stepFinishTerminalSuccessCandidate:
+			if e.PendingToolCount > 0 {
+				result.State = attemptCompletionStateIncompleteTurn
+				result.ReasonCode = "provider_incomplete_turn"
+				result.FailureText = "opencode stream remained active after terminal response"
+				return attemptCompletionDecision{Result: result}
+			}
+			if strings.TrimSpace(result.OutputText) == "" {
+				result.State = attemptCompletionStateFailed
+				result.ReasonCode = "provider_empty_output"
+				result.FailureText = "provider returned an empty terminal response"
+				return attemptCompletionDecision{Result: result}
+			}
 			result.State = attemptCompletionStateSuccess
 			result.ReasonCode = "execution_completed"
 			return attemptCompletionDecision{Result: result}
-		case stepFinishTerminalFailure:
-			result.State = attemptCompletionStateFailed
-			result.ReasonCode = "provider_terminal_failure"
-			result.FailureText = firstNonEmpty(strings.TrimSpace(e.FailureText), "opencode terminated with terminal failure reason")
-			return attemptCompletionDecision{Result: result}
 		case stepFinishNonTerminal:
-			return attemptCompletionDecision{
-				Result:            result,
-				ExportCheckPolicy: exportCheckPolicyRequired,
-				ExportCheckReason: firstNonEmpty(strings.TrimSpace(e.LastStepFinish.Normalized), string(e.LastStepFinish.Kind), "non_terminal_finish_reason"),
-			}
+			result.State = attemptCompletionStateIncompleteTurn
+			result.ReasonCode = "provider_incomplete_turn"
+			result.FailureText = "opencode finished with a non-terminal reason"
+			return attemptCompletionDecision{Result: result}
 		case stepFinishAmbiguous:
-			return attemptCompletionDecision{
-				Result:            result,
-				ExportCheckPolicy: exportCheckPolicyRequired,
-				ExportCheckReason: firstNonEmpty(string(e.LastStepFinish.Kind), "ambiguous_finish_reason"),
-			}
+			result.State = attemptCompletionStateIncompleteTurn
+			result.ReasonCode = "provider_incomplete_turn"
+			result.FailureText = "opencode finished with an ambiguous reason"
+			return attemptCompletionDecision{Result: result}
 		}
 	}
 	if e.CleanEOF {
-		return attemptCompletionDecision{
-			Result:            result,
-			ExportCheckPolicy: exportCheckPolicyRequired,
-			ExportCheckReason: "clean_eof_without_terminal_evidence",
-		}
+		result.State = attemptCompletionStateIncompleteTurn
+		result.ReasonCode = "provider_incomplete_turn"
+		result.FailureText = "opencode finished without terminal stream evidence"
+		return attemptCompletionDecision{Result: result}
 	}
 
 	result.State = attemptCompletionStateIncompleteTurn

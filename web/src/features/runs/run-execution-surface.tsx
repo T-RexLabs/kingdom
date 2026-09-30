@@ -1,38 +1,41 @@
-import type { RunDetailSummary, RunExecution, RunExecutionDetail, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/api/hooks";
-import { Badge } from "@/components/ui/badge";
-import { PopoverListbox } from "@/components/ui/popover-listbox";
-import { RelativeTime } from "@/components/ui/relative-time";
+import type { RunDetailSummary, RunExecutionDetail, RunGraphEdge, RunGraphNode, RunNodeAttemptHistoryItem, RunNodeExecution, TimelineEvent } from "@/api/hooks";
 import { nodeLabel } from "@/lib/utils";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useId, useMemo, useState } from "react";
-import { statusLabel } from "@/lib/status-system";
-import { operatorFacingExecutionFailureText } from "./completion-receipt-failures";
-import type { ActivityStepGroup } from "./run-activity-selection";
-import { useNodeActivityRecency } from "./use-node-activity-recency";
-import { RunActivityLanes } from "./run-activity-lanes";
+import { useId, useRef, useState } from "react";
 import { RunExecutionActivity } from "./run-execution-activity";
 import { RunExecutionsPanel } from "./run-executions-panel";
-import { executionDisplayStatus, executionProgressLabel, isActiveExecutionStatus, isBlockedExecutionStatus, isCurrentActivityExecutionStatus, isQueuedExecutionStatus, operatorExecutionStatusText } from "./run-status-semantics";
+import { presentAttemptHistoryItem, presentRunNodeExecution } from "./run-execution-presentation";
+import { isActiveExecutionStatus } from "./run-status-semantics";
 import { TimelinePanel } from "./timeline-panel";
+import { WorkflowNodeCards } from "./workflow-node-cards";
 
 export function RunExecutionSurface({
 	run,
-	executions,
-	stepGroups,
+	nodes,
+	attempts,
 	executionsErrorMessage,
 	showPrimaryExecutionError,
 	isSummaryLoading,
 	onRetryExecutions,
 	selectedNodeId,
 	selectedAttemptId,
-	selectedAttemptSource,
 	onSelectStep,
 	onSelectAttempt,
+	onSelectCurrentAttempt,
+	historyOpen,
+	onToggleHistory,
+	hasMoreAttempts,
+	onLoadMoreAttempts,
+	isLoadingMoreAttempts,
+	isHistoryLoading,
 	detail,
 	isDetailLoading,
 	detailErrorMessage,
 	detailPlaceholderMessage,
 	onRetryDetail,
+	onRetryStop,
+	isStopRetryPending,
+	stopRetryErrorMessage,
 	events,
 	graph,
 	hasMoreEvents,
@@ -40,22 +43,31 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents,
 }: {
 	run: RunDetailSummary;
-	executions: RunExecution[];
-	stepGroups: ActivityStepGroup[];
+	nodes: RunNodeExecution[];
+	attempts: RunNodeAttemptHistoryItem[];
 	executionsErrorMessage: string | null;
 	showPrimaryExecutionError: boolean;
 	isSummaryLoading: boolean;
 	onRetryExecutions: () => void;
 	selectedNodeId: string | null;
 	selectedAttemptId: string | null;
-	selectedAttemptSource: "auto" | "manual" | null;
 	onSelectStep: (nodeId: string) => void;
 	onSelectAttempt: (attemptId: string) => void;
+	onSelectCurrentAttempt: () => void;
+	historyOpen: boolean;
+	onToggleHistory: () => void;
+	hasMoreAttempts: boolean;
+	onLoadMoreAttempts: () => void;
+	isLoadingMoreAttempts: boolean;
+	isHistoryLoading: boolean;
 	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null;
 	isDetailLoading: boolean;
 	detailErrorMessage: string | null;
 	detailPlaceholderMessage?: string | null;
 	onRetryDetail: () => void;
+	onRetryStop: (attemptID: string) => void;
+	isStopRetryPending: boolean;
+	stopRetryErrorMessage: string | null;
 	events: TimelineEvent[];
 	graph?: { nodes: RunGraphNode[]; edges: RunGraphEdge[] };
 	hasMoreEvents: boolean;
@@ -63,160 +75,141 @@ export function RunExecutionSurface({
 	isLoadingMoreEvents: boolean;
 }) {
 	const [timelineOpen, setTimelineOpen] = useState(false);
-	const currentStepGroup = stepGroups.find((item) => item.nodeId === selectedNodeId)
-		?? (selectedAttemptSource === "manual" ? null : stepGroups[0] ?? null);
-	const currentExecution = currentStepGroup
-		? currentStepGroup.attempts.find((item) => item.attempt_id === selectedAttemptId)
-			?? currentStepGroup.attempts.find((item) => item.attempt_id === currentStepGroup.preferredAttemptId)
-			?? currentStepGroup.attempts[0]
-			?? null
-		: null;
-	const primaryExecutionErrorVisible = showPrimaryExecutionError && typeof executionsErrorMessage === "string" && executionsErrorMessage.trim() !== "";
-	const currentExecutionDisplayStatus = selectedExecutionDisplayStatus(currentExecution, detail);
-	const summary = executionSummary(run, currentExecution, currentExecutionDisplayStatus, detail, executionsErrorMessage, primaryExecutionErrorVisible, isSummaryLoading);
-	const isExecutionRunning = isActiveExecutionStatus(currentExecution?.status);
-	const nodeActivityAt = useNodeActivityRecency(run.run_id, currentExecution?.attempt_id ?? selectedAttemptId, isExecutionRunning);
-	// Prefer honest ACP activity recency; fall back to the coarse execution timestamp
-	// only before any agent activity has been recorded.
-	const summaryActivityAt = nodeActivityAt ?? currentExecution?.activity_at ?? run.last_activity_at;
-	const activityHeroLabel = primaryExecutionErrorVisible ? "Execution Steps" : activityHeroLabelText(currentExecutionDisplayStatus, selectedAttemptSource);
-	const stepSelectorId = useId();
-	const attemptSelectorId = useId();
+	const historyPanelId = useId();
 	const timelinePanelId = useId();
-	const stepOptions = useMemo(() => {
-		return stepGroups.map((item) => ({
-			id: item.nodeId,
-			label: nodeLabel(item.nodeId),
-		}));
-	}, [stepGroups]);
-	const attemptOptions = (currentStepGroup?.attempts ?? []).map((item) => ({
-		id: item.attempt_id,
-		label: `Attempt ${item.attempt}`,
-	}));
-	const stepSelectorFooter = executionsErrorMessage && !primaryExecutionErrorVisible ? (
-		<div className="space-y-2 text-xs text-status-blocked">
-			<div>{executionsErrorMessage}</div>
-			<button
-				type="button"
-				onClick={onRetryExecutions}
-				className="rounded-md border border-status-blocked/30 px-2.5 py-1 font-medium text-status-blocked hover:bg-status-blocked/10"
-			>
-				Retry step list
-			</button>
-		</div>
-	) : null;
+	const currentAttemptActionRef = useRef<HTMLButtonElement>(null);
+	const selectedNode = nodes.find((node) => node.node_id === selectedNodeId) ?? nodes[0] ?? null;
+	const currentExecution = selectedNode?.current_execution ?? null;
+	const selectedHistory = attempts.find((attempt) => attempt.attempt_id === selectedAttemptId) ?? null;
+	const selectedDetail = detail?.attempt_id === selectedAttemptId ? detail : null;
+	const selectedExecution = selectedHistory ?? selectedDetail ?? currentExecution;
+	const selectedPresentation = selectedNode ? presentRunNodeExecution(selectedNode, selectedExecution) : null;
+	const historicalSelected = !!selectedAttemptId && selectedExecution?.attempt_id === selectedAttemptId && selectedAttemptId !== currentExecution?.attempt_id;
+	const primaryExecutionErrorVisible = showPrimaryExecutionError && !!executionsErrorMessage?.trim();
+	const stopRetryAvailable = !!selectedExecution && selectedExecution.attempt_id === currentExecution?.attempt_id
+		&& selectedPresentation?.status === "paused"
+		&& selectedExecution.stop_retry_available;
 
 	return (
 		<div className="space-y-3">
-			<RunActivityLanes
-				runId={run.run_id}
-				executions={executions}
-				selectedNodeId={selectedNodeId}
-				onSelectStep={onSelectStep}
-			/>
-			{primaryExecutionErrorVisible && (
+			{primaryExecutionErrorVisible ? (
 				<section className="rounded-xl border border-status-blocked/40 bg-status-blocked/10 p-4 text-status-blocked">
-					<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-						<div className="space-y-1">
-							<p className="text-xs uppercase tracking-[0.16em] text-status-blocked/80">Execution Steps</p>
-							<p className="text-sm font-medium text-foreground">The execution step list could not be loaded.</p>
-							<p className="text-sm text-status-blocked">{executionsErrorMessage}</p>
-						</div>
-						<button
-							type="button"
-							onClick={onRetryExecutions}
-							className="inline-flex items-center justify-center rounded-md border border-status-blocked/40 px-3 py-2 text-sm font-medium text-status-blocked hover:bg-status-blocked/10"
-						>
-							Retry step list
-						</button>
-					</div>
+					<p className="text-sm font-medium text-foreground">The execution step list could not be loaded.</p>
+					<p className="mt-1 text-sm">{executionsErrorMessage}</p>
+					<button
+						type="button"
+						onClick={onRetryExecutions}
+						className="mt-3 inline-flex min-h-11 items-center rounded-md border border-status-blocked/40 px-3 text-sm font-medium hover:bg-status-blocked/10"
+					>
+						Retry Step List
+					</button>
 				</section>
-			)}
-			<section className="rounded-xl border border-border bg-background/70 p-4">
-				<div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-					<div className="min-w-0 flex-1">
-						<p className="text-xs uppercase tracking-[0.16em] text-foreground-muted">{selectedAttemptSource === "manual" ? "Selected Step" : activityHeroLabel}</p>
-						<PopoverListbox
-							triggerId={stepSelectorId}
-							triggerRole="button"
-							triggerAriaLabel="Current step"
-							triggerClassName="mt-2 flex w-full items-center gap-2 rounded-md text-left transition-colors hover:text-gold"
-							triggerContent={(
-								<>
-									<span className="truncate text-lg font-semibold text-foreground sm:text-xl">{summary.title}</span>
-									<ChevronDown className="h-4 w-4 shrink-0 text-foreground-subtle" />
-								</>
-							)}
-							items={stepOptions}
-							selectedId={currentStepGroup?.nodeId ?? null}
-							onSelect={onSelectStep}
-							footer={stepSelectorFooter}
-							minWidth={220}
-							panelClassName="flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-						/>
-						<p className="mt-2 max-w-3xl text-wrap-anywhere text-sm leading-relaxed text-foreground-subtle">{summary.body}</p>
-						<div className="mt-3 text-xs text-foreground-subtle">
-							Last activity <RelativeTime iso={summaryActivityAt} />
+			) : null}
+			<WorkflowNodeCards
+				nodes={nodes}
+				selectedNodeId={selectedNode?.node_id}
+				onSelectNode={onSelectStep}
+				emptyMessage={!isSummaryLoading && !primaryExecutionErrorVisible ? "No execution steps have been recorded yet." : undefined}
+			/>
+
+			{selectedNode ? (
+				<section className="rounded-xl border border-border bg-background/70">
+					<div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-4 py-3">
+						<div>
+							<p className="text-xs font-medium uppercase tracking-[0.16em] text-foreground-muted">Selected Node</p>
+							<p className="mt-1 font-medium text-foreground">{nodeLabel(selectedNode.node_id)}</p>
 						</div>
-					</div>
-					<div className="flex flex-col items-start gap-2 sm:items-end">
-						{currentExecution && currentExecutionDisplayStatus
-							? <Badge variant="status" status={currentExecutionDisplayStatus}>{statusLabel(currentExecutionDisplayStatus)}</Badge>
-							: null}
-						{currentStepGroup && currentStepGroup.attempts.length > 1 ? (
-							<div className="min-w-[6.75rem] sm:min-w-[7rem]">
-								<PopoverListbox
-									triggerId={attemptSelectorId}
-									triggerRole="button"
-									triggerAriaLabel="Selected attempt"
-									triggerClassName="flex w-full items-center justify-between gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1.5 text-left text-xs text-foreground transition-colors hover:border-gold/40 hover:text-gold"
-									triggerContent={(
-										<>
-											<span className="truncate">{`Attempt ${currentExecution?.attempt ?? currentStepGroup.attempts[0]?.attempt ?? 1}`}</span>
-											<ChevronDown className="h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
-										</>
-									)}
-									items={attemptOptions}
-									selectedId={selectedAttemptId}
-									onSelect={onSelectAttempt}
-									minWidth={112}
-									panelClassName="flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"
-								/>
-							</div>
+						{currentExecution ? (
+							<button
+								ref={currentAttemptActionRef}
+								type="button"
+								onClick={onSelectCurrentAttempt}
+								className="min-h-11 rounded-md border border-border px-3 text-sm font-medium text-foreground hover:bg-surface-raised"
+							>
+								{selectedPresentation?.currentAttemptLabel} {currentExecution.attempt}
+							</button>
 						) : null}
 					</div>
-				</div>
-			</section>
+					{historicalSelected ? (
+						<div className="flex flex-wrap items-center justify-between gap-3 border-b border-gold/30 bg-gold/5 px-4 py-3">
+							<p className="text-sm font-medium text-gold">{selectedPresentation?.historicalAttemptLabel} {selectedExecution?.attempt}</p>
+							<button
+								type="button"
+								onClick={() => {
+									onSelectCurrentAttempt();
+									currentAttemptActionRef.current?.focus();
+								}}
+								className="min-h-11 rounded-md border border-gold/40 px-3 text-sm font-medium text-gold hover:bg-gold/10"
+							>
+								Return to Current Attempt
+							</button>
+						</div>
+					) : null}
+					<button
+						type="button"
+						onClick={onToggleHistory}
+						aria-expanded={historyOpen}
+						aria-controls={historyPanelId}
+						className="flex min-h-11 w-full items-center justify-between gap-3 px-4 py-3 text-left"
+					>
+						<span className="text-sm font-medium text-foreground">Attempt History ({selectedNode.attempt_count})</span>
+						{historyOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+					</button>
+					{historyOpen ? (
+						<div id={historyPanelId} className="border-t border-border px-4 py-3">
+							<AttemptHistory
+								attempts={attempts}
+								currentAttemptId={currentExecution?.attempt_id}
+								loading={isHistoryLoading}
+								hasMore={hasMoreAttempts}
+								onLoadMore={onLoadMoreAttempts}
+								loadingMore={isLoadingMoreAttempts}
+								onSelect={onSelectAttempt}
+							/>
+						</div>
+					) : null}
+				</section>
+			) : null}
 
+			{stopRetryAvailable && selectedExecution ? (
+				<div className="flex flex-wrap items-center gap-3">
+					<button
+						type="button"
+						onClick={() => onRetryStop(selectedExecution.attempt_id)}
+						disabled={isStopRetryPending}
+						className="inline-flex min-h-11 items-center justify-center rounded-md border border-status-blocked/40 px-3 py-2 text-sm font-medium text-status-blocked hover:bg-status-blocked/10 disabled:opacity-60"
+					>
+						{isStopRetryPending ? "Retrying Stop..." : "Retry Stop"}
+					</button>
+					{stopRetryErrorMessage ? <p role="alert" className="text-sm text-status-failed">{stopRetryErrorMessage}</p> : null}
+				</div>
+			) : null}
 			<RunExecutionActivity
 				runId={run.run_id}
-				attemptId={currentExecution?.attempt_id ?? selectedAttemptId}
-				isRunning={isActiveExecutionStatus(currentExecution?.status)}
+				attemptId={selectedExecution?.attempt_id ?? null}
+				isRunning={isActiveExecutionStatus(selectedExecution?.status)}
 			/>
-
 			<RunExecutionsPanel
 				detail={detail}
 				isDetailLoading={isDetailLoading}
 				detailErrorMessage={detailErrorMessage}
 				detailPlaceholderMessage={detailPlaceholderMessage}
 				onRetryDetail={onRetryDetail}
+				failure={!historicalSelected ? selectedNode?.failure : selectedHistory?.failure}
 			/>
-
 			<section className="rounded-xl border border-border bg-surface-raised/20">
 				<button
 					type="button"
 					onClick={() => setTimelineOpen((current) => !current)}
 					aria-expanded={timelineOpen}
 					aria-controls={timelinePanelId}
-					className="flex w-full items-center justify-between gap-3 px-3 py-3 text-left"
+					className="flex min-h-11 w-full items-center justify-between gap-3 px-3 py-3 text-left"
 				>
-					<div className="min-w-0">
-						<p className="text-xs uppercase tracking-[0.16em] text-foreground-muted">Timeline</p>
-						<p className="mt-1 text-xs text-foreground-subtle">Latest activity first. Expand to inspect step-by-step events.</p>
-					</div>
-					{timelineOpen
-						? <ChevronDown className="h-4 w-4 shrink-0 text-foreground-subtle" />
-						: <ChevronRight className="h-4 w-4 shrink-0 text-foreground-subtle" />}
+					<span>
+						<span className="block text-xs font-medium uppercase tracking-[0.16em] text-foreground-muted">Timeline</span>
+						<span className="mt-1 block text-xs text-foreground-subtle">Latest activity first. Expand to inspect step-by-step events.</span>
+					</span>
+					{timelineOpen ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
 				</button>
 				{timelineOpen ? (
 					<div id={timelinePanelId} className="border-t border-border px-3 py-3">
@@ -224,7 +217,7 @@ export function RunExecutionSurface({
 							<TimelinePanel
 								events={events}
 								graph={graph}
-								executions={executions}
+								executions={nodes.flatMap((node) => node.current_execution ? [node.current_execution] : [])}
 								hasMore={hasMoreEvents}
 								onLoadMore={onLoadMoreEvents}
 								isLoadingMore={isLoadingMoreEvents}
@@ -237,121 +230,98 @@ export function RunExecutionSurface({
 	);
 }
 
-function activityHeroLabelText(
-	status: string | null,
-	selectionSource: "auto" | "manual" | null,
-): string {
-	if (selectionSource === "manual") {
-		return "Selected Step";
-	}
-	if (status === null || isCurrentActivityExecutionStatus(status)) {
-		return "Current Activity";
-	}
-	if (status === "succeeded") {
-		return "Latest Completed Step";
-	}
-	return "Latest Step";
-}
-
-function executionSummary(
-	run: RunDetailSummary,
-	execution: RunExecution | null,
-	displayStatus: string | null,
-	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null,
-	executionsErrorMessage: string | null,
-	showPrimaryExecutionError: boolean,
-	isSummaryLoading: boolean,
-): { title: string; body: string } {
-	if (!execution) {
-		if (showPrimaryExecutionError && executionsErrorMessage) {
-			return {
-				title: "Execution steps unavailable",
-				body: "Retry the step list to restore the latest execution view.",
-			};
-		}
-		if (isSummaryLoading) {
-			return {
-				title: "Loading current step",
-				body: "Kingdom is loading the latest execution summary from recorded activity.",
-			};
-		}
-		return {
-			title: "Waiting to start",
-			body: run.status === "failed"
-				? "This run failed before a useful step was recorded."
-				: "This run has not reached a meaningful execution step yet.",
-		};
+function AttemptHistory({
+	attempts,
+	currentAttemptId,
+	loading,
+	hasMore,
+	onLoadMore,
+	loadingMore,
+	onSelect,
+}: {
+	attempts: RunNodeAttemptHistoryItem[];
+	currentAttemptId?: string;
+	loading: boolean;
+	hasMore: boolean;
+	onLoadMore: () => void;
+	loadingMore: boolean;
+	onSelect: (attemptId: string) => void;
+}) {
+	if (loading) {
+		return <p className="text-sm text-foreground-subtle">Loading attempt history...</p>;
 	}
 
-	const title = nodeLabel(execution.node_id);
-	const state = execution.status;
-	const progressLabel = executionProgressLabel(
-		state,
-		detail?.progress_reason_code,
-		detail?.progress_event_type,
-		detail?.live_signal?.live_label,
+	return (
+		<div className="space-y-2">
+			{attempts.map((attempt) => (
+				<AttemptHistoryRow
+					key={attempt.attempt_id}
+					attempt={attempt}
+					current={attempt.attempt_id === currentAttemptId}
+					onSelect={onSelect}
+				/>
+			))}
+			{attempts.length === 0 ? <p className="text-sm text-foreground-subtle">No attempt history is available.</p> : null}
+			{hasMore ? (
+				<button
+					type="button"
+					onClick={onLoadMore}
+					disabled={loadingMore}
+					className="min-h-11 text-sm font-medium text-gold hover:text-gold-bright disabled:opacity-60"
+				>
+					{loadingMore ? "Loading Attempts..." : "Load Older Attempts"}
+				</button>
+			) : null}
+		</div>
 	);
-
-	if (displayStatus === "rework") {
-		return { title, body: "Changes were requested for this step." };
-	}
-	if (detail?.output_verdict === "REWORK") {
-		return { title, body: "Changes were requested for this step." };
-	}
-	if (detail?.settlement_status === "pending") {
-		return {
-			title,
-			body: operatorExecutionStatusText("verifying", progressLabel) ?? "Kingdom is still confirming the final result for this step.",
-		};
-	}
-	if (isQueuedExecutionStatus(state)) {
-		return {
-			title,
-			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is queued to start.",
-		};
-	}
-	if (isActiveExecutionStatus(state)) {
-		return { title, body: operatorExecutionStatusText(state, progressLabel) ?? "This step is still running." };
-	}
-	if (isBlockedExecutionStatus(state)) {
-		return {
-			title,
-			body: operatorExecutionStatusText(state, progressLabel) ?? "This step is blocked while Kingdom decides or performs recovery.",
-		};
-	}
-	if (state === "failed") {
-		const matchingDetail = detail?.attempt_id === execution.attempt_id ? detail : null;
-		return {
-			title,
-			body: operatorFacingExecutionFailureText(
-				matchingDetail?.failure_code ?? execution.failure_code,
-				matchingDetail?.completion_invalid_reason ?? execution.completion_invalid_reason,
-				matchingDetail?.failure_text,
-				execution.failure_text,
-			) ?? "This step failed.",
-		};
-	}
-	if (state === "cancelled") {
-		return {
-			title,
-			body: run.status === "failed" ? "This step stopped after the run failed elsewhere." : "This step stopped before completion.",
-		};
-	}
-	return { title, body: "This step completed." };
 }
 
-function selectedExecutionDisplayStatus(
-	execution: RunExecution | null,
-	detail: (RunExecutionDetail & { live_signal?: { live_label?: string; activity_at: string } }) | null,
-): string | null {
-	if (!execution) {
-		return null;
-	}
-	if (detail && detail.attempt_id === execution.attempt_id) {
-		if (detail.settlement_status === "pending") {
-			return "verifying";
-		}
-		return executionDisplayStatus(detail);
-	}
-	return executionDisplayStatus(execution);
+function AttemptHistoryRow({
+	attempt,
+	current,
+	onSelect,
+}: {
+	attempt: RunNodeAttemptHistoryItem;
+	current: boolean;
+	onSelect: (attemptId: string) => void;
+}) {
+	const presentation = presentAttemptHistoryItem(attempt, current ? attempt.attempt_id : undefined);
+
+	return (
+		<article className="rounded-lg border border-border bg-surface p-3">
+			<button type="button" onClick={() => onSelect(attempt.attempt_id)} className="min-h-11 w-full text-left">
+				<span className="font-medium text-foreground">{presentation.attemptLabel}</span>
+				<span className="mt-1 block text-sm text-foreground-subtle">Outcome: {presentation.outcome}</span>
+				<span className="mt-1 block text-xs text-foreground-subtle">
+					Started: {attempt.started_at ?? attempt.launch_started_at ?? "Not started"} · Finished: {attempt.committed_at ?? attempt.terminal_observed_at ?? "In progress"}
+				</span>
+				{presentation.error ? <span className="mt-1 block text-sm text-status-failed">Error: {presentation.error}</span> : null}
+				{attempt.superseded ? (
+					<span className="mt-1 block text-xs text-foreground-subtle">
+						Superseded{attempt.superseded_at ? ` at ${attempt.superseded_at}` : ""}
+					</span>
+				) : null}
+				{presentation.retryRelationships.map((relationship, index) => (
+					<span key={`${attempt.attempt_id}-${index}`} className="mt-1 block text-xs text-foreground-subtle">
+						{relationship}
+					</span>
+				))}
+				{attempt.token_usage ? (
+					<span className="mt-1 block text-xs text-foreground-subtle">
+						Token Usage: {attempt.token_usage.total_tokens} total ({attempt.token_usage.input_tokens} input, {attempt.token_usage.output_tokens} output)
+					</span>
+				) : null}
+			</button>
+			<details className="mt-2 text-xs text-foreground-subtle">
+				<summary className="min-h-11 cursor-pointer py-2 font-medium text-foreground">Technical Details</summary>
+				{attempt.provider_invocation_id ? (
+					<p>
+						Provider Invocation ID: <code className="text-wrap-anywhere">{attempt.provider_invocation_id}</code>
+					</p>
+				) : (
+					<p>No provider invocation ID was recorded.</p>
+				)}
+			</details>
+		</article>
+	);
 }

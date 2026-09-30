@@ -38,6 +38,12 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !tableExists(t, db, "provider_invocations") {
 		t.Fatal("expected provider_invocations table to exist after up migration")
 	}
+	if !tableExists(t, db, "provider_terminal_handoffs") {
+		t.Fatal("expected provider_terminal_handoffs table to exist after up migration")
+	}
+	if !tableExists(t, db, "provider_process_guards") {
+		t.Fatal("expected provider_process_guards table to exist after up migration")
+	}
 	if !tableExists(t, db, "provider_completion_evidence") {
 		t.Fatal("expected provider_completion_evidence table to exist after up migration")
 	}
@@ -64,6 +70,9 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	}
 	if !tableExists(t, db, "planning_operation_events") {
 		t.Fatal("expected planning_operation_events table to exist after up migration")
+	}
+	if !tableExists(t, db, "planning_activity_reconciliations") {
+		t.Fatal("expected planning_activity_reconciliations table to exist after up migration")
 	}
 	if !tableExists(t, db, "run_plan_reviews") {
 		t.Fatal("expected run_plan_reviews table to exist after up migration")
@@ -119,20 +128,39 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "attempt_executions", "result_snapshot_id") {
 		t.Fatal("expected attempt_executions.result_snapshot_id column to exist after up migration")
 	}
-	if !columnExists(t, db, "provider_invocations", "completion_capability_hash") {
-		t.Fatal("expected provider_invocations.completion_capability_hash column to exist after up migration")
+	for _, column := range []string{"completion_mode", "invalid_reason", "opened_at", "settled_at", "terminal_handoff_pending_at", "terminal_recovery_required_at", "terminal_handoff_file_cleanup_pending_at"} {
+		if !columnExists(t, db, "provider_invocations", column) {
+			t.Fatalf("expected provider_invocations.%s column to exist after up migration", column)
+		}
 	}
-	if !columnExists(t, db, "provider_invocations", "receipt_seen_count") {
-		t.Fatal("expected provider_invocations.receipt_seen_count column to exist after up migration")
+	for _, column := range []string{"completion_capability_hash", "completion_capability_issued_at", "completion_capability_used_at", "completion_capability_revoked_at", "receipt_seen_count", "first_receipt_seen_at", "last_receipt_seen_at", "last_receipt_disposition", "receipt_persisted_at", "receipt_inbox_cleaned_at"} {
+		if columnExists(t, db, "provider_invocations", column) {
+			t.Fatalf("expected retired provider_invocations.%s column to be absent", column)
+		}
 	}
-	if !columnExists(t, db, "provider_invocations", "first_receipt_seen_at") {
-		t.Fatal("expected provider_invocations.first_receipt_seen_at column to exist after up migration")
+	if columnExists(t, db, "provider_process_guards", "terminal_recovery_required_at") {
+		t.Fatal("expected terminal recovery markers to live on provider invocations, not process guards")
 	}
-	if !columnExists(t, db, "provider_invocations", "last_receipt_seen_at") {
-		t.Fatal("expected provider_invocations.last_receipt_seen_at column to exist after up migration")
+	if indexExists(t, db, "idx_provider_invocations_receipt_ingestion") {
+		t.Fatal("expected retired receipt ingestion index to be absent after up migration")
 	}
-	if !columnExists(t, db, "provider_invocations", "last_receipt_disposition") {
-		t.Fatal("expected provider_invocations.last_receipt_disposition column to exist after up migration")
+	for _, column := range []string{"handoff_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "expected_lease_owner", "expected_lease_version", "stream_observation_json", "payload_json", "created_at"} {
+		if !columnExists(t, db, "provider_terminal_handoffs", column) {
+			t.Fatalf("expected provider_terminal_handoffs.%s column to exist after up migration", column)
+		}
+	}
+	if !indexExists(t, db, "idx_provider_terminal_handoffs_pending") {
+		t.Fatal("expected pending provider terminal handoff index after up migration")
+	}
+	for _, column := range []string{"guard_id", "owner_kind", "owner_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "command_ordinal", "lifecycle", "platform", "guardian_pid", "guardian_identity_token", "child_pid", "child_identity_token", "tree_id", "tree_identity_token", "quiescence_capability_hash", "lease_owner", "lease_version", "started_at", "acknowledged_at", "termination_requested_at", "exited_at", "quiescent_at", "exit_code", "exit_signal", "termination_forced", "failure_code", "failure_text", "quiescence_evidence_sha256", "quiescence_evidence_json", "quiescence_evidence_lost_at", "created_at", "updated_at"} {
+		if !columnExists(t, db, "provider_process_guards", column) {
+			t.Fatalf("expected provider_process_guards.%s column to exist after up migration", column)
+		}
+	}
+	for _, indexName := range []string{"idx_provider_process_guards_pending", "idx_provider_process_guards_invocation"} {
+		if !indexExists(t, db, indexName) {
+			t.Fatalf("expected process guard index %q after up migration", indexName)
+		}
 	}
 	if !columnExists(t, db, "provider_completion_evidence", "evidence_kind") {
 		t.Fatal("expected provider_completion_evidence.evidence_kind column to exist after up migration")
@@ -143,8 +171,8 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !columnExists(t, db, "artifacts", "artifact_action") {
 		t.Fatal("expected artifacts.artifact_action column to exist after up migration")
 	}
-	if !indexExists(t, db, "idx_planning_provider_completion_receipt_invocation") {
-		t.Fatal("expected planner receipt uniqueness index to exist after up migration")
+	if !columnExists(t, db, "planning_provider_invocations", "completion_mode") {
+		t.Fatal("expected planning_provider_invocations.completion_mode column to exist after up migration")
 	}
 	if !columnExists(t, db, "workflow_runs", "pending_approval_key") {
 		t.Fatal("expected workflow_runs.pending_approval_key column to exist after up migration")
@@ -163,6 +191,62 @@ func TestMigrationBaselineOmitsObsoleteRunDetailProjectionTables(t *testing.T) {
 	for _, tableName := range []string{"run_detail_stats", "run_agent_memberships", "run_agent_projection"} {
 		if tableExists(t, db, tableName) {
 			t.Fatalf("expected %s to be dropped after full migration", tableName)
+		}
+	}
+}
+
+func TestMigrationUpgradeAddsRecoveryLeaseAndResponseWorkspaceCleanupFields(t *testing.T) {
+	t.Parallel()
+	db := openTestDB(t)
+
+	var existingMigrations []SQLMigration
+	for _, name := range []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+		"0005_unbounded_planning_external_context.up.sql",
+	} {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatalf("read existing migration %s: %v", name, err)
+		}
+		existingMigrations = append(existingMigrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, existingMigrations, time.Date(2026, 9, 29, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply existing migration history: %v", err)
+	}
+	for _, tableColumn := range [][2]string{
+		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
+		{"provider_invocations", "terminal_handoff_pending_lease_version"},
+		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
+		{"provider_invocations", "terminal_recovery_required_lease_owner"},
+		{"provider_invocations", "terminal_recovery_required_lease_version"},
+		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
+		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
+	} {
+		if columnExists(t, db, tableColumn[0], tableColumn[1]) {
+			t.Fatalf("existing schema unexpectedly has %s.%s before forward migration", tableColumn[0], tableColumn[1])
+		}
+	}
+	raw, err := dbmigrations.Read("0006_execution_recovery_and_response_workspace_cleanup.up.sql")
+	if err != nil {
+		t.Fatalf("read forward recovery migration: %v", err)
+	}
+	if err := ApplySQLMigrations(context.Background(), db, []SQLMigration{{Name: "0006_execution_recovery_and_response_workspace_cleanup.up.sql", SQL: raw}}, time.Date(2026, 9, 29, 12, 1, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply forward recovery migration: %v", err)
+	}
+	for _, tableColumn := range [][2]string{
+		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
+		{"provider_invocations", "terminal_handoff_pending_lease_version"},
+		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
+		{"provider_invocations", "terminal_recovery_required_lease_owner"},
+		{"provider_invocations", "terminal_recovery_required_lease_version"},
+		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
+		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
+	} {
+		if !columnExists(t, db, tableColumn[0], tableColumn[1]) {
+			t.Fatalf("forward migration did not add %s.%s", tableColumn[0], tableColumn[1])
 		}
 	}
 }
@@ -295,7 +379,7 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("run_planning_outputs_lineage_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert attempt execution seed row for lineage constraint: %v", err)
 		}
@@ -312,7 +396,7 @@ func TestMigrationConstraints(t *testing.T) {
 		mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_constraint', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_1', 'run_1', 'plan_drafting', 1,1, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_constraint_2', 'run_1', 'plan_drafting', 2,2, 'succeeded', 'council-member', 'agent_council', 1, '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_constraint_2', 'committed_success', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:2', 'run_1', 'nr_plan_constraint_2', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z', '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:01:00Z')`)
 
 		_, err := db.Exec(`INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planrev_bad_attempt_lineage', 'run_1', 'plan_drafting', 'nr_plan_constraint_1', 'run_1:plan_drafting:2', 'agent_council', '', 'plan_revision', 'constraint', '2026-03-01T12:00:00Z')`)
 		if err == nil {
@@ -325,7 +409,7 @@ func TestMigrationConstraints(t *testing.T) {
 		mustExec(t, db, `INSERT OR IGNORE INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council_append_only', 'council-member', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT OR IGNORE INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_append_only', 'wfdef_1', 'plan_drafting', 'council-member', 'plan_drafting', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT OR IGNORE INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_plan_append_only', 'run_1', 'plan_drafting', 3,3, 'succeeded', 'council-member', 'agent_council_append_only', 1, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-		mustExec(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:append_only', 'run_1', 'nr_plan_append_only', 'committed_success', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT OR IGNORE INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:plan_drafting:append_only', 'run_1', 'nr_plan_append_only', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		mustExec(t, db, `INSERT INTO run_planning_outputs (planning_output_id, run_id, node_id, node_run_id, attempt_id, agent_id, source_message_id, kind, content_markdown, created_at) VALUES ('planout_append_only', 'run_1', 'plan_drafting', 'nr_plan_append_only', 'run_1:plan_drafting:append_only', 'agent_council_append_only', '', 'plan_revision', 'append only', '2026-03-01T12:00:00Z')`)
 
 		if _, err := db.Exec(`UPDATE run_planning_outputs SET content_markdown = 'mutated' WHERE planning_output_id = 'planout_append_only'`); err == nil {
@@ -359,14 +443,14 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("attempt_execution_state_constraint", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_bad_state', 'run_1', 'nr_1', 'unknown', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_bad_state', 'run_1', 'nr_1', 'unknown', 'provider_backed', 'server_response', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected CHECK constraint failure for attempt_executions.state")
 		}
 	})
 
 	t.Run("attempt_event_log_sequence_uniqueness", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_1', 'run_1', 'nr_1', 'queued', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('att_exec_1', 'run_1', 'nr_1', 'queued', 'provider_backed', 'server_response', '', NULL, 0, '', NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 		if err != nil {
 			t.Fatalf("insert attempt execution seed row: %v", err)
 		}
@@ -540,7 +624,7 @@ func TestMigrationConstraints(t *testing.T) {
 	})
 
 	t.Run("artifact_attempt_provenance_required", func(t *testing.T) {
-		_, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'king', '2026-03-01T12:00:00Z')`)
+		_, err := db.Exec(`INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_bad_attempt', 'run_1', 'nr_1', NULL, 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 12, 'king', '2026-03-01T12:00:00Z')`)
 		if err == nil {
 			t.Fatal("expected NOT NULL failure for artifacts.attempt_id")
 		}
@@ -785,9 +869,24 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql"}
+	expectedNames := []string{
+		"0001_initial_schema.up.sql",
+		"0002_events_execution_activity_index.up.sql",
+		"0003_external_sources_and_idempotency_retention.up.sql",
+		"0004_resumable_workspace_tree_cleanup.up.sql",
+		"0005_unbounded_planning_external_context.up.sql",
+		"0006_execution_recovery_and_response_workspace_cleanup.up.sql",
+		"0008_provider_content.up.sql",
+		"0009_planning_content.up.sql",
+		"0010_artifact_content.up.sql",
+		"0011_complete_external_comments.up.sql",
+		"0012_provider_stream_content.up.sql",
+		"0013_request_content.up.sql",
+		"0014_planning_text.up.sql",
+		"0015_execution_input_content.up.sql",
+	}
 	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
-		t.Fatalf("expected only consolidated canonical migrations, got %v", canonicalNames)
+		t.Fatalf("expected canonical migration sequence %v, got %v", expectedNames, canonicalNames)
 	}
 
 	for _, name := range canonicalNames {
@@ -842,10 +941,20 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 	if _, err := db.Exec(`INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,credential_handle,lifecycle,health_class,credential_generation,validated_generation,created_at,updated_at) VALUES ('invalid-healthy','github','app_private_key','Invalid','1','Iv1','app','github-app:invalid-healthy','enabled','healthy',0,0,'2026-08-15T12:00:00Z','2026-08-15T12:00:00Z')`); err == nil {
 		t.Fatal("schema accepted healthy connection with generation zero")
 	}
-	// Installation identity is a set the connection covers, not a column on it.
-	for _, column := range []string{"installation_id", "connection_id", "account_id", "account_login"} {
+	// Live installation claims are separate from the durable account identity.
+	for _, column := range []string{"installation_id", "connection_id"} {
 		if !columnExists(t, db, "external_connection_installations", column) {
 			t.Fatalf("external_connection_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"installation_id", "account_id", "account_login"} {
+		if !columnExists(t, db, "external_installations", column) {
+			t.Fatalf("external_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"account_id", "account_login"} {
+		if columnExists(t, db, "external_connection_installations", column) {
+			t.Fatalf("external_connection_installations.%s must not duplicate durable identity", column)
 		}
 	}
 	for _, column := range []string{"installation_id", "installation_account_id", "installation_account_login"} {
@@ -853,7 +962,7 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 			t.Fatalf("external_connections.%s survived the move to the installations table", column)
 		}
 	}
-	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages"} {
+	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages", "created_at_unix_nano"} {
 		if !columnExists(t, db, "external_source_snapshots", column) {
 			t.Fatalf("external_source_snapshots.%s is missing", column)
 		}
@@ -914,6 +1023,53 @@ func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
 	assertNoForeignKeyTo("external_source_links", "planning_sessions", "decrees")
 	assertNoForeignKeyTo("planning_external_source_adoptions", "planning_sessions")
 	assertNoForeignKeyTo("planning_operation_external_snapshots", "planning_operations")
+}
+
+func TestFreshDatabaseGetsFencedResumableManagedWorktreeCleanupSchema(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
+	}
+	migrations := make([]SQLMigration, 0, len(names))
+	for _, name := range names {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply canonical migrations: %v", err)
+	}
+
+	for _, column := range []string{"cleanup_cursor", "cleanup_owner", "cleanup_owner_pid", "cleanup_owner_identity_token", "cleanup_fence", "cleanup_started"} {
+		if !columnExists(t, db, "run_worktrees", column) {
+			t.Fatalf("run_worktrees.%s is missing", column)
+		}
+	}
+	if !columnExists(t, db, "run_execution_targets", "cleanup_cursor") {
+		t.Fatal("run_execution_targets.cleanup_cursor is missing")
+	}
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `INSERT INTO run_worktrees (run_id, repo_common_dir, main_worktree_root, project_relpath, worktree_name, seed_commit_oid, state, created_at, last_used_at) VALUES ('run_1', '/repo/.git', '/repo', '.', 'managed-run', '1111111111111111111111111111111111111111', 'active', '2026-08-15T12:00:00Z', '2026-08-15T12:00:00Z')`)
+
+	var cursor, owner, ownerIdentity string
+	var ownerPID, fence, started int
+	if err := db.QueryRow(`SELECT cleanup_cursor, cleanup_owner, cleanup_owner_pid, cleanup_owner_identity_token, cleanup_fence, cleanup_started FROM run_worktrees WHERE run_id = 'run_1'`).Scan(&cursor, &owner, &ownerPID, &ownerIdentity, &fence, &started); err != nil {
+		t.Fatalf("read default run worktree cleanup fence: %v", err)
+	}
+	if cursor != "" || owner != "" || ownerPID != 0 || ownerIdentity != "" || fence != 0 || started != 0 {
+		t.Fatalf("unexpected initial cleanup state: cursor=%q owner=%q owner_pid=%d owner_identity=%q fence=%d started=%d", cursor, owner, ownerPID, ownerIdentity, fence, started)
+	}
+	if _, err := db.Exec(`UPDATE run_worktrees SET cleanup_fence = -1 WHERE run_id = 'run_1'`); err == nil {
+		t.Fatal("schema accepted a negative worktree cleanup fence")
+	}
+	if _, err := db.Exec(`UPDATE run_worktrees SET cleanup_started = 2 WHERE run_id = 'run_1'`); err == nil {
+		t.Fatal("schema accepted an invalid worktree cleanup-started flag")
+	}
 }
 
 func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
@@ -1109,7 +1265,7 @@ func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
 			t.Fatalf("apply baseline migration: %v", err)
 		}
 		seedMinimumGraph(t, db)
-		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+		mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:decree_intake:1', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', '2026-03-01T12:00:00Z', NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 		migrations := append(load(t, "0001_initial_schema.up.sql"), SQLMigration{
 			Name: "0002_broken_fk_rebuild.up.sql",

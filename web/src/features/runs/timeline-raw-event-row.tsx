@@ -112,10 +112,10 @@ export function RawEventRow({
 	const Icon = reworkEvent
 		? RotateCw
 		: RAW_EVENT_ICONS[(attemptEventIconKey(event) ?? event.event_type) as AttemptEventIconKey | string] ?? Activity;
-	const dotClass = event.event_type === "attempt.retrying"
+	const dotClass = event.event_type === "attempt.retry_scheduled"
 		? "bg-role-loki"
 		: runStatusDotClass(eventTone);
-	const iconClass = event.event_type === "attempt.retrying"
+	const iconClass = event.event_type === "attempt.retry_scheduled"
 		? accentTextClass("loki")
 		: runStatusTextClass(eventTone);
 	const hasPayload = !!event.payload_json && Object.keys(event.payload_json).length > 0;

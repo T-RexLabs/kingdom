@@ -3,6 +3,154 @@ import type { RunExecution, RunGraphNode, TimelineEvent } from "@/api/hooks-type
 import { buildRawEventLabel, buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
 
 describe("timeline milestones", () => {
+	it.each([
+		["run.retry_reopened", "operator_retry", "Manual Retry Scheduled - Attempt 1"],
+		["run.rerun_reopened", "operator_rerun", "Manual Rerun Scheduled - Attempt 1"],
+	] as const)("creates one recovery milestone for %s", (eventType, trigger, label) => {
+		const event: TimelineEvent = {
+			event_id: `evt-${eventType}`,
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: eventType,
+			reason_code: eventType === "run.retry_reopened" ? "manual_retry_requested" : "manual_rerun_requested",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: eventType === "run.retry_reopened" ? "manual_retry_requested" : "manual_rerun_requested",
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: "2026-03-18T11:40:00Z",
+			},
+		};
+
+		const milestones = synthesizeMilestones([event], [], [], buildTimelineLookups([event], []));
+
+		expect(milestones).toEqual([
+			expect.objectContaining({ id: `recovery-${event.event_id}`, label, status: "ready" }),
+		]);
+	});
+
+	it.each([
+		["retry", "run.retry_reopened", "attempt.retry_queued", "operator_retry", "manual_retry_requested", "Manual Retry Scheduled - Attempt 1"],
+		["rerun", "run.rerun_reopened", "attempt.rerun_queued", "operator_rerun", "manual_rerun_requested", "Manual Rerun Scheduled - Attempt 1"],
+	] as const)("deduplicates producer-shaped manual %s recovery events", (_action, runEventType, attemptEventType, trigger, code, label) => {
+		const scheduledAt = "2026-03-18T11:40:00Z";
+		const runEvent: TimelineEvent = {
+			event_id: `evt-${runEventType}`,
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: runEventType,
+			reason_code: code,
+			emitted_at: scheduledAt,
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-source",
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: code,
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: scheduledAt,
+			},
+		};
+		const attemptEvent: TimelineEvent = {
+			event_id: `evt-${attemptEventType}`,
+			run_event_seq: 2,
+			attempt_seq: 1,
+			event_type: attemptEventType,
+			reason_code: code,
+			emitted_at: scheduledAt,
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-target",
+				recovery_trigger: trigger,
+				recovery_phase: "scheduled",
+				error_code: code,
+				source_attempt_id: "run-1:delegated_execution_berserker:1",
+				source_node_run_id: "nr-builder-source",
+				target_attempt_id: "run-1:delegated_execution_berserker:2",
+				target_node_run_id: "nr-builder-target",
+				retry_index: 0,
+				retry_max: 0,
+				scheduled_at: scheduledAt,
+			},
+		};
+
+		const events = [runEvent, attemptEvent];
+		const milestones = synthesizeMilestones(events, [], [], buildTimelineLookups(events, []));
+		const recoveryMilestones = milestones.filter((milestone) => milestone.id.startsWith("recovery-"));
+
+		expect(recoveryMilestones).toEqual([
+			expect.objectContaining({
+				id: `recovery-${attemptEvent.event_id}`,
+				label,
+				detail: "Delegated Execution Berserker",
+				status: "ready",
+				events: [runEvent, attemptEvent],
+			}),
+		]);
+	});
+
+	it("shows node detail from a producer-shaped recovery payload", () => {
+		const events: TimelineEvent[] = [{
+			event_id: "retry-scheduled", run_event_seq: 1, attempt_seq: 1, event_type: "attempt.retry_scheduled", reason_code: "llm_rate_limited", emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				node_id: "delegated_execution_berserker",
+				node_run_id: "nr-builder-source",
+				retry_decision_id: "retry-builder-1",
+				decision: "retry",
+				recovery_trigger: "automatic_retry",
+				recovery_phase: "scheduled",
+				error_code: "llm_rate_limited",
+				source_attempt_id: "run-1:delegated_execution_berserker:1",
+				source_node_run_id: "nr-builder-source",
+				target_attempt_id: "run-1:delegated_execution_berserker:2",
+				target_node_run_id: "nr-builder-target",
+				retry_index: 1,
+				retry_max: 3,
+				scheduled_at: "2026-03-18T11:41:00Z",
+			},
+		}];
+		const nodes: RunGraphNode[] = [{ node_id: "delegated_execution_berserker", required_role: "builder-berserker", execution_ownership: "provider_backed", state: "blocked" }];
+		const lookups = buildTimelineLookups(events, nodes);
+		expect(buildRawEventLabel(events[0], lookups)).toEqual({ label: "Retry Scheduled - Rate Limit", detail: "Delegated Execution Berserker" });
+		expect(synthesizeMilestones(events, nodes, [], lookups)).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Retry Scheduled - Rate Limit", status: "ready" })]));
+	});
+
+	it("presents final governance rework separately from Manual Rerun", () => {
+		const event: TimelineEvent = {
+			event_id: "final-rework-queued",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.final_rework_queued",
+			reason_code: "rework_requested",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				node_id: "plan_drafting",
+				node_run_id: "nr-plan-rework",
+				attempt_id: "run-1:plan_drafting:2",
+				attempt: 2,
+				governance_rework: "final",
+				state: "ready",
+			},
+		};
+		const nodes: RunGraphNode[] = [{
+			node_id: "plan_drafting",
+			required_role: "council-member",
+			execution_ownership: "provider_backed",
+			state: "ready",
+		}];
+		const lookups = buildTimelineLookups([event], nodes);
+		const milestones = synthesizeMilestones([event], nodes, [], lookups);
+
+		expect(buildRawEventLabel(event, lookups)).toEqual({ label: "Plan Drafting final governance rework queued" });
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({ label: "Plan Drafting", detail: "Final Governance Rework Queued", status: "ready" }),
+		]));
+		expect(JSON.stringify(milestones)).not.toContain("Manual Rerun");
+	});
+
 	it("describes runtime-owned raw events without default execution metadata", () => {
     const nodes: RunGraphNode[] = [{
       node_id: "king_plan_decision",
@@ -93,8 +241,17 @@ describe("timeline milestones", () => {
 			emitted_at: "2026-03-18T11:41:00Z",
 			payload_json: { node_id: "delegated_execution_berserker" },
 		};
+		const provisionalText: TimelineEvent = {
+			event_id: "evt-provisional-text",
+			run_event_seq: 3,
+			attempt_seq: 3,
+			event_type: "attempt.progress",
+			reason_code: "stream_event",
+			emitted_at: "2026-03-18T11:42:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", text: "Partial response" },
+		};
 
-		const lookups = buildTimelineLookups([retryQueued, progress], nodes);
+		const lookups = buildTimelineLookups([retryQueued, progress, provisionalText], nodes);
 
 		expect(buildRawEventLabel(retryQueued, lookups)).toEqual({
 			label: "Delegated Execution Berserker retry queued",
@@ -103,6 +260,10 @@ describe("timeline milestones", () => {
 		expect(buildRawEventLabel(progress, lookups)).toEqual({
 			label: "Delegated Execution Berserker Provider running",
 			detail: undefined,
+		});
+		expect(buildRawEventLabel(provisionalText, lookups)).toEqual({
+			label: "Delegated Execution Berserker Provisional Stream Text",
+			detail: "Not Canonical",
 		});
 	});
 
@@ -126,20 +287,21 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 		const recovered: TimelineEvent = {
 			event_id: "evt-recovered-blocked",
 			run_event_seq: 1,
 			attempt_seq: 1,
-			event_type: "attempt.recovered",
+			event_type: "node.state_changed",
 			emitted_at: "2026-03-18T11:41:00Z",
 			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 		};
 
 		const lookups = buildTimelineLookups([recovered], nodes, executions);
 		expect(buildRawEventLabel(recovered, lookups)).toEqual({
-			label: "Delegated Execution Berserker blocked for retry",
+			label: "Delegated Execution Berserker blocked",
 			detail: undefined,
 		});
 
@@ -150,6 +312,101 @@ describe("timeline milestones", () => {
 				status: "blocked",
 				kind: "node_blocked",
 				detail: "Blocked",
+			}),
+		]));
+	});
+
+	it("keeps a quiescence-blocked retry visibly paused in the timeline", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-paused",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "blocked",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-paused",
+			node_run_id: "nr-builder-paused",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "paused",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+
+		const recoveryEvent: TimelineEvent = {
+			event_id: "evt-retry-paused",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "node.state_changed",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-paused", state: "blocked" },
+		};
+		const retryEvent: TimelineEvent = {
+			event_id: "evt-retry-queued",
+			run_event_seq: 2,
+			attempt_seq: 1,
+			event_type: "attempt.retry_queued",
+			emitted_at: "2026-03-18T11:42:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-paused-2", attempt: 2 },
+		};
+		const milestones = synthesizeMilestones([recoveryEvent, retryEvent], nodes, [], buildTimelineLookups([recoveryEvent, retryEvent], nodes, executions));
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "paused",
+				kind: "node_blocked",
+				detail: "Retry Paused - Previous Attempt Still Running",
+				events: expect.arrayContaining([expect.objectContaining({ event_id: "evt-retry-queued" })]),
+			}),
+		]));
+	});
+
+	it("describes a paused workspace-restoration handoff accurately", () => {
+		const nodes: RunGraphNode[] = [{
+			node_id: "delegated_execution_berserker",
+			node_run_id: "nr-builder-restore",
+			required_role: "builder-berserker",
+			execution_ownership: "provider_backed",
+			state: "blocked",
+		}];
+		const executions: RunExecution[] = [{
+			attempt_id: "attempt-builder-restore",
+			node_run_id: "nr-builder-restore",
+			node_id: "delegated_execution_berserker",
+			attempt: 1,
+			agent_id: "agent-builder",
+			required_role: "builder-berserker",
+			execution_mode: "provider_backed",
+			status: "paused",
+			handoff_state: "workspace_restore_failed",
+			queued_at: "2026-03-18T11:39:30Z",
+			activity_at: "2026-03-18T11:41:00Z",
+			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
+			launch_started_at: "2026-03-18T11:39:30Z",
+		}];
+		const recoveryEvent: TimelineEvent = {
+			event_id: "evt-retry-restore-paused",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "node.state_changed",
+			emitted_at: "2026-03-18T11:41:00Z",
+			payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-restore", state: "blocked" },
+		};
+
+		const milestones = synthesizeMilestones([recoveryEvent], nodes, [], buildTimelineLookups([recoveryEvent], nodes, executions));
+		expect(milestones).toEqual(expect.arrayContaining([
+			expect.objectContaining({
+				id: "node-delegated_execution_berserker",
+				status: "paused",
+				detail: "Step Paused - Trusted Workspace Restoration Failed",
 			}),
 		]));
 	});
@@ -174,6 +431,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:42:00Z",
 			updated_at: "2026-03-18T11:42:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 		}];
 		const events: TimelineEvent[] = [
@@ -181,7 +439,7 @@ describe("timeline milestones", () => {
 				event_id: "evt-recovered-blocked",
 				run_event_seq: 5,
 				attempt_seq: 3,
-				event_type: "attempt.recovered",
+				event_type: "node.state_changed",
 				emitted_at: "2026-03-18T11:41:00Z",
 				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 			},
@@ -225,7 +483,7 @@ describe("timeline milestones", () => {
 				event_id: "evt-recovered-blocked-live-only",
 				run_event_seq: 5,
 				attempt_seq: 3,
-				event_type: "attempt.recovered",
+				event_type: "node.state_changed",
 				emitted_at: "2026-03-18T11:41:00Z",
 				payload_json: { node_id: "delegated_execution_berserker", node_run_id: "nr-builder-1", state: "blocked" },
 			},
@@ -299,6 +557,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:00Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 			started_at: "2026-03-18T11:40:15Z",
 		}];
@@ -352,6 +611,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:39:30Z",
 			activity_at: "2026-03-18T11:41:00Z",
 			updated_at: "2026-03-18T11:41:00Z",
+			stop_retry_available: false,
 			launch_started_at: "2026-03-18T11:39:30Z",
 			progress_at: "2026-03-18T11:40:15Z",
 		}];
@@ -538,6 +798,7 @@ describe("timeline milestones", () => {
 			queued_at: "2026-03-18T11:41:00Z",
 			activity_at: "2026-03-18T11:41:30Z",
 			updated_at: "2026-03-18T11:41:30Z",
+			stop_retry_available: false,
 			terminal_observed_at: "2026-03-18T11:41:30Z",
 		}];
 		const events: TimelineEvent[] = [{
@@ -585,6 +846,7 @@ describe("timeline milestones", () => {
 				queued_at: "2026-03-18T11:41:00Z",
 				activity_at: "2026-03-18T11:42:00Z",
 				updated_at: "2026-03-18T11:42:00Z",
+				stop_retry_available: false,
 				committed_at: "2026-03-18T11:42:00Z",
 				failure_code: "provider_incomplete_turn",
 				failure_text: "older failed attempt",
@@ -601,6 +863,7 @@ describe("timeline milestones", () => {
 				queued_at: "2026-03-18T11:41:00Z",
 				activity_at: "2026-03-18T11:41:00Z",
 				updated_at: "2026-03-18T11:41:00Z",
+				stop_retry_available: false,
 				started_at: "2026-03-18T11:41:00Z",
 			},
 		];
@@ -650,173 +913,6 @@ describe("timeline milestones", () => {
 		  detail: "Kingdom could not confirm a clean finish for this step.",
 		});
   });
-
-  it("does not treat raw event text markers as receipt conflict state", () => {
-    const nodes: RunGraphNode[] = [{
-      node_id: "delegated_execution_berserker",
-      required_role: "builder-berserker",
-      execution_ownership: "provider_backed",
-      state: "failed",
-    }];
-    const event: TimelineEvent = {
-      event_id: "evt-receipt-conflict",
-      run_event_seq: 1,
-      attempt_seq: 1,
-      event_type: "attempt.failed",
-      reason_code: "provider_incomplete_turn",
-      emitted_at: "2026-03-18T11:40:00Z",
-      payload_json: { node_id: "delegated_execution_berserker", error: "completion_receipt_conflict should not be a control channel" },
-    };
-
-    const lookups = buildTimelineLookups([event], nodes);
-
-    expect(buildRawEventLabel(event, lookups)).toEqual({
-      label: "Delegated Execution Berserker failed",
-      detail: "Kingdom could not confirm a clean finish for this step.",
-    });
-  });
-
-	it("uses durable execution failure text for recovered receipt conflict milestones", () => {
-		const nodes: RunGraphNode[] = [{
-			node_id: "delegated_execution_berserker",
-			node_run_id: "nr-builder-conflict",
-			required_role: "builder-berserker",
-			execution_ownership: "provider_backed",
-			state: "failed",
-		}];
-		const executions: RunExecution[] = [{
-			attempt_id: "attempt-builder-conflict",
-			node_run_id: "nr-builder-conflict",
-			node_id: "delegated_execution_berserker",
-			attempt: 1,
-			agent_id: "agent-builder",
-			required_role: "builder-berserker",
-			execution_mode: "provider_backed",
-			status: "failed",
-			queued_at: "2026-03-18T11:39:30Z",
-			activity_at: "2026-03-18T11:41:00Z",
-			updated_at: "2026-03-18T11:41:00Z",
-			committed_at: "2026-03-18T11:41:00Z",
-			failure_code: "provider_incomplete_turn",
-			failure_text: "conflicting provider completion receipts invalidated the invocation",
-			completion_invalid_reason: "completion_receipt_conflict",
-		}];
-		const event: TimelineEvent = {
-			event_id: "evt-recovered-receipt-conflict",
-			run_event_seq: 1,
-			attempt_seq: 1,
-			event_type: "attempt.failed",
-			reason_code: "provider_incomplete_turn",
-			emitted_at: "2026-03-18T11:41:00Z",
-			payload_json: {
-				node_id: "delegated_execution_berserker",
-				node_run_id: "nr-builder-conflict",
-				provider_outcome: "failed",
-				reason: "provider_settlement_recovered",
-			},
-		};
-
-		const lookups = buildTimelineLookups([event], nodes, executions);
-		const milestones = synthesizeMilestones([event], nodes, [], lookups);
-
-		expect(milestones).toEqual(expect.arrayContaining([
-			expect.objectContaining({
-				id: "node-delegated_execution_berserker",
-				status: "failed",
-				detail: "Failed - Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
-			}),
-		]));
-	});
-
-	it("uses durable receipt conflict text when the failed attempt event is not loaded", () => {
-		const nodes: RunGraphNode[] = [{
-			node_id: "delegated_execution_berserker",
-			node_run_id: "nr-builder-conflict",
-			required_role: "builder-berserker",
-			execution_ownership: "provider_backed",
-			state: "failed",
-		}];
-		const executions: RunExecution[] = [{
-			attempt_id: "attempt-builder-conflict",
-			node_run_id: "nr-builder-conflict",
-			node_id: "delegated_execution_berserker",
-			attempt: 1,
-			agent_id: "agent-builder",
-			required_role: "builder-berserker",
-			execution_mode: "provider_backed",
-			status: "failed",
-			queued_at: "2026-03-18T11:39:30Z",
-			activity_at: "2026-03-18T11:41:00Z",
-			updated_at: "2026-03-18T11:41:00Z",
-			committed_at: "2026-03-18T11:41:00Z",
-			failure_code: "provider_incomplete_turn",
-			failure_text: "conflicting provider completion receipts invalidated the invocation",
-			completion_invalid_reason: "completion_receipt_conflict",
-		}];
-		const events: TimelineEvent[] = [{
-			event_id: "evt-builder-started",
-			run_event_seq: 1,
-			attempt_seq: 1,
-			event_type: "attempt.started",
-			emitted_at: "2026-03-18T11:39:45Z",
-			payload_json: {
-				node_id: "delegated_execution_berserker",
-				node_run_id: "nr-builder-conflict",
-			},
-		}];
-
-		const lookups = buildTimelineLookups(events, nodes, executions);
-		const milestones = synthesizeMilestones(events, nodes, [], lookups);
-
-		expect(milestones).toEqual(expect.arrayContaining([
-			expect.objectContaining({
-				id: "node-delegated_execution_berserker",
-				status: "failed",
-				detail: "Failed - Kingdom detected conflicting completion receipts for this step and could not safely accept the result.",
-			}),
-		]));
-	});
-
-	it("does not apply unrelated durable receipt conflict text to raw failure events", () => {
-		const nodes: RunGraphNode[] = [{
-			node_id: "delegated_execution_berserker",
-			required_role: "builder-berserker",
-			execution_ownership: "provider_backed",
-			state: "failed",
-		}];
-		const executions: RunExecution[] = [{
-			attempt_id: "attempt-builder-conflict",
-			node_run_id: "nr-builder-conflict",
-			node_id: "delegated_execution_berserker",
-			attempt: 1,
-			agent_id: "agent-builder",
-			required_role: "builder-berserker",
-			execution_mode: "provider_backed",
-			status: "failed",
-			queued_at: "2026-03-18T11:39:30Z",
-			activity_at: "2026-03-18T11:41:00Z",
-			updated_at: "2026-03-18T11:41:00Z",
-			committed_at: "2026-03-18T11:41:00Z",
-			failure_code: "provider_incomplete_turn",
-			failure_text: "completion_receipt_conflict: unrelated execution failure text",
-		}];
-		const event: TimelineEvent = {
-			event_id: "evt-unmatched-incomplete-turn",
-			run_event_seq: 1,
-			attempt_seq: 1,
-			event_type: "attempt.failed",
-			reason_code: "provider_incomplete_turn",
-			emitted_at: "2026-03-18T11:40:00Z",
-			payload_json: { node_id: "delegated_execution_berserker" },
-		};
-
-		const lookups = buildTimelineLookups([event], nodes, executions);
-
-		expect(buildRawEventLabel(event, lookups)).toEqual({
-			label: "Delegated Execution Berserker failed",
-			detail: "Kingdom could not confirm a clean finish for this step.",
-		});
-	});
 
 	it("orders milestones by displayed recency instead of earliest start", () => {
 		const nodes: RunGraphNode[] = [

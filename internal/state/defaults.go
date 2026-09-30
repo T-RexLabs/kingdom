@@ -9,8 +9,5 @@ const (
 	DefaultQueueAgingBoost            = 30 * time.Second
 	DefaultReadyEscalationThreshold   = 5 * time.Minute
 
-	DefaultMaxSpawnDepth         = 3
-	DefaultMaxActiveAgentsPerRun = 12
-
-	DefaultNightravenConcurrencyCap = 1
+	DefaultMaxSpawnDepth = 3
 )

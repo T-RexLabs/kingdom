@@ -7,8 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
-	"runtime"
-	"syscall"
+	"path/filepath"
 )
 
 type Directory struct {
@@ -21,7 +20,14 @@ type Directory struct {
 // OpenDirChain opens a descendant directory while pinning every path component
 // to a directory descriptor. The anchor itself is the caller's trust boundary.
 func OpenDirChain(anchor string, chain ...Directory) (*os.Root, error) {
-	root, err := os.OpenRoot(anchor)
+	if anchor == "" {
+		return nil, fmt.Errorf("secure directory anchor is required")
+	}
+	absoluteAnchor, err := filepath.Abs(anchor)
+	if err != nil {
+		return nil, fmt.Errorf("resolve secure directory anchor: %w", err)
+	}
+	root, err := os.OpenRoot(absoluteAnchor)
 	if err != nil {
 		return nil, err
 	}
@@ -40,13 +46,24 @@ func OpenDirChain(anchor string, chain ...Directory) (*os.Root, error) {
 // OpenDir opens one directory below an already pinned root. The caller retains
 // ownership of parent and must close both roots.
 func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
+	return openDirWithSync(parent, component, SyncDirectory)
+}
+
+func openDirWithSync(parent *os.Root, component Directory, syncDirectory func(*os.Root) error) (*os.Root, error) {
 	if component.Name == "" || component.Name == "." || component.Name == ".." {
 		return nil, fmt.Errorf("invalid secure directory component")
 	}
+	if component.Create && syncDirectory == nil {
+		return nil, fmt.Errorf("secure directory sync operation is required when creating directories")
+	}
 	info, statErr := parent.Lstat(component.Name)
+	created := false
+	needsSync := component.Create
 	if errors.Is(statErr, fs.ErrNotExist) && component.Create {
-		if err := parent.Mkdir(component.Name, component.Mode.Perm()); err != nil && !errors.Is(err, fs.ErrExist) {
-			return nil, err
+		var mkdirErr error
+		created, mkdirErr = createOSRootDirectory(parent, component.Name, component.Mode.Perm())
+		if mkdirErr != nil {
+			return nil, mkdirErr
 		}
 		info, statErr = parent.Lstat(component.Name)
 	}
@@ -56,11 +73,8 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return nil, fmt.Errorf("secure path component %q must be a non-symlink directory", component.Name)
 	}
-	if component.ExactMode && info.Mode().Perm() != component.Mode.Perm() {
+	if component.ExactMode && EnforcesPOSIXMode() && info.Mode().Perm() != component.Mode.Perm() {
 		return nil, fmt.Errorf("secure directory %q must have mode %04o", component.Name, component.Mode.Perm())
-	}
-	if err := CurrentUserOwns(info); err != nil {
-		return nil, fmt.Errorf("secure directory %q: %w", component.Name, err)
 	}
 	child, err := parent.OpenRoot(component.Name)
 	if err != nil {
@@ -71,18 +85,54 @@ func OpenDir(parent *os.Root, component Directory) (*os.Root, error) {
 		_ = child.Close()
 		return nil, fmt.Errorf("secure path component %q changed while opening", component.Name)
 	}
+	if component.ExactMode && created {
+		if err := ProtectCurrentUserOnlyPath(child.Name()); err != nil {
+			_ = child.Close()
+			return nil, fmt.Errorf("protect secure directory %q: %w", component.Name, err)
+		}
+	}
+	directory, err := child.Open(".")
+	if err != nil {
+		_ = child.Close()
+		return nil, err
+	}
+	validateErr := ValidateCurrentUserOwnership(directory)
+	if validateErr == nil && component.ExactMode {
+		validateErr = ValidateCurrentUserOnly(directory)
+	}
+	closeErr := directory.Close()
+	if validateErr != nil {
+		_ = child.Close()
+		return nil, fmt.Errorf("secure directory %q: %w", component.Name, validateErr)
+	}
+	if closeErr != nil {
+		_ = child.Close()
+		return nil, closeErr
+	}
+	if needsSync {
+		// Create=true callers may be retrying a path created by another process
+		// or by an earlier attempt whose sync failed. Sync both parent and child
+		// before returning an open directory that can receive published data.
+		if err := syncDirectory(parent); err != nil {
+			_ = child.Close()
+			return nil, fmt.Errorf("sync secure parent for directory %q: %w", component.Name, err)
+		}
+		if err := syncDirectory(child); err != nil {
+			_ = child.Close()
+			return nil, fmt.Errorf("sync newly created secure directory %q: %w", component.Name, err)
+		}
+	}
 	return child, nil
 }
 
-func CurrentUserOwns(info fs.FileInfo) error {
-	if runtime.GOOS == "windows" {
-		return nil
+// SyncDirectory requests the platform's directory-sync operation for an
+// already pinned os.Root. On Windows it flushes a write-capable directory
+// handle, which does not promise crash-durable namespace publication.
+func SyncDirectory(root *os.Root) error {
+	if root == nil {
+		return fmt.Errorf("secure directory root is required")
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok || int(stat.Uid) != os.Geteuid() {
-		return fmt.Errorf("must be owned by the current user")
-	}
-	return nil
+	return syncOSRootDirectory(root)
 }
 
 // OpenRegularFile opens a leaf without following a symlink and verifies that

@@ -51,13 +51,12 @@ export function RunExecutionActivity({
         type="button"
         onClick={() => setOpen((current) => !current)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+        className="flex min-h-11 w-full items-center justify-between gap-3 px-4 py-3 text-left"
       >
         <span className="flex min-w-0 items-center gap-2">
           <span className="text-xs uppercase tracking-[0.16em] text-foreground-muted">Activity</span>
           {/* Surface the current action in the collapsed header so live work is
-              visible at a glance without expanding. The lanes card above carries the
-              animated liveness cue, so no quill here. */}
+              visible at a glance without expanding. */}
           {showLive && state.currentEvent ? (
             <span className="min-w-0 truncate text-xs text-foreground-subtle">{state.currentEvent.label}</span>
           ) : null}

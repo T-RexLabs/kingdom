@@ -11,16 +11,14 @@ import (
 )
 
 var runActivityAttemptEventTypes = map[string]struct{}{
-	"attempt.started":         {},
-	"attempt.retrying":        {},
-	"attempt.retry_recovered": {},
-	"attempt.retry_exhausted": {},
-	"attempt.recovered":       {},
-	"attempt.retry_queued":    {},
-	"attempt.rerun_queued":    {},
-	"attempt.failed":          {},
-	"attempt.succeeded":       {},
-	"attempt.cancelled":       {},
+	"attempt.started":             {},
+	"attempt.retry_scheduled":     {},
+	"attempt.retry_queued":        {},
+	"attempt.rerun_queued":        {},
+	"attempt.final_rework_queued": {},
+	"attempt.failed":              {},
+	"attempt.succeeded":           {},
+	"attempt.cancelled":           {},
 }
 
 type RunActivityUpdateRequest struct {

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import json
+import sqlite3
+import tempfile
 import unittest
+from pathlib import Path
 
 from scripts.e2e.rework_analysis_report import (
     build_bootstrap_failure_analysis,
+    build_rework_analysis,
     classify_provider_timeout,
     provider_timeout_blockers,
     structured_guidance_warnings,
@@ -42,6 +47,32 @@ class ReworkAnalysisReportTests(unittest.TestCase):
         )
         self.assertTrue(blockers["provider_first_event_timeout"])
         self.assertFalse(blockers["provider_stream_inactivity_timeout"])
+
+    def test_build_rework_analysis_should_classify_canonical_invalid_response(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report_dir = root / "report"
+            report_dir.mkdir()
+            (report_dir / "run-final.json").write_text(json.dumps({"status": "failed"}), encoding="utf-8")
+            db_path = root / "runtime.sqlite"
+            connection = sqlite3.connect(db_path)
+            connection.executescript(
+                """
+                CREATE TABLE workflow_runs (run_id TEXT, run_status TEXT, plan_state TEXT, created_at TEXT, updated_at TEXT, rework_cycle_count INTEGER, max_rework_cycles INTEGER);
+                CREATE TABLE node_runs (run_id TEXT, node_id TEXT, attempt INTEGER, node_status TEXT, started_at TEXT, finished_at TEXT);
+                CREATE TABLE token_usage (run_id TEXT, required_role TEXT, model TEXT, created_at TEXT, usage_id TEXT);
+                CREATE TABLE events (run_id TEXT, attempt_id TEXT, reason_code TEXT, reason_text TEXT, payload_json TEXT, created_at TEXT, event_type TEXT);
+                CREATE TABLE mailbox_messages (run_id TEXT, message_id TEXT, from_agent_id TEXT, to_agent_id TEXT, created_at TEXT, payload_json TEXT);
+                INSERT INTO workflow_runs VALUES ('run-1', 'failed', '', '2026-01-01T00:00:00Z', '2026-01-01T00:01:00Z', 0, 0);
+                INSERT INTO events VALUES ('run-1', 'attempt-1', 'llm_invalid_response', 'invalid provider response', '{}', '2026-01-01T00:01:00Z', 'attempt.failed');
+                """
+            )
+            connection.close()
+
+            analysis = build_rework_analysis("test", "run-1", report_dir, db_path, "", "", "")
+
+            self.assertEqual(analysis["failure_classification"], "invalid_response")
+            self.assertTrue(analysis["blockers"]["invalid_response"])
 
     def test_summarize_validator_waves_should_ignore_non_validator_retries_when_retry_context_missing(self) -> None:
         failures = {1: ["2026-03-24T20:10:21Z", "2026-03-24T20:10:29Z"]}

@@ -58,6 +58,109 @@ func TestIdempotencyMiddlewareRequiresKeyOnMutations(t *testing.T) {
 	}
 }
 
+func TestIdempotencyMiddlewareSpoolsLargeUnknownLengthBodyBeforeReservation(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+
+	called := false
+	routes := http.NewServeMux()
+	routes.HandleFunc("DELETE /connections/{id}", func(w http.ResponseWriter, _ *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewIdempotencyMiddleware(store, time.Now)(routes)
+
+	key := testIdempotencyKey(t, "oversized-unknown-length", time.Now())
+	body := bytes.Repeat([]byte("x"), (17<<20)+1)
+	req := httptest.NewRequest(http.MethodDelete, "/connections/connection-test", bytes.NewReader(body))
+	req.ContentLength = -1
+	req.TransferEncoding = []string{"chunked"}
+	req.Header.Set(idempotencyKeyHeader, key)
+	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent {
+		t.Fatalf("status=%d body=%s", res.Code, res.Body.String())
+	}
+	if !called {
+		t.Fatal("large request did not reach mutation handler")
+	}
+	if _, found, err := store.Lookup(context.Background(), "DELETE /connections/{id}", "actor_1", key); err != nil {
+		t.Fatalf("lookup idempotency reservation: %v", err)
+	} else if !found {
+		t.Fatal("large request did not reserve its idempotency key")
+	}
+}
+
+func TestIdempotencyMiddlewareAcceptsDecreeBodyAboveGenericLimit(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+	body := bytes.Repeat([]byte("x"), (1<<20)+1)
+	called := false
+	var bodyBytes int64
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /api/v1/decrees", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		bodyBytes, _ = io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusNoContent)
+	})
+	handler := NewIdempotencyMiddleware(store, time.Now)(routes)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/decrees", bytes.NewReader(body))
+	req.Header.Set(idempotencyKeyHeader, testIdempotencyKey(t, "large-decree-body", time.Now()))
+	req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
+	res := httptest.NewRecorder()
+
+	handler.ServeHTTP(res, req)
+
+	if res.Code != http.StatusNoContent || !called || bodyBytes != int64(len(body)) {
+		t.Fatalf("decree idempotency request status=%d called=%t bytes=%d, want success with %d body bytes: %s", res.Code, called, bodyBytes, len(body), res.Body.String())
+	}
+}
+
+func TestIdempotencyMiddlewareHashesExactLargeRawBodyAfterValidation(t *testing.T) {
+	store := newIdempotencyStoreForAPITest(t)
+	validator, err := NewOpenAPIRequestValidator()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutations := 0
+	routes := http.NewServeMux()
+	routes.HandleFunc("POST /decrees", func(w http.ResponseWriter, _ *http.Request) { mutations++; w.WriteHeader(http.StatusCreated) })
+	handler := validator(NewIdempotencyMiddleware(store, time.Now)(routes))
+	key := testIdempotencyKey(t, "large-raw-hash", time.Now())
+	body := append([]byte(`{ "decree_title":"test","decree_text":"`), bytes.Repeat([]byte("x"), (17<<20)+1)...)
+	body = append(body, []byte(`" }`)...)
+	request := func(raw []byte) int {
+		req := httptest.NewRequest(http.MethodPost, "/decrees?b=2&a=1", bytes.NewReader(raw))
+		req.ContentLength = -1
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set(idempotencyKeyHeader, key)
+		req = req.WithContext(context.WithValue(req.Context(), principalContextKey{}, principal{ActorID: "actor_1", RoleID: operatorRoleID, Method: "test"}))
+		res := httptest.NewRecorder()
+		handler.ServeHTTP(res, req)
+		return res.Code
+	}
+	if status := request(body); status != http.StatusCreated {
+		t.Fatalf("initial status=%d", status)
+	}
+	if status := request(body); status != http.StatusCreated {
+		t.Fatalf("replay status=%d", status)
+	}
+	if status := request(append(body, ' ')); status != http.StatusConflict {
+		t.Fatalf("different raw whitespace status=%d", status)
+	}
+	if mutations != 1 {
+		t.Fatalf("mutations=%d", mutations)
+	}
+	record, found, err := store.Lookup(context.Background(), "POST /decrees", "actor_1", key)
+	if err != nil || !found {
+		t.Fatalf("lookup found=%t err=%v", found, err)
+	}
+	if record.RequestHash != requestHash(http.MethodPost, "/decrees?a=1&b=2\x00auth=test", body) {
+		t.Fatal("raw-body/target/auth hash changed")
+	}
+}
+
 func TestIdempotencyMiddlewareRejectsMalformedAndFutureKeys(t *testing.T) {
 	store := newIdempotencyStoreForAPITest(t)
 	now := time.Date(2026, 8, 17, 12, 0, 0, 0, time.UTC)

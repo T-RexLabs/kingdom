@@ -98,7 +98,7 @@ Expected behavior:
 
 ## Local Server Contract
 
-`kd init` writes a local `.kingdom/` workspace plus `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/` in the project root.
+`kd init` writes a local `.kingdom/` workspace and managed OpenCode profiles under `.kingdom/opencode/agents/` in the project root.
 
 `kd summon`:
 

@@ -6,10 +6,158 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
+
+	"kingdom/internal/dbmigrations"
 )
+
+func readExternalSnapshotForTest(ctx context.Context, store *ExternalStore, id string) (ExternalSourceSnapshot, []ExternalComment, error) {
+	snapshot, err := store.GetSnapshotMetadata(ctx, id)
+	if err != nil {
+		return snapshot, nil, err
+	}
+	var comments []ExternalComment
+	err = store.SnapshotComments(id).Replay(ctx, func(c ExternalComment) error { comments = append(comments, c); return nil })
+	return snapshot, comments, err
+}
+
+type changingExternalCommentSource struct {
+	reads  int
+	closed bool
+}
+
+func (s *changingExternalCommentSource) Replay(ctx context.Context, visit func(ExternalComment) error) error {
+	s.reads++
+	return visit(ExternalComment{ProviderCommentID: "1", Body: fmt.Sprintf("version-%d", s.reads)})
+}
+func (s *changingExternalCommentSource) Close() error { s.closed = true; return nil }
+
+func TestExternalCommentCaptureRejectsChangedReplayAtomically(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "changing-comments")
+	source := &changingExternalCommentSource{}
+	req := CaptureExternalIssueRequest{SourceID: "changing-source", SnapshotID: "changing-snapshot", ConnectionID: "conn-changing-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: fixture.at, UpdatedAt: fixture.at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: fixture.at, Comments: source}
+	if _, _, err := fixture.external.CaptureIssue(fixture.ctx, req); err == nil || !strings.Contains(err.Error(), "changed during replay") {
+		t.Fatalf("mutable comment source accepted: %v", err)
+	}
+	if !source.closed {
+		t.Fatal("failed capture retained its comment source")
+	}
+	var count int
+	if err := fixture.db.QueryRow(`SELECT COUNT(*) FROM external_source_snapshots WHERE snapshot_id='changing-snapshot'`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("partial snapshot committed: %d %v", count, err)
+	}
+}
+
+func TestCompleteCommentMigrationPreservesHistoricalProvenance(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var migrations []SQLMigration
+	for _, name := range names {
+		if name >= "0011_complete_external_comments.up.sql" {
+			continue
+		}
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(ctx, db, migrations, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	store := NewExternalStore(db)
+	at := "2026-08-12T10:00:00Z"
+	_, err = store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "migration-connection", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:migration-connection", ActorID: "operator", CreatedAt: at, AuditEventID: "migration-audit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := CaptureExternalIssueRequest{SourceID: "migration-source", SnapshotID: "migration-old", ConnectionID: "migration-connection", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, FetchedAt: at, ProviderCommentCount: 205, FetchedCommentCount: 1, FetchedCommentPages: 1, OmittedCommentCount: 204, OmittedCommentPages: 2, Comments: ExternalCommentList{{ProviderCommentID: "1", Body: "historical prefix", OriginalBytes: 40000, TruncationReason: "comment_byte_limit"}}}
+	old, _, err := store.CaptureIssue(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Seed the pre-migration decree shape explicitly; current decree creation
+	// may depend on later migrations owned by another subsystem.
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(`INSERT INTO decrees(decree_id,decree_title,decree_text,metadata_json,created_at) VALUES('migration-decree','Decree','immutable','{}',?)`, at); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "migration-link", "decree", "migration-decree", old.SourceID, old.SnapshotID, "operator", "", at); err != nil {
+		tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := dbmigrations.Read("0011_complete_external_comments.up.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplySQLMigrations(ctx, db, []SQLMigration{{Name: "0011_complete_external_comments.up.sql", SQL: raw}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	after, comments, err := readExternalSnapshotForTest(ctx, store, old.SnapshotID)
+	if err != nil || after != old || len(comments) != 1 || comments[0].Body != "historical prefix" || comments[0].TruncationReason != "comment_byte_limit" {
+		t.Fatalf("migration rewrote historical source: %v", err)
+	}
+	spool, err := NewExternalCommentSpool()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer spool.Close()
+	body := strings.Repeat("界", 14000) + "tail"
+	for i := 0; i < 205; i++ {
+		if err := spool.Append(ExternalComment{ProviderCommentID: fmt.Sprint(i), Body: body}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := spool.Seal(); err != nil {
+		t.Fatal(err)
+	}
+	req.SnapshotID = "migration-full"
+	req.PredecessorSnapshotID = old.SnapshotID
+	req.Comments = spool
+	req.FetchedCommentCount = 205
+	req.FetchedCommentPages = 3
+	req.OmittedCommentCount = 0
+	req.OmittedCommentPages = 0
+	full, _, err := store.CaptureIssue(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if full.RetainedCommentCount != 205 || full.RetainedCommentBytes != 205*len(body) || full.CommentsTruncated {
+		t.Fatalf("full capture metadata: %#v", full)
+	}
+	for _, stmt := range []string{`UPDATE external_source_snapshots SET content_digest='changed' WHERE snapshot_id='migration-old'`, `DELETE FROM external_source_snapshot_comments WHERE snapshot_id='migration-old'`, `INSERT INTO external_source_snapshot_comments VALUES('migration-old','extra',1,'','injected','','','',8,8,'')`} {
+		if _, err := db.Exec(stmt); err == nil {
+			t.Fatalf("immutable source accepted %s", stmt)
+		}
+	}
+	links, err := store.GetLinksForTarget(ctx, "decree", "migration-decree")
+	if err != nil || len(links) != 1 || links[0].UsedSnapshotID != old.SnapshotID {
+		t.Fatalf("historical decree binding changed: %v", err)
+	}
+	rows, err := db.Query(`PRAGMA foreign_key_check`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	if rows.Next() {
+		t.Fatal("migration broke foreign keys")
+	}
+}
 
 func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(t *testing.T) {
 	db := openTestDB(t)
@@ -21,18 +169,20 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(
 	if err != nil {
 		t.Fatal(err)
 	}
-	base := CaptureExternalIssueRequest{SourceID: "source-1", SnapshotID: "snapshot-1", ConnectionID: "conn-1", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, Comments: []ExternalComment{{ProviderCommentID: "comment-1", Author: "octocat", Body: "immutable comment", CanonicalURL: "https://github.com/owner/repo/issues/7#issuecomment-1", CreatedAt: at, UpdatedAt: at}}}
+	base := CaptureExternalIssueRequest{SourceID: "source-1", SnapshotID: "snapshot-1", ConnectionID: "conn-1", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, Comments: ExternalCommentList{{ProviderCommentID: "comment-1", Author: "octocat", Body: "immutable comment", CanonicalURL: "https://github.com/owner/repo/issues/7#issuecomment-1", CreatedAt: at, UpdatedAt: at}}}
 	first, created, err := store.CaptureIssue(ctx, base)
 	if err != nil || !created {
 		t.Fatalf("first capture: created=%v err=%v", created, err)
 	}
 	base.SourceID = "source-ignored"
 	base.SnapshotID = "snapshot-ignored"
+	base.FetchedAt = "2026-08-12T11:00:00Z"
+	base.ETag = `"new-validator-same-content"`
 	second, created, err := store.CaptureIssue(ctx, base)
 	if err != nil || created {
 		t.Fatalf("duplicate capture: created=%v err=%v", created, err)
 	}
-	if second.SourceID != first.SourceID || second.SnapshotID != first.SnapshotID {
+	if second != first {
 		t.Fatalf("capture did not deduplicate: %#v %#v", first, second)
 	}
 	for i, id := range []string{"decree-1", "decree-2"} {
@@ -52,6 +202,28 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableDecreeProvenance(
 	}
 	if _, err = db.Exec(`UPDATE external_source_snapshot_comments SET body='changed' WHERE snapshot_id=?`, first.SnapshotID); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("expected immutable comment trigger, got %v", err)
+	}
+}
+
+func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-six", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "6", AccountID: "16", AccountLogin: "owner"}}, CredentialHandle: "github-app:conn-six", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-six"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{SourceID: "source-six", SnapshotID: "snapshot-six", ConnectionID: "conn-six", ProviderNativeID: "100", RepositoryNativeID: "600", RepositoryInstallationID: "6", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/six", IssueNumber: 7, CanonicalURL: "https://github.com/owner/six/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{}, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateDecree(ctx, CreateDecreeRequest{DecreeID: "decree-six", Title: "Decree", Text: "text", CreatedAt: at, DirectSnapshotID: snapshot.SnapshotID, NewLinkID: func() string { return "link-six" }, ActorID: "local-operator"}); err != nil {
+		t.Fatal(err)
+	}
+	basis, err := store.GetRefreshBasis(ctx, "link-six")
+	if err != nil || basis.FetchRepositoryNativeID != "600" || basis.FetchRepositoryInstallationID != "6" {
+		t.Fatalf("refresh basis=%#v err=%v", basis, err)
 	}
 }
 
@@ -250,36 +422,52 @@ func assertDecreeProvenanceWriteCount(t *testing.T, db *sql.DB, decreeID string,
 	}
 }
 
-func TestExternalCommentBounds(t *testing.T) {
-	comments := make([]ExternalComment, 105)
-	for i := range comments {
-		comments[i] = ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: strings.Repeat("x", MaxExternalCommentBytes+10)}
+func TestCaptureValidationAcceptsCompleteIssueContent(t *testing.T) {
+	req := CaptureExternalIssueRequest{
+		SourceID: "source-boundary", SnapshotID: "snapshot-boundary", ConnectionID: "connection-boundary", ProviderNativeID: "100", RepositoryNativeID: "200",
+		Issue: NormalizedExternalIssue{
+			Title:        strings.Repeat("界", 2048),
+			Body:         strings.Repeat("b", 2<<20),
+			State:        "open",
+			Repository:   "owner/repo",
+			IssueNumber:  1,
+			CanonicalURL: "https://github.com/owner/repo/issues/1",
+			CreatedAt:    "2026-08-12T10:00:00Z",
+			UpdatedAt:    "2026-08-12T10:00:00Z",
+		},
+		FetchedAt: "2026-08-12T10:00:00Z",
 	}
-	retained, total, truncated := boundExternalComments(comments)
-	if !truncated || len(retained) > MaxExternalComments || total > MaxExternalCommentsBytes {
-		t.Fatalf("retained=%d total=%d truncated=%v", len(retained), total, truncated)
+	if err := validateCapture(req); err != nil {
+		t.Fatalf("complete external issue rejected: %v", err)
 	}
 }
 
-func TestExternalCommentBoundsPreserveUTF8(t *testing.T) {
-	comments := []ExternalComment{{Body: strings.Repeat("x", MaxExternalCommentBytes-1) + "界"}}
-	retained, _, truncated := boundExternalComments(comments)
-	if !truncated || len(retained) != 1 || !utf8.ValidString(retained[0].Body) || len(retained[0].Body) > MaxExternalCommentBytes {
-		t.Fatalf("invalid per-comment truncation: %#v", retained)
+func TestExternalCommentSpoolPreservesFullUnicodeAndReplay(t *testing.T) {
+	spool, err := NewExternalCommentSpool()
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	comments = make([]ExternalComment, 0, 5)
-	for range 4 {
-		comments = append(comments, ExternalComment{Body: strings.Repeat("x", MaxExternalCommentBytes-1)})
+	defer spool.Close()
+	body := strings.Repeat("x", 40<<10) + "界-tail"
+	for i := 0; i < 205; i++ {
+		if err := spool.Append(ExternalComment{ProviderCommentID: fmt.Sprint(i), Body: body}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	comments = append(comments, ExternalComment{Body: "xx界"})
-	retained, total, truncated := boundExternalComments(comments)
-	if !truncated || total > MaxExternalCommentsBytes {
-		t.Fatalf("aggregate truncation total=%d truncated=%v", total, truncated)
+	if err := spool.Seal(); err != nil {
+		t.Fatal(err)
 	}
-	for _, comment := range retained {
-		if !utf8.ValidString(comment.Body) {
-			t.Fatalf("aggregate truncation produced invalid UTF-8: %q", comment.Body)
+	for pass := 0; pass < 2; pass++ {
+		count := 0
+		err := ReplayExternalComments(context.Background(), spool, func(c ExternalComment) error {
+			if c.ProviderCommentID != fmt.Sprint(count) || c.Body != body || c.RetainedBytes != len(body) || c.TruncationReason != "" {
+				t.Fatal("comment changed across spool replay")
+			}
+			count++
+			return nil
+		})
+		if err != nil || count != 205 {
+			t.Fatalf("replay count=%d err=%v", count, err)
 		}
 	}
 }
@@ -485,61 +673,156 @@ func TestPlanningOperationExternalContextBindsLatestAdoptionPerLink(t *testing.T
 	}
 }
 
-func TestPlanningOperationExternalContextUsesAggregateBudgets(t *testing.T) {
-	t.Run("comment budget", func(t *testing.T) {
-		fixture := newPlanningExternalBindingFixture(t, "comment-budget")
-		comments := []ExternalComment{
-			{ProviderCommentID: "1", Author: "one", Body: strings.Repeat("a", 20*1024), CanonicalURL: "https://example.test/1", CreatedAt: fixture.at, UpdatedAt: fixture.at},
-			{ProviderCommentID: "2", Author: "two", Body: strings.Repeat("界", 7*1024), CanonicalURL: "https://example.test/2", CreatedAt: fixture.at, UpdatedAt: fixture.at},
-		}
-		first := fixture.capture(t, "source-a", "snapshot-a", "100", "A", "body", comments, fixture.at)
-		second := fixture.capture(t, "source-b", "snapshot-b", "101", "B", "body", comments, fixture.at)
-		fixture.link(t, "link-a", first, "adopt-a", fixture.at)
-		fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-		fixture.createOperation(t, "operation-budget")
+func TestPlanningOperationExternalContextBindsEveryActiveSource(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "source-cap")
+	const sources = 205
+	for i := 0; i < sources; i++ {
+		snapshot := fixture.capture(t,
+			fmt.Sprintf("source-%02d", i),
+			fmt.Sprintf("snapshot-%02d", i),
+			fmt.Sprintf("%d", 100+i),
+			fmt.Sprintf("Source %02d", i),
+			fmt.Sprintf("body %02d", i),
+			nil,
+			fixture.at,
+		)
+		fixture.link(t, fmt.Sprintf("link-%02d", i), snapshot, fmt.Sprintf("adopt-%02d", i), fixture.at)
+	}
+	fixture.createOperation(t, "operation-source-cap")
 
-		contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-budget")
-		if err != nil {
-			t.Fatal(err)
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIDs := make([]string, 0, sources)
+	for i := 0; i < sources; i++ {
+		wantIDs = append(wantIDs, fmt.Sprintf("snapshot-%02d", i))
+		if !strings.Contains(contextText, fmt.Sprintf("Source %02d", i)) {
+			t.Fatalf("bound context is missing recent source %d: %s", i, contextText)
 		}
-		issueBytes, commentBytes := planningBindingByteTotals(t, fixture.db, "operation-budget")
-		if commentBytes > MaxPlannerCommentBytes || len(contextText) > MaxPlannerExternalBytes {
-			t.Fatalf("aggregate bytes issue=%d comments=%d", issueBytes, commentBytes)
-		}
-		assertExternalContextJSONValid(t, contextText)
-	})
+	}
+	sort.Strings(wantIDs)
+	if got, want := strings.Join(snapshotIDs, ","), strings.Join(wantIDs, ","); got != want {
+		t.Fatalf("bound snapshots=%q, want %q", got, want)
+	}
+	replayed, replayIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-source-cap")
+	if err != nil || replayed != contextText || strings.Join(replayIDs, ",") != strings.Join(snapshotIDs, ",") {
+		t.Fatalf("immutable replay differs: %v", err)
+	}
+}
 
-	t.Run("total external budget", func(t *testing.T) {
-		fixture := newPlanningExternalBindingFixture(t, "external-budget")
-		comments := []ExternalComment{{ProviderCommentID: "1", Author: "one", Body: strings.Repeat("界", 12*1024), CanonicalURL: "https://example.test/1", CreatedAt: fixture.at, UpdatedAt: fixture.at}}
-		first := fixture.capture(t, "source-a", "snapshot-a", "100", "A", strings.Repeat("a", 48*1024), comments, fixture.at)
-		second := fixture.capture(t, "source-b", "snapshot-b", "101", "B", strings.Repeat("b", 48*1024), comments, fixture.at)
-		fixture.link(t, "link-a", first, "adopt-a", fixture.at)
-		fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-		fixture.createOperation(t, "operation-budget")
+func TestPlanningOperationExternalContextIncludesCompleteRetainedContentBeyondFormerBudgets(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "complete-retained")
+	if ExternalAssemblerVersion != "external-context-v3" {
+		t.Fatalf("assembler version=%q, want external-context-v3", ExternalAssemblerVersion)
+	}
+	issueBody := strings.Repeat(`Complete issue evidence with UTF-8 界 and "quotes". `, 25000)
+	comments := make([]ExternalComment, 205)
+	for i := range comments {
+		body := fmt.Sprintf(`Comment %03d includes UTF-8 界 and "quotes". `, i)
+		comments[i] = ExternalComment{
+			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
+			Author:            fmt.Sprintf("author-%03d-界", i),
+			Body:              strings.Repeat(body, 1000),
+			CanonicalURL:      fmt.Sprintf("https://example.test/issues/7#comment-%03d", i),
+			CreatedAt:         fixture.at,
+			UpdatedAt:         fixture.at,
+		}
+	}
+	snapshot := fixture.capture(t, "source-complete", "snapshot-complete", "100", strings.Repeat(`Complete "issue" 界 `, 200), issueBody, comments, fixture.at)
+	fixture.link(t, "link-complete", snapshot, "adopt-complete", fixture.at)
+	fixture.createOperation(t, "operation-complete-retained")
 
-		contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-budget")
-		if err != nil {
-			t.Fatal(err)
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-complete-retained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondContext, secondIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-complete-retained")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if contextText != secondContext || strings.Join(snapshotIDs, ",") != strings.Join(secondIDs, ",") {
+		t.Fatal("reloading immutable external context was not deterministic")
+	}
+	if len(snapshotIDs) != 1 || snapshotIDs[0] != snapshot.SnapshotID {
+		t.Fatalf("bound snapshots=%#v, want %q", snapshotIDs, snapshot.SnapshotID)
+	}
+
+	storedSnapshot, retainedComments, err := readExternalSnapshotForTest(fixture.ctx, fixture.external, snapshot.SnapshotID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(retainedComments) != len(comments) || storedSnapshot.RetainedCommentCount != len(comments) {
+		t.Fatalf("stored retained comments=%d metadata=%d, want %d", len(retainedComments), storedSnapshot.RetainedCommentCount, len(comments))
+	}
+	retainedCommentBytes := 0
+	expectedComments := make([]planningExternalComment, 0, len(retainedComments))
+	for i, comment := range retainedComments {
+		if comment.ProviderCommentID != comments[i].ProviderCommentID || comment.Body != comments[i].Body {
+			t.Fatalf("stored comment %d differs from retained source: got=%#v want=%#v", i, comment, comments[i])
 		}
-		issueBytes, commentBytes := planningBindingByteTotals(t, fixture.db, "operation-budget")
-		unusedBytes := MaxPlannerExternalBytes - len(contextText)
-		if unusedBytes < 0 || commentBytes == 0 || commentBytes > MaxPlannerCommentBytes {
-			t.Fatalf("aggregate bytes issue=%d comments=%d", issueBytes, commentBytes)
+		if comment.RetainedBytes != len(comment.Body) {
+			t.Fatalf("stored comment %d retained bytes=%d body bytes=%d", i, comment.RetainedBytes, len(comment.Body))
 		}
-		assertExternalContextJSONValid(t, contextText)
-	})
+		retainedCommentBytes += comment.RetainedBytes
+		expectedComments = append(expectedComments, planningExternalComment{
+			Author:       comment.Author,
+			Body:         comment.Body,
+			CanonicalURL: comment.CanonicalURL,
+			CreatedAt:    comment.CreatedAt,
+			UpdatedAt:    comment.UpdatedAt,
+		})
+	}
+	if retainedCommentBytes != storedSnapshot.RetainedCommentBytes || retainedCommentBytes <= 128<<10 || storedSnapshot.CommentsTruncated {
+		t.Fatalf("stored comment body bytes=%d metadata=%d", retainedCommentBytes, storedSnapshot.RetainedCommentBytes)
+	}
+
+	issueJSON, err := json.Marshal(storedSnapshot.Issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentsJSON, err := json.Marshal(expectedComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issueJSON) <= 6*1024 || len(commentsJSON) <= 4*1024 || len(contextText) <= 6*1024 {
+		t.Fatalf("assembled content did not exceed former budgets: issue=%d comments=%d frame=%d", len(issueJSON), len(commentsJSON), len(contextText))
+	}
+	if !utf8.ValidString(contextText) {
+		t.Fatal("assembled context is not valid UTF-8")
+	}
+	assertExternalContextJSONValid(t, contextText)
+	wantOpeningFrame := fmt.Sprintf("<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE snapshot_id=%q assembler=%q>\n", snapshot.SnapshotID, ExternalAssemblerVersion)
+	wantJSONPayload := fmt.Sprintf("\nissue_bytes=%d\nissue_json=%s\ncomment_bytes=%d\ncomments_json=%s\n", len(issueJSON), issueJSON, len(commentsJSON), commentsJSON)
+	if !strings.HasPrefix(contextText, wantOpeningFrame) || !strings.Contains(contextText, wantJSONPayload) || !strings.HasSuffix(contextText, "\n</KINGDOM_UNTRUSTED_EXTERNAL_SOURCE>") {
+		t.Fatal("assembled external context lost its complete versioned frame or JSON payload")
+	}
+	if got := strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE"); got != 1 {
+		t.Fatalf("external frame count=%d, want 1", got)
+	}
+
+	var version, storedDigest string
+	var issueBytes, commentBytes int
+	if err := fixture.db.QueryRow(`SELECT assembler_version,context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-complete-retained' AND snapshot_id=?`, snapshot.SnapshotID).Scan(&version, &storedDigest, &issueBytes, &commentBytes); err != nil {
+		t.Fatal(err)
+	}
+	if version != ExternalAssemblerVersion || storedDigest != digest([]byte(contextText)) || issueBytes != len(issueJSON) || commentBytes != len(commentsJSON) {
+		t.Fatalf("immutable binding metadata version=%q digest=%q issue_bytes=%d comment_bytes=%d", version, storedDigest, issueBytes, commentBytes)
+	}
+	if issueBytes <= 131072 || commentBytes <= 65536 {
+		t.Fatalf("binding metadata did not exceed removed schema ceilings: issue_bytes=%d comment_bytes=%d", issueBytes, commentBytes)
+	}
 }
 
 func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T) {
 	fixture := newPlanningExternalBindingFixture(t, "complete-frames")
-	comments := make([]ExternalComment, 40)
+	comments := make([]ExternalComment, 12)
 	for i := range comments {
 		comments[i] = ExternalComment{
 			ProviderCommentID: fmt.Sprintf("comment-%03d", i),
-			Author:            strings.Repeat(`author\"界`, 80),
-			Body:              strings.Repeat("quoted \\\" multibyte 界 ", 40),
-			CanonicalURL:      "https://example.test/" + strings.Repeat("metadata/", 80) + fmt.Sprint(i),
+			Author:            strings.Repeat(`author\"界`, 20),
+			Body:              strings.Repeat("quoted \\\" multibyte 界 ", 8),
+			CanonicalURL:      "https://example.test/" + strings.Repeat("metadata/", 20) + fmt.Sprint(i),
 			CreatedAt:         fixture.at,
 			UpdatedAt:         fixture.at,
 		}
@@ -554,7 +837,7 @@ func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(contextText) > MaxPlannerExternalBytes || !utf8.ValidString(contextText) {
+	if !utf8.ValidString(contextText) {
 		t.Fatalf("assembled bytes=%d valid_utf8=%v", len(contextText), utf8.ValidString(contextText))
 	}
 	if got := strings.Count(contextText, "\n\n"); got != 1 {
@@ -582,47 +865,39 @@ func TestPlanningOperationExternalContextAccountsForCompleteFrames(t *testing.T)
 	}
 }
 
-func TestPlanningOperationExternalContextFillsExactWholePromptBoundary(t *testing.T) {
-	fixture := newPlanningExternalBindingFixture(t, "exact-boundary")
-	snapshot := fixture.capture(t, "source-boundary", "snapshot-boundary", "100", "Boundary", strings.Repeat("x", MaxPlannerExternalBytes), nil, fixture.at)
-	fixture.link(t, "link-boundary", snapshot, "adopt-boundary", fixture.at)
-	fixture.createOperation(t, "operation-boundary")
-	contextText, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-boundary")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(contextText) != MaxPlannerExternalBytes {
-		t.Fatalf("assembled bytes=%d, want exact boundary %d", len(contextText), MaxPlannerExternalBytes)
-	}
-	assertExternalContextJSONValid(t, contextText)
-}
-
-func TestPlanningOperationExternalContextOmitsUnsafeFrameButKeepsBinding(t *testing.T) {
-	fixture := newPlanningExternalBindingFixture(t, "omitted-frame")
-	firstID := "snapshot-a-" + strings.Repeat("a", 70*1024)
-	secondID := "snapshot-b-" + strings.Repeat("b", 70*1024)
+func TestPlanningOperationExternalContextKeepsCompleteFramesBeyondFormerBudget(t *testing.T) {
+	fixture := newPlanningExternalBindingFixture(t, "large-frame")
+	firstID := "snapshot-a-" + strings.Repeat("a", 7*1024)
+	secondID := "snapshot-b-" + strings.Repeat("b", 7*1024)
 	first := fixture.capture(t, "source-a", firstID, "100", "A", "body", nil, fixture.at)
 	second := fixture.capture(t, "source-b", secondID, "101", "B", "body", nil, fixture.at)
 	fixture.link(t, "link-a", first, "adopt-a", fixture.at)
 	fixture.link(t, "link-b", second, "adopt-b", fixture.at)
-	fixture.createOperation(t, "operation-omitted-frame")
-	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-omitted-frame")
+	fixture.createOperation(t, "operation-large-frame")
+	contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-large-frame")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(snapshotIDs) != 2 || snapshotIDs[0] != firstID || snapshotIDs[1] != secondID {
-		t.Fatal("omitted frame changed immutable snapshot bindings")
+		t.Fatalf("large frames changed immutable snapshot bindings: %#v", snapshotIDs)
 	}
-	if strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE") != 1 || len(contextText) > MaxPlannerExternalBytes {
-		t.Fatalf("unexpected emitted context bytes=%d", len(contextText))
+	if got := strings.Count(contextText, "<KINGDOM_UNTRUSTED_EXTERNAL_SOURCE"); got != 2 || !strings.Contains(contextText, firstID) || !strings.Contains(contextText, secondID) {
+		t.Fatalf("large snapshot frames were omitted: frames=%d bytes=%d", got, len(contextText))
 	}
-	var omittedDigest string
-	var issueBytes, commentBytes int
-	if err := fixture.db.QueryRow(`SELECT context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-omitted-frame' AND snapshot_id=?`, secondID).Scan(&omittedDigest, &issueBytes, &commentBytes); err != nil {
-		t.Fatal(err)
+	if !utf8.ValidString(contextText) {
+		t.Fatal("assembled large frames are not valid UTF-8")
 	}
-	if omittedDigest != digest(nil) || issueBytes != 0 || commentBytes != 0 {
-		t.Fatalf("omitted binding metadata digest=%q issue=%d comments=%d", omittedDigest, issueBytes, commentBytes)
+	assertExternalContextJSONValid(t, contextText)
+	sections := strings.Split(contextText, "\n\n")
+	for i, snapshotID := range snapshotIDs {
+		var storedDigest string
+		var issueBytes, commentBytes int
+		if err := fixture.db.QueryRow(`SELECT context_digest,issue_bytes,comment_bytes FROM planning_operation_external_snapshots WHERE operation_id='operation-large-frame' AND snapshot_id=?`, snapshotID).Scan(&storedDigest, &issueBytes, &commentBytes); err != nil {
+			t.Fatal(err)
+		}
+		if storedDigest != digest([]byte(sections[i])) || issueBytes == 0 || commentBytes != len("[]") {
+			t.Fatalf("large frame %d binding digest=%q issue=%d comments=%d", i, storedDigest, issueBytes, commentBytes)
+		}
 	}
 }
 
@@ -639,12 +914,14 @@ func TestPlanningOperationExternalContextRejectsBindingMetadataTampering(t *test
 	}
 	mustExec(t, fixture.db, `DROP TRIGGER planning_operation_external_no_update`)
 	tests := []struct {
-		name     string
-		column   string
-		tampered any
-		original any
+		name                string
+		column              string
+		tampered            any
+		original            any
+		wantVersionMismatch bool
 	}{
-		{name: "assembler version", column: "assembler_version", tampered: "unknown", original: version},
+		{name: "legacy v2 assembler binding", column: "assembler_version", tampered: "external-context-v2", original: version, wantVersionMismatch: true},
+		{name: "unknown assembler version", column: "assembler_version", tampered: "unknown", original: version, wantVersionMismatch: true},
 		{name: "digest", column: "context_digest", tampered: strings.Repeat("0", 64), original: contextDigest},
 		{name: "issue bytes", column: "issue_bytes", tampered: issueBytes + 1, original: issueBytes},
 		{name: "comment bytes", column: "comment_bytes", tampered: commentBytes + 1, original: commentBytes},
@@ -652,8 +929,17 @@ func TestPlanningOperationExternalContextRejectsBindingMetadataTampering(t *test
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			mustExecArgs(t, fixture.db, `UPDATE planning_operation_external_snapshots SET `+test.column+`=? WHERE operation_id='operation-tamper'`, test.tampered)
-			if _, _, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-tamper"); err == nil || !strings.Contains(err.Error(), "metadata mismatch") {
+			contextText, snapshotIDs, err := fixture.planning.LoadPlanningOperationExternalContext(fixture.ctx, "operation-tamper")
+			var versionErr *UnsupportedPlanningExternalContextVersionError
+			if test.wantVersionMismatch {
+				if !errors.As(err, &versionErr) || versionErr.BoundVersion != test.tampered || versionErr.CurrentVersion != ExternalAssemblerVersion {
+					t.Fatalf("tampered %s error=%v, want typed context-version mismatch", test.column, err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "metadata mismatch") || !strings.Contains(err.Error(), snapshot.SnapshotID) {
 				t.Fatalf("tampered %s was accepted: %v", test.column, err)
+			}
+			if contextText != "" || len(snapshotIDs) != 0 {
+				t.Fatalf("tampered %s returned partial context: bytes=%d snapshots=%#v", test.column, len(contextText), snapshotIDs)
 			}
 			mustExecArgs(t, fixture.db, `UPDATE planning_operation_external_snapshots SET `+test.column+`=? WHERE operation_id='operation-tamper'`, test.original)
 		})
@@ -685,7 +971,7 @@ func newPlanningExternalBindingFixture(t *testing.T, suffix string) planningExte
 
 func (f planningExternalBindingFixture) capture(t *testing.T, sourceID, snapshotID, nativeID, title, body string, comments []ExternalComment, fetchedAt string) ExternalSourceSnapshot {
 	t.Helper()
-	snapshot, _, err := f.external.CaptureIssue(f.ctx, CaptureExternalIssueRequest{SourceID: sourceID, SnapshotID: snapshotID, ConnectionID: "conn-" + strings.TrimPrefix(f.sessionID, "session-"), ProviderNativeID: nativeID, RepositoryNativeID: "repo-" + nativeID, Issue: NormalizedExternalIssue{Title: title, Body: body, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: f.at, UpdatedAt: fetchedAt}, Profile: ExternalImportProfile{IncludeComments: len(comments) > 0}, ProviderUpdatedAt: fetchedAt, FetchedAt: fetchedAt, Comments: comments})
+	snapshot, _, err := f.external.CaptureIssue(f.ctx, CaptureExternalIssueRequest{SourceID: sourceID, SnapshotID: snapshotID, ConnectionID: "conn-" + strings.TrimPrefix(f.sessionID, "session-"), ProviderNativeID: nativeID, RepositoryNativeID: "repo-" + nativeID, Issue: NormalizedExternalIssue{Title: title, Body: body, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: f.at, UpdatedAt: fetchedAt}, Profile: ExternalImportProfile{IncludeComments: len(comments) > 0}, ProviderUpdatedAt: fetchedAt, FetchedAt: fetchedAt, Comments: ExternalCommentList(comments)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -712,15 +998,6 @@ func (f planningExternalBindingFixture) createOperation(t *testing.T, operationI
 	if _, err := f.planning.CreateOperation(f.ctx, CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: f.sessionID, Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: f.at}); err != nil {
 		t.Fatal(err)
 	}
-}
-
-func planningBindingByteTotals(t *testing.T, db *sql.DB, operationID string) (int, int) {
-	t.Helper()
-	var issueBytes, commentBytes int
-	if err := db.QueryRow(`SELECT COALESCE(SUM(issue_bytes),0),COALESCE(SUM(comment_bytes),0) FROM planning_operation_external_snapshots WHERE operation_id=?`, operationID).Scan(&issueBytes, &commentBytes); err != nil {
-		t.Fatal(err)
-	}
-	return issueBytes, commentBytes
 }
 
 func assertExternalContextJSONValid(t *testing.T, contextText string) {
@@ -758,12 +1035,12 @@ func TestExternalCommentOmissionMetadataIsPersistedAndAffectsDigest(t *testing.T
 	for i := range comments {
 		comments[i] = ExternalComment{ProviderCommentID: string(rune(i + 1)), Body: "body"}
 	}
-	req := CaptureExternalIssueRequest{SourceID: "source-comments", SnapshotID: "snapshot-comments", ConnectionID: "conn-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ProviderCommentCount: 150, FetchedCommentCount: 100, FetchedCommentPages: 1, OmittedCommentCount: 50, OmittedCommentPages: 1, Comments: comments}
+	req := CaptureExternalIssueRequest{SourceID: "source-comments", SnapshotID: "snapshot-comments", ConnectionID: "conn-comments", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}, Profile: ExternalImportProfile{IncludeComments: true}, ProviderUpdatedAt: at, FetchedAt: at, ProviderCommentCount: 150, FetchedCommentCount: 100, FetchedCommentPages: 1, OmittedCommentCount: 50, OmittedCommentPages: 1, Comments: ExternalCommentList(comments)}
 	first, created, err := store.CaptureIssue(ctx, req)
 	if err != nil || !created {
 		t.Fatalf("capture: created=%v err=%v", created, err)
 	}
-	loaded, _, err := store.GetSnapshot(ctx, first.SnapshotID)
+	loaded, _, err := readExternalSnapshotForTest(ctx, store, first.SnapshotID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -954,6 +1231,95 @@ func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.
 	}
 }
 
+func TestUpdateConnectionConfirmsDurableCommitError(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-24T14:00:00Z"
+	connection, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-update-commit-ambiguous", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom",
+		Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-update-commit-ambiguous",
+		ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-update-commit-create",
+	}})
+	if err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	displayName := "Renamed App"
+	enabled := false
+	commitErr := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return commitErr
+	}
+	updated, err := store.UpdateConnection(ctx, connection.ConnectionID, UpdateExternalConnectionRequest{
+		Enabled: &enabled, DisplayName: &displayName, ActorID: "local-operator", UpdatedAt: "2026-08-24T14:01:00Z", AuditEventID: "audit-update-commit-ambiguous",
+	})
+	if err != nil {
+		t.Fatalf("confirm exact update after durable commit error: %v", err)
+	}
+	if updated.RowVersion != connection.RowVersion+1 || updated.DisplayName != displayName || updated.Lifecycle != "disabled" || updated.HealthClass != "disabled" {
+		t.Fatalf("unexpected confirmed update projection: %#v", updated)
+	}
+}
+
+func TestUpdateConnectionRejectsMismatchedDurableCommitReadback(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-24T15:00:00Z"
+	connection, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-update-commit-mismatch", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom",
+		Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-update-commit-mismatch",
+		ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-update-mismatch-create",
+	}})
+	if err != nil {
+		t.Fatalf("create connection: %v", err)
+	}
+	displayName := "Renamed App"
+	commitErr := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		if _, err := db.Exec(`UPDATE external_connections SET display_name = 'Later Mutation', row_version = row_version + 1 WHERE connection_id = ?`, connection.ConnectionID); err != nil {
+			return err
+		}
+		return commitErr
+	}
+	_, err = store.UpdateConnection(ctx, connection.ConnectionID, UpdateExternalConnectionRequest{
+		DisplayName: &displayName, ActorID: "local-operator", UpdatedAt: "2026-08-24T15:01:00Z", AuditEventID: "audit-update-commit-mismatch",
+	})
+	var unknown *CommitOutcomeUnknownError
+	if !errors.As(err, &unknown) || !errors.Is(err, commitErr) {
+		t.Fatalf("mismatched durable update readback error=%v, want unknown outcome preserving commit error", err)
+	}
+}
+
+func TestFinalizeConnectionCommitAmbiguityReturnsTargetProjection(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ambiguous := errors.New("commit outcome unknown")
+	store.commitTx = func(tx *sql.Tx) error {
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+		return ambiguous
+	}
+	projected, err := store.FinalizeConnection(context.Background(), FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{ConnectionID: "conn-initial-ambiguous", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "kingdom", Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-app:conn-initial-ambiguous", ActorID: "local-operator", CreatedAt: "2026-08-24T13:00:00Z", AuditEventID: "audit-initial-ambiguous"}})
+	if !errors.Is(err, ambiguous) || projected.ConnectionID != "conn-initial-ambiguous" || projected.CredentialGeneration != 1 || projected.LastSuccessAt == nil {
+		t.Fatalf("ambiguous result projection=%#v err=%v", projected, err)
+	}
+	published, err := store.GetCredentialPublication(context.Background(), projected.ConnectionID)
+	if err != nil || published.CredentialStrategy != "app_private_key" || published.CredentialGeneration != 1 {
+		t.Fatalf("published generation=%#v err=%v", published, err)
+	}
+}
+
 func TestCredentialGenerationFencesStaleCaptureAndHealth(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
@@ -1024,7 +1390,7 @@ func TestConnectionHealthPinsInstallationAccountIdentity(t *testing.T) {
 	if onlyInstallation(t, renamed) != (ConnectionInstallation{InstallationID: "2", AccountID: "10", AccountLogin: "octocat-renamed"}) {
 		t.Fatalf("renamed account login was not refreshed: %#v", renamed)
 	}
-	if _, err := db.Exec(`UPDATE external_connection_installations SET account_id='11' WHERE connection_id='conn-identity'`); err == nil || !strings.Contains(err.Error(), "immutable") {
+	if _, err := db.Exec(`UPDATE external_installations SET account_id='11' WHERE installation_id='2'`); err == nil || !strings.Contains(err.Error(), "immutable") {
 		t.Fatalf("expected pinned installation identity trigger, got %v", err)
 	}
 	if _, err := db.Exec(`UPDATE external_connection_installations SET connection_id='conn-other' WHERE connection_id='conn-identity'`); err == nil || !strings.Contains(err.Error(), "immutable") {
@@ -1079,6 +1445,93 @@ func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
 	if _, err := store.LinkHistory(ctx, "link-detached"); err != nil {
 		t.Fatalf("detached link history is unreadable: %v", err)
 	}
+}
+
+func TestLinkHistoryOrdersRFC3339NanoInstantsExactlyAcrossPages(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	const at = "2026-08-12T10:00:00Z"
+
+	if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-history-order", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-history-order", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-history-order"}); err != nil {
+		t.Fatal(err)
+	}
+	capture := func(snapshotID, predecessor, fetchedAt string) ExternalSourceSnapshot {
+		t.Helper()
+		snapshot, _, err := store.CaptureIssue(ctx, CaptureExternalIssueRequest{
+			SourceID:              "source-history-order",
+			SnapshotID:            snapshotID,
+			ConnectionID:          "conn-history-order",
+			ProviderNativeID:      "100",
+			RepositoryNativeID:    "200",
+			PredecessorSnapshotID: predecessor,
+			Issue:                 NormalizedExternalIssue{Title: snapshotID, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: fetchedAt},
+			Profile:               ExternalImportProfile{},
+			ProviderUpdatedAt:     fetchedAt,
+			FetchedAt:             fetchedAt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return snapshot
+	}
+	oldest := capture("snapshot-zero", "", at)
+	middle := capture("snapshot-zulu", oldest.SnapshotID, "2026-08-12T10:00:00.000000001Z")
+	newest := capture("snapshot-alpha", middle.SnapshotID, "2026-08-12T12:00:00.000000002+02:00")
+	var gotUnixNano int64
+	if err := db.QueryRow(`SELECT created_at_unix_nano FROM external_source_snapshots WHERE snapshot_id=?`, newest.SnapshotID).Scan(&gotUnixNano); err != nil {
+		t.Fatal(err)
+	}
+	wantUnixNano, err := rfc3339NanoUnixNano("2026-08-12T12:00:00.000000002+02:00")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotUnixNano != wantUnixNano {
+		t.Fatalf("stored nanosecond sort key=%d, want %d", gotUnixNano, wantUnixNano)
+	}
+
+	mustExecArgs(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES ('session-history-order','Issue','custom','active','ready','/tmp','{}',?,?)`, at, at)
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := createExternalLinkTx(ctx, tx, "link-history-order", "planning_session", "session-history-order", oldest.SourceID, oldest.SnapshotID, "local-operator", "adoption-history-order", at); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	assertIDs := func(got []ExternalHistoryEntry, want ...string) {
+		t.Helper()
+		ids := make([]string, 0, len(got))
+		for _, entry := range got {
+			ids = append(ids, entry.SnapshotID)
+		}
+		if actual := strings.Join(ids, ","); actual != strings.Join(want, ",") {
+			t.Fatalf("history order=%q, want %q", actual, strings.Join(want, ","))
+		}
+	}
+
+	history, err := store.LinkHistory(ctx, "link-history-order")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertIDs(history, newest.SnapshotID, middle.SnapshotID, oldest.SnapshotID)
+
+	var paged []ExternalHistoryEntry
+	for offset := 0; ; offset++ {
+		page, hasMore, err := store.LinkHistoryPage(ctx, "link-history-order", offset, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, page...)
+		if !hasMore {
+			break
+		}
+	}
+	assertIDs(paged, newest.SnapshotID, middle.SnapshotID, oldest.SnapshotID)
 }
 
 // A removed connection stays in SQLite so provenance links keep resolving and
@@ -1434,6 +1887,26 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 	if err := store.DetachPlanningExternalSource(ctx, DetachPlanningExternalSourceRequest{LinkID: link.LinkID, ChangeID: "change-detach-repeat", ActorID: "local-operator", DetachedAt: detachedAt, AuditEventID: "audit-detach-repeat"}); !errors.Is(err, ErrExternalSourceNotAttached) {
 		t.Fatalf("repeat detach error=%v", err)
 	}
+	var adoptionsBefore, auditEventsBefore int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, link.LinkID).Scan(&adoptionsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&auditEventsBefore); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AdoptLatest(ctx, link.LinkID, "adoption-detached-rejected", "local-operator", detachedAt, "audit-detached-rejected"); !errors.Is(err, ErrExternalSourceNotAttached) {
+		t.Fatalf("adopting a detached source error=%v, want ErrExternalSourceNotAttached", err)
+	}
+	var adoptionsAfter, auditEventsAfter int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM planning_external_source_adoptions WHERE link_id=?`, link.LinkID).Scan(&adoptionsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_integration_audit_events`).Scan(&auditEventsAfter); err != nil {
+		t.Fatal(err)
+	}
+	if adoptionsAfter != adoptionsBefore || auditEventsAfter != auditEventsBefore {
+		t.Fatalf("rejected adoption changed durable history: adoptions=%d (before %d), audit events=%d (before %d)", adoptionsAfter, adoptionsBefore, auditEventsAfter, auditEventsBefore)
+	}
 
 	if _, err := planning.CreateOperation(ctx, CreatePlanningOperationRequest{OperationID: "operation-after-detach", PlanningSessionID: "session-detach", Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: detachedAt}); err != nil {
 		t.Fatal(err)
@@ -1698,7 +2171,7 @@ func TestSettingTheSameNormalizedInstallationSetDoesNotChurnState(t *testing.T) 
 	}
 }
 
-func TestTombstoneReleasesInstallationsSoTheyCanBeConnectedAgain(t *testing.T) {
+func TestTombstoneReleasesInstallationsButRetainsAccountIdentity(t *testing.T) {
 	store, ctx, connection := multiInstallationFixture(t)
 	at := "2026-08-19T11:00:00Z"
 	if err := store.UpdateConnectionStateAudited(ctx, connection.ConnectionID, "removed", "removed", "", at, false, "local-operator", "audit-removed", "connection.removed"); err != nil {
@@ -1710,12 +2183,24 @@ func TestTombstoneReleasesInstallationsSoTheyCanBeConnectedAgain(t *testing.T) {
 		t.Fatalf("tombstone left %d installations held", remaining)
 	}
 	if _, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
+		ConnectionID: "conn-impostor", CredentialStrategy: "user_access_token", DisplayName: "Impostor",
+		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
+		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "999", AccountLogin: "impostor"}},
+		CredentialHandle: "github-user:conn-impostor", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-impostor",
+	}}); !errors.Is(err, ErrExternalConflict) {
+		t.Fatalf("re-added installation accepted a different account identity: %v", err)
+	}
+	readded, err := store.FinalizeConnection(ctx, FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{
 		ConnectionID: "conn-again", CredentialStrategy: "user_access_token", DisplayName: "Again",
 		AppID: "1", ClientID: "IvShared", AppSlug: "kingdom",
-		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid"}},
+		Installations:    []ConnectionInstallation{{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}},
 		CredentialHandle: "github-user:conn-again", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-again",
-	}}); err != nil {
+	}})
+	if err != nil {
 		t.Fatalf("a released installation must be connectable again: %v", err)
+	}
+	if onlyInstallation(t, readded) != (ConnectionInstallation{InstallationID: "10", AccountID: "100", AccountLogin: "enkiid-renamed"}) {
+		t.Fatalf("re-added installation did not retain its account identity: %#v", readded.Installations)
 	}
 }
 

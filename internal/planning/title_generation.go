@@ -47,18 +47,23 @@ func generatedTitleEligibleUserCount(userMessages int) bool {
 // plus the reply being appended. For a normal reply the parent is the active
 // leaf, so this counts the whole conversation; for an edit it stops at the
 // branch point so messages on the superseded branch are not counted.
-func projectedUserMessageCountAfterReply(messages []state.PlanningMessage, request operationRequest) int {
+func projectedUserMessageCountAfterReply(ctx context.Context, messages state.PlanningMessageSource, request operationRequest) (int, error) {
 	parentID := strings.TrimSpace(request.ParentMessageID)
 	userMessages := 1 // the reply being appended
-	for _, message := range messages {
+	stop := errors.New("branch parent reached")
+	err := messages(ctx, func(message state.PlanningMessage) error {
 		if message.Role == state.PlanningMessageRoleUser {
 			userMessages++
 		}
 		if parentID != "" && message.PlanningMessageID == parentID {
-			break
+			return stop
 		}
+		return nil
+	})
+	if errors.Is(err, stop) {
+		err = nil
 	}
-	return userMessages
+	return userMessages, err
 }
 
 func autoTitleEligibilityForSession(ctx context.Context, deps runtimeDeps, session state.PlanningSession) (bool, error) {
@@ -88,24 +93,29 @@ func enqueueGeneratedTitleForSession(
 	}
 	now := deps.nowString()
 	operationID := deps.nextID("planning_operation")
-	requestJSON, err := json.Marshal(operationRequest{TriggerSource: strings.TrimSpace(string(source))})
+	titleRequest := operationRequest{TriggerSource: strings.TrimSpace(string(source))}
+	requestJSON, err := json.Marshal(titleRequest)
 	if err != nil {
 		return state.PlanningSession{}, nil, false, fmt.Errorf("marshal generate title request: %w", err)
 	}
-	operation, err := deps.store.CreateGenerateTitleBundle(ctx, state.CreatePlanningGenerateTitleBundleRequest{
-		SessionID: session.PlanningSessionID,
-		Operation: state.CreatePlanningOperationRequest{
-			OperationID:        operationID,
-			PlanningSessionID:  session.PlanningSessionID,
-			Type:               state.PlanningOperationTypeGenerateTitle,
-			Status:             state.PlanningOperationStatusQueued,
-			RequestPayloadJSON: string(requestJSON),
-			CreatedAt:          now,
-		},
-		InitialEvent:            plannerAcpRunCreatedEvent(operationID, session.PlanningSessionID, state.PlanningOperationTypeGenerateTitle, operationRequest{TriggerSource: strings.TrimSpace(string(source))}, now),
+	operationRequest := state.CreatePlanningOperationRequest{
+		OperationID:        operationID,
+		PlanningSessionID:  session.PlanningSessionID,
+		Type:               state.PlanningOperationTypeGenerateTitle,
+		Status:             state.PlanningOperationStatusQueued,
+		RequestPayloadJSON: string(requestJSON),
+		CreatedAt:          now,
+	}
+	initialEvent := plannerAcpRunCreatedEvent(operationID, session.PlanningSessionID, state.PlanningOperationTypeGenerateTitle, titleRequest, now)
+	bundle := state.CreatePlanningGenerateTitleBundleRequest{
+		SessionID:               session.PlanningSessionID,
+		Operation:               operationRequest,
+		InitialEvent:            initialEvent,
 		CurrentTitleOperationID: operationID,
 		UpdatedAt:               now,
-	})
+	}
+	operation, err := deps.store.CreateGenerateTitleBundle(ctx, bundle)
+	recoveredFromCommitError := false
 	if err != nil {
 		if errors.Is(err, state.ErrPlanningUniqueViolation) {
 			updated, ok, loadErr := deps.store.GetSession(ctx, session.PlanningSessionID)
@@ -115,15 +125,19 @@ func enqueueGeneratedTitleForSession(
 			if ok {
 				return updated, nil, false, nil
 			}
+			return state.PlanningSession{}, nil, false, err
 		}
-		return state.PlanningSession{}, nil, false, err
+		operation, recoveredFromCommitError, err = reconcilePlanningOperationBundleCommit(ctx, deps, err, operationRequest, initialEvent, nil)
+		if err != nil {
+			return state.PlanningSession{}, nil, false, err
+		}
 	}
-	if startRecovered {
+	if recoveredFromCommitError || startRecovered {
 		runner.StartRecovered(operation.OperationID)
 	} else {
 		runner.Start(operation.OperationID)
 	}
-	updated, _, err := deps.store.GetSession(ctx, session.PlanningSessionID)
+	updated, err := readBackPlanningSessionAfterOperation(ctx, deps, session.PlanningSessionID, operation.OperationID, "create planner title operation")
 	if err != nil {
 		return state.PlanningSession{}, &operation, true, err
 	}
@@ -163,7 +177,7 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	deps runtimeDeps,
 	runner *operationRunner,
 	session state.PlanningSession,
-	messages []state.PlanningMessage,
+	messages state.PlanningMessageSource,
 	request operationRequest,
 	source titleTriggerSource,
 ) (*state.PlanningSession, error) {
@@ -173,7 +187,11 @@ func maybeAutoGenerateTitleForReplyFinalize(
 	if !generatedTitleEligibleSession(session) {
 		return nil, nil
 	}
-	if !generatedTitleEligibleUserCount(projectedUserMessageCountAfterReply(messages, request)) {
+	count, err := projectedUserMessageCountAfterReply(ctx, messages, request)
+	if err != nil {
+		return nil, err
+	}
+	if !generatedTitleEligibleUserCount(count) {
 		return nil, nil
 	}
 	updated, _, created, err := enqueueGeneratedTitleForSession(ctx, deps, runner, session, source, false)
@@ -203,6 +221,6 @@ func maybeAutoGenerateTitleForRecoveryCatchup(
 	return &updated, nil
 }
 
-func detachedAutoTitleContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	return context.WithTimeout(context.WithoutCancel(ctx), autoTitleEnqueueTimeout)
+func boundedAutoTitleContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, autoTitleEnqueueTimeout)
 }

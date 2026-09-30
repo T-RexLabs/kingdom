@@ -1,10 +1,12 @@
 import { useMemo, useState } from "react";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MailboxFilters, MailboxMessage, MailboxMessageDetail } from "@/api/hooks";
 import { MailboxPanel } from "./mailbox-panel";
 import { buildMailboxPresentation } from "./mailbox-lanes";
+
+afterEach(() => vi.unstubAllGlobals());
 
 function makeMessage(partial: Partial<MailboxMessage> & { message_id: string }): MailboxMessage {
   return {
@@ -75,6 +77,87 @@ function MailboxHarness({
 }
 
 describe("mailbox panel", () => {
+  it.each(["instruction_dispatched", "response_received"])("loads referenced %s content only on explicit request", async (kind) => {
+    const user = userEvent.setup();
+    let finish!: (response: Response) => void;
+    const fetchContent = vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; }));
+    vi.stubGlobal("fetch", fetchContent);
+    const message = makeMessage({ message_id: "referenced", communication_type: kind });
+    const detail: MailboxMessageDetail = {
+      ...makeDetail(message, "", ""), has_full_content: true, content_is_preview: true,
+      full_content_url: "/api/v1/runs/run-1/mailbox/messages/referenced/content",
+      content: kind === "response_received" ? "Only the response preview" : "",
+      payload_json: { body_markdown: "Generic dispatch summary", response_preview: "Only the response preview" },
+    };
+    render(<MailboxHarness messages={[message]} detailById={{ referenced: detail }} />);
+    expect(fetchContent).not.toHaveBeenCalled();
+    await user.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button"));
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
+    expect(fetchContent).not.toHaveBeenCalled();
+    expect(within(dialog).queryByText("Generic dispatch summary")).not.toBeInTheDocument();
+    expect(within(dialog).getByTestId("message-content-preview-notice")).toBeInTheDocument();
+    const download = within(dialog).getByRole("link", { name: "Download Full Content" });
+    expect(download).toHaveAttribute("href", detail.full_content_url);
+    expect(download).toHaveAttribute("download", "message-content.md");
+    await user.click(within(dialog).getByRole("button", { name: "Load Full Content" }));
+    expect(within(dialog).getByRole("button", { name: "Loading full content..." })).toBeDisabled();
+    expect(fetchContent).toHaveBeenCalledOnce();
+    expect(fetchContent).toHaveBeenCalledWith(detail.full_content_url, expect.objectContaining({ credentials: "same-origin", cache: "no-store", signal: expect.any(AbortSignal) }));
+    finish(new Response("# Complete Message\n\n" + "Full text. ".repeat(5000) + "\n\nCANONICAL TAIL\n\n<script>window.bad=true</script>\n\n![external](https://example.com/image.png)", { status: 200 }));
+    await waitFor(() => expect(within(dialog).getByText("Full content loaded.")).toBeInTheDocument());
+    expect(within(dialog).getByTestId("message-detail-card").textContent).toContain("CANONICAL TAIL");
+    expect(within(dialog).getByRole("heading", { name: "Complete Message" })).toBeInTheDocument();
+    expect(dialog.querySelector("script, img")).toBeNull();
+    expect(within(dialog).queryByText("Generic dispatch summary")).not.toBeInTheDocument();
+    expect(within(dialog).queryByTestId("message-content-preview-notice")).not.toBeInTheDocument();
+  });
+
+  it("keeps the preview after failure, retries on demand, and aborts when the modal closes", async () => {
+    const user = userEvent.setup();
+    const fetchContent = vi.fn().mockResolvedValueOnce(new Response("unavailable", { status: 503 })).mockImplementationOnce(() => new Promise(() => {}));
+    vi.stubGlobal("fetch", fetchContent);
+    const message = makeMessage({ message_id: "retry-content", communication_type: "response_received" });
+    const detail: MailboxMessageDetail = { ...makeDetail(message, "", ""), has_full_content: true, content_is_preview: true, content: "Retained preview", full_content_url: "/api/v1/runs/run-1/mailbox/messages/retry-content/content" };
+    render(<MailboxHarness messages={[message]} detailById={{ "retry-content": detail }} />);
+    await user.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button"));
+    await user.click(screen.getByRole("button", { name: "Load Full Content" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("Full content could not be loaded"));
+    expect(screen.getByTestId("message-detail-card")).toHaveTextContent("Retained preview");
+    expect(fetchContent).toHaveBeenCalledTimes(1);
+    await user.click(screen.getByRole("button", { name: "Retry Full Content" }));
+    const signal = fetchContent.mock.calls[1][1].signal as AbortSignal;
+    expect(signal.aborted).toBe(false);
+    await user.click(screen.getByRole("button", { name: "Close dialog" }));
+    await waitFor(() => expect(signal.aborted).toBe(true));
+  });
+
+  it("continues to show inline full content without fetching the content endpoint", async () => {
+    const fetchContent = vi.fn();
+    vi.stubGlobal("fetch", fetchContent);
+    const message = makeMessage({ message_id: "inline-content", communication_type: "response_received" });
+    const detail = { ...makeDetail(message, "", "Complete inline response"), has_full_content: true, content_is_preview: false, full_content_url: "/api/v1/runs/run-1/mailbox/messages/inline-content/content" };
+    render(<MailboxHarness messages={[message]} detailById={{ "inline-content": detail }} />);
+    await userEvent.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button"));
+    expect(screen.getByTestId("message-detail-card")).toHaveTextContent("Complete inline response");
+    expect(screen.queryByRole("button", { name: "Load Full Content" })).not.toBeInTheDocument();
+    expect(fetchContent).not.toHaveBeenCalled();
+  });
+  it("labels partial counts and retries older pages without hiding loaded messages", async () => {
+    const onLoadMore = vi.fn();
+    const props = {
+      presentation: buildMailboxPresentation([makeMessage({ message_id: "loaded" })]),
+      filters: {}, onChangeFilters: vi.fn(), onSelectMessage: vi.fn(), onLoadMore, hasMore: true,
+    };
+    const { rerender } = render(<MailboxPanel {...props} loadMoreError />);
+    expect(screen.getByText("1 messages loaded")).toBeInTheDocument();
+    expect(screen.getByText("Older messages could not be loaded.")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry Older Messages" }));
+    expect(onLoadMore).toHaveBeenCalledOnce();
+    rerender(<MailboxPanel {...props} isLoadingMore />);
+    expect(screen.getByRole("button", { name: "Loading messages..." })).toBeDisabled();
+    rerender(<MailboxPanel {...props} hasMore={false} />);
+    expect(screen.queryByRole("button", { name: "Load Older Messages" })).not.toBeInTheDocument();
+  });
   it("uses earliest message direction for lane labels", () => {
     const { lanes } = buildMailboxPresentation([
       makeMessage({
@@ -288,7 +371,8 @@ describe("mailbox panel", () => {
     render(<MailboxHarness messages={[]} detailById={{}} />);
 
     await user.click(screen.getByRole("button", { name: "Message type" }));
-    await user.keyboard("{Home}{ArrowDown}{ArrowDown}{ArrowDown}{Enter}");
+		await waitFor(() => expect(screen.getByRole("option", { name: "All messages" })).toHaveFocus());
+    await user.keyboard("{Home}{ArrowDown}{ArrowDown}{Enter}");
 
     expect(screen.getByRole("button", { name: "Message type" })).toHaveTextContent("Response");
   });
@@ -469,7 +553,7 @@ describe("mailbox panel", () => {
       node_id: "execution_review_shieldmaiden",
       communication_type: "response_received",
       preview: "Follow-up planning note without verdict",
-      reason_code: "invalid_execution_review_verdict",
+      reason_code: "llm_invalid_response",
       verdict_type: "review",
       verdict_status: "invalid",
       created_at: "2026-03-06T10:01:00.000Z",
@@ -579,7 +663,7 @@ describe("mailbox panel", () => {
       preview: "Malformed review response",
       verdict_type: "review",
       verdict_status: "invalid",
-      reason_code: "invalid_execution_review_verdict",
+      reason_code: "llm_invalid_response",
     });
 
     render(

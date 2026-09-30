@@ -10,9 +10,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
+	"strings"
 	"sync"
 	"time"
 
+	"kingdom/internal/core/retryengine"
+	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 )
 
@@ -21,12 +25,30 @@ type Service struct {
 	operations     *operationService
 	runner         *operationRunner
 	recovery       *operationRecovery
+	activity       *planningActivityReconciler
 	events         *operationEventService
 	reconcileEvery time.Duration
 
 	recoveryCtx    context.Context
 	recoveryCancel context.CancelFunc
 	recoveryDone   chan struct{}
+	recoveryStart  sync.Once
+
+	startupProcessGuardReplayMu      sync.Mutex
+	startupProcessGuardReplayStarted bool
+	startupProcessGuardReplayPending bool
+	startupProcessGuardReplayCursor  string
+
+	retryWakeMu           sync.Mutex
+	retryWakeTimer        retryWakeTimer
+	retryWakeTimerFactory func(time.Duration) retryWakeTimer
+	retryWakeCancel       chan struct{}
+	retryWakeDue          time.Time
+	retryWakeFailures     int
+	retryWakeWG           sync.WaitGroup
+
+	activityDrainMu  sync.Mutex
+	activityDrainErr error
 
 	// Admission gate. closing flips true once Close has been called;
 	// new writes after that get ErrServiceShuttingDown. activeWrites
@@ -47,6 +69,13 @@ type Service struct {
 }
 
 func NewService(store *state.PlanningStore, planner Agent, projectRoot string, nowRFC3339 func() string, idGenerator func(prefix string) string) *Service {
+	return NewServiceWithRetryEngine(store, planner, projectRoot, nowRFC3339, idGenerator, nil)
+}
+
+// NewServiceWithRetryEngine accepts the already-loaded runtime policy engine.
+// It avoids a second policy load and keeps planning and decree retry decisions
+// on the same canonical model.
+func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projectRoot string, nowRFC3339 func() string, idGenerator func(prefix string) string, retryEngine *retryengine.Engine) *Service {
 	clock := clockFunc(nowRFC3339)
 	ids := idFunc(idGenerator)
 	broker := newOperationEventBroker()
@@ -60,7 +89,10 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 		leaseOwner:  plannerLeaseOwner(),
 		broker:      broker,
 		metrics:     metrics,
+		retryEngine: retryEngine,
 	}
+	activity := newPlanningActivityReconciler(shared)
+	shared.reconcileActivity = activity.ReconcileOperation
 	// One service-owned context drives both the recovery loop and every
 	// runner-spawned goroutine. Close cancels this context, which fans
 	// out: recovery loop exits, in-flight operations see Done at their
@@ -69,19 +101,33 @@ func NewService(store *state.PlanningStore, planner Agent, projectRoot string, n
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := newOperationRunner(shared, ctx)
 	svc := &Service{
-		sessions:       newSessionService(shared, runner),
-		operations:     newOperationService(shared, runner),
-		runner:         runner,
-		recovery:       newOperationRecovery(shared, runner),
-		events:         newOperationEventService(shared),
-		reconcileEvery: 30 * time.Second,
-		recoveryCtx:    ctx,
-		recoveryCancel: cancel,
-		recoveryDone:   make(chan struct{}),
-		forced:         make(chan struct{}),
+		sessions:              newSessionService(shared, runner),
+		operations:            newOperationService(shared, runner),
+		runner:                runner,
+		recovery:              newOperationRecovery(shared, runner),
+		activity:              activity,
+		events:                newOperationEventService(shared),
+		reconcileEvery:        30 * time.Second,
+		recoveryCtx:           ctx,
+		recoveryCancel:        cancel,
+		recoveryDone:          make(chan struct{}),
+		forced:                make(chan struct{}),
+		retryWakeTimerFactory: newStandardRetryWakeTimer,
 	}
-	svc.startRecoveryLoop()
+	runner.deps.retryWake = svc.schedulePlanningRetryWake
+	runner.deps.retryWakeProgress = svc.resetPlanningRetryWakeBackoff
 	return svc
+}
+
+// StartRecoveryLoop enables periodic planning-operation recovery. Runtime
+// startup calls this only after execution process recovery has completed.
+func (s *Service) StartRecoveryLoop() {
+	if s == nil {
+		return
+	}
+	s.recoveryStart.Do(func() {
+		s.startRecoveryLoop()
+	})
 }
 
 func (s *Service) startRecoveryLoop() {
@@ -94,6 +140,7 @@ func (s *Service) startRecoveryLoop() {
 	}
 	go func() {
 		defer close(s.recoveryDone)
+		s.continueStartupActivityRecovery(s.recoveryCtx)
 		ticker := time.NewTicker(s.reconcileEvery)
 		defer ticker.Stop()
 		for {
@@ -101,10 +148,41 @@ func (s *Service) startRecoveryLoop() {
 			case <-s.recoveryCtx.Done():
 				return
 			case <-ticker.C:
-				_ = s.RecoverOperations(s.recoveryCtx)
+				_ = s.recoverOperationsAndSchedule(s.recoveryCtx, false)
+				s.continueStartupActivityRecovery(s.recoveryCtx)
 			}
 		}
 	}()
+}
+
+func (s *Service) continueStartupActivityRecovery(ctx context.Context) {
+	if s == nil || s.activity == nil || ctx.Err() != nil || s.startupPlanningProcessGuardReplayPending() {
+		return
+	}
+	if err := s.activity.Continue(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		log.Printf("planning activity reconciliation continuation: %v", err)
+		if s.recoveryCtx != nil && s.recoveryCtx.Err() != nil {
+			s.recordActivityDrainFailure(err)
+		}
+	}
+}
+
+func (s *Service) recordActivityDrainFailure(err error) {
+	if s == nil || err == nil {
+		return
+	}
+	s.activityDrainMu.Lock()
+	defer s.activityDrainMu.Unlock()
+	s.activityDrainErr = errors.Join(s.activityDrainErr, fmt.Errorf("activity reconciliation drain: %w", err))
+}
+
+func (s *Service) activityDrainFailure() error {
+	if s == nil {
+		return nil
+	}
+	s.activityDrainMu.Lock()
+	defer s.activityDrainMu.Unlock()
+	return s.activityDrainErr
 }
 
 // admitWrite registers an in-flight write at the Service facade. It
@@ -175,7 +253,8 @@ func (s *Service) beginClose() <-chan struct{} {
 // Close shuts down the service in three phases: stop new admissions, stop
 // recovery, then drain in-flight runner operations. The supplied ctx bounds
 // total shutdown time, but Close still attempts later phases and returns any
-// joined timeout or drain errors.
+// joined timeout or drain errors. After successful drain it releases the
+// planner adapter's replay resources.
 //
 // Tests and shutdown paths must call Close so runner goroutines and recovery
 // do not outlive the service and keep mutating the DB after the process is
@@ -184,36 +263,135 @@ func (s *Service) Close(ctx context.Context) error {
 	if s == nil {
 		return nil
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// An escalation cancels an in-progress adapter drain as well as planner
+	// waits. A later Close gets a fresh budget to finish cleanup after a force.
+	forcedAtEntry := planningChannelClosed(s.forced)
+	closeCtx, cancelClose := context.WithCancel(ctx)
+	forceWatchDone := make(chan struct{})
+	go func() {
+		defer close(forceWatchDone)
+		if forcedAtEntry {
+			return
+		}
+		select {
+		case <-s.forced:
+			cancelClose()
+		case <-closeCtx.Done():
+		}
+	}()
+	defer func() { cancelClose(); <-forceWatchDone }()
 	drained := s.beginClose()
 	forced := s.forced
+	// Stop every service-owned worker before waiting for foreground writes.
+	// Otherwise a blocked API write can leave recovery reconciliation running
+	// against SQLite until the caller's shutdown deadline.
+	if s.recoveryCancel != nil {
+		s.recoveryCancel()
+	}
+	s.stopPlanningRetryWake()
+	// Cancellation finalization is allowed a bounded handoff so it can record a
+	// terminal row. Once the caller's grace period ends, revoke that handoff as
+	// well: a runner that has not drained must not retain DB write authority
+	// after Close returns.
+	var stopHandoffAbort func() bool
+	if s.runner != nil {
+		stopHandoffAbort = context.AfterFunc(closeCtx, s.runner.abortHandoffs)
+		defer func() {
+			stopHandoffAbort()
+			// Do not leave revocation dependent on AfterFunc scheduling once
+			// the caller may tear SQLite down immediately after Close returns.
+			if closeCtx.Err() != nil {
+				s.runner.abortHandoffs()
+			}
+		}()
+	}
 
 	var writeDrainErr error
 	select {
 	case <-drained:
 	case <-forced:
-	case <-ctx.Done():
-		writeDrainErr = fmt.Errorf("write drain: %w", ctx.Err())
+	case <-closeCtx.Done():
+		if ctx.Err() != nil {
+			writeDrainErr = fmt.Errorf("write drain: %w", ctx.Err())
+		}
 	}
 
-	if s.recoveryCancel != nil {
-		s.recoveryCancel()
-	}
+	// A service can be closed before runtime startup reaches planning recovery.
+	// Starting the already-cancelled loop closes recoveryDone without allowing
+	// recovery work to run.
+	s.StartRecoveryLoop()
 	var recoveryDrainErr error
 	if s.recoveryDone != nil {
 		select {
 		case <-s.recoveryDone:
 		case <-forced:
-		case <-ctx.Done():
-			recoveryDrainErr = fmt.Errorf("recovery drain: %w", ctx.Err())
+		case <-closeCtx.Done():
+			if ctx.Err() != nil {
+				recoveryDrainErr = fmt.Errorf("recovery drain: %w", ctx.Err())
+			}
 		}
+	}
+	recoveryDrainErr = errors.Join(recoveryDrainErr, s.activityDrainFailure())
+	retryDrained := false
+	if err := s.waitPlanningRetryWake(closeCtx); err != nil {
+		if ctx.Err() != nil || !planningChannelClosed(forced) {
+			recoveryDrainErr = errors.Join(recoveryDrainErr, fmt.Errorf("retry wake drain: %w", err))
+		}
+	} else {
+		retryDrained = true
 	}
 
 	var runnerDrainErr error
 	if s.runner != nil {
-		runnerDrainErr = s.runner.WaitWithAbort(ctx, forced)
+		runnerDrainErr = s.runner.WaitWithAbort(closeCtx, forced)
+		if ctx.Err() == nil && planningChannelClosed(forced) && errors.Is(runnerDrainErr, context.Canceled) {
+			runnerDrainErr = nil
+		}
 	}
 
-	return errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr)
+	if err := errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr); err != nil {
+		return err
+	}
+	// A forced wait returning nil is not evidence of quiescence. In particular
+	// Execute may already have returned while its parser or finalizer still
+	// holds staged terminal content.
+	if !planningChannelClosed(drained) || !planningChannelClosed(s.recoveryDone) || !retryDrained {
+		return nil
+	}
+	if s.runner != nil {
+		s.runner.mu.Lock()
+		idle := s.runner.idle
+		s.runner.mu.Unlock()
+		if !planningChannelClosed(idle) {
+			return nil
+		}
+		if closer, ok := s.runner.deps.planner.(ContextCloser); ok {
+			err := closer.CloseContext(closeCtx)
+			if ctx.Err() == nil && planningChannelClosed(forced) && errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
+		}
+		if _, ok := s.runner.deps.planner.(interface{ Close() error }); ok {
+			return fmt.Errorf("planner cleanup requires CloseContext")
+		}
+	}
+	return nil
+}
+
+func planningChannelClosed(ch <-chan struct{}) bool {
+	if ch == nil {
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	default:
+		return false
+	}
 }
 
 // ForceClose is the hard-stop counterpart to Close. It flips the
@@ -227,6 +405,10 @@ func (s *Service) ForceClose() {
 	_ = s.beginClose()
 	if s.recoveryCancel != nil {
 		s.recoveryCancel()
+	}
+	s.stopPlanningRetryWake()
+	if s.runner != nil {
+		s.runner.abortHandoffs()
 	}
 	s.forceOnce.Do(func() {
 		close(s.forced)
@@ -248,6 +430,14 @@ func (s *Service) ObserveOperationEventReplay(afterEventID string) {
 }
 
 func (s *Service) CreateSession(ctx context.Context, title string, modelSelectionJSON string) (state.PlanningSession, error) {
+	return s.createSession(ctx, title, nil, modelSelectionJSON)
+}
+
+func (s *Service) CreateSessionWithText(ctx context.Context, title *state.PlanningTextSource, modelSelectionJSON string) (state.PlanningSession, error) {
+	return s.createSession(ctx, "", title, modelSelectionJSON)
+}
+
+func (s *Service) createSession(ctx context.Context, title string, source *state.PlanningTextSource, modelSelectionJSON string) (state.PlanningSession, error) {
 	if s == nil || s.sessions == nil {
 		return state.PlanningSession{}, fmt.Errorf("planning service session runtime is required")
 	}
@@ -255,7 +445,7 @@ func (s *Service) CreateSession(ctx context.Context, title string, modelSelectio
 		return state.PlanningSession{}, err
 	}
 	defer s.releaseWrite()
-	return s.sessions.CreateSession(ctx, title, modelSelectionJSON)
+	return s.sessions.CreateSession(ctx, title, modelSelectionJSON, source)
 }
 
 func (s *Service) CreateOperation(ctx context.Context, planningSessionID string, input CreateOperationInput) (CreateOperationResult, error) {
@@ -311,10 +501,85 @@ func (s *Service) SubscribeOperationEvents(operationID string) (<-chan struct{},
 }
 
 func (s *Service) RecoverOperations(ctx context.Context) error {
+	return s.recoverOperationsAndSchedule(ctx, false)
+}
+
+func (s *Service) recoverOperationsAndSchedule(ctx context.Context, backoffOverdueWake bool) error {
 	if s == nil || s.recovery == nil {
 		return fmt.Errorf("planning service recovery runtime is required")
 	}
-	return s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck)
+	deferred, err := s.replayStartupPlanningProcessGuards(ctx)
+	if err != nil {
+		return err
+	}
+	if deferred {
+		return nil
+	}
+	if err := s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck); err != nil {
+		return err
+	}
+	if s.activity != nil {
+		if err := s.activity.RecoverStartupPass(ctx); err != nil {
+			return err
+		}
+	}
+	return s.scheduleNextPlanningRetryWake(ctx, backoffOverdueWake)
+}
+
+func (s *Service) PlanningActivityReconciliationPending(ctx context.Context, operationID string) (bool, error) {
+	if s == nil || s.activity == nil || s.activity.deps.store == nil {
+		return false, fmt.Errorf("planning activity reconciliation runtime is required")
+	}
+	return s.activity.deps.store.PlanningActivityReconciliationPending(ctx, operationID)
+}
+
+// replayStartupPlanningProcessGuards protects startup latency from a large
+// guardian backlog. While deferred work remains, operation recovery waits for
+// the next bounded periodic pass so stale recovery never runs ahead of guard
+// evidence.
+func (s *Service) replayStartupPlanningProcessGuards(ctx context.Context) (bool, error) {
+	if s == nil || s.operations == nil || s.operations.deps.store == nil {
+		return false, nil
+	}
+	s.startupProcessGuardReplayMu.Lock()
+	defer s.startupProcessGuardReplayMu.Unlock()
+
+	if s.startupProcessGuardReplayStarted && !s.startupProcessGuardReplayPending {
+		return false, s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx)
+	}
+
+	passes := 1
+	if !s.startupProcessGuardReplayStarted {
+		s.startupProcessGuardReplayStarted = true
+		s.startupProcessGuardReplayPending = true
+		passes = providerlimits.StartupReplayMaxPasses
+	}
+	for pass := 0; pass < passes; pass++ {
+		replay, err := s.operations.deps.store.ReplayConfiguredPlanningProcessGuardEvidencePass(ctx, s.startupProcessGuardReplayCursor, providerlimits.StartupReplayBatchItems)
+		if err != nil {
+			return false, err
+		}
+		s.startupProcessGuardReplayCursor = replay.NextCursor
+		if replay.Visited < providerlimits.StartupReplayBatchItems {
+			s.startupProcessGuardReplayPending = false
+			return false, nil
+		}
+	}
+	pending, err := s.operations.deps.store.PlanningProcessGuardReplayPending(ctx, s.startupProcessGuardReplayCursor)
+	if err != nil {
+		return false, err
+	}
+	s.startupProcessGuardReplayPending = pending
+	return pending, nil
+}
+
+func (s *Service) startupPlanningProcessGuardReplayPending() bool {
+	if s == nil {
+		return false
+	}
+	s.startupProcessGuardReplayMu.Lock()
+	defer s.startupProcessGuardReplayMu.Unlock()
+	return s.startupProcessGuardReplayPending
 }
 
 // FinaliseIfStuck transitions a running operation to failed if and only if
@@ -341,13 +606,55 @@ func (s *Service) FinaliseIfStuck(ctx context.Context, operationID string) (bool
 		return false, ErrOperationNotFound
 	}
 	now := nowTime(s.operations.deps.nowString())
+	if operationHasNoActiveProviderInvocation(op) && operationLeaseExpired(op, now) {
+		dispatchedRetry, err := s.operations.deps.store.PlanningOperationHasDispatchedRetry(ctx, op.OperationID)
+		if err != nil {
+			return false, err
+		}
+		if dispatchedRetry {
+			requeued, err := s.operations.deps.store.RequeueUnlaunchedPlanningOperation(ctx, op)
+			if err != nil {
+				return false, err
+			}
+			return requeued, nil
+		}
+	}
 	if !IsStuckOperation(op, now) {
 		return false, nil
+	}
+	unresolved, err := s.operations.deps.store.PlanningOperationHasUnresolvedProcessGuard(ctx, operationID)
+	if err != nil {
+		return false, err
+	}
+	if unresolved {
+		return false, nil
+	}
+	contextVersionMismatch, err := s.operations.deps.store.UnsupportedPlanningOperationExternalContextVersion(ctx, operationID)
+	if err != nil {
+		return false, fmt.Errorf("check linked-source context version for stale planning operation %s: %w", operationID, err)
+	}
+	if contextVersionMismatch != nil {
+		if err := s.recovery.failUnsupportedExternalContextVersion(ctx, op, contextVersionMismatch); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	if err := s.recovery.failStuck(ctx, op, idleFor(op, now)); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+func operationHasNoActiveProviderInvocation(op state.PlanningOperation) bool {
+	return op.ActiveProviderInvocationID == nil || strings.TrimSpace(*op.ActiveProviderInvocationID) == ""
+}
+
+func operationLeaseExpired(op state.PlanningOperation, now time.Time) bool {
+	if op.LeaseExpiresAt == nil {
+		return false
+	}
+	expiresAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*op.LeaseExpiresAt))
+	return err == nil && !expiresAt.After(now.UTC())
 }
 
 func (s *Service) UpdateSession(ctx context.Context, planningSessionID string, input UpdateSessionInput) (state.PlanningSession, error) {

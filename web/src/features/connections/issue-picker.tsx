@@ -281,7 +281,7 @@ export function IssuePicker({
           include_comments: includeComments,
         },
       });
-      setOpened(false);
+		setOpened(false);
     } catch (cause) {
       setError({ ...requestError(cause), scope: "select" });
     } finally {
@@ -374,7 +374,7 @@ export function IssuePicker({
                     <ToggleRow
                       label="Include Comments"
                       checked={includeComments}
-                      info="Imports the newest 100 comment bodies, capped at 32 KiB each and 128 KiB in total."
+                      info="Imports all available comment bodies in full."
                       onChange={setIncludeComments}
                     />
                   </div>

@@ -19,7 +19,6 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -34,7 +33,9 @@ import (
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/securefs"
 	"kingdom/internal/shutdown"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
@@ -89,20 +90,22 @@ const (
 )
 
 type summonStateRecord struct {
-	PID         int               `json:"pid"`
-	State       summonStatusState `json:"state"`
-	PhaseCode   string            `json:"phase_code,omitempty"`
-	Phase       string            `json:"phase,omitempty"`
-	ProgressNow int               `json:"progress_now,omitempty"`
-	ProgressMax int               `json:"progress_max,omitempty"`
-	ConfigPath  string            `json:"config_path,omitempty"`
-	KingdomHome string            `json:"kingdom_home,omitempty"`
-	Listen      string            `json:"listen,omitempty"`
-	BasePath    string            `json:"base_path,omitempty"`
-	LogPath     string            `json:"log_path,omitempty"`
-	StartedAt   string            `json:"started_at,omitempty"`
-	UpdatedAt   string            `json:"updated_at,omitempty"`
-	LastError   string            `json:"last_error,omitempty"`
+	PID                  int               `json:"pid"`
+	ProcessIdentityToken string            `json:"process_identity_token,omitempty"`
+	StopControlToken     string            `json:"stop_control_token,omitempty"`
+	State                summonStatusState `json:"state"`
+	PhaseCode            string            `json:"phase_code,omitempty"`
+	Phase                string            `json:"phase,omitempty"`
+	ProgressNow          int               `json:"progress_now,omitempty"`
+	ProgressMax          int               `json:"progress_max,omitempty"`
+	ConfigPath           string            `json:"config_path,omitempty"`
+	KingdomHome          string            `json:"kingdom_home,omitempty"`
+	Listen               string            `json:"listen,omitempty"`
+	BasePath             string            `json:"base_path,omitempty"`
+	LogPath              string            `json:"log_path,omitempty"`
+	StartedAt            string            `json:"started_at,omitempty"`
+	UpdatedAt            string            `json:"updated_at,omitempty"`
+	LastError            string            `json:"last_error,omitempty"`
 }
 
 type installConfig struct {
@@ -127,7 +130,6 @@ type installConfig struct {
 		BinaryPath      string `yaml:"binary_path"`
 		Model           string `yaml:"model"`
 		Agent           string `yaml:"agent"`
-		AttachURL       string `yaml:"attach_url"`
 		SkipPermissions *bool  `yaml:"skip_permissions"`
 	} `yaml:"provider"`
 	GitHub struct {
@@ -179,23 +181,25 @@ type summonStartupTracker struct {
 	warnedStateIO bool
 }
 
-func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConfig, configPath string, pid int, startedAt string) *summonStartupTracker {
+func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConfig, configPath string, pid int, identityToken, stopControlToken, startedAt string) *summonStartupTracker {
 	return &summonStartupTracker{
 		writer:      writer,
 		interactive: isInteractiveWriter(writer),
 		statePath:   strings.TrimSpace(statePath),
 		state: summonStateRecord{
-			PID:         pid,
-			State:       summonStatusStateStarting,
-			PhaseCode:   string(kingdom.StartupPhaseStartingRuntime),
-			Phase:       startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
-			ConfigPath:  strings.TrimSpace(configPath),
-			KingdomHome: strings.TrimSpace(cfg.KingdomHome),
-			Listen:      summonConnectAddress(cfg.Server.Listen),
-			BasePath:    strings.TrimSpace(cfg.Server.BasePath),
-			LogPath:     summonLogPath(cfg.KingdomHome),
-			StartedAt:   strings.TrimSpace(startedAt),
-			UpdatedAt:   strings.TrimSpace(startedAt),
+			PID:                  pid,
+			ProcessIdentityToken: strings.TrimSpace(identityToken),
+			StopControlToken:     strings.TrimSpace(stopControlToken),
+			State:                summonStatusStateStarting,
+			PhaseCode:            string(kingdom.StartupPhaseStartingRuntime),
+			Phase:                startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
+			ConfigPath:           strings.TrimSpace(configPath),
+			KingdomHome:          strings.TrimSpace(cfg.KingdomHome),
+			Listen:               summonConnectAddress(cfg.Server.Listen),
+			BasePath:             strings.TrimSpace(cfg.Server.BasePath),
+			LogPath:              summonLogPath(cfg.KingdomHome),
+			StartedAt:            strings.TrimSpace(startedAt),
+			UpdatedAt:            strings.TrimSpace(startedAt),
 		},
 	}
 }
@@ -624,14 +628,41 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	if err := validatePublishPreflight(cfg); err != nil {
 		return err
 	}
-
+	signalCh := make(chan os.Signal, 2)
+	signal.Notify(signalCh, summonSignals()...)
+	defer signal.Stop(signalCh)
 	pidPath := filepath.Join(cfg.KingdomHome, "run", defaultPIDFileName)
-	releasePID, err := acquirePIDFile(pidPath)
+	identityToken, err := processguardian.ProcessIdentityToken(os.Getpid())
+	if err != nil {
+		return fmt.Errorf("identify summon process: %w", err)
+	}
+	stopControlToken, err := generateSummonStopControlToken()
+	if err != nil {
+		return err
+	}
+	releasePID, err := acquirePIDFileWithIdentity(pidPath, identityToken, stopControlToken)
 	if err != nil {
 		return err
 	}
 	defer releasePID()
-	startupTracker := newSummonStartupTracker(stderr, statePath, cfg, resolvedConfigPath, os.Getpid(), startedAt)
+	stopControl, err := listenForSummonStop(signalCh, summonStopRequestPath(cfg.KingdomHome), stopControlToken)
+	if err != nil {
+		return fmt.Errorf("prepare summon stop control: %w", err)
+	}
+	defer stopControl()
+	startupCtx, cancelStartup := context.WithCancel(ctx)
+	defer cancelStartup()
+	startupStopRequested, finishStartupWatch := watchSummonStartupStop(signalCh, cancelStartup)
+	defer finishStartupWatch()
+	startupStopWasRequested := func() bool {
+		select {
+		case <-startupStopRequested:
+			return true
+		default:
+			return false
+		}
+	}
+	startupTracker := newSummonStartupTracker(stderr, statePath, cfg, resolvedConfigPath, os.Getpid(), identityToken, stopControlToken, startedAt)
 	startupTracker.Initialize()
 	startupReady := false
 	defer func() {
@@ -645,8 +676,14 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		}
 	}()
 
-	if err := ensureDatabaseSchema(cfg.DBPath); err != nil {
+	if err := ensureDatabaseSchemaWithContext(startupCtx, cfg.DBPath); err != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
 		return err
+	}
+	if startupCtx.Err() != nil && startupStopWasRequested() {
+		return nil
 	}
 
 	db, err := openSQLiteDatabase(cfg.DBPath, sqlitePoolOptions{MaxOpenConns: 4, MaxIdleConns: 4})
@@ -676,7 +713,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
-		StartupContext:      ctx,
+		StartupContext:      startupCtx,
 		StartupReporter:     startupTracker.Report,
 		Paths:               bootstrapPaths,
 		ProviderEngine:      cfg.Provider.Engine,
@@ -692,12 +729,29 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			WorkDir:         filepath.Dir(cfg.KingdomHome),
 			Model:           cfg.Provider.Model,
 			Agent:           cfg.Provider.Agent,
-			AttachURL:       cfg.Provider.AttachURL,
 			SkipPermissions: skipPermissions,
 		},
 	})
 	if err != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
 		return fmt.Errorf("bootstrap runtime: %w", err)
+	}
+	runtimeLifecycleTransferred := false
+	defer func() {
+		if runtimeLifecycleTransferred {
+			return
+		}
+		closeCtx, cancel := context.WithTimeout(context.Background(), summonGracefulShutdownTimeout)
+		defer cancel()
+		_ = runtimeInstance.GracefulClose(closeCtx)
+	}()
+	if startupCtx.Err() != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
+		return startupCtx.Err()
 	}
 
 	// readInstallConfigFromStruct already normalized cfg.Server.BasePath,
@@ -705,7 +759,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	// local re-normalization, no scattered TrimRight fallbacks.
 	apiHandler, err := api.NewHandler(api.ServerConfig{
 		DB:                         db,
-		StartupContext:             ctx,
+		StartupContext:             startupCtx,
 		BasePath:                   cfg.Server.BasePath,
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
@@ -715,6 +769,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		RoleCommPolicyPath:         filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
+		RuntimeRoot:                filepath.Join(cfg.KingdomHome, "runtime"),
+		RetryEngine:                runtimeInstance.RetryEngine(),
 		DefaultPublishMode:         cfg.Publish.Mode,
 		OperatorCredential:         operatorCredential,
 		ExternalAdapter:            deps.externalAdapter,
@@ -722,15 +778,26 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		GitHubSharedAppClientID:    cfg.GitHub.SharedApp.ClientID,
 	})
 	if err != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
 		return fmt.Errorf("build api handler: %w", err)
 	}
-	if err := runtimeInstance.Start(ctx); err != nil {
+	if startupCtx.Err() != nil {
 		_ = apiHandler.Close(context.Background())
+		if startupStopWasRequested() {
+			return nil
+		}
+		return startupCtx.Err()
+	}
+	runtimeInstance.SetPreDispatchRecovery(apiHandler.RecoverPlanningOperations)
+	if err := runtimeInstance.Start(startupCtx); err != nil {
+		_ = apiHandler.Close(context.Background())
+		if startupStopWasRequested() {
+			return nil
+		}
 		return fmt.Errorf("start runtime: %w", err)
 	}
-	defer func() {
-		_ = runtimeInstance.Close()
-	}()
 	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
 		apiHandler,
 		shutdown.CloseFunc(runtimeInstance.GracefulClose),
@@ -770,6 +837,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			err = fmt.Errorf("shutdown drain failed: %w", drainErr)
 		}
 	}()
+	runtimeLifecycleTransferred = true
 
 	errCh := make(chan error, 1)
 	go func() {
@@ -784,41 +852,51 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 	// with a summon that hangs. For the same reason it reports through the log
 	// and never through the startup tracker, whose phases are a gate on
 	// readiness and are already past.
-	go warmSummonProviderSurfaces(ctx, apiHandler, stderr)
+	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
 
-	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh, ""); err != nil {
+	if err := waitForSummonReadyWithContext(startupCtx, cfg, opts.readyTimeout, nil, errCh, "", "", nil); err != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
 		// The deferred safety-net above owns shutdown. Returning
 		// here drains apiHandler + server through the lifted
 		// Coordinator instead of doing a duplicate
 		// server.Shutdown(...) here that would muddy ownership.
 		return err
 	}
-	if err := ensureWorkflowSeeds(ctx, cfg); err != nil {
+	if err := ensureWorkflowSeeds(startupCtx, cfg); err != nil {
+		if startupStopWasRequested() {
+			return nil
+		}
 		return fmt.Errorf("ensure workflow seeds: %w", err)
 	}
+	if finishStartupWatch() {
+		return nil
+	}
+	if startupCtx.Err() != nil {
+		return startupCtx.Err()
+	}
 	if err := registerSummonInstance(summonInstanceRecord{
-		PID:         os.Getpid(),
-		ConfigPath:  resolvedConfigPath,
-		KingdomHome: cfg.KingdomHome,
-		Listen:      summonConnectAddress(cfg.Server.Listen),
-		BasePath:    cfg.Server.BasePath,
-		StartedAt:   startedAt,
+		PID:                  os.Getpid(),
+		ProcessIdentityToken: identityToken,
+		StopControlToken:     stopControlToken,
+		ConfigPath:           resolvedConfigPath,
+		KingdomHome:          cfg.KingdomHome,
+		Listen:               summonConnectAddress(cfg.Server.Listen),
+		BasePath:             cfg.Server.BasePath,
+		StartedAt:            startedAt,
 	}); err != nil {
 		return fmt.Errorf("register summon instance: %w", err)
 	}
 	startupTracker.MarkReady()
 	startupReady = true
 	defer func() {
-		_ = unregisterSummonInstance(os.Getpid())
+		_ = unregisterSummonInstance(os.Getpid(), identityToken, stopControlToken)
 	}()
 
 	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen)); err != nil {
 		return err
 	}
-
-	signalCh := make(chan os.Signal, 2)
-	signal.Notify(signalCh, syscall.SIGINT, syscall.SIGTERM)
-	defer signal.Stop(signalCh)
 
 	err = awaitSummonTermination(
 		ctx,
@@ -1058,7 +1136,7 @@ func runSummonDetach(stdout io.Writer, cfg installConfig, configPath string, opt
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Stdout = logFile
 	cmd.Stderr = logFile
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureDetachedCommand(cmd)
 
 	if err := cmd.Start(); err != nil {
 		_ = logFile.Close()
@@ -1140,6 +1218,9 @@ func normalizeSummonListenAddress(listen string) (string, error) {
 	if strings.TrimSpace(host) == "" {
 		return "", fmt.Errorf("summon listen host cannot be empty")
 	}
+	if !isLoopbackAPIHost(host) {
+		return "", fmt.Errorf("summon listen host must be loopback until TLS listener support exists")
+	}
 	return net.JoinHostPort(host, strconv.Itoa(portNum)), nil
 }
 
@@ -1204,35 +1285,65 @@ func runSummonStatus(stdout io.Writer, args []string) error {
 		_, err = io.WriteString(stdout, "summon status: stopped (no local summon config)\n")
 		return err
 	}
-	if state, ok, err := loadSummonState(summonStatePath(cfg.KingdomHome)); err != nil {
-		return err
-	} else if ok {
-		if normalized, found := normalizeSummonState(state); found {
-			return writeSummonStateStatus(stdout, normalized, "config", "")
-		}
-	}
-
 	pidPath := filepath.Join(cfg.KingdomHome, "run", defaultPIDFileName)
-	pid, ok, err := readRunningPID(pidPath)
+	pidRecord, pidOK, err := readRunningPIDRecord(pidPath)
 	if err != nil {
 		return err
 	}
-	if ok {
-		record, _, recordErr := findSummonInstanceForConfig(resolvedConfigPath, cfg.KingdomHome)
-		if recordErr != nil {
-			return recordErr
-		}
-		if record != nil {
-			return writeSummonStatus(stdout, *record, "config", "")
-		}
-		return writeSummonStatus(stdout, summonInstanceRecord{PID: pid, ConfigPath: resolvedConfigPath, KingdomHome: cfg.KingdomHome, Listen: summonConnectAddress(cfg.Server.Listen), BasePath: cfg.Server.BasePath}, "config", "")
+	registryRecord, registryFound, err := findSummonInstanceForConfig(resolvedConfigPath, cfg.KingdomHome)
+	if err != nil {
+		return err
 	}
-	record, discovered, recordErr := findSummonInstanceForConfig(resolvedConfigPath, cfg.KingdomHome)
-	if recordErr != nil {
-		return recordErr
+	if pidOK && registryFound && registryRecord != nil && registryRecord.StopControlToken != pidRecord.StopControlToken {
+		registryRecord = nil
+		registryFound = false
 	}
-	if discovered {
-		return writeSummonStatus(stdout, *record, "registry", "pid file missing or stale for current config")
+	state, stateOK, err := loadSummonState(summonStatePath(cfg.KingdomHome))
+	if err != nil {
+		return err
+	}
+	if stateOK {
+		stateMatchesActiveGeneration := !pidOK && !registryFound
+		if pidOK {
+			stateMatchesActiveGeneration = state.PID == pidRecord.PID && state.StopControlToken != "" && state.StopControlToken == pidRecord.StopControlToken
+		} else if registryFound && registryRecord != nil {
+			stateMatchesActiveGeneration = state.PID == registryRecord.PID && state.StopControlToken != "" && state.StopControlToken == registryRecord.StopControlToken
+		}
+		if stateMatchesActiveGeneration {
+			normalized, found, identityErr := normalizeSummonState(state)
+			if identityErr != nil {
+				return fmt.Errorf("inspect summon state process identity: %w", identityErr)
+			}
+			if found {
+				return writeSummonStateStatus(stdout, normalized, "config", "")
+			}
+		}
+	}
+	if pidOK {
+		if registryFound && registryRecord != nil {
+			return writeSummonStatus(stdout, *registryRecord, "config", "")
+		}
+		return writeSummonStatus(stdout, summonInstanceRecord{
+			PID:                  pidRecord.PID,
+			ProcessIdentityToken: pidRecord.ProcessIdentityToken,
+			StopControlToken:     pidRecord.StopControlToken,
+			ConfigPath:           resolvedConfigPath,
+			KingdomHome:          cfg.KingdomHome,
+			Listen:               summonConnectAddress(cfg.Server.Listen),
+			BasePath:             cfg.Server.BasePath,
+		}, "config", "")
+	}
+	if registryFound && registryRecord != nil {
+		return writeSummonStatus(stdout, *registryRecord, "registry", "pid file missing or stale for current config")
+	}
+	if stateOK {
+		normalized, found, identityErr := normalizeSummonState(state)
+		if identityErr != nil {
+			return fmt.Errorf("inspect summon state process identity: %w", identityErr)
+		}
+		if found {
+			return writeSummonStateStatus(stdout, normalized, "config", "")
+		}
 	}
 	_, err = io.WriteString(stdout, "summon status: stopped\n")
 	return err
@@ -1312,14 +1423,16 @@ func runSummonStop(stdout io.Writer, args []string) error {
 
 func writeSummonStatus(stdout io.Writer, record summonInstanceRecord, source, note string) error {
 	return writeSummonStateStatus(stdout, summonStateRecord{
-		PID:         record.PID,
-		State:       summonStatusStateRunning,
-		ConfigPath:  record.ConfigPath,
-		KingdomHome: record.KingdomHome,
-		Listen:      record.Listen,
-		BasePath:    record.BasePath,
-		LogPath:     summonLogPath(record.KingdomHome),
-		StartedAt:   record.StartedAt,
+		PID:                  record.PID,
+		ProcessIdentityToken: record.ProcessIdentityToken,
+		StopControlToken:     record.StopControlToken,
+		State:                summonStatusStateRunning,
+		ConfigPath:           record.ConfigPath,
+		KingdomHome:          record.KingdomHome,
+		Listen:               record.Listen,
+		BasePath:             record.BasePath,
+		LogPath:              summonLogPath(record.KingdomHome),
+		StartedAt:            record.StartedAt,
 	}, source, note)
 }
 
@@ -1389,8 +1502,12 @@ func summonStatePhaseDisplay(state summonStateRecord) string {
 }
 
 func stopSummonRegistryRecord(stdout io.Writer, record summonInstanceRecord) error {
-	stopped, err := stopSummonProcess(stdout, record.PID, func() error {
-		return unregisterSummonInstance(record.PID)
+	if strings.TrimSpace(record.KingdomHome) == "" {
+		return fmt.Errorf("summon registry record is missing its Kingdom home")
+	}
+	pidPath := filepath.Join(record.KingdomHome, "run", defaultPIDFileName)
+	stopped, err := stopSummonProcess(stdout, record.PID, record.ProcessIdentityToken, record.StopControlToken, summonStopRequestPath(record.KingdomHome), func() error {
+		return cleanupSummonProcessGeneration(pidPath, record.PID, record.ProcessIdentityToken, record.StopControlToken)
 	})
 	if err != nil {
 		return err
@@ -1402,31 +1519,46 @@ func stopSummonRegistryRecord(stdout io.Writer, record summonInstanceRecord) err
 	return nil
 }
 
-func stopSummonProcess(stdout io.Writer, pid int, cleanup func() error) (bool, error) {
+func stopSummonProcess(stdout io.Writer, pid int, identityToken, stopControlToken, stopRequestPath string, cleanup func() error) (bool, error) {
 	if pid <= 0 {
 		return false, nil
 	}
-	if !isProcessRunning(pid) {
+	matches, err := summonProcessIdentityMatches(pid, identityToken)
+	if err != nil {
+		return false, fmt.Errorf("verify summon process identity: %w", err)
+	}
+	if !matches {
 		if cleanup != nil {
 			_ = cleanup()
 		}
 		return false, nil
 	}
-	process, err := os.FindProcess(pid)
+	matches, err = summonProcessIdentityMatches(pid, identityToken)
 	if err != nil {
-		return false, fmt.Errorf("find summon process: %w", err)
+		return false, fmt.Errorf("recheck summon process identity: %w", err)
 	}
-	if err := process.Signal(syscall.SIGTERM); err != nil {
-		if !isProcessRunning(pid) {
+	if !matches {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		return false, nil
+	}
+	if err := writeSummonStopRequest(stopRequestPath, stopControlToken); err != nil {
+		matches, identityErr := summonProcessIdentityMatches(pid, identityToken)
+		if identityErr == nil && !matches {
 			if cleanup != nil {
 				_ = cleanup()
 			}
 			return false, nil
 		}
-		return false, fmt.Errorf("signal summon process: %w", err)
+		return false, fmt.Errorf("request summon stop: %w", err)
 	}
 	err = waitForSummonStopped(func() (bool, error) {
-		if !isProcessRunning(pid) {
+		matches, err := summonProcessIdentityMatches(pid, identityToken)
+		if err != nil {
+			return false, err
+		}
+		if !matches {
 			if cleanup != nil {
 				_ = cleanup()
 			}
@@ -1498,44 +1630,42 @@ func waitForSummonStopped(check func() (bool, error), waitTimeout, pollInterval,
 }
 
 func stopSummonIfRunning(stdout io.Writer, pidPath string) (bool, error) {
-	pid, ok, err := readRunningPID(pidPath)
+	record, ok, err := readRunningPIDRecord(pidPath)
 	if err != nil {
 		return false, err
 	}
 	if !ok {
 		return false, nil
 	}
-	return stopSummonProcess(stdout, pid, func() error {
-		_ = os.Remove(pidPath)
-		return unregisterSummonInstance(pid)
+	stopRequestPath := filepath.Join(filepath.Dir(pidPath), defaultSummonStopRequestFileName)
+	return stopSummonProcess(stdout, record.PID, record.ProcessIdentityToken, record.StopControlToken, stopRequestPath, func() error {
+		return cleanupSummonProcessGeneration(pidPath, record.PID, record.ProcessIdentityToken, record.StopControlToken)
 	})
 }
 
 func isSummonStopped(pidPath string, pid int) (bool, error) {
-	if !isProcessRunning(pid) {
-		_ = os.Remove(pidPath)
-		return true, nil
-	}
-
-	runningPID, ok, err := readRunningPID(pidPath)
+	record, ok, err := readRunningPIDRecord(pidPath)
 	if err != nil {
 		return false, err
 	}
-	if !ok {
+	if !ok || record.PID != pid {
 		return true, nil
 	}
-	if runningPID != pid {
-		return true, nil
-	}
-
 	return false, nil
 }
 
 func waitForSummonReady(cfg installConfig, timeout time.Duration, serverErrCh <-chan error, startupLogPath string) error {
-	return waitForSummonReadyWithProcess(cfg, timeout, nil, serverErrCh, startupLogPath, "", nil)
+	return waitForSummonReadyWithContext(context.Background(), cfg, timeout, nil, serverErrCh, startupLogPath, "", nil)
 }
 
 func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string, statePath string, renderer *summonDetachedProgressRenderer) error {
+	return waitForSummonReadyWithContext(context.Background(), cfg, timeout, processDone, serverErrCh, startupLogPath, statePath, renderer)
+}
+
+func waitForSummonReadyWithContext(ctx context.Context, cfg installConfig, timeout time.Duration, processDone <-chan error, serverErrCh <-chan error, startupLogPath string, statePath string, renderer *summonDetachedProgressRenderer) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -1548,9 +1678,12 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 	apiURL := summonAPIURL(cfg) + "/health"
 
 	for time.Now().Before(deadline) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if renderer != nil {
 			if state, ok, err := loadSummonState(statePath); err == nil && ok {
-				if normalized, found := normalizeSummonState(state); found {
+				if normalized, found, identityErr := normalizeSummonState(state); identityErr == nil && found {
 					renderer.Render(normalized)
 				}
 			}
@@ -1573,13 +1706,19 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 			}
 		}
 
-		apiReq, _ := http.NewRequest(http.MethodGet, apiURL, nil)
+		apiReq, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)
+		if err != nil {
+			return fmt.Errorf("build summon readiness request: %w", err)
+		}
 		if credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome)); err == nil {
 			apiReq.Header.Set("Authorization", "Bearer "+string(credential))
 		}
 
 		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh, cfg.Server.Listen, startupLogPath)
 		if err != nil {
+			return err
+		}
+		if err := ctx.Err(); err != nil {
 			return err
 		}
 
@@ -1597,7 +1736,13 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 			}
 		}
 
-		time.Sleep(160 * time.Millisecond)
+		timer := time.NewTimer(160 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 
 	return fmt.Errorf("summon readiness timeout after %s", timeout)
@@ -1837,35 +1982,46 @@ func saveSummonState(path string, state summonStateRecord) error {
 	return nil
 }
 
-func normalizeSummonState(state summonStateRecord) (summonStateRecord, bool) {
+func normalizeSummonState(state summonStateRecord) (summonStateRecord, bool, error) {
+	return normalizeSummonStateWithIdentity(state, summonProcessIdentityMatches)
+}
+
+func normalizeSummonStateWithIdentity(state summonStateRecord, identityMatches func(int, string) (bool, error)) (summonStateRecord, bool, error) {
 	state.State = summonStatusState(strings.TrimSpace(string(state.State)))
 	if state.State == "" {
-		return summonStateRecord{}, false
+		return summonStateRecord{}, false, nil
 	}
-	running := state.PID > 0 && isProcessRunning(state.PID)
 	switch state.State {
+	case summonStatusStateFailed, summonStatusStateStopped:
+		return state, true, nil
 	case summonStatusStateStarting:
+		running, err := identityMatches(state.PID, state.ProcessIdentityToken)
+		if err != nil {
+			return summonStateRecord{}, false, fmt.Errorf("inspect starting summon process identity: %w", err)
+		}
 		if running {
-			return state, true
+			return state, true, nil
 		}
 		if strings.TrimSpace(state.LastError) != "" {
 			state.State = summonStatusStateFailed
-			return state, true
+			return state, true, nil
 		}
 		state.State = summonStatusStateStopped
 		state.Phase = ""
-		return state, true
+		return state, true, nil
 	case summonStatusStateRunning:
+		running, err := identityMatches(state.PID, state.ProcessIdentityToken)
+		if err != nil {
+			return summonStateRecord{}, false, fmt.Errorf("inspect running summon process identity: %w", err)
+		}
 		if running {
-			return state, true
+			return state, true, nil
 		}
 		state.State = summonStatusStateStopped
 		state.Phase = ""
-		return state, true
-	case summonStatusStateFailed, summonStatusStateStopped:
-		return state, true
+		return state, true, nil
 	default:
-		return summonStateRecord{}, false
+		return summonStateRecord{}, false, nil
 	}
 }
 
@@ -2295,6 +2451,13 @@ func bootstrapPathsFromConfig(cfg installConfig) kingdom.BootstrapPaths {
 }
 
 func ensureDatabaseSchema(dbPath string) error {
+	return ensureDatabaseSchemaWithContext(context.Background(), dbPath)
+}
+
+func ensureDatabaseSchemaWithContext(ctx context.Context, dbPath string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		return fmt.Errorf("create database directory: %w", err)
 	}
@@ -2318,7 +2481,7 @@ func ensureDatabaseSchema(dbPath string) error {
 		migrations = append(migrations, state.SQLMigration{Name: name, SQL: rawMigration})
 	}
 
-	if err := state.ApplySQLMigrations(context.Background(), db, migrations, time.Now().UTC()); err != nil {
+	if err := state.ApplySQLMigrations(ctx, db, migrations, time.Now().UTC()); err != nil {
 		return fmt.Errorf("apply embedded migrations: %w", err)
 	}
 
@@ -2372,18 +2535,43 @@ func sqliteDSN(dbPath string) (string, error) {
 }
 
 func acquirePIDFile(path string) (func(), error) {
+	identityToken, err := processguardian.ProcessIdentityToken(os.Getpid())
+	if err != nil {
+		return nil, fmt.Errorf("identify summon process: %w", err)
+	}
+	stopControlToken, err := generateSummonStopControlToken()
+	if err != nil {
+		return nil, err
+	}
+	return acquirePIDFileWithIdentity(path, identityToken, stopControlToken)
+}
+
+type summonPIDRecord struct {
+	PID                  int    `json:"pid"`
+	ProcessIdentityToken string `json:"process_identity_token"`
+	StopControlToken     string `json:"stop_control_token"`
+}
+
+func acquirePIDFileWithIdentity(path, identityToken, stopControlToken string) (func(), error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create pid directory: %w", err)
 	}
 
-	if existingPID, ok, err := readRunningPID(path); err != nil {
-		return nil, err
-	} else if ok {
-		return nil, fmt.Errorf("summon already running with pid=%d", existingPID)
+	matches, err := summonProcessIdentityMatches(os.Getpid(), identityToken)
+	if err != nil {
+		return nil, fmt.Errorf("verify current summon process identity: %w", err)
+	}
+	if !matches {
+		return nil, fmt.Errorf("current summon process identity does not match pid %d", os.Getpid())
 	}
 
-	pid := os.Getpid()
-	if err := os.WriteFile(path, []byte(strconv.Itoa(pid)), 0o644); err != nil {
+	if existing, ok, err := readRunningPIDRecord(path); err != nil {
+		return nil, err
+	} else if ok {
+		return nil, fmt.Errorf("summon already running with pid=%d", existing.PID)
+	}
+
+	if err := writeSummonPIDRecord(path, summonPIDRecord{PID: os.Getpid(), ProcessIdentityToken: identityToken, StopControlToken: stopControlToken}); err != nil {
 		return nil, fmt.Errorf("write pid file: %w", err)
 	}
 
@@ -2393,41 +2581,77 @@ func acquirePIDFile(path string) (func(), error) {
 			return
 		}
 		released = true
-		_ = os.Remove(path)
+		_ = removeSummonPIDRecordIfIdentity(path, summonPIDRecord{PID: os.Getpid(), ProcessIdentityToken: identityToken, StopControlToken: stopControlToken})
 	}
 	return release, nil
 }
 
-func readRunningPID(path string) (int, bool, error) {
-	raw, err := os.ReadFile(path)
+func writeSummonPIDRecord(path string, record summonPIDRecord) error {
+	if record.PID <= 0 || strings.TrimSpace(record.ProcessIdentityToken) == "" || strings.TrimSpace(record.StopControlToken) == "" {
+		return fmt.Errorf("summon pid, process identity, and stop control token are required")
+	}
+	raw, err := json.Marshal(record)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return 0, false, nil
-		}
-		return 0, false, fmt.Errorf("read pid file: %w", err)
+		return fmt.Errorf("encode summon pid record: %w", err)
 	}
-
-	pidRaw := strings.TrimSpace(string(raw))
-	if pidRaw == "" {
-		_ = os.Remove(path)
-		return 0, false, nil
-	}
-
-	pid, err := strconv.Atoi(pidRaw)
-	if err != nil || pid <= 0 {
-		_ = os.Remove(path)
-		return 0, false, nil
-	}
-
-	if !isProcessRunning(pid) {
-		_ = os.Remove(path)
-		return 0, false, nil
-	}
-
-	return pid, true, nil
+	return os.WriteFile(path, raw, 0o644)
 }
 
-func isProcessRunning(pid int) bool {
-	err := syscall.Kill(pid, 0)
-	return err == nil || errors.Is(err, syscall.EPERM)
+func readRunningPIDRecord(path string) (summonPIDRecord, bool, error) {
+	return readRunningPIDRecordWithIdentity(path, summonProcessIdentityMatches)
+}
+
+func readRunningPIDRecordWithIdentity(path string, identityMatches func(int, string) (bool, error)) (summonPIDRecord, bool, error) {
+	if identityMatches == nil {
+		return summonPIDRecord{}, false, fmt.Errorf("summon process identity checker is required")
+	}
+	root, err := securefs.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return summonPIDRecord{}, false, nil
+		}
+		return summonPIDRecord{}, false, fmt.Errorf("open pid directory: %w", err)
+	}
+	defer root.Close()
+	name := filepath.Base(path)
+	raw, identity, err := root.ReadRegularIdentified(name, maxSummonPIDRecordBytes)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return summonPIDRecord{}, false, nil
+		}
+		return summonPIDRecord{}, false, fmt.Errorf("read pid file: %w", err)
+	}
+	removeObservedRecord := func() error {
+		err := root.RemoveRegularIfIdentity(name, identity)
+		if errors.Is(err, os.ErrNotExist) || errors.Is(err, securefs.ErrIdentityMismatch) {
+			return nil
+		}
+		return err
+	}
+	var record summonPIDRecord
+	if err := json.Unmarshal(raw, &record); err != nil || record.PID <= 0 || strings.TrimSpace(record.ProcessIdentityToken) == "" || strings.TrimSpace(record.StopControlToken) == "" {
+		if err := removeObservedRecord(); err != nil {
+			return summonPIDRecord{}, false, fmt.Errorf("remove invalid pid file: %w", err)
+		}
+		return summonPIDRecord{}, false, nil
+	}
+	matches, err := identityMatches(record.PID, record.ProcessIdentityToken)
+	if err != nil {
+		return summonPIDRecord{}, false, fmt.Errorf("verify pid file process identity: %w", err)
+	}
+	if !matches {
+		if err := removeObservedRecord(); err != nil {
+			return summonPIDRecord{}, false, fmt.Errorf("remove stale pid file: %w", err)
+		}
+		return summonPIDRecord{}, false, nil
+	}
+	return record, true, nil
+}
+
+func readRunningPID(path string) (int, bool, error) {
+	record, running, err := readRunningPIDRecord(path)
+	if err != nil || !running {
+		return 0, running, err
+	}
+	return record.PID, true, nil
 }

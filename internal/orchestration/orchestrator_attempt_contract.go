@@ -26,3 +26,15 @@ func (o *orchestrationLoop) providerTimeoutForNode(nodeID, nodeClass string) tim
 	}
 	return 0
 }
+
+func (o *orchestrationLoop) providerExecutionLeaseDuration(nodeID, nodeClass string) time.Duration {
+	// The fence covers the configured wall-clock budget and the complete quiet
+	// cancellation path, but does not introduce heartbeat or stale-handoff work.
+	leaseDuration := o.providerTimeoutForNode(nodeID, nodeClass)
+	for _, allowance := range []time.Duration{o.streamInactivity, o.cancelGrace, o.cancelForce} {
+		if allowance > 0 {
+			leaseDuration += allowance
+		}
+	}
+	return leaseDuration
+}

@@ -21,7 +21,7 @@ func TestShouldTrackRunActivityAdvancesOnAttemptActivity(t *testing.T) {
 // Guard the coarse lifecycle events that must continue to advance run activity, so a
 // future refactor cannot silently drop them alongside the activity exclusion.
 func TestShouldTrackRunActivityKeepsLifecycleEvents(t *testing.T) {
-	for _, eventType := range []string{"attempt.started", "attempt.succeeded", "attempt.failed", "node.state_changed"} {
+	for _, eventType := range []string{"attempt.started", "attempt.retry_scheduled", "attempt.succeeded", "attempt.failed", "node.state_changed"} {
 		tracked, err := ShouldTrackRunActivity(eventType, "", "{}")
 		if err != nil {
 			t.Fatalf("unexpected error for %q: %v", eventType, err)

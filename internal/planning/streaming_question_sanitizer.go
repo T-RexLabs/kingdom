@@ -6,8 +6,8 @@ const structuredQuestionBlockOpen = "```structured_question"
 
 type streamingQuestionSanitizer struct {
 	onChunk func(text string)
-	raw     strings.Builder
-	emitted int
+	pending string
+	blocked bool
 }
 
 func newStreamingQuestionSanitizer(onChunk func(text string)) *streamingQuestionSanitizer {
@@ -18,16 +18,21 @@ func newStreamingQuestionSanitizer(onChunk func(text string)) *streamingQuestion
 }
 
 func (s *streamingQuestionSanitizer) Write(text string) {
-	if s == nil || text == "" {
+	if s == nil || text == "" || s.blocked {
 		return
 	}
-	_, _ = s.raw.WriteString(text)
-	visible := visibleStreamingPlannerText(s.raw.String())
-	if len(visible) <= s.emitted {
+	data := s.pending + text
+	visible := visibleStreamingPlannerText(data)
+	if visible != "" {
+		s.onChunk(visible)
+	}
+	if strings.Contains(data, structuredQuestionBlockOpen) {
+		s.pending = ""
+		s.blocked = true
 		return
 	}
-	s.onChunk(visible[s.emitted:])
-	s.emitted = len(visible)
+	// Retain only a possible fixed-token suffix, never the response history.
+	s.pending = strings.Clone(data[len(visible):])
 }
 
 func visibleStreamingPlannerText(raw string) string {

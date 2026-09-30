@@ -9,15 +9,28 @@ import (
 
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/runtimefs"
+	"kingdom/internal/timestamporder"
 )
 
-func (o *orchestrationLoop) recordAttemptSnapshotBase(ctx context.Context, attemptID, snapshotID string) error {
+func (o *orchestrationLoop) recordAttemptSnapshotBase(ctx context.Context, attemptID, snapshotID, leaseOwner string, leaseVersion int64) error {
 	if o == nil || o.db == nil || strings.TrimSpace(attemptID) == "" {
-		return nil
+		return fmt.Errorf("attempt snapshot ownership is required")
 	}
-	_, err := o.db.ExecContext(ctx, `UPDATE attempt_executions SET base_snapshot_id = ? WHERE attempt_id = ?`, strings.TrimSpace(snapshotID), strings.TrimSpace(attemptID))
+	if leaseOwner == "" || leaseVersion <= 0 {
+		return fmt.Errorf("snapshot preparation requires a claimed execution lease")
+	}
+	result, err := o.db.ExecContext(ctx, `UPDATE attempt_executions SET base_snapshot_id = ?
+		WHERE attempt_id = ? AND state = 'queued' AND lease_owner = ? AND lease_version = ?
+		AND `+timestamporder.ComparisonSQL("lease_expires_at", "?", ">"), strings.TrimSpace(snapshotID), strings.TrimSpace(attemptID), leaseOwner, leaseVersion, o.now().UTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("record attempt base snapshot: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if updated != 1 {
+		return fmt.Errorf("snapshot preparation lost execution lease authority")
 	}
 	return nil
 }
@@ -50,6 +63,9 @@ func (o *orchestrationLoop) loadAttemptSnapshotIDs(ctx context.Context, attemptI
 }
 
 func (o *orchestrationLoop) captureAttemptResultSnapshot(ctx context.Context, result asyncExecutionResult, capturedAt string) (runtimefs.SnapshotRecord, error) {
+	if executionSpecForNode(result.node.NodeID, result.node.NodeClass).WorkspaceKind != workspaceCanonical {
+		return runtimefs.SnapshotRecord{}, fmt.Errorf("only canonical workspace attempts can capture result snapshots")
+	}
 	if o == nil || o.fsStore == nil {
 		return runtimefs.SnapshotRecord{}, fmt.Errorf("runtime filesystem store is required")
 	}
@@ -84,6 +100,12 @@ func (o *orchestrationLoop) restoreExecutionTarget(ctx context.Context, runID, e
 	if err != nil {
 		return fmt.Errorf("load execution target for snapshot recovery: %w", err)
 	}
+	if strings.TrimSpace(target.State) == "unknown" {
+		return fmt.Errorf("execution target is quarantined after an unsafe workspace failure")
+	}
+	if target.State == "trusted" && target.TrustedSnapshotID == trustedSnapshotID && target.ExecutionRoot == executionRoot {
+		return nil
+	}
 	if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, trustedSnapshotID, target.PublishRoot, target.SourceRoot); err != nil {
 		return err
 	}
@@ -92,6 +114,9 @@ func (o *orchestrationLoop) restoreExecutionTarget(ctx context.Context, runID, e
 	}
 	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(executionRoot), true); err != nil {
 		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
+	}
+	if o.now != nil {
+		restoredAt = o.now().UTC().Format(time.RFC3339Nano)
 	}
 	return o.fsStore.UpdateExecutionTargetState(ctx, runID, "trusted", trustedSnapshotID, "", strings.TrimSpace(restoredAt))
 }

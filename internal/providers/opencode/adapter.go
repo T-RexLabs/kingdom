@@ -8,14 +8,18 @@ package opencode
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 
-	"kingdom/internal/core/verdict"
+	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/processguardian"
 )
 
 const (
@@ -32,71 +36,31 @@ type Adapter interface {
 	Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error)
 }
 
-const CompletionProtocolVersion = "v1"
-
-type ExportCheckPhase string
-
-const (
-	ExportCheckPhaseForegroundReconcile ExportCheckPhase = "foreground_reconcile"
-	ExportCheckPhaseDeferredVerify      ExportCheckPhase = "deferred_verify"
-	ExportCheckPhaseLateRepair          ExportCheckPhase = "late_repair"
-)
-
-type ExportCheckStatus string
-
-const (
-	ExportCheckStatusResolvedSuccess  ExportCheckStatus = "resolved_success"
-	ExportCheckStatusResolvedFailure  ExportCheckStatus = "resolved_failure"
-	ExportCheckStatusUnresolved       ExportCheckStatus = "unresolved"
-	ExportCheckStatusMalformedExport  ExportCheckStatus = "malformed_export"
-	ExportCheckStatusExporterError    ExportCheckStatus = "exporter_error"
-	ExportCheckStatusDeadlineExceeded ExportCheckStatus = "deadline_exceeded"
-	ExportCheckStatusCancelled        ExportCheckStatus = "cancelled"
-)
-
-type ExportCheck struct {
-	ProviderSessionID          string            `json:"-"`
-	ProviderInvocationID       string            `json:"-"`
-	Phase                      ExportCheckPhase  `json:"-"`
-	ExportMode                 string            `json:"-"`
-	Status                     ExportCheckStatus `json:"-"`
-	SalvageUsed                bool              `json:"-"`
-	AssistantFound             bool              `json:"-"`
-	AssistantOwnedByInvocation bool              `json:"-"`
-	AssistantCompletedAt       string            `json:"-"`
-	AssistantFinishReason      string            `json:"-"`
-	AssistantHasError          bool              `json:"-"`
-	StdoutBytes                int               `json:"-"`
-	StderrBytes                int               `json:"-"`
-	DiagnosticText             string            `json:"-"`
-	StdoutCapture              string            `json:"-"`
-	StderrCapture              string            `json:"-"`
-	StartedAt                  string            `json:"-"`
-	FinishedAt                 string            `json:"-"`
-	DurationMillis             int64             `json:"-"`
-}
-
 type ExecuteRequest struct {
-	SessionID                 string `json:"session_id"`
-	ProviderSessionID         string `json:"provider_session_id,omitempty"`
-	AttemptID                 string `json:"attempt_id"`
-	RunID                     string `json:"run_id"`
-	NodeRunID                 string `json:"node_run_id"`
-	Model                     string `json:"model,omitempty"`
-	Variant                   string `json:"variant,omitempty"`
-	Agent                     string `json:"agent,omitempty"`
-	ForceNewSession           bool   `json:"force_new_session,omitempty"`
-	WorkspacePath             string `json:"workspace_path"`
-	ConfigDir                 string `json:"config_dir,omitempty"`
-	DatabasePath              string `json:"database_path,omitempty"`
-	InlineConfigContent       string `json:"-"`
-	Prompt                    string `json:"prompt"`
-	OccurredAt                string `json:"occurred_at"`
-	InvocationID              string `json:"invocation_id,omitempty"`
-	InvocationIssuedAt        string `json:"invocation_issued_at,omitempty"`
-	CompletionProtocolVersion string `json:"completion_protocol_version,omitempty"`
-	CompletionCapability      string `json:"completion_capability,omitempty"`
-	CompletionReceiptDir      string `json:"completion_receipt_dir,omitempty"`
+	CompletionMode      CompletionMode `json:"completion_mode"`
+	SessionID           string         `json:"session_id"`
+	ProviderSessionID   string         `json:"provider_session_id,omitempty"`
+	AttemptID           string         `json:"attempt_id"`
+	RunID               string         `json:"run_id"`
+	NodeRunID           string         `json:"node_run_id"`
+	Model               string         `json:"model,omitempty"`
+	Variant             string         `json:"variant,omitempty"`
+	Agent               string         `json:"agent,omitempty"`
+	ForceNewSession     bool           `json:"force_new_session,omitempty"`
+	WorkspacePath       string         `json:"workspace_path"`
+	ProjectRootBoundary string         `json:"-"`
+	ConfigDir           string         `json:"config_dir,omitempty"`
+	DatabasePath        string         `json:"database_path,omitempty"`
+	InlineConfigContent string         `json:"-"`
+	Prompt              string         `json:"prompt"`
+	// OpenPrompt and WritePrompt are replayable sources: each Execute opens or
+	// invokes its source once, closes opened readers, and streams to stdin. Set
+	// exactly one of Prompt, OpenPrompt, or WritePrompt. Writers must honor ctx.
+	OpenPrompt         func(context.Context) (io.ReadCloser, error) `json:"-"`
+	WritePrompt        func(context.Context, io.Writer) error       `json:"-"`
+	OccurredAt         string                                       `json:"occurred_at"`
+	InvocationID       string                                       `json:"invocation_id,omitempty"`
+	InvocationIssuedAt string                                       `json:"invocation_issued_at,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
@@ -110,38 +74,47 @@ type ExecuteRequest struct {
 	// but before stream decoding begins.
 	OnProcessStarted func() `json:"-"`
 
-	// OnLifecycle is called for structured provider execution lifecycle observations
-	// that are not plain text progress, such as export-based reconciliation phases.
-	OnLifecycle func(observation ExecuteLifecycleObservation) `json:"-"`
+	// OnProcessGuardOwnership durably records guardian ownership before the
+	// provider launch gate is released. The raw quiescence capability is limited
+	// to this orchestration callback and is never included in diagnostics.
+	OnProcessGuardOwnership func(context.Context, ProcessGuardOwnership) error `json:"-"`
+
+	// OnProcessGuardQuiescence records the guardian's terminal proof after the
+	// command tree is quiescent and its streams have been drained.
+	OnProcessGuardQuiescence func(context.Context, ProcessGuardQuiescence) error `json:"-"`
 
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
 	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
-
-	// OnCompletionReceipt persists a runtime-owned settlement receipt before the
-	// adapter returns success for runtime-backed execution.
-	OnCompletionReceipt func(receipt CompletionReceipt) (CompletionReceiptAcceptance, error) `json:"-"`
 }
 
-type ExecuteLifecyclePhase string
+// GuardianRunner starts provider command trees behind a durable launch gate.
+// It is intentionally narrow so adapter tests can supply deterministic handles.
+type GuardianRunner interface {
+	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
+}
+
+type ProcessGuardOwnership struct {
+	CommandOrdinal int
+	StartedAt      string
+	AcknowledgedAt string
+	Ownership      processguardian.Ownership
+}
+
+type ProcessGuardQuiescence struct {
+	CommandOrdinal int
+	ExitedAt       string
+	QuiescentAt    string
+	Result         processguardian.Result
+}
+
+// CompletionMode defines the single, server-owned authority a provider
+// invocation uses to settle an attempt.
+type CompletionMode string
 
 const (
-	ExecuteLifecyclePhaseProviderExportReconciliationStarted    ExecuteLifecyclePhase = "provider_export_reconciliation_started"
-	ExecuteLifecyclePhaseProviderExportReconciliationSucceeded  ExecuteLifecyclePhase = "provider_export_reconciliation_succeeded"
-	ExecuteLifecyclePhaseProviderExportReconciliationFailed     ExecuteLifecyclePhase = "provider_export_reconciliation_failed"
-	ExecuteLifecyclePhaseProviderExportReconciliationUnresolved ExecuteLifecyclePhase = "provider_export_reconciliation_unresolved"
+	CompletionModeServerResponse CompletionMode = "server_response"
 )
-
-type ExecuteLifecycleObservation struct {
-	Phase              ExecuteLifecyclePhase `json:"phase"`
-	OccurredAt         string                `json:"occurred_at,omitempty"`
-	ProviderSessionID  string                `json:"provider_session_id,omitempty"`
-	AmbiguityReason    string                `json:"ambiguity_reason,omitempty"`
-	ResolvedState      string                `json:"resolved_state,omitempty"`
-	ResolvedReasonCode string                `json:"resolved_reason_code,omitempty"`
-	EvidenceSource     string                `json:"evidence_source,omitempty"`
-	Error              string                `json:"error,omitempty"`
-}
 
 type ExecuteActivityKind string
 
@@ -164,25 +137,6 @@ type ExecuteActivityObservation struct {
 	RawText        string              `json:"raw_text,omitempty"`
 }
 
-type CompletionReceipt struct {
-	ProtocolVersion       string `json:"protocol_version"`
-	AttemptID             string `json:"attempt_id"`
-	InvocationID          string `json:"invocation_id"`
-	CompletionCapability  string `json:"completion_capability"`
-	FinalText             string `json:"final_text"`
-	StructuredPayloadJSON string `json:"structured_payload_json,omitempty"`
-}
-
-type CompletionReceiptAcceptance struct {
-	EvidenceID            string `json:"evidence_id,omitempty"`
-	FinalText             string `json:"final_text,omitempty"`
-	StructuredPayloadJSON string `json:"structured_payload_json,omitempty"`
-	Idempotent            bool   `json:"idempotent,omitempty"`
-	Rejected              bool   `json:"rejected,omitempty"`
-	InvalidatesInvocation bool   `json:"invalidates_invocation,omitempty"`
-	RejectedReason        string `json:"rejected_reason,omitempty"`
-}
-
 type mockExecutionArtifact struct {
 	Path string `json:"path"`
 	Name string `json:"name"`
@@ -190,14 +144,16 @@ type mockExecutionArtifact struct {
 	Body string `json:"-"`
 }
 
-type TokenUsage struct {
-	InputTokens      int64 `json:"input_tokens"`
-	OutputTokens     int64 `json:"output_tokens"`
-	TotalTokens      int64 `json:"total_tokens"`
-	ReasoningTokens  int64 `json:"reasoning_tokens"`
-	CacheReadTokens  int64 `json:"cache_read_tokens"`
-	CacheWriteTokens int64 `json:"cache_write_tokens"`
-}
+type TokenUsage = providerexecution.TokenUsage
+
+// InvocationStreamObservation is the complete live-stream evidence for one
+// provider invocation. It is diagnostic evidence only until the execution
+// store validates its lineage and settles it transactionally.
+type InvocationStreamObservation = providerexecution.InvocationStreamObservation
+
+type InvocationToolObservation = providerexecution.InvocationToolObservation
+
+type ProcessGuardObservation = providerexecution.ProcessGuardObservation
 
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
@@ -209,19 +165,18 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted                        bool             `json:"accepted"`
-	OutputText                      string           `json:"output_text,omitempty"`
-	Tokens                          TokenUsage       `json:"tokens"`
-	ProviderSessionID               string           `json:"provider_session_id,omitempty"`
-	SuppressEmptyOutputRetry        bool             `json:"suppress_empty_output_retry,omitempty"`
-	ProviderInvocationID            string           `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt            string           `json:"provider_invocation_at,omitempty"`
-	Outcome                         ExecutionOutcome `json:"outcome,omitempty"`
-	CompletionReceiptAccepted       bool             `json:"completion_receipt_accepted,omitempty"`
-	CompletionReceiptEvidenceID     string           `json:"completion_receipt_evidence_id,omitempty"`
-	CompletionStructuredPayloadJSON string           `json:"completion_structured_payload_json,omitempty"`
-	ProviderDiagnosticsJSON         string           `json:"provider_diagnostics_json,omitempty"`
-	ExportChecks                    []ExportCheck    `json:"-"`
+	Accepted   bool   `json:"accepted"`
+	OutputText string `json:"output_text,omitempty"`
+	// Referenced answers are opened with providerexecution.OpenTerminalText.
+	// OutputPreview is bounded display data, never terminal authority.
+	OutputPreview           string                      `json:"output_preview,omitempty"`
+	Tokens                  TokenUsage                  `json:"tokens"`
+	ProviderSessionID       string                      `json:"provider_session_id,omitempty"`
+	ProviderInvocationID    string                      `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt    string                      `json:"provider_invocation_at,omitempty"`
+	Outcome                 ExecutionOutcome            `json:"outcome,omitempty"`
+	ProviderDiagnosticsJSON string                      `json:"provider_diagnostics_json,omitempty"`
+	StreamObservation       InvocationStreamObservation `json:"stream_observation"`
 }
 
 type CancelRequest struct {
@@ -265,11 +220,27 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	if err := validateExecuteRequest(req); err != nil {
 		return ExecuteResponse{}, err
 	}
+	// This adapter is a string-based fixture, not a production provider. Its
+	// canned output builder may materialize the replay source for assertions.
+	if req.OpenPrompt != nil || req.WritePrompt != nil {
+		var prompt strings.Builder
+		if err := writeRequestPrompt(context.Background(), req, "", &prompt); err != nil {
+			return ExecuteResponse{}, err
+		}
+		req.Prompt = prompt.String()
+	}
 	if strings.TrimSpace(req.WorkspacePath) == "" {
 		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
 	}
+	if err := invokeSyntheticGuardCallbacks(req); err != nil {
+		return ExecuteResponse{}, err
+	}
 	if req.OnProcessStarted != nil {
 		req.OnProcessStarted()
+	}
+	providerSessionID := "memory_" + strings.TrimSpace(req.InvocationID)
+	if req.OnProviderSession != nil {
+		req.OnProviderSession(providerSessionID)
 	}
 
 	a.mu.Lock()
@@ -291,30 +262,69 @@ func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteR
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
-	accepted, err := acceptSyntheticCompletionReceipt(req, summary)
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-	if req.OnCompletionReceipt != nil {
-		disposition, err := completionReceiptDispositionForHandlerResult(accepted, nil)
-		if err != nil {
-			return ExecuteResponse{}, err
-		}
-		if disposition == completionReceiptDispositionRejected {
-			reason := firstNonEmpty(strings.TrimSpace(accepted.RejectedReason), "completion receipt rejected")
-			return ExecuteResponse{}, fmt.Errorf("synthetic completion receipt rejected: %s", reason)
-		}
-	}
 
+	zero := 0
 	return ExecuteResponse{
-		Accepted:                        true,
-		OutputText:                      summary,
-		ProviderInvocationID:            strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt:            strings.TrimSpace(req.InvocationIssuedAt),
-		CompletionReceiptAccepted:       accepted.EvidenceID != "" || accepted.Idempotent,
-		CompletionReceiptEvidenceID:     strings.TrimSpace(accepted.EvidenceID),
-		CompletionStructuredPayloadJSON: strings.TrimSpace(accepted.StructuredPayloadJSON),
+		Accepted:             true,
+		OutputText:           summary,
+		ProviderSessionID:    providerSessionID,
+		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
+		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
+		Outcome: ExecutionOutcome{
+			State:          string(attemptCompletionStateSuccess),
+			ReasonCode:     "execution_completed",
+			EvidenceSource: string(completionEvidenceSourceStream),
+		},
+		StreamObservation: InvocationStreamObservation{
+			ProviderSessionID:      providerSessionID,
+			FinalTurnID:            "turn_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
+			FinalStepID:            "step_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
+			FinalSequence:          2,
+			RawFinishReason:        "stop",
+			NormalizedFinishReason: "stop",
+			CanonicalTerminalText:  summary,
+			ProcessExited:          true,
+			ProcessExitCode:        &zero,
+			StdoutDrained:          true,
+			StderrDrained:          true,
+			ProcessQuiescent:       true,
+			ProcessGuards:          []ProcessGuardObservation{syntheticProcessGuardObservation(req)},
+		},
 	}, nil
+}
+
+// invokeSyntheticGuardCallbacks keeps the in-memory test double compatible
+// with the durable guard contract without pretending that it launches a host
+// provider process. Production OpenCode commands always use SessionAdapter.
+func invokeSyntheticGuardCallbacks(req ExecuteRequest) error {
+	guardID := "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID))
+	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "memory-guardian", ChildPID: 1, ChildIdentityToken: "memory-child", TreeID: 1, TreeIdentityToken: "memory-child", Platform: "unix_process_group", QuiescenceCapability: "memory-guardian-capability"}
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(context.Background(), ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}); err != nil {
+			return err
+		}
+	}
+	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
+	evidence, err := json.Marshal(struct {
+		Type   string                 `json:"type"`
+		Result processguardian.Result `json:"result"`
+	}{Type: "result", Result: result})
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(evidence)
+	result.EvidenceJSON = string(evidence)
+	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func syntheticProcessGuardObservation(req ExecuteRequest) ProcessGuardObservation {
+	return ProcessGuardObservation{CommandOrdinal: 1, GuardID: "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)), GuardianPID: 1, ChildPID: 1, TreeID: 1, Platform: "unix_process_group", Quiescent: true}
 }
 
 func (a *MemoryAdapter) Cancel(_ context.Context, req CancelRequest) error {
@@ -409,6 +419,9 @@ func (a *MemoryAdapter) PublishEvent(req AttemptStreamEvent) error {
 }
 
 func validateExecuteRequest(req ExecuteRequest) error {
+	if req.CompletionMode != CompletionModeServerResponse {
+		return fmt.Errorf("completion mode must be %q", CompletionModeServerResponse)
+	}
 	if req.SessionID == "" {
 		return fmt.Errorf("session id is required")
 	}
@@ -421,59 +434,24 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	if req.NodeRunID == "" {
 		return fmt.Errorf("node run id is required")
 	}
-	if req.Prompt == "" {
-		return fmt.Errorf("prompt is required")
+	sources := 0
+	if req.Prompt != "" {
+		sources++
+	}
+	if req.OpenPrompt != nil {
+		sources++
+	}
+	if req.WritePrompt != nil {
+		sources++
+	}
+	if sources != 1 {
+		return fmt.Errorf("exactly one prompt source is required")
 	}
 	if req.OccurredAt == "" {
 		return fmt.Errorf("occurred_at is required")
 	}
 
 	return nil
-}
-
-func acceptSyntheticCompletionReceipt(req ExecuteRequest, finalText string) (CompletionReceiptAcceptance, error) {
-	if req.OnCompletionReceipt == nil {
-		return CompletionReceiptAcceptance{}, nil
-	}
-	if strings.TrimSpace(req.InvocationID) == "" || strings.TrimSpace(req.CompletionCapability) == "" {
-		return CompletionReceiptAcceptance{}, fmt.Errorf("invocation id and completion capability are required when completion receipt handling is enabled")
-	}
-	accepted, err := req.OnCompletionReceipt(CompletionReceipt{
-		ProtocolVersion:       firstNonEmpty(strings.TrimSpace(req.CompletionProtocolVersion), CompletionProtocolVersion),
-		AttemptID:             strings.TrimSpace(req.AttemptID),
-		InvocationID:          strings.TrimSpace(req.InvocationID),
-		CompletionCapability:  strings.TrimSpace(req.CompletionCapability),
-		FinalText:             strings.TrimSpace(finalText),
-		StructuredPayloadJSON: structuredPayloadJSONForOutputText(finalText),
-	})
-	if err != nil {
-		return CompletionReceiptAcceptance{}, err
-	}
-	if _, err := completionReceiptDispositionForHandlerResult(accepted, nil); err != nil {
-		return CompletionReceiptAcceptance{}, err
-	}
-	if accepted.Rejected {
-		return accepted, nil
-	}
-	if strings.TrimSpace(accepted.FinalText) == "" {
-		accepted.FinalText = strings.TrimSpace(finalText)
-	}
-	if strings.TrimSpace(accepted.StructuredPayloadJSON) == "" {
-		accepted.StructuredPayloadJSON = structuredPayloadJSONForOutputText(finalText)
-	}
-	return accepted, nil
-}
-
-func structuredPayloadJSONForOutputText(outputText string) string {
-	verdict := extractReceiptVerdict(outputText)
-	if verdict == "" {
-		return "{}"
-	}
-	return fmt.Sprintf(`{"verdict":%q}`, verdict)
-}
-
-func extractReceiptVerdict(outputText string) string {
-	return verdict.ExtractNearTop(outputText)
 }
 
 func buildMemoryOutput(req ExecuteRequest) (string, error) {

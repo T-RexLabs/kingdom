@@ -430,6 +430,17 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		"2026-03-03T10:00:00Z",
 	)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+		"msg-review-invalid",
+		runID,
+		"agent-reviewer",
+		"agent-council",
+		"thread-review-invalid",
+		"status_update",
+		"normal",
+		`{"message_source":"communication","communication_type":"response_received","node_id":"execution_review_shieldmaiden","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
+		"2026-03-03T10:01:00Z",
+	)
+	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at, read_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
 		"msg-validation-invalid",
 		runID,
 		"agent-reviewer",
@@ -437,8 +448,8 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		"thread-validation",
 		"status_update",
 		"normal",
-		`{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"invalid_validation_verdict","response_full":"Missing required verdict line."}`,
-		"2026-03-03T10:01:00Z",
+		`{"message_source":"communication","communication_type":"response_received","node_id":"validation_gates_qa_scout","reason_code":"llm_invalid_response","response_full":"Missing required verdict line."}`,
+		"2026-03-03T10:02:00Z",
 	)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -460,8 +471,8 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 	if err := json.Unmarshal(res.Body.Bytes(), &listed); err != nil {
 		t.Fatalf("decode mailbox list payload: %v", err)
 	}
-	if len(listed.Items) != 2 {
-		t.Fatalf("expected 2 mailbox items, got %d", len(listed.Items))
+	if len(listed.Items) != 3 {
+		t.Fatalf("expected 3 mailbox items, got %d", len(listed.Items))
 	}
 
 	byID := make(map[string]struct {
@@ -488,15 +499,23 @@ func TestServerRunMailboxMessagesDoNotInferPassFromMailboxText(t *testing.T) {
 		t.Fatalf("expected mailbox text to avoid pass verdict_status, got %#v", pass.VerdictStatus)
 	}
 
-	invalid := byID["msg-validation-invalid"]
-	if invalid.ReasonCode == nil || *invalid.ReasonCode != "invalid_validation_verdict" {
-		t.Fatalf("expected invalid_validation_verdict reason code, got %#v", invalid.ReasonCode)
-	}
-	if invalid.VerdictType == nil || *invalid.VerdictType != "validation" {
-		t.Fatalf("expected validation verdict_type, got %#v", invalid.VerdictType)
-	}
-	if invalid.VerdictStatus == nil || *invalid.VerdictStatus != "invalid" {
-		t.Fatalf("expected invalid verdict_status, got %#v", invalid.VerdictStatus)
+	for _, test := range []struct {
+		messageID   string
+		verdictType string
+	}{
+		{messageID: "msg-review-invalid", verdictType: "review"},
+		{messageID: "msg-validation-invalid", verdictType: "validation"},
+	} {
+		invalid := byID[test.messageID]
+		if invalid.ReasonCode == nil || *invalid.ReasonCode != "llm_invalid_response" {
+			t.Fatalf("expected llm_invalid_response reason code for %s, got %#v", test.messageID, invalid.ReasonCode)
+		}
+		if invalid.VerdictType == nil || *invalid.VerdictType != test.verdictType {
+			t.Fatalf("expected %s verdict_type for %s, got %#v", test.verdictType, test.messageID, invalid.VerdictType)
+		}
+		if invalid.VerdictStatus == nil || *invalid.VerdictStatus != "invalid" {
+			t.Fatalf("expected invalid verdict_status for %s, got %#v", test.messageID, invalid.VerdictStatus)
+		}
 	}
 }
 

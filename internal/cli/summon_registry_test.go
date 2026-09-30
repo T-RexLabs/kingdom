@@ -41,12 +41,13 @@ func readRegistryInstances(t *testing.T, path string) []summonInstanceRecord {
 
 func recordForPID(pid int) summonInstanceRecord {
 	return summonInstanceRecord{
-		PID:         pid,
-		ConfigPath:  fmt.Sprintf("/tmp/project-%d/.kingdom/config.yaml", pid),
-		KingdomHome: fmt.Sprintf("/tmp/project-%d/.kingdom", pid),
-		Listen:      fmt.Sprintf("127.0.0.1:%d", 9000+(pid%1000)),
-		BasePath:    "/api/v1",
-		StartedAt:   "2026-08-19T10:00:00Z",
+		PID:              pid,
+		StopControlToken: fmt.Sprintf("test-stop-control-%d", pid),
+		ConfigPath:       fmt.Sprintf("/tmp/project-%d/.kingdom/config.yaml", pid),
+		KingdomHome:      fmt.Sprintf("/tmp/project-%d/.kingdom", pid),
+		Listen:           fmt.Sprintf("127.0.0.1:%d", 9000+(pid%1000)),
+		BasePath:         "/api/v1",
+		StartedAt:        "2026-08-19T10:00:00Z",
 	}
 }
 
@@ -91,6 +92,33 @@ func TestSummonRegistrySurvivesConcurrentRegistration(t *testing.T) {
 	}
 }
 
+func TestSummonRegistryRejectsAReusedPIDWithDifferentProcessIdentity(t *testing.T) {
+	process := startCLIProcessHelper(t)
+	raw := []byte(fmt.Sprintf(`{"instances":[{"pid":%d,"process_identity_token":"previous-process","config_path":"/tmp/old/.kingdom/config.yaml","kingdom_home":"/tmp/old/.kingdom","listen":"127.0.0.1:19090","base_path":"/api/v1"}]}`, process.PID()))
+	var registry summonInstanceRegistry
+	if err := json.Unmarshal(raw, &registry); err != nil {
+		t.Fatalf("decode reused-pid registry: %v", err)
+	}
+
+	active, err := liveSummonInstances(registry.Instances)
+	if err != nil {
+		t.Fatalf("filter reused-pid registry: %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("registry accepted pid %d from a different process generation: %#v", process.PID(), active)
+	}
+}
+
+func TestSummonRegistryPreservesInspectionErrors(t *testing.T) {
+	items := []summonInstanceRecord{recordForPID(1234)}
+	live, err := liveSummonInstancesWithIdentity(items, func(int, string) (bool, error) {
+		return false, os.ErrPermission
+	})
+	if err == nil || live != nil {
+		t.Fatalf("identity inspection error was suppressed: live=%#v err=%v", live, err)
+	}
+}
+
 func TestSummonRegistryKeepsEveryLiveInstanceUnderConcurrency(t *testing.T) {
 	path := useIsolatedSummonRegistry(t)
 
@@ -98,9 +126,9 @@ func TestSummonRegistryKeepsEveryLiveInstanceUnderConcurrency(t *testing.T) {
 	// than as corruption. Without the lock the read-modify-write races and
 	// writers overwrite each other.
 	const writers = 12
-	processes := make([]*os.Process, 0, writers)
+	processes := make([]*cliTestProcess, 0, writers)
 	for i := 0; i < writers; i++ {
-		process := startSleepingProcess(t)
+		process := startCLIProcessHelper(t)
 		processes = append(processes, process)
 	}
 
@@ -113,7 +141,7 @@ func TestSummonRegistryKeepsEveryLiveInstanceUnderConcurrency(t *testing.T) {
 			if err := registerSummonInstance(recordForPID(pid)); err != nil {
 				errs <- err
 			}
-		}(process.Pid)
+		}(process.PID())
 	}
 	wg.Wait()
 	close(errs)
@@ -171,8 +199,8 @@ func TestSummonRegistryRebuildsUnreadableFile(t *testing.T) {
 func TestSummonRegistryReadsDoNotWrite(t *testing.T) {
 	path := useIsolatedSummonRegistry(t)
 
-	process := startSleepingProcess(t)
-	if err := registerSummonInstance(recordForPID(process.Pid)); err != nil {
+	process := startCLIProcessHelper(t)
+	if err := registerSummonInstance(recordForPID(process.PID())); err != nil {
 		t.Fatalf("register summon instance: %v", err)
 	}
 	before, err := os.Stat(path)
@@ -185,9 +213,7 @@ func TestSummonRegistryReadsDoNotWrite(t *testing.T) {
 	if err := process.Kill(); err != nil {
 		t.Fatalf("kill process: %v", err)
 	}
-	if _, err := process.Wait(); err != nil {
-		t.Fatalf("reap process: %v", err)
-	}
+	_ = process.Wait()
 	time.Sleep(10 * time.Millisecond)
 
 	instances, err := listActiveSummonInstances()
@@ -211,16 +237,14 @@ func TestSummonRegistryReadsDoNotWrite(t *testing.T) {
 func TestSummonRegistryDropsDeadInstancesOnNextWrite(t *testing.T) {
 	path := useIsolatedSummonRegistry(t)
 
-	dead := startSleepingProcess(t)
-	if err := registerSummonInstance(recordForPID(dead.Pid)); err != nil {
+	dead := startCLIProcessHelper(t)
+	if err := registerSummonInstance(recordForPID(dead.PID())); err != nil {
 		t.Fatalf("register dead-to-be instance: %v", err)
 	}
 	if err := dead.Kill(); err != nil {
 		t.Fatalf("kill process: %v", err)
 	}
-	if _, err := dead.Wait(); err != nil {
-		t.Fatalf("reap process: %v", err)
-	}
+	_ = dead.Wait()
 
 	self := os.Getpid()
 	if err := registerSummonInstance(recordForPID(self)); err != nil {
@@ -247,17 +271,4 @@ func TestSummonRegistryTestsNeverTargetTheRealCacheDirectory(t *testing.T) {
 	if strings.HasPrefix(path, filepath.Join(realCacheDir, "kingdom")) {
 		t.Fatalf("tests resolve the real summon registry at %q", path)
 	}
-}
-
-func startSleepingProcess(t *testing.T) *os.Process {
-	t.Helper()
-	process, err := os.StartProcess("/bin/sleep", []string{"sleep", "60"}, &os.ProcAttr{})
-	if err != nil {
-		t.Fatalf("start helper process: %v", err)
-	}
-	t.Cleanup(func() {
-		_ = process.Kill()
-		_, _ = process.Wait()
-	})
-	return process
 }

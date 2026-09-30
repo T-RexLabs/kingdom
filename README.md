@@ -45,16 +45,18 @@ What that means in practice:
 
 - Kingdom discovers selectable models from your local OpenCode installation.
   - If you have hosted or self-hosted providers configured in OpenCode, and OpenCode exposes them in its model catalog, those models will be available for selection in Kingdom.
-- `kd init` installs Kingdom-managed OpenCode profiles and tools into `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`.
+- `kd init` installs Kingdom-managed OpenCode profiles into `.kingdom/opencode/agents/`.
 - Kingdom launches OpenCode with that overlay via `OPENCODE_CONFIG_DIR`, so Kingdom sees its managed profiles while your normal repo and global OpenCode setup still apply and standalone `opencode` sessions are not polluted by Kingdom assets.
 
 Under the hood, Kingdom asks OpenCode for its model catalog and exposes that list through the product surfaces. Kingdom does not manage providers directly; it relies on OpenCode's configured environment.
+
+Builders work in the run's execution target. Advisors and planners receive private project copies, while reviewers and validators receive independent copies of the implementation snapshot selected for their attempt. Validation setup and test side effects stay in those disposable copies. Generated dependency and cache directories are excluded from implementation snapshots and deliverables; validators may need to run the project's documented dependency setup before testing. Ordinary project files remain included even when Git ignores them.
 
 ## Quickstart Guide
 
 ### Prerequisites
 
-- Go `1.26.3`
+- Go `1.27.0`
 - Node `26.2.0`
 - `opencode` installed and authenticated for the providers and models you want to use
 
@@ -90,7 +92,7 @@ Run `kd init` from the root of the target project:
 kd init
 ```
 
-This creates Kingdom's local workspace under `.kingdom/`, a protected operator credential at `.kingdom/secrets/operator-token`, and Kingdom-managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`. Runtime startup validates those managed assets and secret permissions read-only and fails fast on drift instead of rewriting them. The credential value is never written to config, SQLite, logs, URLs, or browser storage.
+This creates Kingdom's local workspace under `.kingdom/`, a protected operator credential at `.kingdom/secrets/operator-token`, and Kingdom-managed OpenCode profiles under `.kingdom/opencode/agents/`. Runtime startup validates those managed assets and secret permissions read-only and fails fast on drift instead of rewriting them. The credential value is never written to config, SQLite, logs, URLs, or browser storage.
 
 ### 4. Start the runtime
 
@@ -111,7 +113,13 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 3. Choose a global model from the models OpenCode exposes.
 4. Start with `Planning Sessions` or issue a decree directly.
 5. Follow the run under `Runs`.
-6. Inspect the graph, timeline, agents, mailbox, and published output.
+6. Inspect the graph, Activity, agents, messages, and published output.
+
+Planning-session lists and run messages load history in pages. Use **Load More Sessions** in the planning rail, **Load Older Sessions** beside **From Plan**, or **Load Older Messages** in the message lanes to continue through older history. Message-lane counts say “loaded” while additional pages remain.
+
+Message details identify previews and offer **Load Full Content** and **Download Full Content** for complete stored instructions and responses.
+
+Plan-review history and planning-context entries are also paginated through the API; page sizes are read boundaries, not retention ceilings. Context snapshots retain complete included/excluded file metadata under the project enumeration rules, while the planner receives a project-shape summary rather than source-file contents.
 
 > [!NOTE]
 > Every new run requires an explicit global model selection, even if OpenCode has defaults configured.
@@ -136,7 +144,9 @@ For manual setup, save display name, App ID, client ID, and installation ID, the
 
 Run the connection health check after manual provisioning or any key rotation. The check requires the App and installation to grant exactly **Metadata: read-only** and **Issues: read-only**, with zero subscribed events and no additional App permissions. Healthy connections become available in the shared issue picker on planning and direct-decree screens.
 
-Private keys remain in generation files at `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared user tokens remain in `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. SQLite stores only the active generation pointer, never credential bytes. Tokens never enter logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect Connection**. The picker paginates repositories/issues and renders selected bounded comment bodies through restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
+Private keys remain in generation files at `.kingdom/secrets/github-apps/<connection>/private-key.<generation>.pem`; shared user tokens remain in `.kingdom/secrets/github-user-tokens/<connection>/tokens.<generation>.json`. SQLite stores only the active generation pointer, never credential bytes. Tokens never enter logs, API/audit/idempotency payloads, or browser storage. GitHub API, OAuth, and device-flow traffic originates from the local Kingdom runtime without a Kingdom cloud broker; only private Manifest registration is posted by the browser directly to GitHub. Shared access is the intersection of App installation access and the authorizing user; long-idle refresh credentials can expire after six months and require **Reconnect Connection**. The picker paginates repositories/issues and renders opted-in comments through paginated restricted Markdown. See [the GitHub Connections runbook](docs/github-connections-runbook.md).
+
+Comment bodies default off. **Include Comments** captures every comment page and complete bodies without a Kingdom count or byte cap; issue titles/bodies likewise have no Kingdom byte cap. Planner operations bind every active source snapshot when enqueued. Installation-selection and discovery/search limits, provider deadlines, and model context windows still apply.
 
 ## How Work Moves Through Kingdom
 
@@ -166,9 +176,14 @@ Important boundaries:
 
 - `decree intake`, `king plan decision`, `execution kickoff`, and `royal closure` are runtime-owned deterministic steps; provider-backed run nodes are host-launched through OpenCode sessions, not containers.
 - SQLite is the system of record. 
-- Publication is done into the project root or a git worktree if toggled on and in a Git repo.
+- Publication is done into the project root or a git worktree if toggled on and in a Git repo. Basic file permissions are retained in canonical artifacts and ZIP exports; chmod-only changes are deliverables, and publication checks permissions as well as content for conflicts.
 - Only builder output is treated as implementation deliverable content.
 - Non-builder roles are response-first and publish markdown snapshots.
+- Every provider-backed node settles from the server-observed terminal response and its node-specific output contract; process exit, artifacts, mailbox messages, and `opencode export` do not independently authorize success. OpenCode may continue after intermediate stopped steps during compaction or tool use; only the final completed assistant step supplies the settled response.
+- Decree/planning text, persisted execution prompts, provider terminal content, and artifacts use SQLite content manifests and chunks. Decree terminal handoffs reference verified content rather than embedding full output. Complete invocation diagnostics are retained separately from bounded activity/output previews.
+- Runtime content processing uses streaming and disk staging without fixed provider-output, tracked-file-size, aggregate-workspace-size, entry-count, or directory-depth ceilings. Some individual scalar values and read responses still materialize in memory; host resources and provider context windows remain practical constraints.
+- There is no run-wide attempt-count budget. Per-error automatic retries, review/validation cycle caps and ready-node auto-success, `run_until_all_approve`, recovery batching, active timeouts, and guardian metadata boundaries retain their existing roles.
+- After a provider stop is proven, cancellation resumes automatically when worker cleanup and workspace restoration finish. Unproven stops retain the explicit **Retry Stop** gate; see [`docs/errors-and-retries.md`](docs/errors-and-retries.md).
 
 More detail lives in [`docs/how-runs-work.md`](docs/how-runs-work.md) and [`docs/system-architecture.md`](docs/system-architecture.md).
 
@@ -295,7 +310,7 @@ Expected behavior:
 
 ### What `kd init` and `kd summon` Do
 
-`kd init` creates a local Kingdom workspace under `.kingdom/` and installs managed OpenCode profiles and tools under `.kingdom/opencode/agents/` and `.kingdom/opencode/tools/`.
+`kd init` creates a local Kingdom workspace under `.kingdom/` and installs managed OpenCode profiles under `.kingdom/opencode/agents/`.
 
 That scaffold includes:
 
@@ -337,7 +352,7 @@ When the migration baseline changes, `kd clean` followed by `kd init` is the sup
 
 | Command | Purpose |
 | --- | --- |
-| `kd init` | Scaffold `.kingdom/` and managed `.kingdom/opencode/agents/` profiles plus `.kingdom/opencode/tools/` |
+| `kd init` | Scaffold `.kingdom/` and managed `.kingdom/opencode/agents/` profiles |
 | `kd clean` | Remove local Kingdom state and managed profiles |
 | `kd summon` | Start the local runtime and web/API server |
 | `kd summon status` | Inspect the local summoned runtime |

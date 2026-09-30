@@ -28,7 +28,6 @@ type IdempotencyRecord struct {
 const (
 	IdempotencyStatusPending   = "pending"
 	IdempotencyStatusCompleted = "completed"
-	idempotencyPendingGrace    = time.Hour
 )
 
 type IdempotencyConflictError struct {
@@ -57,7 +56,7 @@ func NewIdempotencyStore(db *sql.DB) *IdempotencyStore {
 }
 
 // ReserveVersioned atomically advances the durable clock, rejects expired
-// keys, prunes stale rows, and reserves an admissible mutation.
+// keys, prunes expired completed rows, and reserves an admissible mutation.
 func (s *IdempotencyStore) ReserveVersioned(ctx context.Context, record IdempotencyRecord, key idempotency.Key, now time.Time) (bool, time.Time, error) {
 	if s == nil || s.db == nil {
 		return false, time.Time{}, fmt.Errorf("idempotency store database is required")
@@ -104,12 +103,10 @@ func (s *IdempotencyStore) ReserveVersioned(ctx context.Context, record Idempote
 	if _, err := tx.ExecContext(ctx,
 		`DELETE FROM idempotency_keys
 		 WHERE expires_at IS NOT NULL
-		   AND ((status = ? AND expires_at <= ?)
-		     OR (status = ? AND expires_at <= ?))`,
+		   AND status = ?
+		   AND expires_at <= ?`,
 		IdempotencyStatusCompleted,
 		highWater.Format(time.RFC3339),
-		IdempotencyStatusPending,
-		highWater.Add(-idempotencyPendingGrace).Format(time.RFC3339),
 	); err != nil {
 		return false, time.Time{}, fmt.Errorf("prune expired idempotency keys: %w", err)
 	}

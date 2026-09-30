@@ -34,15 +34,14 @@ func newScriptedExecutionAdapter(steps map[string]scriptedExecutionStep) *script
 }
 
 func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
+	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	step, ok := a.steps[req.AttemptID]
 	a.mu.Unlock()
 	if !ok {
-		return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
+		output := `{"summary":"ok"}`
+		return opencode.ExecuteResponse{Accepted: true, OutputText: output, ProviderInvocationID: req.InvocationID, ProviderInvocationAt: req.InvocationIssuedAt, StreamObservation: testSuccessfulExecuteObservation(req, output)}, nil
 	}
 	if step.block != nil {
 		select {
@@ -54,24 +53,12 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if step.err != nil {
 		return opencode.ExecuteResponse{}, step.err
 	}
-	response := opencode.ExecuteResponse{Accepted: true, OutputText: step.output}
-	if req.OnCompletionReceipt != nil && strings.TrimSpace(req.InvocationID) != "" && strings.TrimSpace(req.CompletionCapability) != "" && strings.TrimSpace(step.output) != "" {
-		acceptance, err := req.OnCompletionReceipt(opencode.CompletionReceipt{
-			ProtocolVersion:       opencode.CompletionProtocolVersion,
-			AttemptID:             req.AttemptID,
-			InvocationID:          req.InvocationID,
-			CompletionCapability:  req.CompletionCapability,
-			FinalText:             step.output,
-			StructuredPayloadJSON: scriptedStructuredPayload(step.output),
-		})
-		if err != nil {
-			return opencode.ExecuteResponse{}, err
-		}
-		response.CompletionReceiptAccepted = true
-		response.CompletionReceiptEvidenceID = acceptance.EvidenceID
-		response.CompletionStructuredPayloadJSON = acceptance.StructuredPayloadJSON
-		response.ProviderInvocationID = req.InvocationID
-		response.ProviderInvocationAt = req.InvocationIssuedAt
+	response := opencode.ExecuteResponse{
+		Accepted:             true,
+		OutputText:           step.output,
+		ProviderInvocationID: req.InvocationID,
+		ProviderInvocationAt: req.InvocationIssuedAt,
+		StreamObservation:    testSuccessfulExecuteObservation(req, step.output),
 	}
 	return response, nil
 }
@@ -86,24 +73,6 @@ func (a *scriptedExecutionAdapter) Stream(context.Context, opencode.StreamReques
 	close(eventCh)
 	close(errCh)
 	return eventCh, errCh, nil
-}
-
-func scriptedStructuredPayload(output string) string {
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" {
-			continue
-		}
-		switch trimmed {
-		case "VERDICT: PASS":
-			return `{"verdict":"PASS"}`
-		case "VERDICT: REWORK":
-			return `{"verdict":"REWORK"}`
-		default:
-			return `{}`
-		}
-	}
-	return `{}`
 }
 
 func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t *testing.T) {
@@ -149,7 +118,10 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 	}
 	defer func() {
 		releaseNight()
-		if err := rt.Close(); err != nil {
+		closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancelClose()
+		if err := rt.GracefulClose(closeCtx); err != nil {
+			_ = rt.ForceClose()
 			t.Fatalf("close runtime: %v", err)
 		}
 	}()
@@ -165,7 +137,7 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 		if got, err := lookupNodeAttemptStatusForNode(db, "run_rework_flow", "validation_gates_qa_scout", 1); err != nil {
 			return err
 		} else if got != "failed" {
-			return fmt.Errorf("expected qa validator attempt 1 failed, got %s", got)
+			return fmt.Errorf("expected qa validator attempt 1 failed, got %s; %s", got, runtimeRunDiagnostic(rt, "run_rework_flow"))
 		}
 		if got, err := lookupNodeAttemptStatusForNode(db, "run_rework_flow", "validation_gates_nightraven", 1); err != nil {
 			return err
@@ -219,6 +191,27 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 			t.Fatalf("expected %s attempt %d status %q, got %q", tc.nodeID, tc.attempt, tc.status, got)
 		}
 	}
+}
+
+func runtimeRunDiagnostic(rt *Runtime, runID string) string {
+	parts := make([]string, 0, 7)
+	for _, query := range []string{
+		`SELECT 'attempts=' || json_group_array(json_object('node',nr.node_id,'status',nr.node_status,'state',ae.state,'base',ae.base_snapshot_id,'result',ae.result_snapshot_id,'lease',ae.lease_owner,'failure',ae.failure_code)) FROM node_runs nr LEFT JOIN attempt_executions ae ON ae.node_run_id=nr.node_run_id WHERE nr.run_id=?`,
+		`SELECT 'outbox=' || json_group_array(json_object('attempt',attempt_id,'status',status,'error',last_error)) FROM attempt_outbox WHERE run_id=?`,
+		`SELECT 'handoffs=' || json_group_array(attempt_id) FROM provider_terminal_handoffs WHERE run_id=?`,
+		`SELECT 'cancel=' || json_group_array(json_object('attempt',attempt_id,'status',status,'handoff',handoff_state)) FROM attempt_cancel_outbox WHERE run_id=?`,
+		`SELECT 'guards=' || json_group_array(json_object('attempt',attempt_id,'state',lifecycle)) FROM provider_process_guards WHERE run_id=?`,
+	} {
+		var value string
+		if err := rt.orchestrator.db.QueryRow(query, runID).Scan(&value); err != nil {
+			value = err.Error()
+		}
+		parts = append(parts, value)
+	}
+	rt.orchestrator.execMu.Lock()
+	parts = append(parts, fmt.Sprintf("maintenance=%v inflight=%v preparations=%d", rt.orchestrator.maintenance.active, rt.orchestrator.inflightRunIDs, len(rt.orchestrator.preparations)))
+	rt.orchestrator.execMu.Unlock()
+	return strings.Join(parts, " ")
 }
 
 func queryLatestNodeAttemptStatus(t *testing.T, db *sql.DB, runID, nodeID string) (int, string) {

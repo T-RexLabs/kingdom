@@ -18,6 +18,8 @@ type operationService struct {
 	runner *operationRunner
 }
 
+const planningOperationCommitReadbackTimeout = time.Second
+
 func newOperationService(deps runtimeDeps, runner *operationRunner) *operationService {
 	return &operationService{deps: deps, runner: runner}
 }
@@ -51,7 +53,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 	switch operationType {
 	case state.PlanningOperationTypeReply:
 		trimmedReply := strings.TrimSpace(input.ReplyMarkdown)
-		if trimmedReply == "" {
+		if trimmedReply == "" && (input.ReplySource == nil || input.ReplySource.SizeBytes <= 0) {
 			return CreateOperationResult{}, fmt.Errorf("planning reply content is required")
 		}
 		// The new user message attaches under an explicit parent (editing an
@@ -63,7 +65,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			parentMessageID = strings.TrimSpace(*input.ParentMessageID)
 		}
 		if parentMessageID != "" {
-			if _, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, parentMessageID); err != nil {
+			if _, err := s.deps.store.GetMessageMetadataInSession(ctx, planningSessionID, parentMessageID); err != nil {
 				if errors.Is(err, state.ErrPlanningMessageNotFound) {
 					return CreateOperationResult{}, ErrMessageNotFound
 				}
@@ -83,6 +85,13 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			// edit) starts a new branch, so the provider session must restart.
 			ForceNewSession: parentMessageID != activeLeaf,
 		}
+		if input.ReplySource != nil {
+			request.ContentMarkdown = ""
+			request.ContentReferenceID = state.PlanningMessageContentID(request.UserMessageID)
+		}
+		if input.AnswerTextSource != nil {
+			request.AnswerTextReferenceID = state.PlanningAnswerTextContentID(request.UserMessageID)
+		}
 	case state.PlanningOperationTypeFormalize:
 		request = operationRequest{
 			DraftID:        s.deps.nextID("planning_draft"),
@@ -93,7 +102,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		if targetID == "" {
 			return CreateOperationResult{}, ErrMessageNotFound
 		}
-		target, err := s.deps.store.GetMessageInSession(ctx, planningSessionID, targetID)
+		target, err := s.deps.store.GetMessageMetadataInSession(ctx, planningSessionID, targetID)
 		if err != nil {
 			if errors.Is(err, state.ErrPlanningMessageNotFound) {
 				return CreateOperationResult{}, ErrMessageNotFound
@@ -135,22 +144,27 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 
 	var operation state.PlanningOperation
 	initialEvent := plannerAcpRunCreatedEvent(operationReq.OperationID, planningSessionID, operationType, request, now)
+	var expectedUserMessage *state.AppendPlanningMessageRequest
 	switch operationType {
 	case state.PlanningOperationTypeReply:
 		conversationState := state.PlanningSessionConversationStateProcessing
 		answerPayloadJSON := firstNonEmpty(strings.TrimSpace(string(request.AnswerPayload)), `{}`)
+		userMessage := state.AppendPlanningMessageRequest{
+			ContentSource:       input.ReplySource,
+			AnswerTextSource:    input.AnswerTextSource,
+			PlanningMessageID:   request.UserMessageID,
+			PlanningSessionID:   planningSessionID,
+			ParentMessageID:     request.ParentMessageID,
+			Role:                state.PlanningMessageRoleUser,
+			ContentMarkdown:     request.ContentMarkdown,
+			QuestionPayloadJSON: `{}`,
+			AnswerPayloadJSON:   answerPayloadJSON,
+			CreatedAt:           request.UserCreatedAt,
+		}
+		expectedUserMessage = &userMessage
 		operation, err = s.deps.store.CreateReplyBundle(ctx, state.CreatePlanningReplyBundleRequest{
-			SessionID: planningSessionID,
-			UserMessage: state.AppendPlanningMessageRequest{
-				PlanningMessageID:   request.UserMessageID,
-				PlanningSessionID:   planningSessionID,
-				ParentMessageID:     request.ParentMessageID,
-				Role:                state.PlanningMessageRoleUser,
-				ContentMarkdown:     request.ContentMarkdown,
-				QuestionPayloadJSON: `{}`,
-				AnswerPayloadJSON:   answerPayloadJSON,
-				CreatedAt:           request.UserCreatedAt,
-			},
+			SessionID:         planningSessionID,
+			UserMessage:       userMessage,
 			Operation:         operationReq,
 			InitialEvent:      initialEvent,
 			ConversationState: conversationState,
@@ -177,6 +191,7 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 			UpdatedAt:           now,
 		})
 	}
+	recoveredFromCommitError := false
 	if err != nil {
 		// The store surfaces ErrPlanningUniqueViolation only on the partial
 		// unique index covering an active interactive operation. Translate to
@@ -184,24 +199,185 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		if errors.Is(err, state.ErrPlanningUniqueViolation) {
 			return CreateOperationResult{}, ErrInteractiveOperationActive
 		}
-		return CreateOperationResult{}, err
+		operation, recoveredFromCommitError, err = reconcilePlanningOperationBundleCommit(
+			ctx, s.deps, err, operationReq, initialEvent, expectedUserMessage,
+		)
+		if err != nil {
+			return CreateOperationResult{}, err
+		}
 	}
-	s.runner.Start(operation.OperationID)
+	if recoveredFromCommitError {
+		s.runner.StartRecovered(operation.OperationID)
+	} else {
+		s.runner.Start(operation.OperationID)
+	}
 	if operationType == state.PlanningOperationTypeReply && !request.ForceNewSession {
-		autoCtx, cancel := detachedAutoTitleContext(ctx)
+		autoCtx, cancel := boundedAutoTitleContext(ctx)
 		defer cancel()
 		if _, autoErr := maybeAutoGenerateTitleAfterSecondUserMessage(autoCtx, s.deps, s.runner, planningSessionID, titleTriggerSourceAutoSecondUserMessageCreate); autoErr != nil {
 			log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceAutoSecondUserMessageCreate, planningSessionID, autoErr)
 		}
 	}
-	updatedSession, ok, err := s.deps.store.GetSession(ctx, planningSessionID)
+	updatedSession, err := readBackPlanningSessionAfterOperation(ctx, s.deps, planningSessionID, operation.OperationID, "create planner operation")
 	if err != nil {
 		return CreateOperationResult{}, err
 	}
-	if !ok {
-		return CreateOperationResult{}, ErrSessionNotFound
-	}
 	return CreateOperationResult{Operation: operation, Session: updatedSession}, nil
+}
+
+func reconcilePlanningOperationBundleCommit(
+	ctx context.Context,
+	deps runtimeDeps,
+	commitErr error,
+	expected state.CreatePlanningOperationRequest,
+	initialEvent *state.AppendPlanningOperationEventRequest,
+	userMessage *state.AppendPlanningMessageRequest,
+) (state.PlanningOperation, bool, error) {
+	var unknown *state.CommitOutcomeUnknownError
+	if !errors.As(commitErr, &unknown) {
+		return state.PlanningOperation{}, false, commitErr
+	}
+	operationID := strings.TrimSpace(unknown.ResourceID)
+	if operationID == "" || operationID != strings.TrimSpace(expected.OperationID) {
+		return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("commit outcome resource id does not match the attempted operation"))
+	}
+
+	readbackCtx, cancel := planningOperationReadbackContext(ctx)
+	defer cancel()
+
+	operation, found, err := deps.store.GetOperation(readbackCtx, operationID)
+	if err != nil {
+		return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("read back planner operation: %w", err))
+	}
+	if !found {
+		return state.PlanningOperation{}, false, &state.CommitOutcomeAbsentError{
+			Operation:  unknown.Operation,
+			ResourceID: operationID,
+			Cause:      unknown.Cause,
+		}
+	}
+	if !planningOperationMatchesCreate(operation, expected) {
+		return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("durable planner operation does not match the attempted bundle"))
+	}
+
+	if initialEvent != nil {
+		events, eventErr := deps.store.ListOperationEventMetadataAfterSeqPage(readbackCtx, operationID, 0, 1)
+		if eventErr != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("read back planner operation event: %w", eventErr))
+		}
+		if len(events) != 1 || !planningOperationEventMatchesCreate(events[0], *initialEvent) {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("durable planner operation event does not match the attempted bundle"))
+		}
+		if err := deps.store.VerifyPlanningEventTextRefs(readbackCtx, initialEvent.EventID, initialEvent.TextRefs); err != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, err)
+		}
+	}
+	if userMessage != nil {
+		message, messageErr := deps.store.GetMessageMetadataInSession(readbackCtx, userMessage.PlanningSessionID, userMessage.PlanningMessageID)
+		if messageErr != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("read back planner reply message: %w", messageErr))
+		}
+		if !planningMessageMatchesCreate(message, *userMessage) {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, fmt.Errorf("durable planner reply message does not match the attempted bundle"))
+		}
+		if err := deps.store.VerifyMessageText(readbackCtx, message, *userMessage); err != nil {
+			return state.PlanningOperation{}, false, unknownPlanningOperationCommit(unknown, err)
+		}
+	}
+	return operation, true, nil
+}
+
+func planningOperationReadbackContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), planningOperationCommitReadbackTimeout)
+}
+
+func unknownPlanningOperationCommit(unknown *state.CommitOutcomeUnknownError, readbackErr error) error {
+	return &state.CommitOutcomeUnknownError{
+		Operation:  unknown.Operation,
+		ResourceID: strings.TrimSpace(unknown.ResourceID),
+		Cause:      errors.Join(unknown.Cause, readbackErr),
+	}
+}
+
+func planningOperationMatchesCreate(operation state.PlanningOperation, expected state.CreatePlanningOperationRequest) bool {
+	if operation.OperationID != strings.TrimSpace(expected.OperationID) ||
+		operation.AcpRunID != acp.PlannerRunID(expected.OperationID) ||
+		operation.PlanningSessionID != strings.TrimSpace(expected.PlanningSessionID) ||
+		operation.Type != expected.Type ||
+		operation.RequestPayloadJSON != strings.TrimSpace(expected.RequestPayloadJSON) ||
+		operation.CreatedAt != strings.TrimSpace(expected.CreatedAt) ||
+		operation.PlanningContextSnapshotID == nil || strings.TrimSpace(*operation.PlanningContextSnapshotID) == "" {
+		return false
+	}
+	switch operation.Status {
+	case state.PlanningOperationStatusQueued, state.PlanningOperationStatusRunning,
+		state.PlanningOperationStatusSucceeded, state.PlanningOperationStatusFailed,
+		state.PlanningOperationStatusCancelled:
+		return true
+	default:
+		return false
+	}
+}
+
+func planningOperationEventMatchesCreate(event state.PlanningOperationEvent, expected state.AppendPlanningOperationEventRequest) bool {
+	return event.EventID == strings.TrimSpace(expected.EventID) &&
+		event.OperationID == strings.TrimSpace(expected.OperationID) &&
+		event.Seq == expected.Seq &&
+		event.EventType == strings.TrimSpace(expected.EventType) &&
+		event.PayloadJSON == strings.TrimSpace(expected.PayloadJSON) &&
+		event.CreatedAt == strings.TrimSpace(expected.CreatedAt)
+}
+
+func planningMessageMatchesCreate(message state.PlanningMessage, expected state.AppendPlanningMessageRequest) bool {
+	parentID := strings.TrimSpace(expected.ParentMessageID)
+	if parentID == "" {
+		if message.ParentMessageID != nil {
+			return false
+		}
+	} else if message.ParentMessageID == nil || strings.TrimSpace(*message.ParentMessageID) != parentID {
+		return false
+	}
+	return message.PlanningMessageID == strings.TrimSpace(expected.PlanningMessageID) &&
+		message.PlanningSessionID == strings.TrimSpace(expected.PlanningSessionID) &&
+		message.Role == expected.Role &&
+		message.ContentMarkdown == expected.ContentMarkdown &&
+		message.QuestionPayloadJSON == strings.TrimSpace(expected.QuestionPayloadJSON) &&
+		message.AnswerPayloadJSON == strings.TrimSpace(expected.AnswerPayloadJSON) &&
+		message.CreatedAt == strings.TrimSpace(expected.CreatedAt)
+}
+
+func readBackPlanningSessionAfterOperation(
+	ctx context.Context,
+	deps runtimeDeps,
+	planningSessionID string,
+	operationID string,
+	operationName string,
+) (state.PlanningSession, error) {
+	session, found, firstErr := deps.store.GetSession(ctx, planningSessionID)
+	if firstErr == nil && found {
+		return session, nil
+	}
+	if firstErr == nil {
+		firstErr = fmt.Errorf("planning session %q was not found after operation commit", strings.TrimSpace(planningSessionID))
+	}
+
+	readbackCtx, cancel := planningOperationReadbackContext(ctx)
+	defer cancel()
+	session, found, readbackErr := deps.store.GetSession(readbackCtx, planningSessionID)
+	if readbackErr == nil && found {
+		return session, nil
+	}
+	if readbackErr == nil {
+		readbackErr = fmt.Errorf("planning session %q was not found during operation result readback", strings.TrimSpace(planningSessionID))
+	}
+	return state.PlanningSession{}, &state.PostCommitProjectionError{
+		Operation:  strings.TrimSpace(operationName),
+		ResourceID: strings.TrimSpace(operationID),
+		Cause:      errors.Join(firstErr, readbackErr),
+	}
 }
 
 func operationReqID(deps runtimeDeps) string {
@@ -212,6 +388,9 @@ func (s *operationService) GetOperation(ctx context.Context, operationID string)
 	operation, ok, err := s.deps.store.GetOperation(ctx, operationID)
 	if err != nil || !ok {
 		return operation, ok, nil, err
+	}
+	if err := s.deps.store.HydrateOperationOutput(ctx, &operation); err != nil {
+		return state.PlanningOperation{}, false, nil, err
 	}
 	request := map[string]any{}
 	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)
@@ -225,6 +404,9 @@ func (s *operationService) GetOperationByAcpRunID(ctx context.Context, acpRunID 
 	operation, ok, err := s.deps.store.GetOperationByAcpRunID(ctx, acpRunID)
 	if err != nil || !ok {
 		return operation, ok, nil, err
+	}
+	if err := s.deps.store.HydrateOperationOutput(ctx, &operation); err != nil {
+		return state.PlanningOperation{}, false, nil, err
 	}
 	request := map[string]any{}
 	_ = json.Unmarshal([]byte(operation.RequestPayloadJSON), &request)
@@ -286,8 +468,21 @@ func (s *operationService) CancelOperationByAcpRunID(ctx context.Context, acpRun
 			return operation, nil
 		}
 	}
-	if s.runner == nil || !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
-		return operation, nil
+	if s.runner == nil {
+		return state.PlanningOperation{}, fmt.Errorf("planning operation runner is unavailable")
+	}
+	if !s.runner.RequestCancel(operation.OperationID, trimmedReason) {
+		if err := s.runner.CancelRecoveredOperation(ctx, operation, trimmedReason); err != nil {
+			return state.PlanningOperation{}, err
+		}
+		updated, found, err := s.deps.store.GetOperation(ctx, operation.OperationID)
+		if err != nil {
+			return state.PlanningOperation{}, err
+		}
+		if !found {
+			return state.PlanningOperation{}, ErrOperationNotFound
+		}
+		return updated, nil
 	}
 	return s.waitForTerminalOperation(ctx, operation.OperationID)
 }
@@ -395,11 +590,11 @@ func (a *latencyAccumulator) add(start string, end *string) {
 	if strings.TrimSpace(start) == "" || end == nil || strings.TrimSpace(*end) == "" {
 		return
 	}
-	startAt, err := time.Parse(time.RFC3339, strings.TrimSpace(start))
+	startAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(start))
 	if err != nil {
 		return
 	}
-	endAt, err := time.Parse(time.RFC3339, strings.TrimSpace(*end))
+	endAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*end))
 	if err != nil || endAt.Before(startAt) {
 		return
 	}

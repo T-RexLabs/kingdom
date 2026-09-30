@@ -21,6 +21,8 @@ import type {
 import { applyPlanningSessionFields } from "@/features/decrees/planner-session-cache";
 import { plannerKeys } from "@/features/decrees/planner-query-keys";
 import { useSlicedMutation } from "./use-sliced-mutation";
+import { historyItems } from "./history-pages";
+import type { components } from "./schema";
 
 const plannerQueryOptions = {
   staleTime: 30_000,
@@ -32,9 +34,26 @@ const plannerQueryOptions = {
 export const ACP_RUN_REFETCH_INTERVAL_MS = 10_000;
 
 export function usePlanningSessions(limit = 100) {
-  return useQuery({
+  return useInfiniteQuery({
     queryKey: plannerKeys.list(limit),
-    queryFn: () => apiFetch<PlanningSessionListResponse>("/planning-sessions", { params: { limit } }),
+    queryFn: ({ pageParam, signal }) => apiFetch<PlanningSessionListResponse>("/planning-sessions", { params: { limit, cursor: pageParam }, signal }),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor,
+    select: (data) => ({ items: historyItems(data.pages, (item) => item.planning_session_id) }),
+    ...plannerQueryOptions,
+  });
+}
+
+export function usePlanningContextEntries(sessionId: string, snapshotId: string, kind: "included" | "excluded" = "included") {
+  return useInfiniteQuery({
+    queryKey: ["planning-context-entries", sessionId, snapshotId, kind],
+    queryFn: ({ pageParam, signal }) => apiFetch<components["schemas"]["PlanningContextEntriesResponse"]>(
+      `/planning-sessions/${sessionId}/context/${snapshotId}/entries`,
+      { params: { kind, limit: 100, cursor: pageParam }, signal },
+    ),
+    enabled: Boolean(sessionId && snapshotId),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.next_cursor,
     ...plannerQueryOptions,
   });
 }

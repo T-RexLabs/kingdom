@@ -9,6 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/timestamporder"
 )
 
 const (
@@ -304,11 +306,10 @@ func assignIngestionEventHashes(ctx context.Context, tx *sql.Tx, req *AttemptEve
 }
 
 func verifyTransitionChain(ctx context.Context, db *sql.DB) (int, []AuditIntegrityFailure, error) {
-	rows, err := db.QueryContext(ctx,
-		`SELECT transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, created_at, prev_hash, entry_hash
+	query := `SELECT transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, created_at, prev_hash, entry_hash
 		 FROM transitions
-		 ORDER BY run_id ASC, created_at ASC, transition_id ASC`,
-	)
+		 ORDER BY run_id ASC, ` + timestamporder.OrderBySQL("created_at", false) + `, transition_id ASC`
+	rows, err := db.QueryContext(ctx, query)
 	if err != nil {
 		return 0, nil, fmt.Errorf("query transitions for audit verification: %w", err)
 	}
@@ -497,14 +498,18 @@ func verifyEventChain(ctx context.Context, db *sql.DB) (int, []AuditIntegrityFai
 }
 
 func loadPreviousTransitionHash(ctx context.Context, tx *sql.Tx, runID string, createdAt string, transitionID string) (string, error) {
+	createdAtBefore := timestamporder.ComparisonSQL("created_at", "?", "<")
+	createdAtEqual := timestamporder.ComparisonSQL("created_at", "?", "=")
 	return loadPreviousHash(ctx, tx,
 		`SELECT entry_hash
 		 FROM transitions
 		 WHERE run_id = ?
-		   AND (created_at < ? OR (created_at = ? AND transition_id < ?))
-		 ORDER BY created_at DESC, transition_id DESC
+		   AND (`+createdAtBefore+` OR (`+createdAtEqual+` AND (created_at < ? OR (created_at = ? AND transition_id < ?))))
+		 ORDER BY `+timestamporder.OrderBySQL("created_at", true)+`, transition_id DESC
 		 LIMIT 1`,
 		runID,
+		createdAt,
+		createdAt,
 		createdAt,
 		createdAt,
 		transitionID,

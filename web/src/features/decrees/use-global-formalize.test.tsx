@@ -19,6 +19,7 @@ const terminalFormalize: PlannerOperationState = {
   replyText: "",
   formalizeText: "Plan",
   error: null,
+  activityReconciled: true,
   activityItems: [],
 };
 

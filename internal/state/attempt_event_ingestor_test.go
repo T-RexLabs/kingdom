@@ -303,9 +303,9 @@ func TestAttemptEventIngestorProjectsRunActivityButNotCollectionsForRetryEvents(
 
 	retry := baseAttemptEventIngestionRequest()
 	retry.EventID = "evt_attempt_retry_projected"
-	retry.EventType = "attempt.retrying"
+	retry.EventType = "attempt.retry_scheduled"
 	retry.Seq = 1
-	retry.PayloadJSON = `{"node_id":"kickoff","node_run_id":"nr_1","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}`
+	retry.PayloadJSON = `{"node_id":"kickoff","node_run_id":"nr_1","recovery_trigger":"automatic_retry","recovery_phase":"scheduled","error_code":"provider_empty_output","retry_index":2,"retry_max":3,"scheduled_at":"2026-03-01T12:10:00Z"}`
 	retry.CreatedAt = "2026-03-01T12:05:00Z"
 
 	if _, err := ingestor.Ingest(ctx, retry); err != nil {
@@ -527,7 +527,7 @@ func countMailboxMessagesByEventID(t *testing.T, db *sql.DB, eventID string) int
 func seedCanonicalAttemptExecutionRow(t *testing.T, db *sql.DB, attemptID, runID, nodeRunID string) {
 	t.Helper()
 
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', '`+runID+`', '`+nodeRunID+`', 'running', '', NULL, 0, '', NULL, NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
+	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', '`+runID+`', '`+nodeRunID+`', 'running', 'provider_backed', 'server_response', '', NULL, 0, '', NULL, NULL, NULL, NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 }
 
 func queryRunEventSequenceMax(t *testing.T, db *sql.DB, runID string) int {

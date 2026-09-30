@@ -7,19 +7,25 @@
  * to a chromeless handoff page so it can close itself.
  *
  * Opening must happen synchronously inside the click that starts a hop —
- * browsers block `window.open` once an await has intervened. No window features
- * are passed, so the browser opens an ordinary tab rather than a popup window.
+ * browsers block `window.open` once an await has intervened. Every hop opens
+ * synchronously, then severs the tab's opener before the external page can run.
+ * The initial blank named tab stays available for the deferred manifest form
+ * POST below.
  */
 const SETUP_WINDOW_NAME = "kingdom-github-setup";
 
 export const setupWindowBlockedMessage =
   "Kingdom could not open a tab for GitHub. Allow pop-ups for this site, then try again.";
 
-/** Opens or focuses the setup tab. Returns false when the browser blocked it. */
+/** Opens or focuses the setup tab, returning false when the browser blocks it. */
 export function openSetupWindow(url = ""): boolean {
   const target = window.open(url, SETUP_WINDOW_NAME);
+  if (!target) return false;
+  // Sever the opener synchronously before the newly opened external page can
+  // run. The blank tab retains its target name for the deferred manifest POST.
+  if (target) target.opener = null;
   target?.focus();
-  return !!target;
+  return true;
 }
 
 /**

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +13,7 @@ import (
 
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/runtimefs"
+	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
 	"kingdom/internal/workspace"
 )
@@ -28,21 +30,24 @@ func (o *orchestrationLoop) git() gitCommandRunner {
 }
 
 type executionWorkspaceContext struct {
-	SeedRoot          string
-	ExecutionRoot     string
-	SourceSnapshotID  string
-	TrustedSnapshotID string
-	PublishRoot       string
-	IsGitRepo         bool
-	WorkspaceEmpty    bool
-	UseGitWorktree    bool
+	WorkspaceKind       executionWorkspaceKind
+	SeedRoot            string
+	ExecutionRoot       string
+	ProjectRootBoundary string
+	SourceSnapshotID    string
+	TrustedSnapshotID   string
+	PublishRoot         string
+	IsGitRepo           bool
+	WorkspaceEmpty      bool
+	UseGitWorktree      bool
 }
 
 type executionArtifact struct {
-	Path   string `json:"path"`
-	Name   string `json:"name"`
-	MIME   string `json:"mime"`
-	Action string `json:"action,omitempty"`
+	Path     string `json:"path"`
+	Name     string `json:"name"`
+	MIME     string `json:"mime"`
+	Action   string `json:"action,omitempty"`
+	ModeBits *int64 `json:"mode_bits,omitempty"`
 }
 
 type runWorktreeContext struct {
@@ -50,6 +55,8 @@ type runWorktreeContext struct {
 	CheckoutRoot string
 	ProjectRoot  string
 }
+
+var errExecutionTargetRecoveryInProgress = errors.New("execution target recovery is in progress")
 
 func (o *orchestrationLoop) resolveExecutionWorkspaceContext(ctx context.Context, runID string) (executionWorkspaceContext, error) {
 	return o.resolveExecutionWorkspaceContextForMode(ctx, runID, o.publishMode)
@@ -65,12 +72,13 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 	}
 	now := nowFn().UTC()
 	var (
-		sourceRoot     string
-		executionRoot  string
-		publishRoot    string
-		isGitRepo      bool
-		workspaceEmpty bool
-		useGitWorktree bool
+		sourceRoot          string
+		executionRoot       string
+		projectRootBoundary string
+		publishRoot         string
+		isGitRepo           bool
+		workspaceEmpty      bool
+		useGitWorktree      bool
 	)
 
 	if normalizePublishMode(publishMode) == PublishModeGitWorktree {
@@ -84,6 +92,7 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 		}
 		sourceRoot = worktreeCtx.ProjectRoot
 		executionRoot = worktreeCtx.ProjectRoot
+		projectRootBoundary = worktreeCtx.ProjectRoot
 		publishRoot = worktreeCtx.ProjectRoot
 		isGitRepo = true
 		workspaceEmpty = empty
@@ -107,19 +116,21 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 		if o != nil && o.fsStore != nil {
 			executionRoot = o.fsStore.RunTargetRoot(runID)
 		}
+		projectRootBoundary = firstNonEmptyString(executionRoot, sourceRoot)
 		publishRoot = projectRoot
 		useGitWorktree = false
 	}
 	if o == nil || o.fsStore == nil {
 		return executionWorkspaceContext{
-			SeedRoot:          sourceRoot,
-			ExecutionRoot:     firstNonEmptyString(executionRoot, sourceRoot),
-			SourceSnapshotID:  "",
-			TrustedSnapshotID: "",
-			PublishRoot:       publishRoot,
-			IsGitRepo:         isGitRepo,
-			WorkspaceEmpty:    workspaceEmpty,
-			UseGitWorktree:    useGitWorktree,
+			SeedRoot:            sourceRoot,
+			ExecutionRoot:       firstNonEmptyString(executionRoot, sourceRoot),
+			ProjectRootBoundary: firstNonEmptyString(executionRoot, sourceRoot),
+			SourceSnapshotID:    "",
+			TrustedSnapshotID:   "",
+			PublishRoot:         publishRoot,
+			IsGitRepo:           isGitRepo,
+			WorkspaceEmpty:      workspaceEmpty,
+			UseGitWorktree:      useGitWorktree,
 		}, nil
 	}
 
@@ -165,20 +176,163 @@ func (o *orchestrationLoop) resolveExecutionWorkspaceContextForMode(ctx context.
 	} else if err != nil {
 		return executionWorkspaceContext{}, fmt.Errorf("load execution target: %w", err)
 	}
+	if strings.TrimSpace(record.State) == "unknown" {
+		return executionWorkspaceContext{}, fmt.Errorf("execution target is quarantined after an unsafe workspace failure")
+	}
 
 	return executionWorkspaceContext{
-		SeedRoot:          sourceRoot,
-		ExecutionRoot:     record.ExecutionRoot,
-		SourceSnapshotID:  record.SourceSnapshotID,
-		TrustedSnapshotID: record.TrustedSnapshotID,
-		PublishRoot:       publishRoot,
-		IsGitRepo:         isGitRepo,
-		WorkspaceEmpty:    workspaceEmpty,
-		UseGitWorktree:    useGitWorktree,
+		SeedRoot:            sourceRoot,
+		ExecutionRoot:       record.ExecutionRoot,
+		ProjectRootBoundary: projectRootBoundary,
+		SourceSnapshotID:    record.SourceSnapshotID,
+		TrustedSnapshotID:   record.TrustedSnapshotID,
+		PublishRoot:         publishRoot,
+		IsGitRepo:           isGitRepo,
+		WorkspaceEmpty:      workspaceEmpty,
+		UseGitWorktree:      useGitWorktree,
 	}, nil
 }
 
-func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, workspaceCtx executionWorkspaceContext) error {
+func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx context.Context, runID, nodeRunID string, record runtimefs.RunExecutionTarget, restoredAt string) (runtimefs.RunExecutionTarget, error) {
+	if strings.TrimSpace(record.State) != "unknown" {
+		return record, nil
+	}
+	if !o.manualTargetRecoveryAuthorized(ctx, runID, nodeRunID, record.UpdatedAt) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit retry or rerun")
+	}
+	quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	var preparingAttemptID string
+	if o.db != nil {
+		if err := o.db.QueryRowContext(ctx, `SELECT attempt_id FROM attempt_executions WHERE node_run_id = ? AND state = 'queued'`, nodeRunID).Scan(&preparingAttemptID); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return runtimefs.RunExecutionTarget{}, err
+		}
+	}
+	if !quiescent || o.hasInflightRunExecutionExcept(runID, preparingAttemptID) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target recovery is waiting for provider process quiescence")
+	}
+	var recovered runtimefs.RunExecutionTarget
+	switch strings.TrimSpace(record.TargetMode) {
+	case PublishModeDirect:
+		recovered, err = o.fsStore.RecoverQuarantinedExecutionTarget(ctx, runID, restoredAt)
+	case PublishModeGitWorktree:
+		recovered, err = o.recoverQuarantinedManagedWorktree(ctx, runID, record, restoredAt)
+	default:
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target has unsupported mode %q", record.TargetMode)
+	}
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	if strings.TrimSpace(recovered.State) == "unknown" {
+		return recovered, errExecutionTargetRecoveryInProgress
+	}
+	return recovered, nil
+}
+
+func (o *orchestrationLoop) recoverQuarantinedManagedWorktree(ctx context.Context, runID string, target runtimefs.RunExecutionTarget, restoredAt string) (runtimefs.RunExecutionTarget, error) {
+	if o == nil || o.fsStore == nil || o.executionStore == nil || o.runWorktrees == nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("managed worktree recovery is not configured")
+	}
+	record, err := o.runWorktrees.GetByRun(ctx, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("load managed worktree for recovery: %w", err)
+	}
+	if err := validateManagedRunWorktreeBoundary(record); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("validate managed worktree recovery boundary: %w", err)
+	}
+	if filepath.Clean(strings.TrimSpace(target.ExecutionRoot)) != filepath.Clean(workspace.ScopedProjectRootInCheckout(record.WorktreePath, workspace.GitProjectTopology{ProjectRelPath: record.ProjectRelPath})) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target is outside its registered managed worktree")
+	}
+	cleanupComplete, err := o.discardQuarantinedManagedWorktreeForManualRecovery(ctx, record, strings.TrimSpace(restoredAt))
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("discard quarantined managed worktree: %w", err)
+	}
+	if !cleanupComplete {
+		return target, nil
+	}
+	fresh, err := o.ensureRunWorktree(ctx, o.yoloRoot, runID)
+	if err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recreate quarantined managed worktree: %w", err)
+	}
+	if filepath.Clean(strings.TrimSpace(target.ExecutionRoot)) != filepath.Clean(fresh.ProjectRoot) {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recreated managed worktree does not match its execution target")
+	}
+	if strings.TrimSpace(target.TrustedSnapshotID) == "" {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("quarantined execution target has no trusted snapshot")
+	}
+	if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, target.TrustedSnapshotID, target.PublishRoot, target.SourceRoot); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("recover trusted snapshot blobs: %w", err)
+	}
+	if err := o.fsStore.RestoreSnapshot(ctx, target.TrustedSnapshotID, fresh.ProjectRoot); err != nil {
+		return runtimefs.RunExecutionTarget{}, fmt.Errorf("restore recreated managed worktree: %w", err)
+	}
+	if err := o.fsStore.UpdateExecutionTargetState(ctx, runID, "trusted", target.TrustedSnapshotID, "", restoredAt); err != nil {
+		return runtimefs.RunExecutionTarget{}, err
+	}
+	target.State = "trusted"
+	target.UpdatedAt = strings.TrimSpace(restoredAt)
+	return target, nil
+}
+
+func (o *orchestrationLoop) recoverQuarantinedExecutionTargetBeforeDispatch(ctx context.Context, runID, nodeRunID string) error {
+	if o == nil || o.fsStore == nil {
+		return nil
+	}
+	record, err := o.fsStore.GetExecutionTarget(ctx, runID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("load execution target before dispatch: %w", err)
+	}
+	_, err = o.recoverQuarantinedExecutionTargetForManualReplay(ctx, runID, nodeRunID, record, o.now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (o *orchestrationLoop) manualTargetRecoveryAuthorized(ctx context.Context, runID, nodeRunID, quarantinedAt string) bool {
+	if o == nil || o.db == nil {
+		return false
+	}
+	var replayedAt, queuedAt string
+	err := o.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM transitions
+WHERE run_id = ?
+  AND entity_type = 'run'
+  AND from_state IN ('failed', 'cancelled')
+  AND to_state = 'running'
+  AND reason_code IN ('manual_retry_requested', 'manual_rerun_requested')
+ORDER BY created_at DESC, transition_id DESC
+LIMIT 1`, strings.TrimSpace(runID)).Scan(&replayedAt)
+	if err != nil {
+		return false
+	}
+	err = o.db.QueryRowContext(ctx, `
+SELECT created_at
+FROM transitions
+WHERE run_id = ?
+  AND node_run_id = ?
+  AND entity_type = 'node'
+  AND from_state = 'pending'
+  AND to_state = 'ready'
+  AND authority_source IN ('api.retry', 'api.rerun')
+ORDER BY created_at DESC, transition_id DESC
+LIMIT 1`, strings.TrimSpace(runID), strings.TrimSpace(nodeRunID)).Scan(&queuedAt)
+	if err != nil {
+		return false
+	}
+	quarantinedTime, quarantineErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(quarantinedAt))
+	replayedTime, replayErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(replayedAt))
+	queuedTime, queuedErr := time.Parse(time.RFC3339Nano, strings.TrimSpace(queuedAt))
+	return quarantineErr == nil && replayErr == nil && queuedErr == nil && !replayedTime.Before(quarantinedTime) && !queuedTime.Before(quarantinedTime)
+}
+
+func (o *orchestrationLoop) prepareExecutionWorkspaceContext(ctx context.Context, workspacePath string, workspaceCtx executionWorkspaceContext) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	resolvedWorkspace := strings.TrimSpace(workspacePath)
 	if resolvedWorkspace == "" {
 		return fmt.Errorf("workspace path is required")
@@ -188,33 +342,44 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 		if o == nil || o.fsStore == nil {
 			return fmt.Errorf("runtime filesystem store is required")
 		}
-		if err := o.fsStore.RecoverMissingSnapshotBlobs(context.Background(), trustedSnapshotID, workspaceCtx.PublishRoot, workspaceCtx.SeedRoot); err != nil {
+		if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, trustedSnapshotID, workspaceCtx.PublishRoot, workspaceCtx.SeedRoot); err != nil {
 			return fmt.Errorf("recover execution workspace snapshot blobs: %w", err)
 		}
-		if err := o.fsStore.RestoreSnapshot(context.Background(), trustedSnapshotID, resolvedWorkspace); err != nil {
+		if err := o.fsStore.RestoreSnapshot(ctx, trustedSnapshotID, resolvedWorkspace); err != nil {
 			return fmt.Errorf("restore execution workspace from trusted snapshot: %w", err)
 		}
 	} else if strings.TrimSpace(workspaceCtx.SeedRoot) != "" {
-		trackedFiles, err := trackedfs.WalkTrackedFiles(workspaceCtx.SeedRoot)
+		seedRoot, err := securefs.OpenRoot(workspaceCtx.SeedRoot)
 		if err != nil {
-			return fmt.Errorf("walk execution seed root: %w", err)
+			return fmt.Errorf("open execution seed root: %w", err)
 		}
-		for _, file := range trackedFiles {
-			resolvedPath, err := resolvePathWithinRoot(resolvedWorkspace, file.RelativePath)
-			if err != nil {
-				return err
-			}
-			raw, err := os.ReadFile(file.AbsolutePath)
-			if err != nil {
-				return fmt.Errorf("read execution seed file %q: %w", file.RelativePath, err)
-			}
-			if err := os.MkdirAll(filepath.Dir(resolvedPath), 0o755); err != nil {
-				return fmt.Errorf("create execution seed directory: %w", err)
-			}
-			if err := os.WriteFile(resolvedPath, raw, os.FileMode(file.Metadata.ModeBits)); err != nil {
-				return fmt.Errorf("write execution seed file %q: %w", file.RelativePath, err)
-			}
+		defer seedRoot.Close()
+		destination, err := securefs.OpenRoot(resolvedWorkspace)
+		if err != nil {
+			return fmt.Errorf("open execution destination: %w", err)
 		}
+		defer destination.Close()
+		writeFile := destination.ReplaceRegularFrom
+		if workspaceCtx.WorkspaceKind == workspacePrivateSource {
+			writeFile = destination.MaterializeRegularFrom
+		}
+		if err := trackedfs.VisitTrackedFilesRoot(ctx, seedRoot, func(file trackedfs.TrackedFile) error {
+			return writeFile(ctx, file.RelativePath, func(w io.Writer) error {
+				_, info, err := seedRoot.CopyRegular(ctx, file.RelativePath, w)
+				if err != nil {
+					return err
+				}
+				if trackedfs.MetadataFromInfo(info) != file.Metadata {
+					return securefs.ErrIdentityMismatch
+				}
+				return nil
+			}, os.FileMode(file.Metadata.ModeBits), 0o755, time.Unix(0, file.Metadata.ModifiedNS))
+		}); err != nil {
+			return fmt.Errorf("copy execution seed: %w", err)
+		}
+	}
+	if err := o.ensureOpenCodeProjectBoundary(ctx, resolvedWorkspace, workspaceCtx.UseGitWorktree); err != nil {
+		return fmt.Errorf("prepare OpenCode project boundary: %w", err)
 	}
 	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(resolvedWorkspace), true); err != nil {
 		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
@@ -222,35 +387,277 @@ func (o *orchestrationLoop) prepareExecutionWorkspace(workspacePath string, work
 	return nil
 }
 
-func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context, runID, publishMode string) (string, error) {
-	projectRoot := strings.TrimSpace(o.yoloRoot)
-	workspacePath := projectRoot
-	if normalizePublishMode(publishMode) == PublishModeGitWorktree {
-		if projectRoot == "" {
-			return "", fmt.Errorf("project root is required for git worktree publish mode")
+// ensureOpenCodeProjectBoundary places an exact-root .git marker where
+// OpenCode's project discovery walks upward before invoking Git. Nested scopes
+// in a managed worktree point at that worktree's Git metadata so ordinary Git
+// commands continue to track paths from the worktree root.
+func (o *orchestrationLoop) ensureOpenCodeProjectBoundary(ctx context.Context, root string, useGitWorktree bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return fmt.Errorf("OpenCode project root is required")
+	}
+	marker := filepath.Join(root, ".git")
+	info, err := os.Lstat(marker)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect OpenCode project marker %q: %w", marker, err)
+	}
+	if useGitWorktree {
+		return o.ensureManagedWorktreeProjectBoundary(ctx, root, marker, info, err)
+	}
+	if err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || info.Mode().IsRegular() {
+			// Direct targets are not Git worktrees. Never let a stale pointer widen
+			// OpenCode's project context to another checkout.
+			if err := os.Remove(marker); err != nil {
+				return fmt.Errorf("remove stale OpenCode project marker: %w", err)
+			}
+		} else if info.IsDir() {
+			return nil
+		} else {
+			return fmt.Errorf("OpenCode project marker %q is not a file or directory", marker)
 		}
-		worktreeCtx, err := o.ensureRunWorktree(ctx, projectRoot, runID)
+	}
+	if err := os.Mkdir(marker, 0o700); err != nil {
+		if !errors.Is(err, os.ErrExist) {
+			return fmt.Errorf("create OpenCode project marker %q: %w", marker, err)
+		}
+		info, statErr := os.Lstat(marker)
+		if statErr != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("OpenCode project marker %q changed while being created", marker)
+		}
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) ensureManagedWorktreeProjectBoundary(ctx context.Context, root, marker string, markerInfo os.FileInfo, markerErr error) error {
+	gitRunner := o.git()
+	if err := gitRunner.LookPath(); err != nil {
+		return fmt.Errorf("resolve Git for managed-worktree project boundary: %w", err)
+	}
+	rootGitTop, rootGitDir, rootGitErr := probeGitWorktreeBoundary(gitRunner, root)
+	parentGitTop, parentGitDir, parentGitErr := probeGitWorktreeBoundary(gitRunner, filepath.Dir(root))
+	if markerErr == nil && markerInfo.IsDir() && rootGitErr == nil && sameOpenCodeProjectRoot(rootGitTop, root) {
+		if parentGitErr != nil || sameOpenCodeProjectRoot(parentGitTop, root) || !openCodePathWithinRoot(root, parentGitTop) {
+			// A real repository at its own root is already an exact boundary.
+			return nil
+		}
+		// Replace the standalone nested repository created by older boundary
+		// setup with a pointer to the containing managed worktree metadata.
+		if err := removeNestedOpenCodeGitMetadata(ctx, root); err != nil {
+			return err
+		}
+		markerErr = os.ErrNotExist
+	}
+	if parentGitErr != nil {
+		if rootGitErr == nil && sameOpenCodeProjectRoot(rootGitTop, root) {
+			return nil
+		}
+		return fmt.Errorf("resolve containing managed worktree Git metadata: %w", parentGitErr)
+	}
+	if !openCodePathWithinRoot(root, parentGitTop) {
+		if markerErr == nil && markerInfo.Mode().IsRegular() && rootGitErr == nil && sameOpenCodeProjectRoot(rootGitTop, root) {
+			// A linked worktree root points at its own registered Git metadata; its
+			// parent directory is outside that worktree.
+			return nil
+		}
+		return fmt.Errorf("managed worktree Git root %q is not an ancestor of scoped project root %q", parentGitTop, root)
+	}
+	if rootGitErr == nil && sameOpenCodeProjectRoot(rootGitDir, parentGitDir) {
+		if markerErr == nil && markerInfo.Mode().IsRegular() {
+			return nil
+		}
+		if sameOpenCodeProjectRoot(rootGitTop, root) && markerErr == nil && markerInfo.IsDir() {
+			return nil
+		}
+	}
+	if markerErr == nil {
+		if markerInfo.Mode()&os.ModeSymlink != 0 || markerInfo.Mode().IsRegular() {
+			if err := os.Remove(marker); err != nil {
+				return fmt.Errorf("remove stale managed-worktree project marker: %w", err)
+			}
+		} else if !markerInfo.IsDir() {
+			return fmt.Errorf("managed-worktree project marker %q is not a file or directory", marker)
+		}
+	}
+	if err := writeManagedWorktreeGitFile(marker, parentGitDir); err != nil {
+		return err
+	}
+	verifiedGitDir, err := gitRunner.Run(root, "rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil {
+		return fmt.Errorf("verify managed-worktree project boundary: %w", err)
+	}
+	if !sameOpenCodeProjectRoot(verifiedGitDir, parentGitDir) {
+		return fmt.Errorf("scoped project Git metadata %q does not match managed worktree metadata %q", verifiedGitDir, parentGitDir)
+	}
+	return nil
+}
+
+func probeGitWorktreeBoundary(gitRunner gitCommandRunner, root string) (string, string, error) {
+	gitTop, err := gitRunner.Run(root, "rev-parse", "--path-format=absolute", "--show-toplevel")
+	if err != nil {
+		return "", "", err
+	}
+	gitDir, err := gitRunner.Run(root, "rev-parse", "--path-format=absolute", "--git-dir")
+	if err != nil {
+		return "", "", err
+	}
+	return strings.TrimSpace(gitTop), strings.TrimSpace(gitDir), nil
+}
+
+func writeManagedWorktreeGitFile(marker, gitDir string) error {
+	gitDir = strings.TrimSpace(gitDir)
+	if gitDir == "" {
+		return fmt.Errorf("managed worktree Git directory is required")
+	}
+	file, err := os.OpenFile(marker, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create managed-worktree project marker %q: %w", marker, err)
+	}
+	_, writeErr := fmt.Fprintf(file, "gitdir: %s\n", gitDir)
+	syncErr := file.Sync()
+	closeErr := file.Close()
+	if err := errors.Join(writeErr, syncErr, closeErr); err != nil {
+		_ = os.Remove(marker)
+		return fmt.Errorf("write managed-worktree project marker %q: %w", marker, err)
+	}
+	return nil
+}
+
+func removeNestedOpenCodeGitMetadata(ctx context.Context, root string) error {
+	secureRoot, err := securefs.OpenRoot(root)
+	if err != nil {
+		return fmt.Errorf("open nested project root for Git metadata replacement: %w", err)
+	}
+	defer secureRoot.Close()
+	if err := secureRoot.RemoveTree(ctx, ".git", 128); err != nil {
+		return fmt.Errorf("remove obsolete nested Git metadata: %w", err)
+	}
+	return nil
+}
+
+func openCodePathWithinRoot(path, root string) bool {
+	path = filepath.Clean(strings.TrimSpace(path))
+	root = filepath.Clean(strings.TrimSpace(root))
+	if path == "" || root == "" {
+		return false
+	}
+	pathAbs, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	rootAbs, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	if resolved, err := filepath.EvalSymlinks(pathAbs); err == nil {
+		pathAbs = resolved
+	}
+	if resolved, err := filepath.EvalSymlinks(rootAbs); err == nil {
+		rootAbs = resolved
+	}
+	relative, err := filepath.Rel(rootAbs, pathAbs)
+	if err != nil {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
+}
+
+func sameOpenCodeProjectRoot(left, right string) bool {
+	normalize := func(path string) string {
+		absolute, err := filepath.Abs(filepath.Clean(path))
 		if err != nil {
-			return "", err
+			return filepath.Clean(path)
 		}
-		workspacePath = strings.TrimSpace(worktreeCtx.ProjectRoot)
-	} else if workspacePath == "" && o != nil && o.fsStore != nil {
-		workspacePath = strings.TrimSpace(o.fsStore.RunTargetRoot(runID))
+		resolved, err := filepath.EvalSymlinks(absolute)
+		if err == nil {
+			return filepath.Clean(resolved)
+		}
+		return filepath.Clean(absolute)
 	}
-	if workspacePath == "" {
-		return "", fmt.Errorf("response-only workspace path is required")
+	return normalize(left) == normalize(right)
+}
+
+func (o *orchestrationLoop) resolveResponseOnlyWorkspacePath(ctx context.Context, runID, attemptID, publishMode string) (string, string, error) {
+	if o == nil {
+		return "", "", fmt.Errorf("orchestration loop is required")
 	}
-	if err := os.MkdirAll(workspacePath, 0o755); err != nil {
-		return "", fmt.Errorf("prepare response-only workspace root: %w", err)
+	nowFn := time.Now
+	if o.now != nil {
+		nowFn = o.now
 	}
-	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(workspacePath), true); err != nil {
-		return "", fmt.Errorf("install managed opencode overlay into response-only workspace: %w", err)
+	projectRoot := strings.TrimSpace(o.yoloRoot)
+	targetMode := normalizePublishMode(publishMode)
+	if targetMode == PublishModeGitWorktree {
+		return o.preparePrivateGitWorkspace(ctx, runID, attemptID, "")
 	}
-	return workspacePath, nil
+	if o.fsStore == nil {
+		return "", "", fmt.Errorf("runtime filesystem store is required for an isolated response-only workspace")
+	}
+	if projectRoot != "" {
+		if err := os.MkdirAll(projectRoot, 0o755); err != nil {
+			return "", "", fmt.Errorf("prepare response-only project root: %w", err)
+		}
+	}
+	markedAt := nowFn().UTC().Format(time.RFC3339Nano)
+	workspacePath, err := o.fsStore.PrepareResponseOnlyWorkspace(ctx, runID, attemptID, markedAt)
+	if err != nil {
+		return "", "", err
+	}
+	workspaceCtx := executionWorkspaceContext{
+		WorkspaceKind:       workspacePrivateSource,
+		SeedRoot:            projectRoot,
+		ExecutionRoot:       workspacePath,
+		ProjectRootBoundary: workspacePath,
+		PublishRoot:         projectRoot,
+		IsGitRepo:           projectRoot != "" && o.isGitWorkingTree(projectRoot),
+		WorkspaceEmpty:      projectRoot == "",
+	}
+	if err := o.prepareExecutionWorkspaceContext(ctx, workspacePath, workspaceCtx); err != nil {
+		// Preparation owns the attempt until it unwinds. Its durable cleanup
+		// marker lets maintenance remove partial copies after that reservation.
+		return "", "", fmt.Errorf("prepare response-only workspace: %w", err)
+	}
+	return workspacePath, markedAt, nil
+}
+
+func (o *orchestrationLoop) removeResponseOnlyWorkspaceAndClear(ctx context.Context, runID, attemptID, markedAt string) error {
+	if o == nil || o.fsStore == nil || strings.TrimSpace(markedAt) == "" {
+		return fmt.Errorf("response-only workspace cleanup identity is required")
+	}
+	if err := o.fsStore.RemoveResponseOnlyWorkspaceContext(ctx, runID, attemptID); err != nil {
+		return err
+	}
+	nowFn := time.Now
+	if o.now != nil {
+		nowFn = o.now
+	}
+	if err := o.fsStore.ClearResponseOnlyWorkspaceCleanupPending(ctx, attemptID, markedAt, nowFn().UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (o *orchestrationLoop) resetResponseOnlyWorkspaceCleanupCursor() {
+	if o != nil {
+		o.maintenance.scanMu.Lock()
+		o.responseOnlyWorkspaceCleanupCursor = ""
+		o.maintenance.scanMu.Unlock()
+	}
 }
 
 func directoryIsEmpty(path string) (bool, error) {
-	entries, err := os.ReadDir(path)
+	root, err := securefs.OpenRoot(path)
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	entries, err := root.ReadDirBounded(".", 1)
+	if errors.Is(err, securefs.ErrLimitExceeded) {
+		return false, nil
+	}
 	if err != nil {
 		return false, err
 	}
@@ -278,10 +685,6 @@ func (o *orchestrationLoop) ensureRunWorktree(ctx context.Context, projectRoot, 
 	if err := os.MkdirAll(worktreeRoot, 0o755); err != nil {
 		return runWorktreeContext{}, fmt.Errorf("create worktree root: %w", err)
 	}
-	registeredWorktrees, err := workspace.ListRegisteredWorktrees(topology.MainWorktreeRoot, o.git())
-	if err != nil {
-		return runWorktreeContext{}, newGitWorktreeRuntimeError("registered git worktrees could not be listed")
-	}
 	seedCommitOID := strings.TrimSpace(topology.HeadCommitOID)
 	worktreeName := ""
 	worktreePath := ""
@@ -301,6 +704,13 @@ func (o *orchestrationLoop) ensureRunWorktree(ctx context.Context, projectRoot, 
 			return runWorktreeContext{}, err
 		}
 		worktreePath = workspace.ManagedRunWorktreePath(topology.MainWorktreeRoot, worktreeName)
+	}
+	if record.RunID != "" && (record.CleanupStarted || record.CleanupOwner != "" || (record.State != workspace.RunWorktreeStateActive && record.State != workspace.RunWorktreeStateCleaned)) {
+		return runWorktreeContext{}, fmt.Errorf("managed git worktree cleanup is in progress; dispatch must wait for cleanup to complete")
+	}
+	registeredWorktrees, err := workspace.ListRegisteredWorktrees(topology.MainWorktreeRoot, o.git())
+	if err != nil {
+		return runWorktreeContext{}, newGitWorktreeRuntimeError("registered git worktrees could not be listed")
 	}
 	if entry, ok := registeredWorktrees.Lookup(worktreePath); ok && entry.Prunable {
 		if err := o.pruneWorktreesNow(topology.MainWorktreeRoot); err != nil {

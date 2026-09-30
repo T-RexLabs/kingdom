@@ -11,25 +11,40 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
+	"sync"
 	"testing"
 	"time"
 
 	"kingdom/internal/acp"
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/retryengine"
+	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
 
-func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
-	t.Parallel()
+const (
+	plannerTimeoutTestFirstEventTimeout       = 10 * time.Second
+	plannerTimeoutTestStreamInactivityTimeout = 2 * time.Second
+	plannerTimeoutTestCancelGraceTimeout      = 500 * time.Millisecond
+	plannerTimeoutTestCancelForceTimeout      = time.Second
+	// This bounds test liveness only. It includes asynchronous launch,
+	// guardian quiescence, and durable ACP finalization under package-wide load.
+	plannerTimeoutTestTerminalDeadline = 30 * time.Second
+)
 
+func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	projectRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
 		t.Fatalf("write project root seed: %v", err)
 	}
-	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	planner := newLifecyclePlannerAgent()
+	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{
+		ProjectRoot:  projectRoot,
+		PlannerAgent: planner,
+	})
 
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
@@ -67,6 +82,7 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode acp run: %v", err)
 	}
+	awaitLifecyclePlannerCompletion(t, planner.completed)
 	completed := awaitAcpRun(t, handler, run.RunId.String(), 2*time.Second)
 	if completed.Status != gen.AcpRunStatus(acp.PlannerRunStatusCompleted) {
 		t.Fatalf("expected completed acp run, got %+v", completed)
@@ -112,6 +128,33 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 	}
 }
 
+func TestServerPlanningClockRetainsNanosecondPrecision(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 6, 3, 12, 0, 0, 123456789, time.UTC)
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{Now: func() time.Time { return now }})
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/planning-sessions",
+		idempotencyKey: "idem-planning-clock-precision",
+		body:           map[string]any{"model_selection": map[string]any{"model": "gpt-5.4"}},
+	})
+	if res.Code != http.StatusCreated {
+		t.Fatalf("create planning session: status=%d body=%s", res.Code, res.Body.String())
+	}
+	var created gen.CreatePlanningSessionResult
+	if err := json.Unmarshal(res.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode planning session: %v", err)
+	}
+	var createdAt string
+	if err := db.QueryRow(`SELECT created_at FROM planning_sessions WHERE planning_session_id = ?`, created.Session.PlanningSessionId).Scan(&createdAt); err != nil {
+		t.Fatal(err)
+	}
+	if createdAt != now.Format(time.RFC3339Nano) {
+		t.Fatalf("planning session created_at=%s, want %s", createdAt, now.Format(time.RFC3339Nano))
+	}
+}
+
 func TestServerRealPlannerUsesPolicyStreamInactivityTimeout(t *testing.T) {
 	projectRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Planner Timeout\n"), 0o644); err != nil {
@@ -126,10 +169,23 @@ func TestServerRealPlannerUsesPolicyStreamInactivityTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read provider policy: %v", err)
 	}
-	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: 10s", 1)
-	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: 150ms", 1)
+	policyText := strings.Replace(string(policyRaw), "first_event_timeout: 60s", "first_event_timeout: "+plannerTimeoutTestFirstEventTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "stream_inactivity_timeout: 10m", "stream_inactivity_timeout: "+plannerTimeoutTestStreamInactivityTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "cancel_grace_timeout: 5s", "cancel_grace_timeout: "+plannerTimeoutTestCancelGraceTimeout.String(), 1)
+	policyText = strings.Replace(policyText, "cancel_force_timeout: 10s", "cancel_force_timeout: "+plannerTimeoutTestCancelForceTimeout.String(), 1)
 	if err := os.WriteFile(policyPath, []byte(policyText), 0o600); err != nil {
 		t.Fatalf("write timeout provider policy: %v", err)
+	}
+	policy, err := providerpolicy.LoadPolicyFromFile(policyPath, filepath.Join(kingdomHome, "schemas", "opencode_provider_policy.schema.json"))
+	if err != nil {
+		t.Fatalf("load timeout provider policy: %v", err)
+	}
+	firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, err := policy.ExecutionTimeouts()
+	if err != nil {
+		t.Fatalf("parse timeout provider policy: %v", err)
+	}
+	if firstEventTimeout != plannerTimeoutTestFirstEventTimeout || streamInactivityTimeout != plannerTimeoutTestStreamInactivityTimeout || cancelGraceTimeout != plannerTimeoutTestCancelGraceTimeout || cancelForceTimeout != plannerTimeoutTestCancelForceTimeout {
+		t.Fatalf("unexpected timeout fixture: first_event=%s stream_inactivity=%s cancel_grace=%s cancel_force=%s", firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout)
 	}
 
 	pidPath := filepath.Join(t.TempDir(), "planner.pid")
@@ -141,7 +197,8 @@ if [ "$1" != "run" ]; then
 fi
 printf '%s\n' "$$" > "$FAKE_OPENCODE_PID_PATH"
 printf '%s\n' '{"type":"step_start","sessionID":"ses_planner_stall","part":{"id":"part_planner_stall"}}'
-sleep 30
+trap '' TERM
+exec /bin/sleep 30
 `
 	if err := os.WriteFile(binaryPath, []byte(fakeOpenCode), 0o755); err != nil {
 		t.Fatalf("write fake OpenCode executable: %v", err)
@@ -203,11 +260,11 @@ sleep 30
 	if err := json.Unmarshal(runRes.Body.Bytes(), &run); err != nil {
 		t.Fatalf("decode ACP run: %v", err)
 	}
-	terminal := awaitAcpRun(t, handler, run.RunId.String(), 10*time.Second)
+	terminal := awaitAcpRun(t, handler, run.RunId.String(), plannerTimeoutTestTerminalDeadline)
 	if terminal.Status != gen.AcpRunStatus(acp.PlannerRunStatusFailed) {
 		t.Fatalf("expected failed ACP run, got %+v", terminal)
 	}
-	if terminal.Error == nil || !strings.Contains(*terminal.Error, "stream_inactivity_timeout") || !strings.Contains(*terminal.Error, "event_count=1") {
+	if terminal.Error == nil || !strings.Contains(*terminal.Error, "stream_inactivity_timeout exceeded after 2s") || !strings.Contains(*terminal.Error, "event_count=1") {
 		t.Fatalf("expected inactivity diagnostics on terminal run, got %+v", terminal.Error)
 	}
 
@@ -226,8 +283,8 @@ sleep 30
 	if err != nil || !found {
 		t.Fatalf("get canonical provider settlement: found=%t err=%v", found, err)
 	}
-	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_timeout" {
-		t.Fatalf("expected failed provider_timeout settlement, got %+v", settlement)
+	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "timeout" {
+		t.Fatalf("expected failed timeout settlement, got %+v", settlement)
 	}
 	if !strings.Contains(settlement.FailureReasonText, "stream_inactivity_timeout") || !strings.Contains(settlement.FailureReasonText, "event_count=1") {
 		t.Fatalf("expected settlement inactivity diagnostics, got %q", settlement.FailureReasonText)
@@ -236,7 +293,7 @@ sleep 30
 	if err != nil || !found {
 		t.Fatalf("get provider invocation: found=%t err=%v", found, err)
 	}
-	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed || invocation.ProviderSessionID != "ses_planner_stall" || invocation.FailureReasonCode != "provider_timeout" {
+	if invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed || invocation.ProviderSessionID != "ses_planner_stall" || invocation.FailureReasonCode != "timeout" {
 		t.Fatalf("expected settled failed provider invocation, got %+v", invocation)
 	}
 	session, found, err := store.GetSession(t.Context(), created.Session.PlanningSessionId)
@@ -269,11 +326,10 @@ sleep 30
 		t.Fatalf("parse fake provider pid: %v", err)
 	}
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		err := syscall.Kill(pid, 0)
-		if errors.Is(err, syscall.ESRCH) {
+		if providerTestProcessAbsent(pid) {
 			return nil
 		}
-		return fmt.Errorf("provider process %d is still present: %v", pid, err)
+		return fmt.Errorf("provider process %d is still present", pid)
 	})
 }
 
@@ -529,6 +585,44 @@ func TestWritePlanningOperationEventsReplaysOnlyEventsAfterLastEventID(t *testin
 	}
 }
 
+func TestWritePlanningOperationEventsReplaysRecoveredActivityThenMarkerAfterCompletedRun(t *testing.T) {
+	t.Parallel()
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{ProjectRoot: projectRoot})
+	server := handler.(*Server)
+	store := state.NewPlanningStore(db)
+	ctx := t.Context()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{PlanningSessionID: "ps_reconcile_replay", Title: "Reconcile replay", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"gpt-5.4"}`, CreatedAt: "2026-06-12T11:00:00Z", UpdatedAt: "2026-06-12T11:00:00Z"}); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	bindAPIPlanningContext(t, store, "ps_reconcile_replay")
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{OperationID: "op_reconcile_replay", PlanningSessionID: "ps_reconcile_replay", Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusSucceeded, RequestPayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:01Z", StartedAt: "2026-06-12T11:00:01Z", FinishedAt: "2026-06-12T11:00:06Z"}); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	for _, event := range []state.AppendPlanningOperationEventRequest{
+		{EventID: "op_reconcile_replay:1", OperationID: "op_reconcile_replay", Seq: 1, EventType: acp.RunCompletedEventType, PayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:06Z"},
+		{EventID: "op_reconcile_replay:2", OperationID: "op_reconcile_replay", Seq: 2, EventType: acp.GenericEventType, PayloadJSON: `{"kind":"kingdom.tool","activity_id":"recovered-tool","label":"Fetched https://example.com"}`, CreatedAt: "2026-06-12T11:00:07Z"},
+		{EventID: "op_reconcile_replay:3", OperationID: "op_reconcile_replay", Seq: 3, EventType: acp.RunActivityReconciledEventType, PayloadJSON: `{}`, CreatedAt: "2026-06-12T11:00:08Z"},
+	} {
+		if _, err := store.AppendOperationEvent(ctx, event); err != nil {
+			t.Fatalf("append event %s: %v", event.EventID, err)
+		}
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/op_reconcile_replay/events", nil)
+	res := httptest.NewRecorder()
+	server.writePlanningOperationEvents(res, req, "op_reconcile_replay", "op_reconcile_replay:1", nil)
+	body := res.Body.String()
+	if strings.Contains(body, "id: op_reconcile_replay:1\n") || !strings.Contains(body, "id: op_reconcile_replay:2\n") || !strings.Contains(body, "id: op_reconcile_replay:3\n") {
+		t.Fatalf("expected exact replay of activity then marker after completed event, got %q", body)
+	}
+	if strings.Index(body, "id: op_reconcile_replay:2\n") > strings.Index(body, "id: op_reconcile_replay:3\n") {
+		t.Fatalf("expected recovered activity before marker, got %q", body)
+	}
+}
+
 func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	t.Parallel()
 
@@ -555,6 +649,123 @@ func TestGetAcpRunExposesTerminalOutputText(t *testing.T) {
 	if run.OutputText == nil || *run.OutputText != "Partial decree body" {
 		t.Fatalf("expected output_text to expose persisted terminal text, got %+v", run.OutputText)
 	}
+}
+
+func TestAcpRunDoesNotAutomaticallyRetryAfterMeaningfulPartialText(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("# Project\n"), 0o644); err != nil {
+		t.Fatalf("write project root seed: %v", err)
+	}
+	policy, err := retryengine.LoadPolicyFromFile(filepath.Join("..", "..", "policies", "retry_policy.yaml"), filepath.Join("..", "..", "contracts", "schemas", "retry_policy.schema.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	retries, err := retryengine.NewEngine(policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := &retryOutputPlannerAgent{observed: make(chan struct{}, 2)}
+	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
+		ProjectRoot:  projectRoot,
+		Now:          func() time.Time { return time.Date(2026, 6, 12, 11, 0, 0, 0, time.UTC) },
+		PlannerAgent: agent,
+		RetryEngine:  retries,
+	})
+	server := handler.(*Server)
+	session, err := server.planningService.CreateSession(context.Background(), "Retry Output", `{"model":"test-model"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, err := server.planningService.CreateOperation(context.Background(), session.PlanningSessionID, planning.CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Plan this", AnswerPayloadJSON: `{"text":"Plan this"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-agent.observed
+	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+		operation, found, err := state.NewPlanningStore(db).GetOperation(context.Background(), op.Operation.OperationID)
+		if err != nil {
+			return err
+		}
+		if !found || operation.Status != state.PlanningOperationStatusFailed {
+			return fmt.Errorf("meaningful-progress operation status=%q found=%t", operation.Status, found)
+		}
+		return nil
+	})
+	var meaningfulProgress int
+	var decision string
+	if err := db.QueryRow(`SELECT meaningful_progress, decision FROM retry_decisions WHERE planning_operation_id = ?`, op.Operation.OperationID).Scan(&meaningfulProgress, &decision); err != nil {
+		t.Fatal(err)
+	}
+	if meaningfulProgress != 1 || decision != string(state.RetryDecisionFailFast) {
+		t.Fatalf("retry decision meaningful_progress=%d decision=%q, want progress and fail-fast", meaningfulProgress, decision)
+	}
+	if agent.calls != 1 {
+		t.Fatalf("provider call count=%d, want no automatic rerun after streamed text", agent.calls)
+	}
+	var messageParts int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_operation_events WHERE operation_id = ? AND event_type = ?`, op.Operation.OperationID, acp.MessagePartEventType).Scan(&messageParts); err != nil {
+		t.Fatal(err)
+	}
+	if messageParts == 0 {
+		t.Fatal("expected the first attempt's streamed partial text to remain in the event log")
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/acp/runs/" + acp.PlannerRunID(op.Operation.OperationID)})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected acp run 200, got %d (%s)", res.Code, res.Body.String())
+	}
+	var run gen.AcpRun
+	if err := json.Unmarshal(res.Body.Bytes(), &run); err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != gen.AcpRunStatusFailed {
+		t.Fatalf("acp status=%q, want failed", run.Status)
+	}
+	if run.OutputText != nil && strings.Contains(*run.OutputText, "current successful response") {
+		t.Fatalf("acp output unexpectedly came from an automatic retry: %v", run.OutputText)
+	}
+}
+
+type retryOutputPlannerAgent struct {
+	calls    int
+	observed chan struct{}
+}
+
+func (a *retryOutputPlannerAgent) OpeningTurn(ctx context.Context, input planning.AgentContext) (planning.AgentTurn, error) {
+	return (&testPlannerAgent{}).OpeningTurn(ctx, input)
+}
+
+func (a *retryOutputPlannerAgent) OpeningTurnStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.AgentTurn, error) {
+	return (&testPlannerAgent{}).OpeningTurnStream(ctx, input, onChunk)
+}
+
+func (a *retryOutputPlannerAgent) ContinueTurnStream(_ context.Context, input planning.AgentContext, onChunk func(string)) (planning.AgentTurn, error) {
+	a.calls++
+	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
+		if err := input.ProviderInvocation.OnProviderSession("retry-output-session"); err != nil {
+			return planning.AgentTurn{}, err
+		}
+	}
+	a.observed <- struct{}{}
+	if a.calls == 1 {
+		if onChunk != nil {
+			onChunk("failed partial response")
+		}
+		return planning.AgentTurn{}, &planning.AgentExecutionError{Metadata: planning.ProviderExecutionMetadata{FinalText: "failed partial response", OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timeout"}, Err: errors.New("timeout")}
+	}
+	metadata, err := apiTestTerminalMetadata(input, "current successful response")
+	if err != nil {
+		return planning.AgentTurn{}, err
+	}
+	return planning.AgentTurn{ContentMarkdown: "current successful response", Metadata: metadata}, nil
+}
+
+func (a *retryOutputPlannerAgent) FormalizePlanStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.FormalizedPlan, error) {
+	return (&testPlannerAgent{}).FormalizePlanStream(ctx, input, onChunk)
+}
+
+func (a *retryOutputPlannerAgent) GenerateTitle(ctx context.Context, input planning.AgentContext, onChunk func(string)) (planning.GeneratedTitle, error) {
+	return (&testPlannerAgent{}).GenerateTitle(ctx, input, onChunk)
 }
 
 func TestPlanningMessagesExposeSourceRunIDBeyondTwoHundredOperations(t *testing.T) {
@@ -651,4 +862,28 @@ func awaitAcpRun(t *testing.T, handler http.Handler, runID string, timeout time.
 		return fmt.Errorf("acp run %s still %s", runID, status)
 	})
 	return run
+}
+
+type lifecyclePlannerAgent struct {
+	testPlannerAgent
+	completed     chan struct{}
+	completedOnce sync.Once
+}
+
+func newLifecyclePlannerAgent() *lifecyclePlannerAgent {
+	return &lifecyclePlannerAgent{completed: make(chan struct{})}
+}
+
+func (a *lifecyclePlannerAgent) ContinueTurnStream(ctx context.Context, input planning.AgentContext, onChunk func(string)) (turn planning.AgentTurn, err error) {
+	defer a.completedOnce.Do(func() { close(a.completed) })
+	return a.testPlannerAgent.ContinueTurnStream(ctx, input, onChunk)
+}
+
+func awaitLifecyclePlannerCompletion(t *testing.T, completed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-completed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("lifecycle planner did not complete its provider turn")
+	}
 }

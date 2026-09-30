@@ -1,7 +1,10 @@
 package api
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -15,6 +18,54 @@ import (
 
 	gen "kingdom/internal/apigen"
 )
+
+func TestStreamingJSONValidationPreservesTypedConstraints(t *testing.T) {
+	var schema openapi3.Schema
+	if err := json.Unmarshal([]byte(`{"type":"object","additionalProperties":false,"required":["text","count"],"properties":{"text":{"type":"string","minLength":1,"maxLength":3},"count":{"type":"integer","minimum":1},"mode":{"type":"string","enum":["safe"]},"pattern":{"type":"string","pattern":"^a+$"},"unique":{"type":"array","uniqueItems":true,"items":{"type":"string"}}}}`), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		body  string
+		valid bool
+	}{
+		{`{"text":"abc","count":1,"mode":"safe","pattern":"aaa","unique":["a","b"]}`, true},
+		{`{"text":"\ud83d\ude00","count":2}`, true},
+		{`{"text":"é中","count":1}`, true},
+		{`{"text":"�","count":1}`, true},
+		{`{"text":"abcd","count":1}`, false},
+		{`{"text":"","count":1}`, false},
+		{`{"text":1,"count":1}`, false},
+		{`{"text":"a","count":1.2}`, false},
+		{`{"text":"a","count":0}`, false},
+		{`{"text":"a","count":1,"mode":"unsafe"}`, false},
+		{`{"text":"a","count":1,"pattern":"b"}`, false},
+		{`{"text":"a","count":1,"unique":["a","a"]}`, false},
+		{`{"text":"a","count":1,"unknown":true}`, false},
+		{`{"text":"a"}`, false},
+		{`{"text":"a","text":"b","count":1}`, false},
+		{`{"text":"\uZZZZ","count":1}`, false},
+		{`{"text":"\q","count":1}`, false},
+		{`{"text":"a","count":1,}`, false},
+		{`{"text":"a","count":1} {}`, false},
+		{`{"text":"a","count":1e}`, false},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			parser := &schemaJSONReader{reader: bufio.NewReader(strings.NewReader(tc.body))}
+			value, err := parser.value(&schema, true)
+			if err == nil {
+				if _, e := parser.nonspace(); e != io.EOF {
+					err = fmt.Errorf("trailing JSON")
+				}
+			}
+			if err == nil {
+				err = schema.VisitJSON(value, openapi3.VisitAsRequest())
+			}
+			if (err == nil) != tc.valid {
+				t.Fatalf("valid=%t error=%v", tc.valid, err)
+			}
+		})
+	}
+}
 
 func TestNewOpenAPIRequestValidator(t *testing.T) {
 	t.Parallel()
@@ -263,6 +314,30 @@ func TestOpenAPISecuredOperationsDeclareCanonicalValidationAndAuthErrors(t *test
 	if len(missingAuthentication) > 0 {
 		sort.Strings(missingAuthentication)
 		t.Fatalf("expected secured operations to declare 401 canonical error responses, missing: %s", strings.Join(missingAuthentication, ", "))
+	}
+}
+
+func TestOpenAPISpecKeepsTypedDecreeBody(t *testing.T) {
+	t.Parallel()
+
+	swagger, err := gen.GetSwagger()
+	if err != nil {
+		t.Fatalf("load swagger: %v", err)
+	}
+	path := swagger.Paths.Find("/decrees")
+	if path == nil || path.Post == nil {
+		t.Fatal("expected POST /decrees operation")
+	}
+	operation := path.Post
+	if operation.RequestBody == nil || operation.RequestBody.Value == nil || !operation.RequestBody.Value.Required {
+		t.Fatal("decree request body must remain required")
+	}
+	content := operation.RequestBody.Value.Content.Get("application/json")
+	if content == nil || content.Schema == nil || content.Schema.Value == nil {
+		t.Fatal("decree JSON schema is missing")
+	}
+	if err := content.Schema.Value.VisitJSON(map[string]any{"decree_title": "test", "decree_text": 42}); err == nil {
+		t.Fatal("decree text must remain a typed string")
 	}
 }
 

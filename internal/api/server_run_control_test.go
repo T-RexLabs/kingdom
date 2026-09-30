@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/state"
+	"kingdom/internal/workspace"
 )
 
 func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
@@ -39,6 +41,86 @@ func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
 
 	if res.Code == http.StatusForbidden || res.Code == http.StatusUnauthorized {
 		t.Fatalf("verified local operator must retain allfather authority regardless of forged role, got %d", res.Code)
+	}
+}
+
+func TestServerRetryExecutionStopRequestsPausedHandoff(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-01T13:00:00Z"
+	attemptID := runID + ":delegated_execution_berserker:1"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-builder-stop-retry', 'builder-berserker', 'Builder', 'blocked', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-stop-retry', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-stop-retry', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, 'nr-builder-stop-retry', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session-builder-stop-retry', 'ses-builder-stop-retry', ?, ?, 'agent_unresponsive', 'provider stopped responding', ?, ?)`, attemptID, runID, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'session-builder-stop-retry', 'ses-builder-stop-retry', 'superseded', 'server_response', ?, ?)`, attemptID, runID, now, now)
+	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-stop-retry' WHERE attempt_id = ?`, attemptID)
+	mustExecSQL(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard-builder-stop-retry', 'decree_attempt', ?, 'inv-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker-builder-stop-retry', 1, ?, ?, ?, ?, ?)`, attemptID, attemptID, runID, now, now, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel-builder-stop-retry', ?, ?, 'nr-builder-stop-retry', 'ses-builder-stop-retry', 'agent_unresponsive', 'provider stopped responding', ?, 'pending', 'guardian_evidence_lost', 1, 'Kingdom proved the managed provider process is absent, but guardian quiescence evidence is missing or invalid.', ?, ?)`, attemptID, runID, now, now, now)
+	projection := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
+	if projection.Code != http.StatusOK {
+		t.Fatalf("expected execution projection 200, got %d (%s)", projection.Code, projection.Body.String())
+	}
+	var executions gen.RunExecutionsResponse
+	if err := json.Unmarshal(projection.Body.Bytes(), &executions); err != nil {
+		t.Fatalf("decode execution projection: %v", err)
+	}
+	var current *gen.RunExecution
+	for _, node := range executions.Items {
+		if node.NodeId == "delegated_execution_berserker" {
+			current = node.CurrentExecution
+			break
+		}
+	}
+	if current == nil || current.AttemptId != attemptID || !current.StopRetryAvailable {
+		t.Fatalf("expected eligible stop retry execution projection, got %#v", executions.Items)
+	}
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry",
+	})
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d (%s)", res.Code, res.Body.String())
+	}
+	var result gen.RetryExecutionStopResult
+	if err := json.Unmarshal(res.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode stop retry result: %v", err)
+	}
+	if result.RunId != runID || result.AttemptId != attemptID || !result.StopRetryRequested {
+		t.Fatalf("unexpected stop retry result: %#v", result)
+	}
+	var handoffState string
+	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel-builder-stop-retry'`).Scan(&handoffState); err != nil {
+		t.Fatalf("load stop retry handoff state: %v", err)
+	}
+	if handoffState != "guardian_evidence_recovery_requested" {
+		t.Fatalf("expected guardian_evidence_recovery_requested, got %q", handoffState)
+	}
+	var recoveryEvents int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM attempt_event_log WHERE attempt_id = ? AND event_type = 'attempt.guardian_evidence_recovery_requested' AND reason_code = 'guardian_evidence_lost'`, attemptID).Scan(&recoveryEvents); err != nil {
+		t.Fatalf("count guardian evidence recovery events: %v", err)
+	}
+	if recoveryEvents != 1 {
+		t.Fatalf("expected one durable guardian evidence recovery event, got %d", recoveryEvents)
+	}
+	replayed := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry",
+	})
+	if replayed.Code != http.StatusAccepted {
+		t.Fatalf("expected idempotent 202 replay, got %d (%s)", replayed.Code, replayed.Body.String())
+	}
+	conflict := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/executions/" + attemptID + "/stop-retry",
+		idempotencyKey: "idem-stop-retry-conflict",
+	})
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("expected duplicate stop retry request to conflict, got %d (%s)", conflict.Code, conflict.Body.String())
 	}
 }
 
@@ -205,6 +287,24 @@ func TestServerFinalApprovalReworkReopensRunThroughPlanDrafting(t *testing.T) {
 	}
 	if !queuedPlanAttempt.Valid || queuedPlanAttempt.Int64 != 1 {
 		t.Fatalf("expected queued_plan_attempt=1, got %#v", queuedPlanAttempt)
+	}
+
+	var eventType, payloadJSON string
+	if err := db.QueryRow(`SELECT event_type, payload_json FROM events WHERE run_id = ? AND node_run_id = (SELECT node_run_id FROM node_runs WHERE run_id = ? AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1)`, runID, runID).Scan(&eventType, &payloadJSON); err != nil {
+		t.Fatalf("query final rework queued event: %v", err)
+	}
+	if eventType != "attempt.final_rework_queued" {
+		t.Fatalf("expected final rework queued event, got %q", eventType)
+	}
+	var queuedPayload map[string]any
+	if err := json.Unmarshal([]byte(payloadJSON), &queuedPayload); err != nil {
+		t.Fatalf("decode final rework queued payload: %v", err)
+	}
+	if queuedPayload["governance_rework"] != "final" || queuedPayload["state"] != "ready" {
+		t.Fatalf("expected final governance rework payload, got %#v", queuedPayload)
+	}
+	if _, isRecoveryPayload := queuedPayload["recovery_trigger"]; isRecoveryPayload {
+		t.Fatalf("final governance rework must not use a retry recovery payload, got %#v", queuedPayload)
 	}
 }
 
@@ -1076,7 +1176,7 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, ?, ?)`, "agent_cancel_reviewer_"+runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'delegated_execution_berserker', 1,1, 'running', 'builder-berserker', ?, 1, ?, NULL)`, "nr_cancel_builder_"+runID, runID, "agent_cancel_builder_"+runID, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review_shieldmaiden', 1,1, 'ready', 'reviewer-shieldmaiden', ?, 1, NULL, NULL)`, "nr_cancel_review_"+runID, runID, "agent_cancel_reviewer_"+runID)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'running', 'worker-1', ?, 1, ?, ?, NULL, NULL, '', '', ?, ?)`, runID+":delegated_execution_berserker:1", runID, "nr_cancel_builder_"+runID, now, "session_cancel_builder_"+runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'running', 'provider_backed', 'server_response', 'worker-1', ?, 1, ?, ?, NULL, NULL, '', '', ?, ?)`, runID+":delegated_execution_berserker:1", runID, "nr_cancel_builder_"+runID, now, "session_cancel_builder_"+runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?)`, "session_cancel_builder_"+runID, "agent_cancel_builder_"+runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
@@ -1423,6 +1523,75 @@ func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 	}
 }
 
+func TestServerRetryAndRerunRejectStartedManagedWorktreeCleanup(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		path func(string) string
+	}{
+		{name: "retry", path: func(runID string) string { return "/api/v1/runs/" + runID + "/nodes/kickoff/retry" }},
+		{name: "rerun", path: func(runID string) string { return "/api/v1/runs/" + runID + "/rerun-from/kickoff" }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			handler, db := newAPIServerForTest(t)
+			runID := seedRunViaAPI(t, handler)
+			setRunStatus(t, db, runID, "failed")
+
+			mainWorktreeRoot := t.TempDir()
+			worktreeName := workspace.RunPathName("cleanup-race", runID)
+			worktrees := workspace.NewRunWorktreeStore(db)
+			now := time.Now().UTC().Format(time.RFC3339Nano)
+			if err := worktrees.UpsertActive(context.Background(), runID, filepath.Join(mainWorktreeRoot, ".git"), mainWorktreeRoot, ".", worktreeName, "1111111111111111111111111111111111111111", now); err != nil {
+				t.Fatalf("persist managed run worktree: %v", err)
+			}
+			if err := worktrees.ScheduleTerminalCleanup(context.Background(), now, now); err != nil {
+				t.Fatalf("schedule managed worktree cleanup: %v", err)
+			}
+			_, claim, claimed, err := worktrees.ClaimDueForCleanup(context.Background(), runID, now, "cleanup_api_"+tc.name)
+			if err != nil || !claimed {
+				t.Fatalf("claim managed worktree cleanup: claimed=%t err=%v", claimed, err)
+			}
+			started, err := worktrees.BeginCleanupDeletion(context.Background(), claim)
+			if err != nil || !started {
+				t.Fatalf("begin managed worktree deletion: started=%t err=%v", started, err)
+			}
+
+			var attemptsBefore int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&attemptsBefore); err != nil {
+				t.Fatalf("count kickoff attempts before replay: %v", err)
+			}
+			res := performJSONRequest(t, handler, requestSpec{
+				method:         http.MethodPost,
+				path:           tc.path(runID),
+				body:           map[string]any{"reason": "wait for managed worktree cleanup"},
+				idempotencyKey: "idem-cleanup-race-" + tc.name,
+			})
+			if res.Code != http.StatusConflict {
+				t.Fatalf("expected 409 while cleanup deletion has started, got %d (%s)", res.Code, res.Body.String())
+			}
+			assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+			if !strings.Contains(res.Body.String(), "wait for cleanup to finish") {
+				t.Fatalf("cleanup conflict did not explain the retry condition: %s", res.Body.String())
+			}
+			var runStatus string
+			if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+				t.Fatalf("read run status after rejected replay: %v", err)
+			}
+			if runStatus != "failed" {
+				t.Fatalf("rejected %s changed run status to %q", tc.name, runStatus)
+			}
+			var attemptsAfter int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&attemptsAfter); err != nil {
+				t.Fatalf("count kickoff attempts after replay: %v", err)
+			}
+			if attemptsAfter != attemptsBefore {
+				t.Fatalf("rejected %s queued an attempt: before=%d after=%d", tc.name, attemptsBefore, attemptsAfter)
+			}
+		})
+	}
+}
+
 func TestServerRetryNodeReopensSettledCancelledRun(t *testing.T) {
 	t.Parallel()
 
@@ -1461,7 +1630,7 @@ func TestServerRerunFromCancelledWaitsForCancellationOutbox(t *testing.T) {
 	attemptID := runID + ":kickoff:1"
 	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES (?, ?, 'kickoff', 1, 1, 'cancelled', 'council-member', ?, 1, ?)`, nodeRunID, runID, agentID, now)
-	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, session_ref, committed_at, created_at, updated_at) VALUES (?, ?, ?, 'committed_cancelled', 'provider_backed', ?, ?, ?, ?)`, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, session_ref, committed_at, created_at, updated_at) VALUES (?, ?, ?, 'committed_cancelled', 'provider_backed', 'server_response', ?, ?, ?, ?)`, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'run_cancelled_by_user', 'cancel settling', ?, 'pending', ?, ?)`, "cancel_outbox_"+runID, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
 	setRunStatus(t, db, runID, "cancelled")
 

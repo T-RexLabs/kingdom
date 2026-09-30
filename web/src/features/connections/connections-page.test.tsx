@@ -811,6 +811,45 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("Finish creating the private App on GitHub.")).toBeInTheDocument();
   });
 
+  it("shows recovery guidance when the browser blocks a GitHub handoff tab", async () => {
+    let installationRequests = 0;
+    const open = vi.fn().mockReturnValue(null);
+    vi.stubGlobal("open", open);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) {
+          return json({ items: [] });
+        }
+        if (url.endsWith("/connections/github/setup-options")) {
+          return json({ shared_enabled: false });
+        }
+        if (url.endsWith("/connections/github/manifest-flows")) {
+          return json({
+            flow_id: "flow-popup-blocked-123456",
+            stage: "awaiting_installation",
+            expires_at: "2099-08-15T13:00:00Z",
+          });
+        }
+        if (url.endsWith("/manifest-flows/flow-popup-blocked-123456/installation") && init?.method === "POST") {
+          installationRequests += 1;
+          return json({ installation_url: "https://github.com/apps/kingdom/installations/new" });
+        }
+        throw new Error(`unexpected request ${url}`);
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ConnectionsPage />);
+
+    await user.click(await screen.findByRole("button", { name: "Choose Repositories on GitHub" }));
+
+    expect(await screen.findByText(/allow pop-ups for this site/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry This Step" })).toBeInTheDocument();
+    expect(open).toHaveBeenCalledWith("https://github.com/apps/kingdom/installations/new", "kingdom-github-setup");
+    expect(installationRequests).toBe(1);
+  });
+
   it("keeps manual metadata in a secondary modal and shows post-save CLI guidance", async () => {
     let postBody: Record<string, unknown> | undefined;
     vi.stubGlobal(
