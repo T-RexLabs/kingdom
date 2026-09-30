@@ -35,7 +35,7 @@ func TestGeneratedContentExcludedAcrossUmbrellaSnapshotLifecycle(t *testing.T) {
 	for _, repo := range []string{"repo-a", "repo-b"} {
 		writeTestFile(t, source, repo+"/.git/HEAD", "ref: refs/heads/main\n")
 	}
-	generated := []string{".venv", "__pycache__", ".ruff_cache", "node_modules"}
+	generated := []string{".venv", "__pycache__", ".ruff_cache", "node_modules", ".terraform"}
 	for _, name := range generated {
 		writeTestFile(t, source, "repo-a/tools/"+name+"/cache.bin", "excluded source cache")
 	}

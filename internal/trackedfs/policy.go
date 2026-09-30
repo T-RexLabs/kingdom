@@ -38,6 +38,7 @@ var generatedDirectoryNames = map[string]struct{}{
 	".mypy_cache":   {},
 	".tox":          {},
 	".nox":          {},
+	".terraform":    {},
 }
 
 type Metadata struct {

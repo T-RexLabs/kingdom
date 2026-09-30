@@ -14,7 +14,7 @@ import (
 func TestGeneratedDirectoriesAreExcludedWithoutReservingFileNames(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
-	generated := []string{"node_modules", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox", ".nox"}
+	generated := []string{"node_modules", ".venv", "__pycache__", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".tox", ".nox", ".terraform"}
 	want := map[string]bool{}
 	write := func(path string) {
 		t.Helper()
@@ -39,7 +39,7 @@ func TestGeneratedDirectoriesAreExcludedWithoutReservingFileNames(t *testing.T) 
 			t.Errorf("generated directory %q must not become hard-protected", name)
 		}
 	}
-	for _, path := range []string{".gitignore", "config/local.yaml", "dist/report.json", "src/venv/api.py", "vendor/library.go", "fixtures/.venv-example/file.txt"} {
+	for _, path := range []string{".gitignore", "config/local.yaml", ".terraform.lock.hcl", "infra/main.tf", "dist/report.json", "src/venv/api.py", "vendor/library.go", "fixtures/.venv-example/file.txt"} {
 		write(path)
 		want[path] = true
 	}
