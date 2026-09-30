@@ -248,8 +248,11 @@ export function PlannerTranscript({
     }
 
     lastFollowLatestRequestRef.current = followLatestRequest;
-    updatePinned(true);
-    pinToLatest();
+    const frameId = requestAnimationFrame(() => {
+      updatePinned(true);
+      pinToLatest();
+    });
+    return () => cancelAnimationFrame(frameId);
   }, [followLatestRequest, pinToLatest, updatePinned]);
 
   // Single growth detector. We observe the tail item's content box — the element

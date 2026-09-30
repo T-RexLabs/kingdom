@@ -40,17 +40,18 @@ export default defineConfig({
     proxy: {
       "/api": {
         target: "http://localhost:8080",
-        changeOrigin: true,
+        changeOrigin: false,
       },
       "/healthz": {
         target: "http://localhost:8080",
-        changeOrigin: true,
+        changeOrigin: false,
       },
     },
   },
   test: {
     globals: true,
-    environment: "jsdom",
+    // jsdom plus the storage Node 26 would otherwise mask; see the module doc.
+    environment: "./src/test/jsdom-storage-env.ts",
     setupFiles: "./src/test/setup.ts",
   },
 });

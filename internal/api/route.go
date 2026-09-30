@@ -1,6 +1,7 @@
 package api
 
 import (
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -25,6 +26,36 @@ func NormalizeBasePath(raw string) string {
 		base = "/" + base
 	}
 	return base
+}
+
+func ValidateBasePath(raw string) (string, error) {
+	base := NormalizeBasePath(raw)
+	if base == "/" {
+		return "", fmt.Errorf("API base path cannot be root")
+	}
+	if strings.Contains(base, "//") {
+		return "", fmt.Errorf("API base path cannot contain empty segments")
+	}
+	segments := strings.Split(strings.TrimPrefix(base, "/"), "/")
+	for _, segment := range segments {
+		if segment == "." || segment == ".." || segment == "" {
+			return "", fmt.Errorf("API base path contains an invalid segment")
+		}
+		for _, char := range segment {
+			if char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || strings.ContainsRune("-._~", char) {
+				continue
+			}
+			return "", fmt.Errorf("API base path segment %q contains an invalid character", segment)
+		}
+	}
+	reserved := map[string]struct{}{
+		"agents": {}, "assets": {}, "connections": {}, "decrees": {}, "favicon.svg": {},
+		"healthz": {}, "index.html": {}, "realm-analytics": {}, "runs": {}, "src": {},
+	}
+	if _, conflict := reserved[strings.ToLower(segments[0])]; conflict {
+		return "", fmt.Errorf("API base path conflicts with reserved web route /%s", segments[0])
+	}
+	return base, nil
 }
 
 // MatchesBasePath reports whether path is the API base path or any

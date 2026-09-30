@@ -29,6 +29,8 @@ const plannerQueryOptions = {
   refetchOnWindowFocus: manualRefetchQueryOptions.refetchOnWindowFocus,
 } as const;
 
+export const ACP_RUN_REFETCH_INTERVAL_MS = 10_000;
+
 export function usePlanningSessions(limit = 100) {
   return useQuery({
     queryKey: plannerKeys.list(limit),
@@ -119,6 +121,7 @@ export function useUpdatePlanningSessionTitle(sessionId: string) {
         title_state: updated.title_state,
       });
     },
+    sessionId,
   );
 }
 
@@ -128,6 +131,7 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
     {
       modelSelection: UpdatePlanningSessionRequest["model_selection"];
       key: string;
+      editGeneration?: number;
     },
     PlanningSessionDetail
   >(
@@ -143,6 +147,7 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
         model_selection: updated.model_selection,
       });
     },
+    sessionId,
   );
 }
 
@@ -210,6 +215,13 @@ export function usePlanningOperation(operationId?: string) {
     queryFn: operationId
       ? () => apiFetch<AcpRun>(`/acp/runs/${operationId}`)
       : skipToken,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+      return status === "completed" || status === "failed" || status === "cancelled"
+        ? false
+        : ACP_RUN_REFETCH_INTERVAL_MS;
+    },
+    refetchIntervalInBackground: true,
   });
 }
 

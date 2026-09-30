@@ -53,6 +53,23 @@ func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
 	}
 }
 
+func TestWorkerOutputValidatorRejectsUnsafeDeletionArtifactPaths(t *testing.T) {
+	t.Parallel()
+
+	validator := &WorkerOutputValidator{}
+	request := WorkerOutputValidationRequest{RunID: "run", NodeRunID: "node", AttemptID: "attempt", ProducerRole: "builder-berserker", CreatedAt: "2026-08-17T12:00:00Z"}
+	for _, artifactPath := range []string{"/tmp/file", "//tmp/file", `..\secret`, `C:\temp\file`, "../secret"} {
+		t.Run(artifactPath, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := validator.buildArtifactRecord(request, workerOutputArtifact{Action: "delete", Path: artifactPath, Name: "file"}, 0)
+			var validationErr *WorkerOutputValidationError
+			if !errors.As(err, &validationErr) || validationErr.Code != string(errorcatalog.CodeInvalidOutputSchema) {
+				t.Fatalf("unsafe deletion path %q error=%v", artifactPath, err)
+			}
+		})
+	}
+}
+
 func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T) {
 	t.Parallel()
 

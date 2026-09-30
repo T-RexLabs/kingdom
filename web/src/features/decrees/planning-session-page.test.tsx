@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactNode } from "react";
@@ -38,6 +38,8 @@ const mockUseSearch = vi.fn(() => ({}));
 const mockNavigate = vi.fn();
 const mockUsePlannerMessagePages = vi.fn();
 const mockUsePlannerOperation = vi.fn();
+const refetchPlanningSession = vi.fn(async () => ({}));
+const mockNewIdempotencyKey = vi.fn((scope: string) => `${scope}-test`);
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: { children: ReactNode }) => (
@@ -59,7 +61,7 @@ vi.mock("@tanstack/react-query", async () => {
 });
 
 vi.mock("@/api/hooks", () => ({
-  newIdempotencyKey: (scope: string) => `${scope}-test`,
+  newIdempotencyKey: (scope: string) => mockNewIdempotencyKey(scope),
   useProviderModels: () => mockUseProviderModels(),
   useRefreshProviderModels: () => ({ mutate: refreshProviderModelsMutate, isPending: false }),
   usePlanningSession: (...args: unknown[]) => mockUsePlanningSession(...args),
@@ -84,17 +86,60 @@ vi.mock("./planner-draft-panel", () => ({
   PlanResultModal: ({ open, draft }: { open: boolean; draft: unknown }) => (open && draft ? <div>Plan Modal</div> : null),
 }));
 
+vi.mock("@/features/connections/external-source-comparison", () => ({
+  ExternalSourceComparison: ({ baselineId, candidateId }: { baselineId: string; candidateId: string }) => <div aria-label="GitHub source comparison" data-baseline={baselineId} data-candidate={candidateId}>Source comparison</div>,
+}));
+
+vi.mock("@/features/connections/issue-picker", () => ({
+  IssuePicker: ({ onSelect, triggerLabel, onOpenChange }: { onSelect: (selection: unknown) => Promise<void>; triggerLabel: string; onOpenChange?: (open: boolean) => void }) => (
+    <>
+    <button
+      type="button"
+      data-testid="open-import-dialog"
+      onClick={() => onOpenChange?.(true)}
+    >
+      Open Import Dialog
+    </button>
+    <button
+      type="button"
+      onClick={() => {
+        void onSelect({
+          intake: {
+            connection_id: "connection-1",
+            repository_id: "repository-1",
+            issue_number: 23,
+            include_comments: false,
+          },
+          issue: {},
+        }).catch(() => undefined);
+      }}
+    >
+      {triggerLabel}
+    </button>
+    </>
+  ),
+}));
+
 vi.mock("./use-planner-operation", () => ({
   usePlannerOperation: (...args: unknown[]) => mockUsePlannerOperation(...args),
 }));
 
-vi.mock("./use-global-formalize", () => ({
+vi.mock("./global-formalize-context", () => ({
   useGlobalFormalize: () => ({
     current: null,
     trackFormalize: vi.fn(),
     clearFormalize: vi.fn(),
   }),
 }));
+
+/**
+ * Planning sources are a collapsed control in the settings row — the header
+ * stays one row tall on load — so any test that works with the list has to
+ * open it the way an operator would.
+ */
+async function openPlanningSources(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(screen.getByRole("button", { name: /^Planning Sources/ }));
+}
 
 describe("PlanningSessionPage", () => {
   beforeEach(() => {
@@ -131,6 +176,9 @@ describe("PlanningSessionPage", () => {
     setQueryData.mockClear();
     setQueriesData.mockClear();
     mockNavigate.mockReset();
+    refetchPlanningSession.mockClear();
+    mockNewIdempotencyKey.mockReset();
+    mockNewIdempotencyKey.mockImplementation((scope: string) => `${scope}-test`);
     mockUseParams.mockReturnValue({ sessionId: "planning-session-1" });
     mockUseSearch.mockReturnValue({});
     mockUsePlanningSession.mockReturnValue({
@@ -154,6 +202,7 @@ describe("PlanningSessionPage", () => {
         },
       },
       error: null,
+      refetch: refetchPlanningSession,
     });
     mockUsePlanningSessionDraft.mockReturnValue({ data: null });
     mockUseUpdatePlanningSessionTitle.mockReturnValue({
@@ -190,6 +239,7 @@ describe("PlanningSessionPage", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it("shows session title in the top bar", () => {
@@ -205,6 +255,391 @@ describe("PlanningSessionPage", () => {
   it("shows Generate Plan button", () => {
     render(<PlanningSessionPage />);
     expect(screen.getByRole("button", { name: "Generate Plan" })).toBeInTheDocument();
+  });
+
+  it("attaches a GitHub issue to the existing session and refreshes every source card", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = { url: String(input), init };
+      return new Response(JSON.stringify({
+        link_id: "link-23",
+        provider: "github",
+        repository: "owner/repo",
+        issue_number: 23,
+        canonical_url: "https://github.com/owner/repo/issues/23",
+        used_snapshot_id: "snapshot-23",
+        active_snapshot_id: "snapshot-23",
+        latest_snapshot_id: "snapshot-23",
+        status: "never_checked",
+      }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+
+    await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
+    expect(request?.url).toMatch(/\/planning-sessions\/planning-session-1\/external-sources$/);
+    expect(request?.init?.method).toBe("POST");
+    expect(new Headers(request?.init?.headers).get("Idempotency-Key")).toMatch(/^kd1\./);
+    expect(JSON.parse(String(request?.init?.body))).toEqual({
+      connection_id: "connection-1",
+      repository_id: "repository-1",
+      issue_number: 23,
+      include_comments: false,
+    });
+  });
+
+  it("retains the attachment idempotency key while the reservation is pending", async () => {
+    const requestKeys: string[] = [];
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      requestKeys.push(new Headers(init?.headers).get("Idempotency-Key") ?? "");
+      if (requestKeys.length === 1) {
+        return new Response(JSON.stringify({
+          error: {
+            code: "idempotency_pending",
+            message: "The original request is still pending recovery.",
+            retryable: true,
+            category: "conflict",
+            details: {},
+            correlation_id: "test-idempotency-pending",
+            occurred_at: "2026-04-21T10:06:00Z",
+          },
+        }), { status: 409, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ link_id: "link-23" }), {
+        status: 201,
+        headers: { "Content-Type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    expect(requestKeys[0]).toMatch(/^kd1\./);
+    expect(requestKeys[1]).toBe(requestKeys[0]);
+    expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists every source as one row and says nothing about a current one", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
+    // A current source has no update to review, and nothing to say about its
+    // own freshness.
+    expect(screen.queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Not Checked")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
+  });
+
+  it("offers an update review only for the source that has one", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1-next", status: "changed" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    const changed = screen.getByRole("region", { name: "Linked GitHub source owner/one#1" });
+    const unchanged = screen.getByRole("region", { name: "Linked GitHub source owner/two#2" });
+    expect(within(changed).getByRole("button", { name: "Review Update" })).toBeInTheDocument();
+    expect(within(unchanged).queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
+    expect(screen.getByText("Update Available")).toBeInTheDocument();
+
+    // A diff needs room a popover does not have, so reviewing opens where it
+    // can be read — and that is also where adopting happens.
+    await user.click(within(changed).getByRole("button", { name: "Review Update" }));
+    const review = await screen.findByRole("dialog", { name: "Review Source Update" });
+    expect(within(review).getByLabelText("GitHub source comparison")).toBeInTheDocument();
+    expect(within(review).getByRole("button", { name: "Adopt Update" })).toBeInTheDocument();
+  });
+
+  it("shows changed fields after refresh and keeps each source's own baseline", async () => {
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        planning_session_id: "planning-session-1",
+        title: "Planner kickoff",
+        title_state: "custom",
+        auto_title_eligible: false,
+        lifecycle_state: "active",
+        conversation_state: "ready",
+        current_question_message_id: "assistant-1",
+        context_snapshot_id: "planning-context-1",
+        created_at: "2026-04-21T10:00:00Z",
+        updated_at: "2026-04-21T10:05:00Z",
+        project_root: "/tmp/project",
+        model_selection: { model: "github-copilot/gpt-5.4", thinking_effort: "medium" },
+        external_sources: [{
+          link_id: "link-1",
+          provider: "github",
+          repository: "owner/repo",
+          issue_number: 17,
+          canonical_url: "https://github.com/owner/repo/issues/17",
+          used_snapshot_id: "snapshot-used",
+          latest_snapshot_id: "snapshot-latest",
+          status: "changed",
+        }, {
+          link_id: "link-2",
+          provider: "github",
+          repository: "owner/other",
+          issue_number: 18,
+          canonical_url: "https://github.com/owner/other/issues/18",
+          used_snapshot_id: "snapshot-other-used",
+          active_snapshot_id: "snapshot-other-active",
+          latest_snapshot_id: "snapshot-other-latest",
+          status: "changed",
+        }],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toMatch(/\/external-source-links\/link-1\/refreshes$/);
+      expect(init?.method).toBe("POST");
+      expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("external-refresh-test");
+      return new Response(JSON.stringify({
+        outcome: "changed",
+        snapshot_created: true,
+        changes: {
+          title: true,
+          body: true,
+          state: false,
+          repository: false,
+          issue_number: false,
+          canonical_url: false,
+          created_at: false,
+          updated_at: true,
+          comment_count: false,
+          comments: false,
+        },
+        message: "A newer GitHub issue version is available.",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    expect(screen.getAllByText(/update available/i)).toHaveLength(2);
+    expect(screen.getByRole("link", { name: /open owner\/repo#17 on github/i })).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByRole("link", { name: /open owner\/other#18 on github/i })).toBeInTheDocument();
+    const firstSource = screen.getByRole("region", { name: "Linked GitHub source owner/repo#17" });
+    const secondSource = screen.getByRole("region", { name: "Linked GitHub source owner/other#18" });
+
+    // Each source reviews against its own baseline: the used snapshot until an
+    // adoption exists, the adopted one after.
+    await user.click(within(firstSource).getByRole("button", { name: "Review Update" }));
+    expect(within(await screen.findByRole("dialog", { name: "Review Source Update" })).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-used");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(within(secondSource).getByRole("button", { name: "Review Update" }));
+    expect(within(await screen.findByRole("dialog", { name: "Review Source Update" })).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-other-active");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(within(firstSource).getByRole("button", { name: /^refresh /i }));
+
+    expect(await within(firstSource).findByText("A newer GitHub issue version is available.")).toBeInTheDocument();
+    expect(refetchPlanningSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("lists every source as one row and expands one at a time", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    expect(screen.getByRole("button", { name: "Add Source" })).toBeInTheDocument();
+    expect(screen.getAllByRole("region", { name: /Linked GitHub source/ })).toHaveLength(2);
+    // A current source has nothing behind a disclosure, so it has no
+    // disclosure — and nothing to say about its own freshness.
+    expect(screen.queryByRole("button", { name: /^Details for / })).not.toBeInTheDocument();
+    expect(screen.queryByText("Not Checked")).not.toBeInTheDocument();
+    expect(screen.queryByText("Up to Date")).not.toBeInTheDocument();
+  });
+
+  it("offers an update review only for the source that has one", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1-next", status: "changed" },
+          { link_id: "link-2", provider: "github", repository: "owner/two", issue_number: 2, canonical_url: "https://github.com/owner/two/issues/2", used_snapshot_id: "snapshot-2", active_snapshot_id: "snapshot-2", latest_snapshot_id: "snapshot-2", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    const changed = screen.getByRole("region", { name: "Linked GitHub source owner/one#1" });
+    const unchanged = screen.getByRole("region", { name: "Linked GitHub source owner/two#2" });
+    expect(within(changed).getByRole("button", { name: "Review Update" })).toBeInTheDocument();
+    expect(within(unchanged).queryByRole("button", { name: "Review Update" })).not.toBeInTheDocument();
+    expect(screen.getByText("Update Available")).toBeInTheDocument();
+
+    // A diff needs room a popover does not have, so reviewing opens where it
+    // can be read — and that is also where adopting happens.
+    await user.click(within(changed).getByRole("button", { name: "Review Update" }));
+    const review = await screen.findByRole("dialog", { name: "Review Source Update" });
+    expect(within(review).getByLabelText("GitHub source comparison")).toBeInTheDocument();
+    expect(within(review).getByRole("button", { name: "Adopt Update" })).toBeInTheDocument();
+  });
+
+  it("keeps the sources panel open while the import dialog is open", async () => {
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    await user.click(screen.getByTestId("open-import-dialog"));
+
+    // The import dialog opens over the panel. Left dismissable, the first press
+    // that reached the dialog would close the list the operator is coming back
+    // to with their new source.
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("button", { name: "Add GitHub Issue" })).toBeInTheDocument();
+  });
+
+  it("wires the sources popover to responsive fixed width and end alignment", async () => {
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    const panel = document.querySelector<HTMLElement>("#planning-sources-popover");
+
+    expect(panel).toBeInTheDocument();
+    expect(panel).toHaveAttribute("data-popover-placement", "bottom-end");
+    expect(panel).toHaveClass("w-[264px]");
+    expect(panel).toHaveClass("sm:w-[380px]");
+    expect(panel).toHaveClass("max-w-[calc(100vw_-_16px)]");
+    await waitFor(() => expect(panel?.style.maxWidth).not.toBe(""));
+    expect(panel?.style.minWidth).toBe("");
+  });
+
+  it("removes a source only after confirmation and detaches it on the server", async () => {
+    const base = mockUsePlanningSession().data;
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...base,
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/one", issue_number: 1, canonical_url: "https://github.com/owner/one/issues/1", used_snapshot_id: "snapshot-1", active_snapshot_id: "snapshot-1", latest_snapshot_id: "snapshot-1", status: "never_checked" },
+        ],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    let request: { url: string; init?: RequestInit } | undefined;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      request = { url: String(input), init };
+      return new Response(JSON.stringify({ status: "detached" }), { status: 201, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    await openPlanningSources(user);
+    // Removal is confirmed inline; nothing leaves until the operator says so.
+    await user.click(screen.getByRole("button", { name: "Remove owner/one#1" }));
+    expect(request).toBeUndefined();
+    // The confirmation is the two buttons. It carries no prose, so the labels
+    // are what name the target and separate the ask from the answer.
+    expect(screen.getByRole("button", { name: "Keep owner/one#1" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Confirm removing owner/one#1" }));
+    await waitFor(() => expect(refetchPlanningSession).toHaveBeenCalledTimes(1));
+    expect(request?.url).toMatch(/\/external-source-links\/link-1\/detachments$/);
+    expect(request?.init?.method).toBe("POST");
+    expect(new Headers(request?.init?.headers).get("Idempotency-Key")).toBe("external-detach-test");
+  });
+
+  it("shows durable recovery guidance after a revoked refresh", async () => {
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        planning_session_id: "planning-session-1",
+        title: "Planner kickoff",
+        title_state: "custom",
+        auto_title_eligible: false,
+        lifecycle_state: "active",
+        conversation_state: "ready",
+        current_question_message_id: "assistant-1",
+        context_snapshot_id: "planning-context-1",
+        created_at: "2026-04-21T10:00:00Z",
+        updated_at: "2026-04-21T10:05:00Z",
+        project_root: "/tmp/project",
+        model_selection: { model: "github-copilot/gpt-5.4", thinking_effort: "medium" },
+        external_sources: [{
+          link_id: "link-1",
+          provider: "github",
+          repository: "owner/repo",
+          issue_number: 17,
+          canonical_url: "https://github.com/owner/repo/issues/17",
+          used_snapshot_id: "snapshot-used",
+          latest_snapshot_id: "snapshot-used",
+          status: "revoked",
+        }],
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+
+    const user = userEvent.setup();
+    render(<PlanningSessionPage />);
+
+    // A source Kingdom can no longer read has to be visible before anything is
+    // expanded, or the operator plans against context that is silently gone.
+    expect(screen.getByRole("button", { name: /^Planning Sources/ })).toHaveTextContent("1 unreadable");
+
+    await openPlanningSources(user);
+    expect(screen.getByText(/GitHub App access was revoked/i)).toBeInTheDocument();
+    expect(screen.getByText(/run the connection health check/i)).toBeInTheDocument();
+    expect(screen.queryByText(/refresh completed/i)).not.toBeInTheDocument();
   });
 
   it("renders editable title on click", async () => {
@@ -223,6 +658,122 @@ describe("PlanningSessionPage", () => {
 		expect(screen.getByRole("combobox", { name: "Planner Model" })).toBeInTheDocument();
 		expect(screen.getByRole("button", { name: "Thinking Effort" })).toBeInTheDocument();
 	});
+
+  it("does not revive a stale model draft after canonical A to B to A changes", async () => {
+    const user = userEvent.setup();
+    const sessionA = mockUsePlanningSession().data;
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "fresh",
+        items: [
+          {
+            id: "github-copilot/gpt-5.4",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "GPT-5.4",
+            thinking_effort_options: [{ value: "medium", label: "Medium" }],
+          },
+          {
+            id: "github-copilot/canonical-b",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "Canonical B",
+            thinking_effort_options: [{ value: "low", label: "Low" }],
+          },
+          {
+            id: "github-copilot/local-draft",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "Local Draft",
+            thinking_effort_options: [{ value: "high", label: "High" }],
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const { rerender } = render(<PlanningSessionPage />);
+
+    await user.click(screen.getByRole("combobox", { name: "Planner Model" }));
+    await user.click(screen.getByRole("option", { name: "GitHub Copilot - Local Draft" }));
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).toHaveTextContent("Local Draft");
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("High");
+
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...sessionA,
+        model_selection: {
+          model: "github-copilot/canonical-b",
+          thinking_effort: "low",
+        },
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    rerender(<PlanningSessionPage />);
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).toHaveTextContent("Canonical B");
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("Low");
+
+    mockUsePlanningSession.mockReturnValue({
+      data: sessionA,
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    rerender(<PlanningSessionPage />);
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).toHaveTextContent("GPT-5.4");
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("Medium");
+  });
+
+  it("does not restore a stale thinking draft after navigating away and back", async () => {
+    const user = userEvent.setup();
+    const sessionOne = mockUsePlanningSession().data;
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "fresh",
+        items: [{
+          id: "github-copilot/gpt-5.4",
+          provider_id: "github-copilot",
+          provider_name: "GitHub Copilot",
+          model_name: "GPT-5.4",
+          thinking_effort_options: [
+            { value: "medium", label: "Medium" },
+            { value: "high", label: "High" },
+          ],
+        }],
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
+    const { rerender } = render(<PlanningSessionPage />);
+
+    await user.click(screen.getByRole("button", { name: "Thinking Effort" }));
+    await user.click(screen.getByRole("option", { name: "High" }));
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("High");
+
+    mockUseParams.mockReturnValue({ sessionId: "planning-session-2" });
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...sessionOne,
+        planning_session_id: "planning-session-2",
+        title: "Second session",
+      },
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    rerender(<PlanningSessionPage />);
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("Medium");
+
+    mockUseParams.mockReturnValue({ sessionId: "planning-session-1" });
+    mockUsePlanningSession.mockReturnValue({
+      data: sessionOne,
+      error: null,
+      refetch: refetchPlanningSession,
+    });
+    rerender(<PlanningSessionPage />);
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("Medium");
+  });
 
   it("starts title catch-up once for an eligible placeholder session", async () => {
     mockUsePlanningSession.mockReturnValue({
@@ -315,7 +866,7 @@ describe("PlanningSessionPage", () => {
         lifecycle_state: "active",
         conversation_state: "processing",
         current_question_message_id: "assistant-1",
-        current_operation_id: "operation-1",
+        current_run_id: "operation-1",
         current_draft_id: undefined,
         context_snapshot_id: "planning-context-1",
         created_at: "2026-04-21T10:00:00Z",
@@ -741,13 +1292,17 @@ describe("PlanningSessionPage", () => {
     // caller has to handle; .mutate routes them to hook.error and
     // the dedicated chip, which is the surface we want.
     await waitFor(() => {
-      expect(modelMutate).toHaveBeenCalledWith({
-        modelSelection: {
-          model: "github-copilot/gpt-5.4",
-          thinking_effort: "medium",
+      expect(modelMutate).toHaveBeenCalledWith(
+        {
+          modelSelection: {
+            model: "github-copilot/gpt-5.4",
+            thinking_effort: "medium",
+          },
+          key: "planning-update-model-test",
+          editGeneration: 1,
         },
-        key: "planning-update-model-test",
-      });
+        expect.objectContaining({ onSuccess: expect.any(Function) }),
+      );
     });
     expect(modelMutateAsync).not.toHaveBeenCalled();
     expect(titleMutateAsync).not.toHaveBeenCalled();
@@ -873,6 +1428,7 @@ describe("PlanningSessionPage", () => {
       expect.objectContaining({
         modelSelection: expect.objectContaining({ model: "github-copilot/gpt-5.4" }),
       }),
+		expect.objectContaining({ onSuccess: expect.any(Function) }),
     );
     expect(titleMutateAsync).not.toHaveBeenCalled();
   });
@@ -919,7 +1475,7 @@ describe("PlanningSessionPage", () => {
     expect(modelMutate).not.toHaveBeenCalled();
   });
 
-  it("shows stale planner model catalog warning while preserving model selection", () => {
+  it("says nothing about a stale catalog while its models are still selectable", () => {
     mockUseProviderModels.mockReturnValue({
       data: {
         catalog_status: "stale",
@@ -933,7 +1489,7 @@ describe("PlanningSessionPage", () => {
           },
         ],
         failure_reason: "command_failed",
-        failure_message: "showing cached models",
+        failure_message: "Showing the models Kingdom already had.",
       },
       isLoading: false,
       error: null,
@@ -942,95 +1498,83 @@ describe("PlanningSessionPage", () => {
 
     render(<PlanningSessionPage />);
 
-    expect(screen.getByText("showing cached models")).toBeInTheDocument();
+    // The planner header is always on screen above the transcript, so a notice
+    // here costs a full row for the life of the session. It has to earn that by
+    // telling the operator something they can act on.
+    expect(screen.queryByText("Showing the models Kingdom already had.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
   });
 
-	it("keeps cached planner models selectable when a background refresh fails", () => {
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "fresh",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-			},
-			isLoading: false,
-			error: new Error("provider model catalog refresh failed"),
-			refetch: vi.fn(),
-		});
+  it("stays silent when a background refresh fails but cached planner models remain", () => {
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "fresh",
+        items: [
+          {
+            id: "github-copilot/gpt-5.4",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "GPT-5.4",
+            thinking_effort_options: [{ value: "medium", label: "Medium" }],
+          },
+        ],
+      },
+      isLoading: false,
+      error: new Error("provider model catalog refresh failed"),
+      refetch: vi.fn(),
+    });
 
-		render(<PlanningSessionPage />);
+    render(<PlanningSessionPage />);
 
-		expect(screen.getByText("provider model catalog refresh failed")).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
-	});
+    expect(screen.queryByText("provider model catalog refresh failed")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
+  });
 
-	it("uses a live refresh when retrying a stale planner model catalog warning", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-		});
+  it("uses a live refresh when retrying an unreachable planner catalog", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "planner model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+    });
 
-		render(<PlanningSessionPage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<PlanningSessionPage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
-	});
+    expect(refreshProviderModelsMutate).toHaveBeenCalledTimes(1);
+  });
 
-	it("shows retry refresh failures inline while keeping cached planner models selectable", async () => {
-		const user = userEvent.setup();
-		mockUseProviderModels.mockReturnValue({
-			data: {
-				catalog_status: "stale",
-				items: [
-					{
-						id: "github-copilot/gpt-5.4",
-						provider_id: "github-copilot",
-						provider_name: "GitHub Copilot",
-						model_name: "GPT-5.4",
-						thinking_effort_options: [{ value: "medium", label: "Medium" }],
-					},
-				],
-				failure_reason: "command_failed",
-				failure_message: "showing cached models",
-			},
-			isLoading: false,
-			error: null,
-			refetch: vi.fn(),
-			dataUpdatedAt: 1,
-		});
-		refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
-			callbacks?.onError?.(new Error("planner refresh failed"), undefined, undefined);
-		});
+  it("shows a planner retry failure in place of the copy it replaced", async () => {
+    const user = userEvent.setup();
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        catalog_status: "unavailable",
+        items: [],
+        failure_reason: "timeout",
+        failure_message: "planner model catalog unavailable",
+      },
+      isLoading: false,
+      error: null,
+      refetch: vi.fn(),
+      dataUpdatedAt: 1,
+    });
+    refreshProviderModelsMutate.mockImplementation((_vars, callbacks) => {
+      callbacks?.onError?.(new Error("planner refresh failed"), undefined, undefined);
+    });
 
-		render(<PlanningSessionPage />);
-		await user.click(screen.getByRole("button", { name: "Retry refresh" }));
+    render(<PlanningSessionPage />);
+    await user.click(screen.getByRole("button", { name: "Retry" }));
 
-		expect(await screen.findByText("planner refresh failed")).toBeInTheDocument();
-		expect(screen.getByRole("combobox", { name: "Planner Model" })).not.toBeDisabled();
-	});
+    expect(await screen.findByText("planner refresh failed")).toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: "Planner Model" })).toBeDisabled();
+  });
 
   it("concurrent model edit + title save preserves the dirty model selection", async () => {
     // Load-bearing regression test. Before the field-scoped + narrow-
@@ -1145,8 +1689,8 @@ describe("PlanningSessionPage", () => {
     // onSuccess writing the response back into the cache) would tear
     // down the 500ms timer and start a new one — at <500ms cadence
     // the autosave could be starved indefinitely. The fix: deps are
-    // [model, thinkingEffort, hasModelSelectionChanges, modelMutate];
-    // the session reference no longer participates.
+    // [model, thinkingEffort, hasModelSelectionChanges, editGeneration,
+    // submitModelSelection]; the session reference no longer participates.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 
@@ -1176,7 +1720,7 @@ describe("PlanningSessionPage", () => {
     await user.click(screen.getByRole("option", { name: "High" }));
 
     // Advance 250ms — halfway through the debounce. No autosave yet.
-    vi.advanceTimersByTime(250);
+    act(() => vi.advanceTimersByTime(250));
     expect(modelMutate).not.toHaveBeenCalled();
 
     // Sibling cache update lands: a NEW session object (different
@@ -1208,16 +1752,93 @@ describe("PlanningSessionPage", () => {
     // Advance another 250ms — total 500ms since the dropdown change.
     // The original timer must still resolve at 500ms; if the rerender
     // had restarted it, the autosave would not yet have fired.
-    vi.advanceTimersByTime(250);
+    await act(async () => vi.advanceTimersByTime(250));
 
     expect(modelMutate).toHaveBeenCalledTimes(1);
-    expect(modelMutate).toHaveBeenCalledWith({
-      modelSelection: {
+    expect(modelMutate).toHaveBeenCalledWith(
+      {
+        modelSelection: {
+          model: "github-copilot/gpt-5.4",
+          thinking_effort: "high",
+        },
+        key: "planning-update-model-test",
+        editGeneration: 1,
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
+  });
+
+  it("preserves a later local model edit when an earlier autosave resolves during its debounce", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const initialSession = mockUsePlanningSession().data;
+    mockUseProviderModels.mockReturnValue({
+      data: {
+        items: [
+          {
+            id: "github-copilot/gpt-5.4",
+            provider_id: "github-copilot",
+            provider_name: "GitHub Copilot",
+            model_name: "GPT-5.4",
+            thinking_effort_options: [
+              { value: "low", label: "Low" },
+              { value: "medium", label: "Medium" },
+              { value: "high", label: "High" },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+    });
+    const { rerender } = render(<PlanningSessionPage />);
+
+    await user.click(screen.getByRole("button", { name: "Thinking Effort" }));
+    await user.click(screen.getByRole("option", { name: "High" }));
+    await act(async () => vi.advanceTimersByTime(500));
+    expect(modelMutate).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "Thinking Effort" }));
+    await user.click(screen.getByRole("option", { name: "Low" }));
+    await act(async () => vi.advanceTimersByTime(250));
+    const firstAutosaveCallbacks = modelMutate.mock.calls[0]?.[1] as {
+      onSuccess?: (result: typeof initialSession) => void;
+    };
+    act(() => firstAutosaveCallbacks.onSuccess?.({
+      ...initialSession,
+      model_selection: {
         model: "github-copilot/gpt-5.4",
         thinking_effort: "high",
       },
-      key: "planning-update-model-test",
+    }));
+
+    mockUsePlanningSession.mockReturnValue({
+      data: {
+        ...initialSession,
+        model_selection: {
+          model: "github-copilot/gpt-5.4",
+          thinking_effort: "high",
+        },
+      },
+      error: null,
+      refetch: refetchPlanningSession,
     });
+    rerender(<PlanningSessionPage />);
+
+    expect(screen.getByRole("button", { name: "Thinking Effort" })).toHaveTextContent("Low");
+
+    await act(async () => vi.advanceTimersByTime(250));
+    expect(modelMutate).toHaveBeenCalledTimes(2);
+    expect(modelMutate).toHaveBeenLastCalledWith(
+      {
+        modelSelection: {
+          model: "github-copilot/gpt-5.4",
+          thinking_effort: "low",
+        },
+        key: "planning-update-model-test",
+        editGeneration: 2,
+      },
+      expect.objectContaining({ onSuccess: expect.any(Function) }),
+    );
   });
 
   it("model chip disappears and reset() fires when the user reverts to canonical", async () => {

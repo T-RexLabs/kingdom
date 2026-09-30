@@ -122,10 +122,8 @@ func (s *operationService) CreateOperation(ctx context.Context, planningSessionI
 		return CreateOperationResult{}, fmt.Errorf("marshal planning operation request: %w", err)
 	}
 	operationID := operationReqID(s.deps)
-	acpRunID := acp.PlannerRunID(operationID)
 	operationReq := state.CreatePlanningOperationRequest{
 		OperationID:        operationID,
-		AcpRunID:           acpRunID,
 		PlanningSessionID:  planningSessionID,
 		Type:               operationType,
 		Status:             state.PlanningOperationStatusQueued,

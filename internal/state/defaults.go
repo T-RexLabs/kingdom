@@ -11,7 +11,6 @@ const (
 
 	DefaultMaxSpawnDepth         = 3
 	DefaultMaxActiveAgentsPerRun = 12
-	DefaultMaxAttemptsPerNode    = 5
 
 	DefaultNightravenConcurrencyCap = 1
 )

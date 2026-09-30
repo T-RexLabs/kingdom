@@ -1087,7 +1087,8 @@ CREATE TABLE planning_operations (
   operation_id TEXT PRIMARY KEY,
   acp_run_id TEXT NOT NULL,
   planning_session_id TEXT NOT NULL,
-  type TEXT NOT NULL CHECK (type IN ('bootstrap_context', 'reply', 'formalize', 'regenerate', 'generate_title')),
+  planning_context_snapshot_id TEXT,
+  type TEXT NOT NULL CHECK (type IN ('reply', 'formalize', 'regenerate', 'generate_title')),
   status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'succeeded', 'failed', 'cancelled')),
   request_payload_json TEXT NOT NULL,
   lease_owner TEXT NOT NULL DEFAULT '',
@@ -1104,6 +1105,7 @@ CREATE TABLE planning_operations (
   started_at TEXT,
   finished_at TEXT,
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
+  FOREIGN KEY (planning_context_snapshot_id) REFERENCES planning_context_snapshots(planning_context_snapshot_id),
   FOREIGN KEY (active_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id),
   FOREIGN KEY (canonical_settlement_id) REFERENCES planning_provider_completion_settlements(settlement_id)
 );
@@ -1122,6 +1124,14 @@ ON planning_operations (active_provider_invocation_id);
 
 CREATE INDEX idx_planning_operations_canonical_settlement
 ON planning_operations (canonical_settlement_id);
+
+CREATE INDEX idx_planning_operations_context_snapshot
+ON planning_operations (planning_context_snapshot_id);
+
+CREATE TRIGGER planning_operation_context_binding_immutable
+BEFORE UPDATE OF planning_context_snapshot_id ON planning_operations
+WHEN NEW.planning_context_snapshot_id IS NOT OLD.planning_context_snapshot_id
+BEGIN SELECT RAISE(ABORT, 'planning operation context binding is immutable'); END;
 
 CREATE UNIQUE INDEX idx_planning_operations_single_active_interactive
 ON planning_operations (planning_session_id)

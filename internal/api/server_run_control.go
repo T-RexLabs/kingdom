@@ -26,7 +26,7 @@ func (s *Server) handleCancelRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.cancel_run")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.cancel_run")
 	if !ok {
 		return
 	}
@@ -135,9 +135,8 @@ func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID := strings.TrimSpace(r.Header.Get(actorIDHeader))
-	roleID := strings.TrimSpace(r.Header.Get(roleIDHeader))
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.retry_node"); !ok {
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.retry_node")
+	if !ok {
 		return
 	}
 	runStatus, err := s.runStatusForRun(r.Context(), runID)
@@ -145,12 +144,12 @@ func (s *Server) handleRetryNode(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "fetch run status failed")
 		return
 	}
-	if runStatus != "failed" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed before retry", "api.retry_node", map[string]any{"run_id": runID, "run_status": runStatus})
+	if runStatus != "failed" && runStatus != "cancelled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed or cancelled before retry", "api.retry_node", map[string]any{"run_id": runID, "run_status": runStatus})
 		return
 	}
 
-	if _, err := s.transitionService.ReplayRunFromFailure(r.Context(), state.ReplayRunFromFailureRequest{
+	if _, err := s.transitionService.ReplayTerminalRun(r.Context(), state.ReplayTerminalRunRequest{
 		RunID:           runID,
 		AnchorNodeID:    nodeKey,
 		TargetNodeIDs:   []string{nodeKey},
@@ -195,9 +194,8 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	actorID := strings.TrimSpace(r.Header.Get(actorIDHeader))
-	roleID := strings.TrimSpace(r.Header.Get(roleIDHeader))
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.rerun_from_node"); !ok {
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.rerun_from_node")
+	if !ok {
 		return
 	}
 	runStatus, err := s.runStatusForRun(r.Context(), runID)
@@ -205,8 +203,8 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "fetch run status failed")
 		return
 	}
-	if runStatus != "failed" {
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed before rerun", "api.rerun_from_node", map[string]any{"run_id": runID, "run_status": runStatus})
+	if runStatus != "failed" && runStatus != "cancelled" {
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, "run must be failed or cancelled before rerun", "api.rerun_from_node", map[string]any{"run_id": runID, "run_status": runStatus})
 		return
 	}
 	replayPlan, err := s.manualRerunPlan(r.Context(), runID, nodeKey)
@@ -219,7 +217,7 @@ func (s *Server) handleRerunFromNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.transitionService.ReplayRunFromFailure(r.Context(), state.ReplayRunFromFailureRequest{
+	if _, err := s.transitionService.ReplayTerminalRun(r.Context(), state.ReplayTerminalRunRequest{
 		RunID:           runID,
 		AnchorNodeID:    replayPlan.DisplayAnchorNodeID,
 		TargetNodeIDs:   replayPlan.TargetNodeIDs,
@@ -283,12 +281,8 @@ func (s *Server) handleCreatePlanApproval(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.create_plan_approval")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.create_plan_approval")
 	if !ok {
-		return
-	}
-	if roleID != "allfather" {
-		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "plan approval endpoint is allfather-only", "api.create_plan_approval", map[string]any{"role_id": roleID})
 		return
 	}
 
@@ -459,12 +453,8 @@ func (s *Server) handleCreateFinalApproval(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	actorID, roleID, ok := s.requireActorRoleHeaders(w, r, "api.create_final_approval")
+	actorID, roleID, ok := s.requirePrincipal(w, r, "api.create_final_approval")
 	if !ok {
-		return
-	}
-	if roleID != "allfather" {
-		writeCanonicalError(w, http.StatusForbidden, errorcatalog.CodePolicyViolation, "final approval endpoint is allfather-only", "api.create_final_approval", map[string]any{"role_id": roleID})
 		return
 	}
 
@@ -645,14 +635,10 @@ func (s *Server) writeRunTransitionApplyError(w http.ResponseWriter, err error, 
 	var illegalTransitionErr *state.IllegalTransitionError
 	var stateConflictErr *state.StateConflictError
 	var replayWaveActiveErr *state.ReplayWaveActiveError
-	var attemptCapErr *state.NodeAttemptLimitExceededError
+	var replayNotQuiescentErr *state.ReplayNotQuiescentError
 	switch {
-	case errors.As(err, &attemptCapErr):
-		budgetDetails := mergeCanonicalErrorDetails(details, map[string]any{
-			"node_key":              attemptCapErr.NodeID,
-			"max_attempts_per_node": attemptCapErr.MaxLimit,
-		})
-		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeBudgetExceeded, attemptCapErr.Error(), operation, budgetDetails)
+	case errors.As(err, &replayNotQuiescentErr):
+		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, replayNotQuiescentErr.Error(), operation, mergeCanonicalErrorDetails(details, map[string]any{"settling": replayNotQuiescentErr.Blockers}))
 	case errors.As(err, &illegalTransitionErr), errors.As(err, &stateConflictErr), errors.As(err, &replayWaveActiveErr):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, blockedMessage, operation, details)
 	default:
@@ -661,9 +647,6 @@ func (s *Server) writeRunTransitionApplyError(w http.ResponseWriter, err error, 
 }
 
 func mergeCanonicalErrorDetails(base map[string]any, extra map[string]any) map[string]any {
-	if len(base) == 0 && len(extra) == 0 {
-		return nil
-	}
 	merged := make(map[string]any, len(base)+len(extra))
 	for key, value := range base {
 		merged[key] = value

@@ -1,12 +1,13 @@
-import { newIdempotencyKey, useDeletePlanningSession, usePlanningSessions, type PlanningSessionSummary } from "@/api/hooks";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { useDeletePlanningSession, usePlanningSessions, type PlanningSessionSummary } from "@/api/hooks";
+import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { ConfirmDialog, MODAL_BODY_TEXT_CLASS } from "@/components/ui/modal-shell";
 import { Link, useNavigate, useRouterState } from "@tanstack/react-router";
 import { Plus, Sparkles, X } from "lucide-react";
 import { useState } from "react";
 import { getPlanningSessionDisplayTitle, hasPlaceholderTitle } from "./planning-session-title";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 function displaySessionTitle(session: PlanningSessionSummary): string {
   return getPlanningSessionDisplayTitle(session, "New session");
@@ -17,6 +18,10 @@ export function PlanningSessionList() {
   const navigate = useNavigate();
   const { data, isLoading, error, refetch } = usePlanningSessions();
   const deletePlanningSession = useDeletePlanningSession();
+  const recoverableDelete = useRecoverableMutation(
+    "planning-delete",
+    (sessionId: string, key) => deletePlanningSession.mutateAsync({ value: sessionId, key }),
+  );
   const sessions = data?.items ?? [];
   const [pendingDelete, setPendingDelete] = useState<PlanningSessionSummary | null>(null);
 
@@ -27,10 +32,7 @@ export function PlanningSessionList() {
     const deletingSession = pendingDelete;
     const isActiveSession = pathname === `/decrees/planning/${deletingSession.planning_session_id}`;
     try {
-      await deletePlanningSession.mutateAsync({
-        value: deletingSession.planning_session_id,
-        key: newIdempotencyKey("planning-delete"),
-      });
+      await recoverableDelete.mutateAsync(deletingSession.planning_session_id);
     } catch {
       return;
     }
@@ -120,31 +122,21 @@ export function PlanningSessionList() {
       </Card>
 
       {pendingDelete ? (
-        <ModalDialog
+        <ConfirmDialog
           open
-          onClose={() => setPendingDelete(null)}
-          ariaLabel="Delete planning session"
-          panelClassName={`w-full ${modalShellSizeClass("sm")}`}
+          onClose={() => {
+            if (!recoverableDelete.hasPendingRecovery) setPendingDelete(null);
+          }}
+          onConfirm={() => void confirmDelete()}
+          title={displaySessionTitle(pendingDelete)}
+          caption="Delete Session"
+          description="This removes the planning session and its drafts, messages, and saved context snapshots."
+          confirmLabel={deletePlanningSession.isPending ? "Deleting..." : recoverableDelete.hasPendingRecovery ? "Retry Delete Session" : "Delete Session"}
+          confirmDisabled={deletePlanningSession.isPending}
+          dismissDisabled={recoverableDelete.hasPendingRecovery}
         >
-          <ModalShell
-            title={displaySessionTitle(pendingDelete)}
-            caption="Delete Session"
-            description="This removes the planning session and its drafts, messages, and saved context snapshots."
-            onClose={() => setPendingDelete(null)}
-            footer={(
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="ghost" onClick={() => setPendingDelete(null)}>
-                  Cancel
-                </Button>
-                <Button type="button" variant="destructive" onClick={() => void confirmDelete()} disabled={deletePlanningSession.isPending}>
-                  {deletePlanningSession.isPending ? "Deleting..." : "Delete Session"}
-                </Button>
-              </div>
-            )}
-          >
-            <p className={MODAL_BODY_TEXT_CLASS}>This action cannot be undone.</p>
-          </ModalShell>
-        </ModalDialog>
+          <p className={MODAL_BODY_TEXT_CLASS}>This action cannot be undone.</p>
+        </ConfirmDialog>
       ) : null}
     </>
   );

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -17,7 +20,12 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/workflow"
+	githubexternal "kingdom/internal/external/github"
+	"kingdom/internal/idempotency"
+	"kingdom/internal/localauth"
+	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 )
 
@@ -31,8 +39,6 @@ const (
 
 const (
 	defaultServerAddress = "http://127.0.0.1:8080"
-	defaultActorID       = "cli-user"
-	defaultRoleID        = "allfather"
 	defaultTimeout       = 30 * time.Second
 )
 
@@ -40,12 +46,13 @@ var loadInstallConfigForCLI = installConfigForCLI
 var findActiveSummonForCLI = findActiveInstallModeSummon
 
 type Config struct {
-	ServerAddress  string
-	ServerExplicit bool
-	ActorID        string
-	RoleID         string
-	JSONOutput     bool
-	Timeout        time.Duration
+	ServerAddress      string
+	ServerExplicit     bool
+	JSONOutput         bool
+	Timeout            time.Duration
+	CredentialFile     string
+	CredentialExplicit bool
+	IdempotencyKey     string
 }
 
 type Runtime struct {
@@ -132,8 +139,6 @@ func Execute(ctx context.Context, stdout io.Writer, stderr io.Writer, args []str
 func parseGlobalFlags(args []string) (Config, []string, error) {
 	cfg := Config{
 		ServerAddress: defaultServerAddress,
-		ActorID:       defaultActorID,
-		RoleID:        defaultRoleID,
 		Timeout:       defaultTimeout,
 	}
 
@@ -159,22 +164,24 @@ func parseGlobalFlags(args []string) (Config, []string, error) {
 		case strings.HasPrefix(arg, "--server="):
 			cfg.ServerAddress = strings.TrimSpace(strings.TrimPrefix(arg, "--server="))
 			serverExplicit = true
-		case arg == "--actor-id":
+		case arg == "--credential-file":
 			if i+1 >= len(args) {
-				return Config{}, nil, fmt.Errorf("--actor-id requires a value")
+				return Config{}, nil, fmt.Errorf("--credential-file requires a value")
 			}
 			i++
-			cfg.ActorID = strings.TrimSpace(args[i])
-		case strings.HasPrefix(arg, "--actor-id="):
-			cfg.ActorID = strings.TrimSpace(strings.TrimPrefix(arg, "--actor-id="))
-		case arg == "--role-id":
+			cfg.CredentialFile = strings.TrimSpace(args[i])
+			cfg.CredentialExplicit = true
+		case strings.HasPrefix(arg, "--credential-file="):
+			cfg.CredentialFile = strings.TrimSpace(strings.TrimPrefix(arg, "--credential-file="))
+			cfg.CredentialExplicit = true
+		case arg == "--idempotency-key":
 			if i+1 >= len(args) {
-				return Config{}, nil, fmt.Errorf("--role-id requires a value")
+				return Config{}, nil, fmt.Errorf("--idempotency-key requires a value")
 			}
 			i++
-			cfg.RoleID = strings.TrimSpace(args[i])
-		case strings.HasPrefix(arg, "--role-id="):
-			cfg.RoleID = strings.TrimSpace(strings.TrimPrefix(arg, "--role-id="))
+			cfg.IdempotencyKey = strings.TrimSpace(args[i])
+		case strings.HasPrefix(arg, "--idempotency-key="):
+			cfg.IdempotencyKey = strings.TrimSpace(strings.TrimPrefix(arg, "--idempotency-key="))
 		case arg == "--timeout":
 			if i+1 >= len(args) {
 				return Config{}, nil, fmt.Errorf("--timeout requires a value")
@@ -200,20 +207,84 @@ func parseGlobalFlags(args []string) (Config, []string, error) {
 	if cfg.ServerAddress == "" {
 		return Config{}, nil, errors.New("--server cannot be empty")
 	}
-	if cfg.ActorID == "" {
-		return Config{}, nil, errors.New("--actor-id cannot be empty")
-	}
-	if cfg.RoleID == "" {
-		return Config{}, nil, errors.New("--role-id cannot be empty")
-	}
 	if cfg.Timeout <= 0 {
 		return Config{}, nil, errors.New("--timeout must be greater than zero")
+	}
+	if cfg.IdempotencyKey != "" {
+		key, err := idempotency.Parse(cfg.IdempotencyKey)
+		if err != nil {
+			return Config{}, nil, fmt.Errorf("invalid --idempotency-key: %w", err)
+		}
+		if err := key.ValidateAt(time.Now()); err != nil {
+			return Config{}, nil, fmt.Errorf("invalid --idempotency-key: %w", err)
+		}
+		cfg.IdempotencyKey = key.Raw
 	}
 	cfg.ServerExplicit = serverExplicit
 
 	applyInstallModeDefaults(&cfg)
+	normalizedServer, err := normalizeAPIServerAddress(cfg.ServerAddress)
+	if err != nil {
+		return Config{}, nil, fmt.Errorf("invalid --server value: %w", err)
+	}
+	cfg.ServerAddress = normalizedServer
+	if err := validateCLIAPIAuthentication(cfg); err != nil {
+		return Config{}, nil, err
+	}
 
 	return cfg, remaining, nil
+}
+
+func validateCLIAPIAuthentication(cfg Config) error {
+	parsed, err := url.Parse(strings.TrimSpace(cfg.ServerAddress))
+	if err != nil {
+		return fmt.Errorf("parse API server: %w", err)
+	}
+	if isLoopbackAPIHost(parsed.Hostname()) {
+		return nil
+	}
+	if parsed.Scheme != "https" {
+		return errors.New("non-loopback API servers require HTTPS")
+	}
+	if !cfg.CredentialExplicit || strings.TrimSpace(cfg.CredentialFile) == "" {
+		return errors.New("non-loopback API servers require an explicit --credential-file")
+	}
+	return nil
+}
+
+func isLoopbackAPIHost(host string) bool {
+	if strings.EqualFold(strings.TrimSpace(host), "localhost") {
+		return true
+	}
+	address, err := netip.ParseAddr(strings.TrimSpace(host))
+	return err == nil && address.Unmap().IsLoopback()
+}
+
+func normalizeAPIServerAddress(raw string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return "", err
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", errors.New("must use http or https")
+	}
+	if parsed.Host == "" {
+		return "", errors.New("must be an absolute URL with a host")
+	}
+	if parsed.User != nil {
+		return "", errors.New("must not include user information")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("must not include a query or fragment")
+	}
+	if parsed.RawPath != "" {
+		return "", errors.New("must not use an encoded API path")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	if parsed.Path == "" {
+		parsed.Path = "/api/v1"
+	}
+	return parsed.String(), nil
 }
 
 func (r *Runtime) run(ctx context.Context, args []string) error {
@@ -234,6 +305,10 @@ func (r *Runtime) run(ctx context.Context, args []string) error {
 	switch {
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"create", "decree"}):
 		return r.handleCreateDecree(ctx, args[2:])
+	case len(args) >= 4 && sameHelpPath(args[:4], []string{"connections", "github", "key", "provision"}):
+		return r.handleGitHubKeyProvision(args[4:], false)
+	case len(args) >= 4 && sameHelpPath(args[:4], []string{"connections", "github", "key", "rotate"}):
+		return r.handleGitHubKeyProvision(args[4:], true)
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "start"}):
 		return r.handleRunStart(ctx, args[2:])
 	case len(args) >= 2 && sameHelpPath(args[:2], []string{"run", "status"}):
@@ -270,6 +345,8 @@ var cliCommandRoutes = []commandRoute{
 	{path: []string{"summon", "status"}},
 	{path: []string{"summon", "logs"}},
 	{path: []string{"summon", "stop"}},
+	{path: []string{"connections", "github", "key", "provision"}},
+	{path: []string{"connections", "github", "key", "rotate"}},
 	{path: []string{"create", "decree"}},
 	{path: []string{"run", "start"}},
 	{path: []string{"run", "status"}},
@@ -355,13 +432,235 @@ func nearestKnownHelpPath(path []string) []string {
 }
 
 func (r *Runtime) newResponsesClient() (*gen.ClientWithResponses, error) {
-	httpClient := &http.Client{Timeout: r.config.Timeout}
+	httpClient, err := r.authenticatedHTTPClient(r.config.Timeout)
+	if err != nil {
+		return nil, err
+	}
 	return gen.NewClientWithResponses(r.config.ServerAddress, gen.WithHTTPClient(httpClient))
 }
 
 func (r *Runtime) newRawClient() (*gen.Client, error) {
-	httpClient := &http.Client{Timeout: 0}
+	httpClient, err := r.authenticatedHTTPClient(0)
+	if err != nil {
+		return nil, err
+	}
 	return gen.NewClient(r.config.ServerAddress, gen.WithHTTPClient(httpClient))
+}
+
+type bearerTransport struct {
+	token         []byte
+	allowedOrigin string
+	base          http.RoundTripper
+}
+
+type ambiguousMutationError struct {
+	Key   string
+	Cause error
+}
+
+func (e *ambiguousMutationError) Error() string {
+	return fmt.Sprintf("mutation outcome remains ambiguous; retry with --idempotency-key %s: %v", e.Key, e.Cause)
+}
+
+func (e *ambiguousMutationError) Unwrap() error { return e.Cause }
+
+func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if httpOrigin(req.URL) != t.allowedOrigin {
+		return nil, fmt.Errorf("refusing to send operator credential to %s", httpOrigin(req.URL))
+	}
+	canReplayBody := req.GetBody != nil || req.Body == nil || req.Body == http.NoBody
+	for attempt := 0; ; attempt++ {
+		if req.Context().Err() != nil {
+			if attempt > 0 && req.Header.Get("Idempotency-Key") != "" {
+				return nil, &ambiguousMutationError{Key: req.Header.Get("Idempotency-Key"), Cause: req.Context().Err()}
+			}
+			return nil, req.Context().Err()
+		}
+		body := req.Body
+		if attempt > 0 {
+			body = http.NoBody
+			if req.GetBody != nil {
+				var bodyErr error
+				body, bodyErr = req.GetBody()
+				if bodyErr != nil {
+					return nil, fmt.Errorf("reopen idempotent request body: %w", bodyErr)
+				}
+			}
+		}
+		response, err := t.base.RoundTrip(t.authenticatedClone(req, body))
+		if err == nil && req.Header.Get("Idempotency-Key") != "" {
+			err = bufferHTTPResponseBody(response)
+			if err != nil && response != nil && response.Body != nil {
+				_ = response.Body.Close()
+				response = nil
+			}
+		}
+		pending := false
+		var inspectErr error
+		if req.Header.Get("Idempotency-Key") != "" && err == nil {
+			pending, inspectErr = responseHasCanonicalErrorCode(response, errorcatalog.CodeIdempotencyPending)
+		}
+		if inspectErr != nil {
+			return nil, &ambiguousMutationError{Key: req.Header.Get("Idempotency-Key"), Cause: inspectErr}
+		}
+		shouldRetry := req.Header.Get("Idempotency-Key") != "" && canReplayBody && (err != nil || pending)
+		if !shouldRetry {
+			return response, err
+		}
+		if attempt == 2 {
+			if response != nil && response.Body != nil {
+				_ = response.Body.Close()
+			}
+			cause := err
+			if cause == nil {
+				cause = errors.New("idempotency request remains pending")
+			}
+			return nil, &ambiguousMutationError{Key: req.Header.Get("Idempotency-Key"), Cause: cause}
+		}
+		if response != nil && response.Body != nil {
+			_ = response.Body.Close()
+		}
+		timer := time.NewTimer(time.Duration(attempt+1) * 100 * time.Millisecond)
+		select {
+		case <-req.Context().Done():
+			timer.Stop()
+			return nil, &ambiguousMutationError{Key: req.Header.Get("Idempotency-Key"), Cause: req.Context().Err()}
+		case <-timer.C:
+		}
+	}
+}
+
+func bufferHTTPResponseBody(response *http.Response) error {
+	if response == nil || response.Body == nil {
+		return nil
+	}
+	original := response.Body
+	body, err := io.ReadAll(original)
+	_ = original.Close()
+	if err != nil {
+		return fmt.Errorf("read idempotent mutation response: %w", err)
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	return nil
+}
+
+func responseHasCanonicalErrorCode(response *http.Response, code errorcatalog.Code) (bool, error) {
+	if response == nil || response.StatusCode != http.StatusConflict || response.Body == nil {
+		return false, nil
+	}
+	original := response.Body
+	body, err := io.ReadAll(original)
+	_ = original.Close()
+	if err != nil {
+		return false, fmt.Errorf("read idempotency response: %w", err)
+	}
+	response.Body = io.NopCloser(bytes.NewReader(body))
+	return canonicalErrorCode(body) == string(code), nil
+}
+
+func (t bearerTransport) authenticatedClone(req *http.Request, body io.ReadCloser) *http.Request {
+	clone := req.Clone(req.Context())
+	clone.Header = req.Header.Clone()
+	clone.Header.Set("Authorization", "Bearer "+string(t.token))
+	clone.Body = body
+	return clone
+}
+
+func (r *Runtime) authenticatedHTTPClient(timeout time.Duration) (*http.Client, error) {
+	transport := http.DefaultTransport
+	credentialFile := strings.TrimSpace(r.config.CredentialFile)
+	if credentialFile == "" {
+		return nil, errors.New("local operator credential was not found; run the command from an initialized Kingdom workspace or pass --credential-file")
+	}
+	if err := validateCLIAPIAuthentication(r.config); err != nil {
+		return nil, err
+	}
+	token, err := localauth.ReadCredential(credentialFile)
+	if err != nil {
+		return nil, err
+	}
+	serverURL, err := url.Parse(r.config.ServerAddress)
+	if err != nil {
+		return nil, fmt.Errorf("parse server address: %w", err)
+	}
+	allowedOrigin := httpOrigin(serverURL)
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: bearerTransport{token: token, allowedOrigin: allowedOrigin, base: transport},
+		CheckRedirect: func(req *http.Request, _ []*http.Request) error {
+			if httpOrigin(req.URL) != allowedOrigin {
+				return fmt.Errorf("refusing authenticated redirect to %s", httpOrigin(req.URL))
+			}
+			return nil
+		},
+	}, nil
+}
+
+func httpOrigin(value *url.URL) string {
+	if value == nil {
+		return ""
+	}
+	return strings.ToLower(value.Scheme) + "://" + strings.ToLower(value.Host)
+}
+
+func (r *Runtime) handleGitHubKeyProvision(args []string, rotate bool) error {
+	flags := newFlagSet("connections github key")
+	var connectionID, from string
+	flags.StringVar(&connectionID, "connection-id", "", "saved connection id")
+	flags.StringVar(&from, "from", "", "RSA PKCS#1 or PKCS#8 PEM file")
+	if err := flags.Parse(args); err != nil {
+		return usageError{err: err, helpTopic: []string{"connections"}}
+	}
+	if flags.NArg() != 0 || strings.TrimSpace(connectionID) == "" || strings.TrimSpace(from) == "" {
+		return usageError{err: errors.New("--connection-id and --from are required"), helpTopic: []string{"connections"}}
+	}
+	credentialPath := strings.TrimSpace(r.config.CredentialFile)
+	if credentialPath == "" {
+		return errors.New("GitHub key provisioning requires an initialized Kingdom workspace")
+	}
+	secretsRoot := filepath.Dir(credentialPath)
+	dbPath := filepath.Join(filepath.Dir(secretsRoot), "kingdom.db")
+	db, err := openSQLiteDatabase(dbPath, sqlitePoolOptions{MaxOpenConns: 1, MaxIdleConns: 1})
+	if err != nil {
+		return fmt.Errorf("open Kingdom state: %w", err)
+	}
+	defer db.Close()
+	externalStore := state.NewExternalStore(db)
+	connection, err := externalStore.GetConnectionForCredentialMutation(context.Background(), connectionID)
+	if err != nil {
+		return fmt.Errorf("validate saved connection: %w", err)
+	}
+	if connection.CredentialStrategy != "app_private_key" {
+		return errors.New("GitHub private-key provision and rotate are unavailable for shared GitHub connections; use Reconnect")
+	}
+	store, err := githubexternal.NewKeyStore(secretsRoot)
+	if err != nil {
+		return err
+	}
+	raw, err := os.ReadFile(filepath.Clean(from))
+	if err != nil {
+		return fmt.Errorf("read GitHub App private key: %w", err)
+	}
+	action := "provisioned"
+	if rotate {
+		action = "rotated"
+	}
+	eventType := "credential.provisioned"
+	if rotate {
+		eventType = "credential.rotated"
+	}
+	at := time.Now().UTC().Format(time.RFC3339Nano)
+	targetGeneration := connection.CredentialGeneration + 1
+	if _, err = store.InstallAudited(connectionID, targetGeneration, raw, rotate, func() error {
+		return externalStore.RecordCredentialEvent(context.Background(), connectionID, connection.RowVersion, targetGeneration, "local-operator", fmt.Sprintf("external_audit_%d", time.Now().UTC().UnixNano()), eventType, at)
+	}); err != nil {
+		return fmt.Errorf("provision and record GitHub App private key: %w", err)
+	}
+	if r.config.JSONOutput {
+		return writeJSON(r.stdout, map[string]string{"connection_id": connectionID, "credential_state": "present", "action": action})
+	}
+	_, err = fmt.Fprintf(r.stdout, "GitHub App private key %s for connection %s\n", action, connectionID)
+	return err
 }
 
 func optionalReason(action, rawReason string) (*string, error) {
@@ -379,10 +678,7 @@ func optionalReason(action, rawReason string) (*string, error) {
 }
 
 func (r *Runtime) currentPlanRevisionID(ctx context.Context, client *gen.ClientWithResponses, runID string) (string, error) {
-	response, err := client.GetRunPlanWithResponse(ctx, runID, &gen.GetRunPlanParams{
-		XActorId: r.config.ActorID,
-		XRoleId:  r.config.RoleID,
-	})
+	response, err := client.GetRunPlanWithResponse(ctx, runID)
 	if err != nil {
 		return "", err
 	}
@@ -457,7 +753,7 @@ func (r *Runtime) handleCreateDecree(ctx context.Context, args []string) error {
 	runRequest.DecreeId = decreeResponse.DecreeId
 	runResponse, err := r.createRun(ctx, runRequest)
 	if err != nil {
-		return &decreeIssueError{DecreeID: decreeResponse.DecreeId, SkipReviewsAndValidations: opts.skipReviewsAndValidations, Err: err}
+		return &decreeIssueError{DecreeID: decreeResponse.DecreeId, SkipReviewsAndValidations: opts.skipReviewsAndValidations, RunRequest: runRequest, Err: err}
 	}
 
 	if r.config.JSONOutput {
@@ -481,11 +777,13 @@ func (r *Runtime) createDecree(ctx context.Context, request gen.CreateDecreeRequ
 	if err != nil {
 		return nil, err
 	}
+	key, err := r.newIdempotencyKey("decree-create")
+	if err != nil {
+		return nil, err
+	}
 
 	response, err := client.CreateDecreeWithResponse(ctx, &gen.CreateDecreeParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("decree-create"),
+		IdempotencyKey: key,
 	}, request)
 	if err != nil {
 		return nil, err
@@ -501,11 +799,13 @@ func (r *Runtime) createRun(ctx context.Context, request gen.CreateRunRequest) (
 	if err != nil {
 		return nil, err
 	}
+	key, err := r.newIdempotencyKey("run-start")
+	if err != nil {
+		return nil, err
+	}
 
 	response, err := client.CreateRunWithResponse(ctx, &gen.CreateRunParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("run-start"),
+		IdempotencyKey: key,
 	}, request)
 	if err != nil {
 		return nil, err
@@ -563,11 +863,13 @@ func (r *Runtime) handleRunStart(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	key, err := r.newIdempotencyKey("run-start")
+	if err != nil {
+		return err
+	}
 
 	response, err := client.CreateRunWithResponse(ctx, &gen.CreateRunParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("run-start"),
+		IdempotencyKey: key,
 	}, request)
 	if err != nil {
 		return err
@@ -600,7 +902,7 @@ func (r *Runtime) handleRunStatus(ctx context.Context, args []string) error {
 		return err
 	}
 
-	response, err := client.GetRunWithResponse(ctx, opts.runID, &gen.GetRunParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunWithResponse(ctx, opts.runID)
 	if err != nil {
 		return err
 	}
@@ -643,7 +945,7 @@ func (r *Runtime) handleRunArtifactsExport(ctx context.Context, args []string) e
 		return err
 	}
 
-	response, err := client.GetRunArtifactsArchiveWithResponse(ctx, opts.runID, &gen.GetRunArtifactsArchiveParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunArtifactsArchiveWithResponse(ctx, opts.runID)
 	if err != nil {
 		return err
 	}
@@ -688,7 +990,7 @@ func (r *Runtime) handleGraphShow(ctx context.Context, args []string) error {
 		return err
 	}
 
-	response, err := client.GetRunGraphWithResponse(ctx, opts.runID, &gen.GetRunGraphParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	response, err := client.GetRunGraphWithResponse(ctx, opts.runID)
 	if err != nil {
 		return err
 	}
@@ -723,11 +1025,13 @@ func (r *Runtime) handleNodeRetry(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
+	key, err := r.newIdempotencyKey("node-retry")
+	if err != nil {
+		return err
+	}
 
 	response, err := client.RetryNodeWithResponse(ctx, opts.runID, opts.nodeKey, &gen.RetryNodeParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("node-retry"),
+		IdempotencyKey: key,
 	}, gen.RetryNodeRequest{Reason: opts.reason})
 	if err != nil {
 		return err
@@ -759,11 +1063,13 @@ func (r *Runtime) handleNodeRerunFrom(ctx context.Context, args []string) error 
 	if err != nil {
 		return err
 	}
+	key, err := r.newIdempotencyKey("node-rerun-from")
+	if err != nil {
+		return err
+	}
 
 	response, err := client.RerunFromNodeWithResponse(ctx, opts.runID, opts.nodeKey, &gen.RerunFromNodeParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("node-rerun-from"),
+		IdempotencyKey: key,
 	}, gen.RerunFromNodeRequest{Reason: opts.reason})
 	if err != nil {
 		return err
@@ -796,7 +1102,8 @@ func (r *Runtime) handleTimelineFollow(ctx context.Context, args []string) error
 		return err
 	}
 
-	response, err := client.StreamEvents(ctx, &gen.StreamEventsParams{RunId: opts.runID, XActorId: r.config.ActorID, XRoleId: r.config.RoleID})
+	follow := true
+	response, err := client.StreamEvents(ctx, &gen.StreamEventsParams{RunId: opts.runID, Follow: &follow})
 	if err != nil {
 		return err
 	}
@@ -844,7 +1151,7 @@ func (r *Runtime) handleApprovalsList(ctx context.Context, args []string) error 
 	}
 
 	limitValue := gen.Limit(opts.limit)
-	params := &gen.GetRunTimelineParams{XActorId: r.config.ActorID, XRoleId: r.config.RoleID, Limit: &limitValue}
+	params := &gen.GetRunTimelineParams{Limit: &limitValue}
 	if opts.cursor != "" {
 		cursorValue := gen.Cursor(opts.cursor)
 		params.Cursor = &cursorValue
@@ -933,11 +1240,13 @@ func (r *Runtime) handleApprovalsDecide(ctx context.Context, args []string) erro
 	if err != nil {
 		return err
 	}
+	key, err := r.newIdempotencyKey("approval-decide")
+	if err != nil {
+		return err
+	}
 
 	response, err := client.CreateFinalApprovalWithResponse(ctx, opts.runID, &gen.CreateFinalApprovalParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("approval-decide"),
+		IdempotencyKey: key,
 	}, gen.CreateFinalApprovalRequest{
 		Action: gen.CreateFinalApprovalRequestAction(action),
 		Reason: reasonPtr,
@@ -985,11 +1294,13 @@ func (r *Runtime) handleApprovalsPlanDecide(ctx context.Context, args []string) 
 	if err != nil {
 		return err
 	}
+	key, err := r.newIdempotencyKey("approval-plan-decide")
+	if err != nil {
+		return err
+	}
 
 	response, err := client.CreatePlanApprovalWithResponse(ctx, opts.runID, &gen.CreatePlanApprovalParams{
-		XActorId:       r.config.ActorID,
-		XRoleId:        r.config.RoleID,
-		IdempotencyKey: newIdempotencyKey("approval-plan-decide"),
+		IdempotencyKey: key,
 	}, gen.CreatePlanApprovalRequest{
 		Action:         gen.CreatePlanApprovalRequestAction(action),
 		PlanRevisionId: planRevisionID,
@@ -1217,19 +1528,37 @@ func defaultPublishModeForCLI() string {
 }
 
 func applyInstallModeDefaults(cfg *Config) {
-	if cfg == nil || cfg.ServerExplicit || strings.TrimSpace(cfg.ServerAddress) != defaultServerAddress {
+	if cfg == nil {
 		return
 	}
-	if record, ok := findActiveSummonForCLI(); ok {
-		listen := strings.TrimSpace(record.Listen)
-		basePath := strings.TrimSpace(record.BasePath)
-		if listen != "" && basePath != "" {
-			cfg.ServerAddress = fmt.Sprintf("http://%s%s", summonConnectAddress(listen), basePath)
-			return
+	mayReplaceServer := !cfg.ServerExplicit && strings.TrimSpace(cfg.ServerAddress) == defaultServerAddress
+	if mayReplaceServer {
+		if record, ok := findActiveSummonForCLI(); ok {
+			if strings.TrimSpace(cfg.CredentialFile) == "" && strings.TrimSpace(record.KingdomHome) != "" {
+				candidate := localauth.CredentialPath(record.KingdomHome)
+				if _, err := os.Stat(candidate); err == nil {
+					cfg.CredentialFile = candidate
+				}
+			}
+			listen := strings.TrimSpace(record.Listen)
+			basePath := strings.TrimSpace(record.BasePath)
+			if listen != "" && basePath != "" {
+				cfg.ServerAddress = fmt.Sprintf("http://%s%s", summonConnectAddress(listen), basePath)
+				return
+			}
 		}
 	}
 	installCfg, ok := loadInstallConfigForCLI()
 	if !ok {
+		return
+	}
+	if strings.TrimSpace(cfg.CredentialFile) == "" && localCredentialMayAuthenticate(cfg.ServerAddress) {
+		candidate := localauth.CredentialPath(installCfg.KingdomHome)
+		if _, err := os.Stat(candidate); err == nil {
+			cfg.CredentialFile = candidate
+		}
+	}
+	if !mayReplaceServer {
 		return
 	}
 	// installCfg comes from readInstallConfigFromStruct, which
@@ -1239,6 +1568,14 @@ func applyInstallModeDefaults(cfg *Config) {
 		return
 	}
 	cfg.ServerAddress = fmt.Sprintf("http://%s%s", summonConnectAddress(listen), installCfg.Server.BasePath)
+}
+
+func localCredentialMayAuthenticate(serverAddress string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(serverAddress))
+	if err != nil {
+		return false
+	}
+	return (parsed.Scheme == "http" || parsed.Scheme == "https") && isLoopbackAPIHost(parsed.Hostname())
 }
 
 func requireGlobalModelForInstallMode(globalModel string, cfg Config) error {
@@ -1372,8 +1709,20 @@ func applyRunWorkflowOptions(request *gen.CreateRunRequest, skipReviewsAndValida
 	return assignLoopOverrides(request, maxExecutionReviewCycles, maxValidationReworkCycles)
 }
 
-func newIdempotencyKey(prefix string) string {
-	return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+func newIdempotencyKey(scope string) (string, error) {
+	key, err := idempotency.Generate(scope, time.Now())
+	if err != nil {
+		return "", fmt.Errorf("generate idempotency key: %w", err)
+	}
+	return key, nil
+}
+
+func (r *Runtime) newIdempotencyKey(scope string) (string, error) {
+	if key := strings.TrimSpace(r.config.IdempotencyKey); key != "" {
+		r.config.IdempotencyKey = ""
+		return key, nil
+	}
+	return newIdempotencyKey(scope)
 }
 
 func writeJSON(writer io.Writer, value interface{}) error {
@@ -1407,6 +1756,7 @@ type apiError struct {
 type decreeIssueError struct {
 	DecreeID                  string
 	SkipReviewsAndValidations bool
+	RunRequest                gen.CreateRunRequest
 	Err                       error
 }
 
@@ -1471,10 +1821,7 @@ func (r *Runtime) writeError(err error) int {
 }
 
 func (r *Runtime) writeDecreeIssueError(err *decreeIssueError) {
-	recoveryCommand := fmt.Sprintf("kd run start --decree-id %s", strings.TrimSpace(err.DecreeID))
-	if err.SkipReviewsAndValidations {
-		recoveryCommand += " --skip-reviews-and-validations"
-	}
+	recoveryCommand := buildRunRecoveryCommand(err.RunRequest, err.Err)
 	workflowID := workflow.BuiltInWorkflowID(err.SkipReviewsAndValidations)
 	if r.config.JSONOutput {
 		payload := map[string]any{
@@ -1495,6 +1842,51 @@ func (r *Runtime) writeDecreeIssueError(err *decreeIssueError) {
 		_, _ = fmt.Fprintf(r.stderr, "  cause: %v\n", err.Err)
 	}
 	_, _ = fmt.Fprintf(r.stderr, "  recovery: %s\n", recoveryCommand)
+}
+
+func buildRunRecoveryCommand(request gen.CreateRunRequest, cause error) string {
+	parts := []string{"kd"}
+	var ambiguous *ambiguousMutationError
+	if errors.As(cause, &ambiguous) && strings.TrimSpace(ambiguous.Key) != "" {
+		parts = append(parts, "--idempotency-key", shellQuote(ambiguous.Key))
+	}
+	parts = append(parts, "run", "start", "--decree-id", shellQuote(request.DecreeId))
+	if request.ModelSelection.Global.Model != "" {
+		parts = append(parts, "--global-model", shellQuote(request.ModelSelection.Global.Model))
+	}
+	if request.ModelSelection.RoleOverrides != nil && len(*request.ModelSelection.RoleOverrides) > 0 {
+		roles := make([]string, 0, len(*request.ModelSelection.RoleOverrides))
+		for role := range *request.ModelSelection.RoleOverrides {
+			roles = append(roles, role)
+		}
+		sort.Strings(roles)
+		overrides := make([]string, 0, len(roles))
+		for _, role := range roles {
+			overrides = append(overrides, role+"="+(*request.ModelSelection.RoleOverrides)[role].Model)
+		}
+		parts = append(parts, "--agent-model-overrides", shellQuote(strings.Join(overrides, ",")))
+	}
+	parts = append(parts, "--publish-mode", shellQuote(string(request.PublishMode)))
+	if request.AutonomousApprovals != nil {
+		parts = append(parts, "--autonomous-approvals="+strconv.FormatBool(*request.AutonomousApprovals))
+	}
+	if request.SkipReviewsAndValidations != nil && *request.SkipReviewsAndValidations {
+		parts = append(parts, "--skip-reviews-and-validations")
+	}
+	if request.RunUntilAllApprove != nil && *request.RunUntilAllApprove {
+		parts = append(parts, "--run-until-all-approve")
+	}
+	if request.MaxExecutionReviewCycles != nil {
+		parts = append(parts, "--max-execution-review-cycles", strconv.Itoa(*request.MaxExecutionReviewCycles))
+	}
+	if request.MaxValidationReworkCycles != nil {
+		parts = append(parts, "--max-validation-rework-cycles", strconv.Itoa(*request.MaxValidationReworkCycles))
+	}
+	return strings.Join(parts, " ")
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
 }
 
 func (r *Runtime) writeStructuredError(err *apiError) {

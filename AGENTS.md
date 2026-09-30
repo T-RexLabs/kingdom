@@ -30,6 +30,12 @@
 - Think in strategic coding standards, not tactical patches.
 - UX and UI must feel clean, responsive, and professional.
 
+## UI Text Casing
+
+- **Title Case** for headings, modal titles and captions, field and toggle labels, buttons, status values, and metadata term names. Capitalize every word except articles, coordinating conjunctions, and prepositions of four letters or fewer, unless first or last.
+- **Sentence case** for descriptions, help text, empty states, errors, loading text, placeholders, and aria-labels that describe an action rather than name a control.
+- Preserve product spellings exactly: `GitHub`, `Kingdom`, `App`, `ID`.
+
 ## Execution Rules
 
 - Preserve the accepted architecture and invariants from `docs/system-architecture.md`.

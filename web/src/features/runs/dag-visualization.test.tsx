@@ -1,12 +1,15 @@
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { DAGVisualization } from "./dag-visualization";
+import type { RunGraphNode } from "@/api/hooks";
 
-function providerNode(node_id: string, required_role: string, state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
+type NodeState = RunGraphNode["state"];
+
+function providerNode(node_id: string, required_role: string, state: NodeState) {
   return { node_id, required_role, execution_ownership: "provider_backed" as const, state };
 }
 
-function runtimeNode(node_id: string, required_role: string, state: "pending" | "ready" | "starting" | "running" | "succeeded" | "failed" | "blocked" | "cancelled" | "skipped") {
+function runtimeNode(node_id: string, required_role: string, state: NodeState) {
   return { node_id, required_role, execution_ownership: "runtime_owned" as const, state };
 }
 
@@ -303,5 +306,32 @@ describe("dag visualization", () => {
     expect(container.querySelectorAll("[data-edge]")).toHaveLength(2);
     expect(container.querySelector('[data-edge="kickoff->build"]')).toBeNull();
     expect(screen.getByRole("button", { name: /Review.*Execution mode Agent-executed.*Role Reviewer Shieldmaiden/i })).toBeInTheDocument();
+  });
+  it("draws a rework request as its own state rather than a failure", () => {
+    const { container } = render(
+      <DAGVisualization
+        graph={{
+          run_id: "run-rework",
+          nodes: [
+            providerNode("execution_review", "reviewer-shieldmaiden", "rework"),
+            providerNode("build", "builder-berserker", "failed"),
+          ],
+          edges: [{ from: "execution_review", to: "build", on: "rework" }],
+        }}
+      />,
+    );
+
+    // The pulsing red border is the graph's "this step broke" signal. A
+    // reviewer that asked for another pass did not break, and saying so is the
+    // whole point of the state.
+    const reworkNode = container.querySelector('[data-node="execution_review"] rect[data-part="bg"]');
+    const failedNode = container.querySelector('[data-node="build"] rect[data-part="bg"]');
+    expect(reworkNode).toBeTruthy();
+    expect(reworkNode).not.toHaveClass("dag-node-failed-border");
+    expect(failedNode).toHaveClass("dag-node-failed-border");
+    expect(reworkNode?.getAttribute("stroke")).not.toBe(failedNode?.getAttribute("stroke"));
+
+    expect(screen.getByRole("button", { name: /Execution Review\. Status Rework\./i })).toBeInTheDocument();
+    expect(screen.getByTestId("dag-legend")).toHaveTextContent("Rework");
   });
 });

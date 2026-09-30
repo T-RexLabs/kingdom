@@ -22,17 +22,16 @@ type runArtifactsResponse struct {
 }
 
 type runArtifactItem struct {
-	ArtifactID   string `json:"artifact_id"`
-	ArtifactKind string `json:"artifact_kind"`
-	Name         string `json:"name"`
-	MIME         string `json:"mime"`
-	Path         string `json:"path"`
-	SizeBytes    int64  `json:"size_bytes"`
-	SHA256       string `json:"sha256"`
-	CreatedAt    string `json:"created_at"`
-	Previewable  bool   `json:"previewable"`
-	ContentURL   string `json:"content_url"`
-	DownloadURL  string `json:"download_url"`
+	ArtifactID     string `json:"artifact_id"`
+	ArtifactKind   string `json:"artifact_kind"`
+	ArtifactAction string `json:"artifact_action"`
+	Name           string `json:"name"`
+	MIME           string `json:"mime"`
+	Path           string `json:"path"`
+	SizeBytes      int64  `json:"size_bytes"`
+	SHA256         string `json:"sha256,omitempty"`
+	CreatedAt      string `json:"created_at"`
+	DownloadURL    string `json:"download_url,omitempty"`
 }
 
 type artifactDeletionArchive struct {
@@ -50,7 +49,7 @@ type artifactDeletionArchiveEntry struct {
 }
 
 func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_run_artifacts"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_run_artifacts"); !ok {
 		return
 	}
 
@@ -68,19 +67,21 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 
 	items := make([]runArtifactItem, 0, len(records))
 	for _, record := range records {
-		contentURL := s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
+		downloadURL := ""
+		if record.ArtifactAction != "delete" {
+			downloadURL = s.basePath + "/artifacts/" + url.PathEscape(record.ArtifactID) + "/content"
+		}
 		items = append(items, runArtifactItem{
-			ArtifactID:   record.ArtifactID,
-			ArtifactKind: record.ArtifactKind,
-			Name:         record.Name,
-			MIME:         record.MIME,
-			Path:         record.Path,
-			SizeBytes:    record.SizeBytes,
-			SHA256:       record.SHA256,
-			CreatedAt:    record.CreatedAt,
-			Previewable:  isPreviewableMIME(record.MIME),
-			ContentURL:   contentURL,
-			DownloadURL:  contentURL + "?download=1",
+			ArtifactID:     record.ArtifactID,
+			ArtifactKind:   record.ArtifactKind,
+			ArtifactAction: record.ArtifactAction,
+			Name:           record.Name,
+			MIME:           record.MIME,
+			Path:           record.Path,
+			SizeBytes:      record.SizeBytes,
+			SHA256:         record.SHA256,
+			CreatedAt:      record.CreatedAt,
+			DownloadURL:    downloadURL,
 		})
 	}
 
@@ -88,7 +89,7 @@ func (s *Server) handleListRunArtifacts(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_run_artifacts_archive"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_artifacts_archive"); !ok {
 		return
 	}
 
@@ -169,6 +170,7 @@ func (s *Server) handleGetRunArtifactsArchive(w http.ResponseWriter, r *http.Req
 
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", runID+"-artifacts.zip"))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 
@@ -231,12 +233,11 @@ func normalizeArchiveRelativePath(candidatePath string, fallbackName string, art
 		normalized = "artifact-" + sanitizePathToken(artifactID)
 	}
 
-	normalized = strings.ReplaceAll(normalized, "\\", "/")
 	if strings.Contains(normalized, "\x00") {
 		return "", fmt.Errorf("artifact path contains invalid null byte")
 	}
-	if strings.HasPrefix(normalized, "/") {
-		normalized = strings.TrimPrefix(normalized, "/")
+	if path.IsAbs(normalized) || strings.Contains(normalized, "\\") || hasPortableDrivePrefix(normalized) {
+		return "", fmt.Errorf("artifact archive path must be portable and relative")
 	}
 	parts := strings.Split(normalized, "/")
 	for _, part := range parts {
@@ -253,6 +254,10 @@ func normalizeArchiveRelativePath(candidatePath string, fallbackName string, art
 	}
 
 	return cleaned, nil
+}
+
+func hasPortableDrivePrefix(value string) bool {
+	return len(value) >= 2 && ((value[0] >= 'a' && value[0] <= 'z') || (value[0] >= 'A' && value[0] <= 'Z')) && value[1] == ':'
 }
 
 func appendArtifactIDSuffix(entryPath string, artifactID string) string {
@@ -293,7 +298,7 @@ func sanitizePathToken(raw string) string {
 
 func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	artifactID := strings.TrimSpace(r.PathValue("id"))
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_artifact"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_artifact"); !ok {
 		return
 	}
 
@@ -309,19 +314,23 @@ func (s *Server) handleGetArtifact(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := gen.ArtifactResponse{
-		ArtifactId: record.ArtifactID,
-		Name:       record.Name,
-		Mime:       record.MIME,
-		SizeBytes:  int(record.SizeBytes),
-		Sha256:     record.SHA256,
+		ArtifactId:     record.ArtifactID,
+		ArtifactAction: gen.ArtifactResponseArtifactAction(record.ArtifactAction),
+		Name:           record.Name,
+		Mime:           record.MIME,
+		SizeBytes:      int(record.SizeBytes),
 	}
-
-	response.DownloadUrl = s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content?download=1"
+	if record.ArtifactAction != "delete" {
+		sha256 := record.SHA256
+		downloadURL := s.artifactDownloadURL + "/" + url.PathEscape(response.ArtifactId) + "/content"
+		response.Sha256 = &sha256
+		response.DownloadUrl = &downloadURL
+	}
 	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_artifact_content"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_artifact_content"); !ok {
 		return
 	}
 
@@ -345,25 +354,10 @@ func (s *Server) handleGetArtifactContent(w http.ResponseWriter, r *http.Request
 	if mime == "" {
 		mime = "application/octet-stream"
 	}
-	disposition := "inline"
-	if parseBoolQuery(r.URL.Query().Get("download")) {
-		disposition = "attachment"
-	}
-
 	w.Header().Set("Content-Type", mime)
-	w.Header().Set("Content-Disposition", fmt.Sprintf("%s; filename=%q", disposition, record.Name))
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=%q", record.Name))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(content)
-}
-
-func isPreviewableMIME(mime string) bool {
-	value := strings.ToLower(strings.TrimSpace(mime))
-	return strings.HasPrefix(value, "text/") ||
-		value == "application/json" ||
-		value == "image/png" ||
-		value == "image/jpeg" ||
-		value == "image/gif" ||
-		value == "image/webp" ||
-		value == "image/svg+xml"
 }

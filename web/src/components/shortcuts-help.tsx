@@ -1,7 +1,5 @@
 import { Keyboard } from "lucide-react";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
-import { cn } from "@/lib/utils";
+import { MODAL_BODY_TEXT_CLASS, Modal } from "@/components/ui/modal-shell";
 
 interface Shortcut {
   keys: string;
@@ -33,17 +31,17 @@ export function ShortcutsHelp({ open, onClose, shortcuts, pendingG }: ShortcutsH
   }
 
   return (
-		<ModalDialog open={open} onClose={onClose} ariaLabel="Keyboard shortcuts" panelClassName={cn("w-full", modalShellSizeClass("sm"))}>
-			<ModalShell
-				title={<span className="flex items-center gap-2"><Keyboard className="h-5 w-5 text-gold" /> Keyboard Shortcuts</span>}
-				caption="Shortcuts"
-				onClose={onClose}
-				footer={<p className="text-xs text-foreground-subtle">Press <Kbd>?</Kbd> to toggle this overlay</p>}
-			>
+		<Modal
+			open={open}
+			onClose={onClose}
+			size="sm"
+			title={<span className="flex items-center gap-2"><Keyboard className="h-5 w-5 text-gold" /> Keyboard Shortcuts</span>}
+			footer={<p className="text-xs text-foreground-subtle">Press <Kbd>?</Kbd> to toggle this overlay</p>}
+		>
 	          <div className="mb-3">
-	            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-foreground-subtle">
+	            <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-foreground-subtle">
 	              Navigation
-            </h3>
+            </h4>
             <div className="space-y-2">
               {shortcuts
                 .filter((s) => s.keys.startsWith("g"))
@@ -53,9 +51,9 @@ export function ShortcutsHelp({ open, onClose, shortcuts, pendingG }: ShortcutsH
             </div>
           </div>
           <div>
-            <h3 className="mb-2 text-xs font-medium uppercase tracking-wider text-foreground-subtle">
+            <h4 className="mb-2 text-xs font-medium uppercase tracking-wider text-foreground-subtle">
               General
-            </h3>
+            </h4>
             <div className="space-y-2">
               {shortcuts
                 .filter((s) => !s.keys.startsWith("g"))
@@ -65,8 +63,7 @@ export function ShortcutsHelp({ open, onClose, shortcuts, pendingG }: ShortcutsH
 	              <ShortcutRow shortcut={{ keys: "Esc", label: "Esc", description: "Close overlay / cancel" }} />
 	            </div>
 	          </div>
-			</ModalShell>
-		</ModalDialog>
+		</Modal>
   );
 }
 

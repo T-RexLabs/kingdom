@@ -13,7 +13,24 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kingdom/internal/localauth"
 )
+
+func executeAuthenticatedAPICommand(t *testing.T, stdout, stderr *bytes.Buffer, args []string) int {
+	return executeAuthenticatedAPICommandContext(t, context.Background(), stdout, stderr, args)
+}
+
+func executeAuthenticatedAPICommandContext(t *testing.T, ctx context.Context, stdout, stderr *bytes.Buffer, args []string) int {
+	t.Helper()
+	kingdomHome := filepath.Join(t.TempDir(), ".kingdom")
+	credentialPath, err := localauth.EnsureCredential(kingdomHome)
+	if err != nil {
+		t.Fatalf("create test operator credential: %v", err)
+	}
+	withCredential := append([]string{"--credential-file", credentialPath}, args...)
+	return Execute(ctx, stdout, stderr, withCredential)
+}
 
 func assertContainsAll(t *testing.T, output string, want ...string) {
 	t.Helper()
@@ -329,11 +346,58 @@ func TestExecuteCreateDecreeUsesConnectAddressForWildcardActiveSummon(t *testing
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected success exit code, got %d stderr=%q", exitCode, stderr.String())
+	}
+}
+
+func TestExecuteAPICommandDiscoversWorkspaceCredentialWithExplicitLoopbackServer(t *testing.T) {
+	originalLoader := loadInstallConfigForCLI
+	defer func() { loadInstallConfigForCLI = originalLoader }()
+	originalFindActive := findActiveSummonForCLI
+	defer func() { findActiveSummonForCLI = originalFindActive }()
+	findActiveSummonForCLI = func() (summonInstanceRecord, bool) { return summonInstanceRecord{}, false }
+
+	kingdomHome := filepath.Join(t.TempDir(), ".kingdom")
+	secrets := filepath.Join(kingdomHome, "secrets")
+	if err := os.MkdirAll(secrets, 0700); err != nil {
+		t.Fatal(err)
+	}
+	credentialPath, err := localauth.EnsureCredential(kingdomHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialRaw, err := localauth.ReadCredential(credentialPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := string(credentialRaw)
+	loadInstallConfigForCLI = func() (installConfig, bool) { return defaultInstallConfig(kingdomHome), true }
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/runs/run-1" || r.Header.Get("Authorization") != "Bearer "+credential {
+			t.Fatalf("request path=%q authorization=%q", r.URL.Path, r.Header.Get("Authorization"))
+		}
+		writeJSONResponse(t, w, http.StatusOK, map[string]any{
+			"run_id": "run-1", "workflow_id": "royal-decree-v1", "status": "running",
+			"created_at": "2026-08-13T12:00:00Z", "updated_at": "2026-08-13T12:01:00Z",
+		})
+	}))
+	defer server.Close()
+	stdout, stderr := &bytes.Buffer{}, &bytes.Buffer{}
+	if exit := Execute(context.Background(), stdout, stderr, []string{"--server", server.URL + "/api/v1", "run", "status", "--run-id", "run-1"}); exit != ExitSuccess {
+		t.Fatalf("exit=%d stderr=%q", exit, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "run-1") {
+		t.Fatalf("stdout=%q", stdout.String())
+	}
+}
+
+func TestLocalCredentialDiscoveryRejectsRemoteExplicitServer(t *testing.T) {
+	if localCredentialMayAuthenticate("https://example.com/api/v1") {
+		t.Fatal("local operator credential would be sent to a remote host")
 	}
 }
 
@@ -343,12 +407,6 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 	requestCount := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
-		if r.Header.Get("X-Actor-Id") != "actor-1" {
-			t.Fatalf("expected actor header")
-		}
-		if r.Header.Get("X-Role-Id") != "chancellor" {
-			t.Fatalf("expected role header")
-		}
 		if r.Header.Get("Idempotency-Key") == "" {
 			t.Fatal("expected idempotency header")
 		}
@@ -400,10 +458,8 @@ func TestExecuteCreateDecreeHumanOutput(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"create", "decree", "--title", "Launch", "--text", "Build it",
 	})
 
@@ -451,10 +507,8 @@ func TestExecuteCreateDecreeSendsSkipReviewFlag(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"create", "decree", "--title", "Launch", "--text", "Build it", "--skip-reviews-and-validations",
 	})
 
@@ -511,7 +565,7 @@ func TestExecuteCreateDecreeUsesInstallConfigServerBasePathByDefault(t *testing.
 	stderr := &bytes.Buffer{}
 	stdout.Reset()
 	stderr.Reset()
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
@@ -565,7 +619,7 @@ func TestExecuteCreateDecreePrefersActiveSummonAddressByDefault(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"create", "decree", "--title", "Launch", "--text", "Build it", "--global-model", "github-copilot/gpt-5.3-codex",
 	})
 	if exitCode != ExitSuccess {
@@ -702,10 +756,8 @@ func TestExecuteCreateDecreeAllowsZeroLoopOverrides(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"create", "decree",
 		"--title", "Launch",
 		"--text", "Build it",
@@ -756,10 +808,8 @@ func TestExecuteRunStartAllowsZeroValidationLoopOverrides(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"run", "start",
 		"--decree-id", "decree-123",
 		"--global-model", "github-copilot/gpt-5.3-codex",
@@ -807,10 +857,8 @@ func TestExecuteRunStartAllowsLoopOptionsWithSkipReviewsAndValidations(t *testin
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"run", "start",
 		"--decree-id", "decree-123",
 		"--global-model", "github-copilot/gpt-5.3-codex",
@@ -1017,7 +1065,7 @@ func TestExecuteRunStatusJSONOutput(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"--json",
 		"run", "status", "--run-id", "run-1",
@@ -1053,7 +1101,7 @@ func TestExecuteGraphShowMermaid(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"graph", "show", "--run-id", "run-1", "--mermaid",
 	})
@@ -1077,12 +1125,6 @@ func TestExecuteRunArtifactsExport(t *testing.T) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/runs/run-1/artifacts/archive" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		if r.Header.Get("X-Actor-Id") != "actor-1" {
-			t.Fatalf("expected actor header")
-		}
-		if r.Header.Get("X-Role-Id") != "chancellor" {
-			t.Fatalf("expected role header")
-		}
 		w.Header().Set("Content-Type", "application/zip")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(archiveBytes)
@@ -1092,10 +1134,8 @@ func TestExecuteRunArtifactsExport(t *testing.T) {
 	outputPath := filepath.Join(t.TempDir(), "run-1-artifacts.zip")
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"--actor-id", "actor-1",
-		"--role-id", "chancellor",
 		"run", "artifacts", "export", "--run-id", "run-1", "--output", outputPath,
 	})
 
@@ -1137,7 +1177,7 @@ func TestExecuteNodeRetryReturnsAPIExitCode(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"node", "retry", "--run-id", "run-1", "--node-key", "kickoff", "--reason", "try again",
 	})
@@ -1167,7 +1207,7 @@ func TestExecuteTimelineFollowStreamsEvents(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(ctx, stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommandContext(t, ctx, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"timeline", "follow", "--run-id", "run-1",
 	})
@@ -1199,7 +1239,7 @@ func TestExecuteApprovalsListFiltersTimeline(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"approvals", "list", "--run-id", "run-1",
 	})
@@ -1221,9 +1261,6 @@ func TestExecuteApprovalsDecideCallsFinalApprovalEndpointWithoutReasonForConfirm
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/runs/run-1/final-approval" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
-		}
-		if r.Header.Get("X-Role-Id") != "allfather" {
-			t.Fatalf("expected default allfather role header")
 		}
 		defer r.Body.Close()
 		body, err := io.ReadAll(r.Body)
@@ -1251,7 +1288,7 @@ func TestExecuteApprovalsDecideCallsFinalApprovalEndpointWithoutReasonForConfirm
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"approvals", "decide", "--run-id", "run-1", "--action", "confirm",
 	})
@@ -1309,9 +1346,6 @@ func TestExecuteApprovalsPlanDecideFetchesCurrentPlanAndCallsPlanApprovalEndpoin
 			if !requestedPlan {
 				t.Fatal("expected plan approval flow to fetch current plan before posting decision")
 			}
-			if r.Header.Get("X-Role-Id") != "allfather" {
-				t.Fatalf("expected default allfather role header")
-			}
 			defer r.Body.Close()
 			body, err := io.ReadAll(r.Body)
 			if err != nil {
@@ -1345,7 +1379,7 @@ func TestExecuteApprovalsPlanDecideFetchesCurrentPlanAndCallsPlanApprovalEndpoin
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"approvals", "plan-decide", "--run-id", "run-1", "--action", "confirm",
 	})
@@ -1396,7 +1430,7 @@ func TestExecuteApprovalsPlanDecideFailsWhenCurrentPlanRevisionUnavailable(t *te
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
 		"approvals", "plan-decide", "--run-id", "run-1", "--action", "confirm",
 	})
@@ -1414,7 +1448,7 @@ func TestExecuteReturnsRuntimeExitCodeOnTransportFailure(t *testing.T) {
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{
+	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", "http://127.0.0.1:1/api/v1",
 		"run", "status", "--run-id", "run-1",
 	})

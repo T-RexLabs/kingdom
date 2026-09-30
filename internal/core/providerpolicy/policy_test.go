@@ -321,6 +321,62 @@ func TestLoadPolicyFromFileAcceptsCompletionReconcileBackoffSchedule(t *testing.
 	}
 }
 
+func TestPolicyExecutionTimeouts(t *testing.T) {
+	t.Parallel()
+
+	policy := Policy{Timeouts: Timeouts{
+		FirstEventTimeout:       " 125ms ",
+		StreamInactivityTimeout: "3s",
+	}}
+	firstEventTimeout, streamInactivityTimeout, err := policy.ExecutionTimeouts()
+	if err != nil {
+		t.Fatalf("parse execution timeouts: %v", err)
+	}
+	if firstEventTimeout != 125*time.Millisecond {
+		t.Fatalf("expected 125ms first-event timeout, got %s", firstEventTimeout)
+	}
+	if streamInactivityTimeout != 3*time.Second {
+		t.Fatalf("expected 3s stream-inactivity timeout, got %s", streamInactivityTimeout)
+	}
+}
+
+func TestPolicyExecutionTimeoutsRejectsInvalidFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		policy Policy
+		field  string
+	}{
+		{
+			name: "first event",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "not-a-duration",
+				StreamInactivityTimeout: "3s",
+			}},
+			field: "first_event_timeout",
+		},
+		{
+			name: "stream inactivity",
+			policy: Policy{Timeouts: Timeouts{
+				FirstEventTimeout:       "1s",
+				StreamInactivityTimeout: "0s",
+			}},
+			field: "stream_inactivity_timeout",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, _, err := tt.policy.ExecutionTimeouts()
+			if err == nil || !strings.Contains(err.Error(), tt.field) {
+				t.Fatalf("expected %s validation error, got %v", tt.field, err)
+			}
+		})
+	}
+}
+
 func TestLoadPolicyFromFileRejectsInvalidCompletionReconcileBackoffSchedule(t *testing.T) {
 	t.Parallel()
 

@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { PlanResultModal } from "./planner-draft-panel";
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, ...props }: any) => <a {...props}>{children}</a>,
+  Link: ({ children, search }: { children: ReactNode; search: unknown }) => <a href="#" data-search={JSON.stringify(search)}>{children}</a>,
 }));
 
 vi.mock("@/lib/use-text-reveal", () => ({
@@ -32,7 +32,10 @@ function ModalHarness() {
           decree_text: "Plan body",
           created_at: "2026-04-29T12:00:00Z",
         }}
-        sessionId="session-1"
+        planningLineage={{
+          planning_session_id: "session-1",
+          planning_draft_id: "draft-1",
+        }}
         operation={null}
         onClose={() => setOpen(false)}
       />
@@ -48,7 +51,7 @@ describe("plan result modal", () => {
 
     await user.click(screen.getByRole("button", { name: "Open plan result" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Generated plan" });
+    const dialog = screen.getByRole("dialog", { name: "Royal decree draft" });
     const contentCard = within(dialog).getByTestId("plan-result-card");
 
     expect(contentCard).toHaveClass("border-border");
@@ -69,5 +72,17 @@ describe("plan result modal", () => {
 
     await user.click(closeButton);
     await waitFor(() => expect(opener).toHaveFocus());
+  });
+
+  it("routes only one typed planning lineage", async () => {
+    const user = userEvent.setup();
+    render(<ModalHarness />);
+
+    await user.click(screen.getByRole("button", { name: "Open plan result" }));
+
+    expect(screen.getByRole("link", { name: /issue decree from plan/i })).toHaveAttribute("data-search", JSON.stringify({
+      planning_session_id: "session-1",
+      planning_draft_id: "draft-1",
+    }));
   });
 });

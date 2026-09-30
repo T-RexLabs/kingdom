@@ -75,6 +75,8 @@ func TestRetryMatrixClassifications(t *testing.T) {
 	expectClass(t, CodeInvalidOutputSchema, "non_retryable", false)
 	expectClass(t, CodePolicyViolation, "non_retryable", false)
 	expectClass(t, CodeIdempotencyConflict, "non_retryable", false)
+	expectClass(t, CodeIdempotencyKeyExpired, "non_retryable", false)
+	expectClass(t, CodeIdempotencyPending, "conditional_limited", true)
 	expectClass(t, CodeDependencyBlocked, "non_retryable", false)
 	expectClass(t, CodeLLMInvalidResponse, "non_retryable", false)
 	expectClass(t, CodeProviderIncompleteTurn, "non_retryable", false)

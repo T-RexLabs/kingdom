@@ -5,6 +5,17 @@ export function PageHeader({ children, className }: { children: ReactNode; class
   return <header className={cn("flex h-[76px] items-center border-b border-border px-page", className)}>{children}</header>;
 }
 
+/**
+ * The one scroll viewport of a page.
+ *
+ * `relative` is load-bearing, not decoration. A scroll viewport only clips the
+ * descendants it is a containing block for, so an absolutely positioned
+ * descendant whose nearest positioned ancestor sits *above* this element
+ * escapes the clip entirely and grows the document's scroll height instead —
+ * which is how a second, page-level scrollbar appears next to this one. The
+ * `sr-only` utility is exactly such a descendant: it is `position: absolute`,
+ * so every visually hidden label inside a page would otherwise leak out.
+ */
 export function PageContent({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cn("flex-1 min-h-0 overflow-auto px-page py-4", className)}>{children}</div>;
+  return <div className={cn("relative min-h-0 flex-1 overflow-auto px-page py-4", className)}>{children}</div>;
 }

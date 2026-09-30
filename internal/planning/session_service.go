@@ -34,12 +34,23 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 	if err != nil {
 		return state.PlanningSession{}, fmt.Errorf("marshal opening question: %w", err)
 	}
-
-	session, bootstrapOperation, err := s.deps.store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
+	// Scan before the transaction, not after it. Every planner operation binds
+	// the session's active context snapshot at enqueue, so a session created
+	// without one could never chat; capturing it here means a failed scan
+	// fails creation loudly instead of persisting an unusable session.
+	summary, err := scanProjectRoot(ctx, s.deps.projectRoot)
+	if err != nil {
+		return state.PlanningSession{}, err
+	}
+	contextSnapshot, err := contextSnapshotRequest(s.deps, sessionID, summary, now)
+	if err != nil {
+		return state.PlanningSession{}, err
+	}
+	session, err := s.deps.store.CreateSessionBundle(ctx, state.CreatePlanningSessionBundleRequest{
 		Session: state.CreatePlanningSessionRequest{
-			PlanningSessionID:        sessionID,
-			Title:                    firstNonEmpty(strings.TrimSpace(title), defaultTitle),
-			TitleState:               defaultPlanningSessionTitleState(title),
+			PlanningSessionID:   sessionID,
+			Title:               firstNonEmpty(strings.TrimSpace(title), defaultTitle),
+			TitleState:          defaultPlanningSessionTitleState(title),
 			LifecycleState:      state.PlanningSessionLifecycleStateActive,
 			ConversationState:   state.PlanningSessionConversationStateReady,
 			ActiveLeafMessageID: messageID,
@@ -59,21 +70,11 @@ func (s *sessionService) CreateSession(ctx context.Context, title string, modelS
 			AnswerPayloadJSON:   `{}`,
 			CreatedAt:           now,
 		},
-		BootstrapOperation: state.CreatePlanningOperationRequest{
-			OperationID:        s.deps.nextID("planning_operation"),
-			PlanningSessionID:  sessionID,
-			Type:               state.PlanningOperationTypeBootstrapContext,
-			Status:             state.PlanningOperationStatusQueued,
-			RequestPayloadJSON: `{}`,
-			LeaseOwner:         "",
-			LeaseVersion:       0,
-			CreatedAt:          now,
-		},
+		ContextSnapshot: contextSnapshot,
 	})
 	if err != nil {
 		return state.PlanningSession{}, err
 	}
-	s.runner.Start(bootstrapOperation.OperationID)
 	return session, nil
 }
 

@@ -28,11 +28,13 @@ Targets that need JavaScript tooling, such as `make openapi-lint`, reuse the dep
 | Command | What It Runs |
 | ------- | ------------ |
 | `make test` | `go test ./...` after building web assets |
+| `make test-web` | frontend unit tests |
+| `make lint-web` | frontend ESLint with zero warnings allowed |
 | `make test-race` | race-enabled tests for `internal/state/...`, `internal/planning/...`, and `internal/api/...` |
 | `make vet` | `go vet ./...` |
 | `make coverage-core` | core coverage gate via `scripts/check_core_coverage.sh` |
 | `make contracts-check` | regenerate OpenAPI types and verify no checked-in diff |
-| `make verify` | `test`, `test-race`, `vet`, `coverage-core`, and `contracts-check` |
+| `make verify` | `test`, `test-web`, `lint-web`, `test-race`, `vet`, `coverage-core`, and `contracts-check` |
 
 ## Recommended Local Runtime Verification
 

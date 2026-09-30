@@ -1,5 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import * as d3 from "d3";
+import { computeLegendLayout } from "./stacked-bar-chart-layout";
 
 export interface StackedBarDatum {
   label: string;
@@ -12,21 +13,6 @@ interface StackedBarChartProps {
   width?: number;
   height?: number;
   integerTicks?: boolean;
-}
-
-interface LegendLayoutInput {
-  keys: string[];
-  chartLeft: number;
-  chartWidth: number;
-  markerWidth: number;
-  markerToTextGap: number;
-  itemGap: number;
-  measureLabel: (label: string) => number;
-}
-
-interface LegendLayout {
-  totalWidth: number;
-  items: Array<{ key: string; x: number }>;
 }
 
 let legendMeasureContext: CanvasRenderingContext2D | null | undefined;
@@ -61,29 +47,6 @@ function toLegendLabel(value: string): string {
     .split(/[_\s-]+/)
     .map((token) => (token.length > 0 ? token[0].toUpperCase() + token.slice(1) : token))
     .join(" ");
-}
-
-export function computeLegendLayout({
-  keys,
-  chartLeft,
-  chartWidth,
-  markerWidth,
-  markerToTextGap,
-  itemGap,
-  measureLabel,
-}: LegendLayoutInput): LegendLayout {
-  const itemWidths = keys.map((key) => markerWidth + markerToTextGap + Math.max(0, measureLabel(key)));
-  const totalWidth = itemWidths.reduce((sum, width) => sum + width, 0) + Math.max(0, keys.length - 1) * itemGap;
-  const startX = chartLeft + Math.max(0, (chartWidth - totalWidth) / 2);
-
-  const items: Array<{ key: string; x: number }> = [];
-  let cursor = startX;
-  keys.forEach((key, index) => {
-    items.push({ key, x: cursor });
-    cursor += itemWidths[index] + itemGap;
-  });
-
-  return { totalWidth, items };
 }
 
 function buildIntegerYAxis(maxValue: number, desiredTickCount: number): { domainMax: number; ticks: number[] } {

@@ -14,16 +14,6 @@ import (
 	executionstore "kingdom/internal/execution/store"
 )
 
-type NodeAttemptLimitExceededError struct {
-	RunID    string
-	NodeID   string
-	MaxLimit int
-}
-
-func (e *NodeAttemptLimitExceededError) Error() string {
-	return fmt.Sprintf("max attempts per node exceeded for run %q node %q (max=%d)", e.RunID, e.NodeID, e.MaxLimit)
-}
-
 type QueuedNodeAttempt struct {
 	NodeID       string
 	NodeRunID    string
@@ -33,14 +23,7 @@ type QueuedNodeAttempt struct {
 	AgentID      string
 }
 
-type nodeAttemptBudgetMode int
-
-const (
-	nodeAttemptBudgetDefault nodeAttemptBudgetMode = iota
-	nodeAttemptBudgetGovernanceRework
-)
-
-type ReplayRunFromFailureRequest struct {
+type ReplayTerminalRunRequest struct {
 	RunID           string
 	AnchorNodeID    string
 	TargetNodeIDs   []string
@@ -210,10 +193,10 @@ const (
 	SupersedeQueuedAttemptsOutcomeBlockedByNewerTerminalAttempt SupersedeQueuedAttemptsOutcome = "blocked_by_newer_terminal_attempt"
 )
 
-func (s *TransitionService) ReplayRunFromFailure(ctx context.Context, req ReplayRunFromFailureRequest) ([]QueuedNodeAttempt, error) {
+func (s *TransitionService) ReplayTerminalRun(ctx context.Context, req ReplayTerminalRunRequest) ([]QueuedNodeAttempt, error) {
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
-		queued, err := s.replayRunFromFailureOnce(ctx, req)
+		queued, err := s.replayTerminalRunOnce(ctx, req)
 		if err == nil {
 			return queued, nil
 		}
@@ -309,7 +292,7 @@ func (s *TransitionService) queuePendingNodeWaveOnce(ctx context.Context, req Qu
 		}
 	}()
 
-	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunID, req.NodeIDs, req.IgnoreActiveNodeIDs, occurredAt, req.GenerateID, nodeAttemptBudgetDefault)
+	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunID, req.NodeIDs, req.IgnoreActiveNodeIDs, occurredAt, req.GenerateID)
 	if err != nil {
 		return QueuePendingNodeWaveResult{}, err
 	}
@@ -349,7 +332,7 @@ func filterIgnoredNodeIDs(nodeIDs, ignoredNodeIDs []string) []string {
 	return filtered
 }
 
-func (s *TransitionService) queuePendingNodeWaveTx(ctx context.Context, tx *sql.Tx, runID string, nodeIDs, ignoreActiveNodeIDs []string, occurredAt string, generate func(string) string, budgetMode nodeAttemptBudgetMode) ([]QueuedNodeAttempt, error) {
+func (s *TransitionService) queuePendingNodeWaveTx(ctx context.Context, tx *sql.Tx, runID string, nodeIDs, ignoreActiveNodeIDs []string, occurredAt string, generate func(string) string) ([]QueuedNodeAttempt, error) {
 	runStatus, err := runStatusForQueuePendingWaveTx(ctx, tx, runID)
 	if err != nil {
 		return nil, err
@@ -372,7 +355,7 @@ func (s *TransitionService) queuePendingNodeWaveTx(ctx context.Context, tx *sql.
 
 	queued := make([]QueuedNodeAttempt, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, runID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, generate, budgetMode)
+		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, runID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, generate)
 		if err != nil {
 			return nil, err
 		}
@@ -398,7 +381,7 @@ func (s *TransitionService) queuePlanReworkWaveTx(ctx context.Context, tx *sql.T
 	if err != nil {
 		return nil, err
 	}
-	queued, err := s.queuePendingNodeWaveTx(ctx, tx, runID, nodeIDs, nil, occurredAt, generate, nodeAttemptBudgetGovernanceRework)
+	queued, err := s.queuePendingNodeWaveTx(ctx, tx, runID, nodeIDs, nil, occurredAt, generate)
 	if err != nil {
 		return nil, err
 	}
@@ -522,7 +505,7 @@ ORDER BY wn.node_id ASC`, placeholders)
 	return &attempt, nil
 }
 
-func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req ReplayRunFromFailureRequest) ([]QueuedNodeAttempt, error) {
+func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req ReplayTerminalRunRequest) ([]QueuedNodeAttempt, error) {
 	if strings.TrimSpace(req.RunID) == "" {
 		return nil, fmt.Errorf("run id is required")
 	}
@@ -556,6 +539,25 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 			_ = tx.Rollback()
 		}
 	}()
+	runStatus, err := runStatusForQueuePendingWaveTx(ctx, tx, req.RunID)
+	if err != nil {
+		return nil, err
+	}
+	if runStatus != "failed" && runStatus != "cancelled" {
+		return nil, &StateConflictError{EntityType: EntityTypeRun, ExpectedState: "failed or cancelled", ActualState: runStatus}
+	}
+	if err := validateTransition(EntityTypeRun, runStatus, "running"); err != nil {
+		return nil, err
+	}
+	if runStatus == "cancelled" {
+		blockers, err := cancelledRunReplayBlockersTx(ctx, tx, req.RunID)
+		if err != nil {
+			return nil, err
+		}
+		if len(blockers) > 0 {
+			return nil, &ReplayNotQuiescentError{RunID: req.RunID, Blockers: blockers}
+		}
+	}
 
 	reasonText := strings.TrimSpace(req.Reason)
 	if reasonText == "" {
@@ -567,10 +569,11 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 	if err != nil {
 		return nil, err
 	}
-	runPayload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"reason":%q,"recorded_at":%q}`,
+	runPayload := fmt.Sprintf(`{"run_id":%q,"node_id":%q,"reason":%q,"source_status":%q,"recorded_at":%q}`,
 		req.RunID,
 		req.AnchorNodeID,
 		strings.TrimSpace(req.Reason),
+		runStatus,
 		occurredAt,
 	)
 	if err := s.applyTx(ctx, tx, TransitionRequest{
@@ -578,7 +581,7 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 		EventID:         generateID(req.GenerateID, "evt"),
 		RunID:           req.RunID,
 		Entity:          EntityTypeRun,
-		FromState:       "failed",
+		FromState:       runStatus,
 		ToState:         "running",
 		ActorID:         req.ActorID,
 		RoleID:          req.RoleID,
@@ -603,7 +606,7 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 		return nil, err
 	}
 	for idx, nodeID := range req.TargetNodeIDs {
-		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, req.RunID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, req.GenerateID, nodeAttemptBudgetDefault)
+		queuedAttempt, err := s.insertPendingNodeAttemptTx(ctx, tx, req.RunID, nodeID, queuedWaves[strings.TrimSpace(nodeID)], occurredAt, req.GenerateID)
 		if err != nil {
 			return nil, err
 		}
@@ -648,6 +651,40 @@ func (s *TransitionService) replayRunFromFailureOnce(ctx context.Context, req Re
 	}
 	committed = true
 	return queued, nil
+}
+
+func cancelledRunReplayBlockersTx(ctx context.Context, tx *sql.Tx, runID string) ([]string, error) {
+	var pendingCancellation int
+	var pendingCompletion int
+	var nonterminalExecution int
+	var activeLease int
+	err := tx.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM attempt_cancel_outbox WHERE run_id = ? AND status = 'pending'),
+       EXISTS(SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending'),
+       EXISTS(SELECT 1 FROM attempt_executions WHERE run_id = ? AND state NOT IN ('committed_success', 'committed_failure', 'committed_cancelled')),
+       EXISTS(
+         SELECT 1
+         FROM session_leases sl
+         JOIN attempt_executions ae ON ae.session_ref = sl.session_id
+         WHERE ae.run_id = ? AND sl.status = 'active'
+       )`, runID, runID, runID, runID).Scan(&pendingCancellation, &pendingCompletion, &nonterminalExecution, &activeLease)
+	if err != nil {
+		return nil, fmt.Errorf("inspect cancelled run replay quiescence: %w", err)
+	}
+	blockers := make([]string, 0, 4)
+	if pendingCancellation != 0 {
+		blockers = append(blockers, "provider cancellation")
+	}
+	if pendingCompletion != 0 {
+		blockers = append(blockers, "completion projection")
+	}
+	if nonterminalExecution != 0 {
+		blockers = append(blockers, "attempt settlement")
+	}
+	if activeLease != 0 {
+		blockers = append(blockers, "session lease")
+	}
+	return blockers, nil
 }
 
 func (s *TransitionService) RecordFinalApproval(ctx context.Context, req FinalApprovalRecordRequest) error {
@@ -727,7 +764,7 @@ func (s *TransitionService) RecordFinalRework(ctx context.Context, req FinalRewo
 		return err
 	}
 
-	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunTransition.RunID, req.TargetNodeIDs, nil, req.RunTransition.OccurredAt, req.GenerateID, nodeAttemptBudgetGovernanceRework)
+	queued, err := s.queuePendingNodeWaveTx(ctx, tx, req.RunTransition.RunID, req.TargetNodeIDs, nil, req.RunTransition.OccurredAt, req.GenerateID)
 	if err != nil {
 		return err
 	}
@@ -2659,13 +2696,6 @@ func (s *TransitionService) reassignStaleAttemptForRetryOnce(ctx context.Context
 	if err != nil {
 		return QueuedNodeAttempt{}, err
 	}
-	attemptLimit, err := nodeAttemptLimitForRunTx(ctx, tx, attempt.RunID, attempt.NodeID)
-	if err != nil {
-		return QueuedNodeAttempt{}, err
-	}
-	if nextAttempt > attemptLimit {
-		return QueuedNodeAttempt{}, &NodeAttemptLimitExceededError{RunID: attempt.RunID, NodeID: attempt.NodeID, MaxLimit: attemptLimit}
-	}
 	if req.HasReplacement {
 		if err := claimReusableAgentTx(ctx, tx, req.ReplacementAgentID, occurredAt); err != nil {
 			return QueuedNodeAttempt{}, err
@@ -2745,7 +2775,7 @@ func claimReusableAgentTx(ctx context.Context, tx *sql.Tx, agentID, updatedAt st
 	return nil
 }
 
-func (s *TransitionService) insertPendingNodeAttemptTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, wave int, occurredAt string, generate func(string) string, budgetMode nodeAttemptBudgetMode) (QueuedNodeAttempt, error) {
+func (s *TransitionService) insertPendingNodeAttemptTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, wave int, occurredAt string, generate func(string) string) (QueuedNodeAttempt, error) {
 	requiredRole, err := requiredRoleForRunNodeTx(ctx, tx, runID, nodeID)
 	if err != nil {
 		return QueuedNodeAttempt{}, err
@@ -2754,23 +2784,16 @@ func (s *TransitionService) insertPendingNodeAttemptTx(ctx context.Context, tx *
 	if err != nil {
 		return QueuedNodeAttempt{}, err
 	}
-	return s.insertPendingNodeAttemptWithAgentTx(ctx, tx, runID, nodeID, requiredRole, agentID, wave, occurredAt, generate, budgetMode)
+	return s.insertPendingNodeAttemptWithAgentTx(ctx, tx, runID, nodeID, requiredRole, agentID, wave, occurredAt, generate)
 }
 
-func (s *TransitionService) insertPendingNodeAttemptWithAgentTx(ctx context.Context, tx *sql.Tx, runID, nodeID, requiredRole, agentID string, wave int, occurredAt string, generate func(string) string, budgetMode nodeAttemptBudgetMode) (QueuedNodeAttempt, error) {
+func (s *TransitionService) insertPendingNodeAttemptWithAgentTx(ctx context.Context, tx *sql.Tx, runID, nodeID, requiredRole, agentID string, wave int, occurredAt string, generate func(string) string) (QueuedNodeAttempt, error) {
 	maxAttempt, err := nextAttemptNumberTx(ctx, tx, runID, nodeID)
 	if err != nil {
 		return QueuedNodeAttempt{}, err
 	}
 	if wave <= 0 {
 		return QueuedNodeAttempt{}, fmt.Errorf("wave is required for queued node attempt run=%q node=%q", runID, nodeID)
-	}
-	attemptLimit, err := nodeAttemptLimitForQueueTx(ctx, tx, runID, nodeID, budgetMode)
-	if err != nil {
-		return QueuedNodeAttempt{}, err
-	}
-	if maxAttempt > attemptLimit {
-		return QueuedNodeAttempt{}, &NodeAttemptLimitExceededError{RunID: runID, NodeID: nodeID, MaxLimit: attemptLimit}
 	}
 	nodeRunID := generateID(generate, "node_run")
 	if err := insertNodeAttemptTx(ctx, tx, CreateNodeAttemptRequest{
@@ -2913,13 +2936,6 @@ ORDER BY from_node_id ASC, to_node_id ASC, on_condition ASC`, strings.TrimSpace(
 	return graph, nil
 }
 
-func nodeAttemptLimitForQueueTx(ctx context.Context, tx *sql.Tx, runID, nodeID string, budgetMode nodeAttemptBudgetMode) (int, error) {
-	if budgetMode == nodeAttemptBudgetGovernanceRework {
-		return unboundedLoopAttemptLimit, nil
-	}
-	return nodeAttemptLimitForRunTx(ctx, tx, runID, nodeID)
-}
-
 func loadRunLoopSettingsTx(ctx context.Context, tx *sql.Tx, runID string) (workflow.LoopSettings, error) {
 	var runUntilAllApprove int
 	var maxExecutionReviewCycles int
@@ -2975,29 +2991,6 @@ func requiredRoleForRunNodeTx(ctx context.Context, tx *sql.Tx, runID, nodeID str
 		return "", fmt.Errorf("load required role for run node: %w", err)
 	}
 	return strings.TrimSpace(requiredRole), nil
-}
-
-func nodeAttemptLimitForRunTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (int, error) {
-	settings, err := loadRunLoopSettingsTx(ctx, tx, runID)
-	if err != nil {
-		return 0, err
-	}
-	var nodeClass string
-	err = tx.QueryRowContext(ctx,
-		`SELECT wn.node_class
-		 FROM workflow_runs wr
-		 JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = ?
-		 WHERE wr.run_id = ?`,
-		nodeID,
-		runID,
-	).Scan(&nodeClass)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, fmt.Errorf("node %q not found for run %q", nodeID, runID)
-	}
-	if err != nil {
-		return 0, fmt.Errorf("load run loop settings: %w", err)
-	}
-	return NodeAttemptLimitForClass(strings.TrimSpace(nodeClass), settings), nil
 }
 
 func nextAttemptNumberTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (int, error) {

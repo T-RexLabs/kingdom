@@ -12,6 +12,7 @@ import (
 	"time"
 
 	gen "kingdom/internal/apigen"
+	coreverdict "kingdom/internal/core/verdict"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
@@ -83,10 +84,8 @@ LIMIT 1`, runID).Scan(&reviewNodeID); err != nil {
 	seedTimelineEvents(t, db, runID)
 
 	first := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/timeline?limit=2",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=2",
 	})
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected first page 200, got %d", first.Code)
@@ -113,10 +112,8 @@ LIMIT 1`, runID).Scan(&reviewNodeID); err != nil {
 	}
 
 	second := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/timeline?limit=2&cursor=" + *firstPage.NextCursor,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=2&cursor=" + *firstPage.NextCursor,
 	})
 	if second.Code != http.StatusOK {
 		t.Fatalf("expected second page 200, got %d", second.Code)
@@ -172,10 +169,8 @@ func TestServerTimelinePreservesRunEventOrderingAcrossAttempts(t *testing.T) {
 	seedEvent("evt-attempt-2-progress", "attempt-2", "attempt.progress", 2, "2026-03-06T10:02:00Z")
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/timeline?limit=10",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=10",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
@@ -235,10 +230,8 @@ func TestServerTimelineIncludesMailboxRevisionsForSameLogicalMessage(t *testing.
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/timeline?limit=10",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=10",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
@@ -297,10 +290,8 @@ func TestServerListRunPlanReviewsReturnsLatestFirst(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_new', ?, ?, 'needs_rework', 'Tighten acceptance criteria.', 'god-operator', 'allfather', 2, 2, '2026-03-01T12:02:00Z')`, runID, currentPlanRevisionID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan-reviews",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan-reviews",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -340,10 +331,8 @@ func TestServerListRunGovernanceDecisionsReturnsUnifiedNewestFirstHistory(t *tes
 	mustExecSQL(t, db, `INSERT INTO run_final_reviews (final_review_id, run_id, decision, feedback_markdown, actor_id, role_id, queued_plan_attempt, created_at) VALUES ('final_review_hist', ?, 'confirmed', '', 'god-operator', 'allfather', NULL, '2026-03-01T12:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/governance-decisions",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/governance-decisions",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -387,10 +376,8 @@ func TestServerListRunsOrdersNewestFirstAndHonorsLimit(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-new', NULL, 'decree-list-2', 'wfdef-list-2', 'running', 'draft', 0, 1, '2026-03-02T10:10:00Z', '2026-03-02T10:20:00Z')`)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?limit=1",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?limit=1",
 	})
 
 	if res.Code != http.StatusOK {
@@ -431,10 +418,8 @@ func TestServerListRunsSupportsCursorPaginationAndSearch(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-charlie', NULL, 'decree-list-search-3', 'wfdef-list-search-1', 'failed', 'approved', 0, 1, '2026-03-02T11:10:00Z', '2026-03-02T11:20:00Z')`)
 
 	first := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?limit=1",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?limit=1",
 	})
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected first page 200, got %d (%s)", first.Code, first.Body.String())
@@ -455,10 +440,8 @@ func TestServerListRunsSupportsCursorPaginationAndSearch(t *testing.T) {
 	}
 
 	second := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?limit=1&cursor=" + *firstPage.NextCursor,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?limit=1&cursor=" + *firstPage.NextCursor,
 	})
 	if second.Code != http.StatusOK {
 		t.Fatalf("expected second page 200, got %d (%s)", second.Code, second.Body.String())
@@ -476,10 +459,8 @@ func TestServerListRunsSupportsCursorPaginationAndSearch(t *testing.T) {
 	}
 
 	searchRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=bravo",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=bravo",
 	})
 	if searchRes.Code != http.StatusOK {
 		t.Fatalf("expected search page 200, got %d (%s)", searchRes.Code, searchRes.Body.String())
@@ -511,10 +492,8 @@ func TestServerListRunsSearchRanksRunIDMatchesAheadOfTitleMatches(t *testing.T) 
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-unrelated', NULL, 'decree-search-rank-3', 'wfdef-search-rank', 'failed', 'approved', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
 
 	first := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=run-target&limit=1",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=run-target&limit=1",
 	})
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected first search page 200, got %d (%s)", first.Code, first.Body.String())
@@ -535,10 +514,8 @@ func TestServerListRunsSearchRanksRunIDMatchesAheadOfTitleMatches(t *testing.T) 
 	}
 
 	second := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=run-target&limit=1&cursor=" + *firstPage.NextCursor,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=run-target&limit=1&cursor=" + *firstPage.NextCursor,
 	})
 	if second.Code != http.StatusOK {
 		t.Fatalf("expected second search page 200, got %d (%s)", second.Code, second.Body.String())
@@ -555,10 +532,8 @@ func TestServerListRunsSearchRanksRunIDMatchesAheadOfTitleMatches(t *testing.T) 
 	}
 
 	third := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=run-target",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=run-target",
 	})
 	if third.Code != http.StatusOK {
 		t.Fatalf("expected full ranked search page 200, got %d (%s)", third.Code, third.Body.String())
@@ -588,10 +563,8 @@ func TestServerListRunsSearchUsesTokenPrefixAndRejectsMiddleSubstrings(t *testin
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-archival', NULL, 'decree-search-prefix-2', 'wfdef-search-prefix', 'running', 'draft', 0, 1, '2026-03-03T09:10:00Z', '2026-03-03T09:20:00Z')`)
 
 	prefixRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=older%20histor",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=older%20histor",
 	})
 	if prefixRes.Code != http.StatusOK {
 		t.Fatalf("expected token-prefix search 200, got %d (%s)", prefixRes.Code, prefixRes.Body.String())
@@ -608,10 +581,8 @@ func TestServerListRunsSearchUsesTokenPrefixAndRejectsMiddleSubstrings(t *testin
 	}
 
 	substringRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?search=stor",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?search=stor",
 	})
 	if substringRes.Code != http.StatusOK {
 		t.Fatalf("expected middle-substring search 200, got %d (%s)", substringRes.Code, substringRes.Body.String())
@@ -643,10 +614,8 @@ func TestServerListRunsCanFilterPendingManualGovernanceByRecentActivity(t *testi
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-ignored', NULL, 'decree-ignored', 'wfdef-pending', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-03T09:10:00Z', '2026-03-05T13:00:00Z')`)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?state_filter=awaiting_human_decision",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?state_filter=awaiting_human_decision",
 	})
 
 	if res.Code != http.StatusOK {
@@ -695,10 +664,8 @@ func TestServerListRunsKeepsPlanPendingApprovalKeyStableAcrossProjectionCatchUp(
 	assertPendingApprovalKey := func() {
 		t.Helper()
 		res := performJSONRequest(t, handler, requestSpec{
-			method:  http.MethodGet,
-			path:    "/api/v1/runs?state_filter=awaiting_human_decision",
-			actorID: "actor-1",
-			roleID:  "chancellor",
+			method: http.MethodGet,
+			path:   "/api/v1/runs?state_filter=awaiting_human_decision",
 		})
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -742,10 +709,8 @@ func TestServerListRunsStateFilterKeepsOperatorBucketsNonOverlapping(t *testing.
 	mustExecSQL(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, autonomous_approvals, rework_cycle_count, row_version, created_at, updated_at) VALUES ('run-auto-final', NULL, 'decree-auto-final', 'wfdef-filter', 'awaiting_human_confirmation', 'approved', 1, 0, 1, '2026-03-01T09:13:00Z', '2026-03-01T09:13:00Z')`)
 
 	runningRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?state_filter=running",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?state_filter=running",
 	})
 	if runningRes.Code != http.StatusOK {
 		t.Fatalf("expected running filter 200, got %d (%s)", runningRes.Code, runningRes.Body.String())
@@ -765,10 +730,8 @@ func TestServerListRunsStateFilterKeepsOperatorBucketsNonOverlapping(t *testing.
 	}
 
 	decisionRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs?state_filter=awaiting_human_decision",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs?state_filter=awaiting_human_decision",
 	})
 	if decisionRes.Code != http.StatusOK {
 		t.Fatalf("expected awaiting_human_decision filter 200, got %d (%s)", decisionRes.Code, decisionRes.Body.String())
@@ -799,10 +762,8 @@ func TestServerGetRunReturnsDerivedDisplayState(t *testing.T) {
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'awaiting_human_confirmation', plan_state = 'approved', autonomous_approvals = 0, pending_approval_key = 'final:gate-run-detail', row_version = 7 WHERE run_id = ?`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -828,10 +789,8 @@ func TestServerGetRunOmitsStalePlanPendingApprovalKeyForTerminalRun(t *testing.T
 	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'cancelled', plan_state = 'awaiting_king_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate-run-detail', row_version = 7 WHERE run_id = ?`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -861,10 +820,8 @@ func TestServerGetRunIncludesPendingSettlementNodeInFailedNodes(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-run-recovery-pending', ?, 'nr-run-recovery-pending', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session-run-recovery-pending', 'ses-run-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -890,10 +847,8 @@ func TestServerGetRunFailsWhenStoredModelSelectionJSONIsInvalid(t *testing.T) {
 	mustExecSQL(t, db, `UPDATE workflow_runs SET model_selection_json = '{' WHERE run_id = ?`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for corrupt run model selection, got %d (%s)", res.Code, res.Body.String())
@@ -908,10 +863,8 @@ func TestServerListRunsFailsWhenStoredModelSelectionJSONIsInvalid(t *testing.T) 
 	mustExecSQL(t, db, `UPDATE workflow_runs SET model_selection_json = '{' WHERE run_id = ?`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs",
 	})
 	if res.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500 for corrupt run list model selection, got %d (%s)", res.Code, res.Body.String())
@@ -965,10 +918,8 @@ func TestServerGetRunUpdatedAtReflectsNodeTransitionActivity(t *testing.T) {
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1008,10 +959,8 @@ func TestServerGetRunIncludesTabCountsForRunDetailChrome(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-count-2', ?, 2, 'nr-run-counts-root', 'attempt-run-count-2', 'v1', 'attempt.progress', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-count', 'caus-run-count', 'prev-run-count-2', 'entry-run-count-2', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1062,10 +1011,8 @@ func TestServerGetRunLastActivityReflectsMailboxMessage(t *testing.T) {
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1118,10 +1065,8 @@ func TestServerListRunsReturnsLastActivityFromAttemptRetryEvent(t *testing.T) {
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1161,10 +1106,8 @@ func TestServerGetRunIncludesAuthoritativeStreamCursor(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-cursor-2', ?, 2, 'nr-run-cursor', 'attempt-run-cursor', 'v1', 'attempt.retrying', 2, '{"step":2}', 'actor-1', 'chancellor', 'test', 'internal_error', 'seed', 'corr-run-cursor-2', 'caus-run-cursor-2', 'prev-run-cursor-2', 'entry-run-cursor-2', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1197,10 +1140,8 @@ func TestServerGetRunIncludesActiveRuntimeRetries(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry', ?, 1, 'nr-run-retry', 'attempt-run-retry', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry', 'caus-run-retry', 'prev-run-retry', 'entry-run-retry', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1238,10 +1179,8 @@ func TestServerGetRunOmitsRecoveredRuntimeRetries(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-recovered-2', ?, 2, 'nr-run-retry-recovered', 'attempt-run-retry-recovered', 'v1', 'attempt.retry_recovered', 2, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-recovered","retry_index":2,"retry_max":3,"reason_code":"provider_output_recovered"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_output_recovered', 'provider output recovered after empty-output retry', 'corr-run-retry-recovered', 'caus-run-retry-recovered-2', 'prev-run-retry-recovered-2', 'entry-run-retry-recovered-2', '2026-03-06T10:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1269,10 +1208,8 @@ func TestServerGetRunUsesCanonicalSeqForRuntimeRetrySelection(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-seq-active', ?, 2, 'nr-run-retry-seq', 'attempt-run-retry-seq', 'v1', 'attempt.retrying', 2, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-seq","retry_index":2,"retry_max":3,"delay_seconds":10,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 10s', 'corr-run-retry-seq', 'caus-run-retry-seq-2', 'prev-run-retry-seq-2', 'entry-run-retry-seq-2', '2026-03-06T10:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1305,10 +1242,8 @@ func TestServerGetRunIncludesConcurrentRuntimeRetries(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-validator', ?, 2, 'nr-run-retry-validator', 'attempt-run-retry-validator', 'v1', 'attempt.retrying', 1, '{"node_id":"validation_gates_qa_scout","node_run_id":"nr-run-retry-validator","retry_index":2,"retry_max":4,"delay_seconds":8,"reason_code":"provider_empty_output_retry"}', 'runtime_orchestrator', 'intelligence-qa-scout', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output after 8s', 'corr-run-retry', 'caus-run-retry-validator', 'prev-run-retry-validator', 'entry-run-retry-validator', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1339,10 +1274,8 @@ func TestServerGetRunIgnoresLaterMailboxEventsWhenRetryIsStillActive(t *testing.
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-mailbox-message', ?, 2, 'nr-run-retry-mailbox', 'run:mailbox', 'v1', 'mailbox.message_recorded', 1, '{"message_id":"msg-mailbox","node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-mailbox","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent-run-retry-mailbox', 'builder-berserker', 'state.mailbox', 'execution_completed', 'mailbox message recorded', 'corr-run-retry-mailbox-2', 'caus-run-retry-mailbox-2', 'prev-run-retry-mailbox-2', 'entry-run-retry-mailbox-2', '2026-03-06T10:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1372,10 +1305,8 @@ func TestServerGetRunIgnoresMalformedRuntimeRetryPayload(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-run-retry-malformed', ?, 1, 'nr-run-retry-malformed', 'attempt-run-retry-malformed', 'v1', 'attempt.retrying', 1, '{"node_id":"delegated_execution_berserker","node_run_id":"nr-run-retry-malformed","retry_index":2,"retry_max":3}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_empty_output_retry', 'retrying empty provider output', 'corr-run-retry-malformed', 'caus-run-retry-malformed', 'prev-run-retry-malformed', 'entry-run-retry-malformed', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1402,10 +1333,8 @@ func TestServerGetRunGraphIncludesFailedNodeReason(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-failed', ?, 1, 'nr-graph-failed', 'attempt-graph-failed', 'v1', 'attempt.failed', 1, '{"error":"Builder crashed while preparing workspace."}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'execution_setup_failed', 'builder failed', 'corr-graph-failed', 'caus-graph-failed', 'prev-graph-failed', 'entry-graph-failed', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1441,10 +1370,8 @@ func TestServerGetRunGraphUsesCanonicalSeqForFailureReason(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-failed-seq-new', ?, 2, 'nr-graph-failed-seq', 'attempt-graph-failed-seq', 'v1', 'attempt.failed', 2, '{"error":"Canonical seq failure."}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'execution_setup_failed', 'builder failed', 'corr-graph-failed-seq', 'caus-graph-failed-seq-2', 'prev-graph-failed-seq-2', 'entry-graph-failed-seq-2', '2026-03-06T10:02:00Z')`, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1480,10 +1407,8 @@ func TestServerGetRunGraphFallsBackToDurableFailureText(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-failed-durable', ?, 1, 'nr-graph-failed-durable', 'attempt-graph-failed-durable', 'v1', 'attempt.failed', 1, '{"reason":"stale_attempt"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'agent_unresponsive', 'stale running attempt recovered as failed', 'corr-graph-failed-durable', 'caus-graph-failed-durable', 'prev-graph-failed-durable', 'entry-graph-failed-durable', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1520,10 +1445,8 @@ func TestServerGetRunGraphUsesFriendlyProviderIncompleteTurnReason(t *testing.T)
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-incomplete-turn', ?, 1, 'nr-graph-incomplete-turn', 'attempt-graph-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-incomplete-turn', 'caus-graph-incomplete-turn', 'prev-graph-incomplete-turn', 'entry-graph-incomplete-turn', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1561,10 +1484,8 @@ func TestServerGetRunGraphUsesReceiptConflictReasonForRecoveredInvalidHandshake(
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-graph-receipt-conflict', ?, 1, 'nr-graph-receipt-conflict', 'attempt-graph-receipt-conflict', 'v1', 'attempt.failed', 1, '{"error":"conflicting provider completion receipts invalidated the invocation"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-graph-receipt-conflict', 'caus-graph-receipt-conflict', 'prev-graph-receipt-conflict', 'entry-graph-receipt-conflict', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1599,10 +1520,8 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-recovery-pending', ?, 'nr-graph-recovery-pending', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session-graph-recovery-pending', 'ses-graph-recovery-pending', ?, ?, NULL, 'provider_incomplete_turn', 'provider exited without an accepted kingdom_complete_attempt receipt', ?, ?)`, runID, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1628,6 +1547,110 @@ func TestServerGetRunGraphTreatsPendingSettlementAsFailed(t *testing.T) {
 	t.Fatal("expected delegated_execution_berserker node in graph response")
 }
 
+func TestServerGetRunGraphReportsRequestedReworkAsReworkNotFailed(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name        string
+		nodeID      string
+		role        string
+		failureCode string
+		failureText string
+	}{
+		{"execution review", "execution_review_shieldmaiden", "reviewer-shieldmaiden", coreverdict.ReworkReasonCodeExecutionReview, "review requested rework"},
+		{"validation gate", "validation_gates_qa_scout", "intelligence-qa-scout", coreverdict.ReworkReasonCodeValidationGate, "validation requested rework"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			handler, db := newAPIServerForTest(t)
+			runID := seedRunWithLinearExecutionWorkflow(t, handler)
+			now := "2026-03-06T10:01:00Z"
+			suffix := strings.ReplaceAll(testCase.name, " ", "-")
+
+			mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, ?, 'Owner', 'busy', NULL, 0, ?, ?)`, "agent-rework-"+suffix, testCase.role, now, now)
+			mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, ?, 1,1, 'failed', ?, ?, 1, ?, ?)`, "nr-rework-"+suffix, runID, testCase.nodeID, testCase.role, "agent-rework-"+suffix, now, now)
+			mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, 'committed_failure', 'provider_backed', '', NULL, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				"attempt-rework-"+suffix, runID, "nr-rework-"+suffix, "session-rework-"+suffix, "ses-rework-"+suffix, now, now, now, testCase.failureCode, testCase.failureText, now, now)
+
+			res := performJSONRequest(t, handler, requestSpec{
+				method: http.MethodGet,
+				path:   "/api/v1/runs/" + runID + "/graph",
+			})
+			if res.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+			}
+
+			var payload gen.RunGraphResponse
+			if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("decode run graph response: %v", err)
+			}
+
+			for _, node := range payload.Nodes {
+				if node.NodeId != testCase.nodeID {
+					continue
+				}
+				// The durable node status stays `failed` — the engine needs a
+				// failure to route the loop back — but nothing broke, so the
+				// graph must not draw it as a broken step.
+				if node.State != gen.RunGraphNodeStateRework {
+					t.Fatalf("expected rework state for %q, got %q", testCase.nodeID, node.State)
+				}
+				if node.FailureReason == nil || *node.FailureReason != testCase.failureText {
+					t.Fatalf("expected rework reason %q, got %#v", testCase.failureText, node.FailureReason)
+				}
+				var durableStatus string
+				if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = ?`, "nr-rework-"+suffix).Scan(&durableStatus); err != nil {
+					t.Fatalf("read durable node status: %v", err)
+				}
+				if durableStatus != "failed" {
+					t.Fatalf("expected durable node status to stay failed, got %q", durableStatus)
+				}
+				return
+			}
+			t.Fatalf("expected %q node in graph response", testCase.nodeID)
+		})
+	}
+}
+
+func TestServerGetRunGraphKeepsGenuineOwnerFailuresFailed(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := "2026-03-06T10:01:00Z"
+
+	// A reviewer whose receipt was unusable really did fail. Only a requested
+	// rework earns the softer state.
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-invalid-verdict', 'reviewer-shieldmaiden', 'Reviewer', 'busy', NULL, 0, ?, ?)`, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-invalid-verdict', ?, 'execution_review_shieldmaiden', 1,1, 'failed', 'reviewer-shieldmaiden', 'agent-invalid-verdict', 1, ?, ?)`, runID, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-invalid-verdict', ?, 'nr-invalid-verdict', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-invalid-verdict', 'ses-invalid-verdict', ?, ?, ?, 'invalid_execution_review_verdict', 'execution review response missing required verdict line', ?, ?)`, runID, now, now, now, now, now)
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
+	})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	var payload gen.RunGraphResponse
+	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode run graph response: %v", err)
+	}
+
+	for _, node := range payload.Nodes {
+		if node.NodeId != "execution_review_shieldmaiden" {
+			continue
+		}
+		if node.State != gen.RunGraphNodeStateFailed {
+			t.Fatalf("expected invalid verdict to stay failed, got %q", node.State)
+		}
+		return
+	}
+	t.Fatal("expected execution_review_shieldmaiden node in graph response")
+}
+
 func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 	t.Parallel()
 
@@ -1643,10 +1666,8 @@ func TestServerGetRunGraphReturnsLatestNodeLineage(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-lineage-2', ?, 'nr-graph-lineage-2', 'running', 'provider_backed', '', NULL, 1, 'session-graph-lineage-2', 'ses-graph-lineage-2', ?, NULL, NULL, '', '', ?, ?)`, runID, later, later, later)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1697,10 +1718,8 @@ func TestServerGetRunGraphKeepsBlockedLineageVisibleUntilRetryLaunches(t *testin
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-blocked-visible-2', ?, 'nr-graph-blocked-visible-2', 'queued', 'provider_backed', '', NULL, 1, 'session-graph-blocked-visible-2', '', NULL, NULL, NULL, NULL, '', '', ?, ?)`, runID, later, later)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1751,10 +1770,8 @@ func TestServerGetRunGraphKeepsSupersededBlockedLineageVisibleUntilCancelDrain(t
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('attempt-graph-superseded-visible-2', ?, 'nr-graph-superseded-visible-2', 'committed_cancelled', 'provider_backed', '', NULL, 1, 'session-graph-superseded-visible-2', 'ses-graph-superseded-visible-2', ?, NULL, ?, ?, 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', ?, ?)`, runID, later, later, later, later, later, later)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/graph",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/graph",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -1813,10 +1830,8 @@ func TestServerRunPlanSnapshotReturnsLatestPlanDraftingResponse(t *testing.T) {
 	revision := mustRefreshRunPlanRevision(t, db, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 
 	if res.Code != http.StatusOK {
@@ -1874,10 +1889,8 @@ func TestServerRunPlanSnapshotUsesCanonicalRevisionIndependentOfMailboxVisibilit
 	revision := mustRefreshRunPlanRevision(t, db, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 
 	if res.Code != http.StatusOK {
@@ -1921,10 +1934,8 @@ func TestServerRunPlanSnapshotUsesLatestCanonicalRevision(t *testing.T) {
 	revision := mustRefreshRunPlanRevision(t, db, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 
 	if res.Code != http.StatusOK {
@@ -1977,10 +1988,8 @@ func TestServerRunPlanSnapshotUsesCanonicalCurrentPlanWhenProjectionRowIsMissing
 	}
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2019,10 +2028,8 @@ func TestServerRunPlanSnapshotReturnsPendingAfterFreshPlanningWaveQueued(t *test
 	mustExecSQL(t, db, `UPDATE workflow_runs SET updated_at = ? WHERE run_id = ?`, now, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2071,10 +2078,8 @@ func TestServerRunTabCountsSuppressStructuredPlanningMessages(t *testing.T) {
 	VALUES ('msg_plan_counts_suppressed', ?, 'agent_plan_counts_council', 'agent_plan_counts_king', 'thread_plan_counts_suppressed', 'status_update', 'normal', '{"message_source":"communication","communication_type":"response_received","node_id":"plan_drafting","response_full":"Latest planning response"}', ?)`, runID, createdAt)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2111,10 +2116,8 @@ func TestServerRunPlanSnapshotPrefersLatestPersistedRevisionWhenTimestampsTie(t 
 	revision := mustRefreshRunPlanRevision(t, db, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 
 	if res.Code != http.StatusOK {
@@ -2145,10 +2148,8 @@ func TestServerRunPlanSnapshotSupportsCustomPlanDraftingNodeID(t *testing.T) {
 	revisionID := seedCurrentPlanRevisionForNode(t, db, runID, planNodeID, "Custom scope plan\n- Rework acceptance criteria")
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2189,10 +2190,8 @@ func TestServerRunPlanSnapshotAggregatesMultiplePlanDraftingNodes(t *testing.T) 
 	revision := mustRefreshRunPlanRevision(t, db, runID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2240,10 +2239,8 @@ func TestServerRunPlanSnapshotFallbackUsesResolvedCustomPlanDraftingNodeID(t *te
 	runID := seedRunWithCustomPlanDraftingWorkflow(t, handler, planNodeID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
@@ -2281,10 +2278,8 @@ func TestServerRunPlanSnapshotReturnsEmptyDraftWhenPlanMissing(t *testing.T) {
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/plan",
-		actorID: "actor-allfather",
-		roleID:  "allfather",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/plan",
 	})
 
 	if res.Code != http.StatusOK {
@@ -2332,10 +2327,8 @@ func TestServerListRunGovernanceDecisionsSupportsPagination(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO run_plan_reviews (plan_review_id, run_id, reviewed_plan_revision_id, decision, feedback_markdown, actor_id, role_id, queued_advisory_attempt, queued_plan_attempt, created_at) VALUES ('plan_review_2', ?, ?, 'needs_rework', 'Plan rework v2', 'god-operator', 'allfather', 2, 2, '2026-03-01T12:03:00Z')`, runID, planRevisionID)
 
 	first := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/governance-decisions?limit=2",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/governance-decisions?limit=2",
 	})
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected first page 200, got %d (%s)", first.Code, first.Body.String())
@@ -2361,10 +2354,8 @@ func TestServerListRunGovernanceDecisionsSupportsPagination(t *testing.T) {
 	}
 
 	second := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/governance-decisions?limit=2&cursor=" + *firstPage.NextCursor,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/governance-decisions?limit=2&cursor=" + *firstPage.NextCursor,
 	})
 	if second.Code != http.StatusOK {
 		t.Fatalf("expected second page 200, got %d (%s)", second.Code, second.Body.String())
@@ -2390,10 +2381,8 @@ func TestServerListRunGovernanceDecisionsSupportsPagination(t *testing.T) {
 	}
 
 	invalid := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/governance-decisions?cursor=invalid-token",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/governance-decisions?cursor=invalid-token",
 	})
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for invalid governance cursor, got %d (%s)", invalid.Code, invalid.Body.String())
@@ -2433,10 +2422,8 @@ func TestServerGetRunReturnsCurrentAndReworkLoopCycleMetrics(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('validation_attempt_qa_1', ?, 'nr_cycle_validation_a_1', 'committed_failure', 'validation_gate_rework', 'validator requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2484,7 +2471,7 @@ func TestServerGetRunUsesWaveLineageInsteadOfLatestAttemptNumber(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_lineage_primary_attempt_2', ?, 'nr_review_wave_lineage_primary_2', 'committed_failure', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_lineage_secondary_attempt_1', ?, 'nr_review_wave_lineage_secondary_1', 'committed_failure', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2526,10 +2513,8 @@ func TestServerGetRunIgnoresCancelledValidationWaveInReworkMetrics(t *testing.T)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('validation_attempt_cancelled_night_1', ?, 'nr_cycle_validation_cancelled_b_1', 'committed_cancelled', 'provider_cancelled', 'validator cancelled', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2570,7 +2555,7 @@ func TestServerGetRunUsesCanonicalReviewWaveCounting(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_primary_attempt_1', ?, 'nr_review_wave_primary_1', 'committed_failure', 'execution_review_rework', 'review requested rework', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('review_wave_secondary_attempt_1', ?, 'nr_review_wave_secondary_1', 'committed_failure', 'provider_process_failed', 'review process crashed', ?, ?, ?, ?, ?)`, runID, now, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2614,10 +2599,8 @@ func TestServerGetRunCountsAutoSucceededLoopsFromCanonicalAttemptEventsOnly(t *t
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_mailbox', ?, 4, 'nr_auto_success_validation', 'run:mailbox', 'v1', 'mailbox.message_recorded', 2, '{"message_id":"msg_auto_success_validation","node_id":"validation_gates_qa_scout","node_run_id":"nr_auto_success_validation","message_source":"communication","communication_type":"response_received","visible_to_operator":true}', 'agent_validation_auto_success', 'intelligence-qa-scout', 'state.mailbox', 'validation_gate_cap_auto_succeeded', 'mailbox message recorded', 'corr_auto_success_validation_mailbox', 'caus_auto_success_validation_mailbox', 'prev_auto_success_validation_mailbox', 'entry_auto_success_validation_mailbox', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2659,10 +2642,8 @@ func TestServerGetRunCountsValidationAutoSucceededByWaveNotPerValidator(t *testi
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_auto_success_validation_wave_night', ?, 2, 'nr_auto_success_validation_wave_night', 'attempt_auto_success_validation_wave_night', 'v1', 'attempt.succeeded', 1, '{"status":"ok"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'validation_gate_cap_auto_succeeded', 'validation auto-succeeded at cap', 'corr_auto_success_validation_wave_night', 'caus_auto_success_validation_wave_night', 'prev_auto_success_validation_wave_night', 'entry_auto_success_validation_wave_night', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2690,10 +2671,8 @@ func TestServerRunDetailIncludesFailedNodeSummaries(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-failed-builder', ?, 1, 'nr-failed-builder', 'attempt-failed-builder', 'v1', 'attempt.failed', 1, '{"error":"Builder crashed while preparing workspace."}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'execution_setup_failed', 'builder failed', 'corr-failed-builder', 'caus-failed-builder', 'prev-failed-builder', 'entry-failed-builder', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2727,10 +2706,8 @@ func TestServerRunDetailFailedNodeSummariesFallBackToReasonText(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-failed-builder-reason-text', ?, 1, 'nr-failed-builder-reason-text', 'attempt-failed-builder-reason-text', 'v1', 'attempt.failed', 1, '{"reason":"stale_attempt"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'agent_unresponsive', 'Agent became unresponsive before completion could be confirmed.', 'corr-failed-builder-reason-text', 'caus-failed-builder-reason-text', 'prev-failed-builder-reason-text', 'entry-failed-builder-reason-text', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2763,10 +2740,8 @@ func TestServerRunDetailFailedNodeSummariesUseFriendlyProviderIncompleteTurnReas
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-failed-validator-incomplete-turn', ?, 1, 'nr-failed-validator-incomplete-turn', 'attempt-failed-validator-incomplete-turn', 'v1', 'attempt.failed', 1, '{"error":"incomplete terminal state (reason=\"provider_incomplete_turn\")"}', 'runtime_orchestrator', 'intelligence-nightraven', 'runtime.orchestrator', 'provider_incomplete_turn', 'node execution completed', 'corr-failed-validator-incomplete-turn', 'caus-failed-validator-incomplete-turn', 'prev-failed-validator-incomplete-turn', 'entry-failed-validator-incomplete-turn', ?)`, runID, now)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200 get run response, got %d (%s)", res.Code, res.Body.String())
@@ -2805,7 +2780,7 @@ func TestServerListRunAgentsReturnsParticipantsOrdered(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:implementation:1', ?, 'nr-agent-builder', 'running', 'worker-1', '2026-03-01T14:00:00Z', 1, 'session-agent-builder', 'ses-agent-builder', ?, NULL, NULL, '', '', ?, ?)`, runID, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-run-agents-1', ?, 'agent-root', 'agent-council', 'thread-agents', 'status_update', 'normal', '{}', ?)`, runID, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2867,7 +2842,7 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:execution_kickoff:1', ?, 'nr-runtime-exec', 'committed_failure', 'runtime_owned', '', NULL, 0, '', '', ?, ?, ?, 'execution_setup_failed', 'kickoff failed', ?, ?)`, runID, earlier, earlier, earlier, earlier, earlier)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-provider-exec', 'running', 'provider_backed', 'worker-1', '2026-03-01T14:00:00Z', 1, 'session-exec-builder', 'ses-exec-builder', ?, NULL, NULL, '', '', ?, ?)`, runID, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -2944,7 +2919,7 @@ func TestServerListRunExecutionsReturnsExecutionScopedSessionIdentity(t *testing
 		t.Fatalf("expected failure text, got %#v", payload.Items[1].FailureText)
 	}
 
-	runRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID, actorID: "actor-1", roleID: "chancellor"})
+	runRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
 	if runRes.Code != http.StatusOK {
 		t.Fatalf("expected run detail 200, got %d (%s)", runRes.Code, runRes.Body.String())
 	}
@@ -2979,7 +2954,7 @@ func TestServerRunExecutionsExposeCompletionInvalidReason(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_capability_issued_at, opened_at, receipt_seen_count, last_receipt_disposition, invalid_reason, created_at, updated_at) VALUES ('inv-builder-invalid-reason', ?, ?, 'nr-builder-invalid-reason', 'session-builder-invalid-reason', 'ses-builder-invalid-reason', 'invalid_handshake', ?, ?, 2, 'invalidated', 'completion_receipt_conflict', ?, ?)`, attemptID, runID, now, now, now, now)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv-builder-invalid-reason' WHERE attempt_id = ?`, attemptID)
 
-	listRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	listRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if listRes.Code != http.StatusOK {
 		t.Fatalf("expected list executions 200, got %d (%s)", listRes.Code, listRes.Body.String())
 	}
@@ -2999,7 +2974,7 @@ func TestServerRunExecutionsExposeCompletionInvalidReason(t *testing.T) {
 		t.Fatalf("expected structured completion invalid reason, got %#v", listPayload.Items[0].CompletionInvalidReason)
 	}
 
-	detailRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+	detailRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 	if detailRes.Code != http.StatusOK {
 		t.Fatalf("expected get execution 200, got %d (%s)", detailRes.Code, detailRes.Body.String())
 	}
@@ -3025,7 +3000,7 @@ func TestServerListRunExecutionsUsesVerifyingStatusForPendingSettlement(t *testi
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-recovery', ?, 'delegated_execution_berserker', 1,1, 'failed', 'builder-berserker', 'agent-builder-recovery', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-builder-recovery', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session-builder-recovery', 'ses-builder-recovery', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3061,7 +3036,7 @@ func TestServerListRunExecutionsUsesBlockedStatusFromNodeState(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-builder-blocked', ?, 'delegated_execution_berserker', 1, 1, 'blocked', 'builder-berserker', 'agent-builder-blocked', 1, ?, ?)`, runID, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-builder-blocked', 'committed_failure', 'provider_backed', '', NULL, 1, 'session-builder-blocked', 'ses-builder-blocked', ?, ?, ?, ?, 'dependency_blocked', 'validator blocked', ?, ?)`, runID, now, now, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3155,7 +3130,7 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'committed_failure', terminal_observed_at = ?, committed_at = ?, failure_code = 'execution_review_rework', failure_text = 'review requested rework', created_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, now, now, attemptID)
 	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES ('outbox-review-detail', ?, ?, 'nr-review-detail', 1, 'committed_failure', ?, 'published', 1, '', ?, ?, ?)`, attemptID, runID, `{"provider_invocation_id":"inv-review-stale","provider_invocation_at":"2026-03-01T12:58:00Z","output_text":"VERDICT: PASS\n\nStale reviewer response."}`, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3223,7 +3198,7 @@ func TestServerGetRunExecutionReturnsPendingObservedOutputDetail(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:execution_review_shieldmaiden:1', ?, 'nr-review-pending-detail', 'terminal_observed', 'provider_backed', '', NULL, 1, 'session-review-pending-detail', 'ses-review-pending-detail', ?, ?, NULL, '', '', ?, ?)`, runID, now, now, now, now)
 	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, publish_attempts, last_error, created_at, updated_at, published_at) VALUES ('outbox-review-pending-detail', ?, ?, 'nr-review-pending-detail', 1, 'committed_success', ?, 'pending', 0, '', ?, ?, NULL)`, runID+`:execution_review_shieldmaiden:1`, runID, `{"provider_invocation_id":"inv-review-pending-detail","provider_invocation_at":"2026-03-01T12:59:59Z","output_text":"Context summary\nVERDICT: PASS\n\nCaptured reviewer response."}`, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:execution_review_shieldmaiden:1`, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:execution_review_shieldmaiden:1`})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3277,7 +3252,7 @@ func TestServerGetRunExecutionReturnsDurableProgressFields(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr-review-progress-detail', ?, 'execution_review_shieldmaiden', 1,1, 'starting', 'reviewer-shieldmaiden', 'agent-review-progress-detail', 1, NULL, NULL)`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, progress_event_type, progress_reason_code, progress_at, created_at, updated_at) VALUES (?, ?, 'nr-review-progress-detail', 'starting', 'provider_backed', '', NULL, 1, 'session-review-progress-detail', '', ?, NULL, NULL, NULL, '', '', 'attempt.progress', 'provider_invoked', ?, ?, ?)`, attemptID, runID, now, now, now, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3337,7 +3312,7 @@ func TestServerGetRunExecutionTreatsCommittedProviderAttemptsWithoutInvocationAs
 		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review_shieldmaiden', ?, 1, 'running', 'reviewer-shieldmaiden', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, agentID, now, now)
 		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', '', NULL, 1, ?, ?, ?, ?, ?, '', '', ?, ?)`, attemptID, runID, nodeRunID, tt.state, fmt.Sprintf("session-%d", idx+1), fmt.Sprintf("ses-%d", idx+1), now, now, now, now, now)
 
-		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 		if res.Code != http.StatusOK {
 			t.Fatalf("%s: expected 200, got %d (%s)", tt.name, res.Code, res.Body.String())
 		}
@@ -3407,7 +3382,7 @@ func TestServerGetRunExecutionTreatsCommittedProviderFailuresWithInvocationAsTer
 			t.Fatalf("%s: mark provider invocation open: %v", tt.name, err)
 		}
 
-		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID, actorID: "actor-1", roleID: "chancellor"})
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 		if res.Code != http.StatusOK {
 			t.Fatalf("%s: expected 200, got %d (%s)", tt.name, res.Code, res.Body.String())
 		}
@@ -3436,37 +3411,35 @@ func TestServerGetRunExecutionReturnsNotFoundForUnknownAttempt(t *testing.T) {
 	handler, _ := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:missing:1`, actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + runID + `:missing:1`})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d (%s)", res.Code, res.Body.String())
 	}
 	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
 }
 
-func TestServerListRunExecutionsRequiresAuthHeaders(t *testing.T) {
+func TestServerListRunExecutionsUsesAuthenticatedPrincipal(t *testing.T) {
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 
 	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
-	if res.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d (%s)", res.Code, res.Body.String())
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200 without attribution headers, got %d (%s)", res.Code, res.Body.String())
 	}
-	assertErrorCode(t, res.Body.Bytes(), "policy_violation")
 }
 
-func TestServerListRunExecutionsRejectsUnknownRole(t *testing.T) {
+func TestServerListRunExecutionsIgnoresForgedUnknownRole(t *testing.T) {
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "role-missing"})
-	if res.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d (%s)", res.Code, res.Body.String())
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
+	if res.Code != http.StatusOK {
+		t.Fatalf("expected 200 with forged role ignored, got %d (%s)", res.Code, res.Body.String())
 	}
-	assertErrorCode(t, res.Body.Bytes(), "policy_violation")
 }
 
 func TestServerListRunExecutionsOrdersByActivityAt(t *testing.T) {
@@ -3483,7 +3456,7 @@ func TestServerListRunExecutionsOrdersByActivityAt(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:1', ?, 'nr-order-old', 'committed_failure', 'provider_backed', '', NULL, 0, 'session-order-old', 'ses-order-old', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z', 'provider_process_failed', 'older start, latest activity', '2026-03-01T12:00:00Z', '2026-03-01T12:05:00Z')`, runID)
 	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+runID+`:delegated_execution_berserker:2', ?, 'nr-order-newer-start', 'running', 'provider_backed', 'worker-1', '2026-03-01T12:20:00Z', 1, 'session-order-new', 'ses-order-new', '2026-03-01T12:01:00Z', NULL, NULL, '', '', '2026-03-01T12:01:00Z', '2026-03-01T12:04:00Z')`, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3520,7 +3493,7 @@ func TestServerListRunAgentsPreservesUnavailableStatuses(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-offline', 'council-member', 'Offline Scout', NULL, 0, ?)`, runID, now)
 	mustExecSQL(t, db, `INSERT INTO run_participants (run_id, agent_id, role_id, display_name, parent_agent_id, spawn_depth, first_seen_at) VALUES (?, 'agent-failed', 'council-member', 'Failed Scout', NULL, 0, ?)`, runID, now)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -3561,7 +3534,7 @@ func TestServerRunAgentApisPreserveHistoricalMembershipSnapshots(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO mailbox_messages (message_id, run_id, from_agent_id, to_agent_id, thread_id, message_type, priority, payload_json, created_at) VALUES ('msg-role-transition-api', ?, 'agent-role-transition-api', 'agent-role-transition-api', 'thread-role-transition-api', 'status_update', 'normal', '{}', ?)`, runID, now)
 
 	assertRunAgentAPIState := func(expectedCount int) {
-		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents", actorID: "actor-1", roleID: "chancellor"})
+		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/agents"})
 		if res.Code != http.StatusOK {
 			t.Fatalf("expected agents 200, got %d (%s)", res.Code, res.Body.String())
 		}
@@ -3578,7 +3551,7 @@ func TestServerRunAgentApisPreserveHistoricalMembershipSnapshots(t *testing.T) {
 			t.Fatalf("expected %d run agents, got %#v", expectedCount, agentsPayload.Items)
 		}
 
-		runRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID, actorID: "actor-1", roleID: "chancellor"})
+		runRes := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID})
 		if runRes.Code != http.StatusOK {
 			t.Fatalf("expected run detail 200, got %d (%s)", runRes.Code, runRes.Body.String())
 		}
@@ -3605,7 +3578,7 @@ func TestServerListRunAgentsReturnsNotFoundForUnknownRun(t *testing.T) {
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/agents", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/agents"})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", res.Code)
 	}
@@ -3616,7 +3589,7 @@ func TestServerListRunExecutionsReturnsNotFoundForUnknownRun(t *testing.T) {
 	t.Parallel()
 
 	handler, _ := newAPIServerForTest(t)
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/executions", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/executions"})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", res.Code)
 	}
@@ -3653,10 +3626,8 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-progress', ?, 9005, NULL, ?, 'v1', 'attempt.progress', 4, '{"step":1}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_invoked', 'progress', 'corr-activity', 'caus-act-progress', 'prev-act-progress', 'entry-act-progress', '2026-06-14T10:00:04Z')`, runID, attemptID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", res.Code, res.Body.String())
@@ -3678,10 +3649,8 @@ func TestServerRunExecutionActivityReturnsParsedDedupedItems(t *testing.T) {
 
 	// The coarse timeline must never surface activity events.
 	timeline := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/timeline?limit=200",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/timeline?limit=200",
 	})
 	if timeline.Code != http.StatusOK {
 		t.Fatalf("expected timeline 200, got %d", timeline.Code)
@@ -3704,10 +3673,8 @@ func TestServerRunExecutionActivityReturnsNotFoundForUnknownAttempt(t *testing.T
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/executions/attempt-missing/activity",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/executions/attempt-missing/activity",
 	})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
@@ -3729,10 +3696,8 @@ func TestServerRunExecutionActivityReturnsNotFoundForMismatchedRunAttempt(t *tes
 	mustExecSQL(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt-act-cross-run', ?, 9001, NULL, ?, 'v1', 'attempt.activity', 1, '{"kind":"kingdom.reasoning","activity_id":"part-cross-run","detail":"Other run","occurred_at":"2026-06-14T10:00:01Z"}', 'runtime_orchestrator', 'builder-berserker', 'runtime.orchestrator', 'provider_activity', 'provider activity telemetry', 'corr-activity', 'caus-cross-run', 'prev-cross-run', 'entry-cross-run', '2026-06-14T10:00:00Z')`, otherRunID, attemptID)
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID + "/executions/" + attemptID + "/activity",
 	})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())

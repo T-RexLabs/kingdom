@@ -115,9 +115,9 @@ func TestListAllPlanningOperationEventsReadsPastFirstPage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_reconcile_pages")
 	operation, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID:        "op_reconcile_pages",
-		AcpRunID:           acp.PlannerRunID("op_reconcile_pages"),
 		PlanningSessionID:  "ps_reconcile_pages",
 		Type:               state.PlanningOperationTypeReply,
 		Status:             state.PlanningOperationStatusRunning,

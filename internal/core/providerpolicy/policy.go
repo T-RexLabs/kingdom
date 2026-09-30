@@ -208,6 +208,18 @@ func (p Policy) CompletionReconcileBackoffDurations() ([]time.Duration, error) {
 	return parseDurationSchedule(p.Timeouts.CompletionReconcileBackoffSchedule, "completion reconcile backoff schedule")
 }
 
+func (p Policy) ExecutionTimeouts() (time.Duration, time.Duration, error) {
+	firstEventTimeout, err := parseDuration(p.Timeouts.FirstEventTimeout, "first_event_timeout")
+	if err != nil {
+		return 0, 0, err
+	}
+	streamInactivityTimeout, err := parseDuration(p.Timeouts.StreamInactivityTimeout, "stream_inactivity_timeout")
+	if err != nil {
+		return 0, 0, err
+	}
+	return firstEventTimeout, streamInactivityTimeout, nil
+}
+
 func (p Policy) AgentForRole(roleID string) string {
 	role := strings.TrimSpace(roleID)
 	if role != "" {
@@ -220,18 +232,8 @@ func (p Policy) AgentForRole(roleID string) string {
 	return strings.TrimSpace(p.AgentPolicy.DefaultAgent)
 }
 func validateTimeout(value string, field string) error {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return fmt.Errorf("provider policy %s is required", field)
-	}
-	d, err := time.ParseDuration(trimmed)
-	if err != nil {
-		return fmt.Errorf("provider policy %s duration parse failed: %w", field, err)
-	}
-	if d <= 0 {
-		return fmt.Errorf("provider policy %s duration must be > 0", field)
-	}
-	return nil
+	_, err := parseDuration(value, field)
+	return err
 }
 
 func parseDurationSchedule(raws []string, field string) ([]time.Duration, error) {
@@ -250,6 +252,21 @@ func parseDurationSchedule(raws []string, field string) ([]time.Duration, error)
 		durations = append(durations, parsed)
 	}
 	return durations, nil
+}
+
+func parseDuration(raw, field string) (time.Duration, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, fmt.Errorf("provider policy %s is required", field)
+	}
+	parsed, err := time.ParseDuration(trimmed)
+	if err != nil {
+		return 0, fmt.Errorf("provider policy %s duration parse failed: %w", field, err)
+	}
+	if parsed <= 0 {
+		return 0, fmt.Errorf("provider policy %s duration must be > 0", field)
+	}
+	return parsed, nil
 }
 
 func validatePolicySchema(rawYAML []byte, schemaPath string) error {

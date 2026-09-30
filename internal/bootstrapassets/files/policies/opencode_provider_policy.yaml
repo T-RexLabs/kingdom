@@ -54,6 +54,7 @@ retry_boundaries:
     - invalid_output_schema
     - policy_violation
     - idempotency_conflict
+    - idempotency_key_expired
     - dependency_blocked
     - llm_invalid_response
     - llm_context_overflow

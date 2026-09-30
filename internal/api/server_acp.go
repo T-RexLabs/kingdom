@@ -18,7 +18,7 @@ import (
 )
 
 func (s *Server) handleListAcpAgents(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_acp_agents"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_acp_agents"); !ok {
 		return
 	}
 	agents := acp.PlannerAgents()
@@ -30,7 +30,7 @@ func (s *Server) handleListAcpAgents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetAcpAgent(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_acp_agent"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_acp_agent"); !ok {
 		return
 	}
 	name := strings.TrimSpace(r.PathValue("name"))
@@ -43,7 +43,7 @@ func (s *Server) handleGetAcpAgent(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.create_acp_run"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.create_acp_run"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -118,7 +118,7 @@ func (s *Server) handleCreateAcpRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetAcpRun(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_acp_run"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_acp_run"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -143,7 +143,7 @@ func (s *Server) handleGetAcpRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCancelAcpRun(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.cancel_acp_run"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.cancel_acp_run"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -175,7 +175,7 @@ func (s *Server) handleCancelAcpRun(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.stream_acp_run_events"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.stream_acp_run_events"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -214,7 +214,7 @@ func (s *Server) handleStreamAcpRunEvents(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleGetAcpRunActivity(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_acp_run_activity"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_acp_run_activity"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -255,9 +255,6 @@ func acpAgentFromDefinition(agent acp.PlannerAgent) gen.AcpAgent {
 
 func acpRunFromOperation(operation state.PlanningOperation) gen.AcpRun {
 	runID := mustParseOpenAPIUUID(operation.AcpRunID)
-	if runID == uuid.Nil {
-		runID = mustParseOpenAPIUUID(acp.PlannerRunID(operation.OperationID))
-	}
 	result := gen.AcpRun{
 		AgentName:         gen.AcpRunAgentName(acp.PlannerAgentNameForOperationType(string(operation.Type))),
 		CreatedAt:         mustParseRFC3339(operation.CreatedAt),

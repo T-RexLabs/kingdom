@@ -3,7 +3,6 @@ package orchestration
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -440,57 +439,12 @@ func (o *orchestrationLoop) enqueueNodeAttempt(ctx context.Context, runID, nodeI
 		OccurredAt: occurredAt,
 	})
 	if err != nil {
-		var limitErr *state.NodeAttemptLimitExceededError
-		if errors.As(err, &limitErr) {
-			return 0, fmt.Errorf("max attempts reached for run=%s node=%s", runID, nodeID)
-		}
 		return 0, err
 	}
 	if !result.Queued || len(result.Attempts) != 1 {
-		var maxAttempt int
-		if err := o.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(attempt), 0) FROM node_runs WHERE run_id = ? AND node_id = ?`, runID, nodeID).Scan(&maxAttempt); err != nil {
-			return 0, err
-		}
-		attemptLimit, err := o.attemptLimitForNodeRun(ctx, runID, nodeID)
-		if err != nil {
-			return 0, err
-		}
-		if maxAttempt >= attemptLimit {
-			return 0, fmt.Errorf("max attempts reached for run=%s node=%s", runID, nodeID)
-		}
 		return 0, fmt.Errorf("node attempt queue skipped for run=%s node=%s", runID, nodeID)
 	}
 	return result.Attempts[0].Attempt, nil
-}
-
-func (o *orchestrationLoop) attemptLimitForNodeRun(ctx context.Context, runID, nodeID string) (int, error) {
-	classID, err := o.nodeClassForRunNode(ctx, runID, nodeID)
-	if err != nil {
-		return 0, err
-	}
-	settings, err := o.loadLoopSettingsForRun(ctx, runID)
-	if err != nil {
-		return 0, err
-	}
-	limit := state.NodeAttemptLimitForClass(classID, settings)
-	return limit, nil
-}
-
-func (o *orchestrationLoop) nodeClassForRunNode(ctx context.Context, runID, nodeID string) (string, error) {
-	var nodeClass string
-	err := o.db.QueryRowContext(ctx, `
-SELECT wn.node_class
-FROM workflow_runs wr
-JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id
-WHERE wr.run_id = ? AND wn.node_id = ?
-LIMIT 1`, runID, nodeID).Scan(&nodeClass)
-	if errors.Is(err, sql.ErrNoRows) {
-		return resolvedNodeClass(nodeID, ""), nil
-	}
-	if err != nil {
-		return "", err
-	}
-	return resolvedNodeClass(nodeID, nodeClass), nil
 }
 
 func (o *orchestrationLoop) loadLoopSettingsForRun(ctx context.Context, runID string) (workflow.LoopSettings, error) {

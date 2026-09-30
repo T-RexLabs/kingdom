@@ -27,11 +27,10 @@ const (
 type PlanningOperationType string
 
 const (
-	PlanningOperationTypeBootstrapContext PlanningOperationType = "bootstrap_context"
-	PlanningOperationTypeReply            PlanningOperationType = "reply"
-	PlanningOperationTypeFormalize        PlanningOperationType = "formalize"
-	PlanningOperationTypeRegenerate       PlanningOperationType = "regenerate"
-	PlanningOperationTypeGenerateTitle    PlanningOperationType = "generate_title"
+	PlanningOperationTypeReply         PlanningOperationType = "reply"
+	PlanningOperationTypeFormalize     PlanningOperationType = "formalize"
+	PlanningOperationTypeRegenerate    PlanningOperationType = "regenerate"
+	PlanningOperationTypeGenerateTitle PlanningOperationType = "generate_title"
 )
 
 type PlanningOperationStatus string
@@ -121,6 +120,7 @@ type PlanningOperation struct {
 	OperationID                string
 	AcpRunID                   string
 	PlanningSessionID          string
+	PlanningContextSnapshotID  *string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
 	RequestPayloadJSON         string
@@ -221,7 +221,6 @@ type CreatePlanningContextSnapshotRequest struct {
 
 type CreatePlanningOperationRequest struct {
 	OperationID                string
-	AcpRunID                   string
 	PlanningSessionID          string
 	Type                       PlanningOperationType
 	Status                     PlanningOperationStatus
@@ -276,9 +275,12 @@ type CancelQueuedPlanningOperationRequest struct {
 }
 
 type CreatePlanningSessionBundleRequest struct {
-	Session            CreatePlanningSessionRequest
-	OpeningMessage     AppendPlanningMessageRequest
-	BootstrapOperation CreatePlanningOperationRequest
+	Session        CreatePlanningSessionRequest
+	OpeningMessage AppendPlanningMessageRequest
+	// ContextSnapshot is captured with the session, not after it. Every
+	// provider-backed planner operation binds the session's active context
+	// snapshot at enqueue, so a session that exists without one cannot chat.
+	ContextSnapshot CreatePlanningContextSnapshotRequest
 }
 
 type CreatePlanningReplyBundleRequest struct {
@@ -406,48 +408,6 @@ type FinalizeGenerateTitleAbortRequest struct {
 	TerminalEvent      *AppendPlanningOperationEventRequest
 }
 
-// FinalizeBootstrapRequest is the input to FinalizeBootstrap. The caller
-// reserves the next event sequence on its cursor and supplies the terminal
-// event metadata; the store builds the payload internally so it can name
-// the snapshot id that the session actually adopted (which may differ from
-// the candidate when /context/refresh raced ahead).
-type FinalizeBootstrapRequest struct {
-	SessionID                  string
-	OperationID                string
-	LeaseOwner                 string
-	LeaseVersion               int
-	UpdatedAt                  string
-	FinishedAt                 string
-	CandidateContextSnapshotID string
-
-	TerminalEventID        string
-	TerminalEventSeq       int
-	TerminalEventCreatedAt string
-}
-
-// FinalizeBootstrapAbortRequest is the input to FinalizeBootstrapAbort.
-// Mirrors FinalizeBootstrapRequest but for non-success termination
-// (failed or cancelled): the caller picks the terminal status, supplies
-// the cancellation/failure reason in ErrorMessage, and provides a
-// pre-built terminal event the store inserts atomically with the
-// op-row update.
-type FinalizeBootstrapAbortRequest struct {
-	SessionID    string
-	OperationID  string
-	LeaseOwner   string
-	LeaseVersion int
-	// Status must be PlanningOperationStatusFailed or
-	// PlanningOperationStatusCancelled. Reply/Regenerate/Formalize
-	// terminalisation goes through FinalizeOperation; bootstrap takes
-	// this dedicated path because it never claims the session's
-	// interactive current_operation_id slot.
-	Status        PlanningOperationStatus
-	UpdatedAt     string
-	FinishedAt    string
-	ErrorMessage  string
-	TerminalEvent *AppendPlanningOperationEventRequest
-}
-
 type PlanningStore struct {
 	db *sql.DB
 }
@@ -470,64 +430,6 @@ type sqlQuerier interface {
 
 func NewPlanningStore(db *sql.DB) *PlanningStore {
 	return &PlanningStore{db: db}
-}
-
-func (s *PlanningStore) NormalizePlannerAcpRunIDs(ctx context.Context) error {
-	if s == nil || s.db == nil {
-		return fmt.Errorf("planning store database is required")
-	}
-	rows, err := s.db.QueryContext(ctx, `SELECT operation_id, acp_run_id FROM planning_operations`)
-	if err != nil {
-		return fmt.Errorf("list planning operations for acp run id normalization: %w", err)
-	}
-	defer rows.Close()
-	type normalizedUpdate struct {
-		operationID string
-		acpRunID    string
-	}
-	updates := make([]normalizedUpdate, 0)
-	for rows.Next() {
-		var operationID string
-		var acpRunID string
-		if err := rows.Scan(&operationID, &acpRunID); err != nil {
-			return fmt.Errorf("scan planning operation for acp run id normalization: %w", err)
-		}
-		normalized := normalizePlanningOperationAcpRunID(operationID, acpRunID)
-		if normalized == strings.TrimSpace(acpRunID) {
-			continue
-		}
-		updates = append(updates, normalizedUpdate{operationID: strings.TrimSpace(operationID), acpRunID: normalized})
-	}
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("iterate planning operations for acp run id normalization: %w", err)
-	}
-	if len(updates) == 0 {
-		return nil
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin planning acp run id normalization: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	for _, update := range updates {
-		if _, err := tx.ExecContext(ctx,
-			`UPDATE planning_operations SET acp_run_id = ? WHERE operation_id = ?`,
-			update.acpRunID,
-			update.operationID,
-		); err != nil {
-			return fmt.Errorf("update planning acp run id for %s: %w", update.operationID, err)
-		}
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit planning acp run id normalization: %w", err)
-	}
-	committed = true
-	return nil
 }
 
 func validatePlanningSessionCreate(req CreatePlanningSessionRequest) error {
@@ -776,7 +678,7 @@ func validatePlanningOperationEventAppend(req AppendPlanningOperationEventReques
 
 func isValidPlanningOperationType(operationType PlanningOperationType) bool {
 	switch operationType {
-	case PlanningOperationTypeBootstrapContext, PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate, PlanningOperationTypeGenerateTitle:
+	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate, PlanningOperationTypeGenerateTitle:
 		return true
 	default:
 		return false

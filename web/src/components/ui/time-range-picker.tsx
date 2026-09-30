@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback, useId } from "react";
 import { cn } from "@/lib/utils";
 import { Clock, Calendar } from "lucide-react";
+import { minutesToRelativeExpr, parseRelativeTime } from "./time-range";
 
 export interface TimePreset {
   label: string;
@@ -29,54 +30,6 @@ interface TimeRangePickerProps {
 }
 
 /**
- * Parse a relative time expression like "now", "now-4h", "now-2d", "now-30m"
- * into a Date. Returns null on invalid input.
- */
-export function parseRelativeTime(expr: string): Date | null {
-  const trimmed = expr.trim().toLowerCase();
-  if (trimmed === "now") return new Date();
-
-  const match = trimmed.match(/^now\s*-\s*(\d+)\s*(m|h|d)$/);
-  if (!match) return null;
-
-  const amount = parseInt(match[1], 10);
-  const unit = match[2];
-  const now = new Date();
-
-  switch (unit) {
-    case "m":
-      now.setMinutes(now.getMinutes() - amount);
-      break;
-    case "h":
-      now.setHours(now.getHours() - amount);
-      break;
-    case "d":
-      now.setDate(now.getDate() - amount);
-      break;
-  }
-  return now;
-}
-
-/**
- * Convert a total-minutes value into a relative "from" expression.
- */
-export function minutesToRelativeExpr(totalMinutes: number): string {
-  if (totalMinutes < 60) return `now-${totalMinutes}m`;
-  if (totalMinutes % 1440 === 0) {
-    return `now-${totalMinutes / 1440}d`;
-  }
-  if (totalMinutes % 60 === 0 && totalMinutes < 1440) {
-    return `now-${totalMinutes / 60}h`;
-  }
-  if (totalMinutes < 1440) {
-    return `now-${totalMinutes}m`;
-  }
-  const days = totalMinutes / 1440;
-  if (Number.isInteger(days)) return `now-${days}d`;
-  return `now-${totalMinutes}m`;
-}
-
-/**
  * Format a Date for the date input (YYYY-MM-DD).
  */
 function toDateLocal(d: Date): string {
@@ -90,20 +43,34 @@ function toDateLocal(d: Date): string {
  */
 export function TimeRangePicker({ value, onChange, className }: TimeRangePickerProps) {
   const [open, setOpen] = useState(false);
-  const [fromExpr, setFromExpr] = useState(() => minutesToRelativeExpr(value));
-  const [toExpr, setToExpr] = useState("now");
-  const [error, setError] = useState<string | null>(null);
+  const [draft, setDraft] = useState(() => ({
+    sourceValue: value,
+    fromExpr: minutesToRelativeExpr(value),
+    toExpr: "now",
+    error: null as string | null,
+  }));
+  if (draft.sourceValue !== value) {
+    setDraft({
+      sourceValue: value,
+      fromExpr: minutesToRelativeExpr(value),
+      toExpr: "now",
+      error: null,
+    });
+  }
+  const { fromExpr, toExpr, error } = draft;
   const fromInputId = useId();
   const toInputId = useId();
   const popoverRef = useRef<HTMLDivElement>(null);
   const fromDateRef = useRef<HTMLInputElement>(null);
   const toDateRef = useRef<HTMLInputElement>(null);
 
-  // Sync fromExpr when value changes via preset buttons
-  useEffect(() => {
-    setFromExpr(minutesToRelativeExpr(value));
-    setToExpr("now");
-    setError(null);
+  const updateDraft = useCallback((fields: Partial<Omit<typeof draft, "sourceValue">>) => {
+    setDraft((existing) => ({
+      ...(existing.sourceValue === value
+        ? existing
+        : { sourceValue: value, fromExpr: minutesToRelativeExpr(value), toExpr: "now", error: null }),
+      ...fields,
+    }));
   }, [value]);
 
   // Close on outside click
@@ -133,30 +100,30 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
     const toDate = parseRelativeTime(toExpr);
 
     if (!fromDate) {
-      setError("Invalid 'From' expression. Use: now, now-4h, now-2d, now-30m");
+      updateDraft({ error: "Invalid 'From' expression. Use: now, now-4h, now-2d, now-30m" });
       return;
     }
     if (!toDate) {
-      setError("Invalid 'To' expression. Use: now, now-4h, now-2d");
+      updateDraft({ error: "Invalid 'To' expression. Use: now, now-4h, now-2d" });
       return;
     }
 
     const diffMs = toDate.getTime() - fromDate.getTime();
     if (diffMs <= 0) {
-      setError("'From' must be before 'To'");
+      updateDraft({ error: "'From' must be before 'To'" });
       return;
     }
 
     const totalMinutes = Math.max(1, Math.round(diffMs / (1000 * 60)));
     if (totalMinutes > 525600) {
-      setError("Maximum range is 1 year");
+      updateDraft({ error: "Maximum range is 1 year" });
       return;
     }
 
-    setError(null);
+    updateDraft({ error: null });
     setOpen(false);
     onChange(totalMinutes);
-  }, [fromExpr, toExpr, onChange]);
+  }, [fromExpr, toExpr, onChange, updateDraft]);
 
   const handleFromCalendar = useCallback(() => {
     fromDateRef.current?.showPicker();
@@ -176,12 +143,12 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
     const diffMs = now.getTime() - d.getTime();
     const diffH = Math.round(diffMs / (1000 * 60 * 60));
     if (diffH < 24) {
-      setFromExpr(`now-${Math.max(1, diffH)}h`);
+      updateDraft({ fromExpr: `now-${Math.max(1, diffH)}h` });
     } else {
       const diffD = Math.round(diffMs / (1000 * 60 * 60 * 24));
-      setFromExpr(`now-${diffD}d`);
+      updateDraft({ fromExpr: `now-${diffD}d` });
     }
-  }, []);
+  }, [updateDraft]);
 
   const handleToDateChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     // date input gives "YYYY-MM-DD" — parse as local midnight
@@ -193,14 +160,14 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
     const diffMs = now.getTime() - d.getTime();
     const diffH = Math.round(diffMs / (1000 * 60 * 60));
     if (diffH <= 0) {
-      setToExpr("now");
+      updateDraft({ toExpr: "now" });
     } else if (diffH < 24) {
-      setToExpr(`now-${diffH}h`);
+      updateDraft({ toExpr: `now-${diffH}h` });
     } else {
       const diffD = Math.round(diffMs / (1000 * 60 * 60 * 24));
-      setToExpr(`now-${diffD}d`);
+      updateDraft({ toExpr: `now-${diffD}d` });
     }
-  }, []);
+  }, [updateDraft]);
 
   const isPreset = PRESETS.some((p) => p.minutes === value);
 
@@ -262,7 +229,7 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   id={fromInputId}
                   type="text"
                   value={fromExpr}
-                  onChange={(e) => { setFromExpr(e.target.value); setError(null); }}
+                  onChange={(e) => updateDraft({ fromExpr: e.target.value, error: null })}
                   onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
                   placeholder="now-24h"
                   className="flex-1 rounded border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground placeholder:text-foreground-subtle focus:border-gold/50 focus:outline-none focus:ring-1 focus:ring-gold/30"
@@ -279,8 +246,8 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   ref={fromDateRef}
                   type="date"
                   onChange={handleFromDateChange}
-                  defaultValue={toDateLocal(parseRelativeTime(fromExpr) ?? new Date())}
-                  className="sr-only color-scheme-dark"
+                  value={toDateLocal(parseRelativeTime(fromExpr) ?? new Date())}
+                  className="sr-only"
                   tabIndex={-1}
                 />
               </div>
@@ -294,7 +261,7 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   id={toInputId}
                   type="text"
                   value={toExpr}
-                  onChange={(e) => { setToExpr(e.target.value); setError(null); }}
+                  onChange={(e) => updateDraft({ toExpr: e.target.value, error: null })}
                   onKeyDown={(e) => { if (e.key === "Enter") handleApply(); }}
                   placeholder="now"
                   className="flex-1 rounded border border-border bg-background px-3 py-1.5 font-mono text-sm text-foreground placeholder:text-foreground-subtle focus:border-gold/50 focus:outline-none focus:ring-1 focus:ring-gold/30"
@@ -311,8 +278,8 @@ export function TimeRangePicker({ value, onChange, className }: TimeRangePickerP
                   ref={toDateRef}
                   type="date"
                   onChange={handleToDateChange}
-                  defaultValue={toDateLocal(new Date())}
-                  className="sr-only color-scheme-dark"
+                  value={toDateLocal(parseRelativeTime(toExpr) ?? new Date())}
+                  className="sr-only"
                   tabIndex={-1}
                 />
               </div>

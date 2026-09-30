@@ -230,6 +230,123 @@ func TestAuditChainDetectsRunEventSequenceGaps(t *testing.T) {
 	}
 }
 
+func TestAuditChainVerifiesAndDetectsExternalIntegrationTampering(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	store := NewExternalStore(db)
+	ctx := context.Background()
+	_, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := "Renamed"
+	if _, err := store.UpdateConnection(ctx, "conn-audit", UpdateExternalConnectionRequest{DisplayName: &name, ActorID: "local-operator", UpdatedAt: "2026-08-12T11:00:00Z", AuditEventID: "external-audit-2"}); err != nil {
+		t.Fatal(err)
+	}
+	var firstSequence, secondSequence, headSequence int
+	var firstPrevious, secondHash, headHash, hashVersion string
+	if err := db.QueryRow(`SELECT event_sequence,previous_hash,hash_version FROM external_integration_audit_events WHERE audit_event_id='external-audit-1'`).Scan(&firstSequence, &firstPrevious, &hashVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT event_sequence,event_hash FROM external_integration_audit_events WHERE audit_event_id='external-audit-2'`).Scan(&secondSequence, &secondHash); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT last_sequence,last_hash FROM external_integration_audit_head WHERE head_id=1`).Scan(&headSequence, &headHash); err != nil {
+		t.Fatal(err)
+	}
+	if firstSequence != 1 || secondSequence != 2 || firstPrevious != AuditGenesisPrevHash || hashVersion != ExternalIntegrationAuditHashVersion || headSequence != 2 || headHash != secondHash {
+		t.Fatalf("invalid external audit allocation: first=(%d,%q,%q) second=%d head=(%d,%q) second_hash=%q", firstSequence, firstPrevious, hashVersion, secondSequence, headSequence, headHash, secondHash)
+	}
+	verifier := NewAuditIntegrityVerifier(db)
+	result, err := verifier.Verify(ctx)
+	if err != nil || len(result.Failures) != 0 || result.ExternalIntegrationEventsVerified != 2 {
+		t.Fatalf("external chain verification: result=%#v err=%v", result, err)
+	}
+	mustExec(t, db, `DROP TRIGGER external_audit_no_update`)
+	mustExec(t, db, `UPDATE external_integration_audit_events SET safe_payload_json='{"tampered":true}' WHERE audit_event_id='external-audit-1'`)
+	err = verifier.VerifyOrError(ctx)
+	var integrityErr *AuditIntegrityError
+	if !errors.As(err, &integrityErr) {
+		t.Fatalf("expected external audit integrity error, got %v", err)
+	}
+	found := false
+	for _, failure := range integrityErr.Failures {
+		if failure.Stream == "external_integration_audit_events" && failure.RecordID == "external-audit-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("missing external audit failure: %#v", integrityErr.Failures)
+	}
+}
+
+func TestAuditChainDetectsExternalSequenceVersionAndHeadTampering(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tamper func(*testing.T, *sql.DB)
+		stream string
+	}{
+		{
+			name: "sequence gap",
+			tamper: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `DROP TRIGGER external_audit_no_update`)
+				mustExec(t, db, `UPDATE external_integration_audit_events SET event_sequence=2 WHERE audit_event_id='external-audit-tamper'`)
+			},
+			stream: "external_integration_audit_events",
+		},
+		{
+			name: "unsupported hash version",
+			tamper: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `DROP TRIGGER external_audit_no_update`)
+				mustExec(t, db, `PRAGMA ignore_check_constraints=ON`)
+				mustExec(t, db, `UPDATE external_integration_audit_events SET hash_version='v2' WHERE audit_event_id='external-audit-tamper'`)
+				mustExec(t, db, `PRAGMA ignore_check_constraints=OFF`)
+			},
+			stream: "external_integration_audit_events",
+		},
+		{
+			name: "durable head mismatch",
+			tamper: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `DROP TRIGGER external_audit_head_fenced`)
+				mustExec(t, db, `UPDATE external_integration_audit_head SET last_sequence=0,last_hash='0000000000000000000000000000000000000000000000000000000000000000' WHERE head_id=1`)
+			},
+			stream: "external_integration_audit_head",
+		},
+		{
+			name: "durable head missing",
+			tamper: func(t *testing.T, db *sql.DB) {
+				mustExec(t, db, `DROP TRIGGER external_audit_head_no_delete`)
+				mustExec(t, db, `DELETE FROM external_integration_audit_head WHERE head_id=1`)
+			},
+			stream: "external_integration_audit_head",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			db := openTestDB(t)
+			applyMigration(t, db, "0001_initial_schema.up.sql")
+			store := NewExternalStore(db)
+			ctx := context.Background()
+			if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit-tamper", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit-tamper", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-tamper"}); err != nil {
+				t.Fatal(err)
+			}
+			test.tamper(t, db)
+			result, err := NewAuditIntegrityVerifier(db).Verify(ctx)
+			if err != nil {
+				t.Fatalf("verify tampered chain: %v", err)
+			}
+			found := false
+			for _, failure := range result.Failures {
+				if failure.Stream == test.stream {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("missing %s failure: %#v", test.stream, result.Failures)
+			}
+		})
+	}
+}
+
 func loadTransitionHashes(t *testing.T, db *sql.DB, transitionID string) (string, string) {
 	t.Helper()
 

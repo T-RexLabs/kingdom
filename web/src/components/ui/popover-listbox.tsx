@@ -1,36 +1,16 @@
-import {
-  FloatingFocusManager,
-  FloatingPortal,
-  autoUpdate,
-  offset,
-  shift,
-  size,
-  useClick,
-  useDismiss,
-  useFloating,
-  useInteractions,
-  useListNavigation,
-  useRole,
-  useTypeahead,
-} from "@floating-ui/react";
-import { useCallback, useId, useMemo, useRef, useState } from "react";
-import { isElementInsideModal, popoverZIndexForOwner, resolveOverlayContainer } from "@/lib/overlay-system";
+import { useInteractions, useListNavigation, useTypeahead } from "@floating-ui/react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { usePopoverFloating, usePopoverOpenState } from "@/lib/use-popover-floating";
+import { PopoverSurface } from "./popover-surface";
 
 /**
- * Generic popover-listbox primitive built on @floating-ui/react.
+ * The option-list popover: a trigger, a scrollable list of options, and
+ * optional search, grouping, and end-of-list loading.
  *
- * Replaces the hand-rolled `getBoundingClientRect()`-once + manual outside
- * click handling that drifted when the parent column scrolled and lacked
- * keyboard support entirely. Floating UI handles:
- *   - autoUpdate (live reposition on scroll, resize, ResizeObserver)
- *   - flip / shift / size middleware (keep panel on screen, match width)
- *   - useListNavigation (Up/Down/Home/End/Enter/Space)
- *   - useTypeahead (jump-to-letter for non-search variants)
- *   - useDismiss (outside click incl. touch, Escape, focus loss)
- *   - FloatingFocusManager (focus trap inside panel; restore on close)
- *
- * Consumers stay thin: SelectField and ModelSelectField are now wrappers
- * around this primitive that supply the trigger label and item shape.
+ * Floating chrome — positioning, portalling, dismissal, focus containment,
+ * z-index — comes from `PopoverSurface`, which every Kingdom popover shares.
+ * What lives here is the part that makes it a listbox: keyboard navigation,
+ * typeahead, selection, and the option rows themselves.
  */
 
 export interface PopoverListboxItem {
@@ -74,6 +54,13 @@ export interface PopoverListboxProps {
   emptyState?: React.ReactNode;
   footer?: React.ReactNode;
 
+  /**
+   * Called when the option list is scrolled to its end. Lets a consumer whose
+   * options arrive a page at a time keep filling as the operator scrolls,
+   * rather than making them ask for each page.
+   */
+  onReachEnd?: () => void;
+
   /** Lower bound on the panel width; defaults to 160px. */
   minWidth?: number;
   /** Upper bound on panel height (px); defaults to 320 (with autoflip). */
@@ -104,12 +91,12 @@ export function PopoverListbox({
   groupBy = false,
   emptyState,
   footer,
+  onReachEnd,
   minWidth = 160,
   maxHeight = 320,
   panelClassName,
   renderItem,
 }: PopoverListboxProps) {
-  const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
 
   const listboxId = useId();
@@ -118,44 +105,27 @@ export function PopoverListbox({
   const listRef = useRef<Array<HTMLElement | null>>([]);
   const selectedIndex = items.findIndex((item) => item.id === selectedId);
 
-  const handleOpenChange = useCallback((nextOpen: boolean) => {
-    setOpen(nextOpen);
-    if (!nextOpen) {
-      setActiveIndex(null);
-    }
-    onOpenChange?.(nextOpen);
-  }, [onOpenChange]);
+  const clearActiveIndex = useCallback(() => setActiveIndex(null), []);
+  const { open, handleOpenChange } = usePopoverOpenState(onOpenChange, clearActiveIndex);
 
-  const { refs, floatingStyles, context } = useFloating({
+  const {
+    context: floatingContext,
+    setReference,
+    setPanel,
+    modalOwned,
+    panelStyle,
+    baseInteractions,
+  } = usePopoverFloating({
     open,
-	    onOpenChange: handleOpenChange,
-    placement: "bottom-start",
-    whileElementsMounted: autoUpdate,
-    middleware: [
-      offset(4),
-      shift({ padding: 8 }),
-      // No `flip`. Predictability matters more than maximum panel size:
-      // the listbox always opens below the trigger and `size` shrinks it
-      // to fit the available viewport space (with internal scrolling
-      // when the option list is longer). Flipping above the trigger was
-      // jarring when triggers landed in the lower half of the viewport.
-      size({
-        padding: 8,
-        apply({ rects, elements, availableHeight }) {
-          Object.assign(elements.floating.style, {
-            minWidth: `${Math.max(minWidth, rects.reference.width)}px`,
-            maxHeight: `${Math.min(maxHeight, availableHeight)}px`,
-          });
-        },
-      }),
-    ],
+    onOpenChange: handleOpenChange,
+    role: "listbox",
+    minWidth,
+    maxHeight,
+    triggerDisabled,
   });
 
-  const click = useClick(context, { enabled: !triggerDisabled });
-  const dismiss = useDismiss(context, { outsidePressEvent: "pointerdown" });
-  const role = useRole(context, { role: "listbox" });
   // List navigation drives Up/Down/Home/End and selection focus.
-  const navigation = useListNavigation(context, {
+  const navigation = useListNavigation(floatingContext, {
     listRef,
     activeIndex,
     selectedIndex: selectedIndex >= 0 ? selectedIndex : null,
@@ -165,18 +135,16 @@ export function PopoverListbox({
   });
   // Typeahead is only useful when there is no search field; otherwise the
   // search input handles "type to filter" itself.
-  const typeahead = useTypeahead(context, {
+  const typeahead = useTypeahead(floatingContext, {
     listRef: { current: items.map((item) => item.label) },
     activeIndex,
     selectedIndex,
-    onMatch: (index) => setActiveIndex(index),
+    onMatch: setActiveIndex,
     enabled: open && !search,
   });
 
   const { getReferenceProps, getFloatingProps, getItemProps } = useInteractions([
-    click,
-    dismiss,
-    role,
+    ...baseInteractions,
     navigation,
     typeahead,
   ]);
@@ -201,13 +169,32 @@ export function PopoverListbox({
 
   const groupedItems = useMemo(() => buildGroupedItems(items, groupBy), [items, groupBy]);
 
-  const setReference = useCallback((node: HTMLButtonElement | null) => {
-    refs.setReference(node);
-  }, [refs]);
-
-  const setFloating = useCallback((node: HTMLDivElement | null) => {
-    refs.setFloating(node);
-  }, [refs]);
+  const [listRoot, setListRoot] = useState<HTMLDivElement | null>(null);
+  const [endSentinel, setEndSentinel] = useState<HTMLDivElement | null>(null);
+  // `onReachEnd` fires from an observer rather than a scroll handler so it also
+  // fires when the loaded options do not fill the panel — the case where the
+  // operator has nothing to scroll and would otherwise be stuck looking at a
+  // short list with more behind it.
+  const reachEndRef = useRef(onReachEnd);
+  useEffect(() => {
+    reachEndRef.current = onReachEnd;
+  }, [onReachEnd]);
+  useEffect(() => {
+    if (!listRoot || !endSentinel) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) reachEndRef.current?.();
+      },
+      { root: listRoot },
+    );
+    observer.observe(endSentinel);
+    return () => observer.disconnect();
+    // Re-observing on every change in length matters: an observer only reports
+    // changes in intersection, so a sentinel that is still visible after a page
+    // loads would never fire again and the list would stall one page in. A
+    // fresh observer re-reports the current state, and the consumer's own
+    // guard — no cursor, or a load already in flight — is what ends the chain.
+  }, [listRoot, endSentinel, items.length]);
 
   const triggerProps = getReferenceProps({
     id: triggerId,
@@ -220,8 +207,6 @@ export function PopoverListbox({
     "aria-describedby": triggerAriaLabel ? triggerContentId : undefined,
     disabled: triggerDisabled,
   });
-  const popoverOwner = refs.reference.current instanceof Element ? refs.reference.current : null;
-  const modalOwned = isElementInsideModal(popoverOwner);
 
   return (
     <>
@@ -230,14 +215,15 @@ export function PopoverListbox({
 				<span id={triggerContentId} className="contents">{triggerContent}</span>
       </button>
       {open ? (
-        <FloatingPortal root={resolveOverlayContainer()}>
-	          <FloatingFocusManager context={context} modal={modalOwned} initialFocus={search ? -1 : 0} returnFocus>
-            <div
-              ref={setFloating}
-              style={{ ...floatingStyles, zIndex: popoverZIndexForOwner(popoverOwner) }}
-              className={panelClassName ?? "flex flex-col overflow-hidden rounded-lg border border-border bg-background shadow-xl"}
-              {...getFloatingProps()}
-            >
+        <PopoverSurface
+          context={floatingContext}
+          panelRef={setPanel}
+          style={panelStyle}
+          modalOwned={modalOwned}
+          floatingProps={getFloatingProps()}
+          initialFocus={search ? -1 : 0}
+          className={panelClassName}
+        >
               {search ? (
                 <input
                   type="text"
@@ -262,6 +248,7 @@ export function PopoverListbox({
                 />
               ) : null}
               <div
+                ref={setListRoot}
                 id={listboxId}
                 role="listbox"
                 aria-labelledby={triggerId}
@@ -293,11 +280,10 @@ export function PopoverListbox({
                           />
                         ),
                     )}
+                {onReachEnd ? <div ref={setEndSentinel} aria-hidden="true" className="h-px" /> : null}
               </div>
               {footer ? <div className="border-t border-border p-2">{footer}</div> : null}
-            </div>
-          </FloatingFocusManager>
-        </FloatingPortal>
+        </PopoverSurface>
       ) : null}
     </>
   );

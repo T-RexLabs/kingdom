@@ -2,10 +2,10 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
-  newIdempotencyKey,
   useCreateFinalApproval,
   useRetryNode,
   useRerunFromNode,
+  type CreateFinalApprovalRequest,
   type RunSummary,
   type RunGraphNode,
 } from "@/api/hooks";
@@ -21,31 +21,35 @@ import { statusLabel } from "@/lib/status-system";
 import { runStatusBannerClass } from "./run-detail-tones";
 import { ApprovalDecisionForm } from "./approval-decision-form";
 import { describeManualGovernanceState } from "./manual-governance-state";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 interface GovernanceActionsProps {
   run: RunSummary;
   failedNodes?: RunGraphNode[];
+  cancelledNodes?: RunGraphNode[];
   showFinalApproval?: boolean;
   showNodeActions?: boolean;
   finalApprovalCardRef?: Ref<HTMLDivElement>;
 }
 
-export function GovernanceActions({ run, failedNodes = [], showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
+export function GovernanceActions({ run, failedNodes = [], cancelledNodes = [], showFinalApproval = true, showNodeActions = true, finalApprovalCardRef }: GovernanceActionsProps) {
   const governanceState = describeManualGovernanceState(run);
   const isAwaitingApproval = governanceState.isAwaitingFinalApproval;
   const isFailedRun = run.status === "failed";
+  const isCancelledRun = run.status === "cancelled";
+  const actionNodes = isCancelledRun ? cancelledNodes : failedNodes;
 
   // Only show governance panel if there are actionable items
   const hasActions =
-    (showFinalApproval && isAwaitingApproval) || (showNodeActions && isFailedRun && failedNodes.length > 0);
+    (showFinalApproval && isAwaitingApproval) || (showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0);
 
   if (!hasActions) return null;
 
   return (
     <div className="space-y-3">
       {showFinalApproval && isAwaitingApproval && <FinalApprovalCard run={run} cardRef={finalApprovalCardRef} />}
-      {showNodeActions && isFailedRun && failedNodes.length > 0 && (
-        <NodeActionsCard runId={run.run_id} failedNodes={failedNodes} />
+      {showNodeActions && (isFailedRun || isCancelledRun) && actionNodes.length > 0 && (
+        <NodeActionsCard runId={run.run_id} nodes={actionNodes} cancelled={isCancelledRun} />
       )}
     </div>
   );
@@ -55,6 +59,11 @@ export function GovernanceActions({ run, failedNodes = [], showFinalApproval = t
 
 export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?: Ref<HTMLDivElement> }) {
   const approval = useCreateFinalApproval(run.run_id);
+  const recoverableApproval = useRecoverableMutation(
+    "approval",
+    (body: CreateFinalApprovalRequest, key) => approval.mutateAsync({ body, key }),
+    run.run_id,
+  );
   const governanceState = describeManualGovernanceState(run);
 
   const handleConfirm = async (notes: string) => {
@@ -62,17 +71,11 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
       action: "confirm" as const,
       ...(notes !== "" ? { reason: notes } : {}),
     };
-    await approval.mutateAsync({
-      body,
-      key: newIdempotencyKey("approval"),
-    });
+    await recoverableApproval.mutateAsync(body);
   };
 
   const handleRequestRework = async (notes: string) => {
-    await approval.mutateAsync({
-      body: { action: "rework", reason: notes },
-      key: newIdempotencyKey("approval"),
-    });
+    await recoverableApproval.mutateAsync({ action: "rework", reason: notes });
   };
 
   return (
@@ -96,6 +99,7 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
             reworkPendingLabel="Requesting Rework..."
             reworkValidationMessage="Add rework guidance before requesting rework."
             errorMessage={approval.error?.message ?? null}
+            recoveryAction={recoverableApproval.pendingRequest?.action ?? null}
             onConfirm={handleConfirm}
             onRequestRework={handleRequestRework}
           />
@@ -109,47 +113,38 @@ export function FinalApprovalCard({ run, cardRef }: { run: RunSummary; cardRef?:
 
 export function NodeActionsCard({
   runId,
-  failedNodes,
+  nodes,
+  cancelled,
 }: {
   runId: string;
-  failedNodes: RunGraphNode[];
+  nodes: RunGraphNode[];
+  cancelled: boolean;
 }) {
   const retry = useRetryNode(runId);
   const rerun = useRerunFromNode(runId);
+  const recoverableRetry = useRecoverableMutation(
+    "retry",
+    (nodeKey: string, key) => retry.mutateAsync({ value: nodeKey, key }),
+    runId,
+  );
+  const recoverableRerun = useRecoverableMutation(
+    "rerun",
+    (nodeKey: string, key) => rerun.mutateAsync({ value: nodeKey, key }),
+    runId,
+  );
   const [pendingAction, setPendingAction] = useState<string | null>(null);
-  const [actionFeedback, setActionFeedback] = useState<string>("");
 
-  const handleRetry = async (nodeKey: string) => {
-    setPendingAction(`retry-${nodeKey}`);
-    setActionFeedback("");
+  // Queuing succeeds by removing the node from this list, which unmounts the
+  // card — so a success banner here could only ever flash and vanish. The run
+  // timeline records "Retry queued" and "Rerun queued" durably, which is where
+  // an operator can actually go back and read what happened.
+  const queueAction = async (action: "retry" | "rerun", nodeKey: string) => {
+    setPendingAction(`${action}-${nodeKey}`);
     try {
-      const result = await retry.mutateAsync({
-        value: nodeKey,
-        key: newIdempotencyKey("retry"),
-      });
-      setActionFeedback(`Retry queued for ${result.node_key}. This reruns only the selected node.`);
+      await (action === "retry" ? recoverableRetry : recoverableRerun).mutateAsync(nodeKey);
     } catch {
-      // error available via retry.error
-    } finally {
-      setPendingAction(null);
-    }
-  };
-
-  const handleRerun = async (nodeKey: string) => {
-    setPendingAction(`rerun-${nodeKey}`);
-    setActionFeedback("");
-    try {
-      const result = await rerun.mutateAsync({
-        value: nodeKey,
-        key: newIdempotencyKey("rerun"),
-      });
-      if (result.from_node !== nodeKey) {
-        setActionFeedback(`Rerun queued from ${result.from_node}. The original target was promoted to rebuild plan and downstream execution.`);
-      } else {
-        setActionFeedback(`Rerun queued from ${result.from_node}. This reruns from that node and downstream.`);
-      }
-    } catch {
-      // error available via rerun.error
+      // Failure is the case worth showing, and it is rendered from
+      // retry.error / rerun.error below.
     } finally {
       setPendingAction(null);
     }
@@ -158,10 +153,14 @@ export function NodeActionsCard({
   return (
     <Card className="border-status-failed/20">
       <CardHeader className="pb-3">
+        {/* Named for what these nodes have in common — the run stopped and they
+            are where it can be picked up again — because the list can hold a
+            reviewer that asked for rework alongside steps that genuinely broke.
+            Each row's badge names its own state. */}
         <CardTitle className="flex items-center gap-2 text-sm">
           <AlertTriangle className="h-4 w-4 text-status-failed" />
           <span className="text-status-failed">
-            Failed Nodes ({failedNodes.length})
+            {cancelled ? "Cancelled Run Nodes" : "Nodes to Recover"} ({nodes.length})
           </span>
         </CardTitle>
         <p className="text-xs text-foreground-subtle">
@@ -169,11 +168,6 @@ export function NodeActionsCard({
         </p>
       </CardHeader>
       <CardContent className="space-y-2">
-        {actionFeedback && (
-          <div className="rounded-md border border-status-succeeded/30 bg-status-succeeded/10 px-3 py-2 text-sm text-status-succeeded">
-            {actionFeedback}
-          </div>
-        )}
         {(retry.error || rerun.error) && (
           <ErrorBanner
             message={
@@ -181,8 +175,12 @@ export function NodeActionsCard({
             }
           />
         )}
-        {failedNodes.map((node) => {
+        {nodes.map((node) => {
           const { executionModeLabel, roleLabel } = nodeExecutionSemantics(node.execution_ownership, node.required_role);
+          const reason = node.failure_reason ?? (cancelled ? "" : "Failure reason unavailable.");
+          const recoveryPending = recoverableRetry.hasPendingRecovery || recoverableRerun.hasPendingRecovery;
+          const canRetryRecovery = recoverableRetry.pendingRequest === node.node_id;
+          const canRerunRecovery = recoverableRerun.pendingRequest === node.node_id;
 
           return (
             <div
@@ -198,16 +196,14 @@ export function NodeActionsCard({
                   <span className="text-foreground-subtle">{executionModeLabel}</span>
                   <span className="text-foreground-subtle">{roleLabel}</span>
                 </div>
-	                <p className="mt-1 text-wrap-anywhere text-xs text-foreground-subtle">
-                  {node.failure_reason ?? "Failure reason unavailable."}
-                </p>
+	                {reason ? <p className="mt-1 text-wrap-anywhere text-xs text-foreground-subtle">{reason}</p> : null}
               </div>
               <div className="flex items-center gap-1.5">
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => handleRetry(node.node_id)}
-                  disabled={pendingAction !== null}
+                  onClick={() => void queueAction("retry", node.node_id)}
+                  disabled={pendingAction !== null || (recoveryPending && !canRetryRecovery)}
                   title="Retry this node"
                 >
                   <RefreshCw
@@ -215,17 +211,17 @@ export function NodeActionsCard({
                       pendingAction === `retry-${node.node_id}` ? "animate-spin" : ""
                     }`}
                   />
-                  Retry
+                  {canRetryRecovery ? "Retry Again" : "Retry"}
                 </Button>
                 <Button
                   size="sm"
                   variant="ghost"
-                  onClick={() => handleRerun(node.node_id)}
-                  disabled={pendingAction !== null}
+                  onClick={() => void queueAction("rerun", node.node_id)}
+                  disabled={pendingAction !== null || (recoveryPending && !canRerunRecovery)}
                   title="Rerun from this node"
                 >
                   <Play className="h-3 w-3" />
-                  Rerun
+                  {canRerunRecovery ? "Retry Rerun" : "Rerun"}
                 </Button>
               </div>
             </div>

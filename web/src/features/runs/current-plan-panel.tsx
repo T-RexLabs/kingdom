@@ -3,18 +3,20 @@ import { Badge } from "@/components/ui/badge";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { RelativeTime } from "@/components/ui/relative-time";
 import {
-  newIdempotencyKey,
   useCreatePlanApproval,
   useRunLatestGovernanceDecision,
   useRunGovernanceDecisions,
   useRunPlan,
   type RunSummary,
+  type CreatePlanApprovalRequest,
 } from "@/api/hooks";
 import { ChevronDown, ChevronRight, Clock3, FileText, Gavel } from "lucide-react";
 import { ApprovalDecisionForm } from "./approval-decision-form";
-import { GovernanceDecisionHistoryModal, governanceDecisionLabel, governanceDecisionStageLabel } from "./governance-decision-history-modal";
+import { GovernanceDecisionHistoryModal } from "./governance-decision-history-modal";
+import { governanceDecisionLabel, governanceDecisionStageLabel } from "./governance-decision-labels";
 import { describeManualGovernanceState, runPlanStateLabel } from "./manual-governance-state";
 import { accentBannerClass, runStatusBannerClass } from "./run-detail-tones";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 
 export function CurrentPlanPanel({
   run,
@@ -26,6 +28,11 @@ export function CurrentPlanPanel({
   const [isOpen, setIsOpen] = useState(true);
   const [historyOpen, setHistoryOpen] = useState(false);
   const planApproval = useCreatePlanApproval(run.run_id);
+  const recoverableApproval = useRecoverableMutation(
+    "plan-approval",
+    (body: CreatePlanApprovalRequest, key) => planApproval.mutateAsync({ body, key }),
+    run.run_id,
+  );
   const { data: plan, isLoading, error } = useRunPlan(run.run_id);
   const latestGovernanceDecision = useRunLatestGovernanceDecision(run.run_id);
   const governanceHistory = useRunGovernanceDecisions(run.run_id, { enabled: historyOpen });
@@ -54,24 +61,18 @@ export function CurrentPlanPanel({
 			plan_revision_id: plan.plan_revision_id,
 			...(notes !== "" ? { reason: notes } : {}),
 		};
-    await planApproval.mutateAsync({
-      body,
-      key: newIdempotencyKey("plan-approval"),
-    });
+    await recoverableApproval.mutateAsync(body);
   };
 
 	const submitRework = async (notes: string) => {
 		if (!hasCurrentPlanRevision || !plan?.plan_revision_id) {
 			return;
 		}
-		await planApproval.mutateAsync({
-			body: {
+		await recoverableApproval.mutateAsync({
 				action: "rework",
 				plan_revision_id: plan.plan_revision_id,
 				reason: notes,
-			},
-      key: newIdempotencyKey("plan-approval"),
-    });
+			});
   };
 
   return (
@@ -186,6 +187,7 @@ export function CurrentPlanPanel({
               reworkPendingLabel="Requesting Rework..."
               reworkValidationMessage="Add rework guidance before requesting rework."
               errorMessage={planApproval.error?.message ?? null}
+              recoveryAction={recoverableApproval.pendingRequest?.action ?? null}
               onConfirm={submitConfirm}
               onRequestRework={submitRework}
             />

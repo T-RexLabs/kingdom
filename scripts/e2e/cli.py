@@ -42,8 +42,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_arguments(
         rework_parser,
         default_output_dir=default_output_dir(DEFAULT_REWORK_OUTPUT_PREFIX),
-        default_actor_id="e2e-rework-analysis",
-        default_role_id="allfather",
     )
     rework_parser.add_argument(
         "--profile",
@@ -66,8 +64,6 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_arguments(
         existing_repo_parser,
         default_output_dir=default_output_dir(DEFAULT_EXISTING_REPO_OUTPUT_PREFIX),
-        default_actor_id="e2e-in-existing-repo",
-        default_role_id="allfather",
     )
     existing_repo_parser.add_argument(
         "--server-port",
@@ -88,8 +84,6 @@ def add_common_arguments(
     parser: argparse.ArgumentParser,
     *,
     default_output_dir: Path,
-    default_actor_id: str,
-    default_role_id: str,
 ) -> None:
     parser.add_argument(
         "--output-dir",
@@ -108,16 +102,6 @@ def add_common_arguments(
         type=positive_int,
         default=2,
         help="Polling interval in seconds.",
-    )
-    parser.add_argument(
-        "--actor-id",
-        default=default_actor_id,
-        help="Actor id used for API requests.",
-    )
-    parser.add_argument(
-        "--role-id",
-        default=default_role_id,
-        help="Role id used for API requests.",
     )
     parser.add_argument(
         "--global-model",
@@ -177,8 +161,6 @@ def build_common_options(args: argparse.Namespace) -> CommonRunOptions:
         output_dir=Path(args.output_dir).resolve(),
         timeout_seconds=int(args.timeout_seconds),
         poll_interval_seconds=int(args.poll_interval_seconds),
-        actor_id=str(args.actor_id),
-        role_id=str(args.role_id),
         global_model=str(args.global_model).strip(),
         agent_model_overrides=str(args.agent_model_overrides).strip(),
         max_execution_review_cycles=int(args.max_execution_review_cycles),

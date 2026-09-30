@@ -58,7 +58,17 @@ type openCodeProviderModelCatalog struct {
 	mu         sync.Mutex
 	cachedAt   time.Time
 	cachedRows []gen.ProviderModel
-	flight     singleflight.Group
+	// lastFailure records why the most recent refresh attempt failed while a
+	// usable cache was already held. It is what turns the next read into a
+	// `stale` snapshot, so a background refresh that fails still reaches the
+	// operator instead of dying silently. Cleared on the next success.
+	lastFailure *providerModelCatalogUnavailableError
+	refreshing  bool
+	flight      singleflight.Group
+
+	// refreshed fires after every completed background refresh. Only tests
+	// read it; production has nothing to wait for.
+	refreshed chan struct{}
 }
 
 type providerModelCatalogUnavailableError struct {
@@ -126,28 +136,91 @@ func (c *openCodeProviderModelCatalog) List(ctx context.Context, refresh bool) (
 	return cloneProviderModels(snapshot.Items), nil
 }
 
+// Snapshot serves the model catalog without ever making an operator wait on
+// OpenCode more than once per process.
+//
+// Listing models means spawning `opencode models --verbose`, which costs
+// seconds. Blocking every read whose cache had just aged past the TTL put that
+// cost on the request path forever: the planner page polled on the same period
+// as the TTL, so a browser tab guaranteed a subprocess spawn a minute, and each
+// one disabled the model selectors while it ran. Reads are now
+// stale-while-revalidate — a populated cache answers immediately and an aged
+// one refreshes in the background — so only the very first read of a process
+// can block, and `kd summon` pays that one through Warm.
+//
+// An explicit refresh stays synchronous: it exists so the operator can press
+// Retry and be told what happened.
 func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh bool) (ProviderModelCatalogSnapshot, error) {
+	if !refresh {
+		if snapshot, ok := c.cachedSnapshot(); ok {
+			return snapshot, nil
+		}
+	}
+	return c.fetchSnapshot(ctx, refresh)
+}
+
+// cachedSnapshot answers from cache when there is one, scheduling a background
+// refresh if the rows have aged out. The second return reports whether the
+// cache could answer at all.
+func (c *openCodeProviderModelCatalog) cachedSnapshot() (ProviderModelCatalogSnapshot, bool) {
 	c.mu.Lock()
-	if !refresh && len(c.cachedRows) > 0 && c.now().Sub(c.cachedAt) <= c.ttl {
-		rows := cloneProviderModels(c.cachedRows)
-		cachedAt := c.cachedAt
+	if len(c.cachedRows) == 0 {
 		c.mu.Unlock()
-		return ProviderModelCatalogSnapshot{Items: rows, Status: ProviderModelCatalogStatusFresh, LastSuccessAt: &cachedAt}, nil
+		return ProviderModelCatalogSnapshot{}, false
+	}
+	rows := cloneProviderModels(c.cachedRows)
+	cachedAt := c.cachedAt
+	failure := c.lastFailure
+	stale := c.now().Sub(cachedAt) > c.ttl
+	scheduleRefresh := stale && !c.refreshing
+	if scheduleRefresh {
+		c.refreshing = true
 	}
 	c.mu.Unlock()
 
+	if scheduleRefresh {
+		go c.refreshInBackground()
+	}
+	if failure != nil {
+		return ProviderModelCatalogSnapshot{
+			Items:          rows,
+			Status:         ProviderModelCatalogStatusStale,
+			LastSuccessAt:  &cachedAt,
+			FailureReason:  failure.reason,
+			FailureMessage: operatorCatalogFailureMessage(failure.reason, true),
+		}, true
+	}
+	return ProviderModelCatalogSnapshot{Items: rows, Status: ProviderModelCatalogStatusFresh, LastSuccessAt: &cachedAt}, true
+}
+
+// refreshInBackground revalidates an aged cache off the request path. Its
+// deadline is the fetch timeout rather than any caller's context, because the
+// caller it was scheduled for has already been answered and may be long gone.
+func (c *openCodeProviderModelCatalog) refreshInBackground() {
+	defer func() {
+		c.mu.Lock()
+		c.refreshing = false
+		refreshed := c.refreshed
+		c.mu.Unlock()
+		if refreshed != nil {
+			select {
+			case refreshed <- struct{}{}:
+			default:
+			}
+		}
+	}()
+	_, _ = c.fetchSnapshot(context.Background(), false)
+}
+
+// fetchSnapshot runs the provider fetch, collapsing concurrent callers onto one
+// subprocess, and records the outcome for later reads.
+func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refresh bool) (ProviderModelCatalogSnapshot, error) {
 	fetchKey := "cached"
 	if refresh {
 		fetchKey = "refresh"
 	}
 	resolvedRows, err, _ := c.flight.Do(fetchKey, func() (any, error) {
 		c.mu.Lock()
-		if !refresh && len(c.cachedRows) > 0 && c.now().Sub(c.cachedAt) <= c.ttl {
-			rows := cloneProviderModels(c.cachedRows)
-			cachedAt := c.cachedAt
-			c.mu.Unlock()
-			return ProviderModelCatalogSnapshot{Items: rows, Status: ProviderModelCatalogStatusFresh, LastSuccessAt: &cachedAt}, nil
-		}
 		cachedRows := cloneProviderModels(c.cachedRows)
 		cachedAt := c.cachedAt
 		c.mu.Unlock()
@@ -155,20 +228,24 @@ func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh boo
 		rows, fetchErr := c.fetch(ctx, refresh)
 		if fetchErr != nil {
 			unavailableErr := classifyProviderModelCatalogError(fetchErr)
-			if len(cachedRows) > 0 && !cachedAt.IsZero() {
+			servingCachedModels := len(cachedRows) > 0 && !cachedAt.IsZero()
+			if servingCachedModels {
+				c.mu.Lock()
+				c.lastFailure = unavailableErr
+				c.mu.Unlock()
 				return ProviderModelCatalogSnapshot{
 					Items:          cachedRows,
 					Status:         ProviderModelCatalogStatusStale,
 					LastSuccessAt:  &cachedAt,
 					FailureReason:  unavailableErr.reason,
-					FailureMessage: unavailableErr.Error(),
+					FailureMessage: operatorCatalogFailureMessage(unavailableErr.reason, true),
 				}, nil
 			}
 			return ProviderModelCatalogSnapshot{
 				Items:          []gen.ProviderModel{},
 				Status:         ProviderModelCatalogStatusUnavailable,
 				FailureReason:  unavailableErr.reason,
-				FailureMessage: unavailableErr.Error(),
+				FailureMessage: operatorCatalogFailureMessage(unavailableErr.reason, false),
 				UnavailableErr: unavailableErr,
 			}, nil
 		}
@@ -176,6 +253,7 @@ func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh boo
 		c.mu.Lock()
 		c.cachedRows = cloneProviderModels(rows)
 		c.cachedAt = c.now()
+		c.lastFailure = nil
 		resolvedCachedAt := c.cachedAt
 		c.mu.Unlock()
 
@@ -217,6 +295,41 @@ func (c *openCodeProviderModelCatalog) fetch(ctx context.Context, refresh bool) 
 		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: parseErr}
 	}
 	return rows, nil
+}
+
+// operatorCatalogFailureMessage turns a catalog failure into something an
+// operator can act on.
+//
+// `FailureMessage` reaches the model selector verbatim, so it must never carry
+// a Go error string: "timeout: context deadline exceeded" tells the operator
+// nothing about what Kingdom was doing or whether their work is affected. The
+// two outcomes differ enough to deserve different words — with a cached list
+// the planner keeps working and the refresh is the only casualty, without one
+// no model can be chosen at all. The underlying error stays in FailureReason
+// for programmatic callers and in the process log for diagnosis.
+func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, servingCachedModels bool) string {
+	if servingCachedModels {
+		switch reason {
+		case ProviderModelCatalogFailureReasonTimeout:
+			return "Showing the models Kingdom already had. The refresh from OpenCode timed out."
+		case ProviderModelCatalogFailureReasonBinaryMissing:
+			return "Showing the models Kingdom already had. The opencode binary is no longer on PATH."
+		case ProviderModelCatalogFailureReasonParseFailed:
+			return "Showing the models Kingdom already had. Kingdom could not read the model list OpenCode returned."
+		default:
+			return "Showing the models Kingdom already had. The refresh from OpenCode did not complete."
+		}
+	}
+	switch reason {
+	case ProviderModelCatalogFailureReasonTimeout:
+		return "OpenCode did not return a model list in time. Retry once it responds."
+	case ProviderModelCatalogFailureReasonBinaryMissing:
+		return "Kingdom could not find the opencode binary on PATH. Install or configure OpenCode, then retry."
+	case ProviderModelCatalogFailureReasonParseFailed:
+		return "Kingdom could not read the model list OpenCode returned. Check the installed OpenCode version, then retry."
+	default:
+		return "Kingdom could not list OpenCode models. Check the OpenCode installation, then retry."
+	}
 }
 
 func classifyProviderModelCatalogError(err error) *providerModelCatalogUnavailableError {

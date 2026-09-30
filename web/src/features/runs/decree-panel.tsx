@@ -6,20 +6,26 @@ import {
   type Role,
   type RunModelSelectionEntry,
   type RunSummary,
+  type DecreeDetail,
 } from "@/api/hooks";
+import { apiFetch } from "@/api/client";
+import type { components } from "@/api/schema";
 import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { Modal } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/decrees/provider-model-selection";
-import { cn, roleTitle } from "@/lib/utils";
+import { ExternalSourceCoordinate, ExternalSourceStrip } from "@/features/connections/external-source-strip";
+import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
+import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
+import { roleTitle } from "@/lib/utils";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
-import { ChevronRight, Scroll, Settings2 } from "lucide-react";
+import { ChevronRight, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
 
 export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role[] }) {
   const [readOpen, setReadOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { data: decree, isLoading, error } = useDecree(run.decree_id);
+  const { data: decree, isLoading, error, refetch } = useDecree(run.decree_id);
   const providerModelsQuery = useProviderModels({ enabled: settingsOpen });
   const providerModels = providerModelsQuery.data?.items ?? [];
   const decreeTitle = decree?.decree_title?.trim();
@@ -62,8 +68,10 @@ export function DecreePanel({ run, roles = [] }: { run: RunSummary; roles?: Role
         open={readOpen}
         title={decreeTitle}
         text={decree?.decree_text}
+        sources={decree?.external_sources}
         isLoading={isLoading}
         hasError={Boolean(error) || !decree}
+        onRefreshed={() => { void refetch(); }}
         onClose={() => setReadOpen(false)}
       />
 
@@ -83,36 +91,106 @@ function DecreeReadDialog({
   open,
   title,
   text,
+  sources,
   isLoading,
   hasError,
   onClose,
+  onRefreshed,
 }: {
   open: boolean;
   title?: string;
   text?: string;
+  sources?: DecreeDetail["external_sources"];
   isLoading: boolean;
   hasError: boolean;
   onClose: () => void;
+  onRefreshed: () => void;
 }) {
   return (
-    <ModalDialog
+    // `workbench` because the decree text and its source cards arrive
+    // separately; an auto-height panel would re-centre itself as they land.
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Royal decree"
-      panelClassName={cn("w-full", modalShellSizeClass("lg"))}
+      size="lg"
+      height="workbench"
+      title={title && title !== "" ? title : "Royal Decree"}
+      caption={title && title !== "" ? "Royal Decree" : undefined}
     >
-      <ModalShell title={title && title !== "" ? title : "Royal Decree"} caption="Royal Decree" onClose={onClose}>
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div>
           {isLoading ? (
             <p className="text-sm text-foreground-subtle">Loading decree…</p>
           ) : hasError ? (
             <p className="text-sm text-foreground-subtle">Decree not available.</p>
           ) : (
-            <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
+            <div>
+              {sources && sources.length > 0 ? (
+                <section aria-label="Issued decree sources" className="mb-4 space-y-2">
+                  <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">{sources.length} GitHub {sources.length === 1 ? "source" : "sources"}</p>
+                  <div className="grid gap-3 lg:grid-cols-2">
+                    {sources.map((source) => <IssuedDecreeSourceCard key={source.link_id} source={source} onRefreshed={onRefreshed} />)}
+                  </div>
+                </section>
+              ) : null}
+              <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
+            </div>
           )}
         </div>
-      </ModalShell>
-    </ModalDialog>
+    </Modal>
+  );
+}
+
+type IssuedDecreeSource = DecreeDetail["external_sources"][number];
+
+function IssuedDecreeSourceCard({ source, onRefreshed }: { source: IssuedDecreeSource; onRefreshed: () => void }) {
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState("");
+  const [refreshResult, setRefreshResult] = useState<components["schemas"]["ExternalRefreshResult"]>();
+  const recoverableRefresh = useRecoverableMutation(
+    "decree-source-refresh",
+    (request: { linkId: string }, key) => apiFetch<components["schemas"]["ExternalRefreshResult"]>(`/external-source-links/${request.linkId}/refreshes`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+    }),
+    source.link_id,
+  );
+  const sourceStatus = refreshResult?.outcome ?? source.status;
+  const latestSnapshotID = refreshResult?.link?.latest_snapshot_id ?? source.latest_snapshot_id;
+  const updateAvailable = latestSnapshotID !== source.used_snapshot_id;
+  const sourceFailureGuidance = externalSourceFailureGuidance(sourceStatus);
+  // A source with no update and no problem says nothing; the card still shows
+  // where the decree came from.
+  const statusNotice = externalSourceStatusNotice(sourceStatus, updateAvailable);
+
+  const refresh = async () => {
+    setRefreshing(true);
+    setRefreshError("");
+    try {
+      const result = await recoverableRefresh.mutateAsync({ linkId: source.link_id });
+      setRefreshResult(result);
+      onRefreshed();
+    } catch (error) {
+      setRefreshError(error instanceof Error ? error.message : "Could not check GitHub source");
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
+  return (
+    <ExternalSourceStrip
+      label={`Issued source ${source.repository}#${source.issue_number}`}
+      identity={<>Imported from GitHub · <ExternalSourceCoordinate canonicalURL={source.canonical_url} repository={source.repository} issueNumber={source.issue_number} /></>}
+      actions={
+        <Button type="button" size="sm" variant="ghost" aria-label={`${recoverableRefresh.hasPendingRecovery ? "Retry" : "Check"} GitHub source ${source.repository}#${source.issue_number}`} onClick={refresh} disabled={refreshing}>{refreshing ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : <RefreshCw className="mr-1 h-3 w-3" />}{recoverableRefresh.hasPendingRecovery ? "Retry GitHub source check" : "Check GitHub source"}</Button>
+      }
+    >
+      {statusNotice ? <p className="text-foreground-muted"><span className="text-foreground">{statusNotice}</span>{updateAvailable ? " — the issued decree remains unchanged." : ""}</p> : null}
+      {sourceFailureGuidance ? <p role="status" className="text-status-failed">{sourceFailureGuidance}</p> : null}
+      {refreshResult ? <p aria-live="polite" className="text-foreground-muted">{refreshResult.message}</p> : null}
+      {updateAvailable ? <ExternalSourceComparison baselineId={source.used_snapshot_id} candidateId={latestSnapshotID} /> : null}
+      {refreshResult?.retry_at ? <p className="text-foreground-muted">Retry after {new Date(refreshResult.retry_at).toLocaleString()}.</p> : null}
+      {refreshError ? <p role="alert" className="text-status-failed">{refreshError}</p> : null}
+    </ExternalSourceStrip>
   );
 }
 
@@ -139,14 +217,16 @@ function DecreeSettingsDialog({
   const showLimits = !skipReviewAndValidation && (run.run_until_all_approve || maxReviewCycles > 0 || maxValidationCycles > 0);
 
   return (
-    <ModalDialog
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Decree settings"
-      panelClassName={cn("w-full", modalShellSizeClass("md"))}
+      size="lg"
+      height="workbench"
+      title="Decree Settings"
+      caption="Run Configuration"
+      description={run.decree_title}
     >
-			<ModalShell title="Decree Settings" caption="Run Configuration" description={run.decree_title} onClose={onClose}>
-	        <div data-testid="decree-settings-scroll-region" className="min-h-0 flex-1 space-y-6 overflow-y-auto">
+	        <div data-testid="decree-settings-scroll-region" className="space-y-6">
             <SettingsSection title="How It Runs" description="Workflow, approval mode, review flow, and publish target.">
               <SettingsSurface>
                 <SettingRow label="Approval">
@@ -223,8 +303,7 @@ function DecreeSettingsDialog({
               </div>
 	            </SettingsSection>
 	          </div>
-			</ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }
 
@@ -347,7 +426,11 @@ function getOrderedRoleOverrides(
       }
       return left.roleName.localeCompare(right.roleName);
     })
-    .map(({ sectionOrder: _sectionOrder, roleOrder: _roleOrder, ...override }) => override);
+    .map((override) => ({
+      roleId: override.roleId,
+      roleName: override.roleName,
+      selection: override.selection,
+    }));
 }
 
 function formatModelSelection(selection: RunModelSelectionEntry | undefined, providerModels: ProviderModel[]): {

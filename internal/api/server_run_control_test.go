@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -17,7 +16,7 @@ import (
 	"kingdom/internal/state"
 )
 
-func TestServerFinalApprovalEndpointIsAllfatherOnly(t *testing.T) {
+func TestServerFinalApprovalIgnoresClientSuppliedRole(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -31,15 +30,16 @@ func TestServerFinalApprovalEndpointIsAllfatherOnly(t *testing.T) {
 			"action": "confirm",
 			"reason": "looks good",
 		},
-		actorID:        "actor-user",
-		roleID:         "chancellor",
+		headers: map[string]string{
+			"X-Actor-Id": "actor-user",
+			"X-Role-Id":  "chancellor",
+		},
 		idempotencyKey: "idem-final-approval-forbidden",
 	})
 
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", res.Code)
+	if res.Code == http.StatusForbidden || res.Code == http.StatusUnauthorized {
+		t.Fatalf("verified local operator must retain allfather authority regardless of forged role, got %d", res.Code)
 	}
-	assertErrorCode(t, res.Body.Bytes(), "policy_violation")
 }
 
 func TestServerFinalApprovalConfirmTransitionsRunToSucceeded(t *testing.T) {
@@ -56,8 +56,6 @@ func TestServerFinalApprovalConfirmTransitionsRunToSucceeded(t *testing.T) {
 			"action": "confirm",
 			"reason": "approved by allfather",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-confirm",
 	})
 	if res.Code != http.StatusCreated {
@@ -98,44 +96,10 @@ func TestServerFinalApprovalConfirmAllowsEmptyReason(t *testing.T) {
 		body: map[string]any{
 			"action": "confirm",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-confirm-empty-reason",
 	})
 	if res.Code != http.StatusCreated {
 		t.Fatalf("expected 201, got %d (%s)", res.Code, res.Body.String())
-	}
-}
-
-func TestWriteRunTransitionApplyErrorMapsAttemptCapToBudgetExceeded(t *testing.T) {
-	t.Parallel()
-
-	recorder := httptest.NewRecorder()
-	server := &Server{}
-	server.writeRunTransitionApplyError(
-		recorder,
-		&state.NodeAttemptLimitExceededError{RunID: "run-1", NodeID: "plan_drafting", MaxLimit: 5},
-		"api.create_plan_approval",
-		"plan transition is not allowed",
-		"apply plan approval transition failed",
-		map[string]any{"run_id": "run-1", "action": "rework"},
-	)
-
-	if recorder.Code != http.StatusConflict {
-		t.Fatalf("expected 409, got %d", recorder.Code)
-	}
-	assertErrorCode(t, recorder.Body.Bytes(), "budget_exceeded")
-
-	var payload struct {
-		Error struct {
-			Details map[string]any `json:"details"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode canonical budget error: %v", err)
-	}
-	if got := payload.Error.Details["node_key"]; got != "plan_drafting" {
-		t.Fatalf("expected node_key detail, got %#v", got)
 	}
 }
 
@@ -152,8 +116,6 @@ func TestServerFinalApprovalRejectsAutonomousApprovalRuns(t *testing.T) {
 		body: map[string]any{
 			"action": "confirm",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-autonomous-blocked",
 	})
 	if res.Code != http.StatusConflict {
@@ -183,8 +145,6 @@ func TestServerFinalApprovalReworkRequiresReason(t *testing.T) {
 		body: map[string]any{
 			"action": "rework",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-rework-missing-reason",
 	})
 	if res.Code != http.StatusBadRequest {
@@ -206,8 +166,6 @@ func TestServerFinalApprovalReworkReopensRunThroughPlanDrafting(t *testing.T) {
 			"action": "rework",
 			"reason": "Tighten the acceptance criteria and revise the delivery plan.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-rework-loop",
 	})
 	if res.Code != http.StatusCreated {
@@ -264,8 +222,6 @@ func TestServerFinalApprovalReworkProjectsSingleCanonicalCollectionEvent(t *test
 			"action": "rework",
 			"reason": "Revise the decree from the planning stage.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-rework-collection-single",
 	})
 	if res.Code != http.StatusCreated {
@@ -311,8 +267,6 @@ func TestServerFinalApprovalReworkAllowsSixthGovernanceAttempt(t *testing.T) {
 			"action": "rework",
 			"reason": "Revise the decree and rerun the downstream execution path.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-rework-sixth-attempt",
 	})
 	if res.Code != http.StatusCreated {
@@ -350,8 +304,6 @@ func TestServerFinalApprovalReworkResolvesCustomPlanDraftingNodeID(t *testing.T)
 			"action": "rework",
 			"reason": "Reopen the decree from the custom planning node.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-custom-plan-node",
 	})
 	if res.Code != http.StatusCreated {
@@ -387,8 +339,6 @@ func TestServerFinalApprovalReworkStillBlocksExecutionStartUntilRenewedPlanAppro
 			"action": "rework",
 			"reason": "Reopen the decree from the custom planning node.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-custom-plan-node-gate",
 	})
 	if res.Code != http.StatusCreated {
@@ -473,8 +423,6 @@ func TestServerFinalApprovalReworkExcludesNeedsReworkBranchFromReplayTargets(t *
 			"action": "rework",
 			"reason": "Revise the final plan without reopening the governance rework branch.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-rework-no-branch",
 	})
 	if res.Code != http.StatusCreated {
@@ -515,8 +463,6 @@ func TestServerFinalApprovalReworkConflictWhenReplayWaveAlreadyActive(t *testing
 			"action": "rework",
 			"reason": "Retrying while a replay wave is already active.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-replay-active",
 	})
 	if res.Code != http.StatusConflict {
@@ -540,8 +486,6 @@ func TestServerFinalApprovalFailureDoesNotCommitRunState(t *testing.T) {
 			"action": "confirm",
 			"reason": "approval persistence should fail",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-final-approval-db-failure",
 	})
 	if res.Code != http.StatusInternalServerError {
@@ -557,7 +501,7 @@ func TestServerFinalApprovalFailureDoesNotCommitRunState(t *testing.T) {
 	}
 }
 
-func TestServerPlanApprovalEndpointIsAllfatherOnly(t *testing.T) {
+func TestServerPlanApprovalIgnoresClientSuppliedRole(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -572,8 +516,6 @@ func TestServerPlanApprovalEndpointIsAllfatherOnly(t *testing.T) {
 			"action":           "confirm",
 			"plan_revision_id": "planrev_z_same_ts",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-same-ts-stale",
 	})
 	if staleRes.Code != http.StatusConflict {
@@ -588,15 +530,16 @@ func TestServerPlanApprovalEndpointIsAllfatherOnly(t *testing.T) {
 			"plan_revision_id": planRevisionID,
 			"reason":           "looks good",
 		},
-		actorID:        "actor-user",
-		roleID:         "king",
+		headers: map[string]string{
+			"X-Actor-Id": "actor-user",
+			"X-Role-Id":  "king",
+		},
 		idempotencyKey: "idem-plan-approval-forbidden",
 	})
 
-	if res.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d", res.Code)
+	if res.Code == http.StatusForbidden || res.Code == http.StatusUnauthorized {
+		t.Fatalf("verified local operator must retain allfather authority regardless of forged role, got %d", res.Code)
 	}
-	assertErrorCode(t, res.Body.Bytes(), "policy_violation")
 }
 
 func TestServerPlanApprovalConfirmTransitionsPlanToApproved(t *testing.T) {
@@ -615,8 +558,6 @@ func TestServerPlanApprovalConfirmTransitionsPlanToApproved(t *testing.T) {
 			"plan_revision_id": planRevisionID,
 			"reason":           "approved by allfather",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-confirm",
 	})
 	if res.Code != http.StatusCreated {
@@ -661,8 +602,6 @@ func TestServerPlanApprovalConfirmSupportsCustomPlanDraftingNodeID(t *testing.T)
 			"plan_revision_id": planRevisionID,
 			"reason":           "approved custom scoped plan",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-custom-plan-node",
 	})
 	if res.Code != http.StatusCreated {
@@ -707,8 +646,6 @@ func TestServerPlanApprovalUsesLatestPersistedRevisionWhenPlanTimestampsTie(t *t
 			"action":           "confirm",
 			"plan_revision_id": currentPlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-same-ts-latest",
 	})
 	if res.Code != http.StatusCreated {
@@ -731,8 +668,6 @@ func TestServerPlanApprovalConfirmAllowsEmptyReason(t *testing.T) {
 			"action":           "confirm",
 			"plan_revision_id": planRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-confirm-empty-reason",
 	})
 	if res.Code != http.StatusCreated {
@@ -755,8 +690,6 @@ func TestServerPlanApprovalReworkRequiresReason(t *testing.T) {
 			"action":           "rework",
 			"plan_revision_id": planRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-rework-missing-reason",
 	})
 	if res.Code != http.StatusBadRequest {
@@ -780,8 +713,6 @@ func TestServerPlanApprovalRejectsAutonomousApprovalRuns(t *testing.T) {
 			"plan_revision_id": planRevisionID,
 			"reason":           "manual rework should be blocked for autonomous runs",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-autonomous-blocked",
 	})
 	if res.Code != http.StatusConflict {
@@ -822,8 +753,6 @@ func TestServerPlanApprovalRejectsStalePlanRevisionID(t *testing.T) {
 			"plan_revision_id": "planrev_stale_plan_revision",
 			"reason":           "this should be rejected as stale",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-stale-plan",
 	})
 	if res.Code != http.StatusConflict {
@@ -864,8 +793,6 @@ func TestServerPlanApprovalUsesLatestCanonicalPlanRevision(t *testing.T) {
 			"action":           "confirm",
 			"plan_revision_id": stalePlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-hidden-latest",
 	})
 	if res.Code != http.StatusConflict {
@@ -887,8 +814,6 @@ func TestServerPlanApprovalUsesLatestCanonicalPlanRevision(t *testing.T) {
 			"action":           "confirm",
 			"plan_revision_id": currentPlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-visible-latest",
 	})
 	if res.Code != http.StatusCreated {
@@ -938,8 +863,6 @@ func TestServerPlanApprovalMaterializesCurrentProjectionWhenMissing(t *testing.T
 			"action":           "confirm",
 			"plan_revision_id": currentPlan.PlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-materialize-current-projection",
 	})
 	if res.Code != http.StatusCreated {
@@ -980,8 +903,6 @@ func TestServerPlanApprovalUsesCanonicalBundleAcrossMultiplePlanDraftingNodes(t 
 			"action":           "confirm",
 			"plan_revision_id": stalePlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-multi-plan-stale",
 	})
 	if staleRes.Code != http.StatusConflict {
@@ -995,8 +916,6 @@ func TestServerPlanApprovalUsesCanonicalBundleAcrossMultiplePlanDraftingNodes(t 
 			"action":           "confirm",
 			"plan_revision_id": currentPlanRevisionID,
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-multi-plan-current",
 	})
 	if res.Code != http.StatusCreated {
@@ -1028,8 +947,6 @@ func TestServerPlanApprovalReworkQueuesFreshPlanningWaveAndPersistsReview(t *tes
 			"plan_revision_id": planRevisionID,
 			"reason":           "tighten acceptance criteria and narrow scope",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-rework-queued-wave",
 	})
 	if res.Code != http.StatusCreated {
@@ -1080,8 +997,6 @@ func TestServerPlanApprovalReworkRemainsRunningPastLegacyCap(t *testing.T) {
 			"plan_revision_id": planRevisionID,
 			"reason":           "another rework cycle is required",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-rework-limit",
 	})
 	if res.Code != http.StatusCreated {
@@ -1126,8 +1041,6 @@ func TestServerPlanApprovalReworkAllowsSixthGovernanceAttempt(t *testing.T) {
 			"plan_revision_id": planRevisionID,
 			"reason":           "A sixth governance rework cycle is required.",
 		},
-		actorID:        "god-operator",
-		roleID:         "allfather",
 		idempotencyKey: "idem-plan-approval-rework-sixth-attempt",
 	})
 	if res.Code != http.StatusCreated {
@@ -1170,8 +1083,6 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/cancel",
 		body:           map[string]any{"reason": "operator cancel"},
-		actorID:        "operator-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-run-cancel",
 	})
 	if res.Code != http.StatusOK {
@@ -1222,20 +1133,19 @@ func TestServerCancelRunTransitionsRunningRunToCancelled(t *testing.T) {
 	}
 }
 
-func TestServerRetryNodeCreatesAttemptAndEnforcesMaxAttemptsPerNode(t *testing.T) {
+func TestServerRetryNodeAllowsRepeatedOperatorAttempts(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
 
-	for i := 1; i <= state.DefaultMaxAttemptsPerNode; i++ {
+	const expectedAttempts = 25
+	for i := 1; i < expectedAttempts; i++ {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
 			path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
 			body:           map[string]any{"reason": "retry attempt"},
-			actorID:        "actor-1",
-			roleID:         "chancellor",
 			idempotencyKey: "idem-retry-attempt-" + strconv.Itoa(i),
 		})
 		if res.Code != http.StatusAccepted {
@@ -1252,33 +1162,22 @@ func TestServerRetryNodeCreatesAttemptAndEnforcesMaxAttemptsPerNode(t *testing.T
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	blocked := performJSONRequest(t, handler, requestSpec{
+	accepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
-		body:           map[string]any{"reason": "must exceed cap"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
+		body:           map[string]any{"reason": "operator requested another retry"},
 		idempotencyKey: "idem-retry-over-cap",
 	})
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when exceeding max attempts per node, got %d (%s)", blocked.Code, blocked.Body.String())
-	}
-	assertErrorCode(t, blocked.Body.Bytes(), "budget_exceeded")
-
-	var runStatusAfterBlocked string
-	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatusAfterBlocked); err != nil {
-		t.Fatalf("query run status after blocked retry: %v", err)
-	}
-	if runStatusAfterBlocked != "failed" {
-		t.Fatalf("expected run to remain failed when retry queue is rejected, got %q", runStatusAfterBlocked)
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for operator retry beyond automatic limit, got %d (%s)", accepted.Code, accepted.Body.String())
 	}
 
 	var maxAttempt int
 	if err := db.QueryRow(`SELECT COALESCE(MAX(attempt), 0) FROM node_runs WHERE run_id = ? AND node_id = 'kickoff'`, runID).Scan(&maxAttempt); err != nil {
 		t.Fatalf("query max attempt: %v", err)
 	}
-	if maxAttempt != state.DefaultMaxAttemptsPerNode {
-		t.Fatalf("expected max attempt %d, got %d", state.DefaultMaxAttemptsPerNode, maxAttempt)
+	if maxAttempt != expectedAttempts {
+		t.Fatalf("expected max attempt %d, got %d", expectedAttempts, maxAttempt)
 	}
 }
 
@@ -1306,8 +1205,6 @@ LIMIT 1`, runID).Scan(&reviewNodeID); err != nil {
 			method:         http.MethodPost,
 			path:           "/api/v1/runs/" + runID + "/nodes/" + reviewNodeID + "/retry",
 			body:           map[string]any{"reason": "retry under configured loop cap"},
-			actorID:        "actor-1",
-			roleID:         "chancellor",
 			idempotencyKey: "idem-retry-loop-cap-" + strconv.Itoa(i),
 		})
 		if res.Code != http.StatusAccepted {
@@ -1332,8 +1229,6 @@ func TestServerRetryQueueFailureDoesNotLeaveStrayPendingAttempt(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/execution_kickoff/retry",
 		body:           map[string]any{"reason": "queue should fail before plan approval"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-unapproved-plan",
 	})
 	if res.Code == http.StatusAccepted {
@@ -1357,7 +1252,7 @@ func TestServerRetryQueueFailureDoesNotLeaveStrayPendingAttempt(t *testing.T) {
 	}
 }
 
-func TestServerRerunFromNodeRollsBackRunWhenBudgetPrecheckFails(t *testing.T) {
+func TestServerRerunFromNodeAllowsTargetsBeyondAutomaticLimitAtomically(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1383,14 +1278,13 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 		t.Fatalf("lookup execution_kickoff node for run: %v", err)
 	}
 
-	for i := 1; i <= state.DefaultMaxAttemptsPerNode; i++ {
+	const priorAttempts = 25
+	for i := 1; i <= priorAttempts; i++ {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
 			path:           "/api/v1/runs/" + runID + "/nodes/" + reviewNodeID + "/retry",
 			body:           map[string]any{"reason": "seed delegated execution attempt budget"},
-			actorID:        "actor-1",
-			roleID:         "chancellor",
 			idempotencyKey: "idem-retry-seed-budget-" + strconv.Itoa(i),
 		})
 		if res.Code != http.StatusAccepted {
@@ -1399,25 +1293,24 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 	}
 
 	setRunStatus(t, db, runID, "failed")
-	blocked := performJSONRequest(t, handler, requestSpec{
+	accepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/" + kickoffNodeID,
-		body:           map[string]any{"reason": "trigger rerun budget precheck failure"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
+		body:           map[string]any{"reason": "operator requested another downstream rerun"},
 		idempotencyKey: "idem-rerun-precheck-over-cap",
 	})
-	if blocked.Code != http.StatusConflict {
-		t.Fatalf("expected 409 when rerun precheck exceeds cap, got %d (%s)", blocked.Code, blocked.Body.String())
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 for downstream rerun beyond automatic limit, got %d (%s)", accepted.Code, accepted.Body.String())
 	}
-	assertErrorCode(t, blocked.Body.Bytes(), "budget_exceeded")
 
-	var runStatusAfterBlocked string
-	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatusAfterBlocked); err != nil {
-		t.Fatalf("query run status after blocked rerun: %v", err)
+	assertLatestAttempt(t, db, runID, reviewNodeID, priorAttempts+1, "pending")
+
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatalf("query run status after rerun: %v", err)
 	}
-	if runStatusAfterBlocked != "failed" {
-		t.Fatalf("expected run to remain failed when rerun precheck is rejected, got %q", runStatusAfterBlocked)
+	if runStatus != "running" {
+		t.Fatalf("expected accepted rerun to reopen run, got %q", runStatus)
 	}
 }
 
@@ -1435,8 +1328,6 @@ func TestServerRetryReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
 		body:           map[string]any{"reason": "manual retry should reuse canonical council agent"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-canonical-agent",
 	})
 	if res.Code != http.StatusAccepted {
@@ -1466,8 +1357,6 @@ func TestServerRerunReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "manual rerun should reuse canonical council agent"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-canonical-agent",
 	})
 	if res.Code != http.StatusAccepted {
@@ -1483,7 +1372,7 @@ func TestServerRerunReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 	}
 }
 
-func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
+func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
@@ -1493,12 +1382,10 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
 		body:           map[string]any{"reason": "retry while running"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-conflict",
 	})
 	if retryConflict.Code != http.StatusConflict {
-		t.Fatalf("expected 409 retry conflict for non-failed run, got %d (%s)", retryConflict.Code, retryConflict.Body.String())
+		t.Fatalf("expected 409 retry conflict for non-terminal run, got %d (%s)", retryConflict.Code, retryConflict.Body.String())
 	}
 	assertErrorCode(t, retryConflict.Body.Bytes(), "dependency_blocked")
 
@@ -1506,12 +1393,10 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "rerun while running"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-conflict",
 	})
 	if rerunConflict.Code != http.StatusConflict {
-		t.Fatalf("expected 409 rerun conflict for non-failed run, got %d (%s)", rerunConflict.Code, rerunConflict.Body.String())
+		t.Fatalf("expected 409 rerun conflict for non-terminal run, got %d (%s)", rerunConflict.Code, rerunConflict.Body.String())
 	}
 	assertErrorCode(t, rerunConflict.Body.Bytes(), "dependency_blocked")
 
@@ -1520,8 +1405,6 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
 		body:           map[string]any{"reason": "retry after failed"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-accepted",
 	})
 	if retryAccepted.Code != http.StatusAccepted {
@@ -1533,13 +1416,101 @@ func TestServerRetryAndRerunRequireFailedRunStatus(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "rerun after failed"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-accepted",
 	})
 	if rerunAccepted.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 rerun accepted for failed run, got %d (%s)", rerunAccepted.Code, rerunAccepted.Body.String())
 	}
+}
+
+func TestServerRetryNodeReopensSettledCancelledRun(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	setRunStatus(t, db, runID, "cancelled")
+
+	res := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		body:           map[string]any{"reason": "resume cancelled work"},
+		idempotencyKey: "idem-retry-cancelled",
+	})
+	if res.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 retry accepted for settled cancelled run, got %d (%s)", res.Code, res.Body.String())
+	}
+
+	assertLatestAttempt(t, db, runID, "kickoff", 1, "ready")
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatalf("query reopened run status: %v", err)
+	}
+	if runStatus != "running" {
+		t.Fatalf("expected cancelled run to reopen as running, got %q", runStatus)
+	}
+}
+
+func TestServerRerunFromCancelledWaitsForCancellationOutbox(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	now := time.Now().UTC().Format(time.RFC3339)
+	agentID := "agent_cancelled_replay_" + runID
+	nodeRunID := "node_run_cancelled_replay_" + runID
+	attemptID := runID + ":kickoff:1"
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'council-member', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
+	mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, finished_at) VALUES (?, ?, 'kickoff', 1, 1, 'cancelled', 'council-member', ?, 1, ?)`, nodeRunID, runID, agentID, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, session_ref, committed_at, created_at, updated_at) VALUES (?, ?, ?, 'committed_cancelled', 'provider_backed', ?, ?, ?, ?)`, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
+	mustExecSQL(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'run_cancelled_by_user', 'cancel settling', ?, 'pending', ?, ?)`, "cancel_outbox_"+runID, attemptID, runID, nodeRunID, "session_cancelled_replay_"+runID, now, now, now)
+	setRunStatus(t, db, runID, "cancelled")
+
+	blocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume after cancellation"},
+		idempotencyKey: "idem-rerun-cancelled-settling",
+	})
+	if blocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while cancellation is settling, got %d (%s)", blocked.Code, blocked.Body.String())
+	}
+	assertErrorCode(t, blocked.Body.Bytes(), "dependency_blocked")
+
+	mustExecSQL(t, db, `UPDATE attempt_cancel_outbox SET status = 'published', published_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, attemptID)
+	mustExecSQL(t, db, `INSERT INTO attempt_outbox (outbox_id, attempt_id, run_id, node_run_id, terminal_seq, terminal_state, payload_json, status, created_at, updated_at) VALUES (?, ?, ?, ?, 1, 'committed_cancelled', '{}', 'pending', ?, ?)`, "completion_outbox_"+runID, attemptID, runID, nodeRunID, now, now)
+	completionBlocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume while completion settles"},
+		idempotencyKey: "idem-rerun-cancelled-completion-settling",
+	})
+	if completionBlocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while completion is settling, got %d (%s)", completionBlocked.Code, completionBlocked.Body.String())
+	}
+
+	mustExecSQL(t, db, `UPDATE attempt_outbox SET status = 'published', published_at = ?, updated_at = ? WHERE attempt_id = ?`, now, now, attemptID)
+	mustExecSQL(t, db, `INSERT INTO session_leases (session_id, agent_id, status, lease_expires_at, last_heartbeat_at, created_at, updated_at) VALUES (?, ?, 'active', ?, ?, ?, ?)`, "session_cancelled_replay_"+runID, agentID, now, now, now, now)
+	leaseBlocked := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume while lease is active"},
+		idempotencyKey: "idem-rerun-cancelled-lease-active",
+	})
+	if leaseBlocked.Code != http.StatusConflict {
+		t.Fatalf("expected 409 while session lease is active, got %d (%s)", leaseBlocked.Code, leaseBlocked.Body.String())
+	}
+
+	mustExecSQL(t, db, `UPDATE session_leases SET status = 'closed', updated_at = ? WHERE session_id = ?`, now, "session_cancelled_replay_"+runID)
+	accepted := performJSONRequest(t, handler, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
+		body:           map[string]any{"reason": "resume after cancellation settled"},
+		idempotencyKey: "idem-rerun-cancelled-settled",
+	})
+	if accepted.Code != http.StatusAccepted {
+		t.Fatalf("expected 202 after cancellation settled, got %d (%s)", accepted.Code, accepted.Body.String())
+	}
+	assertLatestAttempt(t, db, runID, "kickoff", 2, "ready")
 }
 
 func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
@@ -1553,8 +1524,6 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
 		body:           map[string]any{"reason": "retry should refresh collection stream"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-collection-stream",
 	})
 	if retryAccepted.Code != http.StatusAccepted {
@@ -1566,8 +1535,6 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "rerun should refresh collection stream"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-collection-stream",
 	})
 	if rerunAccepted.Code != http.StatusAccepted {
@@ -1591,10 +1558,8 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 	}
 
 	streamRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/events/stream",
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/events/stream",
 	})
 	if streamRes.Code != http.StatusOK {
 		t.Fatalf("expected 200 stream response, got %d (%s)", streamRes.Code, streamRes.Body.String())
@@ -1616,14 +1581,19 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunWithLinearExecutionWorkflow(t, handler)
+	now := time.Now().UTC().Format(time.RFC3339)
+	kingAgentID := "agent_royal_closure_retry_" + runID
+	mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'king', 'idle', NULL, 0, ?, ?)`, kingAgentID, now, now)
+	const priorAttempts = 25
+	for attempt := 1; attempt <= priorAttempts; attempt++ {
+		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'royal_closure', ?, ?, 'succeeded', 'king', ?, 1, ?, ?)`, fmt.Sprintf("nr_royal_closure_%d_%s", attempt, runID), runID, attempt, attempt, kingAgentID, now, now)
+	}
 	setRunStatus(t, db, runID, "failed")
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/royal_closure",
 		body:           map[string]any{"reason": "rerun from final decision"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-royal-closure",
 	})
 	if res.Code != http.StatusAccepted {
@@ -1643,7 +1613,7 @@ func TestServerRerunFromRoyalClosurePromotesToPlanDraftingAndQueuesDescendants(t
 	assertLatestAttempt(t, db, runID, "delegated_execution_berserker", 1, "pending")
 	assertLatestAttempt(t, db, runID, "execution_review_shieldmaiden", 1, "pending")
 	assertLatestAttempt(t, db, runID, "validation_gates_qa_scout", 1, "pending")
-	assertLatestAttempt(t, db, runID, "royal_closure", 1, "pending")
+	assertLatestAttempt(t, db, runID, "royal_closure", priorAttempts+1, "pending")
 
 	var runStatus string
 	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
@@ -1665,8 +1635,6 @@ func TestServerRerunFromPlanDraftingIncludesNeedsReworkBranchTargets(t *testing.
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/rerun-from/plan_drafting",
 		body:           map[string]any{"reason": "rerun should preserve governance branch reachability"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rerun-plan-includes-needs-rework",
 	})
 	if res.Code != http.StatusAccepted {
@@ -1692,8 +1660,6 @@ func TestServerRetryQueuesOnlyTargetNode(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/runs/" + runID + "/nodes/royal_closure/retry",
 		body:           map[string]any{"reason": "retry final decision"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-retry-royal-closure",
 	})
 	if res.Code != http.StatusAccepted {

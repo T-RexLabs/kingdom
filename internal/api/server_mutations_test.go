@@ -2,7 +2,9 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,7 +13,125 @@ import (
 
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/state"
 )
+
+func TestCreateDecreeRejectsUnknownExternalSnapshotWithoutPersisting(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-unknown-external-snapshot", body: map[string]any{"decree_title": "Linked", "decree_text": "Text", "external_source_snapshot_id": "does-not-exist"}})
+	if response.Code != http.StatusNotFound {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Linked'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("decree persisted despite missing external snapshot")
+	}
+}
+
+func TestCreateDecreeRejectsPlanningLineageWithDirectSnapshot(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-mixed-provenance", body: map[string]any{
+		"decree_title": "Mixed", "decree_text": "Text", "external_source_snapshot_id": "snapshot-direct",
+		"planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a"},
+	}})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "policy_violation")
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Mixed'`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatal("mixed provenance request persisted a decree")
+	}
+}
+
+func TestCreateDecreeMapsInvalidPlanningLineageToBadRequest(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	seedAPIDecreeLineage(t, db)
+	tests := []struct {
+		name      string
+		lineage   map[string]any
+		decreeKey string
+	}{
+		{name: "cross-session draft", decreeKey: "cross-draft", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-b"}},
+		{name: "formalize missing context binding", decreeKey: "missing-context", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-unbound"}},
+		{name: "failed formalize", decreeKey: "failed-formalize", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-failed"}},
+		{name: "non-formalize", decreeKey: "reply-operation", lineage: map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-reply"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "invalid-lineage-" + test.decreeKey, body: map[string]any{"decree_title": test.decreeKey, "decree_text": "Text", "planning_lineage": test.lineage}})
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			assertErrorCode(t, response.Body.Bytes(), "policy_violation")
+		})
+	}
+	var count int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title IN ('cross-draft','missing-context','failed-formalize','reply-operation')`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("invalid lineage persisted %d decrees", count)
+	}
+}
+
+func TestCreateDecreeRejectsClientSuppliedPlanningContextLineage(t *testing.T) {
+	handler, _ := newAPIServerForTest(t)
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "client-context-lineage", body: map[string]any{
+		"decree_title": "Invalid", "decree_text": "Text",
+		"planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a", "planning_context_snapshot_id": "context-a"},
+	}})
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestCreateDecreeMapsDuplicateDerivedSourceToConflictAtomically(t *testing.T) {
+	handler, db := newAPIServerForTest(t)
+	seedAPIDecreeLineage(t, db)
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-conflict", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-conflict", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-conflict"}); err != nil {
+		t.Fatal(err)
+	}
+	issue := state.NormalizedExternalIssue{Title: "Issue", Body: "body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: at, UpdatedAt: at}
+	first, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "source-conflict", SnapshotID: "snapshot-conflict-a", ConnectionID: "conn-conflict", ProviderNativeID: "100", RepositoryNativeID: "200", Issue: issue, ProviderUpdatedAt: at, FetchedAt: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issue.Title = "Later"
+	issue.UpdatedAt = "2026-08-12T11:00:00Z"
+	second, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{SourceID: "ignored-source", SnapshotID: "snapshot-conflict-b", ConnectionID: "conn-conflict", ProviderNativeID: "100", RepositoryNativeID: "200", PredecessorSnapshotID: first.SnapshotID, Issue: issue, ProviderUpdatedAt: issue.UpdatedAt, FetchedAt: issue.UpdatedAt})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, snapshotID := range []string{first.SnapshotID, second.SnapshotID} {
+		mustExecSQL(t, db, `INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES ('operation-good',?,?,?,0,0,?)`, snapshotID, state.ExternalAssemblerVersion, strings.Repeat("0", 64), at)
+	}
+
+	response := performJSONRequest(t, handler, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "decree-source-conflict", body: map[string]any{"decree_title": "Conflict", "decree_text": "Text", "planning_lineage": map[string]any{"planning_session_id": "session-a", "planning_draft_id": "draft-a"}}})
+	if response.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertErrorCode(t, response.Body.Bytes(), "idempotency_conflict")
+	var decrees, links int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM decrees WHERE decree_title='Conflict'`).Scan(&decrees); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM external_source_links WHERE target_kind='decree'`).Scan(&links); err != nil {
+		t.Fatal(err)
+	}
+	if decrees != 0 || links != 0 {
+		t.Fatalf("conflict escaped transaction: decrees=%d links=%d", decrees, links)
+	}
+}
 
 func TestServerReplaysIdempotentMutations(t *testing.T) {
 	t.Parallel()
@@ -25,8 +145,6 @@ func TestServerReplaysIdempotentMutations(t *testing.T) {
 			"decree_title": "Replay",
 			"decree_text":  "Same body",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-replay",
 	})
 	second := performJSONRequest(t, handler, requestSpec{
@@ -36,8 +154,6 @@ func TestServerReplaysIdempotentMutations(t *testing.T) {
 			"decree_title": "Replay",
 			"decree_text":  "Same body",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-replay",
 	})
 
@@ -85,8 +201,6 @@ func TestServerPublishWorkflowRejectsInvalidDefinition(t *testing.T) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-invalid-workflow",
 	})
 
@@ -94,6 +208,43 @@ func TestServerPublishWorkflowRejectsInvalidDefinition(t *testing.T) {
 		t.Fatalf("expected 400, got %d (%s)", res.Code, res.Body.String())
 	}
 	assertErrorCode(t, res.Body.Bytes(), "policy_violation")
+}
+
+func TestServerPublishWorkflowDistinguishesExactAndDifferentExistingDefinitions(t *testing.T) {
+	t.Parallel()
+
+	handler, _ := newAPIServerForTest(t)
+	definition := func(nodeID string) map[string]any {
+		return map[string]any{
+			"version":     "v1",
+			"workflow_id": "wf-seed-conflict-v1",
+			"nodes": []map[string]any{{
+				"node_id": nodeID, "required_role": "council-member", "node_class": "execution_kickoff",
+			}},
+			"edges": []map[string]any{},
+		}
+	}
+	publish := func(key, nodeID string) *httptest.ResponseRecorder {
+		return performJSONRequest(t, handler, requestSpec{
+			method: http.MethodPost,
+			path:   "/api/v1/workflows/publish",
+			body: map[string]any{
+				"workflow_id":     "wf-seed-conflict-v1",
+				"version":         "seed-v1",
+				"definition_json": definition(nodeID),
+			},
+			idempotencyKey: key,
+		})
+	}
+	if response := publish("seed-first", "kickoff"); response.Code != http.StatusCreated {
+		t.Fatalf("first publish status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := publish("seed-exact", "kickoff"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), `"message":"workflow version already exists"`) {
+		t.Fatalf("exact publish status=%d body=%s", response.Code, response.Body.String())
+	}
+	if response := publish("seed-different", "different"); response.Code != http.StatusConflict || !strings.Contains(response.Body.String(), "different definition") {
+		t.Fatalf("different publish status=%d body=%s", response.Code, response.Body.String())
+	}
 }
 
 func TestPersistWorkflowGraphRejectsInvalidDefinitionJSON(t *testing.T) {
@@ -128,8 +279,6 @@ func TestServerPublishWorkflowRejectsUnknownDefinitionFields(t *testing.T) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-workflow-unknown-field",
 	})
 
@@ -161,8 +310,6 @@ func TestServerPublishWorkflowRejectsInvalidNodeClass(t *testing.T) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-workflow-invalid-node-class",
 	})
 
@@ -181,8 +328,6 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/decrees",
 		body:           map[string]any{"decree_title": "D", "decree_text": "T"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rework-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -210,8 +355,6 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rework-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -226,8 +369,6 @@ func TestServerCreateRunPreservesPublishedWorkflowIdentity(t *testing.T) {
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-rework-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -252,8 +393,6 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/decrees",
 		body:           map[string]any{"decree_title": "Loop", "decree_text": "Mode"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-loop-mode-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -296,8 +435,6 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-loop-mode-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -315,8 +452,6 @@ func TestServerCreateRunPersistsLoopModeAndCycleOverrides(t *testing.T) {
 			"max_execution_review_cycles":  7,
 			"max_validation_rework_cycles": 9,
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-loop-mode-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -365,8 +500,6 @@ func TestServerCreateRunPersistsPublishMode(t *testing.T) {
 			"publish_mode":    "git_worktree",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-publish-mode-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -428,8 +561,6 @@ func TestServerCreateRunDefaultsReviewLoopsToZeroWhenWorkflowOmitsQualityGates(t
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-no-quality-gates-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -448,8 +579,6 @@ func TestServerCreateRunDefaultsReviewLoopsToZeroWhenWorkflowOmitsQualityGates(t
 			"max_execution_review_cycles":  9,
 			"max_validation_rework_cycles": 11,
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-no-quality-gates-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -521,8 +650,6 @@ func TestServerCreateRunPersistsZeroCycleOverridesWhenQualityGatesExist(t *testi
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-loop-mode-zero-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -539,8 +666,6 @@ func TestServerCreateRunPersistsZeroCycleOverridesWhenQualityGatesExist(t *testi
 			"max_execution_review_cycles":  0,
 			"max_validation_rework_cycles": 0,
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-loop-mode-zero-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -601,8 +726,6 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 		method:         http.MethodPost,
 		path:           "/api/v1/decrees",
 		body:           map[string]any{"decree_title": "Model", "decree_text": "Selection"},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-select-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -630,8 +753,6 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-select-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -657,8 +778,6 @@ func TestServerCreateRunPersistsModelSelection(t *testing.T) {
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-select-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -719,8 +838,6 @@ func TestServerCreateRunRejectsUnknownAgentModelOverrideRole(t *testing.T) {
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-role-check",
 	})
 	if runRes.Code != http.StatusBadRequest {
@@ -742,8 +859,6 @@ func TestServerCreateRunRequiresModelSelectionWhenProviderEngineIsOpenCode(t *te
 			"decree_id":    decreeID,
 			"publish_mode": "direct",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-required",
 	})
 	if runRes.Code != http.StatusBadRequest {
@@ -780,8 +895,6 @@ func TestServerCreateRunRejectsUnavailableGlobalModel(t *testing.T) {
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-global-check",
 	})
 	if runRes.Code != http.StatusBadRequest {
@@ -820,8 +933,6 @@ func TestServerCreateRunRejectsUnavailableAgentModelOverride(t *testing.T) {
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-role-unavailable",
 	})
 	if runRes.Code != http.StatusBadRequest {
@@ -852,8 +963,6 @@ func TestServerCreateRunReturnsServiceUnavailableWhenModelCatalogLookupFails(t *
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-model-catalog-failure",
 	})
 	if runRes.Code != http.StatusServiceUnavailable {
@@ -890,9 +999,8 @@ func TestServerCreateRunReturnsWhenRequestContextIsCancelledDuringModelCatalogLo
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Actor-Id", "actor-1")
-	req.Header.Set("X-Role-Id", "chancellor")
-	req.Header.Set("Idempotency-Key", "idem-model-cancel")
+	authenticateAPITestRequest(req)
+	req.Header.Set("Idempotency-Key", testIdempotencyKey(t, "idem-model-cancel", time.Now()))
 
 	res := httptest.NewRecorder()
 	done := make(chan struct{})
@@ -923,10 +1031,8 @@ func TestServerCreateRunPersistsAutonomousApprovalsOverride(t *testing.T) {
 	runID := seedRunViaAPI(t, handler, withCreateRunBody(map[string]any{"autonomous_approvals": false}))
 
 	res := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/runs/" + runID,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/runs/" + runID,
 	})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected run 200, got %d (%s)", res.Code, res.Body.String())
@@ -952,7 +1058,26 @@ func TestServerCreateRunPersistsAutonomousApprovalsOverride(t *testing.T) {
 func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 	t.Parallel()
 
-	handler, _ := newAPIServerForTest(t)
+	handler, db := newAPIServerForTest(t)
+	seedAPIDecreeLineage(t, db)
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "conn-present", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-present", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-present"}); err != nil {
+		t.Fatal(err)
+	}
+	for i, suffix := range []string{"a", "b"} {
+		issueNumber := i + 7
+		snapshot, _, err := store.CaptureIssue(ctx, state.CaptureExternalIssueRequest{
+			SourceID: "source-" + suffix, SnapshotID: "snapshot-" + suffix, ConnectionID: "conn-present", ProviderNativeID: "issue-" + suffix, RepositoryNativeID: "repo-" + suffix,
+			Issue:             state.NormalizedExternalIssue{Title: "Issue " + suffix, Body: "body", State: "open", Repository: "owner/repo-" + suffix, IssueNumber: issueNumber, CanonicalURL: fmt.Sprintf("https://github.com/owner/repo-%s/issues/%d", suffix, issueNumber), CreatedAt: at, UpdatedAt: at},
+			ProviderUpdatedAt: at, FetchedAt: at,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mustExecSQL(t, db, `INSERT INTO planning_operation_external_snapshots (operation_id,snapshot_id,assembler_version,context_digest,issue_bytes,comment_bytes,bound_at) VALUES ('operation-good',?,?,?,0,0,?)`, snapshot.SnapshotID, state.ExternalAssemblerVersion, strings.Repeat("0", 64), at)
+	}
 	createRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodPost,
 		path:   "/api/v1/decrees",
@@ -960,13 +1085,16 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 			"decree_title": "Planner lineage decree",
 			"decree_text":  "Issue from selected planner draft",
 			"metadata": map[string]any{
-				"planning_session_id":          "planning-session-1",
-				"planning_draft_id":            "planning-draft-1",
-				"planning_context_snapshot_id": "planning-context-1",
+				"priority":                     "high",
+				"planning_session_id":          "untrusted-session",
+				"planning_draft_id":            "untrusted-draft",
+				"planning_context_snapshot_id": "untrusted-context",
+			},
+			"planning_lineage": map[string]any{
+				"planning_session_id": "session-a",
+				"planning_draft_id":   "draft-a",
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-decree-lineage",
 	})
 	if createRes.Code != http.StatusCreated {
@@ -979,10 +1107,8 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 	}
 
 	getRes := performJSONRequest(t, handler, requestSpec{
-		method:  http.MethodGet,
-		path:    "/api/v1/decrees/" + created.DecreeId,
-		actorID: "actor-1",
-		roleID:  "chancellor",
+		method: http.MethodGet,
+		path:   "/api/v1/decrees/" + created.DecreeId,
 	})
 	if getRes.Code != http.StatusOK {
 		t.Fatalf("expected get decree 200, got %d (%s)", getRes.Code, getRes.Body.String())
@@ -996,7 +1122,37 @@ func TestServerDecreeMetadataLineageSurvivesCreation(t *testing.T) {
 		t.Fatal("expected decree metadata to be present")
 	}
 	metadata := *decree.Metadata
-	if metadata["planning_session_id"] != "planning-session-1" || metadata["planning_draft_id"] != "planning-draft-1" || metadata["planning_context_snapshot_id"] != "planning-context-1" {
+	if metadata["priority"] != "high" || metadata["planning_session_id"] != "session-a" || metadata["planning_draft_id"] != "draft-a" || metadata["planning_context_snapshot_id"] != "context-a" {
 		t.Fatalf("expected planner lineage metadata to survive, got %#v", metadata)
+	}
+	if len(decree.ExternalSources) != 2 {
+		t.Fatalf("expected both formalize-bound sources, got %#v", decree.ExternalSources)
+	}
+	snapshots := map[string]bool{}
+	for _, source := range decree.ExternalSources {
+		snapshots[source.UsedSnapshotId] = true
+	}
+	if !snapshots["snapshot-a"] || !snapshots["snapshot-b"] {
+		t.Fatalf("decree detail hid formalize provenance: %#v", decree.ExternalSources)
+	}
+	if strings.Contains(getRes.Body.String(), `"external_source":`) {
+		t.Fatalf("decree detail retained dead singular provenance: %s", getRes.Body.String())
+	}
+}
+
+func seedAPIDecreeLineage(t *testing.T, db *sql.DB) {
+	t.Helper()
+	at := "2026-08-12T10:00:00Z"
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		mustExecSQL(t, db, `INSERT INTO planning_sessions (planning_session_id,title,title_state,lifecycle_state,conversation_state,project_root,model_selection_json,created_at,updated_at) VALUES (?,?,'custom','active','ready','/tmp','{}',?,?)`, sessionID, sessionID, at, at)
+	}
+	for _, draft := range []struct{ id, session string }{{"draft-a", "session-a"}, {"draft-b", "session-b"}, {"draft-failed", "session-a"}, {"draft-reply", "session-a"}, {"draft-unbound", "session-a"}} {
+		mustExecSQL(t, db, `INSERT INTO planning_drafts (planning_draft_id,planning_session_id,decree_title,decree_text,summary_json,created_at) VALUES (?,?,?,?,'{}',?)`, draft.id, draft.session, draft.id, "text", at)
+	}
+	for _, contextSnapshot := range []struct{ id, session string }{{"context-a", "session-a"}, {"context-b", "session-b"}} {
+		mustExecSQL(t, db, `INSERT INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES (?,?,?,'[]','[]',?)`, contextSnapshot.id, contextSnapshot.session, "context", at)
+	}
+	for _, operation := range []struct{ id, kind, status, result, context string }{{"operation-good", "formalize", "succeeded", "draft-a", "context-a"}, {"operation-failed", "formalize", "failed", "draft-failed", "context-a"}, {"operation-reply", "reply", "succeeded", "draft-reply", "context-a"}, {"operation-unbound", "formalize", "succeeded", "draft-unbound", ""}} {
+		mustExecSQL(t, db, `INSERT INTO planning_operations (operation_id,acp_run_id,planning_session_id,planning_context_snapshot_id,type,status,request_payload_json,lease_owner,lease_version,observed_output_text,result_ref,created_at) VALUES (?,?, 'session-a',NULLIF(?,''),?,?, '{}','',0,'',?,?)`, operation.id, operation.id, operation.context, operation.kind, operation.status, operation.result, at)
 	}
 }

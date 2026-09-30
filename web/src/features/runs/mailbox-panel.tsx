@@ -3,13 +3,11 @@ import { Card, CardContent } from "@/components/ui/card";
 import { SelectField } from "@/components/ui/select-field";
 import { Badge } from "@/components/ui/badge";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
   MODAL_BODY_TEXT_CLASS,
+  Modal,
   ModalContentCard,
   MODAL_SUPPORTING_TEXT_CLASS,
-  ModalShell,
-  modalShellSizeClass,
 } from "@/components/ui/modal-shell";
 import { cn, formatTimestamp } from "@/lib/utils";
 import { ArrowDownRight, ArrowUpRight, Gavel, Reply, Send } from "lucide-react";
@@ -209,16 +207,17 @@ function MessageDetailModal({ detail, onClose }: { detail: MailboxMessageDetail 
   const description = `${communicationLabel(detail.communication_type)} from ${agentDisplayName(detail.from_agent_name, detail.from_agent_id)}`;
 
   return (
-    <ModalDialog
+    <Modal
       open
       onClose={onClose}
-      ariaLabel="Message detail"
-      panelClassName={cn("w-full", modalShellSizeClass("lg"))}
+      size="lg"
+      height="workbench"
+      title="Message Detail"
+      caption="Mailbox"
+      description={description}
     >
-			<ModalShell title="Message Detail" caption="Mailbox" description={description} onClose={onClose}>
 	        <MessageDetailView detail={detail} />
-			</ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }
 

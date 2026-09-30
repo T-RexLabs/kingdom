@@ -1,76 +1,62 @@
 import { Card, CardContent } from "@/components/ui/card";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { Link, useNavigate } from "@tanstack/react-router";
 import { ArrowRight, Scroll, Sparkles } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { ThinkingEffortField } from "./thinking-effort-field";
 import { normalizeThinkingEffortSelection } from "./provider-model-selection";
 import { useCreatePlanningSessionNavigation } from "./use-create-planning-session-navigation";
-import { ProviderModelCatalogNotice, useProviderModelCatalogController } from "./provider-model-catalog-state";
+import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
+import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 
 const preloadPlanningSessionPage = () => import("@/features/decrees/planning-session-page");
 
 export function PlanningSessionIndexPage() {
   const [model, setModel] = useState("");
   const [thinkingEffort, setThinkingEffort] = useState("");
-	const providerModelCatalogController = useProviderModelCatalogController();
-	const providerModelCatalog = providerModelCatalogController.state;
+  const providerModelCatalogController = useProviderModelCatalogController();
+  const providerModelCatalog = providerModelCatalogController.state;
   const createPlanningSession = useCreatePlanningSessionNavigation();
   const navigate = useNavigate();
   const selectedModel = useMemo(
     () => providerModelCatalog.items.find((item) => item.id === model),
     [model, providerModelCatalog.items]
   );
+  const normalizedThinkingEffort = model.trim()
+    ? normalizeThinkingEffortSelection(selectedModel, thinkingEffort, { preserveWhenModelMissing: true })
+    : thinkingEffort;
   const recoveryPending = createPlanningSession.hasRecovery;
-	const currentRequest = useMemo(() => (
-		model.trim()
-			? {
-				model_selection: {
-					model: model.trim(),
-					...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-				},
-			}
-			: {}
-	), [model, thinkingEffort]);
-	const recoveryMatchesCurrentForm = createPlanningSession.canRecoverWith(currentRequest);
+  const currentRequest = useMemo(
+    () =>
+      model.trim()
+        ? {
+            model_selection: {
+              model: model.trim(),
+              ...(normalizedThinkingEffort.trim()
+                ? { thinking_effort: normalizedThinkingEffort.trim() }
+                : {}),
+            },
+          }
+        : {},
+    [model, normalizedThinkingEffort]
+  );
 
-  useEffect(() => {
-    if (!model.trim()) return;
-    setThinkingEffort((current) =>
-      normalizeThinkingEffortSelection(selectedModel, current, { preserveWhenModelMissing: true })
-    );
-  }, [model, selectedModel]);
-
-	const handleCreateSession = async () => {
-		try {
-			void preloadPlanningSessionPage();
-			const session = await createPlanningSession.mutateAsync(currentRequest);
-		setModel("");
-		setThinkingEffort("");
-		await navigate({
+  const startSession = async (create: () => Promise<{ planning_session_id: string }>) => {
+    try {
+      void preloadPlanningSessionPage();
+      const session = await create();
+      setModel("");
+      setThinkingEffort("");
+      await navigate({
         to: "/decrees/planning/$sessionId",
         params: { sessionId: session.planning_session_id },
       });
-		} catch {
-			// surfaced through the inline error state
-		}
-	};
-
-	const handleRetryRecovery = async () => {
-		try {
-			void preloadPlanningSessionPage();
-			const session = await createPlanningSession.retryRecovery();
-			setModel("");
-			setThinkingEffort("");
-			await navigate({
-				to: "/decrees/planning/$sessionId",
-				params: { sessionId: session.planning_session_id },
-			});
-		} catch {
-			// surfaced through the inline error state
-		}
-	};
+    } catch {
+      // surfaced through the inline error state
+    }
+  };
 
   return (
     <Card className="h-full border-border/80">
@@ -92,17 +78,17 @@ export function PlanningSessionIndexPage() {
               <div className="w-full">
                 <ProviderModelCatalogNotice
                   state={providerModelCatalog}
-					onRetry={providerModelCatalogController.retry}
-					retryPending={providerModelCatalogController.retryPending}
+                  onRetry={providerModelCatalogController.retry}
+                  retryPending={providerModelCatalogController.retryPending}
                 />
               </div>
-              <div className="w-[280px]">
+              <div className="w-full sm:w-[280px]">
                 <ModelSelectField
                   id="planning-session-model"
                   label="Planner Model"
                   value={model}
-					loading={providerModelCatalog.isLoading}
-                  disabled={providerModelCatalog.disableSelection}
+                  loading={providerModelCatalog.isLoading}
+                  disabled={providerModelCatalog.disableSelection || recoveryPending}
                   options={providerModelCatalog.items}
                   triggerPlaceholder={providerModelCatalog.triggerPlaceholder}
                   emptyStateLabel={providerModelCatalog.emptyStateLabel}
@@ -115,33 +101,26 @@ export function PlanningSessionIndexPage() {
                   }}
                 />
               </div>
-              <div className="w-[240px]">
+              <div className="w-full sm:w-[240px]">
                 <ThinkingEffortField
                   id="planning-session-thinking-effort"
                   label="Thinking Effort"
-                  value={thinkingEffort}
+                  value={normalizedThinkingEffort}
                   model={selectedModel}
-                  disabled={providerModelCatalog.disableSelection}
+                  disabled={providerModelCatalog.disableSelection || recoveryPending}
                   onChange={setThinkingEffort}
                 />
               </div>
             </div>
 
-			{createPlanningSession.error ? (
-				recoveryPending ? (
-					<div className="mt-3 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed">
-						<p>
-							{recoveryMatchesCurrentForm
-								? "Kingdom may have accepted this planner request before the connection failed. Starting again will reuse the same request and idempotency key so Kingdom can recover without creating duplicate sessions."
-								: "Kingdom may have accepted an earlier planner request before the connection failed. Your current form will start a fresh request; use recovery only if you want to retry the earlier submission exactly as it was sent."}
-						</p>
-						<p className="mt-1 text-status-failed/90">{createPlanningSession.error.message}</p>
-						<div className="mt-3 flex flex-wrap gap-2">
-							<Button type="button" size="sm" onClick={() => void handleRetryRecovery()} disabled={createPlanningSession.isPending}>
-								{createPlanningSession.isPending ? "Retrying..." : "Retry Previous Request"}
-							</Button>
-							<Button type="button" size="sm" variant="outline" onClick={createPlanningSession.discardRecovery} disabled={createPlanningSession.isPending}>
-								Discard Recovery
+            {createPlanningSession.error ? (
+              recoveryPending ? (
+                <div className="mt-3 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed">
+                  <p>Kingdom may have accepted this planner request. Retry sends the exact same request and idempotency key so recovery cannot create a duplicate session.</p>
+                  <p className="mt-1 text-status-failed/90">{createPlanningSession.error.message}</p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <Button type="button" size="sm" onClick={() => void startSession(() => createPlanningSession.retryRecovery())} disabled={createPlanningSession.isPending}>
+                      {createPlanningSession.isPending ? "Retrying..." : "Retry Planner Session"}
                     </Button>
                   </div>
                 </div>
@@ -153,14 +132,14 @@ export function PlanningSessionIndexPage() {
             ) : null}
 
             <div className="mt-4 flex flex-wrap gap-3 border-t border-border/60 pt-4">
-				<Button
-					type="button"
-					onClick={() => void handleCreateSession()}
-					disabled={createPlanningSession.isPending}
-				>
-					<Sparkles className="h-3.5 w-3.5" />
-					{createPlanningSession.isPending ? "Starting..." : "Start Planner Session"}
-				</Button>
+              <Button
+                type="button"
+                onClick={() => void startSession(() => createPlanningSession.mutateAsync(currentRequest))}
+                disabled={createPlanningSession.isPending || recoveryPending}
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                {createPlanningSession.isPending ? "Starting..." : "Start Planner Session"}
+              </Button>
               <Link to="/decrees/new" className={buttonVariants({ variant: "outline" })}>
                 <Scroll className="h-3.5 w-3.5" />
                 Issue Decree Directly

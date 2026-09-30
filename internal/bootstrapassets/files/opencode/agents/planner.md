@@ -11,6 +11,7 @@ tools:
   task: false
   todowrite: false
   todoread: false
+  kingdom_complete_attempt: false
 permission:
   edit:
     "*": deny

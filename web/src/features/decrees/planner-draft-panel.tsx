@@ -1,32 +1,30 @@
 import { Link } from "@tanstack/react-router";
 import { ArrowRight } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
   MODAL_BODY_TEXT_CLASS,
   MODAL_SUPPORTING_TEXT_CLASS,
+  Modal,
   ModalContentCard,
-  ModalShell,
-  modalShellSizeClass,
+  ModalFooter,
 } from "@/components/ui/modal-shell";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Spinner } from "@/components/ui/spinner";
 import type { PlanningDraft } from "@/api/hooks";
+import type { components } from "@/api/schema";
 import { isPlannerOperationTerminal, type PlannerOperationState } from "./planner-operation-controller";
 import { useTextReveal } from "@/lib/use-text-reveal";
 
 export function PlanResultModal({
   open,
   draft,
-  sessionId,
-  contextSnapshotId,
+  planningLineage,
   operation,
   onClose,
 }: {
   open: boolean;
   draft: PlanningDraft | null;
-  sessionId: string;
-  contextSnapshotId?: string;
+  planningLineage?: components["schemas"]["PlanningLineage"];
   operation: PlannerOperationState | null;
   onClose: () => void;
 }) {
@@ -37,37 +35,33 @@ export function PlanResultModal({
   if (!open) return null;
 
   return (
-    <ModalDialog
+    <Modal
       open={open}
       onClose={onClose}
-      ariaLabel="Generated plan"
-      panelClassName={`w-full ${modalShellSizeClass("lg")}`}
-    >
-			<ModalShell
-				title={draft?.decree_title ?? (isGenerating ? "Generating plan" : "Plan result")}
-				caption="Generated Plan"
-				onClose={onClose}
-				footer={(
-					<div className="flex items-center justify-end gap-3">
+      size="lg"
+      title={draft?.decree_title ?? (isGenerating ? "Generating plan" : "Plan result")}
+      caption="Generated Plan"
+      footer={(
+					<ModalFooter>
 						<Button variant="ghost" onClick={onClose}>
 							Close
 						</Button>
-						<Link
-							to="/decrees/new"
-							search={{
-								planning_session_id: sessionId,
-								planning_draft_id: draft?.planning_draft_id ?? "",
-								...(contextSnapshotId ? { planning_context_snapshot_id: contextSnapshotId } : {}),
-							}}
-						>
-							<Button disabled={!draft}>
+						{draft && planningLineage ? (
+							<Link to="/decrees/new" search={planningLineage}>
+								<Button>
+									Issue Decree from Plan
+									<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
+								</Button>
+							</Link>
+						) : (
+							<Button disabled>
 								Issue Decree from Plan
 								<ArrowRight className="ml-1.5 h-3.5 w-3.5" />
 							</Button>
-						</Link>
-					</div>
-				)}
-			>
+						)}
+					</ModalFooter>
+      )}
+    >
 	          <ModalContentCard data-testid="plan-result-card">
 	            {generationError ? (
 	              <div className="rounded-lg border border-status-failed/30 bg-status-failed/10 p-4 text-sm text-status-failed">
@@ -99,7 +93,6 @@ export function PlanResultModal({
 	              <MarkdownBlock content={draft.decree_text} className={MODAL_BODY_TEXT_CLASS} />
 	            ) : null}
 	          </ModalContentCard>
-			</ModalShell>
-    </ModalDialog>
+    </Modal>
   );
 }

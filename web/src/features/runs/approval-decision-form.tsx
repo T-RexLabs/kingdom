@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { CheckCircle2, RotateCcw, Shield } from "lucide-react";
 import { runStatusBannerClass } from "./run-detail-tones";
 
-type ApprovalAction = "confirm" | "rework";
+export type ApprovalAction = "confirm" | "rework";
 
 interface ApprovalDecisionFormProps {
   description: string;
@@ -17,6 +17,7 @@ interface ApprovalDecisionFormProps {
   reworkValidationMessage: string;
   errorMessage?: string | null;
   disabled?: boolean;
+  recoveryAction?: ApprovalAction | null;
   onConfirm: (notes: string) => Promise<void>;
   onRequestRework: (notes: string) => Promise<void>;
 }
@@ -33,6 +34,7 @@ export function ApprovalDecisionForm({
   reworkValidationMessage,
   errorMessage,
   disabled = false,
+  recoveryAction = null,
   onConfirm,
   onRequestRework,
 }: ApprovalDecisionFormProps) {
@@ -89,6 +91,7 @@ export function ApprovalDecisionForm({
           }}
           rows={3}
           placeholder={notesPlaceholder}
+          disabled={disabled || recoveryAction !== null}
           className="w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-subtle focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold resize-none"
         />
         {notesHint && (
@@ -112,7 +115,7 @@ export function ApprovalDecisionForm({
         <Button
           type="button"
           size="sm"
-          disabled={disabled || pendingAction !== null}
+          disabled={disabled || pendingAction !== null || (recoveryAction !== null && recoveryAction !== "confirm")}
           onClick={() => {
             void submit("confirm");
           }}
@@ -124,13 +127,13 @@ export function ApprovalDecisionForm({
           )}
           {pendingAction === "confirm"
             ? (confirmPendingLabel ?? "Submitting...")
-            : confirmLabel}
+            : recoveryAction === "confirm" ? `Retry ${confirmLabel}` : confirmLabel}
         </Button>
         <Button
           type="button"
           size="sm"
           variant="outline"
-          disabled={disabled || pendingAction !== null}
+          disabled={disabled || pendingAction !== null || (recoveryAction !== null && recoveryAction !== "rework")}
           onClick={() => {
             void submit("rework");
           }}
@@ -142,7 +145,7 @@ export function ApprovalDecisionForm({
           )}
           {pendingAction === "rework"
             ? (reworkPendingLabel ?? "Submitting...")
-            : reworkLabel}
+            : recoveryAction === "rework" ? `Retry ${reworkLabel}` : reworkLabel}
         </Button>
       </div>
     </div>

@@ -74,12 +74,12 @@ describe("planning session list", () => {
     render(<PlanningSessionList />);
 
     await user.click(screen.getByRole("button", { name: "Delete Session two" }));
-    expect(screen.getByRole("dialog", { name: "Delete planning session" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Session two" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Delete Session" }));
 
     expect(deleteMutate).toHaveBeenCalledWith({
       value: "session-2",
-      key: "planning-delete-test",
+      key: expect.stringMatching(/^kd1\./),
     });
     expect(navigate).toHaveBeenCalledWith({ to: "/decrees/planning" });
   });
@@ -95,7 +95,7 @@ describe("planning session list", () => {
 		await user.click(screen.getByRole("button", { name: "Delete Session two" }));
 		await user.click(screen.getByRole("button", { name: "Delete Session" }));
 
-		await waitFor(() => expect(screen.getByRole("dialog", { name: "Delete planning session" })).toBeInTheDocument());
+		await waitFor(() => expect(screen.getByRole("dialog", { name: "Session two" })).toBeInTheDocument());
 		expect(navigate).not.toHaveBeenCalled();
 	});
 

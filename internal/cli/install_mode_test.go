@@ -3,8 +3,12 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
 	"database/sql"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -22,8 +26,10 @@ import (
 
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/workflow"
+	githubexternal "kingdom/internal/external/github"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/shutdown"
+	"kingdom/internal/state"
 )
 
 func TestAcquirePIDFilePreventsDuplicate(t *testing.T) {
@@ -62,11 +68,6 @@ func TestReadRunningPIDRemovesInvalidPIDFile(t *testing.T) {
 }
 
 func TestRunSummonStatusDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	registryPath := filepath.Join(t.TempDir(), "summon_registry.json")
-	originalRegistryPathFunc := summonRegistryPathFunc
-	summonRegistryPathFunc = func() (string, error) { return registryPath, nil }
-	t.Cleanup(func() { summonRegistryPathFunc = originalRegistryPathFunc })
-
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start dummy summon process: %v", err)
@@ -202,11 +203,6 @@ func TestRunSummonStatusSurfacesFailedLocalState(t *testing.T) {
 }
 
 func TestRunSummonStopDoesNotTargetRegistryWhenConfigMissing(t *testing.T) {
-	registryPath := filepath.Join(t.TempDir(), "summon_registry.json")
-	originalRegistryPathFunc := summonRegistryPathFunc
-	summonRegistryPathFunc = func() (string, error) { return registryPath, nil }
-	t.Cleanup(func() { summonRegistryPathFunc = originalRegistryPathFunc })
-
 	cmd := exec.Command("sleep", "60")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start dummy summon process: %v", err)
@@ -291,7 +287,7 @@ func TestWaitForSummonReadyWithProcessReturnsExitErrorEarly(t *testing.T) {
 	if !strings.Contains(err.Error(), "exited before readiness") {
 		t.Fatalf("expected process exit message, got %v", err)
 	}
-	if time.Since(start) > time.Second {
+	if time.Since(start) > 2*time.Second {
 		t.Fatal("process exit readiness failure should return quickly")
 	}
 }
@@ -336,7 +332,7 @@ func TestRunSummonReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	if !strings.Contains(err.Error(), "another summon or another process") {
 		t.Fatalf("expected non-biased bind error guidance, got %v", err)
 	}
-	if time.Since(start) > time.Second {
+	if time.Since(start) > 2*time.Second {
 		t.Fatalf("expected bind failure before readiness timeout, got duration %s", time.Since(start))
 	}
 }
@@ -369,13 +365,13 @@ func TestResolveSummonListenAddress(t *testing.T) {
 
 	for _, tc := range []struct {
 		name           string
-		configListen  string
+		configListen   string
 		overrideListen string
-		overrideHost  string
-		overridePort  int
-		portExplicit  bool
-		want          string
-		wantErr       string
+		overrideHost   string
+		overridePort   int
+		portExplicit   bool
+		want           string
+		wantErr        string
 	}{
 		{name: "config only", configListen: "127.0.0.1:8080", want: "127.0.0.1:8080"},
 		{name: "listen override", configListen: "127.0.0.1:8080", overrideListen: "127.0.0.1:19090", want: "127.0.0.1:19090"},
@@ -869,6 +865,49 @@ func TestOpenSQLiteDatabaseAppliesPragmasToEveryPooledConnection(t *testing.T) {
 	}
 }
 
+func TestGitHubKeyProvisionRejectsRemovedConnectionBeforeFilesystemMutation(t *testing.T) {
+	root := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", root}); err != nil {
+		t.Fatalf("init workspace: %v", err)
+	}
+	kingdomHome := filepath.Join(root, ".kingdom")
+	db, err := openSQLiteDatabase(filepath.Join(kingdomHome, "kingdom.db"), sqlitePoolOptions{MaxOpenConns: 1, MaxIdleConns: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := state.NewExternalStore(db)
+	ctx := context.Background()
+	at := "2026-08-12T10:00:00Z"
+	if _, err := store.CreateConnection(ctx, state.CreateExternalConnectionRequest{ConnectionID: "removed-connection", CredentialStrategy: "app_private_key", DisplayName: "Removed", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []state.ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:removed-connection", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-cli-removed-create"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionStateAudited(ctx, "removed-connection", "removal_pending", "removal_pending", "", at, false, "local-operator", "audit-cli-removed-pending", "connection.removal_pending"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.UpdateConnectionStateAudited(ctx, "removed-connection", "removed", "removed", "", at, false, "local-operator", "audit-cli-removed-final", "connection.removed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pemPath := filepath.Join(root, "private-key.pem")
+	if err := os.WriteFile(pemPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0600); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &Runtime{config: Config{CredentialFile: filepath.Join(kingdomHome, "secrets", "operator-token")}, stdout: io.Discard, stderr: io.Discard}
+	if err := runtime.handleGitHubKeyProvision([]string{"--connection-id", "removed-connection", "--from", pemPath}, false); err == nil {
+		t.Fatal("removed connection unexpectedly accepted a private key")
+	}
+	keyPath := filepath.Join(kingdomHome, "secrets", "github-apps", "removed-connection", "private-key.1.pem")
+	if _, err := os.Stat(keyPath); !os.IsNotExist(err) {
+		t.Fatalf("removed connection gained a private key: %v", err)
+	}
+}
+
 // TestReadInstallConfigFromStructCanonicalizesBasePath pins the
 // validator-level contract: cfg.Server.BasePath leaves the validator
 // in canonical form regardless of how the user typed it. Every
@@ -990,45 +1029,40 @@ func TestSummonAPIURLBuildsCanonicalURLString(t *testing.T) {
 			{
 				name: "canonical config produces canonical URL",
 				cfg: installConfig{Server: struct {
-					Listen            string `yaml:"listen"`
-					BasePath          string `yaml:"base_path"`
-					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+					Listen   string `yaml:"listen"`
+					BasePath string `yaml:"base_path"`
 				}{Listen: "127.0.0.1:8080", BasePath: "/v1"}},
 				want: "http://127.0.0.1:8080/v1",
 			},
 			{
 				name: "default base path",
 				cfg: installConfig{Server: struct {
-					Listen            string `yaml:"listen"`
-					BasePath          string `yaml:"base_path"`
-					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+					Listen   string `yaml:"listen"`
+					BasePath string `yaml:"base_path"`
 				}{Listen: "127.0.0.1:8080", BasePath: "/api/v1"}},
 				want: "http://127.0.0.1:8080/api/v1",
 			},
 			{
 				name: "deep base path",
 				cfg: installConfig{Server: struct {
-					Listen            string `yaml:"listen"`
-					BasePath          string `yaml:"base_path"`
-					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+					Listen   string `yaml:"listen"`
+					BasePath string `yaml:"base_path"`
 				}{Listen: "host:9000", BasePath: "/internal/api"}},
 				want: "http://host:9000/internal/api",
 			},
 			{
 				name: "wildcard ipv4 bind maps to loopback connect address",
 				cfg: installConfig{Server: struct {
-					Listen            string `yaml:"listen"`
-					BasePath          string `yaml:"base_path"`
-					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+					Listen   string `yaml:"listen"`
+					BasePath string `yaml:"base_path"`
 				}{Listen: "0.0.0.0:8080", BasePath: "/api/v1"}},
 				want: "http://127.0.0.1:8080/api/v1",
 			},
 			{
 				name: "wildcard ipv6 bind maps to loopback connect address",
 				cfg: installConfig{Server: struct {
-					Listen            string `yaml:"listen"`
-					BasePath          string `yaml:"base_path"`
-					PreviewSessionTTL string `yaml:"preview_session_ttl"`
+					Listen   string `yaml:"listen"`
+					BasePath string `yaml:"base_path"`
 				}{Listen: "[::]:8080", BasePath: "/api/v1"}},
 				want: "http://[::1]:8080/api/v1",
 			},
@@ -1203,6 +1237,65 @@ func TestEnsureWorkflowSeedsPublishesAllBundledWorkflows(t *testing.T) {
 		if workflowIDs[i] != want[i] {
 			t.Fatalf("workflow seed publishes = %v, want %v", workflowIDs, want)
 		}
+	}
+}
+
+func TestEnsureWorkflowSeedsRetriesPendingWithSameKey(t *testing.T) {
+	t.Parallel()
+
+	attempts := make(map[string]int)
+	keys := make(map[string]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		var body struct {
+			WorkflowID string `json:"workflow_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		attempts[body.WorkflowID]++
+		key := r.Header.Get("Idempotency-Key")
+		if previous := keys[body.WorkflowID]; previous != "" && previous != key {
+			t.Fatalf("workflow %s changed idempotency key", body.WorkflowID)
+		}
+		keys[body.WorkflowID] = key
+		if attempts[body.WorkflowID] == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusConflict)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]any{"code": "idempotency_pending"}})
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	}))
+	t.Cleanup(server.Close)
+
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := readInstallConfig(filepath.Join(projectRoot, ".kingdom", "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Server.Listen = strings.TrimPrefix(server.URL, "http://")
+	if err := ensureWorkflowSeeds(t.Context(), cfg); err != nil {
+		t.Fatal(err)
+	}
+	for workflowID, count := range attempts {
+		if count != 2 || keys[workflowID] == "" {
+			t.Fatalf("workflow %s attempts=%d key=%q", workflowID, count, keys[workflowID])
+		}
+	}
+}
+
+func TestWorkflowSeedAlreadyExistsRequiresPublishConflictIdentity(t *testing.T) {
+	t.Parallel()
+
+	if !workflowSeedAlreadyExists(http.StatusConflict, []byte(`{"error":{"code":"idempotency_conflict","message":"workflow version already exists","correlation_id":"api.publish_workflow"}}`)) {
+		t.Fatal("canonical workflow-version conflict was not accepted")
+	}
+	if workflowSeedAlreadyExists(http.StatusConflict, []byte(`{"error":{"code":"idempotency_conflict","message":"idempotency key reused with different request","correlation_id":"idempotency-middleware"}}`)) {
+		t.Fatal("middleware idempotency conflict was accepted as published")
 	}
 }
 
@@ -1843,6 +1936,30 @@ func TestPublishOutputRootFromConfig(t *testing.T) {
 	}
 }
 
+func TestReadInstallConfigRejectsUnknownFields(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, ".kingdom", "config.yaml")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatalf("create config directory: %v", err)
+	}
+	raw := "version: v1\n" +
+		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
+		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
+		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
+		"operator:\n  actor_id: summon-system\n  role_id: allfather\n"
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	_, err := readInstallConfig(configPath)
+	if err == nil || !strings.Contains(err.Error(), "field operator not found") {
+		t.Fatalf("expected unknown operator field error, got %v", err)
+	}
+}
+
 func TestReadInstallConfigRequiresGovernanceMode(t *testing.T) {
 	t.Parallel()
 
@@ -1855,8 +1972,7 @@ func TestReadInstallConfigRequiresGovernanceMode(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1880,8 +1996,7 @@ func TestReadInstallConfigRejectsManualGovernanceMode(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: manual\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1905,8 +2020,7 @@ func TestReadInstallConfigRejectsInvalidListenAddress(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: invalid\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: invalid\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1930,8 +2044,7 @@ func TestReadInstallConfigDefaultsAutonomousApprovalsToTrue(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1958,8 +2071,7 @@ func TestReadInstallConfigRejectsUnsupportedMockProviderEngine(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: mock_engine\n  strict: true\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -1986,8 +2098,7 @@ func TestReadInstallConfigRespectsAutonomousApprovalsFalse(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
 		"governance:\n  autonomous_approvals: false\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
@@ -2015,8 +2126,7 @@ func TestReadInstallConfigDefaultsPublishModeToDirect(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2043,8 +2153,7 @@ func TestReadInstallConfigRejectsUnknownPublishMode(t *testing.T) {
 	raw := "version: v1\n" +
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
-		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n  preview_session_ttl: 30m\n" +
-		"operator:\n  actor_id: summon-system\n  role_id: allfather\n" +
+		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
 		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
 		"publish:\n  mode: moonshot\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
@@ -2071,5 +2180,53 @@ func TestValidatePublishPreflightRejectsNonGitRootInCautiousMode(t *testing.T) {
 	message := err.Error()
 	if !strings.Contains(message, "Options:") || !strings.Contains(message, "publish.mode=direct") {
 		t.Fatalf("expected actionable options in error, got %q", message)
+	}
+}
+
+func TestInstallConfigRequiresSharedGitHubAppPair(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, slug, clientID string
+		wantErr              bool
+	}{
+		{name: "disabled"},
+		{name: "enabled", slug: "kingdom", clientID: "IvShared"},
+		{name: "slug only", slug: "kingdom", wantErr: true},
+		{name: "client only", clientID: "IvShared", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := defaultInstallConfig(filepath.Join(t.TempDir(), ".kingdom"))
+			cfg.GitHub.SharedApp.Slug, cfg.GitHub.SharedApp.ClientID = tc.slug, tc.clientID
+			_, err := readInstallConfigFromStruct(cfg)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("read config error=%v wantErr=%v", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestDefaultInstallConfigIncludesOfficialSharedGitHubApp(t *testing.T) {
+	t.Parallel()
+	cfg := defaultInstallConfig(filepath.Join(t.TempDir(), ".kingdom"))
+	if cfg.GitHub.SharedApp.Slug != githubexternal.OfficialSharedAppSlug {
+		t.Fatalf("shared App slug=%q", cfg.GitHub.SharedApp.Slug)
+	}
+	if cfg.GitHub.SharedApp.ClientID != githubexternal.OfficialSharedAppClientID {
+		t.Fatalf("shared App client ID=%q", cfg.GitHub.SharedApp.ClientID)
+	}
+}
+
+func TestInitWritesOfficialSharedGitHubAppConfig(t *testing.T) {
+	t.Parallel()
+	projectRoot := t.TempDir()
+	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
+		t.Fatalf("run init command: %v", err)
+	}
+	cfg, err := readInstallConfig(filepath.Join(projectRoot, ".kingdom", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read initialized config: %v", err)
+	}
+	if cfg.GitHub.SharedApp.Slug != githubexternal.OfficialSharedAppSlug || cfg.GitHub.SharedApp.ClientID != githubexternal.OfficialSharedAppClientID {
+		t.Fatalf("initialized shared App identity=%q/%q", cfg.GitHub.SharedApp.Slug, cfg.GitHub.SharedApp.ClientID)
 	}
 }

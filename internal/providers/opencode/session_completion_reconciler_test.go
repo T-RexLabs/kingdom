@@ -982,7 +982,7 @@ func test2MalformedReviewExportFixture(invocationID, laterInvocationID, recovere
 
 func test2MalformedReviewExportFixtureWithAttempts(currentAttemptID, invocationID, laterAttemptID, laterInvocationID, recoveredOutput string) string {
 	completedAt := defaultExportFixtureCompletedAt()
-	return fmt.Sprintf(`{"messages":[{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]},{"info":{"role":"assistant","finish":"tool-calls","time":{"completed":%d}},"parts":[{"type":"text","text":"running final review checks"},{"type":"tool_call","state":{"status":"completed"}}]},{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]},{"info":{"role":"assistant","finish":"stop","time":{"completed":%d}},"parts":[{"type":"text","text":%q},{"type":"tool_result","state":{"status":"completed"}}]},{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]}`,
+	return fmt.Sprintf(`{"messages":[{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]},{"info":{"role":"assistant","finish":"tool-calls","time":{"completed":%d}},"parts":[{"type":"text","text":"running final review checks"},{"type":"tool_call","state":{"status":"completed"}}]},{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]},{"info":{"role":"assistant","finish":"stop","time":{"completed":%d}},"parts":[{"type":"text","text":%q},{"type":"tool_result","state":{"status":"completed"}}]},{"info":{"role":"user"},"parts":[{"type":"text","text":%q}]},{"info":{"role":"assistant"`,
 		promptWithProviderInvocationMetadata("review invocation prompt", currentAttemptID, invocationID),
 		completedAt-60000,
 		promptWithProviderInvocationMetadata("continue and issue the final review verdict now", currentAttemptID, invocationID),

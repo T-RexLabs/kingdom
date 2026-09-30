@@ -3,10 +3,12 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	openapi_types "github.com/oapi-codegen/runtime/types"
 	gen "kingdom/internal/apigen"
@@ -16,7 +18,7 @@ import (
 )
 
 func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.create_planning_session"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.create_planning_session"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -76,7 +78,7 @@ func (s *Server) handleCreatePlanningSession(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_planning_sessions"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_planning_sessions"); !ok {
 		return
 	}
 	limit, err := parseLimitQuery(r.URL.Query().Get("limit"), 100)
@@ -102,7 +104,7 @@ func (s *Server) handleListPlanningSessions(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleGetPlanningSession(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_planning_session"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_planning_session"); !ok {
 		return
 	}
 	planningSessionID := strings.TrimSpace(r.PathValue("id"))
@@ -128,7 +130,7 @@ func (s *Server) handleGetPlanningSession(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.update_planning_session"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.update_planning_session"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -173,7 +175,7 @@ func (s *Server) handleUpdatePlanningSession(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) handleDeletePlanningSession(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.delete_planning_session"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.delete_planning_session"); !ok {
 		return
 	}
 	planningSessionID := strings.TrimSpace(r.PathValue("id"))
@@ -193,8 +195,57 @@ func (s *Server) handleDeletePlanningSession(w http.ResponseWriter, r *http.Requ
 	w.WriteHeader(http.StatusNoContent)
 }
 
+func (s *Server) handleAttachPlanningExternalSource(w http.ResponseWriter, r *http.Request) {
+	if _, _, ok := s.requirePrincipal(w, r, "api.attach_planning_external_source"); !ok {
+		return
+	}
+	planningSessionID := strings.TrimSpace(r.PathValue("id"))
+	if planningSessionID == "" {
+		s.writeBadRequest(w, "planning session id is required")
+		return
+	}
+	var req gen.ExternalIntake
+	if err := decodeStrictJSON(r, &req); err != nil {
+		s.writeBadRequest(w, err.Error())
+		return
+	}
+
+	// Provider I/O must finish before the short provenance transaction.
+	capture, err := s.fetchCapture(r, req)
+	if err != nil {
+		writeExternalError(w, err, "api.attach_planning_external_source")
+		return
+	}
+	at := s.now().UTC().Format(time.RFC3339Nano)
+	link, err := s.externalStore.AttachPlanningExternalSource(r.Context(), state.AttachPlanningExternalSourceRequest{
+		PlanningSessionID: planningSessionID,
+		Capture:           capture,
+		LinkID:            s.idGenerator("external_link"),
+		AdoptionID:        s.idGenerator("external_adoption"),
+		AuditEventID:      s.idGenerator("external_audit"),
+		ActorID:           authenticatedActorID(r.Context()),
+		AttachedAt:        at,
+	})
+	if err != nil {
+		switch {
+		case errors.Is(err, state.ErrExternalPlanningSessionNotFound):
+			writeCanonicalError(w, http.StatusNotFound, errorcatalog.CodeDependencyBlocked, "planning session not found", "api.attach_planning_external_source", map[string]any{"planning_session_id": planningSessionID})
+		case errors.Is(err, state.ErrExternalPlanningSessionInactive):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeDependencyBlocked, err.Error(), "api.attach_planning_external_source", map[string]any{"planning_session_id": planningSessionID})
+		case errors.Is(err, state.ErrExternalSourceAlreadyAttached):
+			writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), "api.attach_planning_external_source", map[string]any{"planning_session_id": planningSessionID})
+		case errors.Is(err, state.ErrExternalConflict):
+			writeExternalError(w, err, "api.attach_planning_external_source")
+		default:
+			s.writeInternalError(w, "attach planning external source failed")
+		}
+		return
+	}
+	writeJSON(w, http.StatusCreated, externalProvenanceFromState(link, true))
+}
+
 func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_planning_session_messages"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_planning_session_messages"); !ok {
 		return
 	}
 	planningSessionID := strings.TrimSpace(r.PathValue("id"))
@@ -272,7 +323,7 @@ func (s *Server) handleListPlanningSessionMessages(w http.ResponseWriter, r *htt
 }
 
 func (s *Server) handleGetPlanningSessionPlan(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_planning_session_plan"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_planning_session_plan"); !ok {
 		return
 	}
 	planningSessionID := strings.TrimSpace(r.PathValue("id"))
@@ -293,7 +344,7 @@ func (s *Server) handleGetPlanningSessionPlan(w http.ResponseWriter, r *http.Req
 }
 
 func (s *Server) handleActivatePlanningMessageVariant(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.activate_planning_message_variant"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.activate_planning_message_variant"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -324,7 +375,7 @@ func (s *Server) handleActivatePlanningMessageVariant(w http.ResponseWriter, r *
 }
 
 func (s *Server) handleListPlanningMessageVariants(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_planning_message_variants"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_planning_message_variants"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -390,7 +441,7 @@ func (s *Server) planningMessageRunIDs(ctx context.Context, planningSessionID st
 }
 
 func (s *Server) handleRefreshPlanningSessionContext(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.refresh_planning_session_context"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.refresh_planning_session_context"); !ok {
 		return
 	}
 	if s.planningService == nil {
@@ -438,7 +489,13 @@ func (s *Server) presentPlanningSessionDetail(ctx context.Context, session state
 	if err != nil {
 		return gen.PlanningSessionDetail{}, err
 	}
-	return planningSessionDetailFromState(session, autoTitleEligible, presentedRuns), nil
+	result := planningSessionDetailFromState(session, autoTitleEligible, presentedRuns)
+	links, linkErr := s.externalStore.GetLinksForTarget(ctx, "planning_session", session.PlanningSessionID)
+	if linkErr != nil {
+		return gen.PlanningSessionDetail{}, linkErr
+	}
+	result.ExternalSources = externalProvenanceListFromState(links, true)
+	return result, nil
 }
 
 func (s *Server) presentPlanningSessionRuns(ctx context.Context, session state.PlanningSession) (planningSessionPresentedRuns, error) {

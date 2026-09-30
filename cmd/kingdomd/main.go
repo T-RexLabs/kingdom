@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -20,6 +21,8 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/dbmigrations"
+	githubexternal "kingdom/internal/external/github"
+	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/shutdown"
@@ -59,17 +62,20 @@ func main() {
 // construction failure doesn't downgrade the exit code.
 func run() (exitCode int) {
 	var (
-		dbPath              string
-		listen              string
-		basePath            string
-		providerEngine      string
-		providerStrict      bool
-		governanceMode      string
-		autonomousApprovals bool
-		providerBinary      string
-		providerModel       string
-		providerAgent       string
-		providerAttach      string
+		dbPath               string
+		listen               string
+		basePath             string
+		providerEngine       string
+		providerStrict       bool
+		governanceMode       string
+		autonomousApprovals  bool
+		providerBinary       string
+		providerModel        string
+		providerAgent        string
+		providerAttach       string
+		credentialFile       string
+		githubSharedSlug     string
+		githubSharedClientID string
 	)
 
 	flag.StringVar(&dbPath, "db-path", "./.kingdom/kingdom.db", "sqlite database path")
@@ -83,24 +89,42 @@ func run() (exitCode int) {
 	flag.StringVar(&providerModel, "provider-model", envOrDefault("KINGDOM_PROVIDER_MODEL", ""), "optional model override for opencode")
 	flag.StringVar(&providerAgent, "provider-agent", envOrDefault("KINGDOM_PROVIDER_AGENT", ""), "optional agent override for opencode")
 	flag.StringVar(&providerAttach, "provider-attach-url", envOrDefault("KINGDOM_PROVIDER_ATTACH_URL", ""), "optional attach URL for opencode")
+	flag.StringVar(&credentialFile, "credential-file", "./.kingdom/secrets/operator-token", "local operator credential file")
+	flag.StringVar(&githubSharedSlug, "github-shared-app-slug", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_SLUG", githubexternal.OfficialSharedAppSlug), "public shared GitHub App slug (paired with client id)")
+	flag.StringVar(&githubSharedClientID, "github-shared-app-client-id", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_CLIENT_ID", githubexternal.OfficialSharedAppClientID), "public shared GitHub App client id (paired with slug)")
 	flag.Parse()
+	if (strings.TrimSpace(githubSharedSlug) == "") != (strings.TrimSpace(githubSharedClientID) == "") {
+		log.Printf("github shared app slug and client id must both be set or both be blank")
+		return exitFatalStartup
+	}
+	validatedBasePath, err := api.ValidateBasePath(basePath)
+	if err != nil {
+		log.Printf("invalid API base path: %v", err)
+		return exitFatalStartup
+	}
+	basePath = validatedBasePath
+	operatorCredential, err := localauth.ReadCredential(credentialFile)
+	if err != nil {
+		log.Printf("read operator credential: %v", err)
+		return exitFatalStartup
+	}
 
 	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
 		log.Printf("create database directory: %v", err)
 		return exitFatalStartup
 	}
 
-	db, err := sql.Open("sqlite", dbPath)
+	dsn, err := kingdomdSQLiteDSN(dbPath)
+	if err != nil {
+		log.Printf("resolve sqlite database path: %v", err)
+		return exitFatalStartup
+	}
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		log.Printf("open sqlite database: %v", err)
 		return exitFatalStartup
 	}
 	defer db.Close()
-
-	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
-		log.Printf("enable foreign keys: %v", err)
-		return exitFatalStartup
-	}
 
 	if err := ensureSchema(db); err != nil {
 		log.Printf("ensure schema: %v", err)
@@ -113,13 +137,15 @@ func run() (exitCode int) {
 		return exitFatalStartup
 	}
 
+	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
 	runtime, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
-		Paths:               kingdom.DefaultBootstrapPaths(repoRoot),
+		Paths:               bootstrapPaths,
 		ProviderEngine:      providerEngine,
 		ProviderStrict:      providerStrict,
 		GovernanceMode:      governanceMode,
 		AutonomousApprovals: &autonomousApprovals,
+		WorkspaceRoot:       filepath.Join(filepath.Dir(dbPath), "runtime"),
 		ProviderSession: opencode.SessionAdapterConfig{
 			BinaryPath: providerBinary,
 			WorkDir:    repoRoot,
@@ -136,7 +162,25 @@ func run() (exitCode int) {
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
+	apiServer, err := api.NewHandler(api.ServerConfig{
+		DB:                         db,
+		StartupContext:             ctx,
+		BasePath:                   basePath,
+		AutonomousApprovalsDefault: &autonomousApprovals,
+		OpenCodeBinaryPath:         providerBinary,
+		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
+		ProjectRoot:                repoRoot,
+		OperatorCredential:         operatorCredential,
+		GitHubSharedAppSlug:        githubSharedSlug,
+		GitHubSharedAppClientID:    githubSharedClientID,
+	})
+	if err != nil {
+		log.Printf("build api handler: %v", err)
+		return exitFatalStartup
+	}
 	if err := runtime.Start(ctx); err != nil {
+		_ = apiServer.Close(context.Background())
 		log.Printf("start runtime: %v", err)
 		return exitFatalStartup
 	}
@@ -145,18 +189,6 @@ func run() (exitCode int) {
 			log.Printf("runtime close error: %v", err)
 		}
 	}()
-
-	// Normalize once via the shared helper. NewHandler does the same
-	// internally so its registered routes use the canonical form;
-	// hoisting it here means the mux closure below sees the exact
-	// same string and there's no chance of drift on inputs like
-	// "/v1/" vs "/v1".
-	basePath = api.NormalizeBasePath(basePath)
-	apiServer, err := api.NewHandler(api.ServerConfig{DB: db, BasePath: basePath, AutonomousApprovalsDefault: &autonomousApprovals, ProjectRoot: repoRoot})
-	if err != nil {
-		log.Printf("build api handler: %v", err)
-		return exitFatalStartup
-	}
 	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
 		apiServer,
 		shutdown.CloseFunc(runtime.GracefulClose),
@@ -175,13 +207,9 @@ func run() (exitCode int) {
 	// constructed by api.NewSPAMux so both kingdomd and the install_mode
 	// summon flow route via the same predicate — no chance of drifting
 	// trailing-slash semantics between the two front doors.
-	mux := api.NewSPAMux(apiServer, webui.Handler(), basePath)
+	mux := api.NewSPAMux(apiServer, webui.Handler(basePath), basePath)
 
-	server := &http.Server{
-		Addr:              listen,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := api.NewHTTPServer(listen, mux)
 
 	// Safety-net drain. Every exit path from run() — SIGINT (which
 	// also calls shutdownCoord.Run explicitly to capture the result
@@ -243,12 +271,34 @@ func run() (exitCode int) {
 	}
 }
 
+func kingdomdSQLiteDSN(dbPath string) (string, error) {
+	absolutePath, err := filepath.Abs(dbPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve sqlite path: %w", err)
+	}
+	sqliteURL := &url.URL{Scheme: "file", Path: absolutePath}
+	query := sqliteURL.Query()
+	for _, pragma := range []string{"busy_timeout(5000)", "foreign_keys(ON)", "journal_mode(WAL)", "synchronous(NORMAL)"} {
+		query.Add("_pragma", pragma)
+	}
+	sqliteURL.RawQuery = query.Encode()
+	return sqliteURL.String(), nil
+}
+
 func envOrDefault(key, fallback string) string {
 	value := strings.TrimSpace(os.Getenv(key))
 	if value == "" {
 		return fallback
 	}
 	return value
+}
+
+func envOrDefaultAllowEmpty(key, fallback string) string {
+	value, ok := os.LookupEnv(key)
+	if !ok {
+		return fallback
+	}
+	return strings.TrimSpace(value)
 }
 
 func envBoolOrDefault(key string, fallback bool) bool {

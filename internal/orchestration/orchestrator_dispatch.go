@@ -52,6 +52,13 @@ func (o *orchestrationLoop) dispatchReadyNodes(ctx context.Context, run runSnaps
 }
 
 func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, now string) error {
+	pendingTerminalHandoff, err := o.runHasPendingTerminalHandoff(ctx, run.RunID)
+	if err != nil {
+		return err
+	}
+	if pendingTerminalHandoff {
+		return nil
+	}
 	autoSucceededAtCap, err := o.maybeAutoSucceedLoopCappedReadyNode(ctx, run, node, attempt, now)
 	if err != nil {
 		return err
@@ -313,6 +320,17 @@ func (o *orchestrationLoop) dispatchNodeAttempt(ctx context.Context, run runSnap
 	})
 
 	return nil
+}
+
+func (o *orchestrationLoop) runHasPendingTerminalHandoff(ctx context.Context, runID string) (bool, error) {
+	var pending int
+	err := o.db.QueryRowContext(ctx, `
+SELECT EXISTS(SELECT 1 FROM attempt_cancel_outbox WHERE run_id = ? AND status = 'pending')
+    OR EXISTS(SELECT 1 FROM attempt_outbox WHERE run_id = ? AND status = 'pending')`, runID, runID).Scan(&pending)
+	if err != nil {
+		return false, fmt.Errorf("inspect pending run terminal handoff: %w", err)
+	}
+	return pending != 0, nil
 }
 
 func (o *orchestrationLoop) recordExecutionPreparation(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, attemptID, reasonText, payloadRaw, occurredAt string) error {

@@ -191,10 +191,10 @@ describe("mailbox panel", () => {
       />,
     );
 
-    expect(screen.queryByRole("dialog", { name: "Message detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Chancellor -> Council Member/i }));
-    expect(screen.queryByRole("dialog", { name: "Message detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
   });
 
   it("opens and closes modal detail without clearing lane selection", async () => {
@@ -221,10 +221,10 @@ describe("mailbox panel", () => {
       />,
     );
 
-    expect(screen.queryByRole("dialog", { name: "Message detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Instruction/i }));
-    const dialog = screen.getByRole("dialog", { name: "Message detail" });
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
     const contentCard = within(dialog).getByTestId("message-detail-card");
 
     expect(dialog).toBeInTheDocument();
@@ -238,7 +238,7 @@ describe("mailbox panel", () => {
     expect(within(dialog).queryByText(/^Response$/)).not.toBeInTheDocument();
 
 	await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    expect(screen.queryByRole("dialog", { name: "Message detail" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Message Detail" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Instruction/i })).toHaveAttribute("aria-pressed", "true");
   });
 
@@ -261,7 +261,7 @@ describe("mailbox panel", () => {
 
     await user.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button", { name: /Response/i }));
 
-    const dialog = screen.getByRole("dialog", { name: "Message detail" });
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
     expect(within(dialog).getByText("Response body should be shown")).toBeInTheDocument();
     expect(within(dialog).queryByText("Instruction body should stay hidden")).not.toBeInTheDocument();
   });
@@ -592,7 +592,7 @@ describe("mailbox panel", () => {
     );
 
     await user.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button", { name: /Response/i }));
-    const dialog = screen.getByRole("dialog", { name: "Message detail" });
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("Invalid Response")).toBeInTheDocument();
   });
@@ -619,7 +619,7 @@ describe("mailbox panel", () => {
     );
 
     await user.click(within(screen.getByTestId("mailbox-message-list")).getByRole("button", { name: /Response/i }));
-    const dialog = screen.getByRole("dialog", { name: "Message detail" });
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
     expect(dialog).toBeInTheDocument();
     expect(within(dialog).getByText("Auto-Succeeded at Cap")).toBeInTheDocument();
   });
@@ -760,7 +760,7 @@ describe("mailbox panel", () => {
 
     await user.click(messageButton);
 
-    const dialog = screen.getByRole("dialog", { name: "Message detail" });
+    const dialog = screen.getByRole("dialog", { name: "Message Detail" });
     expect(within(dialog).getByRole("list")).toBeInTheDocument();
     expect(within(dialog).getByText("Keep detail list")).toBeInTheDocument();
     expect(within(dialog).getByText("Fully rendered")).toBeInTheDocument();

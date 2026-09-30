@@ -25,7 +25,36 @@ import (
 
 type mockAgent struct{}
 
+type formalizeContextCaptureAgent struct {
+	*mockAgent
+	contexts chan string
+}
+
+func (a *formalizeContextCaptureAgent) FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
+	a.contexts <- input.ContextSummary
+	return a.mockAgent.FormalizePlanStream(ctx, input, onChunk)
+}
+
 var defaultPlanningServiceTestScript = planningfixture.DefaultServiceScript()
+
+func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessionID string) string {
+	t.Helper()
+	snapshotID := "context_" + sessionID
+	if _, err := store.CreateContextSnapshot(context.Background(), state.CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: snapshotID,
+		PlanningSessionID:         sessionID,
+		SummaryMarkdown:           "test context",
+		IncludedFilesJSON:         `[]`,
+		ExcludedFilesJSON:         `[]`,
+		CreatedAt:                 "2026-04-21T16:00:00Z",
+	}); err != nil {
+		t.Fatalf("create planning context snapshot: %v", err)
+	}
+	if _, err := store.PublishContextSnapshot(context.Background(), sessionID, snapshotID, "2026-04-21T16:00:00Z"); err != nil {
+		t.Fatalf("publish planning context snapshot: %v", err)
+	}
+	return snapshotID
+}
 
 // testSuccessMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
@@ -342,25 +371,70 @@ func TestServiceCreateSessionPersistsImmediateOpeningQuestion(t *testing.T) {
 		t.Fatalf("expected stored question payload, got %q", messages[0].QuestionPayloadJSON)
 	}
 
+	// The context snapshot is part of session creation, not a follow-up
+	// operation: every planner operation binds it at enqueue, so a session
+	// that exists without one could never chat.
+	if session.ContextSnapshotID == nil || strings.TrimSpace(*session.ContextSnapshotID) == "" {
+		t.Fatal("expected the created session to carry its context snapshot")
+	}
 	operations, err := store.ListSessionOperations(context.Background(), session.PlanningSessionID, 10)
 	if err != nil {
 		t.Fatalf("list session operations: %v", err)
 	}
-	if len(operations) != 1 || operations[0].Type != state.PlanningOperationTypeBootstrapContext {
-		t.Fatalf("expected queued bootstrap operation, got %+v", operations)
+	if len(operations) != 0 {
+		t.Fatalf("expected no planner operations for a fresh session, got %+v", operations)
 	}
-	awaitOperationTerminal(t, store, operations[0].OperationID)
 
-	updated, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	persisted, ok, err := store.GetSession(context.Background(), session.PlanningSessionID)
 	if err != nil {
-		t.Fatalf("get updated session: %v", err)
+		t.Fatalf("get persisted session: %v", err)
 	}
 	if !ok {
 		t.Fatal("expected session to exist")
 	}
-	if updated.ContextSnapshotID == nil {
-		t.Fatal("expected bootstrap background operation to populate context snapshot")
+	if persisted.ContextSnapshotID == nil || *persisted.ContextSnapshotID != *session.ContextSnapshotID {
+		t.Fatalf("persisted session snapshot pointer disagrees with the returned session: %+v", persisted.ContextSnapshotID)
 	}
+	snapshot, err := store.GetContextSnapshot(context.Background(), *persisted.ContextSnapshotID)
+	if err != nil {
+		t.Fatalf("get adopted context snapshot: %v", err)
+	}
+	if snapshot.PlanningSessionID != session.PlanningSessionID {
+		t.Fatalf("adopted snapshot belongs to another session: %+v", snapshot)
+	}
+}
+
+// A reply sent the instant a session is created must work. Before the context
+// snapshot moved into session creation, this raced an asynchronous bootstrap
+// and failed with "planning session ... has no active context snapshot".
+func TestServiceReplyImmediatelyAfterSessionCreationSucceeds(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:00:00Z" }, deterministicID())
+
+	session, err := service.CreateSession(context.Background(), "Immediate reply", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	reply := "Ship the planner context invariant."
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type:              state.PlanningOperationTypeReply,
+		ReplyMarkdown:     reply,
+		AnswerPayloadJSON: `{"text":"` + reply + `"}`,
+	})
+	if err != nil {
+		t.Fatalf("reply immediately after session creation: %v", err)
+	}
+	if operation.Operation.PlanningContextSnapshotID == nil || *operation.Operation.PlanningContextSnapshotID != *session.ContextSnapshotID {
+		t.Fatalf("reply did not bind the session's adopted snapshot: %+v", operation.Operation.PlanningContextSnapshotID)
+	}
+	awaitOperationTerminal(t, store, operation.Operation.OperationID)
 }
 
 func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
@@ -378,9 +452,6 @@ func TestServiceReplyOperationPersistsUserAndAssistantMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	bootstrap := latestSessionOperation(t, store, session.PlanningSessionID)
-	awaitOperationTerminal(t, store, bootstrap.OperationID)
-
 	reply := "We need a planner for decree composition that captures scope, constraints, acceptance criteria, and verification checkpoints before implementation begins."
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -438,7 +509,6 @@ func TestServiceReplyOperationPersistsServerSettledSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	reply := "We need a planner that captures scope, constraints, and verification before implementation."
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
@@ -509,7 +579,6 @@ func TestServiceFormalizeOperationCreatesDraftWithoutPlanningMessages(t *testing
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 	_, err = service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Need clearer scope", AnswerPayloadJSON: `{"text":"Need clearer scope"}`})
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
@@ -567,7 +636,6 @@ func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -644,7 +712,6 @@ func TestServiceReplyOperationClassifiesPlannerExecutionFailuresInCanonicalSettl
 			if err != nil {
 				t.Fatalf("create session: %v", err)
 			}
-			awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 			operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 				Type:              state.PlanningOperationTypeReply,
@@ -693,7 +760,6 @@ func TestServiceEditedReplyBranchesNonDestructively(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
 		ReplyMarkdown:     "Original user turn",
@@ -798,6 +864,7 @@ func TestServiceEditedReplyDoesNotAutoTitleFromStaleTranscript(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_edit_auto_title")
 	// Linear seed chain: opening -> user_2 -> assistant_2 -> user_3 -> assistant_3.
 	seedMessages := []state.AppendPlanningMessageRequest{
 		{PlanningMessageID: "pm_edit_auto_title_opening", PlanningSessionID: "ps_edit_auto_title", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-21T17:00:00Z"},
@@ -857,7 +924,6 @@ func TestServiceGenerateTitlePersistsDurableOperationSettlement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	updated, err := service.GenerateTitle(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -922,7 +988,6 @@ func TestServiceGenerateTitlePreservesNewerCustomTitle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 	if session.TitleState != planningSessionTitleStatePlaceholder {
 		t.Fatalf("expected placeholder session title, got %+v", session)
 	}
@@ -988,7 +1053,6 @@ func TestServiceGenerateTitleRunsAlongsideInteractiveOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	_, err = store.CreateReplyBundle(context.Background(), state.CreatePlanningReplyBundleRequest{
 		SessionID: session.PlanningSessionID,
@@ -1068,7 +1132,6 @@ func TestServiceSecondReplyAutoGeneratesTitleInParallel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -1177,6 +1240,7 @@ func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_recovery_catchup")
 	seedMessages := []state.AppendPlanningMessageRequest{
 		{PlanningMessageID: "pm_recovery_catchup_opening", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "", Role: state.PlanningMessageRoleAssistant, ContentMarkdown: "Opening question", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{}`, CreatedAt: "2026-04-26T09:55:00Z"},
 		{PlanningMessageID: "pm_recovery_catchup_user_2", PlanningSessionID: "ps_recovery_catchup", ParentMessageID: "pm_recovery_catchup_opening", Role: state.PlanningMessageRoleUser, ContentMarkdown: "First answer", QuestionPayloadJSON: `{}`, AnswerPayloadJSON: `{"text":"First answer"}`, CreatedAt: "2026-04-26T09:55:01Z"},
@@ -1240,7 +1304,6 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Test reply", AnswerPayloadJSON: `{"text":"Test reply"}`})
 	if err != nil {
@@ -1285,7 +1348,6 @@ func TestServiceReplyOperationEmitsLifecycleEventsAndBatchedTextDeltas(t *testin
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Lean", AnswerPayloadJSON: `{"value":"lean","text":"Lean"}`})
 	if err != nil {
@@ -1359,7 +1421,6 @@ func TestServiceRecoverOperationsRestartsQueuedWork(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	operation, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "planning_operation_recovery",
@@ -1410,6 +1471,68 @@ func TestServiceRecoverOperationsRestartsQueuedWork(t *testing.T) {
 	}
 }
 
+func TestRecoveredFormalizeUsesOperationBoundContextSnapshot(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	ctx := context.Background()
+	const sessionID = "ps_bound_context_recovery"
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID: sessionID, Title: "Bound context", TitleState: "custom",
+		LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady,
+		ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"test-model"}`, CreatedAt: "2026-04-21T17:00:00Z", UpdatedAt: "2026-04-21T17:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, state.CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "context-a", PlanningSessionID: sessionID, SummaryMarkdown: "context A", IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: "2026-04-21T17:00:01Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishContextSnapshot(ctx, sessionID, "context-a", "2026-04-21T17:00:01Z"); err != nil {
+		t.Fatal(err)
+	}
+	operation, err := store.CreateFormalizeBundle(ctx, state.CreatePlanningFormalizeBundleRequest{
+		SessionID:         sessionID,
+		Operation:         state.CreatePlanningOperationRequest{OperationID: "operation-bound", PlanningSessionID: sessionID, Type: state.PlanningOperationTypeFormalize, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{"draft_id":"draft-bound","draft_created_at":"2026-04-21T17:00:02Z"}`, CreatedAt: "2026-04-21T17:00:02Z"},
+		ConversationState: state.PlanningSessionConversationStateProcessing, CurrentOperationID: "operation-bound", UpdatedAt: "2026-04-21T17:00:02Z",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if operation.PlanningContextSnapshotID == nil || *operation.PlanningContextSnapshotID != "context-a" {
+		t.Fatalf("operation context binding=%v", operation.PlanningContextSnapshotID)
+	}
+	if _, err := store.CreateContextSnapshot(ctx, state.CreatePlanningContextSnapshotRequest{PlanningContextSnapshotID: "context-b", PlanningSessionID: sessionID, SummaryMarkdown: "context B", IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: "2026-04-21T17:00:03Z"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishContextSnapshot(ctx, sessionID, "context-b", "2026-04-21T17:00:03Z"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE planning_operations SET planning_context_snapshot_id='context-b' WHERE operation_id='operation-bound'`); err == nil || !strings.Contains(err.Error(), "immutable") {
+		t.Fatalf("operation context binding was mutable: %v", err)
+	}
+
+	agent := &formalizeContextCaptureAgent{mockAgent: &mockAgent{}, contexts: make(chan string, 1)}
+	service := NewService(store, agent, projectRoot, func() string { return "2026-04-21T17:00:04Z" }, deterministicID())
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		_ = service.Close(closeCtx)
+	})
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatal(err)
+	}
+	awaitOperationTerminal(t, store, operation.OperationID)
+	select {
+	case got := <-agent.contexts:
+		if got != "context A" {
+			t.Fatalf("recovered formalize context=%q, want context A", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("formalize agent did not receive context")
+	}
+}
+
 // TestRefreshContextReturnsAdoptedSnapshot guards the API contract: the
 // returned snapshot must match session.context_snapshot_id, even when a
 // concurrent /context/refresh adopted a newer snapshot before ours.
@@ -1439,7 +1562,6 @@ func TestRefreshContextReturnsAdoptedSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	// First refresh produces snap_A and adopts it.
 	snapA, sessionA, err := service.RefreshContext(context.Background(), session.PlanningSessionID)
@@ -1565,6 +1687,7 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_stuck_e2e")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_stuck_e2e",
 		PlanningSessionID:  "ps_stuck_e2e",
@@ -1658,9 +1781,9 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 // lease race during finalization does not increment failureCount. This uses a
 // direct UPDATE so the stale-lease path is deterministic on every run.
 //
-// Bootstrap variant covers the FinalizeBootstrapAbort path; the
-// reply variant covers FinalizeOperation. Both routes live inside
-// failOperation so a single ordering fix protects both.
+// The title variant covers the FinalizeTitleAbort path; the reply variant
+// covers FinalizeOperation. Both routes live inside failOperation so a single
+// ordering fix protects both.
 func TestFailOperationStaleLeaseDoesNotBumpFailureMetric(t *testing.T) {
 	t.Parallel()
 
@@ -1671,9 +1794,9 @@ func TestFailOperationStaleLeaseDoesNotBumpFailureMetric(t *testing.T) {
 		seedBundle func(t *testing.T, store *state.PlanningStore, sessionID string)
 	}{
 		{
-			name:   "bootstrap",
-			opID:   "po_bootstrap_stale",
-			opType: state.PlanningOperationTypeBootstrapContext,
+			name:   "title",
+			opID:   "po_title_stale",
+			opType: state.PlanningOperationTypeGenerateTitle,
 		},
 		{
 			name:   "reply",
@@ -1699,27 +1822,34 @@ func TestFailOperationStaleLeaseDoesNotBumpFailureMetric(t *testing.T) {
 
 			sessionID := "ps_failop_stale_" + tc.name
 			currentOpID := tc.opID
-			// Reply needs current_operation_id pointing at the op so
-			// the slot fence is testable. Bootstrap deliberately leaves
-			// it NULL — that's part of the lifecycle distinction.
+			// Each operation type fences on its own session slot: reply on
+			// current_operation_id, generated titles on
+			// current_title_operation_id.
 			currentOp := ""
+			currentTitleOp := ""
 			if tc.opType == state.PlanningOperationTypeReply {
 				currentOp = currentOpID
+			} else {
+				currentTitleOp = currentOpID
 			}
 			if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-				PlanningSessionID:  sessionID,
-				Title:              "stale-lease",
-				TitleState:         "custom",
-				LifecycleState:     state.PlanningSessionLifecycleStateActive,
-				ConversationState:  state.PlanningSessionConversationStateProcessing,
-				CurrentOperationID: currentOp,
-				ProjectRoot:        projectRoot,
-				ModelSelectionJSON: `{"model":"test-model"}`,
-				CreatedAt:          "2026-04-26T13:00:00Z",
-				UpdatedAt:          "2026-04-26T13:00:00Z",
+				PlanningSessionID:       sessionID,
+				Title:                   "stale-lease",
+				TitleState:              "custom",
+				LifecycleState:          state.PlanningSessionLifecycleStateActive,
+				ConversationState:       state.PlanningSessionConversationStateProcessing,
+				CurrentOperationID:      currentOp,
+				CurrentTitleOperationID: currentTitleOp,
+				ProjectRoot:             projectRoot,
+				ModelSelectionJSON:      `{"model":"test-model"}`,
+				CreatedAt:               "2026-04-26T13:00:00Z",
+				UpdatedAt:               "2026-04-26T13:00:00Z",
 			}); err != nil {
 				t.Fatalf("create session: %v", err)
 			}
+			// Every operation type binds the session's adopted snapshot at
+			// enqueue, so the session needs one first.
+			bindPlanningContextForTest(t, store, sessionID)
 			if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 				OperationID:        tc.opID,
 				PlanningSessionID:  sessionID,
@@ -1956,6 +2086,7 @@ func TestFailStuckMetricBumpsExactlyOnceUnderConcurrentFinalize(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_metric_race")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_metric_race",
 		PlanningSessionID:  "ps_metric_race",
@@ -2047,6 +2178,7 @@ func TestRecoveryDoesNotRestartExpiredButNotStuckRunningOperation(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_grace")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_grace",
 		PlanningSessionID:  "ps_grace",
@@ -2095,15 +2227,14 @@ func TestRecoveryDoesNotRestartExpiredButNotStuckRunningOperation(t *testing.T) 
 	}
 }
 
-// TestRecoveryFailStuckBootstrapWhileForegroundOpActive pins the
-// realistic shape: a bootstrap op stuck mid-refresh while the user
-// has already submitted a reply that holds the session's interactive
-// slot. Recovery must finalise the bootstrap as failed via the
-// dedicated FinalizeBootstrapAbort path — without it, the
-// FinalizeOperation interactive-slot fence rejects the bootstrap
-// finalize (current_operation_id is po_reply_fg, not the bootstrap
-// op id) and the bootstrap row stays stuck in `running` forever.
-func TestRecoveryFailStuckBootstrapWhileForegroundOpActive(t *testing.T) {
+// TestRecoveryFailStuckTitleWhileForegroundOpActive pins the realistic shape:
+// a generated-title op stuck mid-flight while the user has already submitted a
+// reply that holds the session's interactive slot. Recovery must finalise the
+// title op as failed via its own abort path — routing it through
+// FinalizeOperation's interactive-slot fence would reject the abort
+// (current_operation_id is po_reply_fg, not the title op id) and leave the row
+// stuck in `running` forever.
+func TestRecoveryFailStuckTitleWhileForegroundOpActive(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -2115,20 +2246,22 @@ func TestRecoveryFailStuckBootstrapWhileForegroundOpActive(t *testing.T) {
 
 	// Session has a foreground reply holding the interactive slot.
 	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{
-		PlanningSessionID:  "ps_bs_recovery",
-		Title:              "bs-recovery",
-		TitleState:         "custom",
-		LifecycleState:     state.PlanningSessionLifecycleStateActive,
-		ConversationState:  state.PlanningSessionConversationStateProcessing,
-		CurrentOperationID: "po_reply_fg",
-		ProjectRoot:        projectRoot,
-		ModelSelectionJSON: `{"model":"test-model"}`,
-		CreatedAt:          "2026-04-26T08:00:00Z",
-		UpdatedAt:          "2026-04-26T08:00:00Z",
+		PlanningSessionID:       "ps_bs_recovery",
+		Title:                   "title-recovery",
+		TitleState:              "custom",
+		LifecycleState:          state.PlanningSessionLifecycleStateActive,
+		ConversationState:       state.PlanningSessionConversationStateProcessing,
+		CurrentOperationID:      "po_reply_fg",
+		CurrentTitleOperationID: "po_bs_stuck",
+		ProjectRoot:             projectRoot,
+		ModelSelectionJSON:      `{"model":"test-model"}`,
+		CreatedAt:               "2026-04-26T08:00:00Z",
+		UpdatedAt:               "2026-04-26T08:00:00Z",
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 	// Foreground reply (running, lease still valid) — owns the slot.
+	bindPlanningContextForTest(t, store, "ps_bs_recovery")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_reply_fg",
 		PlanningSessionID:  "ps_bs_recovery",
@@ -2143,33 +2276,33 @@ func TestRecoveryFailStuckBootstrapWhileForegroundOpActive(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed reply op: %v", err)
 	}
-	// Bootstrap op stuck (lease expired well past 3× TTL).
+	// Title op stuck (lease expired well past 3× TTL).
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_bs_stuck",
 		PlanningSessionID:  "ps_bs_recovery",
-		Type:               state.PlanningOperationTypeBootstrapContext,
+		Type:               state.PlanningOperationTypeGenerateTitle,
 		Status:             state.PlanningOperationStatusRunning,
 		RequestPayloadJSON: `{}`,
-		LeaseOwner:         "abandoned-bs-worker",
+		LeaseOwner:         "abandoned-title-worker",
 		LeaseExpiresAt:     "2026-04-26T09:00:00Z", // 2h before service.now → past 3× TTL
 		LeaseVersion:       1,
 		CreatedAt:          "2026-04-26T08:55:00Z",
 		StartedAt:          "2026-04-26T08:55:01Z",
 	}); err != nil {
-		t.Fatalf("seed stuck bootstrap op: %v", err)
+		t.Fatalf("seed stuck title op: %v", err)
 	}
 
 	if err := service.RecoverOperations(context.Background()); err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 
-	// Bootstrap row finalised as failed.
+	// Title row finalised as failed.
 	op, ok, err := store.GetOperation(context.Background(), "po_bs_stuck")
 	if err != nil || !ok {
-		t.Fatalf("get bootstrap op: ok=%v err=%v", ok, err)
+		t.Fatalf("get title op: ok=%v err=%v", ok, err)
 	}
 	if op.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("expected stuck bootstrap finalised as failed, got %q (this is the case where FinalizeOperation's interactive fence would have rejected the abort)", op.Status)
+		t.Fatalf("expected stuck title op finalised as failed, got %q (this is the case where FinalizeOperation's interactive fence would have rejected the abort)", op.Status)
 	}
 
 	// Foreground reply slot untouched.
@@ -2185,7 +2318,64 @@ func TestRecoveryFailStuckBootstrapWhileForegroundOpActive(t *testing.T) {
 	}
 }
 
-func TestRecoverOperationsPagesStuckBootstrapOperations(t *testing.T) {
+// Sessions left snapshot-less by the removed asynchronous bootstrap can never
+// enqueue a planner operation — every reply, title, and formalize attempt is
+// rejected at bind time. Recovery must repair them so an existing session is
+// not bricked for good.
+func TestRecoveryBackfillsSessionsMissingContextSnapshot(t *testing.T) {
+	t.Parallel()
+
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T11:00:00Z" }, deterministicID())
+	t.Cleanup(func() { _ = service.Close(context.Background()) })
+
+	ctx := context.Background()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID:  "ps_bricked",
+		Title:              "bricked",
+		TitleState:         "custom",
+		LifecycleState:     state.PlanningSessionLifecycleStateActive,
+		ConversationState:  state.PlanningSessionConversationStateReady,
+		ProjectRoot:        projectRoot,
+		ModelSelectionJSON: `{"model":"test-model"}`,
+		CreatedAt:          "2026-04-26T08:00:00Z",
+		UpdatedAt:          "2026-04-26T08:00:00Z",
+	}); err != nil {
+		t.Fatalf("seed snapshot-less session: %v", err)
+	}
+
+	// Precondition: the session cannot enqueue work in this state.
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID: "po_bricked", PlanningSessionID: "ps_bricked", Type: state.PlanningOperationTypeGenerateTitle,
+		Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: "2026-04-26T08:00:01Z",
+	}); !errors.Is(err, state.ErrPlanningContextSnapshotUnavailable) {
+		t.Fatalf("expected a snapshot-less session to reject operations, got %v", err)
+	}
+
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatalf("recover operations: %v", err)
+	}
+
+	repaired, ok, err := store.GetSession(ctx, "ps_bricked")
+	if err != nil || !ok {
+		t.Fatalf("get repaired session: ok=%v err=%v", ok, err)
+	}
+	if repaired.ContextSnapshotID == nil || strings.TrimSpace(*repaired.ContextSnapshotID) == "" {
+		t.Fatal("expected recovery to publish a context snapshot for the session")
+	}
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID: "po_repaired", PlanningSessionID: "ps_bricked", Type: state.PlanningOperationTypeGenerateTitle,
+		Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: "2026-04-26T11:00:01Z",
+	}); err != nil {
+		t.Fatalf("repaired session still cannot enqueue work: %v", err)
+	}
+}
+
+func TestRecoverOperationsPagesStuckOperations(t *testing.T) {
 	t.Parallel()
 
 	projectRoot := t.TempDir()
@@ -2200,26 +2390,28 @@ func TestRecoverOperationsPagesStuckBootstrapOperations(t *testing.T) {
 
 	ctx := context.Background()
 	for i := 1; i <= state.DefaultPlanningOperationListLimit+1; i++ {
-		sessionID := fmt.Sprintf("ps_bootstrap_page_%03d", i)
-		operationID := fmt.Sprintf("po_bootstrap_page_%03d", i)
+		sessionID := fmt.Sprintf("ps_stuck_page_%03d", i)
+		operationID := fmt.Sprintf("po_stuck_page_%03d", i)
 		createdAt := fmt.Sprintf("2026-04-26T08:%02d:00Z", i%60)
 		if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
-			PlanningSessionID:  sessionID,
-			Title:              fmt.Sprintf("bootstrap-%03d", i),
-			TitleState:         "custom",
-			LifecycleState:     state.PlanningSessionLifecycleStateActive,
-			ConversationState:  state.PlanningSessionConversationStateReady,
-			ProjectRoot:        projectRoot,
-			ModelSelectionJSON: `{"model":"test-model"}`,
-			CreatedAt:          createdAt,
-			UpdatedAt:          createdAt,
+			PlanningSessionID:       sessionID,
+			Title:                   fmt.Sprintf("stuck-%03d", i),
+			TitleState:              "custom",
+			LifecycleState:          state.PlanningSessionLifecycleStateActive,
+			ConversationState:       state.PlanningSessionConversationStateReady,
+			CurrentTitleOperationID: operationID,
+			ProjectRoot:             projectRoot,
+			ModelSelectionJSON:      `{"model":"test-model"}`,
+			CreatedAt:               createdAt,
+			UpdatedAt:               createdAt,
 		}); err != nil {
 			t.Fatalf("create session %d: %v", i, err)
 		}
+		bindPlanningContextForTest(t, store, sessionID)
 		if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 			OperationID:        operationID,
 			PlanningSessionID:  sessionID,
-			Type:               state.PlanningOperationTypeBootstrapContext,
+			Type:               state.PlanningOperationTypeGenerateTitle,
 			Status:             state.PlanningOperationStatusRunning,
 			RequestPayloadJSON: `{}`,
 			LeaseOwner:         fmt.Sprintf("worker-%03d", i),
@@ -2241,7 +2433,7 @@ func TestRecoverOperationsPagesStuckBootstrapOperations(t *testing.T) {
 		t.Fatalf("count failed operations: %v", err)
 	}
 	if failedCount != state.DefaultPlanningOperationListLimit+1 {
-		t.Fatalf("expected all stuck bootstrap operations to fail across pages, got %d", failedCount)
+		t.Fatalf("expected all stuck operations to fail across pages, got %d", failedCount)
 	}
 }
 
@@ -2272,6 +2464,7 @@ func TestFinaliseIfStuckBeforeThreshold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindPlanningContextForTest(t, store, "ps_fresh")
 	if _, err := store.CreateOperation(context.Background(), state.CreatePlanningOperationRequest{
 		OperationID:        "po_fresh",
 		PlanningSessionID:  "ps_fresh",
@@ -2317,7 +2510,6 @@ func TestServiceRejectsDuplicateInteractiveOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	firstOp, err := store.CreateFormalizeBundle(context.Background(), state.CreatePlanningFormalizeBundleRequest{
 		SessionID: session.PlanningSessionID,
@@ -2669,7 +2861,6 @@ func startBlockingReplyForCloseTest(t *testing.T, service *Service, store *state
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	op, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -2873,7 +3064,6 @@ func TestFailOperationDuringShutdownRoutesToCancelled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	// Create a fresh reply operation row in the DB, then claim it
 	// directly through the store so we have a known LeaseOwner /
@@ -2982,7 +3172,6 @@ func TestServiceWritesRejectedAfterCloseAndPersistNoRow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	preCloseOps := countPlanningOperations(t, db)
 	preCloseSessions := countPlanningSessions(t, db)
@@ -3071,7 +3260,6 @@ func TestServiceCloseCancelsInFlightGenerateTitleOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	updated, err := service.GenerateTitle(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -3127,7 +3315,6 @@ func TestServiceGenerateTitleCanRetryAfterCancelledTitleRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	updated, err := service.GenerateTitle(context.Background(), session.PlanningSessionID)
 	if err != nil {
@@ -3194,7 +3381,6 @@ func TestServiceRegenerateRejectsUserTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	reply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -3239,7 +3425,6 @@ func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	firstReply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
 		Type:              state.PlanningOperationTypeReply,
@@ -3313,15 +3498,20 @@ func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
 // mid-persist). The "Start was called" invariant is enforced by
 // construction: with admission control, every successful
 // CreateSession completes persist+Start before releaseWrite.
-func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
-	t.Parallel()
-
+func TestServiceCreateSessionRaceWithCloseHasNoOrphans(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeTestFile(t, projectRoot, "README.md", "# Project\n")
 
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T13:00:00Z" }, deterministicID())
+
+	// Occupy the sole in-memory SQLite connection so every caller crosses the
+	// admission gate but cannot persist until shutdown is already waiting.
+	blocker, err := db.Conn(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	const concurrency = 16
 	results := make(chan error, concurrency)
@@ -3334,17 +3524,32 @@ func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
 			results <- err
 		}()
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		service.writeMu.Lock()
+		active := service.activeWrites
+		service.writeMu.Unlock()
+		if active == concurrency {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d/%d writes reached admission gate", active, concurrency)
+		}
+		time.Sleep(time.Millisecond)
+	}
 
-	// Race Close against the in-flight writes. The exact interleaving
-	// is non-deterministic; the invariant is what we assert on.
 	closeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	closeErr := service.Close(closeCtx)
-	if closeErr != nil && !errors.Is(closeErr, context.DeadlineExceeded) {
-		t.Fatalf("close: %v", closeErr)
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- service.Close(closeCtx) }()
+	if err := blocker.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	wg.Wait()
+	if closeErr := <-closeResult; closeErr != nil {
+		t.Fatalf("close: %v", closeErr)
+	}
 	close(results)
 
 	// Count outcomes.
@@ -3363,20 +3568,33 @@ func TestServiceCreateOperationRaceWithCloseHasNoOrphans(t *testing.T) {
 		t.Fatalf("expected admitted+rejected to equal concurrency=%d, got admitted=%d rejected=%d", concurrency, admitted, rejected)
 	}
 
-	// Invariant: exactly `admitted` rows persisted. Rejected calls
-	// must not leave half-persisted state behind, and admitted calls
-	// must each persist exactly one row. This is what proves the
-	// admission gate covered persist+Start atomically.
+	// Invariant: exactly `admitted` rows persisted, and every one of them is
+	// complete. Rejected calls must not leave half-persisted state behind.
+	// Session creation launches no background work, so a persisted session
+	// with a resolvable snapshot is the whole of the durable outcome — that
+	// is what proves the bundle committed atomically under the gate.
 	persistedSessions := countPlanningSessions(t, db)
 	if persistedSessions != admitted {
 		t.Fatalf("expected %d persisted sessions (matching admitted count), got %d", admitted, persistedSessions)
 	}
-	persistedOps := countPlanningOperations(t, db)
-	if persistedOps != admitted {
-		t.Fatalf("expected %d persisted operations (one bootstrap per admitted session), got %d", admitted, persistedOps)
+	if persistedOps := countPlanningOperations(t, db); persistedOps != 0 {
+		t.Fatalf("expected no planner operations from session creation, got %d", persistedOps)
+	}
+	var unusable int
+	if err := db.QueryRow(`
+		SELECT COUNT(1)
+		FROM planning_sessions s
+		LEFT JOIN planning_context_snapshots snapshot
+		  ON snapshot.planning_context_snapshot_id = s.context_snapshot_id
+		 AND snapshot.planning_session_id = s.planning_session_id
+		WHERE snapshot.planning_context_snapshot_id IS NULL`).Scan(&unusable); err != nil {
+		t.Fatalf("count sessions without a resolvable context snapshot: %v", err)
+	}
+	if unusable != 0 {
+		t.Fatalf("expected every persisted session to carry a context snapshot, got %d without one", unusable)
 	}
 
-	t.Logf("admitted=%d rejected=%d (every persisted row had Start invoked under the gate)", admitted, rejected)
+	t.Logf("admitted=%d rejected=%d (every persisted session committed with its context snapshot)", admitted, rejected)
 }
 
 // TestServiceCloseRespectsParentDeadline pins the bounded-shutdown
@@ -3493,11 +3711,9 @@ func TestServiceCloseRejectsLaterStart(t *testing.T) {
 	store := state.NewPlanningStore(db)
 	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T12:00:00Z" }, deterministicID())
 
-	session, err := service.CreateSession(context.Background(), "Reject after close", `{"model":"test-model"}`)
-	if err != nil {
+	if _, err := service.CreateSession(context.Background(), "Reject after close", `{"model":"test-model"}`); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	awaitOperationTerminal(t, store, latestSessionOperation(t, store, session.PlanningSessionID).OperationID)
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()

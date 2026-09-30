@@ -67,7 +67,7 @@ type runMailboxMessageDetail struct {
 }
 
 func (s *Server) handleListRunMailboxMessages(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.list_run_mailbox_messages"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.list_run_mailbox_messages"); !ok {
 		return
 	}
 
@@ -182,7 +182,7 @@ LIMIT ?`, mailboxview.UserFacingMailboxPredicate("")),
 }
 
 func (s *Server) handleGetRunMailboxMessage(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_run_mailbox_message"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_run_mailbox_message"); !ok {
 		return
 	}
 
@@ -224,7 +224,7 @@ func (s *Server) handleGetRunMailboxMessage(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleMarkRunMailboxMessageRead(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.mark_run_mailbox_message_read"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.mark_run_mailbox_message_read"); !ok {
 		return
 	}
 

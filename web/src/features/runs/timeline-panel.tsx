@@ -4,6 +4,7 @@ import type { RunExecution, RunGraphEdge, RunGraphNode, TimelineEvent } from "@/
 import { buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
 import { MilestoneRow } from "./timeline-milestone-row";
 import { RawEventRow } from "./timeline-raw-event-row";
+import { orderMilestonesForDisplay } from "./timeline-ordering";
 
 export function TimelinePanel({
   events,
@@ -23,10 +24,32 @@ export function TimelinePanel({
 	const [expandedId, setExpandedId] = useState<string | null>(null);
 	const [showRawEvents, setShowRawEvents] = useState(false);
 	const [userScrolledAwayFromLatest, setUserScrolledAwayFromLatest] = useState(false);
-	const [hasHiddenLatestUpdate, setHasHiddenLatestUpdate] = useState(false);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const prevRangeRef = useRef({ count: 0, firstSeq: 0, lastSeq: 0 });
 	const inspectionLocked = userScrolledAwayFromLatest || expandedId !== null;
+	const currentRange = {
+		count: events.length,
+		firstSeq: events[0]?.run_event_seq ?? 0,
+		lastSeq: events[events.length - 1]?.run_event_seq ?? 0,
+	};
+	const [timelineUpdateState, setTimelineUpdateState] = useState({
+		...currentRange,
+		hasHiddenLatestUpdate: false,
+	});
+	if (!sameTimelineRange(timelineUpdateState, currentRange)) {
+		const initialLoad = timelineUpdateState.count === 0 && currentRange.count > 0;
+		const receivedNewer = timelineUpdateState.count > 0
+			&& currentRange.lastSeq > timelineUpdateState.lastSeq;
+		setTimelineUpdateState({
+			...currentRange,
+			hasHiddenLatestUpdate: receivedNewer && inspectionLocked
+				? true
+				: (initialLoad || receivedNewer) && !inspectionLocked
+					? false
+					: timelineUpdateState.hasHiddenLatestUpdate,
+		});
+	}
+	const hasHiddenLatestUpdate = timelineUpdateState.hasHiddenLatestUpdate;
 
   const lookups = useMemo(
 		() => buildTimelineLookups(events, graph?.nodes ?? [], executions),
@@ -64,26 +87,20 @@ export function TimelinePanel({
 		const lastSeq = events[events.length - 1]?.run_event_seq ?? 0;
 		const previous = prevRangeRef.current;
 		const initialLoad = previous.count === 0 && events.length > 0;
-		const appendedNewer = previous.count > 0
-			&& events.length > previous.count
-			&& firstSeq === previous.firstSeq
+		const receivedNewer = previous.count > 0
 			&& lastSeq > previous.lastSeq;
-		if (appendedNewer && inspectionLocked) {
-			setHasHiddenLatestUpdate(true);
-		}
-		if ((initialLoad || appendedNewer) && !inspectionLocked) {
+		if ((initialLoad || receivedNewer) && !inspectionLocked) {
 			scrollContainerToTop(scrollRef.current, "auto");
-			setHasHiddenLatestUpdate(false);
 		}
 		prevRangeRef.current = { count: events.length, firstSeq, lastSeq };
 	}, [events, inspectionLocked]);
 
-	const scrollToLatest = useCallback(() => {
+	const scrollToLatest = () => {
 		scrollContainerToTop(scrollRef.current, "smooth");
 		setUserScrolledAwayFromLatest(false);
-		setHasHiddenLatestUpdate(false);
+		setTimelineUpdateState((current) => ({ ...current, hasHiddenLatestUpdate: false }));
 		setExpandedId(null);
-	}, []);
+	};
 
   if (events.length === 0) {
     return (
@@ -181,10 +198,6 @@ export function TimelinePanel({
 	);
 }
 
-export function orderMilestonesForDisplay<T>(milestones: readonly T[]): T[] {
-	return [...milestones].reverse();
-}
-
 function compareTimelineEventDisplayTime(left: TimelineEvent, right: TimelineEvent): number {
 	if (left.run_event_seq !== right.run_event_seq) {
 		return left.run_event_seq - right.run_event_seq;
@@ -195,6 +208,15 @@ function compareTimelineEventDisplayTime(left: TimelineEvent, right: TimelineEve
 	if (left.emitted_at > right.emitted_at) return 1;
 	if (left.emitted_at < right.emitted_at) return -1;
 	return left.event_id.localeCompare(right.event_id);
+}
+
+function sameTimelineRange(
+	left: { count: number; firstSeq: number; lastSeq: number },
+	right: { count: number; firstSeq: number; lastSeq: number },
+): boolean {
+	return left.count === right.count
+		&& left.firstSeq === right.firstSeq
+		&& left.lastSeq === right.lastSeq;
 }
 
 function scrollContainerToTop(element: HTMLDivElement | null, behavior: ScrollBehavior): void {

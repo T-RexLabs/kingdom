@@ -32,7 +32,7 @@ KD_GO_SOURCES := $(shell find cmd internal web -type f -name '*.go' ! -name '*_t
 BOOTSTRAP_ASSETS := $(shell find internal/bootstrapassets/files -type f)
 DB_MIGRATIONS := $(shell find internal/dbmigrations -maxdepth 1 -type f -name '*.sql')
 
-.PHONY: help install build dev-web test test-race test-integration test-e2e vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
+.PHONY: help install build dev-web test test-web lint-web test-race test-integration test-e2e test-github-smoke test-opencode-security-smoke vet coverage-core scripts-check verify contracts-generate contracts-check openapi-lint tool-versions
 
 ##@ Setup and Build
 help: ## Show supported make targets
@@ -51,6 +51,12 @@ dev-web: $(WEB_NODE_MODULES_STAMP) ## Start the web app in Vite dev mode
 test: $(WEB_DIST_INDEX) ## Run `go test ./...`
 	$(GO) test ./...
 
+test-web: $(WEB_NODE_MODULES_STAMP) ## Run the frontend unit test suite
+	$(PNPM) --dir web test
+
+lint-web: $(WEB_NODE_MODULES_STAMP) ## Run frontend lint with zero warnings
+	$(PNPM) --dir web lint
+
 # test-race exercises the planning + state packages under the race detector.
 # Critical for the streaming sequence cursor and lease-fenced terminal writes -
 # both are concurrent paths where a missed race would silently violate the
@@ -66,6 +72,12 @@ test-integration: $(WEB_DIST_INDEX) ## Run the integration test suite
 test-e2e: $(WEB_DIST_INDEX) ## Run the end-to-end test suite
 	$(GO) test ./tests/e2e/...
 
+test-github-smoke: ## Run the opt-in live GitHub App smoke test
+	KINGDOM_GITHUB_LIVE_SMOKE=1 $(GO) test ./internal/external/github -run '^TestLiveGitHubAppSmoke$$' -count=1 -v
+
+test-opencode-security-smoke: ## Run the opt-in live adversarial planner containment test
+	KINGDOM_LIVE_OPENCODE_SECURITY_TEST=1 $(GO) test ./internal/planning -run '^TestLiveAdversarialExternalPlannerContainment$$' -count=1 -v
+
 vet: $(WEB_DIST_INDEX) ## Run `go vet ./...`
 	$(GO) vet ./...
 
@@ -76,11 +88,16 @@ scripts-check: ## Run lightweight script verification checks
 	bash -n scripts/*.sh
 	python3 -m unittest discover -s scripts/tests -p "test_*.py"
 
-verify: test test-race vet coverage-core contracts-check ## Run the main verification sweep
+verify: test test-web lint-web test-race vet coverage-core contracts-check ## Run the main verification sweep
 
 ##@ Contracts
-contracts-check: $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED) ## Verify generated OpenAPI types are up to date
-	git diff --exit-code -- $(OPENAPI_GENERATED) $(WEB_OPENAPI_GENERATED)
+contracts-check: $(WEB_NODE_MODULES_STAMP) ## Verify generated OpenAPI types are up to date
+	@tmp_dir="$$(mktemp -d)"; trap 'rm -rf "$$tmp_dir"' EXIT; \
+	$(GO) run github.com/oapi-codegen/oapi-codegen/v2/cmd/oapi-codegen@$(OAPI_CODEGEN_VERSION) -generate types,client,spec -package apigen -o "$$tmp_dir/types.gen.go" $(OPENAPI_SPEC); \
+	$(PNPM) --dir web exec openapi-typescript ../$(OPENAPI_SPEC) -o "$$tmp_dir/schema.ts"; \
+	cmp -s "$$tmp_dir/types.gen.go" $(OPENAPI_GENERATED) || { diff -u $(OPENAPI_GENERATED) "$$tmp_dir/types.gen.go"; exit 1; }; \
+	cmp -s "$$tmp_dir/schema.ts" $(WEB_OPENAPI_GENERATED) || { diff -u $(WEB_OPENAPI_GENERATED) "$$tmp_dir/schema.ts"; exit 1; }; \
+	printf 'Generated OpenAPI contracts are current.\n'
 
 openapi-lint: $(WEB_NODE_MODULES_STAMP) ## Lint the OpenAPI spec with Redocly
 	$(PNPM) --dir web exec redocly lint ../$(OPENAPI_SPEC)

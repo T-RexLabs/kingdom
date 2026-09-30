@@ -189,6 +189,29 @@ describe("useTextReveal", () => {
     expect(result.current.isStreamActive).toBe(false);
   });
 
+  it("keeps draining when the target grows after streaming ends", () => {
+    const { result, rerender } = renderHook(
+      ({ text, streaming }) => useTextReveal(text, streaming),
+      { initialProps: { text: "", streaming: true } },
+    );
+
+    const initialTarget = "A response that still has buffered text";
+    rerender({ text: initialTarget, streaming: true });
+    act(() => advanceAndFlush(THROTTLE_MS + 1));
+    rerender({ text: initialTarget, streaming: false });
+
+    const partialText = result.current.displayText;
+    const extendedTarget = `${initialTarget} and a final suffix`;
+    rerender({ text: extendedTarget, streaming: false });
+
+    expect(result.current.displayText).toBe(partialText);
+    expect(result.current.isStreamActive).toBe(true);
+
+    act(() => advanceAndFlush(THROTTLE_MS + 1));
+    expect(result.current.displayText.length).toBeGreaterThan(partialText.length);
+    expect(result.current.displayText.length).toBeLessThan(extendedTarget.length);
+  });
+
   it("snaps immediately when streaming ends with no unrevealed text", () => {
     const { result, rerender } = renderHook(
       ({ text, streaming }) => useTextReveal(text, streaming),

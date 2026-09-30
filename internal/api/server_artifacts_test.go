@@ -18,7 +18,7 @@ func TestServerListRunArtifacts(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifact(t, db, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
 	}
@@ -26,10 +26,9 @@ func TestServerListRunArtifacts(t *testing.T) {
 	var payload struct {
 		RunID string `json:"run_id"`
 		Items []struct {
-			ArtifactID  string `json:"artifact_id"`
-			ContentURL  string `json:"content_url"`
-			DownloadURL string `json:"download_url"`
-			Previewable bool   `json:"previewable"`
+			ArtifactID     string `json:"artifact_id"`
+			ArtifactAction string `json:"artifact_action"`
+			DownloadURL    string `json:"download_url"`
 		} `json:"items"`
 	}
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
@@ -41,8 +40,93 @@ func TestServerListRunArtifacts(t *testing.T) {
 	if len(payload.Items) != 1 {
 		t.Fatalf("expected one artifact, got %d", len(payload.Items))
 	}
-	if !strings.Contains(payload.Items[0].ContentURL, "/api/v1/artifacts/artifact-1/content") {
-		t.Fatalf("expected content url in payload, got %q", payload.Items[0].ContentURL)
+	if !strings.Contains(payload.Items[0].DownloadURL, "/api/v1/artifacts/artifact-1/content") {
+		t.Fatalf("expected download url in payload, got %q", payload.Items[0].DownloadURL)
+	}
+	if payload.Items[0].ArtifactAction != "write" {
+		t.Fatalf("expected write artifact action, got %q", payload.Items[0].ArtifactAction)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(res.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode raw artifacts list: %v", err)
+	}
+	items, _ := raw["items"].([]any)
+	item, _ := items[0].(map[string]any)
+	if _, ok := item["content_url"]; ok {
+		t.Fatal("artifact list exposed obsolete inline content URL")
+	}
+	if _, ok := item["previewable"]; ok {
+		t.Fatal("artifact list exposed obsolete previewability metadata")
+	}
+}
+
+func TestNormalizeArchiveRelativePathRejectsNonPortablePaths(t *testing.T) {
+	t.Parallel()
+
+	for _, artifactPath := range []string{"/tmp/file", "//tmp/file", `..\secret`, `C:\temp\file`, "../secret"} {
+		t.Run(artifactPath, func(t *testing.T) {
+			t.Parallel()
+			if _, err := normalizeArchiveRelativePath(artifactPath, "fallback", "artifact"); err == nil {
+				t.Fatalf("unsafe archive path %q succeeded", artifactPath)
+			}
+		})
+	}
+}
+
+func TestServerDeletionArtifactMetadataOmitsContentFields(t *testing.T) {
+	t.Parallel()
+
+	handler, db := newAPIServerForTest(t)
+	runID := seedRunViaAPI(t, handler)
+	seedArtifact(t, db, runID)
+	now := time.Now().UTC().Format(time.RFC3339)
+	if _, err := db.Exec(`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, artifact_action, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES ('artifact-delete-metadata', ?, 'node-run-1', 'attempt-seed', 'deliverable', 'delete', 'notes.md', 'text/markdown', 'docs/notes.md', '', 0, 'builder-berserker', ?)`, runID, now); err != nil {
+		t.Fatal(err)
+	}
+
+	list := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts"})
+	if list.Code != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", list.Code, list.Body.String())
+	}
+	var listed struct {
+		Items []map[string]any `json:"items"`
+	}
+	if err := json.Unmarshal(list.Body.Bytes(), &listed); err != nil {
+		t.Fatal(err)
+	}
+	var deletion map[string]any
+	for _, item := range listed.Items {
+		if item["artifact_id"] == "artifact-delete-metadata" {
+			deletion = item
+			break
+		}
+	}
+	if deletion == nil || deletion["artifact_action"] != "delete" {
+		t.Fatalf("deletion metadata=%v", deletion)
+	}
+	if _, ok := deletion["sha256"]; ok {
+		t.Fatal("deletion artifact exposed a checksum")
+	}
+	if _, ok := deletion["download_url"]; ok {
+		t.Fatal("deletion artifact advertised unavailable content")
+	}
+
+	detail := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-delete-metadata"})
+	if detail.Code != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", detail.Code, detail.Body.String())
+	}
+	var detailed map[string]any
+	if err := json.Unmarshal(detail.Body.Bytes(), &detailed); err != nil {
+		t.Fatal(err)
+	}
+	if detailed["artifact_action"] != "delete" {
+		t.Fatalf("detail artifact action=%v", detailed["artifact_action"])
+	}
+	if _, ok := detailed["sha256"]; ok {
+		t.Fatal("deletion detail exposed a checksum")
+	}
+	if _, ok := detailed["download_url"]; ok {
+		t.Fatal("deletion detail advertised unavailable content")
 	}
 }
 
@@ -53,7 +137,7 @@ func TestServerGetRunArtifactsArchive(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifact(t, db, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
 	}
@@ -62,6 +146,9 @@ func TestServerGetRunArtifactsArchive(t *testing.T) {
 	}
 	if got := res.Header().Get("Content-Disposition"); !strings.Contains(got, runID+"-artifacts.zip") {
 		t.Fatalf("expected archive filename in content disposition, got %q", got)
+	}
+	if got := res.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff artifact archive response, got %q", got)
 	}
 
 	archive, err := zip.NewReader(bytes.NewReader(res.Body.Bytes()), int64(res.Body.Len()))
@@ -95,7 +182,7 @@ func TestServerGetRunArtifactsArchiveDeterministicRenameOnCollision(t *testing.T
 	runID := seedRunViaAPI(t, handler)
 	seedArtifactIdentityPair(t, db, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
 	}
@@ -131,7 +218,7 @@ func TestServerGetRunArtifactsArchiveDeleteOnlyUsesMetadata(t *testing.T) {
 		t.Fatalf("insert delete artifact: %v", err)
 	}
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -190,7 +277,7 @@ func TestServerGetRunArtifactsArchiveMixedWriteAndDelete(t *testing.T) {
 		t.Fatalf("insert delete artifact: %v", err)
 	}
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/artifacts/archive"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
 	}
@@ -213,7 +300,7 @@ func TestServerGetRunArtifactsArchiveRunNotFound(t *testing.T) {
 
 	handler, _ := newAPIServerForTest(t)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/artifacts/archive", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/run-missing/artifacts/archive"})
 	if res.Code != http.StatusNotFound {
 		t.Fatalf("expected 404, got %d", res.Code)
 	}
@@ -227,12 +314,18 @@ func TestServerGetArtifactContent(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifact(t, db, runID)
 
-	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-1/content", actorID: "actor-1", roleID: "chancellor"})
+	res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-1/content"})
 	if res.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", res.Code)
 	}
 	if got := res.Header().Get("Content-Type"); got != "text/plain" {
 		t.Fatalf("expected text/plain content type, got %q", got)
+	}
+	if got := res.Header().Get("Content-Disposition"); !strings.HasPrefix(got, "attachment;") {
+		t.Fatalf("expected attachment content disposition, got %q", got)
+	}
+	if got := res.Header().Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Fatalf("expected nosniff artifact response, got %q", got)
 	}
 	if !strings.Contains(res.Body.String(), "seed artifact") {
 		t.Fatalf("expected artifact body, got %q", res.Body.String())
@@ -246,11 +339,11 @@ func TestServerGetArtifactContentServesPerArtifactID(t *testing.T) {
 	runID := seedRunViaAPI(t, handler)
 	seedArtifactIdentityPair(t, db, runID)
 
-	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-identity-1/content", actorID: "actor-1", roleID: "chancellor"})
+	first := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-identity-1/content"})
 	if first.Code != http.StatusOK {
 		t.Fatalf("expected 200 for first artifact, got %d", first.Code)
 	}
-	second := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-identity-2/content", actorID: "actor-1", roleID: "chancellor"})
+	second := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/artifacts/artifact-identity-2/content"})
 	if second.Code != http.StatusOK {
 		t.Fatalf("expected 200 for second artifact, got %d", second.Code)
 	}
@@ -260,156 +353,5 @@ func TestServerGetArtifactContentServesPerArtifactID(t *testing.T) {
 	}
 	if second.Body.String() != "omega-homepage" {
 		t.Fatalf("expected second artifact identity body, got %q", second.Body.String())
-	}
-}
-
-func TestServerPreviewSessionServesHTMLAndLinkedAssets(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunViaAPI(t, handler)
-	seedPreviewBundle(t, db, runID)
-
-	create := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/artifacts/artifact-html-root/preview-session",
-		body:           map[string]any{},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
-		idempotencyKey: "idem-preview-session-root",
-	})
-	if create.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d (%s)", create.Code, create.Body.String())
-	}
-
-	var payload struct {
-		PreviewURL string `json:"preview_url"`
-	}
-	if err := json.Unmarshal(create.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode preview session response: %v", err)
-	}
-	if payload.PreviewURL == "" {
-		t.Fatal("expected preview_url")
-	}
-
-	root := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: payload.PreviewURL})
-	if root.Code != http.StatusOK {
-		t.Fatalf("expected root preview 200, got %d (%s)", root.Code, root.Body.String())
-	}
-	if got := root.Header().Get("Content-Type"); got != "text/html" {
-		t.Fatalf("expected text/html for root preview, got %q", got)
-	}
-	if !strings.Contains(root.Body.String(), "./styles.css") {
-		t.Fatalf("expected html preview body, got %q", root.Body.String())
-	}
-
-	styles := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: payload.PreviewURL + "/styles.css"})
-	if styles.Code != http.StatusOK {
-		t.Fatalf("expected styles preview 200, got %d (%s)", styles.Code, styles.Body.String())
-	}
-	if got := styles.Header().Get("Content-Type"); got != "text/css" {
-		t.Fatalf("expected text/css for stylesheet preview, got %q", got)
-	}
-	if !strings.Contains(styles.Body.String(), "#123456") {
-		t.Fatalf("expected stylesheet from same node attempt, got %q", styles.Body.String())
-	}
-
-	script := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: payload.PreviewURL + "/app.js"})
-	if script.Code != http.StatusOK {
-		t.Fatalf("expected app.js preview 200, got %d (%s)", script.Code, script.Body.String())
-	}
-	if !strings.Contains(script.Body.String(), "preview bundle") {
-		t.Fatalf("expected script preview body, got %q", script.Body.String())
-	}
-}
-
-func TestServerPreviewSessionRejectsEscapingAssetPaths(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunViaAPI(t, handler)
-	seedPreviewBundle(t, db, runID)
-
-	create := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/artifacts/artifact-html-root/preview-session",
-		body:           map[string]any{},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
-		idempotencyKey: "idem-preview-session-escape",
-	})
-	if create.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d (%s)", create.Code, create.Body.String())
-	}
-
-	var payload struct {
-		PreviewURL string `json:"preview_url"`
-	}
-	if err := json.Unmarshal(create.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode preview session response: %v", err)
-	}
-
-	escape := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: payload.PreviewURL + "/..%2F..%2Fsecret.txt"})
-	if escape.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for escaping path, got %d (%s)", escape.Code, escape.Body.String())
-	}
-}
-
-func TestServerPreviewSessionExpires(t *testing.T) {
-	t.Parallel()
-
-	now := time.Date(2026, 3, 2, 16, 0, 0, 0, time.UTC)
-	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
-		Now: func() time.Time {
-			return now
-		},
-		PreviewSessionTTL: time.Second,
-	})
-	runID := seedRunViaAPI(t, handler)
-	seedPreviewBundle(t, db, runID)
-
-	create := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/artifacts/artifact-html-root/preview-session",
-		body:           map[string]any{},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
-		idempotencyKey: "idem-preview-session-expiry",
-	})
-	if create.Code != http.StatusCreated {
-		t.Fatalf("expected 201, got %d (%s)", create.Code, create.Body.String())
-	}
-
-	var payload struct {
-		PreviewURL string `json:"preview_url"`
-	}
-	if err := json.Unmarshal(create.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode preview session response: %v", err)
-	}
-
-	now = now.Add(2 * time.Second)
-	expired := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: payload.PreviewURL})
-	if expired.Code != http.StatusNotFound {
-		t.Fatalf("expected expired preview 404, got %d (%s)", expired.Code, expired.Body.String())
-	}
-}
-
-func TestServerPreviewSessionRejectsUnexpectedRequestFields(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunViaAPI(t, handler)
-	seedPreviewBundle(t, db, runID)
-
-	create := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/artifacts/artifact-html-root/preview-session",
-		body:           map[string]any{"unexpected": true},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
-		idempotencyKey: "idem-preview-session-invalid-body",
-	})
-	if create.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for unexpected preview-session request fields, got %d (%s)", create.Code, create.Body.String())
 	}
 }

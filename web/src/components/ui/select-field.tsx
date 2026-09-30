@@ -1,4 +1,5 @@
 import { cn } from "@/lib/utils";
+import { fieldClass, fieldLabelClass } from "./field-styles";
 import { PopoverListbox, type PopoverListboxItem } from "./popover-listbox";
 
 export type SelectOption = {
@@ -44,7 +45,7 @@ export function SelectField({
   return (
     <div className={cn("relative", className)}>
       {label ? (
-        <label htmlFor={id} className={cn("mb-1.5 block text-sm font-medium", labelClassName)}>
+        <label htmlFor={id} className={cn(fieldLabelClass, labelClassName)}>
           {label}
         </label>
       ) : null}
@@ -54,7 +55,8 @@ export function SelectField({
         triggerAriaLabel={label || undefined}
         triggerDisabled={disabled}
         triggerClassName={cn(
-          "w-full truncate rounded-md border border-border bg-background px-3 py-2 text-left text-sm transition-colors focus:border-gold focus:outline-none focus:ring-1 focus:ring-gold",
+          fieldClass,
+          "truncate text-left",
           disabled ? "cursor-not-allowed opacity-50" : "hover:border-border/80",
           selected ? "text-foreground" : "text-foreground-subtle",
           triggerClassName,

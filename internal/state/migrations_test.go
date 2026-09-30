@@ -621,7 +621,7 @@ func TestMigrationConstraints(t *testing.T) {
 		}
 	})
 
-	t.Run("planning_operations_allow_bootstrap_context_alongside_interactive_operation", func(t *testing.T) {
+	t.Run("planning_operations_scope_active_slots_by_operation_type", func(t *testing.T) {
 		_, err := db.Exec(`INSERT INTO planning_sessions (planning_session_id, title, title_state, lifecycle_state, conversation_state, active_leaf_message_id, current_operation_id, current_draft_id, context_snapshot_id, project_root, model_selection_json, created_at, updated_at) VALUES ('ps_bootstrap', 'session', 'custom', 'active', 'processing', NULL, 'po_reply_active', NULL, NULL, '/tmp/project', '{}', '2026-03-01T12:10:00Z', '2026-03-01T12:10:00Z')`)
 		if err != nil {
 			t.Fatalf("insert planning session seed row: %v", err)
@@ -632,9 +632,9 @@ func TestMigrationConstraints(t *testing.T) {
 			t.Fatalf("insert interactive operation seed row: %v", err)
 		}
 
-		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_bootstrap_active', 'po_bootstrap_active', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
-		if err != nil {
-			t.Fatalf("expected bootstrap_context operation to coexist with the active interactive slot, got %v", err)
+		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_unknown_type', 'po_unknown_type', 'ps_bootstrap', 'bootstrap_context', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:02Z', NULL, NULL)`)
+		if err == nil {
+			t.Fatal("expected an operation type outside the supported set to be rejected")
 		}
 
 		_, err = db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_expires_at, lease_version, last_heartbeat_at, error, result_ref, created_at, started_at, finished_at) VALUES ('po_formalize_blocked', 'po_formalize_blocked', 'ps_bootstrap', 'formalize', 'queued', '{}', '', NULL, 0, NULL, NULL, NULL, '2026-03-01T12:10:03Z', NULL, NULL)`)
@@ -785,8 +785,9 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 	if strings.Join(canonicalNames, ",") != strings.Join(scaffoldNames, ",") {
 		t.Fatalf("canonical/scaffold migration names differ: canonical=%v scaffold=%v", canonicalNames, scaffoldNames)
 	}
-	if len(canonicalNames) == 0 || canonicalNames[0] != "0001_initial_schema.up.sql" {
-		t.Fatalf("expected canonical migrations to start with the collapsed baseline migration, got %v", canonicalNames)
+	expectedNames := []string{"0001_initial_schema.up.sql", "0002_events_execution_activity_index.up.sql", "0003_external_sources_and_idempotency_retention.up.sql"}
+	if strings.Join(canonicalNames, ",") != strings.Join(expectedNames, ",") {
+		t.Fatalf("expected only consolidated canonical migrations, got %v", canonicalNames)
 	}
 
 	for _, name := range canonicalNames {
@@ -804,7 +805,115 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 		if string(canonicalMigration) != string(scaffoldMigration) {
 			t.Fatalf("scaffold migration %s must match canonical migration", name)
 		}
+		if name == "0003_external_sources_and_idempotency_retention.up.sql" {
+			upper := strings.ToUpper(string(canonicalMigration))
+			if strings.Contains(upper, "ALTER TABLE") || strings.Contains(upper, "_LEGACY") {
+				t.Fatal("consolidated external migration must be create-only without legacy rebuilds")
+			}
+		}
 	}
+}
+
+func TestFreshDatabaseGetsFinalExternalSchema(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	names, err := dbmigrations.List()
+	if err != nil {
+		t.Fatalf("list migrations: %v", err)
+	}
+	migrations := make([]SQLMigration, 0, len(names))
+	for _, name := range names {
+		raw, err := dbmigrations.Read(name)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", name, err)
+		}
+		migrations = append(migrations, SQLMigration{Name: name, SQL: raw})
+	}
+	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 8, 15, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("apply consolidated migrations: %v", err)
+	}
+
+	for _, column := range []string{"credential_strategy", "app_slug", "credential_generation", "validated_generation"} {
+		if !columnExists(t, db, "external_connections", column) {
+			t.Fatalf("external_connections.%s is missing", column)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO external_connections (connection_id,provider,credential_strategy,display_name,app_id,client_id,app_slug,credential_handle,lifecycle,health_class,credential_generation,validated_generation,created_at,updated_at) VALUES ('invalid-healthy','github','app_private_key','Invalid','1','Iv1','app','github-app:invalid-healthy','enabled','healthy',0,0,'2026-08-15T12:00:00Z','2026-08-15T12:00:00Z')`); err == nil {
+		t.Fatal("schema accepted healthy connection with generation zero")
+	}
+	// Installation identity is a set the connection covers, not a column on it.
+	for _, column := range []string{"installation_id", "connection_id", "account_id", "account_login"} {
+		if !columnExists(t, db, "external_connection_installations", column) {
+			t.Fatalf("external_connection_installations.%s is missing", column)
+		}
+	}
+	for _, column := range []string{"installation_id", "installation_account_id", "installation_account_login"} {
+		if columnExists(t, db, "external_connections", column) {
+			t.Fatalf("external_connections.%s survived the move to the installations table", column)
+		}
+	}
+	for _, column := range []string{"comments_etag", "fetched_comment_pages", "omitted_comment_count", "omitted_comment_pages"} {
+		if !columnExists(t, db, "external_source_snapshots", column) {
+			t.Fatalf("external_source_snapshots.%s is missing", column)
+		}
+	}
+	if !columnExists(t, db, "external_source_observations", "retry_at") {
+		t.Fatal("external_source_observations.retry_at is missing")
+	}
+	if columnExists(t, db, "external_source_observations", "change_summary_json") {
+		t.Fatal("unused external_source_observations.change_summary_json survived consolidation")
+	}
+	var linkHeadsSQL string
+	if err := db.QueryRow(`SELECT sql FROM sqlite_master WHERE type='table' AND name='external_source_link_heads'`).Scan(&linkHeadsSQL); err != nil {
+		t.Fatalf("read external_source_link_heads schema: %v", err)
+	}
+	for _, status := range []string{"revoked", "permission_mismatch", "timeout", "malformed_response", "oversized_response"} {
+		if !strings.Contains(linkHeadsSQL, "'"+status+"'") {
+			t.Fatalf("external_source_link_heads status enum is missing %q", status)
+		}
+	}
+	for _, column := range []string{"event_sequence", "hash_version"} {
+		if !columnExists(t, db, "external_integration_audit_events", column) {
+			t.Fatalf("external_integration_audit_events.%s is missing", column)
+		}
+	}
+
+	var sequence int
+	var hash string
+	if err := db.QueryRow(`SELECT last_sequence,last_hash FROM external_integration_audit_head WHERE head_id=1`).Scan(&sequence, &hash); err != nil {
+		t.Fatalf("read initial external audit head: %v", err)
+	}
+	if sequence != 0 || hash != AuditGenesisPrevHash {
+		t.Fatalf("initial external audit head=(%d,%q)", sequence, hash)
+	}
+
+	assertNoForeignKeyTo := func(table string, forbidden ...string) {
+		t.Helper()
+		rows, err := db.Query(`PRAGMA foreign_key_list(` + table + `)`)
+		if err != nil {
+			t.Fatalf("foreign keys for %s: %v", table, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var id, seq int
+			var target, from, to, onUpdate, onDelete, match string
+			if err := rows.Scan(&id, &seq, &target, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+				t.Fatalf("scan foreign key for %s: %v", table, err)
+			}
+			for _, forbiddenTarget := range forbidden {
+				if target == forbiddenTarget {
+					t.Fatalf("%s unexpectedly references detached target %s", table, target)
+				}
+			}
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("iterate foreign keys for %s: %v", table, err)
+		}
+	}
+	assertNoForeignKeyTo("external_source_links", "planning_sessions", "decrees")
+	assertNoForeignKeyTo("planning_external_source_adoptions", "planning_sessions")
+	assertNoForeignKeyTo("planning_operation_external_snapshots", "planning_operations")
 }
 
 func TestApplySQLMigrationsBaselineOnly(t *testing.T) {
@@ -1165,6 +1274,14 @@ func applyMigration(t *testing.T, db *sql.DB, fileName string) {
 	if err := ApplySQLMigrations(context.Background(), db, migrations, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)); err != nil {
 		t.Fatalf("apply migrations from %s: %v", fileName, err)
 	}
+}
+
+func bindTestPlanningContext(t *testing.T, db *sql.DB, sessionID string) string {
+	t.Helper()
+	snapshotID := "context_" + sessionID
+	mustExecArgs(t, db, `INSERT OR IGNORE INTO planning_context_snapshots (planning_context_snapshot_id,planning_session_id,summary_markdown,included_files_json,excluded_files_json,created_at) VALUES (?,?,'test context','[]','[]','2026-04-21T16:00:00Z')`, snapshotID, sessionID)
+	mustExecArgs(t, db, `UPDATE planning_sessions SET context_snapshot_id=? WHERE planning_session_id=?`, snapshotID, sessionID)
+	return snapshotID
 }
 
 func openTestDB(t *testing.T) *sql.DB {

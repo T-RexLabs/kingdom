@@ -29,6 +29,7 @@ export function PlannerThread({
   session,
   operation,
   connection,
+  operationQueryState,
   onSubmitReply,
   onRegenerate,
   onActivateVariant,
@@ -36,6 +37,13 @@ export function PlannerThread({
   session: PlanningSessionDetail;
   operation?: PlannerOperationState | null;
   connection?: PlannerConnection;
+  operationQueryState?: {
+    isLoading: boolean;
+    isError: boolean;
+    isRetrying: boolean;
+    error: unknown;
+    retry: () => void;
+  };
   onSubmitReply: (payload: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => Promise<void> | void;
   onRegenerate: (payload: { messageId: string; parentMessageId?: string }) => Promise<void> | void;
   onActivateVariant: (payload: { messageId: string }) => Promise<void> | void;
@@ -69,12 +77,12 @@ export function PlannerThread({
 
   const messagesError = messagePages.error;
   const operationError = operation?.error ?? null;
-  // Transport health is rendered separately from operation errors. SSE
-  // backoff/exhaustion is a recoverable network condition, not a server-
-  // attested operation failure — the poll fallback is still working in
-  // the background. The composer remains gated by conversation_state, so
-  // this banner is purely informational.
-  const transportFailing = connection?.state === "failed" || connection?.state === "retrying";
+  // Transport health is separate from canonical query health and from a
+  // server-attested operation failure.
+  const transportFailing =
+    !operation || (operation.status !== "done" && operation.status !== "error" && operation.status !== "cancelled")
+      ? connection?.state === "failed" || connection?.state === "retrying"
+      : false;
   // `cancelled` is a system event (server shutdown), not a planner
   // failure. Render it as a neutral notice instead of a red error chip
   // so the user reads it the way it actually means it.
@@ -196,7 +204,36 @@ export function PlannerThread({
           role="status"
           className="mx-4 mt-2 rounded-xl border border-border/40 bg-surface-raised/40 p-3 text-sm text-foreground-subtle"
         >
-          Connection lost — retrying in background. Your operation is still running.
+          Live updates disconnected. Kingdom is checking the operation in the background.
+        </div>
+      ) : null}
+
+      {operationQueryState?.isLoading ? (
+        <div
+          role="status"
+          className="mx-4 mt-2 rounded-xl border border-border/40 bg-surface-raised/40 p-3 text-sm text-foreground-subtle"
+        >
+          Checking planner operation...
+        </div>
+      ) : null}
+
+      {operationQueryState?.isError ? (
+        <div
+          role="alert"
+          className="mx-4 mt-2 flex items-center gap-3 rounded-xl border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
+        >
+          <span className="min-w-0 flex-1">
+            Could not refresh planner operation. Kingdom will retry automatically.
+            {operationQueryState.error instanceof Error ? ` ${operationQueryState.error.message}` : ""}
+          </span>
+          <button
+            type="button"
+            className="shrink-0 rounded-md border border-status-failed/40 bg-status-failed/10 px-2.5 py-1 text-xs font-medium transition-colors hover:bg-status-failed/20 disabled:cursor-not-allowed disabled:opacity-60"
+            disabled={operationQueryState.isRetrying}
+            onClick={operationQueryState.retry}
+          >
+            {operationQueryState.isRetrying ? "Retrying..." : "Retry"}
+          </button>
         </div>
       ) : null}
 

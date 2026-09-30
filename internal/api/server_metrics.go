@@ -40,7 +40,7 @@ type tokenByRolePayload struct {
 	OutputTokens        int64                 `json:"output_tokens"`
 	ReasoningTokens     int64                 `json:"reasoning_tokens"`
 	RecordCount         int                   `json:"record_count"`
-	ByModel             []tokenByModelPayload `json:"by_model,omitempty"`
+	ByModel             []tokenByModelPayload `json:"by_model"`
 }
 
 type tokenByModelPayload struct {
@@ -317,7 +317,7 @@ type realmAnalyticsExecutionDetailSnapshotPayload struct {
 var errRealmAnalyticsSelectedRunNotFound = errors.New("realm analytics selected run not found")
 
 func (s *Server) handleGetMetricsRuntime(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_metrics_runtime"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_metrics_runtime"); !ok {
 		return
 	}
 
@@ -338,7 +338,7 @@ func (s *Server) handleGetMetricsRuntime(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) handleGetDashboardSnapshot(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_dashboard_snapshot"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_dashboard_snapshot"); !ok {
 		return
 	}
 
@@ -352,7 +352,7 @@ func (s *Server) handleGetDashboardSnapshot(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleGetRealmAnalyticsSnapshot(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_realm_analytics_snapshot"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_realm_analytics_snapshot"); !ok {
 		return
 	}
 	snapshotAt := s.now().UTC()
@@ -371,7 +371,7 @@ func (s *Server) handleGetRealmAnalyticsSnapshot(w http.ResponseWriter, r *http.
 }
 
 func (s *Server) handleGetRealmAnalyticsExecutionDetailSnapshot(w http.ResponseWriter, r *http.Request) {
-	if _, _, ok := s.requireActorRoleHeaders(w, r, "api.get_realm_analytics_execution_detail_snapshot"); !ok {
+	if _, _, ok := s.requirePrincipal(w, r, "api.get_realm_analytics_execution_detail_snapshot"); !ok {
 		return
 	}
 	snapshotAt := s.now().UTC()

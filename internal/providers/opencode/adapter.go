@@ -89,6 +89,7 @@ type ExecuteRequest struct {
 	WorkspacePath             string `json:"workspace_path"`
 	ConfigDir                 string `json:"config_dir,omitempty"`
 	DatabasePath              string `json:"database_path,omitempty"`
+	InlineConfigContent       string `json:"-"`
 	Prompt                    string `json:"prompt"`
 	OccurredAt                string `json:"occurred_at"`
 	InvocationID              string `json:"invocation_id,omitempty"`
@@ -151,16 +152,16 @@ const (
 )
 
 type ExecuteActivityObservation struct {
-	Kind          ExecuteActivityKind `json:"kind"`
-	ProviderPartID string             `json:"provider_part_id,omitempty"`
-	OccurredAt    string              `json:"occurred_at,omitempty"`
-	ToolName   string              `json:"tool_name,omitempty"`
-	ToolStatus string              `json:"tool_status,omitempty"`
-	ToolTitle  string              `json:"tool_title,omitempty"`
-	ToolInput  string              `json:"tool_input,omitempty"`
-	Label      string              `json:"label,omitempty"`
-	Summary    string              `json:"summary,omitempty"`
-	RawText    string              `json:"raw_text,omitempty"`
+	Kind           ExecuteActivityKind `json:"kind"`
+	ProviderPartID string              `json:"provider_part_id,omitempty"`
+	OccurredAt     string              `json:"occurred_at,omitempty"`
+	ToolName       string              `json:"tool_name,omitempty"`
+	ToolStatus     string              `json:"tool_status,omitempty"`
+	ToolTitle      string              `json:"tool_title,omitempty"`
+	ToolInput      string              `json:"tool_input,omitempty"`
+	Label          string              `json:"label,omitempty"`
+	Summary        string              `json:"summary,omitempty"`
+	RawText        string              `json:"raw_text,omitempty"`
 }
 
 type CompletionReceipt struct {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -26,8 +27,12 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/bootstrapassets"
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/external"
+	githubexternal "kingdom/internal/external/github"
+	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/shutdown"
@@ -51,9 +56,13 @@ const (
 	strictSummonReadyTimeoutPad = 30 * time.Second
 
 	summonGracefulShutdownTimeout = 10 * time.Second
-	summonStopWaitTimeout         = 12 * time.Second
-	summonStopPollInterval        = 120 * time.Millisecond
-	summonStopSettleGrace         = 1200 * time.Millisecond
+	// summonProviderWarmTimeout bounds the post-listen provider warm. Warming
+	// is an optimisation, so it gets a generous ceiling and then gives up
+	// rather than holding a goroutine against a wedged provider.
+	summonProviderWarmTimeout = 60 * time.Second
+	summonStopWaitTimeout     = 12 * time.Second
+	summonStopPollInterval    = 120 * time.Millisecond
+	summonStopSettleGrace     = 1200 * time.Millisecond
 )
 
 var sqliteConnectionPragmas = []string{
@@ -69,21 +78,6 @@ type sqlitePoolOptions struct {
 }
 
 var errSummonForcedShutdown = errors.New("summon forced shutdown")
-
-var summonRegistryPathFunc = defaultSummonRegistryPath
-
-type summonInstanceRecord struct {
-	PID         int    `json:"pid"`
-	ConfigPath  string `json:"config_path"`
-	KingdomHome string `json:"kingdom_home"`
-	Listen      string `json:"listen"`
-	BasePath    string `json:"base_path"`
-	StartedAt   string `json:"started_at"`
-}
-
-type summonInstanceRegistry struct {
-	Instances []summonInstanceRecord `json:"instances"`
-}
 
 type summonStatusState string
 
@@ -123,14 +117,9 @@ type installConfig struct {
 		WorktreeRetention string `yaml:"worktree_retention"`
 	} `yaml:"publish"`
 	Server struct {
-		Listen            string `yaml:"listen"`
-		BasePath          string `yaml:"base_path"`
-		PreviewSessionTTL string `yaml:"preview_session_ttl"`
+		Listen   string `yaml:"listen"`
+		BasePath string `yaml:"base_path"`
 	} `yaml:"server"`
-	Operator struct {
-		ActorID string `yaml:"actor_id"`
-		RoleID  string `yaml:"role_id"`
-	} `yaml:"operator"`
 	Provider struct {
 		Engine          string `yaml:"engine"`
 		Strict          bool   `yaml:"strict"`
@@ -141,6 +130,12 @@ type installConfig struct {
 		AttachURL       string `yaml:"attach_url"`
 		SkipPermissions *bool  `yaml:"skip_permissions"`
 	} `yaml:"provider"`
+	GitHub struct {
+		SharedApp struct {
+			Slug     string `yaml:"slug"`
+			ClientID string `yaml:"client_id"`
+		} `yaml:"shared_app"`
+	} `yaml:"github"`
 }
 
 // summonAPIURL builds the canonical http://<listen><basePath> URL
@@ -387,6 +382,19 @@ func startupPhaseLabel(phase kingdom.StartupPhase) string {
 	}
 }
 
+// warmSummonProviderSurfaces performs the post-listen provider warm and
+// reports how long it took, so an operator watching summon can see the cost
+// being paid here instead of in their first planner session.
+func warmSummonProviderSurfaces(ctx context.Context, handler *api.Server, stderr io.Writer) {
+	warmCtx, cancel := context.WithTimeout(ctx, summonProviderWarmTimeout)
+	defer cancel()
+	started := time.Now()
+	handler.Warm(warmCtx)
+	if stderr != nil {
+		_, _ = fmt.Fprintf(stderr, "summon: provider surfaces warmed in %s\n", time.Since(started).Round(time.Millisecond))
+	}
+}
+
 func summonLogPath(kingdomHome string) string {
 	return filepath.Join(strings.TrimSpace(kingdomHome), "logs", defaultLogFileName)
 }
@@ -448,6 +456,9 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	kingdomHome := filepath.Join(absProjectPath, defaultInstallDirName)
 	if err := os.MkdirAll(kingdomHome, 0o755); err != nil {
 		return fmt.Errorf("create kingdom home: %w", err)
+	}
+	if _, err := localauth.EnsureCredential(kingdomHome); err != nil {
+		return err
 	}
 
 	if err := bootstrapassets.WriteScaffold(kingdomHome, absProjectPath, opts.force); err != nil {
@@ -511,7 +522,7 @@ func runCleanCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("remove kingdom home: %w", err)
 	}
 
-	_, err = fmt.Fprintf(stdout, "cleaned kingdom scaffold at %s\n", kingdomHome)
+	_, err = fmt.Fprintf(stdout, "cleaned kingdom scaffold at %s (including local secrets; API access must be reprovisioned and existing browser sessions are invalid)\n", kingdomHome)
 	return err
 }
 
@@ -559,6 +570,17 @@ func validateSummonRoute(args []string) error {
 }
 
 func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string) (err error) {
+	return runSummonWithDependencies(ctx, stdout, stderr, args, summonDependencies{})
+}
+
+// summonDependencies is an internal construction seam for deterministic
+// installed-mode validation. Production callers always use the zero value,
+// which preserves fixed GitHub.com egress and exposes no operator switch.
+type summonDependencies struct {
+	externalAdapter external.Adapter
+}
+
+func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string, deps summonDependencies) (err error) {
 	opts := summonOptions{}
 	flags := newFlagSet("summon")
 	readyTimeoutExplicit := false
@@ -646,17 +668,23 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 	if err != nil {
 		return fmt.Errorf("parse publish.worktree_retention: %w", err)
 	}
+	operatorCredential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome))
+	if err != nil {
+		return err
+	}
+	bootstrapPaths := bootstrapPathsFromConfig(cfg)
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
 		StartupContext:      ctx,
 		StartupReporter:     startupTracker.Report,
-		Paths:               bootstrapPathsFromConfig(cfg),
+		Paths:               bootstrapPaths,
 		ProviderEngine:      cfg.Provider.Engine,
 		ProviderStrict:      cfg.Provider.Strict,
 		GovernanceMode:      cfg.Provider.GovernanceMode,
 		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
 		PublishMode:         cfg.Publish.Mode,
+		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
 		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
 		WorktreeRetention:   worktreeRetention,
 		ProviderSession: opencode.SessionAdapterConfig{
@@ -672,18 +700,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		return fmt.Errorf("bootstrap runtime: %w", err)
 	}
 
-	if err := runtimeInstance.Start(ctx); err != nil {
-		return fmt.Errorf("start runtime: %w", err)
-	}
-	defer func() {
-		_ = runtimeInstance.Close()
-	}()
-
-	previewSessionTTL, err := time.ParseDuration(cfg.Server.PreviewSessionTTL)
-	if err != nil {
-		return fmt.Errorf("parse server.preview_session_ttl: %w", err)
-	}
-
 	// readInstallConfigFromStruct already normalized cfg.Server.BasePath,
 	// so every consumer below reads the canonical form directly. No
 	// local re-normalization, no scattered TrimRight fallbacks.
@@ -691,29 +707,37 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		DB:                         db,
 		StartupContext:             ctx,
 		BasePath:                   cfg.Server.BasePath,
-		PreviewSessionTTL:          previewSessionTTL,
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
 		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
+		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		RoleCommPolicyPath:         filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
 		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
 		DefaultPublishMode:         cfg.Publish.Mode,
+		OperatorCredential:         operatorCredential,
+		ExternalAdapter:            deps.externalAdapter,
+		GitHubSharedAppSlug:        cfg.GitHub.SharedApp.Slug,
+		GitHubSharedAppClientID:    cfg.GitHub.SharedApp.ClientID,
 	})
 	if err != nil {
 		return fmt.Errorf("build api handler: %w", err)
 	}
+	if err := runtimeInstance.Start(ctx); err != nil {
+		_ = apiHandler.Close(context.Background())
+		return fmt.Errorf("start runtime: %w", err)
+	}
+	defer func() {
+		_ = runtimeInstance.Close()
+	}()
 	runtimeCloser := shutdown.CompositeCloser{Closers: []shutdown.Closer{
 		apiHandler,
 		shutdown.CloseFunc(runtimeInstance.GracefulClose),
 	}}
 
-	handler := withSummonAccessLog(api.NewSPAMux(apiHandler, webui.Handler(), cfg.Server.BasePath), stderr)
-	server := &http.Server{
-		Addr:              cfg.Server.Listen,
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	handler := withSummonAccessLog(api.NewSPAMux(apiHandler, webui.Handler(cfg.Server.BasePath), cfg.Server.BasePath), stderr)
+	server := api.NewHTTPServer(cfg.Server.Listen, handler)
 
 	// Single graceful-path Coordinator owned by runSummon. Both
 	// the awaitSummonTermination graceful callback AND the deferred
@@ -752,12 +776,25 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 		errCh <- server.ListenAndServe()
 	}()
 
+	// Warm the provider surfaces the first operator would otherwise wait on:
+	// listing OpenCode models, and OpenCode's own one-time database and agent
+	// resolution. It runs beside the listener rather than before it, because
+	// readiness must not wait on OpenCode — a slow or broken provider has to
+	// leave the operator with a running Kingdom that can explain itself, not
+	// with a summon that hangs. For the same reason it reports through the log
+	// and never through the startup tracker, whose phases are a gate on
+	// readiness and are already past.
+	go warmSummonProviderSurfaces(ctx, apiHandler, stderr)
+
 	if err := waitForSummonReady(cfg, opts.readyTimeout, errCh, ""); err != nil {
 		// The deferred safety-net above owns shutdown. Returning
 		// here drains apiHandler + server through the lifted
 		// Coordinator instead of doing a duplicate
 		// server.Shutdown(...) here that would muddy ownership.
 		return err
+	}
+	if err := ensureWorkflowSeeds(ctx, cfg); err != nil {
+		return fmt.Errorf("ensure workflow seeds: %w", err)
 	}
 	if err := registerSummonInstance(summonInstanceRecord{
 		PID:         os.Getpid(),
@@ -777,10 +814,6 @@ func runSummon(ctx context.Context, stdout io.Writer, stderr io.Writer, args []s
 
 	if _, err := fmt.Fprintf(stdout, "kingdom summoned\n  api: %s\n  ui: http://%s/\n", summonAPIURL(cfg), summonConnectAddress(cfg.Server.Listen)); err != nil {
 		return err
-	}
-
-	if err := ensureWorkflowSeeds(ctx, cfg); err != nil {
-		_, _ = fmt.Fprintf(stderr, "warning: workflow seeds unavailable: %v\n", err)
 	}
 
 	signalCh := make(chan os.Signal, 2)
@@ -1541,8 +1574,9 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		}
 
 		apiReq, _ := http.NewRequest(http.MethodGet, apiURL, nil)
-		apiReq.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
-		apiReq.Header.Set("X-Role-Id", cfg.Operator.RoleID)
+		if credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome)); err == nil {
+			apiReq.Header.Set("Authorization", "Bearer "+string(credential))
+		}
 
 		apiReady, err := probeSummonHealth(client, apiReq, serverErrCh, cfg.Server.Listen, startupLogPath)
 		if err != nil {
@@ -1550,7 +1584,17 @@ func waitForSummonReadyWithProcess(cfg installConfig, timeout time.Duration, pro
 		}
 
 		if apiReady {
-			return nil
+			if statePath == "" {
+				return nil
+			}
+			if state, ok, stateErr := loadSummonState(statePath); stateErr == nil && ok {
+				if state.State == summonStatusStateFailed {
+					return fmt.Errorf("summon startup failed: %s", strings.TrimSpace(state.LastError))
+				}
+				if state.State == summonStatusStateRunning {
+					return nil
+				}
+			}
 		}
 
 		time.Sleep(160 * time.Millisecond)
@@ -1925,32 +1969,107 @@ func ensureWorkflowSeeds(ctx context.Context, cfg installConfig) error {
 			return fmt.Errorf("encode workflow seed %q publish payload: %w", seed.Name, err)
 		}
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, summonAPIURL(cfg)+"/workflows/publish", strings.NewReader(string(encoded)))
+		credential, err := localauth.ReadCredential(localauth.CredentialPath(cfg.KingdomHome))
 		if err != nil {
 			return err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("X-Actor-Id", cfg.Operator.ActorID)
-		req.Header.Set("X-Role-Id", cfg.Operator.RoleID)
-		req.Header.Set("Idempotency-Key", newIdempotencyKey("summon-seed-workflow"))
-
-		resp, err := client.Do(req)
+		idempotencyKey, err := newIdempotencyKey("summon-seed-workflow")
 		if err != nil {
 			return err
 		}
+		published := false
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequestWithContext(ctx, http.MethodPost, summonAPIURL(cfg)+"/workflows/publish", bytes.NewReader(encoded))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set("Accept", "application/json")
+			req.Header.Set("Authorization", "Bearer "+string(credential))
+			req.Header.Set("Idempotency-Key", idempotencyKey)
 
-		bodyRaw, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if resp.StatusCode == http.StatusCreated || resp.StatusCode == http.StatusConflict {
-			continue
+			resp, err := client.Do(req)
+			if err != nil {
+				if attempt < 2 {
+					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+						return err
+					}
+					continue
+				}
+				return fmt.Errorf("publish workflow seed %q outcome is ambiguous: %w", seed.Name, err)
+			}
+			bodyRaw, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr != nil {
+				if attempt < 2 {
+					if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+						return err
+					}
+					continue
+				}
+				return fmt.Errorf("publish workflow seed %q response is ambiguous: %w", seed.Name, readErr)
+			}
+			if resp.StatusCode == http.StatusCreated || workflowSeedAlreadyExists(resp.StatusCode, bodyRaw) {
+				published = true
+				break
+			}
+			if resp.StatusCode == http.StatusConflict && canonicalErrorCode(bodyRaw) == string(errorcatalog.CodeIdempotencyPending) && attempt < 2 {
+				if err := waitForRetry(ctx, 100*time.Millisecond); err != nil {
+					return err
+				}
+				continue
+			}
+			return fmt.Errorf("publish workflow seed %q failed: status=%d body=%s", seed.Name, resp.StatusCode, strings.TrimSpace(string(bodyRaw)))
 		}
-
-		return fmt.Errorf("publish workflow seed %q failed: status=%d body=%s", seed.Name, resp.StatusCode, strings.TrimSpace(string(bodyRaw)))
+		if !published {
+			return fmt.Errorf("publish workflow seed %q remained pending", seed.Name)
+		}
 	}
 
 	return nil
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func canonicalErrorCode(body []byte) string {
+	return parseCanonicalError(body).Code
+}
+
+type canonicalErrorSummary struct {
+	Code          string
+	Message       string
+	CorrelationID string
+}
+
+func parseCanonicalError(body []byte) canonicalErrorSummary {
+	var envelope struct {
+		Error struct {
+			Code          string `json:"code"`
+			Message       string `json:"message"`
+			CorrelationID string `json:"correlation_id"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &envelope) != nil {
+		return canonicalErrorSummary{}
+	}
+	return canonicalErrorSummary{Code: envelope.Error.Code, Message: envelope.Error.Message, CorrelationID: envelope.Error.CorrelationID}
+}
+
+func workflowSeedAlreadyExists(status int, body []byte) bool {
+	errorSummary := parseCanonicalError(body)
+	return status == http.StatusConflict &&
+		errorSummary.Code == string(errorcatalog.CodeIdempotencyConflict) &&
+		errorSummary.CorrelationID == "api.publish_workflow" &&
+		errorSummary.Message == "workflow version already exists"
 }
 
 func withSummonAccessLog(next http.Handler, writer io.Writer) http.Handler {
@@ -1967,7 +2086,7 @@ func withSummonAccessLog(next http.Handler, writer io.Writer) http.Handler {
 			writer,
 			"summon http method=%s path=%s status=%d duration_ms=%d remote=%s\n",
 			r.Method,
-			r.URL.RequestURI(),
+			r.URL.EscapedPath(),
 			recorder.status,
 			time.Since(start).Milliseconds(),
 			r.RemoteAddr,
@@ -2006,9 +2125,6 @@ func defaultInstallConfig(kingdomHome string) installConfig {
 	}
 	cfg.Server.Listen = "127.0.0.1:8080"
 	cfg.Server.BasePath = "/api/v1"
-	cfg.Server.PreviewSessionTTL = "30m"
-	cfg.Operator.ActorID = "summon-system"
-	cfg.Operator.RoleID = "allfather"
 	cfg.Provider.Engine = "opencode"
 	cfg.Provider.Strict = true
 	cfg.Provider.GovernanceMode = "autonomous"
@@ -2016,6 +2132,8 @@ func defaultInstallConfig(kingdomHome string) installConfig {
 	cfg.Governance.AutonomousApprovals = boolPtr(true)
 	cfg.Publish.Mode = kingdom.PublishModeDirect
 	cfg.Publish.WorktreeRetention = workspace.DefaultRunWorktreeRetention.String()
+	cfg.GitHub.SharedApp.Slug = githubexternal.OfficialSharedAppSlug
+	cfg.GitHub.SharedApp.ClientID = githubexternal.OfficialSharedAppClientID
 	return cfg
 }
 
@@ -2056,7 +2174,9 @@ func readInstallConfig(path string) (installConfig, error) {
 	}
 
 	var cfg installConfig
-	if err := yaml.Unmarshal(raw, &cfg); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(string(raw)))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&cfg); err != nil {
 		return installConfig{}, fmt.Errorf("decode summon config: %w", err)
 	}
 	return readInstallConfigFromStruct(cfg)
@@ -2086,25 +2206,22 @@ func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
 	// must all see the canonical form. Normalizing here lets
 	// scattered TrimRight/TrimSpace fallback paths elsewhere be
 	// dropped — there's only one canonical form anywhere.
-	cfg.Server.BasePath = api.NormalizeBasePath(cfg.Server.BasePath)
-	if strings.TrimSpace(cfg.Server.PreviewSessionTTL) == "" {
-		cfg.Server.PreviewSessionTTL = "30m"
+	basePath, err := api.ValidateBasePath(cfg.Server.BasePath)
+	if err != nil {
+		return installConfig{}, fmt.Errorf("config server.base_path: %w", err)
 	}
-	if _, err := time.ParseDuration(cfg.Server.PreviewSessionTTL); err != nil {
-		return installConfig{}, fmt.Errorf("config server.preview_session_ttl must be a valid duration: %w", err)
-	}
-	if strings.TrimSpace(cfg.Operator.ActorID) == "" {
-		cfg.Operator.ActorID = "summon-system"
-	}
-	if strings.TrimSpace(cfg.Operator.RoleID) == "" {
-		cfg.Operator.RoleID = "allfather"
-	}
+	cfg.Server.BasePath = basePath
 	if strings.TrimSpace(cfg.Provider.Engine) == "" {
 		cfg.Provider.Engine = "opencode"
 	}
 
 	if strings.TrimSpace(cfg.Provider.Engine) != "opencode" {
 		return installConfig{}, fmt.Errorf("config provider.engine must be: opencode")
+	}
+	cfg.GitHub.SharedApp.Slug = strings.TrimSpace(cfg.GitHub.SharedApp.Slug)
+	cfg.GitHub.SharedApp.ClientID = strings.TrimSpace(cfg.GitHub.SharedApp.ClientID)
+	if (cfg.GitHub.SharedApp.Slug == "") != (cfg.GitHub.SharedApp.ClientID == "") {
+		return installConfig{}, fmt.Errorf("config github.shared_app.slug and github.shared_app.client_id must both be set or both be blank")
 	}
 
 	mode := strings.ToLower(strings.TrimSpace(cfg.Provider.GovernanceMode))
@@ -2313,156 +2430,4 @@ func readRunningPID(path string) (int, bool, error) {
 func isProcessRunning(pid int) bool {
 	err := syscall.Kill(pid, 0)
 	return err == nil || errors.Is(err, syscall.EPERM)
-}
-
-func defaultSummonRegistryPath() (string, error) {
-	cacheDir, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve user cache dir: %w", err)
-	}
-	return filepath.Join(cacheDir, "kingdom", defaultSummonRegistryFileName), nil
-}
-
-func loadSummonRegistry() (summonInstanceRegistry, string, error) {
-	registryPath, err := summonRegistryPathFunc()
-	if err != nil {
-		return summonInstanceRegistry{}, "", err
-	}
-	raw, err := os.ReadFile(registryPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return summonInstanceRegistry{}, registryPath, nil
-		}
-		return summonInstanceRegistry{}, registryPath, fmt.Errorf("read summon registry: %w", err)
-	}
-	registry := summonInstanceRegistry{}
-	if err := json.Unmarshal(raw, &registry); err != nil {
-		return summonInstanceRegistry{}, registryPath, fmt.Errorf("decode summon registry: %w", err)
-	}
-	cleaned := make([]summonInstanceRecord, 0, len(registry.Instances))
-	for _, item := range registry.Instances {
-		if item.PID <= 0 || !isProcessRunning(item.PID) {
-			continue
-		}
-		cleaned = append(cleaned, item)
-	}
-	registry.Instances = cleaned
-	if err := saveSummonRegistry(registryPath, registry); err != nil {
-		return summonInstanceRegistry{}, registryPath, err
-	}
-	return registry, registryPath, nil
-}
-
-func saveSummonRegistry(path string, registry summonInstanceRegistry) error {
-	if strings.TrimSpace(path) == "" {
-		return fmt.Errorf("summon registry path is required")
-	}
-	if len(registry.Instances) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove empty summon registry: %w", err)
-		}
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return fmt.Errorf("create summon registry directory: %w", err)
-	}
-	raw, err := json.MarshalIndent(registry, "", "  ")
-	if err != nil {
-		return fmt.Errorf("encode summon registry: %w", err)
-	}
-	if err := os.WriteFile(path, raw, 0o644); err != nil {
-		return fmt.Errorf("write summon registry: %w", err)
-	}
-	return nil
-}
-
-func registerSummonInstance(record summonInstanceRecord) error {
-	registry, registryPath, err := loadSummonRegistry()
-	if err != nil {
-		return err
-	}
-	cleaned := make([]summonInstanceRecord, 0, len(registry.Instances)+1)
-	replaced := false
-	for _, existing := range registry.Instances {
-		if existing.PID == record.PID {
-			cleaned = append(cleaned, record)
-			replaced = true
-			continue
-		}
-		cleaned = append(cleaned, existing)
-	}
-	if !replaced {
-		cleaned = append(cleaned, record)
-	}
-	registry.Instances = cleaned
-	return saveSummonRegistry(registryPath, registry)
-}
-
-func unregisterSummonInstance(pid int) error {
-	if pid <= 0 {
-		return nil
-	}
-	registry, registryPath, err := loadSummonRegistry()
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return err
-	}
-	cleaned := make([]summonInstanceRecord, 0, len(registry.Instances))
-	for _, item := range registry.Instances {
-		if item.PID == pid {
-			continue
-		}
-		cleaned = append(cleaned, item)
-	}
-	registry.Instances = cleaned
-	return saveSummonRegistry(registryPath, registry)
-}
-
-func listActiveSummonInstances() ([]summonInstanceRecord, error) {
-	registry, _, err := loadSummonRegistry()
-	if err != nil {
-		return nil, err
-	}
-	items := make([]summonInstanceRecord, len(registry.Instances))
-	copy(items, registry.Instances)
-	return items, nil
-}
-
-func findSummonInstanceForConfig(configPath, kingdomHome string) (*summonInstanceRecord, bool, error) {
-	items, err := listActiveSummonInstances()
-	if err != nil {
-		return nil, false, err
-	}
-	trimmedConfig := strings.TrimSpace(configPath)
-	trimmedHome := strings.TrimSpace(kingdomHome)
-	for _, item := range items {
-		if trimmedConfig != "" && strings.TrimSpace(item.ConfigPath) == trimmedConfig {
-			copyItem := item
-			return &copyItem, true, nil
-		}
-		if trimmedHome != "" && strings.TrimSpace(item.KingdomHome) == trimmedHome {
-			copyItem := item
-			return &copyItem, true, nil
-		}
-	}
-	return nil, false, nil
-}
-
-func findActiveInstallModeSummon() (summonInstanceRecord, bool) {
-	configPath := filepath.Join(defaultInstallDirName, defaultConfigFileName)
-	resolvedConfigPath, err := filepath.Abs(configPath)
-	if err != nil {
-		return summonInstanceRecord{}, false
-	}
-	installCfg, err := readInstallConfig(resolvedConfigPath)
-	if err != nil {
-		return summonInstanceRecord{}, false
-	}
-	record, found, err := findSummonInstanceForConfig(resolvedConfigPath, installCfg.KingdomHome)
-	if err != nil || !found || record == nil {
-		return summonInstanceRecord{}, false
-	}
-	return *record, true
 }

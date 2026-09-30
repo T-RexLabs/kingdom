@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -145,33 +147,85 @@ func TestOpenCodeProviderModelCatalogListTimesOutBoundedFetch(t *testing.T) {
 	}
 }
 
-func TestOpenCodeProviderModelCatalogSnapshotReturnsStaleCacheOnFetchFailure(t *testing.T) {
+func TestOpenCodeProviderModelCatalogSnapshotServesCacheWhileRevalidating(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
+	release := make(chan struct{})
+	catalog := &openCodeProviderModelCatalog{
+		binaryPath:   "opencode",
+		now:          func() time.Time { return now.Add(2 * time.Minute) },
+		ttl:          60 * time.Second,
+		fetchTimeout: 2 * time.Second,
+		cachedAt:     now,
+		cachedRows:   []gen.ProviderModel{cachedProviderModel()},
+		refreshed:    make(chan struct{}, 1),
+		execVerbose: func(_ context.Context, _ string, _ bool) ([]byte, error) {
+			<-release
+			return []byte(`
+{
+  "id": "gpt-5.4-mini",
+  "providerID": "github-copilot",
+  "name": "GPT-5.4-Mini"
+}
+`), nil
+		},
+	}
+
+	// A read past the TTL must not wait on the subprocess: an aged cache is
+	// still a usable model list, and blocking here is what used to disable the
+	// model selectors for seconds at a time.
+	snapshot, err := catalog.Snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("snapshot provider models: %v", err)
+	}
+	if snapshot.Status != ProviderModelCatalogStatusFresh {
+		t.Fatalf("expected an aged cache to still read as fresh, got %q", snapshot.Status)
+	}
+	if len(snapshot.Items) != 1 || snapshot.Items[0].Id != "github-copilot/gpt-5.3-codex" {
+		t.Fatalf("expected the cached rows, got %#v", snapshot.Items)
+	}
+
+	close(release)
+	awaitBackgroundRefresh(t, catalog)
+
+	refreshed, err := catalog.Snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("snapshot provider models after revalidation: %v", err)
+	}
+	if len(refreshed.Items) != 1 || refreshed.Items[0].Id != "github-copilot/gpt-5.4-mini" {
+		t.Fatalf("expected the revalidated rows, got %#v", refreshed.Items)
+	}
+}
+
+func TestOpenCodeProviderModelCatalogSnapshotReportsFailedRevalidationOnNextRead(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 30, 10, 0, 0, 0, time.UTC)
 	catalog := &openCodeProviderModelCatalog{
-		binaryPath: "opencode",
-		now: func() time.Time {
-			return now.Add(2 * time.Minute)
-		},
+		binaryPath:   "opencode",
+		now:          func() time.Time { return now.Add(2 * time.Minute) },
 		ttl:          60 * time.Second,
 		fetchTimeout: 25 * time.Millisecond,
 		cachedAt:     now,
-		cachedRows: []gen.ProviderModel{{
-			Id:           "github-copilot/gpt-5.3-codex",
-			ProviderId:   "github-copilot",
-			ProviderName: "GitHub Copilot",
-			ModelName:    "GPT-5.3-Codex",
-		}},
+		cachedRows:   []gen.ProviderModel{cachedProviderModel()},
+		refreshed:    make(chan struct{}, 1),
 		execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
 			<-ctx.Done()
 			return nil, ctx.Err()
 		},
 	}
 
+	if _, err := catalog.Snapshot(context.Background(), false); err != nil {
+		t.Fatalf("snapshot provider models: %v", err)
+	}
+	awaitBackgroundRefresh(t, catalog)
+
+	// Revalidating off the request path must not mean revalidation failures go
+	// unreported: the next read is where the operator hears about it.
 	snapshot, err := catalog.Snapshot(context.Background(), false)
 	if err != nil {
-		t.Fatalf("snapshot provider models: %v", err)
+		t.Fatalf("snapshot provider models after failed revalidation: %v", err)
 	}
 	if snapshot.Status != ProviderModelCatalogStatusStale {
 		t.Fatalf("expected stale provider model catalog status, got %q", snapshot.Status)
@@ -181,5 +235,112 @@ func TestOpenCodeProviderModelCatalogSnapshotReturnsStaleCacheOnFetchFailure(t *
 	}
 	if snapshot.FailureReason != ProviderModelCatalogFailureReasonTimeout {
 		t.Fatalf("expected timeout failure reason, got %q", snapshot.FailureReason)
+	}
+	// The message reaches the model selector verbatim, so it has to read as
+	// operator guidance rather than as the Go error that caused it.
+	if strings.Contains(snapshot.FailureMessage, "context deadline exceeded") {
+		t.Fatalf("expected operator guidance, got raw error text: %q", snapshot.FailureMessage)
+	}
+	if !strings.Contains(snapshot.FailureMessage, "already had") {
+		t.Fatalf("expected the message to say cached models are still in use, got %q", snapshot.FailureMessage)
+	}
+}
+
+func TestOpenCodeProviderModelCatalogSnapshotBlocksOnlyOnAnEmptyCache(t *testing.T) {
+	t.Parallel()
+
+	catalog := &openCodeProviderModelCatalog{
+		binaryPath:   "opencode",
+		now:          time.Now,
+		ttl:          60 * time.Second,
+		fetchTimeout: 2 * time.Second,
+		execVerbose: func(_ context.Context, _ string, _ bool) ([]byte, error) {
+			return []byte(`
+{
+  "id": "gpt-5.4-mini",
+  "providerID": "github-copilot",
+  "name": "GPT-5.4-Mini"
+}
+`), nil
+		},
+	}
+
+	snapshot, err := catalog.Snapshot(context.Background(), false)
+	if err != nil {
+		t.Fatalf("snapshot provider models: %v", err)
+	}
+	if snapshot.Status != ProviderModelCatalogStatusFresh || len(snapshot.Items) != 1 {
+		t.Fatalf("expected the first read to fill the cache synchronously, got %#v", snapshot)
+	}
+}
+
+func cachedProviderModel() gen.ProviderModel {
+	return gen.ProviderModel{
+		Id:           "github-copilot/gpt-5.3-codex",
+		ProviderId:   "github-copilot",
+		ProviderName: "GitHub Copilot",
+		ModelName:    "GPT-5.3-Codex",
+	}
+}
+
+func awaitBackgroundRefresh(t *testing.T, catalog *openCodeProviderModelCatalog) {
+	t.Helper()
+	select {
+	case <-catalog.refreshed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("background provider model refresh did not complete")
+	}
+}
+
+func TestOpenCodeProviderModelCatalogSnapshotExplainsUnavailableWithoutRawError(t *testing.T) {
+	t.Parallel()
+
+	for _, testCase := range []struct {
+		name      string
+		execError error
+		reason    ProviderModelCatalogFailureReason
+	}{
+		{"timeout", context.DeadlineExceeded, ProviderModelCatalogFailureReasonTimeout},
+		{"binary missing", exec.ErrNotFound, ProviderModelCatalogFailureReasonBinaryMissing},
+		{"command failed", errors.New("exit status 1"), ProviderModelCatalogFailureReasonCommandFailed},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			catalog := &openCodeProviderModelCatalog{
+				binaryPath:   "opencode",
+				now:          time.Now,
+				ttl:          60 * time.Second,
+				fetchTimeout: 25 * time.Millisecond,
+				execVerbose: func(ctx context.Context, _ string, _ bool) ([]byte, error) {
+					if errors.Is(testCase.execError, context.DeadlineExceeded) {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					}
+					return nil, testCase.execError
+				},
+			}
+
+			snapshot, err := catalog.Snapshot(context.Background(), true)
+			if err != nil {
+				t.Fatalf("snapshot provider models: %v", err)
+			}
+			if snapshot.Status != ProviderModelCatalogStatusUnavailable {
+				t.Fatalf("expected unavailable status, got %q", snapshot.Status)
+			}
+			if snapshot.FailureReason != testCase.reason {
+				t.Fatalf("expected %q failure reason, got %q", testCase.reason, snapshot.FailureReason)
+			}
+			if snapshot.FailureMessage == "" {
+				t.Fatal("expected an operator-facing failure message")
+			}
+			// Raw causes are diagnostics, not operator copy. They must not be
+			// what the model selector shows.
+			for _, leak := range []string{"context deadline exceeded", "executable file not found", "exit status"} {
+				if strings.Contains(snapshot.FailureMessage, leak) {
+					t.Fatalf("expected operator guidance, got raw error text %q in %q", leak, snapshot.FailureMessage)
+				}
+			}
+		})
 	}
 }

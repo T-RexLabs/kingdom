@@ -1,11 +1,47 @@
 import { render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { useRef, useState } from "react";
+import { describe, expect, it, vi } from "vitest";
 import { OVERLAY_ROOT_ID, OVERLAY_Z_INDEX, SCENE_ROOT_ID } from "@/lib/overlay-system";
 import { ModalDialog } from "./modal-dialog";
 import { PopoverListbox } from "./popover-listbox";
 
 describe("modal dialog", () => {
+	it("moves focus into the dialog before hiding the scene", async () => {
+		const user = userEvent.setup();
+		const sceneRoot = document.getElementById(SCENE_ROOT_ID) as HTMLElement;
+		const overlayRoot = document.getElementById(OVERLAY_ROOT_ID) as HTMLElement;
+		let focusWhenSceneWasHidden: Element | null = null;
+		const originalSetAttribute = sceneRoot.setAttribute.bind(sceneRoot);
+		vi.spyOn(sceneRoot, "setAttribute").mockImplementation((name, value) => {
+			if (name === "aria-hidden" && value === "true") {
+				focusWhenSceneWasHidden = document.activeElement;
+			}
+			originalSetAttribute(name, value);
+		});
+
+		function Harness() {
+			const [open, setOpen] = useState(false);
+			return (
+				<>
+					<button type="button" onClick={() => setOpen(true)}>Open modal</button>
+					<ModalDialog open={open} onClose={() => setOpen(false)} ariaLabel="Focus modal" panelClassName="w-full max-w-sm">
+						<button type="button">Primary action</button>
+					</ModalDialog>
+				</>
+			);
+		}
+
+		const view = render(<Harness />, { container: sceneRoot });
+		const opener = view.getByRole("button", { name: "Open modal" });
+		await user.click(opener);
+
+		const action = within(overlayRoot).getByRole("button", { name: "Primary action" });
+		expect(action).toHaveFocus();
+		expect(overlayRoot).toContainElement(focusWhenSceneWasHidden as HTMLElement | null);
+		expect(sceneRoot).not.toContainElement(focusWhenSceneWasHidden as HTMLElement | null);
+	});
+
 	it("renders into the shared overlay root and obscures only the scene root", () => {
 		const view = render(
 			<ModalDialog open onClose={() => {}} ariaLabel="Focus modal" panelClassName="w-full max-w-sm">
@@ -58,6 +94,35 @@ describe("modal dialog", () => {
 
 		await waitFor(() => {
 			expect(view.getByRole("button", { name: "Open modal" })).toHaveFocus();
+		});
+	});
+
+	it("uses the supplied post-close focus target when it appears with the recovery state", async () => {
+		const user = userEvent.setup();
+		function Harness() {
+			const [open, setOpen] = useState(true);
+			const resumeRef = useRef<HTMLButtonElement | null>(null);
+			return (
+				<>
+					{!open ? <button ref={resumeRef} type="button">Resume Setup</button> : null}
+					<ModalDialog
+						open={open}
+						onClose={() => setOpen(false)}
+						ariaLabel="Focus modal"
+						panelClassName="w-full max-w-sm"
+						getFinalFocus={() => resumeRef.current}
+					>
+						<button type="button" onClick={() => setOpen(false)}>Close modal</button>
+					</ModalDialog>
+				</>
+			);
+		}
+
+		render(<Harness />);
+		await user.click(within(document.getElementById(OVERLAY_ROOT_ID) as HTMLElement).getByRole("button", { name: "Close modal" }));
+
+		await waitFor(() => {
+			expect(document.activeElement).toHaveAccessibleName("Resume Setup");
 		});
 	});
 

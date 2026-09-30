@@ -12,9 +12,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,6 +26,7 @@ import (
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/idempotency"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil/planningfixture"
@@ -152,9 +154,15 @@ type requestSpec struct {
 	method         string
 	path           string
 	body           map[string]any
-	actorID        string
-	roleID         string
+	headers        map[string]string
 	idempotencyKey string
+}
+
+const apiTestOperatorCredential = "api-test-operator-credential"
+
+func authenticateAPITestRequest(req *http.Request) {
+	req.RemoteAddr = "127.0.0.1:49152"
+	req.Header.Set("Authorization", "Bearer "+apiTestOperatorCredential)
 }
 
 func performJSONRequest(t *testing.T, handler http.Handler, spec requestSpec) *httptest.ResponseRecorder {
@@ -170,17 +178,15 @@ func performJSONRequest(t *testing.T, handler http.Handler, spec requestSpec) *h
 	}
 
 	req := httptest.NewRequest(spec.method, spec.path, body)
+	authenticateAPITestRequest(req)
+	for name, value := range spec.headers {
+		req.Header.Set(name, value)
+	}
 	if spec.body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if spec.actorID != "" {
-		req.Header.Set("X-Actor-Id", spec.actorID)
-	}
-	if spec.roleID != "" {
-		req.Header.Set("X-Role-Id", spec.roleID)
-	}
 	if spec.idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", spec.idempotencyKey)
+		req.Header.Set("Idempotency-Key", testIdempotencyKey(t, spec.idempotencyKey, time.Now()))
 	}
 
 	res := httptest.NewRecorder()
@@ -188,9 +194,45 @@ func performJSONRequest(t *testing.T, handler http.Handler, spec requestSpec) *h
 	return res
 }
 
+func testIdempotencyKey(t *testing.T, logicalKey string, now time.Time) string {
+	t.Helper()
+	if strings.HasPrefix(logicalKey, idempotency.Version+".") {
+		return logicalKey
+	}
+	digest := sha256.Sum256([]byte(logicalKey))
+	key, err := idempotency.GenerateWithReader("test", now.UTC().Truncate(time.Hour), idempotency.DefaultTTL, bytes.NewReader(digest[:]))
+	if err != nil {
+		t.Fatalf("generate test idempotency key: %v", err)
+	}
+	return key
+}
+
 func newAPIServerForTest(t *testing.T) (http.Handler, *sql.DB) {
 	t.Helper()
 	return newAPIServerForTestWithConfig(t, ServerConfig{})
+}
+
+func seedBrowserSessionForTest(t *testing.T, server *Server, rawOrigin string, expiresAt time.Time) (*http.Cookie, browserSession) {
+	t.Helper()
+	parsed, err := url.Parse(rawOrigin)
+	if err != nil {
+		t.Fatalf("parse browser session origin: %v", err)
+	}
+	origin, local, err := canonicalOrigin(parsed.Scheme, parsed.Host)
+	if err != nil || !local {
+		t.Fatalf("canonicalize browser session origin %q: local=%t err=%v", rawOrigin, local, err)
+	}
+	lease, _, err := server.auth.createOrReuseSession("", origin)
+	if err != nil {
+		t.Fatalf("create browser session: %v", err)
+	}
+	key := sha256.Sum256([]byte(lease.CookieToken))
+	server.auth.mu.Lock()
+	session := server.auth.sessions[key]
+	session.ExpiresAt = expiresAt
+	server.auth.sessions[key] = session
+	server.auth.mu.Unlock()
+	return &http.Cookie{Name: browserSessionCookieName(origin, server.basePath), Value: lease.CookieToken, Path: server.basePath + "/"}, session
 }
 
 func newAPIServerForTestWithConfig(t *testing.T, cfg ServerConfig) (http.Handler, *sql.DB) {
@@ -202,6 +244,9 @@ func newAPIServerForTestWithConfig(t *testing.T, cfg ServerConfig) (http.Handler
 	}
 
 	cfg.DB = db
+	if len(cfg.OperatorCredential) == 0 {
+		cfg.OperatorCredential = []byte(apiTestOperatorCredential)
+	}
 	if strings.TrimSpace(cfg.ProjectRoot) == "" {
 		cfg.ProjectRoot = t.TempDir()
 	}
@@ -315,11 +360,25 @@ func firstNonEmptyAPITest(values ...string) string {
 
 func repoRootForAPITests(t *testing.T) string {
 	t.Helper()
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve caller")
+	root := t.TempDir()
+	commands := [][]string{
+		{"git", "init", "-q", root},
+		{"git", "-C", root, "config", "user.name", "Kingdom Tests"},
+		{"git", "-C", root, "config", "user.email", "kingdom-tests@invalid.local"},
 	}
-	return filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("test repository\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	commands = append(commands,
+		[]string{"git", "-C", root, "add", "README.md"},
+		[]string{"git", "-C", root, "commit", "-q", "-m", "test fixture"},
+	)
+	for _, args := range commands {
+		if output, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
+			t.Fatalf("prepare git test repository: %v (%s)", err, output)
+		}
+	}
+	return root
 }
 
 func (s staticProviderModelCatalog) List(_ context.Context, _ bool) ([]gen.ProviderModel, error) {
@@ -422,8 +481,6 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 			"decree_title": "Seed decree",
 			"decree_text":  "Seed text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-seed-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -448,8 +505,6 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 				"edges":       []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-seed-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -471,8 +526,6 @@ func seedRunViaAPI(t *testing.T, handler http.Handler, opts ...seedRunOption) st
 		method:         http.MethodPost,
 		path:           "/api/v1/runs",
 		body:           runBody,
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-seed-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -496,8 +549,6 @@ func seedDecree(t *testing.T, handler http.Handler) string {
 			"decree_title": "Seed decree",
 			"decree_text":  "Seed text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-seed-decree",
 	})
 	if res.Code != http.StatusCreated {
@@ -529,8 +580,6 @@ func seedWorkflow(t *testing.T, handler http.Handler, workflowID string) {
 				"edges": []map[string]any{},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-seed-workflow-" + workflowID,
 	})
 	if res.Code != http.StatusCreated {
@@ -548,8 +597,6 @@ func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) stri
 			"decree_title": "Linear replay decree",
 			"decree_text":  "Linear replay text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-linear-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -587,8 +634,6 @@ func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) stri
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-linear-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -603,8 +648,6 @@ func seedRunWithLinearExecutionWorkflow(t *testing.T, handler http.Handler) stri
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-linear-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -632,8 +675,6 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 			"decree_title": "Custom plan replay decree",
 			"decree_text":  "Custom plan replay text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-custom-plan-decree-" + trimmedPlanNodeID,
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -667,8 +708,6 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-custom-plan-workflow-" + trimmedPlanNodeID,
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -683,8 +722,6 @@ func seedRunWithCustomPlanDraftingWorkflow(t *testing.T, handler http.Handler, p
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-custom-plan-run-" + trimmedPlanNodeID,
 	})
 	if runRes.Code != http.StatusCreated {
@@ -708,8 +745,6 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 			"decree_title": "Multi plan decree",
 			"decree_text":  "Multi plan decree text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-multi-plan-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -746,8 +781,6 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-multi-plan-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -762,8 +795,6 @@ func seedRunWithMultiPlanDraftingWorkflow(t *testing.T, handler http.Handler) st
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-multi-plan-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -787,8 +818,6 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 			"decree_title": "Governance branch decree",
 			"decree_text":  "Governance branch text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-governance-branch-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -826,8 +855,6 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-governance-branch-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -842,8 +869,6 @@ func seedRunWithGovernanceBranchWorkflow(t *testing.T, handler http.Handler) str
 			"publish_mode":    "direct",
 			"model_selection": defaultTestRunModelSelectionBody(),
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-governance-branch-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -867,8 +892,6 @@ func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ..
 			"decree_title": "Planning wave decree",
 			"decree_text":  "Planning wave text",
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-planning-wave-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -902,8 +925,6 @@ func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ..
 				},
 			},
 		},
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-planning-wave-workflow",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -925,8 +946,6 @@ func seedRunWithPlanningWaveWorkflow(t *testing.T, handler http.Handler, opts ..
 		method:         http.MethodPost,
 		path:           "/api/v1/runs",
 		body:           runBody,
-		actorID:        "actor-1",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-planning-wave-run",
 	})
 	if runRes.Code != http.StatusCreated {
@@ -1201,63 +1220,6 @@ func assertLatestAttempt(t *testing.T, db *sql.DB, runID, nodeID string, expecte
 	}
 }
 
-func seedPreviewBundle(t *testing.T, db *sql.DB, runID string) {
-	t.Helper()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-preview-a', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed preview agent a: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent-preview-b', 'council-member', 'idle', NULL, 0, ?, ?)`, now, now); err != nil {
-		t.Fatalf("seed preview agent b: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-preview-a', ?, 'kickoff', 1,1, 'succeeded', 'council-member', 'agent-preview-a', 1, NULL, NULL)`, runID); err != nil {
-		t.Fatalf("seed preview node run a: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('node-run-preview-b', ?, 'royal_closure', 1,1, 'succeeded', 'council-member', 'agent-preview-b', 1, NULL, NULL)`, runID); err != nil {
-		t.Fatalf("seed preview node run b: %v", err)
-	}
-
-	workspaceRoot := t.TempDir()
-	if _, err := db.Exec(`INSERT INTO workspaces (workspace_id, run_id, node_run_id, workspace_path, status, created_at, released_at) VALUES ('ws-preview-a', ?, 'node-run-preview-a', ?, 'released', ?, ?)`, runID, workspaceRoot, now, now); err != nil {
-		t.Fatalf("seed preview workspace a: %v", err)
-	}
-	if _, err := db.Exec(`INSERT INTO workspaces (workspace_id, run_id, node_run_id, workspace_path, status, created_at, released_at) VALUES ('ws-preview-b', ?, 'node-run-preview-b', ?, 'released', ?, ?)`, runID, workspaceRoot, now, now); err != nil {
-		t.Fatalf("seed preview workspace b: %v", err)
-	}
-
-	insertArtifact := func(artifactID string, nodeRunID string, attemptID string, artifactKind string, name string, mime string, relPath string, body string, createdAt string) {
-		t.Helper()
-		sum := sha256.Sum256([]byte(body))
-		checksum := hex.EncodeToString(sum[:])
-		if _, err := db.Exec(
-			`INSERT INTO artifacts (artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'council-member', ?)`,
-			artifactID,
-			runID,
-			nodeRunID,
-			attemptID,
-			artifactKind,
-			name,
-			mime,
-			relPath,
-			checksum,
-			len(body),
-			createdAt,
-		); err != nil {
-			t.Fatalf("seed preview artifact %s: %v", artifactID, err)
-		}
-		if _, err := db.Exec(`INSERT INTO artifact_contents (artifact_id, content, sha256, size_bytes, created_at) VALUES (?, ?, ?, ?, ?)`, artifactID, []byte(body), checksum, len(body), createdAt); err != nil {
-			t.Fatalf("seed preview artifact content %s: %v", artifactID, err)
-		}
-	}
-
-	htmlBody := `<!doctype html><html><head><link rel="stylesheet" href="./styles.css"></head><body><h1>Preview Bundle</h1><script src="./app.js"></script></body></html>`
-	insertArtifact("artifact-html-root", "node-run-preview-a", "attempt-preview-a", "deliverable", "index.html", "text/html", "web/index.html", htmlBody, now)
-	insertArtifact("artifact-css-primary", "node-run-preview-a", "attempt-preview-a", "deliverable", "styles.css", "text/css", "web/styles.css", "body { background: #123456; }", now)
-	insertArtifact("artifact-js-primary", "node-run-preview-a", "attempt-preview-a", "deliverable", "app.js", "application/javascript", "web/app.js", "console.log('preview bundle');", now)
-	insertArtifact("artifact-css-shadow", "node-run-preview-b", "attempt-preview-b", "verification", "styles.css", "text/css", "web/styles.css", "body { background: #ff0000; }", now)
-}
-
 func seedArtifactIdentityPair(t *testing.T, db *sql.DB, runID string) {
 	t.Helper()
 
@@ -1359,5 +1321,19 @@ func mustExecSQL(t *testing.T, db *sql.DB, query string, args ...any) {
 	t.Helper()
 	if _, err := db.Exec(query, args...); err != nil {
 		t.Fatalf("exec failed: %v\nquery: %s", err, query)
+	}
+}
+
+func bindAPIPlanningContext(t *testing.T, store *state.PlanningStore, sessionID string) {
+	t.Helper()
+	snapshotID := "context_" + sessionID
+	if _, err := store.CreateContextSnapshot(t.Context(), state.CreatePlanningContextSnapshotRequest{
+		PlanningContextSnapshotID: snapshotID, PlanningSessionID: sessionID, SummaryMarkdown: "test context",
+		IncludedFilesJSON: `[]`, ExcludedFilesJSON: `[]`, CreatedAt: "2026-06-12T09:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PublishContextSnapshot(t.Context(), sessionID, snapshotID, "2026-06-12T09:00:00Z"); err != nil {
+		t.Fatal(err)
 	}
 }

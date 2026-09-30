@@ -14,8 +14,6 @@ class CommonRunOptions:
     output_dir: Path
     timeout_seconds: int
     poll_interval_seconds: int
-    actor_id: str
-    role_id: str
     global_model: str
     agent_model_overrides: str
     max_execution_review_cycles: int
@@ -52,6 +50,7 @@ class WorkspacePaths:
     report_dir: Path
     config_path: Path
     db_path: Path
+    credential_path: Path
 
 
 @dataclass(frozen=True)

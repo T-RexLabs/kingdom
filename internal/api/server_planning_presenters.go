@@ -42,6 +42,12 @@ func handlePlanningError(w http.ResponseWriter, err error, authority string) {
 		errors.Is(err, planning.ErrSessionBusy),
 		errors.Is(err, state.ErrPlanningLeaseConflict):
 		writeCanonicalError(w, http.StatusConflict, errorcatalog.CodeIdempotencyConflict, err.Error(), authority, nil)
+	case errors.Is(err, state.ErrPlanningContextSnapshotUnavailable):
+		// Sessions are created with their context snapshot in one
+		// transaction, so an unresolvable pointer is a server-side invariant
+		// violation. It is not the caller's request to fix, and the raw
+		// message must not be handed back as a policy violation.
+		writeCanonicalError(w, http.StatusInternalServerError, errorcatalog.CodeInternalError, "planning session context snapshot is unavailable", authority, nil)
 	case errors.Is(err, planning.ErrServiceShuttingDown):
 		// 503 + Retry-After lets clients (UI auto-retry, smoke
 		// scripts, integration tests) re-issue the same request

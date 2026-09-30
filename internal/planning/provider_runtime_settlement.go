@@ -158,6 +158,7 @@ func providerSettlementForSuccess(invocationID string, metadata ProviderExecutio
 		"structured_payload_json": structuredPayloadJSON,
 		"output_text":             finalText,
 		"provider_session":        strings.TrimSpace(metadata.ProviderSessionID),
+		"provider_diagnostics":    providerDiagnosticsObject(metadata.ProviderDiagnosticsJSON),
 	})
 	return &state.FinalizePlanningProviderSettlementRequest{
 		SettlementID:                 fmt.Sprintf("settlement_%s", sanitizePlannerToken(trimmedInvocationID)),
@@ -192,17 +193,26 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 		SettledAt:                    settledAt,
 	}
 	payload, _ := json.Marshal(map[string]any{
-		"state":            strings.TrimSpace(firstNonEmpty(metadata.OutcomeState, plannerOutcomeStateForCancelled(cancelled))),
-		"reason_code":      request.FailureReasonCode,
-		"failure_text":     request.FailureReasonText,
-		"output_text":      strings.TrimSpace(metadata.FinalText),
-		"provider_session": strings.TrimSpace(metadata.ProviderSessionID),
+		"state":                strings.TrimSpace(firstNonEmpty(metadata.OutcomeState, plannerOutcomeStateForCancelled(cancelled))),
+		"reason_code":          request.FailureReasonCode,
+		"failure_text":         request.FailureReasonText,
+		"output_text":          strings.TrimSpace(metadata.FinalText),
+		"provider_session":     strings.TrimSpace(metadata.ProviderSessionID),
+		"provider_diagnostics": providerDiagnosticsObject(metadata.ProviderDiagnosticsJSON),
 	})
 	request.PrimaryEvidenceID = fmt.Sprintf("evidence_terminal_%s_%s", sanitizePlannerToken(*operation.ActiveProviderInvocationID), outcome)
 	request.PrimaryEvidenceKind = state.PlanningProviderCompletionEvidenceKindStreamObservation
 	request.PrimaryEvidencePayloadJSON = string(payload)
 	request.PrimaryEvidenceCreatedAt = settledAt
 	return request
+}
+
+func providerDiagnosticsObject(raw string) map[string]any {
+	diagnostics := map[string]any{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &diagnostics); err != nil || diagnostics == nil {
+		return map[string]any{}
+	}
+	return diagnostics
 }
 
 func providerMetadataFromError(err error) ProviderExecutionMetadata {

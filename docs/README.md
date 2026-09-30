@@ -10,6 +10,8 @@
 
 ## Reference Docs
 
+- [`github-connections-runbook.md`](github-connections-runbook.md): GitHub App setup, key lifecycle, recovery, and operator disclosures.
+
 - [`interfaces-overview.md`](interfaces-overview.md): the main web, CLI, API, metrics, and streaming interfaces
 - [`data-and-storage.md`](data-and-storage.md): durable data model and storage notes
 - [`errors-and-retries.md`](errors-and-retries.md): runtime error categories and retry behavior

@@ -245,7 +245,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider node wall-clock timeouts: %w", err)
 	}
-	firstEventTimeout, streamInactivityTimeout, err := parseProviderExecutionTimeouts(providerCfg.Timeouts.FirstEventTimeout, providerCfg.Timeouts.StreamInactivityTimeout)
+	firstEventTimeout, streamInactivityTimeout, err := providerCfg.ExecutionTimeouts()
 	if err != nil {
 		return nil, fmt.Errorf("parse provider execution timeouts: %w", err)
 	}
@@ -1285,34 +1285,6 @@ func parseCompletionReconcileTotalTimeout(raw string) (time.Duration, error) {
 		return 0, fmt.Errorf("completion_reconcile_total_timeout must be > 0")
 	}
 	return timeout, nil
-}
-
-func parseProviderExecutionTimeouts(firstEventRaw, streamInactivityRaw string) (time.Duration, time.Duration, error) {
-	firstEvent := strings.TrimSpace(firstEventRaw)
-	if firstEvent == "" {
-		return 0, 0, fmt.Errorf("first_event_timeout is required")
-	}
-	firstEventTimeout, err := time.ParseDuration(firstEvent)
-	if err != nil {
-		return 0, 0, fmt.Errorf("first_event_timeout parse failed: %w", err)
-	}
-	if firstEventTimeout <= 0 {
-		return 0, 0, fmt.Errorf("first_event_timeout must be > 0")
-	}
-
-	streamInactivity := strings.TrimSpace(streamInactivityRaw)
-	if streamInactivity == "" {
-		return 0, 0, fmt.Errorf("stream_inactivity_timeout is required")
-	}
-	streamInactivityTimeout, err := time.ParseDuration(streamInactivity)
-	if err != nil {
-		return 0, 0, fmt.Errorf("stream_inactivity_timeout parse failed: %w", err)
-	}
-	if streamInactivityTimeout <= 0 {
-		return 0, 0, fmt.Errorf("stream_inactivity_timeout must be > 0")
-	}
-
-	return firstEventTimeout, streamInactivityTimeout, nil
 }
 
 func parseProviderCancelTimeouts(graceRaw, forceRaw string) (time.Duration, time.Duration, error) {

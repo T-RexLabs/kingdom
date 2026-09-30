@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useState } from "react";
 
 interface RetainedDataOptions<TIdentity, TData> {
   identity: TIdentity;
@@ -24,17 +24,20 @@ export function useRetainedData<TIdentity, TData>({
   isPending,
   isFetching,
 }: RetainedDataOptions<TIdentity, TData>): RetainedDataState<TData> {
-  const lastSuccessfulRef = useRef<{ identity: TIdentity; data: TData } | null>(null);
+  const [lastSuccessful, setLastSuccessful] = useState<{ identity: TIdentity; data: TData } | null>(null);
 
-  useEffect(() => {
-    if (data !== undefined) {
-      lastSuccessfulRef.current = { identity, data };
-    }
-  }, [data, identity]);
+  if (
+    data !== undefined &&
+    (lastSuccessful === null ||
+      !Object.is(lastSuccessful.identity, identity) ||
+      !Object.is(lastSuccessful.data, data))
+  ) {
+    setLastSuccessful({ identity, data });
+  }
 
-  const hasRetainedMatch = lastSuccessfulRef.current !== null && !Object.is(lastSuccessfulRef.current.identity, identity);
+  const hasRetainedMatch = lastSuccessful !== null && !Object.is(lastSuccessful.identity, identity);
   const shouldRetainPrevious = data === undefined && isFetching && hasRetainedMatch;
-  const displayData = shouldRetainPrevious ? lastSuccessfulRef.current?.data : data;
+  const displayData = shouldRetainPrevious ? lastSuccessful.data : data;
 
   return {
     displayData,

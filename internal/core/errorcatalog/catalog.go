@@ -34,6 +34,8 @@ const (
 	CodeContainerOOMKilled     Code = "container_oom_killed"
 	CodeEventSequenceGap       Code = "event_sequence_gap"
 	CodeIdempotencyConflict    Code = "idempotency_conflict"
+	CodeIdempotencyKeyExpired  Code = "idempotency_key_expired"
+	CodeIdempotencyPending     Code = "idempotency_pending"
 )
 
 type RetryProfile struct {
@@ -64,6 +66,8 @@ var catalog = map[Code]RetryProfile{
 	CodeContainerOOMKilled:     {Category: CategoryRuntime, RetryClass: "conditional_limited", Retryable: true, EscalationTarget: "chancellor"},
 	CodeEventSequenceGap:       {Category: CategoryControlPlane, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
 	CodeIdempotencyConflict:    {Category: CategoryControlPlane, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
+	CodeIdempotencyKeyExpired:  {Category: CategoryControlPlane, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "chancellor"},
+	CodeIdempotencyPending:     {Category: CategoryControlPlane, RetryClass: "conditional_limited", Retryable: true, EscalationTarget: "chancellor"},
 }
 
 func AllCodes() []Code {

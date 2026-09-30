@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import type { ComponentProps, ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DashboardPage } from "./dashboard-page";
 
@@ -10,7 +10,9 @@ const apiFetchMock = vi.fn();
 const sparklineRenderSpy = vi.fn();
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, ...props }: any) => <a {...props}>{children}</a>,
+  Link: ({ children, to, ...props }: Omit<ComponentProps<"a">, "href"> & { to?: string }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
 }));
 
 vi.mock("@/components/ui/sparkline", async () => {
@@ -268,6 +270,7 @@ describe("DashboardPage", () => {
 	    render(<DashboardPage />, { wrapper: makeWrapper(queryClient) });
 
 	    await screen.findByText("Royal decree");
+	    await waitFor(() => expect(sparklineRenderSpy).toHaveBeenCalled());
 	    sparklineRenderSpy.mockClear();
 
 	    const snapshotRefresh = createDeferred<typeof dashboardSnapshot>();

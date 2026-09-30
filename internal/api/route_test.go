@@ -34,6 +34,27 @@ func TestNormalizeBasePath(t *testing.T) {
 	}
 }
 
+func TestValidateBasePathRejectsWebRouteCollisionsAndMalformedPaths(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{"/", "/connections", "/runs/internal", "/assets/api", "/healthz", "/api//v1", "/api/../v1", "/api/v1?debug=true"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateBasePath(raw); err == nil {
+				t.Fatalf("ValidateBasePath(%q) succeeded", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"v1", "/api/v1", "/internal/api"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Parallel()
+			if _, err := ValidateBasePath(raw); err != nil {
+				t.Fatalf("ValidateBasePath(%q): %v", raw, err)
+			}
+		})
+	}
+}
+
 // TestNewSPAMuxRoutesByBasePath verifies that API, healthz, and SPA routes
 // all respect the configured base path, including non-default values.
 func TestNewSPAMuxRoutesByBasePath(t *testing.T) {

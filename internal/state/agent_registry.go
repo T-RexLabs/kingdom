@@ -129,23 +129,23 @@ type CreateNodeAttemptRequest struct {
 }
 
 type RunParticipant struct {
-	AgentID         string
-	RoleID          string
-	DisplayName     string
-	Status          AgentStatus
-	ParentAgentID   sql.NullString
-	SpawnDepth      int
-	FirstSeenAt     string
+	AgentID       string
+	RoleID        string
+	DisplayName   string
+	Status        AgentStatus
+	ParentAgentID sql.NullString
+	SpawnDepth    int
+	FirstSeenAt   string
 }
 
 type AgentRecord struct {
-	AgentID         string
-	RoleID          string
-	DisplayName     string
-	Status          AgentStatus
-	ParentAgentID   sql.NullString
-	SpawnDepth      int
-	CreatedAt       string
+	AgentID       string
+	RoleID        string
+	DisplayName   string
+	Status        AgentStatus
+	ParentAgentID sql.NullString
+	SpawnDepth    int
+	CreatedAt     string
 }
 
 type AgentRegistry struct {

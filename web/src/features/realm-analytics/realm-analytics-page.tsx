@@ -1,4 +1,4 @@
-import { startTransition, useState, useMemo, useCallback, useDeferredValue, useEffect } from "react";
+import { startTransition, useState, useMemo, useDeferredValue, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -144,7 +144,7 @@ export function RealmAnalyticsPage() {
     select: (search) => search.window_minutes ?? 1440,
   });
 
-  const setWindowTotalMinutes = useCallback((totalMinutes: number) => {
+  const setWindowTotalMinutes = (totalMinutes: number) => {
     startTransition(() => {
       navigate({
         search: (previous) => ({
@@ -154,7 +154,7 @@ export function RealmAnalyticsPage() {
         replace: true,
       });
     });
-  }, [navigate]);
+  };
 
   const snapshotQuery = useRealmAnalyticsSnapshot(windowTotalMinutes);
   const retainedSnapshot = useRetainedData({
@@ -323,9 +323,7 @@ function RunAnalyticsSection({
 	windowLabel: string;
 	isLoading: boolean;
 }) {
-  const outcomeBars = useMemo<StackedBarDatum[]>(() => {
-	    if (!runAnalytics?.outcome_series) return [];
-	    return runAnalytics.outcome_series.map((b) => {
+  const outcomeBars = useMemo<StackedBarDatum[]>(() => runAnalytics?.outcome_series.map((b) => {
       // Shorten bucket labels for display
       const label =
 	        runAnalytics.bucket_type === "hour"
@@ -339,19 +337,14 @@ function RunAnalyticsSection({
           { key: "cancelled", value: b.cancelled, color: "var(--color-status-cancelled)" },
         ],
       };
-    });
-	  }, [runAnalytics?.outcome_series, runAnalytics?.bucket_type]);
+    }) ?? [], [runAnalytics]);
 
-  const durationByRoleBars = useMemo(() => {
-	    if (!runAnalytics?.duration_by_role) return [];
-	    return runAnalytics.duration_by_role.map((r) => ({
+  const durationByRoleBars = useMemo(() => runAnalytics?.duration_by_role.map((r) => ({
       label: roleTitle(r.role),
       value: r.avg_duration_seconds,
       color: roleColor(r.role),
-    }));
-	  }, [runAnalytics?.duration_by_role]);
+    })) ?? [], [runAnalytics]);
 
-  const formatDurationValue = useCallback((v: number) => formatDuration(v), []);
   const deferredOutcomeBars = useDeferredValue(outcomeBars);
   const deferredDurationByRoleBars = useDeferredValue(durationByRoleBars);
 
@@ -411,9 +404,9 @@ function RunAnalyticsSection({
           </CardHeader>
           <CardContent className="h-[250px] overflow-y-auto [scrollbar-gutter:stable]">
             <HorizontalBarChart
-	              ariaLabel="Average execution duration by role"
+              ariaLabel="Average execution duration by role"
               data={deferredDurationByRoleBars}
-              formatValue={formatDurationValue}
+              formatValue={formatDuration}
             />
           </CardContent>
         </Card>
@@ -519,13 +512,14 @@ function ExecutionDetailSection({ windowTotalMinutes }: { windowTotalMinutes: nu
     select: (search) => search.run_id ?? null,
   });
   const navigate = useNavigate({ from: "/realm-analytics" });
-  const setSelectedRunId = useCallback((runID: string | null) => {
+  const setSelectedRunId = (runID: string | null) => {
     startTransition(() => {
       navigate({
         search: (previous) => {
           if (!runID) {
-            const { run_id: _ignored, ...rest } = previous;
-            return rest;
+            const next = { ...previous };
+            Reflect.deleteProperty(next, "run_id");
+            return next;
           }
           return {
             ...previous,
@@ -535,7 +529,7 @@ function ExecutionDetailSection({ windowTotalMinutes }: { windowTotalMinutes: nu
         replace: true,
       });
     });
-  }, [navigate]);
+  };
 
   const executionDetailQuery = useRealmAnalyticsExecutionDetailSnapshot(windowTotalMinutes, selectedRunId);
   const retainedExecutionDetail = useRetainedData({
@@ -556,29 +550,23 @@ function ExecutionDetailSection({ windowTotalMinutes }: { windowTotalMinutes: nu
   const [showAdvancedTokenDetails, setShowAdvancedTokenDetails] = useState(false);
   const showSelectedRunSkeletons = retainedExecutionDetail.isInitialLoading && !executionDetail && !blockingError;
 
-  const scopedTokenStats = useMemo(() => {
-    return {
-      total: executionDetail?.tokens.derived_total_tokens ?? 0,
-      providerTotal: executionDetail?.tokens.provider_total_tokens ?? 0,
-      input: executionDetail?.tokens.input ?? 0,
-      output: executionDetail?.tokens.output ?? 0,
-      reasoning: executionDetail?.tokens.reasoning ?? 0,
-      cacheRead: executionDetail?.tokens.cache_read ?? 0,
-      cacheWrite: executionDetail?.tokens.cache_write ?? 0,
-      byRole: executionDetail?.tokens.by_role ?? [],
-    };
-  }, [executionDetail]);
+  const scopedTokenStats = useMemo(() => ({
+    total: executionDetail?.tokens.derived_total_tokens ?? 0,
+    providerTotal: executionDetail?.tokens.provider_total_tokens ?? 0,
+    input: executionDetail?.tokens.input ?? 0,
+    output: executionDetail?.tokens.output ?? 0,
+    reasoning: executionDetail?.tokens.reasoning ?? 0,
+    cacheRead: executionDetail?.tokens.cache_read ?? 0,
+    cacheWrite: executionDetail?.tokens.cache_write ?? 0,
+    byRole: executionDetail?.tokens.by_role ?? [],
+  }), [executionDetail]);
 
-  const byRoleBars = useMemo(() => {
-    return scopedTokenStats.byRole.map((r) => ({
-      label: roleTitle(r.required_role),
-      value: r.derived_total_tokens,
-      color: roleColor(r.required_role),
-    }));
-  }, [scopedTokenStats.byRole]);
+  const byRoleBars = useMemo(() => scopedTokenStats.byRole.map((r) => ({
+    label: roleTitle(r.required_role),
+    value: r.derived_total_tokens,
+    color: roleColor(r.required_role),
+  })), [scopedTokenStats.byRole]);
   const deferredByRoleBars = useDeferredValue(byRoleBars);
-
-  const formatTokenValue = useCallback((v: number) => formatCompactNumber(v), []);
 
   const tokenTotal = scopedTokenStats.total;
   const tokenProviderTotal = scopedTokenStats.providerTotal;
@@ -792,7 +780,7 @@ function ExecutionDetailSection({ windowTotalMinutes }: { windowTotalMinutes: nu
                       ariaLabel="Tokens by role"
                       data={deferredByRoleBars}
                       emptyHeight={250}
-                      formatValue={formatTokenValue}
+                      formatValue={formatCompactNumber}
                     />
                   </div>
                   <div className="hidden self-stretch bg-border lg:block" aria-hidden="true" />
@@ -919,10 +907,7 @@ function RunScopePicker({
 	  const [stableSelectedLabel, setStableSelectedLabel] = useState<string | null>(null);
 
 	  useEffect(() => {
-	    if (!open) {
-	      setCommittedSearch("");
-	      return;
-	    }
+	    if (!open) return;
 	    const timer = window.setTimeout(() => {
 	      setCommittedSearch(search.trim());
 	    }, RUN_SCOPE_SEARCH_DEBOUNCE_MS);
@@ -933,39 +918,33 @@ function RunScopePicker({
 
 	  const runsQuery = useInfiniteRuns({ enabled: open, search: committedSearch, limit: 25 });
 
-	  const options = useMemo<PopoverListboxItem[]>(() => {
-	    const items = runsQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [];
-	    return items.map((run) => ({
+	  const items = runsQuery.data?.pages.flatMap((page) => page.items ?? []) ?? [];
+	  const options: PopoverListboxItem[] = items.map((run) => ({
 	      id: run.run_id,
 	      label: `${run.decree_title || run.run_id} — ${formatTimestamp(run.created_at)}`,
 	    }));
-	  }, [runsQuery.data?.pages]);
 
-	  useEffect(() => {
-	    if (!selectedRunId) {
-	      setStableSelectedLabel(null);
-	      return;
-	    }
-	    const selectedOptionLabel = options.find((opt) => opt.id === selectedRunId)?.label;
-	    if (selectedOptionLabel) {
-	      setStableSelectedLabel(selectedOptionLabel);
-	      return;
-	    }
-	    if (selectedRun) {
-	      setStableSelectedLabel(`${selectedRun.decree_title || selectedRun.run_id} — ${formatTimestamp(selectedRun.created_at)}`);
-	    }
-	  }, [options, selectedRun, selectedRunId]);
+	  const selectedOptionLabel = options.find((option) => option.id === selectedRunId)?.label;
+	  const selectedRunLabel = selectedRun
+	    ? `${selectedRun.decree_title || selectedRun.run_id} — ${formatTimestamp(selectedRun.created_at)}`
+	    : undefined;
+	  const latestSelectedLabel = selectedOptionLabel ?? selectedRunLabel;
+	  if (!selectedRunId && stableSelectedLabel !== null) {
+	    setStableSelectedLabel(null);
+	  } else if (latestSelectedLabel && latestSelectedLabel !== stableSelectedLabel) {
+	    setStableSelectedLabel(latestSelectedLabel);
+	  }
 
 	  const selectedLabel = selectedRunId
-	    ? (options.find((opt) => opt.id === selectedRunId)?.label
+	    ? (selectedOptionLabel
 	      ?? stableSelectedLabel
-	      ?? (selectedRun ? `${selectedRun.decree_title || selectedRun.run_id} — ${formatTimestamp(selectedRun.created_at)}` : selectedRunId))
+	      ?? selectedRunId)
 	    : "All Runs";
 
-	  const pickerItems = useMemo<PopoverListboxItem[]>(() => [
+	  const pickerItems: PopoverListboxItem[] = [
 	    ...(search.trim() === "" ? [{ id: ALL_RUNS_SCOPE_ID, label: "All Runs" }] : []),
 	    ...options,
-	  ], [options, search]);
+	  ];
 
 	  const footer = runsQuery.isError ? (
 	    <div className="flex items-center justify-between gap-3">
@@ -1047,12 +1026,12 @@ function RunScopePicker({
 function TokenRoleBreakdownList({ roles }: { roles: TokensByRole[] }) {
   const [expandedRoleIDs, setExpandedRoleIDs] = useState<Record<string, boolean>>({});
 
-  const toggleRole = useCallback((roleID: string) => {
+  const toggleRole = (roleID: string) => {
     setExpandedRoleIDs((current) => ({
       ...current,
       [roleID]: !current[roleID],
     }));
-  }, []);
+  };
 
   return (
     <div className="space-y-2">

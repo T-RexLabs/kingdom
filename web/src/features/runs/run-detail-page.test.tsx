@@ -440,7 +440,7 @@ describe("run detail page", () => {
 		expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: true });
 	});
 
-	it("uses failed-node summaries while still fetching graph context for activity", () => {
+  it("uses failed-node summaries while still fetching graph context for activity", () => {
 		mockRun.status = "failed";
 		mockRun.display_state = "failed";
 		mockSearch.tab = "execution";
@@ -460,6 +460,35 @@ describe("run detail page", () => {
 		expect(governanceActionsPropsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
 				failedNodes: mockRun.failed_nodes,
+        showFinalApproval: false,
+      }),
+    );
+  });
+
+  it("loads graph nodes for cancelled-run replay controls", () => {
+    const cancelledNode = {
+      node_id: "delegated_execution_berserker",
+      required_role: "builder-berserker",
+      execution_ownership: "provider_backed",
+      state: "cancelled",
+    };
+    mockRun.status = "cancelled";
+    mockRun.display_state = "cancelled";
+    mockSearch.tab = "agents";
+    useRunGraphMock.mockImplementation(() => ({
+      data: { run_id: "run-1", nodes: [cancelledNode], edges: [] },
+      isPending: false,
+      isError: false,
+      error: null,
+      refetch: graphRefetchMock,
+    }));
+
+    render(<RunDetailPage />);
+
+    expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
+    expect(governanceActionsPropsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cancelledNodes: [cancelledNode],
         showFinalApproval: false,
       }),
     );
@@ -1523,7 +1552,7 @@ describe("run detail page", () => {
 
     await user.click(screen.getByTestId("run-cancel-pill"));
 
-    expect(screen.getByRole("dialog", { name: "Cancel run" })).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Balance Layout" })).toBeInTheDocument();
     expect(cancelMutateAsyncMock).not.toHaveBeenCalled();
     expect(confirmSpy).not.toHaveBeenCalled();
 
@@ -1536,15 +1565,15 @@ describe("run detail page", () => {
     render(<RunDetailPage />);
 
     await user.click(screen.getByTestId("run-cancel-pill"));
-    const dialog = screen.getByRole("dialog", { name: "Cancel run" });
+    const dialog = screen.getByRole("dialog", { name: "Balance Layout" });
 
     await user.click(within(dialog).getByRole("button", { name: "Cancel Run" }));
 
     expect(cancelMutateAsyncMock).toHaveBeenCalledWith({
       body: { reason: "manual cancellation from run detail" },
-      key: "idem-cancel-test",
+      key: expect.stringMatching(/^kd1\./),
     });
-    expect(screen.queryByRole("dialog", { name: "Cancel run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Balance Layout" })).not.toBeInTheDocument();
   });
 
   it("lets the operator dismiss the cancel dialog without mutating the run", async () => {
@@ -1553,12 +1582,12 @@ describe("run detail page", () => {
     render(<RunDetailPage />);
 
     await user.click(screen.getByTestId("run-cancel-pill"));
-    const dialog = screen.getByRole("dialog", { name: "Cancel run" });
+    const dialog = screen.getByRole("dialog", { name: "Balance Layout" });
 
     await user.click(within(dialog).getByRole("button", { name: "Keep Run Active" }));
 
     expect(cancelMutateAsyncMock).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog", { name: "Cancel run" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Balance Layout" })).not.toBeInTheDocument();
   });
 
   it("keeps header metadata in a separate right-side cluster", () => {

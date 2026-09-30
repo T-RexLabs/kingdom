@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useReducer, type ReactNode } from "react";
+import { createContext, useContext } from "react";
 
 export type NotificationStatus = "loading" | "success" | "error" | "info";
 
@@ -18,16 +18,16 @@ export type Notification = {
   onDismiss?: () => void;
 };
 
-type NotificationState = {
+export type NotificationState = {
   notifications: Map<string, Notification>;
 };
 
-type NotificationDispatch =
+export type NotificationDispatch =
   | { type: "add"; notification: Notification }
   | { type: "update"; id: string; partial: Partial<Omit<Notification, "id">> }
   | { type: "remove"; id: string };
 
-function notificationReducer(state: NotificationState, action: NotificationDispatch): NotificationState {
+export function notificationReducer(state: NotificationState, action: NotificationDispatch): NotificationState {
   switch (action.type) {
     case "add": {
       const next = new Map(state.notifications);
@@ -50,39 +50,17 @@ function notificationReducer(state: NotificationState, action: NotificationDispa
   }
 }
 
-type NotificationContextValue = {
+export type NotificationContextValue = {
   notifications: Map<string, Notification>;
   addNotification: (notification: Notification) => void;
   updateNotification: (id: string, partial: Partial<Omit<Notification, "id">>) => void;
   removeNotification: (id: string) => void;
 };
 
-const NotificationContext = createContext<NotificationContextValue | null>(null);
-
-export function NotificationProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(notificationReducer, { notifications: new Map() });
-
-  const addNotification = useCallback((notification: Notification) => {
-    dispatch({ type: "add", notification });
-  }, []);
-
-  const updateNotification = useCallback((id: string, partial: Partial<Omit<Notification, "id">>) => {
-    dispatch({ type: "update", id, partial });
-  }, []);
-
-  const removeNotification = useCallback((id: string) => {
-    dispatch({ type: "remove", id });
-  }, []);
-
-  return (
-    <NotificationContext.Provider value={{ notifications: state.notifications, addNotification, updateNotification, removeNotification }}>
-      {children}
-    </NotificationContext.Provider>
-  );
-}
+export const NotificationContext = createContext<NotificationContextValue | null>(null);
 
 export function useNotifications() {
-  const ctx = useContext(NotificationContext);
-  if (!ctx) throw new Error("useNotifications must be used within NotificationProvider");
-  return ctx;
+  const context = useContext(NotificationContext);
+  if (!context) throw new Error("useNotifications must be used within NotificationProvider");
+  return context;
 }

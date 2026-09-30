@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
+import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@/api/client";
 import { RealmAnalyticsPage } from "./realm-analytics-page";
@@ -24,7 +24,7 @@ vi.mock("@tanstack/react-router", async () => {
   const React = await vi.importActual<typeof import("react")>("react");
 
   return {
-    Link: ({ children, ...props }: any) => <a {...props}>{children}</a>,
+    Link: ({ children, ...props }: AnchorHTMLAttributes<HTMLAnchorElement>) => <a {...props}>{children}</a>,
     useSearch: ({ select }: { select?: (search: Record<string, unknown>) => unknown } = {}) =>
       React.useSyncExternalStore(
         (listener) => {
@@ -774,6 +774,10 @@ describe("RealmAnalyticsPage", () => {
 		render(<RealmAnalyticsPage />, { wrapper: makeWrapper(queryClient) });
 
 		await screen.findByText("Windowed decree (24h)");
+		await waitFor(() => {
+			expect(chartRenderSpies.horizontal).toHaveBeenCalled();
+			expect(chartRenderSpies.stacked).toHaveBeenCalled();
+		});
 		chartRenderSpies.horizontal.mockClear();
 		chartRenderSpies.stacked.mockClear();
 
@@ -807,6 +811,7 @@ describe("RealmAnalyticsPage", () => {
 		render(<RealmAnalyticsPage />, { wrapper: makeWrapper(queryClient) });
 
 		await screen.findByText("Windowed decree (24h)");
+		await waitFor(() => expect(chartRenderSpies.horizontal).toHaveBeenCalled());
 		chartRenderSpies.horizontal.mockClear();
 
 		const nextExecutionDetail = createDeferred<typeof selectedRunExecutionDetailSnapshot>();

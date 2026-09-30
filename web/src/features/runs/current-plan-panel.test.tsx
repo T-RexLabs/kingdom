@@ -318,7 +318,7 @@ describe("current plan panel", () => {
         action: "confirm",
 			plan_revision_id: "planrev-1",
       },
-      key: "idem-plan-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 
@@ -463,7 +463,7 @@ describe("current plan panel", () => {
 			plan_revision_id: "planrev-1",
         reason: "Refine the rollout scope.",
       },
-      key: "idem-plan-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 
@@ -492,7 +492,7 @@ describe("current plan panel", () => {
 
 		await user.click(screen.getByRole("button", { name: /Requested Plan Rework/i }));
 
-		expect(screen.getByRole("dialog", { name: "Allfather decision history" })).toBeInTheDocument();
+		expect(screen.getByRole("dialog", { name: "Allfather Decision History" })).toBeInTheDocument();
 		expect(screen.getAllByText("Requested Plan Rework").length).toBeGreaterThan(0);
 	});
 

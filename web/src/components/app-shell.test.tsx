@@ -1,6 +1,9 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import userEvent from "@testing-library/user-event";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./app-shell";
+
+let routerLocation = { pathname: "/runs" };
 
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, to, className }: { children: React.ReactNode; to: string; className?: string }) => (
@@ -8,7 +11,7 @@ vi.mock("@tanstack/react-router", () => ({
       {children}
     </a>
   ),
-  useRouterState: () => ({ location: { pathname: "/runs" } }),
+  useRouterState: () => ({ location: routerLocation }),
 }));
 
 vi.mock("@/api/hooks", () => ({
@@ -28,6 +31,10 @@ vi.mock("@/components/notifications", () => ({
 }));
 
 describe("app shell", () => {
+  beforeEach(() => {
+    routerLocation = { pathname: "/runs" };
+  });
+
   it("routes both brand labels to throne room", () => {
     render(
       <AppShell>
@@ -40,5 +47,34 @@ describe("app shell", () => {
     for (const link of kingdomLinks) {
       expect(link).toHaveAttribute("href", "/");
     }
+  });
+
+  it("closes mobile navigation on route changes without remounting desktop navigation", async () => {
+    const user = userEvent.setup();
+    const view = render(
+      <AppShell>
+        <div>content</div>
+      </AppShell>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Toggle navigation" }));
+    const toggle = screen.getByRole("button", { name: "Toggle navigation" });
+    const sidebar = screen.getByRole("complementary");
+    expect(sidebar).toHaveClass("translate-x-0");
+
+    const runsLink = screen.getByRole("link", { name: "Runs" });
+    runsLink.focus();
+    expect(runsLink).toHaveFocus();
+
+    routerLocation = { pathname: "/agents" };
+    view.rerender(
+      <AppShell>
+        <div>content</div>
+      </AppShell>,
+    );
+
+    expect(screen.getByRole("complementary")).toBe(sidebar);
+    expect(sidebar).toHaveClass("-translate-x-full");
+    expect(toggle).toHaveFocus();
   });
 });

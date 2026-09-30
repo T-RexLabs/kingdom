@@ -69,9 +69,9 @@ func TestGetAcpRunActivityPreservesDistinctIDsForSameSecondEvents(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
+	bindAPIPlanningContext(t, store, "ps_activity_ids")
 	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID:        "op_activity_ids",
-		AcpRunID:           acp.PlannerRunID("op_activity_ids"),
 		PlanningSessionID:  "ps_activity_ids",
 		Type:               state.PlanningOperationTypeReply,
 		Status:             state.PlanningOperationStatusSucceeded,
@@ -92,8 +92,7 @@ func TestGetAcpRunActivityPreservesDistinctIDsForSameSecondEvents(t *testing.T) 
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/acp/runs/"+acp.PlannerRunID("op_activity_ids")+"/activity", nil)
 	req.SetPathValue("runId", acp.PlannerRunID("op_activity_ids"))
-	req.Header.Set("X-Actor-Id", "actor-1")
-	req.Header.Set("X-Role-Id", "chancellor")
+	authenticateAPITestRequest(req)
 	res := httptest.NewRecorder()
 	handler.ServeHTTP(res, req)
 	if res.Code != http.StatusOK {

@@ -1,14 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { DecreePanel } from "./decree-panel";
 
 const useDecreeMock = vi.fn();
 const useProviderModelsMock = vi.fn();
+const refetchDecree = vi.fn();
 
 vi.mock("@/api/hooks", () => ({
   useDecree: (...args: unknown[]) => useDecreeMock(...args),
   useProviderModels: (...args: unknown[]) => useProviderModelsMock(...args),
+  newIdempotencyKey: () => "refresh-key",
+}));
+
+vi.mock("@/features/connections/external-source-comparison", () => ({
+  ExternalSourceComparison: ({ baselineId, candidateId }: { baselineId: string; candidateId: string }) => <div aria-label="GitHub source comparison" data-baseline={baselineId} data-candidate={candidateId}>Source comparison</div>,
 }));
 
 const baseRun = {
@@ -66,9 +72,11 @@ const baseRoles = [
 ];
 
 describe("decree panel", () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     useDecreeMock.mockReset();
     useProviderModelsMock.mockReset();
+    refetchDecree.mockReset();
     useDecreeMock.mockReturnValue({
       data: {
         decree_id: "decree-1",
@@ -81,6 +89,7 @@ describe("decree panel", () => {
       },
       isLoading: false,
       error: null,
+      refetch: refetchDecree,
     });
     useProviderModelsMock.mockReturnValue({
       data: undefined,
@@ -105,11 +114,13 @@ describe("decree panel", () => {
 
     await user.click(screen.getByRole("button", { name: "Read royal decree" }));
 
-    const dialog = screen.getByRole("dialog", { name: "Royal decree" });
+    // The dialog is named by its visible heading, which for an issued
+    // decree is the decree title itself.
+    const dialog = screen.getByRole("dialog", { name: "Royal Landing Page" });
     expect(within(dialog).getByText("Build the new experience.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    expect(screen.queryByRole("dialog", { name: "Royal decree" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Royal Landing Page" })).not.toBeInTheDocument();
   });
 
   it("opens a decree settings modal with structured run configuration", async () => {
@@ -140,7 +151,7 @@ describe("decree panel", () => {
 
     await user.click(screen.getByRole("button", { name: "Open decree settings" }));
 
-	const dialog = screen.getByRole("dialog", { name: "Decree settings" });
+	const dialog = screen.getByRole("dialog", { name: "Decree Settings" });
 	const scrollRegion = within(dialog).getByTestId("decree-settings-scroll-region");
 
 	expect(dialog).toBeInTheDocument();
@@ -148,9 +159,13 @@ describe("decree panel", () => {
 	expect(within(dialog).getByText("Royal Landing Page")).toBeInTheDocument();
     expect(within(dialog).getByText("Workflow, approval mode, review flow, and publish target.")).toBeInTheDocument();
     expect(within(dialog).getByText("Default model selection and any role-specific overrides recorded for this run.")).toBeInTheDocument();
-    expect(scrollRegion).toHaveClass("min-h-0");
-    expect(scrollRegion).toHaveClass("flex-1");
-    expect(scrollRegion).toHaveClass("overflow-y-auto");
+    // The shell body is the one scroller. The settings content used to declare
+    // its own inside it, nesting a scroll container in a scroll container.
+    const modalBody = scrollRegion.parentElement as HTMLElement;
+    expect(modalBody).toHaveClass("min-h-0");
+    expect(modalBody).toHaveClass("flex-1");
+    expect(modalBody).toHaveClass("overflow-y-auto");
+    expect(scrollRegion).not.toHaveClass("overflow-y-auto");
     expect(screen.getByText("Git worktree")).toBeInTheDocument();
     expect(within(dialog).getByText("Default for all agents")).toBeInTheDocument();
     expect(screen.getByText("GitHub Copilot - GPT-5.3-Codex")).toBeInTheDocument();
@@ -166,7 +181,7 @@ describe("decree panel", () => {
 
 	await user.click(screen.getByRole("button", { name: "Close dialog" }));
 
-    expect(screen.queryByRole("dialog", { name: "Decree settings" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Decree Settings" })).not.toBeInTheDocument();
   });
 
   it("falls back to raw ids and skip-review wording when lookup data is unavailable", async () => {
@@ -223,8 +238,97 @@ describe("decree panel", () => {
 
 	    await user.click(screen.getByRole("button", { name: "Open decree settings" }));
 
-	    const dialog = screen.getByRole("dialog", { name: "Decree settings" });
+	    const dialog = screen.getByRole("dialog", { name: "Decree Settings" });
 	    expect(within(dialog).getByText("Standard review flow")).toBeInTheDocument();
 	    expect(within(dialog).queryByText("my-custom-workflow-v7")).not.toBeInTheDocument();
 	  });
+
+  it("shows every issued source and refreshes their comparisons independently without changing decree text", async () => {
+    useDecreeMock.mockReturnValue({
+      data: {
+        decree_id: "decree-1", decree_title: "Royal Landing Page", decree_text: "Immutable operator text.", created_at: "2026-03-06T10:00:00.000Z",
+        external_sources: [
+          { link_id: "link-1", provider: "github", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", used_snapshot_id: "snapshot-a", latest_snapshot_id: "snapshot-a", status: "unchanged" },
+          { link_id: "link-2", provider: "github", repository: "owner/other", issue_number: 8, canonical_url: "https://github.com/owner/other/issues/8", used_snapshot_id: "snapshot-c", latest_snapshot_id: "snapshot-c", status: "unchanged" },
+        ],
+      },
+      isLoading: false, error: null, refetch: refetchDecree,
+    });
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const second = String(input).includes("link-2");
+      return new Response(JSON.stringify({
+        link: { link_id: second ? "link-2" : "link-1", target_kind: "decree", target_id: "decree-1", source_id: second ? "source-2" : "source-1", used_snapshot_id: second ? "snapshot-c" : "snapshot-a", latest_snapshot_id: second ? "snapshot-d" : "snapshot-b", status: "changed", row_version: 2, provider: "github", repository: second ? "owner/other" : "owner/repo", canonical_url: second ? "https://github.com/owner/other/issues/8" : "https://github.com/owner/repo/issues/7", issue_number: second ? 8 : 7, created_at: "2026-03-06T10:00:00Z" },
+        outcome: "changed", snapshot_created: true, changes: { title: true, body: true, state: false, repository: false, issue_number: false, canonical_url: false, created_at: false, updated_at: true, comment_count: false, comments: false }, message: second ? "Second source changed." : "First source changed.",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<DecreePanel run={baseRun} roles={baseRoles} />);
+    await user.click(screen.getByRole("button", { name: "Read royal decree" }));
+    expect(screen.getByRole("link", { name: /owner\/repo#7/i })).toHaveAttribute("rel", "noopener noreferrer");
+    expect(screen.getByRole("link", { name: /owner\/other#8/i })).toBeInTheDocument();
+    const firstSource = screen.getByRole("region", { name: "Issued source owner/repo#7" });
+    const secondSource = screen.getByRole("region", { name: "Issued source owner/other#8" });
+    await user.click(within(firstSource).getByRole("button", { name: /check github source/i }));
+    expect(await within(firstSource).findByText("First source changed.")).toBeInTheDocument();
+    expect(within(secondSource).queryByLabelText("GitHub source comparison")).not.toBeInTheDocument();
+    expect(within(firstSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-candidate", "snapshot-b");
+    await user.click(within(secondSource).getByRole("button", { name: /check github source/i }));
+    expect(await within(secondSource).findByText("Second source changed.")).toBeInTheDocument();
+    expect(within(secondSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-baseline", "snapshot-c");
+    expect(within(secondSource).getByLabelText("GitHub source comparison")).toHaveAttribute("data-candidate", "snapshot-d");
+    expect(within(firstSource).getByText("First source changed.")).toBeInTheDocument();
+    expect(screen.getByText("Immutable operator text.")).toBeInTheDocument();
+    await waitFor(() => expect(refetchDecree).toHaveBeenCalledTimes(2));
+  });
+
+  it("retains revoked source recovery guidance after decree detail reload", async () => {
+    useDecreeMock.mockReturnValue({
+      data: {
+        decree_id: "decree-1", decree_title: "Royal Landing Page", decree_text: "Immutable operator text.", created_at: "2026-03-06T10:00:00.000Z",
+        external_sources: [{ link_id: "link-1", provider: "github", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", used_snapshot_id: "snapshot-a", latest_snapshot_id: "snapshot-a", status: "revoked" }],
+      },
+      isLoading: false, error: null, refetch: refetchDecree,
+    });
+    const user = userEvent.setup();
+    render(<DecreePanel run={baseRun} roles={baseRoles} />);
+
+    await user.click(screen.getByRole("button", { name: "Read royal decree" }));
+
+    expect(screen.getByText(/GitHub App access was revoked/i)).toBeInTheDocument();
+    expect(screen.getByText(/run the connection health check/i)).toBeInTheDocument();
+    expect(screen.getByText("Immutable operator text.")).toBeInTheDocument();
+  });
+
+  it("retries an issued-source pending reservation with the same key", async () => {
+    useDecreeMock.mockReturnValue({
+      data: {
+        decree_id: "decree-1", decree_title: "Royal Landing Page", decree_text: "Immutable operator text.", created_at: "2026-03-06T10:00:00.000Z",
+        external_sources: [{ link_id: "link-1", provider: "github", repository: "owner/repo", issue_number: 7, canonical_url: "https://github.com/owner/repo/issues/7", used_snapshot_id: "snapshot-a", latest_snapshot_id: "snapshot-a", status: "unchanged" }],
+      },
+      isLoading: false, error: null, refetch: refetchDecree,
+    });
+    const keys: string[] = [];
+    let attempts = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      attempts++;
+      keys.push(new Headers(init?.headers).get("Idempotency-Key") || "");
+      if (attempts === 1) {
+        return new Response(JSON.stringify({ error: { code: "idempotency_pending", message: "Refresh is settling", retryable: true, category: "core", details: {}, correlation_id: "test" } }), { status: 409, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        link: { link_id: "link-1", target_kind: "decree", target_id: "decree-1", source_id: "source-1", used_snapshot_id: "snapshot-a", latest_snapshot_id: "snapshot-a", status: "unchanged", row_version: 2, provider: "github", repository: "owner/repo", canonical_url: "https://github.com/owner/repo/issues/7", issue_number: 7, created_at: "2026-03-06T10:00:00Z" },
+        outcome: "unchanged", snapshot_created: false, changes: {}, message: "Source is current.",
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+    const user = userEvent.setup();
+    render(<DecreePanel run={baseRun} roles={baseRoles} />);
+    await user.click(screen.getByRole("button", { name: "Read royal decree" }));
+    await user.click(screen.getByRole("button", { name: "Check GitHub source owner/repo#7" }));
+
+    await user.click(await screen.findByRole("button", { name: "Retry GitHub source owner/repo#7" }));
+
+    expect(await screen.findByText("Source is current.")).toBeInTheDocument();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+  });
 });

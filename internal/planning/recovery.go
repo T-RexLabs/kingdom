@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -101,7 +102,48 @@ func (r *operationRecovery) RecoverOperations(ctx context.Context, finaliseIfStu
 		afterCreatedAt = last.CreatedAt
 		afterOperationID = last.OperationID
 	}
+	if err := r.recoverSessionsMissingContextSnapshot(ctx); err != nil {
+		return err
+	}
 	return r.recoverEligiblePlaceholderTitleSessions(ctx)
+}
+
+// recoverSessionsMissingContextSnapshot repairs sessions that were left
+// without an adopted context snapshot by the removed asynchronous bootstrap.
+// Such a session cannot enqueue any planner operation — every reply, title,
+// and formalize attempt is rejected at bind time — so it stays unusable until
+// a snapshot is published for it. New sessions are created with their snapshot
+// in one transaction, so this pass drains to nothing and stays empty.
+func (r *operationRecovery) recoverSessionsMissingContextSnapshot(ctx context.Context) error {
+	if r == nil || r.deps.store == nil {
+		return nil
+	}
+	afterSessionID := ""
+	for {
+		sessions, err := r.deps.store.ListSessionsMissingContextSnapshotPage(ctx, afterSessionID, state.DefaultPlanningOperationListLimit)
+		if err != nil {
+			return err
+		}
+		if len(sessions) == 0 {
+			return nil
+		}
+		for _, session := range sessions {
+			snapshot, err := r.deps.refreshContextSnapshot(ctx, session.PlanningSessionID)
+			if err != nil {
+				// One unreadable project root must not stall recovery for
+				// every other session; the next cycle retries this one.
+				log.Printf("planner context backfill session_id=%s err=%v", session.PlanningSessionID, err)
+				continue
+			}
+			if _, err := r.deps.store.PublishContextSnapshot(ctx, session.PlanningSessionID, snapshot.PlanningContextSnapshotID, r.deps.nowString()); err != nil {
+				log.Printf("planner context backfill session_id=%s err=%v", session.PlanningSessionID, err)
+			}
+		}
+		if len(sessions) < state.DefaultPlanningOperationListLimit {
+			return nil
+		}
+		afterSessionID = sessions[len(sessions)-1].PlanningSessionID
+	}
 }
 
 func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.Context) error {
@@ -118,8 +160,10 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 			return nil
 		}
 		for _, session := range sessions {
+			// One session's failure must not abort title catch-up for the
+			// rest of the page; the next cycle retries it.
 			if _, err := maybeAutoGenerateTitleForRecoveryCatchup(ctx, r.deps, r.runner, session); err != nil {
-				return err
+				log.Printf("planner auto title source=%s session_id=%s err=%v", titleTriggerSourceRecoveryCatchup, session.PlanningSessionID, err)
 			}
 		}
 		if len(sessions) < state.DefaultPlanningOperationListLimit {

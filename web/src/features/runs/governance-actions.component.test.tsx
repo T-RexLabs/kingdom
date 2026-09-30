@@ -48,6 +48,12 @@ describe("governance actions visibility", () => {
     display_state: "failed",
   };
 
+  const cancelledRun: RunSummary = {
+    ...runningRun,
+    status: "cancelled",
+    display_state: "cancelled",
+  };
+
   const awaitingFinalApprovalRun: RunSummary = {
     ...runningRun,
     status: "awaiting_human_confirmation",
@@ -66,7 +72,7 @@ describe("governance actions visibility", () => {
       />,
     );
 
-    expect(screen.queryByText(/Failed Nodes/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Nodes to Recover/i)).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rerun" })).not.toBeInTheDocument();
   });
@@ -79,13 +85,28 @@ describe("governance actions visibility", () => {
       />,
     );
 
-    expect(screen.getByText(/Failed Nodes/i)).toBeInTheDocument();
+    expect(screen.getByText(/Nodes to Recover/i)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
     expect(screen.getByText("Agent-executed")).toBeInTheDocument();
     expect(screen.getByText("Reviewer Shieldmaiden")).toBeInTheDocument();
     expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
     expect(screen.getByText("Reviewer rejected missing evidence.")).toHaveClass("text-wrap-anywhere");
+  });
+
+  it("shows every supplied workflow node when a run is cancelled", () => {
+    render(
+      <GovernanceActions
+        run={cancelledRun}
+        cancelledNodes={[{ ...failedNode, state: "cancelled", failure_reason: undefined }]}
+      />,
+    );
+
+    expect(screen.getByText("Cancelled Run Nodes (1)")).toBeInTheDocument();
+    expect(screen.getByText("execution_review_shieldmaiden")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Rerun" })).toBeInTheDocument();
+    expect(screen.queryByText("Failure reason unavailable.")).not.toBeInTheDocument();
   });
 
   it("does not leave final approval stuck in success state when the run is actionable again", () => {
@@ -134,7 +155,7 @@ describe("governance actions visibility", () => {
 
     expect(finalApprovalState.mutateAsync).toHaveBeenCalledWith({
       body: { action: "confirm" },
-      key: "idem-final-approval-test",
+      key: expect.stringMatching(/^kd1\./),
     });
   });
 

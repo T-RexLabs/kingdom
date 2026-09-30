@@ -1376,10 +1376,8 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 			repairErr <- err
 			return
 		}
-		if err := os.Mkdir(retryRoot, 0o755); err != nil {
-			repairErr <- err
-			return
-		}
+		// The retrying projector owns creation of the workspace root after the
+		// blocker is removed, avoiding a race between two creators.
 		repairErr <- nil
 	}()
 
@@ -4902,10 +4900,8 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 			repairErr <- err
 			return
 		}
-		if err := os.Mkdir(retryRoot, 0o755); err != nil {
-			repairErr <- err
-			return
-		}
+		// The retrying projector owns creation of the workspace root after the
+		// blocker is removed, avoiding a race between two creators.
 		repairErr <- nil
 	}()
 
@@ -4935,7 +4931,16 @@ func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *t
 func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
+	// GracefulClose intentionally cancels an in-flight SQLite operation. Use a
+	// file-backed database so a driver-replaced connection observes the same
+	// durable state instead of opening a fresh private :memory: database.
+	db, err := sql.Open("sqlite", filepath.Join(t.TempDir(), "close-timeout.sqlite"))
+	if err != nil {
+		t.Fatalf("open close-timeout sqlite db: %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = db.Close() })
+	mustExec(t, db, "PRAGMA foreign_keys = ON")
 	applyMigration(t, db)
 
 	now := "2026-03-01T12:00:00Z"
@@ -5013,7 +5018,7 @@ func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
-	err := rt.GracefulClose(closeCtx)
+	err = rt.GracefulClose(closeCtx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected graceful close to return deadline exceeded while pending outbox remains, got %v", err)
 	}
@@ -6497,12 +6502,12 @@ func TestDiscoverWorkspaceArtifactsUsesTrackedFilesystemPolicy(t *testing.T) {
 	for _, artifact := range artifacts {
 		paths = append(paths, artifact.Path)
 	}
-	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "docs/merge-gate-checklist.md", ".playwright-mcp/console.log"} {
+	for _, relativePath := range []string{"index.html", "styles.css", "script.js", "docs/merge-gate-checklist.md"} {
 		if !slices.Contains(paths, relativePath) {
 			t.Fatalf("expected artifact list to include %s, got %v", relativePath, paths)
 		}
 	}
-	for _, relativePath := range []string{".kingdom/ignored.txt", "kingdom-artifacts/ignored.txt"} {
+	for _, relativePath := range []string{".kingdom/ignored.txt", ".playwright-mcp/console.log", "kingdom-artifacts/ignored.txt"} {
 		if slices.Contains(paths, relativePath) {
 			t.Fatalf("expected artifact list to exclude %s, got %v", relativePath, paths)
 		}
@@ -7152,11 +7157,16 @@ func TestQueueExecutionReworkIfEligibleRollsBackPartialWaveOnQueueFailure(t *tes
 	}
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_rework_partial_validator_1', 'run_rework_partial', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validator_partial', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_rework_partial:validation_gates_qa_scout:1', 'run_rework_partial', 'nr_rework_partial_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
+	mustExec(t, db, `CREATE TRIGGER fail_partial_rework_wave BEFORE INSERT ON node_runs
+		WHEN NEW.run_id = 'run_rework_partial' AND NEW.node_id = 'execution_review_shieldmaiden'
+		BEGIN
+			SELECT RAISE(FAIL, 'forced partial rework wave failure');
+		END`)
 
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil)}
 	queued, capReached, err := loop.queueExecutionReworkIfEligible(context.Background(), runSnapshot{RunID: "run_rework_partial", RunStatus: "running"}, now, "validation_gates_qa_scout")
 	if err == nil {
-		t.Fatal("expected rework queueing to fail when one target node exceeds its attempt budget")
+		t.Fatal("expected rework queueing to fail when one target insert fails")
 	}
 	if capReached {
 		t.Fatal("did not expect capReached flag when queueing transaction fails")
@@ -7197,85 +7207,6 @@ func TestQueueExecutionReworkIfEligibleRollsBackPartialWaveOnQueueFailure(t *tes
 	}
 	if validationAttempts != 1 {
 		t.Fatalf("expected validation node to keep its original single attempt, got %d", validationAttempts)
-	}
-}
-
-func TestAttemptLimitForDelegatedExecutionIncludesReviewAndValidationCycleBudgets(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-
-	now := "2026-03-01T12:00:00Z"
-	definitionJSON := `{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":5,"max_validation_rework_cycles":5}}`
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_attempt_limit', 'Attempt limit decree', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_attempt_limit', 'royal-decree-v1', '1', '%s', '%s')`, definitionJSON, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, max_execution_review_cycles, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_attempt_limit', NULL, 'decree_attempt_limit', 'wfdef_attempt_limit', 'running', 'approved', 0, 5, 5, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_attempt_limit_builder', 'wfdef_attempt_limit', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_attempt_limit_review', 'wfdef_attempt_limit', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_attempt_limit_validation', 'wfdef_attempt_limit', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-
-	loop := orchestrationLoop{db: db}
-	limit, err := loop.attemptLimitForNodeRun(context.Background(), "run_attempt_limit", "delegated_execution_berserker")
-	if err != nil {
-		t.Fatalf("delegated execution attempt limit: %v", err)
-	}
-	if limit != 11 {
-		t.Fatalf("expected delegated execution attempt limit 11 (5 review + 5 validation + 1), got %d", limit)
-	}
-}
-
-func TestAttemptLimitForExecutionReviewIncludesValidationCycleBudget(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-
-	now := "2026-03-01T12:00:00Z"
-	definitionJSON := `{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":2,"max_validation_rework_cycles":4}}`
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_reviewer_shieldmaiden', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_review_attempt_limit', 'Review attempt limit decree', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_review_attempt_limit', 'royal-decree-v1', '1', '%s', '%s')`, definitionJSON, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, rework_cycle_count, max_execution_review_cycles, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_review_attempt_limit', NULL, 'decree_review_attempt_limit', 'wfdef_review_attempt_limit', 'running', 'approved', 0, 2, 4, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_attempt_limit', 'wfdef_review_attempt_limit', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_review_attempt_limit_validation', 'wfdef_review_attempt_limit', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-
-	loop := orchestrationLoop{db: db}
-	limit, err := loop.attemptLimitForNodeRun(context.Background(), "run_review_attempt_limit", "execution_review_shieldmaiden")
-	if err != nil {
-		t.Fatalf("execution review attempt limit: %v", err)
-	}
-	if limit != 7 {
-		t.Fatalf("expected execution review attempt limit 7 (2 review + 4 validation + 1), got %d", limit)
-	}
-
-	for attempt := 1; attempt <= 6; attempt++ {
-		mustExec(t, db, fmt.Sprintf(
-			`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_review_attempt_limit_%d', 'run_review_attempt_limit', 'execution_review_shieldmaiden', %d,%d, 'failed', 'reviewer-shieldmaiden', 'agent_reviewer_shieldmaiden', 1, '%s', '%s')`,
-			attempt,
-			attempt,
-			attempt,
-			now,
-			now,
-		))
-	}
-
-	_, err = loop.enqueueNodeAttempt(context.Background(), "run_review_attempt_limit", "execution_review_shieldmaiden", now)
-	if err != nil {
-		t.Fatalf("expected attempt 7 enqueue to succeed, got error: %v", err)
-	}
-
-	_, err = loop.enqueueNodeAttempt(context.Background(), "run_review_attempt_limit", "execution_review_shieldmaiden", now)
-	if err == nil {
-		t.Fatal("expected attempt 8 enqueue to fail with max attempts reached")
-	}
-	if !strings.Contains(err.Error(), "max attempts reached") {
-		t.Fatalf("expected max attempts reached error, got %v", err)
 	}
 }
 
@@ -8122,7 +8053,7 @@ func TestQueueExecutionReworkIfEligibleUsesLatestAttemptWithinSameWave(t *testin
 	}
 }
 
-func TestQueueExecutionReworkIfEligibleQueuesCurrentValidationBoundaryCap(t *testing.T) {
+func TestQueueExecutionReworkIfEligibleIgnoresAttemptOrdinalAtValidationBoundary(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -8144,7 +8075,9 @@ func TestQueueExecutionReworkIfEligibleQueuesCurrentValidationBoundaryCap(t *tes
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_cap_builder', 'builder-berserker', 'Builder', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_cap_review', 'reviewer-shieldmaiden', 'Reviewer', 'idle', NULL, 0, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_validation_boundary_cap_validator', 'intelligence-qa-scout', 'Validator', 'idle', NULL, 0, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_builder_1', 'run_validation_boundary_cap', 'delegated_execution_berserker', 1,1, 'succeeded', 'builder-berserker', 'agent_validation_boundary_cap_builder', 1, '%s', '%s')`, now, now))
+	for attempt := 1; attempt <= 5; attempt++ {
+		mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_builder_%d', 'run_validation_boundary_cap', 'delegated_execution_berserker', %d,%d, 'succeeded', 'builder-berserker', 'agent_validation_boundary_cap_builder', 1, '%s', '%s')`, attempt, attempt, attempt, now, now))
+	}
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_review_1', 'run_validation_boundary_cap', 'execution_review_shieldmaiden', 1,1, 'succeeded', 'reviewer-shieldmaiden', 'agent_validation_boundary_cap_review', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_validation_boundary_cap_validator_1', 'run_validation_boundary_cap', 'validation_gates_qa_scout', 1,1, 'failed', 'intelligence-qa-scout', 'agent_validation_boundary_cap_validator', 1, '%s', '%s')`, now, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, failure_code, failure_text, created_at, updated_at, started_at, terminal_observed_at, committed_at) VALUES ('run_validation_boundary_cap:validation_gates_qa_scout:1', 'run_validation_boundary_cap', 'nr_validation_boundary_cap_validator_1', 'committed_failure', 'validation_gate_rework', 'validation requested rework', '%s', '%s', '%s', '%s', '%s')`, now, now, now, now, now))
@@ -8158,14 +8091,18 @@ func TestQueueExecutionReworkIfEligibleQueuesCurrentValidationBoundaryCap(t *tes
 		t.Fatalf("expected current failed validation wave at boundary to queue the next wave, got queued=%t autoSucceededAtCap=%t", queued, autoSucceededAtCap)
 	}
 
-	for _, nodeID := range []string{"delegated_execution_berserker", "execution_review_shieldmaiden", "validation_gates_qa_scout"} {
+	for nodeID, expectedAttempt := range map[string]int{
+		"delegated_execution_berserker": 6,
+		"execution_review_shieldmaiden": 2,
+		"validation_gates_qa_scout":     2,
+	} {
 		var attempt int
 		var status string
 		if err := db.QueryRow(`SELECT attempt, node_status FROM node_runs WHERE run_id = 'run_validation_boundary_cap' AND node_id = ? ORDER BY attempt DESC LIMIT 1`, nodeID).Scan(&attempt, &status); err != nil {
 			t.Fatalf("query latest boundary validation attempt for %s: %v", nodeID, err)
 		}
-		if attempt != 2 || status != "pending" {
-			t.Fatalf("expected node %s pending attempt 2 at the validation boundary cap, got attempt=%d status=%q", nodeID, attempt, status)
+		if attempt != expectedAttempt || status != "pending" {
+			t.Fatalf("expected node %s pending attempt %d at the validation boundary cap, got attempt=%d status=%q", nodeID, expectedAttempt, attempt, status)
 		}
 	}
 }
@@ -8304,34 +8241,6 @@ func TestCanStartExecutionReviewCycleIgnoresCapWhenRunUntilAllApproveEnabled(t *
 	}
 	if !started || capReached {
 		t.Fatalf("expected run-until-all-approve to ignore review cap, got started=%t capReached=%t", started, capReached)
-	}
-}
-
-func TestAttemptLimitForDelegatedExecutionIsHighWhenRunUntilAllApproveEnabled(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-
-	now := "2026-03-01T12:00:00Z"
-	definitionJSON := `{"version":"v1","workflow_id":"royal-decree-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":1,"max_validation_rework_cycles":1}}`
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder-berserker', 'Builder', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer-shieldmaiden', 'Reviewer', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('intelligence-qa-scout', 'QA Scout', 0, '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO decrees (decree_id, decree_title, decree_text, metadata_json, created_at) VALUES ('decree_all_approve_limit', 'All approve limit decree', 'text', '{}', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_all_approve_limit', 'royal-decree-v1', '1', '%s', '%s')`, definitionJSON, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_runs (run_id, campaign_id, decree_id, workflow_definition_id, run_status, plan_state, run_until_all_approve, max_execution_review_cycles, max_validation_rework_cycles, row_version, created_at, updated_at) VALUES ('run_all_approve_limit', NULL, 'decree_all_approve_limit', 'wfdef_all_approve_limit', 'running', 'approved', 1, 1, 1, 1, '%s', '%s')`, now, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_all_approve_limit_builder', 'wfdef_all_approve_limit', 'delegated_execution_berserker', 'builder-berserker', 'delegated_execution', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_all_approve_limit_review', 'wfdef_all_approve_limit', 'execution_review_shieldmaiden', 'reviewer-shieldmaiden', 'execution_review', '%s')`, now))
-	mustExec(t, db, fmt.Sprintf(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_all_approve_limit_validation', 'wfdef_all_approve_limit', 'validation_gates_qa_scout', 'intelligence-qa-scout', 'validation_gates', '%s')`, now))
-
-	loop := orchestrationLoop{db: db}
-	limit, err := loop.attemptLimitForNodeRun(context.Background(), "run_all_approve_limit", "delegated_execution_berserker")
-	if err != nil {
-		t.Fatalf("attempt limit check: %v", err)
-	}
-	if limit < 1_000_000 {
-		t.Fatalf("expected very high delegated execution attempt limit in all-approve mode, got %d", limit)
 	}
 }
 
@@ -9475,6 +9384,15 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorRespon
 
 	if !strings.Contains(instruction, "Synthesize all advisor counsel") {
 		t.Fatalf("expected synthesis directive in advisory instruction, got %q", instruction)
+	}
+	for _, expected := range []string{
+		"advisor responses as counsel and evidence",
+		"using counsel to fill unspecified details",
+		"do not invent approval gates",
+	} {
+		if !strings.Contains(instruction, expected) {
+			t.Fatalf("expected advisory synthesis instruction to include %q, got %q", expected, instruction)
+		}
 	}
 	if !strings.Contains(instruction, "Advisor Responses:") {
 		t.Fatalf("expected advisor input packet heading, got %q", instruction)

@@ -6,20 +6,25 @@ import {
   useUpdatePlanningSessionModelSelection,
   useUpdatePlanningSessionTitle,
 } from "@/api/hooks";
+import { apiFetch } from "@/api/client";
+import { type IssueSelection } from "@/features/connections/issue-picker";
+import { PlanningSourcesPanel } from "./planning-sources-panel";
 import { useNavigate, useParams, useSearch } from "@tanstack/react-router";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { Feather, FileText, Sparkles } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ModelSelectField } from "./model-select-field";
 import { getPlanningSessionDisplayTitleValue, hasPlaceholderTitle } from "./planning-session-title";
 import { ThinkingEffortField } from "./thinking-effort-field";
 import { PlannerThread } from "./planner-thread";
 import { PlanResultModal } from "./planner-draft-panel";
-import { ProviderModelCatalogNotice, useProviderModelCatalogController } from "./provider-model-catalog-state";
+import { ProviderModelCatalogNotice } from "./provider-model-catalog-state";
+import { useProviderModelCatalogController } from "./use-provider-model-catalog";
 import { usePlannerMessagePages } from "./use-planner-message-pages";
 import { isPlannerOperationTerminal } from "./planner-operation-controller";
 import { usePlanningSessionTitleController } from "./use-planning-session-title-controller";
 import { usePlannerSessionController } from "./use-planner-session-controller";
-import { useGlobalFormalize } from "./use-global-formalize";
+import { useGlobalFormalize } from "./global-formalize-context";
 import { usePlannerOperation } from "./use-planner-operation";
 import { usePlanningSessionAutoTitleCatchup } from "./use-planning-session-auto-title-catchup";
 import {
@@ -36,8 +41,18 @@ export function PlanningSessionPage() {
   const queryClient = useQueryClient();
   const sessionQuery = usePlanningSession(sessionId);
   const session = sessionQuery.data;
+  const externalSources = session?.external_sources ?? [];
   const updateTitle = useUpdatePlanningSessionTitle(sessionId);
   const updateModelSelection = useUpdatePlanningSessionModelSelection(sessionId);
+  const recoverableAttachSource = useRecoverableMutation(
+    "planning-attach-source",
+    (intake: IssueSelection["intake"], key) => apiFetch(`/planning-sessions/${sessionId}/external-sources`, {
+      method: "POST",
+      headers: { "Idempotency-Key": key },
+      body: JSON.stringify(intake),
+    }),
+    sessionId,
+  );
   // Destructure stable handles up front. The hook object is recreated
   // each render, but `mutate`, `reset`, and `error` are stable across
   // renders (TanStack Query guarantee). Using these in effect deps
@@ -47,15 +62,69 @@ export function PlanningSessionPage() {
     mutate: modelMutate,
     reset: modelReset,
     error: modelError,
+		hasPendingRecovery: modelRecoveryPending,
+		pendingVariables: pendingModelVariables,
+		retryRecovery: retryModelRecovery,
 	} = updateModelSelection;
 	const providerModelCatalogController = useProviderModelCatalogController();
 	const providerModelCatalog = providerModelCatalogController.state;
+	const canonicalModel = session?.model_selection.model ?? "";
+	const canonicalThinkingEffort = session?.model_selection.thinking_effort ?? "";
+	const [modelSelectionDraft, setModelSelectionDraft] = useState(() => ({
+		sessionId,
+		canonicalModel,
+		canonicalThinkingEffort,
+		model: canonicalModel,
+		thinkingEffort: canonicalThinkingEffort,
+		editGeneration: 0,
+		acknowledgedAutosave: undefined as
+			| { model: string; thinkingEffort: string; editGeneration: number }
+			| undefined,
+	}));
+	let currentModelSelection = modelSelectionDraft;
+	if (
+		modelSelectionDraft.sessionId !== sessionId
+		|| modelSelectionDraft.canonicalModel !== canonicalModel
+		|| modelSelectionDraft.canonicalThinkingEffort !== canonicalThinkingEffort
+	) {
+		const acknowledgedAutosave = modelSelectionDraft.acknowledgedAutosave;
+		// Only an acknowledged older edit may yield to canonical state without
+		// replacing a newer local edit that is still inside its debounce window.
+		const preserveLaterEdit = modelSelectionDraft.sessionId === sessionId
+			&& acknowledgedAutosave?.model === canonicalModel
+			&& acknowledgedAutosave.thinkingEffort === canonicalThinkingEffort
+			&& modelSelectionDraft.editGeneration > acknowledgedAutosave.editGeneration;
+		currentModelSelection = preserveLaterEdit
+			? {
+				...modelSelectionDraft,
+				canonicalModel,
+				canonicalThinkingEffort,
+				acknowledgedAutosave: undefined,
+			}
+			: {
+				sessionId,
+				canonicalModel,
+				canonicalThinkingEffort,
+				model: canonicalModel,
+				thinkingEffort: canonicalThinkingEffort,
+				editGeneration: 0,
+				acknowledgedAutosave: undefined,
+			};
+		// Record the transition so returning to an earlier canonical value
+		// cannot make a draft from that earlier generation current again.
+		setModelSelectionDraft(currentModelSelection);
+	}
+	const model = currentModelSelection.model;
+	const selectedModel = providerModelCatalog.items.find((item) => item.id === model);
+	const thinkingEffort = model.trim()
+		? normalizeThinkingEffortSelection(selectedModel, currentModelSelection.thinkingEffort, {
+			preserveWhenModelMissing: true,
+		})
+		: currentModelSelection.thinkingEffort;
 	const messagePages = usePlannerMessagePages(sessionId);
   const userMessageCount = messagePages.messages.filter((m) => m.role === "user").length;
-  const [model, setModel] = useState("");
-  const [thinkingEffort, setThinkingEffort] = useState("");
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const { activeOperation, activeOperationId, connection, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
+  const { activeOperation, activeOperationId, connection, operationQueryState, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
   const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
   const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
@@ -79,6 +148,16 @@ export function PlanningSessionPage() {
   const commitTitle = useCallback(
     async (trimmed: string): Promise<void> => {
       if (!session) return;
+      if (updateTitle.hasPendingRecovery) {
+        try {
+          await updateTitle.retryRecovery();
+          setTitleSaveError(null);
+        } catch (err) {
+          setTitleSaveError({ message: err instanceof Error ? err.message : "Could not save title" });
+          throw err;
+        }
+        return;
+      }
       const previousSession = session;
       // Field-scoped optimistic write via the shared helper. Patches
       // detail + every list slice with only title + title_state.
@@ -145,6 +224,15 @@ export function PlanningSessionPage() {
   const handleCommit = useCallback(async () => {
     if (!session) return;
     const trimmed = titleInput.trim();
+    if (updateTitle.hasPendingRecovery) {
+      try {
+        await commitTitle(trimmed);
+        exitEdit();
+      } catch {
+        // commitTitle keeps the exact recovery request and error visible.
+      }
+      return;
+    }
     if (trimmed === "" || trimmed === session.title) {
       if (titleSaveError) {
         abandonEdit(session.title);
@@ -162,23 +250,7 @@ export function PlanningSessionPage() {
       // titleSaveError. Stay in edit mode so the failed draft is
       // visible — Retry uses the live input, Discard uses abandonEdit.
     }
-  }, [session, titleInput, titleSaveError, commitTitle, exitEdit, abandonEdit]);
-
-  // Reseed local model + thinking-effort state ONLY when the
-  // server-canonical model_selection actually changes (or we navigate
-  // to a different session). Depending on the whole `session` object
-  // would refire on every cache update — including a successful title
-  // save's onSuccess writing the full server response into the cache —
-  // and overwrite the user's in-progress model selection before the
-  // 500ms autosave fires. Narrow string deps mean reference changes
-  // alone don't trigger the reseed.
-  useEffect(() => {
-    if (!session) {
-      return;
-    }
-    setModel(session.model_selection.model ?? "");
-    setThinkingEffort(session.model_selection.thinking_effort ?? "");
-  }, [sessionId, session?.model_selection.model, session?.model_selection.thinking_effort]);
+  }, [session, titleInput, titleSaveError, updateTitle.hasPendingRecovery, commitTitle, exitEdit, abandonEdit]);
 
   // Re-hydrate activeOperationId from global tracker when returning to this page mid-generation.
   // Only re-hydrate when the session is still processing — once the streamed operation reaches
@@ -194,18 +266,6 @@ export function PlanningSessionPage() {
     }
   }, [globalFormalize, sessionId, activeOperationId, setActiveOperationId, session?.conversation_state]);
 
-	const selectedModel = useMemo(
-		() => providerModelCatalog.items.find((item) => item.id === model),
-		[model, providerModelCatalog.items]
-  );
-
-  useEffect(() => {
-    if (!model.trim()) return;
-    setThinkingEffort((current) =>
-      normalizeThinkingEffortSelection(selectedModel, current, { preserveWhenModelMissing: true })
-    );
-  }, [model, selectedModel]);
-
   const hasModelSelectionChanges =
     Boolean(session) &&
     (model !== (session?.model_selection.model ?? "") ||
@@ -215,6 +275,65 @@ export function PlanningSessionPage() {
   const formalizePending = activeOperation?.kind === "formalize" && !isPlannerOperationTerminal(activeOperation.status);
   const hasPlan = Boolean(session?.current_draft_id);
   const showPlanConsumedForSession = useRef<string>("");
+	const submitModelSelection = useCallback((
+		submittedModel: string,
+		submittedThinkingEffort: string,
+		editGeneration: number,
+	) => {
+		if (modelRecoveryPending) return;
+		const normalizedModel = submittedModel.trim();
+		const normalizedThinkingEffort = submittedThinkingEffort.trim();
+		modelMutate({
+			modelSelection: normalizedModel
+				? {
+					model: normalizedModel,
+					...(normalizedThinkingEffort ? { thinking_effort: normalizedThinkingEffort } : {}),
+				}
+				: undefined,
+			key: newIdempotencyKey("planning-update-model"),
+			editGeneration,
+		}, {
+			onSuccess: (result) => {
+				// Superseded sliced mutations resolve with a symbol, not a response.
+				if (typeof result !== "object" || result === null) return;
+				setModelSelectionDraft((current) => (
+					current.sessionId === sessionId && current.editGeneration > editGeneration
+						? {
+							...current,
+							acknowledgedAutosave: {
+								model: result.model_selection.model ?? "",
+								thinkingEffort: result.model_selection.thinking_effort ?? "",
+								editGeneration,
+							},
+						}
+						: current
+				));
+			},
+		});
+	}, [modelMutate, modelRecoveryPending, sessionId]);
+	const handleModelRecovery = () => {
+		const editGeneration = pendingModelVariables?.editGeneration;
+		void retryModelRecovery().then((result) => {
+			if (typeof result !== "object" || result === null || editGeneration === undefined) return;
+			setModelSelectionDraft((current) => (
+				current.sessionId === sessionId && current.editGeneration > editGeneration
+					? {
+						...current,
+						acknowledgedAutosave: {
+							model: result.model_selection.model ?? "",
+							thinkingEffort: result.model_selection.thinking_effort ?? "",
+							editGeneration,
+						},
+					}
+					: current
+			));
+		}).catch(() => {});
+	};
+
+  const attachSource = async ({ intake }: IssueSelection) => {
+    await recoverableAttachSource.mutateAsync(intake);
+    await sessionQuery.refetch();
+  };
 
   // Auto-open plan modal when arriving via ?show_plan=true (e.g. from notification "View Plan" link)
   useEffect(() => {
@@ -224,7 +343,11 @@ export function PlanningSessionPage() {
     }
     if (hasPlan && showPlanConsumedForSession.current !== sessionId) {
       showPlanConsumedForSession.current = sessionId;
-      setShowPlanModal(true);
+      queueMicrotask(() => {
+        if (showPlanConsumedForSession.current === sessionId) {
+          setShowPlanModal(true);
+        }
+      });
       void navigate({
         to: "/decrees/planning/$sessionId",
         params: { sessionId },
@@ -250,20 +373,12 @@ export function PlanningSessionPage() {
   // 500ms timer. With `session` in deps, rapid SSE traffic could
   // starve the autosave indefinitely.
   useEffect(() => {
-    if (!hasModelSelectionChanges) return;
+    if (!hasModelSelectionChanges || modelRecoveryPending) return;
     const timer = setTimeout(() => {
-      modelMutate({
-        modelSelection: model.trim()
-          ? {
-              model: model.trim(),
-              ...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-            }
-          : undefined,
-        key: newIdempotencyKey("planning-update-model"),
-      });
+		submitModelSelection(model, thinkingEffort, currentModelSelection.editGeneration);
     }, 500);
     return () => clearTimeout(timer);
-  }, [model, thinkingEffort, hasModelSelectionChanges, modelMutate]);
+  }, [model, thinkingEffort, hasModelSelectionChanges, modelRecoveryPending, currentModelSelection.editGeneration, submitModelSelection]);
 
   // When the user reverts the dropdown back to canonical, any prior
   // failure is now meaningless — the chip's Retry would re-send the
@@ -271,10 +386,10 @@ export function PlanningSessionPage() {
   // until the next attempt's onMutate fired. Calling reset() clears
   // the mutation state so future dirty edits start clean.
   useEffect(() => {
-    if (!hasModelSelectionChanges && modelError) {
+    if (!hasModelSelectionChanges && modelError && !modelRecoveryPending) {
       modelReset();
     }
-  }, [hasModelSelectionChanges, modelError, modelReset]);
+  }, [hasModelSelectionChanges, modelError, modelRecoveryPending, modelReset]);
 
   if (sessionQuery.isLoading) {
     return (
@@ -297,7 +412,7 @@ export function PlanningSessionPage() {
             onClick={() => { void sessionQuery.refetch(); }}
             className="rounded-md border border-border bg-background px-3 py-1.5 text-sm font-medium text-foreground transition-colors hover:bg-surface-raised/60"
           >
-            Try again
+            Try Again
           </button>
         </div>
       </div>
@@ -324,6 +439,7 @@ export function PlanningSessionPage() {
                 autoFocus
                 type="text"
                 value={titleInput}
+                disabled={updateTitle.hasPendingRecovery}
                 onChange={(e) => setTitleInput(e.target.value)}
                 // Don't blur-commit while a save error is showing — the
                 // user is mid-recovery and a re-blur would re-fire the
@@ -384,16 +500,18 @@ export function PlanningSessionPage() {
                 >
                   Retry
                 </button>
-                <button
-                  type="button"
-                  className="rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
-                  onClick={() => {
-                    setTitleSaveError(null);
-                    abandonEdit(session.title);
-                  }}
-                >
-                  Discard
-                </button>
+                {!updateTitle.hasPendingRecovery ? (
+                  <button
+                    type="button"
+                    className="rounded border border-border/40 bg-background/40 px-2 py-0.5 font-medium text-foreground-subtle hover:bg-surface-raised/40"
+                    onClick={() => {
+                      setTitleSaveError(null);
+                      abandonEdit(session.title);
+                    }}
+                  >
+                    Discard
+                  </button>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -434,35 +552,52 @@ export function PlanningSessionPage() {
 				retryPending={providerModelCatalogController.retryPending}
               />
             </div>
-            <div className="w-[280px]">
+            <div className="min-w-0 max-w-xs flex-1 basis-52">
               <ModelSelectField
                 id="planning-model"
                 label="Planner Model"
                 value={model}
 				loading={providerModelCatalog.isLoading}
-                disabled={providerModelCatalog.disableSelection}
+                  disabled={providerModelCatalog.disableSelection || modelRecoveryPending}
                 options={providerModelCatalog.items}
                 triggerPlaceholder={providerModelCatalog.triggerPlaceholder}
                 emptyStateLabel={providerModelCatalog.emptyStateLabel}
                 onChange={(next) => {
-                  setModel(next);
                   const nextModel = providerModelCatalog.items.find((item) => item.id === next);
-                  setThinkingEffort(normalizeThinkingEffortSelection(nextModel, "", { preserveWhenModelMissing: true }));
+                  setModelSelectionDraft({
+                    ...currentModelSelection,
+                    model: next,
+                    thinkingEffort: normalizeThinkingEffortSelection(nextModel, "", {
+                      preserveWhenModelMissing: true,
+                    }),
+					editGeneration: currentModelSelection.editGeneration + 1,
+                  });
                 }}
               />
             </div>
-            <div className="w-[240px]">
+            <div className="min-w-0 max-w-xs flex-1 basis-52">
               <ThinkingEffortField
                 id="planning-thinking-effort"
                 label="Thinking Effort"
                 value={thinkingEffort}
                 model={selectedModel}
-                disabled={providerModelCatalog.disableSelection}
-                onChange={setThinkingEffort}
+                disabled={providerModelCatalog.disableSelection || modelRecoveryPending}
+                onChange={(next) => {
+					setModelSelectionDraft({
+						...currentModelSelection,
+						thinkingEffort: next,
+						editGeneration: currentModelSelection.editGeneration + 1,
+					});
+                }}
               />
             </div>
+            <PlanningSourcesPanel
+              sources={externalSources}
+              onAttach={attachSource}
+              onChanged={() => sessionQuery.refetch()}
+            />
           </div>
-          {hasModelSelectionChanges && modelError ? (
+          {(hasModelSelectionChanges || modelRecoveryPending) && modelError ? (
             <div
               role="alert"
               className="flex w-full items-center gap-2 rounded-md border border-status-failed/30 bg-status-failed/10 px-2 py-1 text-xs text-status-failed"
@@ -473,16 +608,8 @@ export function PlanningSessionPage() {
               <button
                 type="button"
                 className="ml-auto rounded border border-status-failed/40 bg-status-failed/15 px-2 py-0.5 font-medium hover:bg-status-failed/25"
-                onClick={() => {
-                  modelMutate({
-                    modelSelection: model.trim()
-                      ? {
-                          model: model.trim(),
-                          ...(thinkingEffort.trim() ? { thinking_effort: thinkingEffort.trim() } : {}),
-                        }
-                      : undefined,
-                    key: newIdempotencyKey("planning-update-model"),
-                  });
+                onClick={modelRecoveryPending ? handleModelRecovery : () => {
+				  submitModelSelection(model, thinkingEffort, currentModelSelection.editGeneration);
                 }}
               >
                 Retry
@@ -503,6 +630,7 @@ export function PlanningSessionPage() {
         session={session}
         operation={activeOperation}
         connection={connection}
+        operationQueryState={operationQueryState}
         onSubmitReply={({ text, answer, parentMessageId }) =>
           submitReply({ text, answer, parentMessageId })
         }
@@ -513,8 +641,10 @@ export function PlanningSessionPage() {
       <PlanResultModal
         open={showPlanModal}
         draft={draftQuery.data ?? null}
-        sessionId={sessionId}
-        contextSnapshotId={session.context_snapshot_id ?? undefined}
+        planningLineage={draftQuery.data ? {
+          planning_session_id: sessionId,
+          planning_draft_id: draftQuery.data.planning_draft_id,
+        } : undefined}
         operation={activeOperation?.kind === "formalize" ? activeOperation : null}
         onClose={() => setShowPlanModal(false)}
       />

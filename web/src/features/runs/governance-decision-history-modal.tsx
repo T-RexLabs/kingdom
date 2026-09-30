@@ -1,16 +1,15 @@
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { ModalDialog } from "@/components/ui/modal-dialog";
 import {
 	MODAL_BODY_TEXT_CLASS,
+	Modal,
 	ModalContentCard,
 	ModalContentSection,
-	ModalShell,
-	modalShellSizeClass,
+	ModalFooter,
 } from "@/components/ui/modal-shell";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import type { GovernanceDecision } from "@/api/hooks";
-import { cn } from "@/lib/utils";
+import { governanceDecisionLabel, governanceDecisionStageLabel } from "./governance-decision-labels";
 
 function formatGovernanceTimestamp(iso: string): string {
 	const date = new Date(iso);
@@ -20,17 +19,6 @@ function formatGovernanceTimestamp(iso: string): string {
 
 	const pad = (value: number) => value.toString().padStart(2, "0");
 	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
-}
-
-function decisionLabel(item: GovernanceDecision): string {
-	if (item.stage === "plan") {
-		return item.decision === "needs_rework" ? "Requested Plan Rework" : "Approved Plan";
-	}
-	return item.decision === "needs_rework" ? "Requested Final Rework" : "Confirmed Completion";
-}
-
-function stageLabel(item: GovernanceDecision): string {
-	return item.stage === "plan" ? "Plan" : "Final";
 }
 
 export function GovernanceDecisionHistoryModal({
@@ -49,9 +37,23 @@ export function GovernanceDecisionHistoryModal({
 	onLoadMore?: () => void;
 }) {
 	return (
-		<ModalDialog open={open} onClose={onClose} ariaLabel="Allfather decision history" panelClassName={cn("w-full", modalShellSizeClass("md"))}>
-			<ModalShell title="Allfather Decision History" caption="Governance History" onClose={onClose}>
-				<div className="space-y-3 pr-1">
+		// Paging belongs in the footer: inside the scrolling body the control
+		// scrolls away exactly when the operator has reached the end and wants it.
+		<Modal
+			open={open}
+			onClose={onClose}
+			size="md"
+			title="Allfather Decision History"
+			caption="Governance History"
+			footer={hasMore ? (
+				<ModalFooter>
+					<Button type="button" variant="outline" onClick={onLoadMore} disabled={isLoadingMore || !onLoadMore}>
+						{isLoadingMore ? "Loading Older Decisions..." : "Load Older Decisions"}
+					</Button>
+				</ModalFooter>
+			) : undefined}
+		>
+				<div className="space-y-3">
 					{items.length === 0 ? (
 						<div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-foreground-subtle">
 							No Allfather decisions recorded yet.
@@ -63,8 +65,8 @@ export function GovernanceDecisionHistoryModal({
 								<ModalContentCard key={item.decision_id}>
 									<div className="flex flex-wrap items-center justify-between gap-3">
 										<div className="flex flex-wrap items-center gap-2">
-											<Badge>{stageLabel(item)}</Badge>
-											<p className="text-sm font-semibold text-foreground">{decisionLabel(item)}</p>
+											<Badge>{governanceDecisionStageLabel(item)}</Badge>
+											<p className="text-sm font-semibold text-foreground">{governanceDecisionLabel(item)}</p>
 										</div>
 										<span className="text-xs text-foreground-subtle">{formatGovernanceTimestamp(item.created_at)}</span>
 									</div>
@@ -77,23 +79,7 @@ export function GovernanceDecisionHistoryModal({
 							);
 						})
 					)}
-					{hasMore ? (
-						<div className="flex justify-center pt-1">
-							<Button type="button" variant="outline" onClick={onLoadMore} disabled={isLoadingMore || !onLoadMore}>
-								{isLoadingMore ? "Loading Older Decisions..." : "Load Older Decisions"}
-							</Button>
-						</div>
-					) : null}
 				</div>
-			</ModalShell>
-		</ModalDialog>
+		</Modal>
 	);
-}
-
-export function governanceDecisionLabel(item: GovernanceDecision): string {
-	return decisionLabel(item);
-}
-
-export function governanceDecisionStageLabel(item: GovernanceDecision): string {
-	return stageLabel(item);
 }

@@ -1,7 +1,6 @@
 import { useParams, useSearch, useNavigate } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import {
-	newIdempotencyKey,
 	useRun,
 	useRunExecution,
 	useRunExecutions,
@@ -13,6 +12,7 @@ import {
   useMailboxMessage,
 	useCancelRun,
 	type MailboxFilters,
+	type CancelRunRequest,
 } from "@/api/hooks";
 import { invalidateRunDetailRecoveryQueries, invalidateRunQuerySurfaces, type RunQuerySurface } from "@/api/hooks-runs";
 import type { RunDetailSummary } from "@/api/hooks-types";
@@ -22,11 +22,11 @@ import { ApiError } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InfoTooltip } from "@/components/ui/info-tooltip";
-import { ModalDialog } from "@/components/ui/modal-dialog";
-import { MODAL_BODY_TEXT_CLASS, ModalShell, modalShellSizeClass } from "@/components/ui/modal-shell";
+import { ConfirmDialog, MODAL_BODY_TEXT_CLASS } from "@/components/ui/modal-shell";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
 import { cn } from "@/lib/utils";
+import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   Activity,
@@ -89,13 +89,13 @@ export function RunDetailPage() {
 	const search = useSearch({ from: "/runs/$runId" });
 	const navigate = useNavigate();
 	const queryClient = useQueryClient();
-	const runMountStartedAtRef = useRef(Date.now());
+	const runMountStartedAtRef = useRef(0);
 	const activeTab: RunDetailTab = search.tab ?? "graph";
 	const runQuery = useRun(runId);
 	const run = runQuery.data;
 	const runReady = runQuery.isSuccess;
 	const executionVisible = activeTab === "execution";
-	const graphVisible = activeTab === "graph" || executionVisible;
+	const graphVisible = activeTab === "graph" || executionVisible || run?.status === "cancelled";
 	const timelineVisible = executionVisible;
 	const executionsQueryActive = executionVisible;
 	const agentsVisible = activeTab === "agents";
@@ -106,10 +106,17 @@ export function RunDetailPage() {
 	);
 	const graphQuery = useRunGraph(runId, { enabled: runReady && graphVisible });
 	const graph = graphQuery.data;
+	const graphIsFetching = graphQuery.isFetching;
+	const refetchGraph = graphQuery.refetch;
 	const executionsQuery = useRunExecutions(runId, { enabled: runReady && executionsQueryActive });
-	const executions = executionsQuery.data?.items ?? [];
+	const executions = useMemo(() => executionsQuery.data?.items ?? [], [executionsQuery.data?.items]);
+	const executionsAreFetching = executionsQuery.isFetching;
+	const refetchExecutions = executionsQuery.refetch;
 	const liveExecutionProjectionQuery = useLiveExecutionProjection(runId);
-	const liveExecutionProjection = liveExecutionProjectionQuery.data ?? {};
+	const liveExecutionProjection = useMemo(
+		() => liveExecutionProjectionQuery.data ?? {},
+		[liveExecutionProjectionQuery.data],
+	);
 	const presentedExecutions = useMemo(
 		() => mergeExecutionItems(executions, liveExecutionProjection),
 		[executions, liveExecutionProjection],
@@ -119,17 +126,32 @@ export function RunDetailPage() {
 		[presentedExecutions],
 	);
 	const timelineQuery = useTimeline(runId, RUN_DETAIL_TIMELINE_PAGE_SIZE, { enabled: runReady && timelineVisible });
+	const timelineIsPending = timelineQuery.isPending;
+	const refetchTimeline = timelineQuery.refetch;
+	const fetchNextTimelinePage = timelineQuery.fetchNextPage;
 	const liveTimelineQuery = useLiveTimelineEvents(runId);
 	const liveTimelineSyncQuery = useLiveTimelineSyncState(runId);
 	const runSurfaceFreshnessQuery = useRunSurfaceFreshness(runId);
 	const agentsQuery = useRunAgents(runId, { enabled: runReady && agentsVisible });
 	const agents = agentsQuery.data;
+	const agentsAreFetching = agentsQuery.isFetching;
+	const refetchAgents = agentsQuery.refetch;
 	const [selectedExecution, setSelectedExecution] = useState<SelectedExecutionState | null>(null);
 	const selectedExecutionState = selectedExecution?.runId === runId ? selectedExecution : null;
+	const reconciledSelectedExecution = reconcileSelectedExecution(
+		runId,
+		activityStepGroups,
+		selectedExecutionState,
+	);
+	if (!sameSelectedExecution(selectedExecutionState, reconciledSelectedExecution)) {
+		setSelectedExecution(reconciledSelectedExecution);
+	}
 	const selectedExecutionId = selectedExecutionState?.attemptId ?? null;
 	const selectedExecutionNodeId = selectedExecutionState?.nodeId ?? null;
 	const selectedExecutionIsCanonical = !!selectedExecutionId && executions.some((item) => item.attempt_id === selectedExecutionId);
 	const executionDetailQuery = useRunExecution(runId, selectedExecutionId, { enabled: runReady && executionVisible && !!selectedExecutionId && selectedExecutionIsCanonical });
+	const executionDetailIsFetching = executionDetailQuery.isFetching;
+	const refetchExecutionDetail = executionDetailQuery.refetch;
 	const presentedExecutionDetail = useMemo(
 		() => overlayExecutionDetail(executionDetailQuery.data ?? null, executionDetailQuery.data ? liveExecutionProjection[executionDetailQuery.data.node_run_id] : undefined),
 		[executionDetailQuery.data, liveExecutionProjection],
@@ -144,7 +166,14 @@ export function RunDetailPage() {
 	const [mailboxFilters, setMailboxFilters] = useState<MailboxFilters>({});
 	const mailboxQuery = useMailbox(runId, mailboxFilters, { enabled: runReady && mailboxVisible });
 	const mailbox = mailboxQuery.data;
+	const mailboxIsFetching = mailboxQuery.isFetching;
+	const refetchMailbox = mailboxQuery.refetch;
 	const cancelRun = useCancelRun(runId);
+	const recoverableCancel = useRecoverableMutation(
+		"cancel",
+		(body: CancelRunRequest, key) => cancelRun.mutateAsync({ body, key }),
+		runId,
+	);
 	const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
 	const planApprovalTargetRef = useRef<HTMLDivElement | null>(null);
 	const finalApprovalTargetRef = useRef<HTMLDivElement | null>(null);
@@ -154,7 +183,7 @@ export function RunDetailPage() {
 	    () => [...(timelineQuery.data?.pages ?? [])].reverse().flatMap((page) => page.items ?? []),
 	    [timelineQuery.data?.pages],
 	  );
-  const liveTimelineItems = liveTimelineQuery.data ?? [];
+  const liveTimelineItems = useMemo(() => liveTimelineQuery.data ?? [], [liveTimelineQuery.data]);
   const timelineItems = useMemo(
 	    () => mergeTimelineEvents(baseTimelineItems, liveTimelineItems),
 	    [baseTimelineItems, liveTimelineItems],
@@ -211,12 +240,17 @@ export function RunDetailPage() {
     enabled: runReady && mailboxVisible,
   });
   const messageDetail = mailboxMessageQuery.data;
+	const mailboxMessageIsFetching = mailboxMessageQuery.isFetching;
+	const refetchMailboxMessage = mailboxMessageQuery.refetch;
   const canCancelRun =
     run?.status === "running" ||
     run?.status === "pending" ||
     run?.status === "awaiting_human_confirmation";
 	  const cancelDialogVisible = cancelDialogOpen && canCancelRun;
-	  const dirtyRunSurfaces = runSurfaceFreshnessQuery.data?.dirtySurfaces ?? [];
+	  const dirtyRunSurfaces = useMemo(
+	    () => runSurfaceFreshnessQuery.data?.dirtySurfaces ?? [],
+	    [runSurfaceFreshnessQuery.data?.dirtySurfaces],
+	  );
 	  const dirtyRunSurfaceSet = useMemo(() => new Set(dirtyRunSurfaces), [dirtyRunSurfaces]);
 	const graphDirty = dirtyRunSurfaceSet.has("graph");
 	const executionsDirty = dirtyRunSurfaceSet.has("executions");
@@ -263,18 +297,10 @@ export function RunDetailPage() {
 	}, [activeTab, runId]);
 
 	useEffect(() => {
-		const nextSelection = reconcileSelectedExecution(runId, activityStepGroups, selectedExecutionState);
-		if (sameSelectedExecution(selectedExecutionState, nextSelection)) {
+		if (!runId || !graphVisible || !graphDirty || graphIsFetching) {
 			return;
 		}
-		setSelectedExecution(nextSelection);
-	}, [activityStepGroups, runId, selectedExecutionState]);
-
-	useEffect(() => {
-		if (!runId || !graphVisible || !graphDirty || graphQuery.isFetching) {
-			return;
-		}
-		void Promise.resolve(graphQuery.refetch())
+		void Promise.resolve(refetchGraph())
 			.then((result) => {
 				if (isSuccessfulQueryResult(result)) {
 					clearRunQuerySurfacesDirty(queryClient, runId, ["graph"]);
@@ -283,15 +309,15 @@ export function RunDetailPage() {
 			.catch(() => {
 				// leave dirty so the next visible retry can reconcile it
 			});
-	}, [graphDirty, graphQuery.isFetching, graphQuery.refetch, graphVisible, queryClient, runId]);
+	}, [graphDirty, graphIsFetching, graphVisible, queryClient, refetchGraph, runId]);
 
 	useEffect(() => {
-		if (!runId || !executionsQueryActive || !executionsDirty || executionsQuery.isFetching || (executionVisible && executionDetailQuery.isFetching)) {
+		if (!runId || !executionsQueryActive || !executionsDirty || executionsAreFetching || (executionVisible && executionDetailIsFetching)) {
 			return;
 		}
-		const refreshes: Array<Promise<unknown>> = [Promise.resolve(executionsQuery.refetch())];
+		const refreshes: Array<Promise<unknown>> = [Promise.resolve(refetchExecutions())];
 		if (executionVisible && selectedExecutionId) {
-			refreshes.push(Promise.resolve(executionDetailQuery.refetch()));
+			refreshes.push(Promise.resolve(refetchExecutionDetail()));
 		}
 		void Promise.all(refreshes)
 			.then((results) => {
@@ -303,14 +329,14 @@ export function RunDetailPage() {
 				// leave dirty so the next retry can reconcile it
 			});
 	}, [
-		executionDetailQuery.isFetching,
-		executionDetailQuery.refetch,
+		executionDetailIsFetching,
 		executionsDirty,
 		executionsQueryActive,
-		executionsQuery.isFetching,
-		executionsQuery.refetch,
+		executionsAreFetching,
 		executionVisible,
 		queryClient,
+		refetchExecutionDetail,
+		refetchExecutions,
 		runId,
 		selectedExecutionId,
 	]);
@@ -322,7 +348,7 @@ export function RunDetailPage() {
 	    if (hiddenTimelineDirtyStartSeq === null || hiddenTimelineDirtyEndSeq === null) {
 	      return;
 	    }
-	    if (timelineQuery.isPending || isTimelineFetchInFlight || hiddenTimelineReconciliationAttempt !== null) {
+	    if (timelineIsPending || isTimelineFetchInFlight || hiddenTimelineReconciliationAttempt !== null) {
 	      return;
 	    }
 	    if (hiddenTimelineRetryAtMs !== null && hiddenTimelineRetryAtMs > Date.now()) {
@@ -349,7 +375,7 @@ export function RunDetailPage() {
 	      if (!started) {
 	        return;
 	      }
-	      void Promise.resolve(timelineQuery.refetch())
+	      void Promise.resolve(refetchTimeline())
 	        .then((result) => {
 	          settleReconciliationAttempt(isSuccessfulQueryResult(result));
 	        })
@@ -369,7 +395,7 @@ export function RunDetailPage() {
 	      if (!started) {
 	        return;
 	      }
-	      void Promise.resolve(timelineQuery.fetchNextPage())
+	      void Promise.resolve(fetchNextTimelinePage())
 	        .then((result) => {
 	          settleReconciliationAttempt(isSuccessfulQueryResult(result));
 	        })
@@ -388,10 +414,10 @@ export function RunDetailPage() {
 	    isTimelineFetchInFlight,
 	    runId,
 	    queryClient,
+	    fetchNextTimelinePage,
+	    refetchTimeline,
 	    timelineRetryWakeTick,
-	    timelineQuery.fetchNextPage,
-	    timelineQuery.isPending,
-	    timelineQuery.refetch,
+	    timelineIsPending,
 	    timelineVisible,
 	  ]);
 
@@ -402,10 +428,10 @@ export function RunDetailPage() {
 		if (hiddenTimelineDirtyStartSeq !== null || hiddenTimelineDirtyEndSeq !== null) {
 			return;
 		}
-		if (timelineQuery.isPending || isTimelineFetchInFlight) {
+		if (timelineIsPending || isTimelineFetchInFlight) {
 			return;
 		}
-		void Promise.resolve(timelineQuery.refetch())
+		void Promise.resolve(refetchTimeline())
 			.then((result) => {
 				if (isSuccessfulQueryResult(result)) {
 					clearRunQuerySurfacesDirty(queryClient, runId, ["timeline"]);
@@ -419,18 +445,18 @@ export function RunDetailPage() {
 		hiddenTimelineDirtyStartSeq,
 		isTimelineFetchInFlight,
 		queryClient,
+		refetchTimeline,
 		runId,
 		timelineDirty,
-		timelineQuery.isPending,
-		timelineQuery.refetch,
+		timelineIsPending,
 		timelineVisible,
 	]);
 
 	useEffect(() => {
-		if (!runId || !agentsVisible || !agentsDirty || agentsQuery.isFetching) {
+		if (!runId || !agentsVisible || !agentsDirty || agentsAreFetching) {
 			return;
 		}
-		void Promise.resolve(agentsQuery.refetch())
+		void Promise.resolve(refetchAgents())
 			.then((result) => {
 				if (isSuccessfulQueryResult(result)) {
 					clearRunQuerySurfacesDirty(queryClient, runId, ["agents"]);
@@ -439,15 +465,15 @@ export function RunDetailPage() {
 			.catch(() => {
 				// leave dirty so the next visible retry can reconcile it
 			});
-	}, [agentsDirty, agentsQuery.isFetching, agentsQuery.refetch, agentsVisible, queryClient, runId]);
+	}, [agentsAreFetching, agentsDirty, agentsVisible, queryClient, refetchAgents, runId]);
 
 	useEffect(() => {
-		if (!runId || !mailboxVisible || !mailboxDirty || mailboxQuery.isFetching || mailboxMessageQuery.isFetching) {
+		if (!runId || !mailboxVisible || !mailboxDirty || mailboxIsFetching || mailboxMessageIsFetching) {
 			return;
 		}
-		const refreshes: Array<Promise<unknown>> = [Promise.resolve(mailboxQuery.refetch())];
+		const refreshes: Array<Promise<unknown>> = [Promise.resolve(refetchMailbox())];
 		if (selectedMessageId) {
-			refreshes.push(Promise.resolve(mailboxMessageQuery.refetch()));
+			refreshes.push(Promise.resolve(refetchMailboxMessage()));
 		}
 		void Promise.all(refreshes)
 			.then((results) => {
@@ -460,12 +486,12 @@ export function RunDetailPage() {
 			});
 	}, [
 		mailboxDirty,
-		mailboxMessageQuery.isFetching,
-		mailboxMessageQuery.refetch,
-		mailboxQuery.isFetching,
-		mailboxQuery.refetch,
+		mailboxIsFetching,
+		mailboxMessageIsFetching,
 		mailboxVisible,
 		queryClient,
+		refetchMailbox,
+		refetchMailboxMessage,
 		runId,
 		selectedMessageId,
 	]);
@@ -474,11 +500,7 @@ export function RunDetailPage() {
     if (!timelineVisible || hiddenTimelineRetryAtMs === null) {
       return;
     }
-    const delayMs = hiddenTimelineRetryAtMs - Date.now();
-    if (delayMs <= 0) {
-      setTimelineRetryWakeTick((current) => current + 1);
-      return;
-    }
+    const delayMs = Math.max(0, hiddenTimelineRetryAtMs - Date.now());
     const timer = window.setTimeout(() => {
       setTimelineRetryWakeTick((current) => current + 1);
     }, delayMs);
@@ -551,17 +573,14 @@ export function RunDetailPage() {
   }, []);
 
   const handleCloseCancelDialog = () => {
-    if (!cancelRun.isPending) {
+    if (!cancelRun.isPending && !recoverableCancel.hasPendingRecovery) {
       setCancelDialogOpen(false);
     }
   };
 
   const handleConfirmCancelRun = async () => {
     try {
-      await cancelRun.mutateAsync({
-        body: { reason: "manual cancellation from run detail" },
-        key: newIdempotencyKey("cancel"),
-      });
+      await recoverableCancel.mutateAsync({ reason: "manual cancellation from run detail" });
       setCancelDialogOpen(false);
     } catch {
       // surfaced via mutation error UI below
@@ -593,7 +612,7 @@ export function RunDetailPage() {
 			'textarea, button:not([disabled]), input:not([disabled]), select:not([disabled]), [href], [tabindex]:not([tabindex="-1"])',
 		);
 		(firstInteractive ?? target).focus({ preventScroll: true });
-	}, [run?.autonomous_approvals, run?.display_state]);
+	}, [run]);
 
   if (runQuery.isPending) {
     return (
@@ -641,6 +660,7 @@ export function RunDetailPage() {
 
 	const governanceState = describeManualGovernanceState(run);
 	const failedNodeCount = run.failed_nodes.length;
+	const cancelledNodes = run.status === "cancelled" ? (graph?.nodes ?? []) : [];
   const untilAllApprove = !!run.run_until_all_approve;
   const skipReviewAndValidation = isSkipReviewValidationWorkflowId(run.workflow_id);
   const governanceJumpLabel = governanceState.isAwaitingPlanApproval
@@ -668,12 +688,15 @@ export function RunDetailPage() {
 
 	const activeTabId = `run-tab-${activeTab}`;
 	const activePanelId = `run-tabpanel-${activeTab}`;
+	// `relative` for the same reason PageContent carries it: a scroll viewport
+	// must be the containing block for its absolutely positioned descendants,
+	// or they escape the clip and grow the document instead.
 	const managedTabPanelClass = activeTab === "graph" || activeTab === "mailbox"
 		? "flex flex-col overflow-hidden"
-		: "overflow-auto";
+		: "relative overflow-auto";
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full min-h-0 flex-col">
       <PageHeader>
         <div className="flex w-full items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -779,9 +802,9 @@ export function RunDetailPage() {
       <div className="flex-1 min-h-0 overflow-hidden px-page py-3">
         <div data-testid="run-detail-layout" className="grid h-full min-h-0 gap-3 lg:grid-cols-2">
           <section className="order-2 flex min-h-0 flex-col rounded-md border border-border bg-background lg:order-1">
-            {failedNodeCount > 0 && (
-              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
-                 <GovernanceActions run={run} failedNodes={run.failed_nodes} showFinalApproval={false} />
+	            {(failedNodeCount > 0 || cancelledNodes.length > 0) && (
+	              <div className="border-b border-border bg-surface-raised/50 px-3 py-3">
+	                 <GovernanceActions run={run} failedNodes={run.failed_nodes} cancelledNodes={cancelledNodes} showFinalApproval={false} />
               </div>
             )}
 
@@ -996,6 +1019,7 @@ export function RunDetailPage() {
         open={cancelDialogVisible}
         runTitle={run.decree_title}
         isPending={cancelRun.isPending}
+        recoveryPending={recoverableCancel.hasPendingRecovery}
         onClose={handleCloseCancelDialog}
         onConfirm={() => {
           void handleConfirmCancelRun();
@@ -1270,42 +1294,35 @@ function CancelRunDialog({
   open,
   runTitle,
   isPending,
+  recoveryPending,
   onClose,
   onConfirm,
 }: {
   open: boolean;
   runTitle: string;
   isPending: boolean;
+  recoveryPending: boolean;
   onClose: () => void;
   onConfirm: () => void;
 }) {
 	return (
-		<ModalDialog
+		<ConfirmDialog
 			open={open}
 			onClose={onClose}
-			ariaLabel="Cancel run"
-			panelClassName={cn("w-full", modalShellSizeClass("sm"))}
+			onConfirm={onConfirm}
+			title={runTitle}
+			caption="Cancel Run"
+			confirmLabel={isPending ? "Cancelling..." : recoveryPending ? "Retry Cancel Run" : "Cancel Run"}
+			// The only confirm that overrides the default dismiss verb, because
+			// here "Cancel" is the destructive action's own name.
+			dismissLabel="Keep Run Active"
+			confirmDisabled={isPending}
+			dismissDisabled={isPending || recoveryPending}
 		>
-			<ModalShell
-				title={runTitle}
-				caption="Cancel Run"
-				onClose={onClose}
-				footer={(
-					<div className="flex justify-end gap-2">
-						<Button type="button" variant="ghost" onClick={onClose} disabled={isPending}>
-							Keep Run Active
-						</Button>
-						<Button type="button" variant="destructive" onClick={onConfirm} disabled={isPending}>
-							{isPending ? "Cancelling..." : "Cancel Run"}
-						</Button>
-					</div>
-				)}
-			>
-				<p className={MODAL_BODY_TEXT_CLASS}>
-					This stops further loop scheduling for this run. Existing work remains visible in the run timeline,
-					DAG, and mailbox.
-				</p>
-			</ModalShell>
-		</ModalDialog>
+			<p className={MODAL_BODY_TEXT_CLASS}>
+				This stops further loop scheduling for this run. Existing work remains visible in the run timeline,
+				DAG, and mailbox.
+			</p>
+		</ConfirmDialog>
 	);
 }

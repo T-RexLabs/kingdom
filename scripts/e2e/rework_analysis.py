@@ -87,16 +87,14 @@ def run_profile(
         print(f"[{profile.profile_id}] create decree")
         run_id = runtime.create_decree_run(
             server_url,
-            config.common.actor_id,
-            config.common.role_id,
+            paths.credential_path,
             run_request,
             paths.report_dir / "decree.json",
         )
         print(f"[{profile.profile_id}] run_id={run_id}")
         poll_result = runtime.poll_run(
             server_url,
-            config.common.actor_id,
-            config.common.role_id,
+            paths.credential_path,
             run_id,
             config.common.timeout_seconds,
             config.common.poll_interval_seconds,
@@ -105,8 +103,7 @@ def run_profile(
         print(f"[{profile.profile_id}] terminal poll status={poll_result.terminal_status}")
         runtime.capture_run_api_artifacts(
             server_url,
-            config.common.actor_id,
-            config.common.role_id,
+            paths.credential_path,
             run_id,
             paths.report_dir,
         )

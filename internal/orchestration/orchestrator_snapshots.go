@@ -2,8 +2,8 @@ package orchestration
 
 import (
 	"context"
-	"fmt"
 	"database/sql"
+	"fmt"
 	"strings"
 	"time"
 
@@ -79,6 +79,13 @@ func (o *orchestrationLoop) restoreExecutionTarget(ctx context.Context, runID, e
 	}
 	if strings.TrimSpace(executionRoot) == "" || strings.TrimSpace(trustedSnapshotID) == "" {
 		return nil
+	}
+	target, err := o.fsStore.GetExecutionTarget(ctx, runID)
+	if err != nil {
+		return fmt.Errorf("load execution target for snapshot recovery: %w", err)
+	}
+	if err := o.fsStore.RecoverMissingSnapshotBlobs(ctx, trustedSnapshotID, target.PublishRoot, target.SourceRoot); err != nil {
+		return err
 	}
 	if err := o.fsStore.RestoreSnapshot(ctx, trustedSnapshotID, executionRoot); err != nil {
 		return err

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { pollingRefetchQueryOptions } from "./query-freshness";
 import type {
   DashboardSnapshot,
@@ -94,5 +94,5 @@ function retryRealmAnalyticsExecutionDetailQuery(failureCount: number, error: un
   if (error instanceof ApiError && error.status === 404) {
     return false;
   }
-  return failureCount < 3;
+  return shouldRetryApiQuery(failureCount, error, 3);
 }

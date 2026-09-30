@@ -3,12 +3,14 @@ package e2e_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -20,12 +22,16 @@ import (
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/external"
+	"kingdom/internal/idempotency"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 
 	_ "modernc.org/sqlite"
 )
+
+const e2eOperatorCredential = "e2e-operator-credential"
 
 func TestE2ERetryAndRerunFlowsAccepted(t *testing.T) {
 	t.Parallel()
@@ -40,8 +46,6 @@ func TestE2ERetryAndRerunFlowsAccepted(t *testing.T) {
 		body: map[string]any{
 			"reason": "recover flaky downstream",
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-retry",
 	})
 	if retryRes.Code != http.StatusAccepted {
@@ -55,8 +59,6 @@ func TestE2ERetryAndRerunFlowsAccepted(t *testing.T) {
 		body: map[string]any{
 			"reason": "rerun after policy update",
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-rerun",
 	})
 	if rerunRes.Code != http.StatusAccepted {
@@ -76,8 +78,6 @@ func TestE2ERetryRejectedWhenRunNotFailed(t *testing.T) {
 		body: map[string]any{
 			"reason": "retry while still active",
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-retry-conflict",
 	})
 	if retryRes.Code != http.StatusConflict {
@@ -93,8 +93,8 @@ func TestE2EReconnectFlowUsesLastEventID(t *testing.T) {
 	env.seedAttemptEvents(t, runID)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/events/stream?run_id="+runID, nil)
-	req.Header.Set("X-Actor-Id", "actor-chancellor")
-	req.Header.Set("X-Role-Id", "chancellor")
+	req.RemoteAddr = "127.0.0.1:49152"
+	req.Header.Set("Authorization", "Bearer "+e2eOperatorCredential)
 	req.Header.Set("Last-Event-ID", "evt-h3-2")
 
 	res := httptest.NewRecorder()
@@ -127,8 +127,6 @@ func TestE2EWaiverEndpointRemoved(t *testing.T) {
 			"target_gate": "security_validation",
 			"reason":      "legacy waiver route should be removed",
 		},
-		actorID:        "actor-king",
-		roleID:         "king",
 		idempotencyKey: "idem-h3-waiver-removed",
 	})
 	if res.Code != http.StatusNotFound {
@@ -136,11 +134,166 @@ func TestE2EWaiverEndpointRemoved(t *testing.T) {
 	}
 }
 
+func TestE2ESeededExternalSecretLeakContainment(t *testing.T) {
+	privateKeyMarker := "GITHUB_PRIVATE_KEY_MARKER_0b91"
+	installationTokenMarker := "INSTALLATION_TOKEN_MARKER_e88a"
+	privateBodyMarker := "PRIVATE_ISSUE_BODY_MARKER_41ce"
+	adapter := &deterministicExternalAdapter{issue: state.NormalizedExternalIssue{Title: "Deterministic issue", Body: privateBodyMarker, State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: "2026-03-01T12:00:00Z", UpdatedAt: "2026-03-01T13:00:00Z"}, token: installationTokenMarker}
+	env := newE2EEnvWithExternalAdapter(t, adapter)
+	secretDir := filepath.Join(env.projectRoot, ".kingdom", "secrets", "github-apps", "connection-fixture")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(secretDir, "private-key.1.pem"), []byte(privateKeyMarker), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	responses := strings.Builder{}
+	create := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections", idempotencyKey: "leak-connection", body: map[string]any{"provider": "github", "credential_strategy": "app_private_key", "display_name": "Leak fixture", "app_id": "1", "client_id": "Iv1", "app_slug": "app", "installation_id": "2"}})
+	responses.WriteString(create.Body.String())
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create connection: %d %s", create.Code, create.Body.String())
+	}
+	var connection struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
+		t.Fatal(err)
+	}
+	externalStore := state.NewExternalStore(env.db)
+	storedConnection, err := externalStore.GetConnection(context.Background(), connection.ConnectionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := externalStore.RecordCredentialEvent(context.Background(), connection.ConnectionID, storedConnection.RowVersion, 1, "local-operator", "audit-e2e-leak-credential", "credential.provisioned", time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+		t.Fatal(err)
+	}
+	health := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionID + "/health-checks", idempotencyKey: "leak-health"})
+	responses.WriteString(health.Body.String())
+	capture := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-captures", idempotencyKey: "leak-capture", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7}})
+	responses.WriteString(capture.Body.String())
+	if capture.Code != http.StatusCreated {
+		t.Fatalf("capture: %d %s", capture.Code, capture.Body.String())
+	}
+
+	for _, marker := range []string{e2eOperatorCredential, privateKeyMarker, installationTokenMarker, privateBodyMarker} {
+		if strings.Contains(responses.String(), marker) {
+			t.Fatalf("compact mutation response leaked marker %q: %s", marker, responses.String())
+		}
+	}
+	var idempotencyPayloads, auditPayloads string
+	if err := env.db.QueryRow(`SELECT COALESCE(group_concat(response_headers_json || response_body_json, ''), '') FROM idempotency_keys`).Scan(&idempotencyPayloads); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.db.QueryRow(`SELECT COALESCE(group_concat(safe_payload_json, ''), '') FROM external_integration_audit_events`).Scan(&auditPayloads); err != nil {
+		t.Fatal(err)
+	}
+	for surface, payload := range map[string]string{"idempotency": idempotencyPayloads, "audit": auditPayloads} {
+		for _, marker := range []string{e2eOperatorCredential, privateKeyMarker, installationTokenMarker, privateBodyMarker} {
+			if strings.Contains(payload, marker) {
+				t.Fatalf("%s persistence leaked marker %q: %s", surface, marker, payload)
+			}
+		}
+	}
+
+	backupPath := filepath.Join(t.TempDir(), "kingdom-backup.sqlite")
+	if _, err := env.db.Exec(`VACUUM INTO ?`, backupPath); err != nil {
+		t.Fatalf("vacuum backup: %v", err)
+	}
+	backup, err := os.ReadFile(backupPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, marker := range []string{e2eOperatorCredential, privateKeyMarker, installationTokenMarker} {
+		if bytes.Contains(backup, []byte(marker)) {
+			t.Fatalf("SQLite backup leaked non-database secret %q", marker)
+		}
+	}
+	if !bytes.Contains(backup, []byte(privateBodyMarker)) {
+		t.Fatal("SQLite backup omitted authoritative external snapshot content")
+	}
+}
+
+func TestE2EDeterministicExternalDiscoveryIntakeIssuanceAndRefresh(t *testing.T) {
+	adapter := &deterministicExternalAdapter{issue: state.NormalizedExternalIssue{Title: "Deterministic issue", Body: "Provider-neutral intake body", State: "open", Repository: "owner/repo", IssueNumber: 7, CanonicalURL: "https://github.com/owner/repo/issues/7", CreatedAt: "2026-03-01T12:00:00Z", UpdatedAt: "2026-03-01T13:00:00Z"}}
+	env := newE2EEnvWithExternalAdapter(t, adapter)
+	create := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections", idempotencyKey: "e2e-external-connection", body: map[string]any{"provider": "github", "credential_strategy": "app_private_key", "display_name": "Fixture", "app_id": "1", "client_id": "Iv1", "app_slug": "app", "installation_id": "2"}})
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create connection: %d %s", create.Code, create.Body.String())
+	}
+	var connection struct {
+		ConnectionID string `json:"connection_id"`
+	}
+	if err := json.Unmarshal(create.Body.Bytes(), &connection); err != nil {
+		t.Fatal(err)
+	}
+	publishFixtureCredentialGeneration(t, env, connection.ConnectionID, "audit-e2e-external-credential")
+	health := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/connections/" + connection.ConnectionID + "/health-checks", idempotencyKey: "e2e-external-health"})
+	if health.Code != http.StatusOK {
+		t.Fatalf("health: %d %s", health.Code, health.Body.String())
+	}
+	for _, path := range []string{"/api/v1/connections/" + connection.ConnectionID + "/repositories", "/api/v1/connections/" + connection.ConnectionID + "/repositories/200/issues"} {
+		if response := env.request(t, requestSpec{method: http.MethodGet, path: path}); response.Code != http.StatusOK {
+			t.Fatalf("discovery %s: %d %s", path, response.Code, response.Body.String())
+		}
+	}
+	capture := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-captures", idempotencyKey: "e2e-external-capture", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7}})
+	if capture.Code != http.StatusCreated {
+		t.Fatalf("capture: %d %s", capture.Code, capture.Body.String())
+	}
+	var captured struct {
+		SnapshotID string `json:"snapshot_id"`
+	}
+	if err := json.Unmarshal(capture.Body.Bytes(), &captured); err != nil {
+		t.Fatal(err)
+	}
+	decree := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/decrees", idempotencyKey: "e2e-external-decree", body: map[string]any{"decree_title": "Operator edit", "decree_text": "Immutable operator text", "external_source_snapshot_id": captured.SnapshotID}})
+	if decree.Code != http.StatusCreated {
+		t.Fatalf("decree: %d %s", decree.Code, decree.Body.String())
+	}
+	planning := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions", idempotencyKey: "e2e-external-planning", body: map[string]any{"title": "External intake"}})
+	if planning.Code != http.StatusCreated {
+		t.Fatalf("planning session: %d %s", planning.Code, planning.Body.String())
+	}
+	var planningSession struct {
+		Session struct {
+			PlanningSessionID string `json:"planning_session_id"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(planning.Body.Bytes(), &planningSession); err != nil {
+		t.Fatal(err)
+	}
+	attach := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/planning-sessions/" + planningSession.Session.PlanningSessionID + "/external-sources", idempotencyKey: "e2e-external-attach", body: map[string]any{"connection_id": connection.ConnectionID, "repository_id": "200", "issue_number": 7}})
+	if attach.Code != http.StatusCreated {
+		t.Fatalf("planning intake: %d %s", attach.Code, attach.Body.String())
+	}
+	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_sources`); count != 1 {
+		t.Fatalf("canonical source count=%d", count)
+	}
+	if count := env.queryInt(t, `SELECT COUNT(*) FROM external_source_links`); count != 2 {
+		t.Fatalf("link count=%d", count)
+	}
+	var linkID string
+	if err := env.db.QueryRow(`SELECT link_id FROM external_source_links WHERE target_kind='decree'`).Scan(&linkID); err != nil {
+		t.Fatal(err)
+	}
+	adapter.update("Changed deterministic issue", "Provider-neutral intake body", "2026-03-01T14:00:00Z")
+	refresh := env.request(t, requestSpec{method: http.MethodPost, path: "/api/v1/external-source-links/" + linkID + "/refreshes", idempotencyKey: "e2e-external-refresh"})
+	if refresh.Code != http.StatusOK || !strings.Contains(refresh.Body.String(), `"outcome":"changed"`) {
+		t.Fatalf("refresh: %d %s", refresh.Code, refresh.Body.String())
+	}
+	var decreeText string
+	if err := env.db.QueryRow(`SELECT decree_text FROM decrees WHERE decree_title='Operator edit'`).Scan(&decreeText); err != nil || decreeText != "Immutable operator text" {
+		t.Fatalf("decree text=%q err=%v", decreeText, err)
+	}
+}
+
 type e2eEnv struct {
-	handler http.Handler
-	db      *sql.DB
-	ids     *testIDGenerator
-	runtime *kingdom.Runtime
+	handler     http.Handler
+	db          *sql.DB
+	ids         *testIDGenerator
+	runtime     *kingdom.Runtime
+	projectRoot string
 }
 
 type testIDGenerator struct {
@@ -155,8 +308,6 @@ type requestSpec struct {
 	method         string
 	path           string
 	body           map[string]any
-	actorID        string
-	roleID         string
 	idempotencyKey string
 }
 
@@ -177,6 +328,10 @@ func (s staticProviderModelCatalog) Snapshot(_ context.Context, _ bool) (api.Pro
 }
 
 func newE2EEnv(t *testing.T) *e2eEnv {
+	return newE2EEnvWithExternalAdapter(t, nil)
+}
+
+func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter) *e2eEnv {
 	t.Helper()
 
 	db, err := sql.Open("sqlite", ":memory:")
@@ -211,12 +366,17 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	}
 
 	generator := &testIDGenerator{}
+	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot(t))
+	bootstrapPaths.ProviderPolicyPath = filepath.Join(projectRoot, ".kingdom", "policies", "opencode_provider_policy.yaml")
+	bootstrapPaths.ProviderPolicySchemaPath = filepath.Join(projectRoot, ".kingdom", "schemas", "opencode_provider_policy.schema.json")
 	handler, err := api.NewHandler(api.ServerConfig{
-		DB:                 db,
-		IDGenerator:        generator.Next,
-		ProjectRoot:        projectRoot,
-		ProviderEngine:     "opencode",
-		OpenCodeBinaryPath: "/bin/sh",
+		DB:                       db,
+		IDGenerator:              generator.Next,
+		ProjectRoot:              projectRoot,
+		ProviderEngine:           "opencode",
+		OpenCodeBinaryPath:       "/bin/sh",
+		ProviderPolicyPath:       bootstrapPaths.ProviderPolicyPath,
+		ProviderPolicySchemaPath: bootstrapPaths.ProviderPolicySchemaPath,
 		ProviderModelCatalog: staticProviderModelCatalog{items: []gen.ProviderModel{{
 			Id:                    "github-copilot/gpt-5.3-codex",
 			ProviderId:            "github-copilot",
@@ -227,6 +387,8 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		Now: func() time.Time {
 			return time.Date(2026, 3, 1, 13, 0, 0, 0, time.UTC)
 		},
+		OperatorCredential: []byte(e2eOperatorCredential),
+		ExternalAdapter:    externalAdapter,
 	})
 	if err != nil {
 		t.Fatalf("build api handler: %v", err)
@@ -234,7 +396,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:               db,
-		Paths:            kingdom.DefaultBootstrapPaths(repoRoot(t)),
+		Paths:            bootstrapPaths,
 		Adapter:          opencode.NewMemoryAdapter(),
 		ProviderEngine:   "opencode",
 		DispatchInterval: 20 * time.Millisecond,
@@ -255,7 +417,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		}
 	})
 
-	return &e2eEnv{handler: handler, db: db, ids: generator, runtime: runtimeInstance}
+	return &e2eEnv{handler: handler, db: db, ids: generator, runtime: runtimeInstance, projectRoot: projectRoot}
 }
 
 func (e *e2eEnv) request(t *testing.T, spec requestSpec) *httptest.ResponseRecorder {
@@ -271,17 +433,18 @@ func (e *e2eEnv) request(t *testing.T, spec requestSpec) *httptest.ResponseRecor
 	}
 
 	req := httptest.NewRequest(spec.method, spec.path, body)
+	req.RemoteAddr = "127.0.0.1:49152"
+	req.Header.Set("Authorization", "Bearer "+e2eOperatorCredential)
 	if spec.body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if spec.actorID != "" {
-		req.Header.Set("X-Actor-Id", spec.actorID)
-	}
-	if spec.roleID != "" {
-		req.Header.Set("X-Role-Id", spec.roleID)
-	}
 	if spec.idempotencyKey != "" {
-		req.Header.Set("Idempotency-Key", spec.idempotencyKey)
+		digest := sha256.Sum256([]byte(spec.idempotencyKey))
+		key, err := idempotency.GenerateWithReader("test", time.Now().UTC().Truncate(time.Hour), idempotency.DefaultTTL, bytes.NewReader(digest[:]))
+		if err != nil {
+			t.Fatalf("generate idempotency key: %v", err)
+		}
+		req.Header.Set("Idempotency-Key", key)
 	}
 
 	res := httptest.NewRecorder()
@@ -299,8 +462,6 @@ func (e *e2eEnv) createRun(t *testing.T) string {
 			"decree_title": "H3 decree",
 			"decree_text":  "H3 decree text",
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-decree",
 	})
 	if decreeRes.Code != http.StatusCreated {
@@ -332,8 +493,6 @@ func (e *e2eEnv) createRun(t *testing.T) string {
 				},
 			},
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-publish",
 	})
 	if publishRes.Code != http.StatusCreated {
@@ -350,8 +509,6 @@ func (e *e2eEnv) createRun(t *testing.T) string {
 				"global": map[string]any{"model": "github-copilot/gpt-5.3-codex"},
 			},
 		},
-		actorID:        "actor-chancellor",
-		roleID:         "chancellor",
 		idempotencyKey: "idem-h3-run",
 	})
 	if runRes.Code != http.StatusCreated {

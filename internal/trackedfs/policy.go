@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"kingdom/internal/securefs"
 )
 
 var protectedRootSegments = map[string]struct{}{
@@ -15,7 +17,13 @@ var protectedRootSegments = map[string]struct{}{
 	".svn":              {},
 	".jj":               {},
 	".kingdom":          {},
+	".opencode":         {},
+	".playwright-cli":   {},
+	".playwright-mcp":   {},
+	".tmp":              {},
+	"kd-sandbox":        {},
 	"kingdom-artifacts": {},
+	"node_modules":      {},
 }
 
 type Metadata struct {
@@ -124,6 +132,60 @@ func WalkTrackedFiles(root string) ([]TrackedFile, error) {
 		return nil, fmt.Errorf("walk tracked files: %w", err)
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].RelativePath < files[j].RelativePath })
+	return files, nil
+}
+
+// WalkTrackedFilesRoot enumerates tracked files through an already pinned,
+// no-follow root. It is used when subsequent decisions mutate that same tree.
+func WalkTrackedFilesRoot(root *securefs.Root) ([]TrackedFile, error) {
+	if root == nil {
+		return nil, fmt.Errorf("tracked root is required")
+	}
+	files := make([]TrackedFile, 0)
+	var walk func(string) error
+	walk = func(directory string) error {
+		entries, err := root.ReadDir(directory)
+		if err != nil {
+			return err
+		}
+		sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
+		for _, entry := range entries {
+			relativePath := entry.Name()
+			if directory != "" {
+				relativePath = directory + "/" + entry.Name()
+			}
+			normalized := NormalizeRelativePath(relativePath)
+			if normalized == "" || IsProtectedRelativePath(normalized) {
+				continue
+			}
+			if entry.IsDir() {
+				if err := walk(normalized); err != nil {
+					return err
+				}
+				continue
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				continue
+			}
+			file, err := root.OpenRegular(normalized)
+			if err != nil {
+				if info, infoErr := entry.Info(); infoErr == nil && !info.Mode().IsRegular() {
+					continue
+				}
+				return err
+			}
+			info, err := file.Stat()
+			_ = file.Close()
+			if err != nil {
+				return err
+			}
+			files = append(files, TrackedFile{RelativePath: normalized, Metadata: MetadataFromInfo(info)})
+		}
+		return nil
+	}
+	if err := walk(""); err != nil {
+		return nil, fmt.Errorf("walk tracked files: %w", err)
+	}
 	return files, nil
 }
 

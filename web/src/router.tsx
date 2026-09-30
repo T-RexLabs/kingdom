@@ -2,24 +2,28 @@ import {
   createRouter,
   createRootRoute,
   createRoute,
-  Outlet,
   lazyRouteComponent,
   redirect,
 } from "@tanstack/react-router";
-import { AppShell } from "@/components/app-shell";
 import { NotFoundPage } from "@/components/error-boundary";
-import { GovernanceNotifierMount } from "@/features/runs/governance-notifier";
+import { RootLayout } from "@/components/root-layout";
 import { isRunDetailTab, type RunDetailTab } from "@/features/runs/run-detail-tabs";
 import { isRunsStateFilter, type RunsStateFilter } from "@/lib/run-filters";
+import { validateDecreeNewSearch } from "@/features/decrees/decree-route-search";
+import { GITHUB_SETUP_RETURN_PATH } from "@/features/connections/github-setup-return-path";
 
 const rootRoute = createRootRoute({
-  component: () => (
-    <AppShell>
-      <GovernanceNotifierMount />
-      <Outlet />
-    </AppShell>
-  ),
+  component: RootLayout,
   notFoundComponent: NotFoundPage,
+});
+
+const githubSetupReturnRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: GITHUB_SETUP_RETURN_PATH,
+  component: lazyRouteComponent(
+    () => import("@/features/connections/github-setup-return-page"),
+    "GitHubSetupReturnPage"
+  ),
 });
 
 // Dashboard stays eagerly loaded (landing page — must be instant)
@@ -112,26 +116,7 @@ const decreesPlanningSessionRoute = createRoute({
 const decreesNewRoute = createRoute({
   getParentRoute: () => decreesRoute,
   path: "/new",
-  validateSearch: (search: Record<string, unknown>): {
-    planning_session_id?: string;
-    planning_draft_id?: string;
-    planning_context_snapshot_id?: string;
-  } => {
-    const next: {
-      planning_session_id?: string;
-      planning_draft_id?: string;
-      planning_context_snapshot_id?: string;
-    } = {};
-
-    for (const key of ["planning_session_id", "planning_draft_id", "planning_context_snapshot_id"] as const) {
-      const value = search[key];
-      if (typeof value === "string" && value.trim() !== "") {
-        next[key] = value;
-      }
-    }
-
-    return next;
-  },
+  validateSearch: validateDecreeNewSearch,
   component: lazyRouteComponent(
     () => import("@/features/decrees/issue-decree-page"),
     "IssueDecreePage"
@@ -144,6 +129,15 @@ const agentsRoute = createRoute({
   component: lazyRouteComponent(
     () => import("@/features/agents/agents-page"),
     "AgentsPage"
+  ),
+});
+
+const connectionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/connections",
+  component: lazyRouteComponent(
+    () => import("@/features/connections/connections-page"),
+    "ConnectionsPage"
   ),
 });
 
@@ -190,7 +184,9 @@ const routeTree = rootRoute.addChildren([
     decreesNewRoute,
   ]),
   agentsRoute,
+  connectionsRoute,
   realmAnalyticsRoute,
+  githubSetupReturnRoute,
 ]);
 
 export const router = createRouter({

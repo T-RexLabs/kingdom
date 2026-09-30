@@ -3,7 +3,8 @@ import { render, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { OVERLAY_ROOT_ID, OVERLAY_Z_INDEX } from "@/lib/overlay-system";
 import { ModalDialog } from "@/components/ui/modal-dialog";
-import { NotificationProvider, useNotifications } from "./notification-context";
+import { useNotifications } from "./notification-context";
+import { NotificationProvider } from "./notification-provider";
 import { NotificationStack } from "./notification-stack";
 
 function NotificationSeed() {

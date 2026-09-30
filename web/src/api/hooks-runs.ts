@@ -1,7 +1,7 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { ApiError, apiFetch } from "./client";
+import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { dashboardSnapshotQueryKey, realmAnalyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
-import { manualRefetchQueryOptions, searchDrivenCollectionQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
+import { manualRefetchQueryOptions, refetchOnMountQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
 import { RUNS_STATE_FILTERS, type RunsStateFilter } from "@/lib/run-filters";
 import type {
   AgentsResponse,
@@ -212,7 +212,7 @@ export function parseRunsCollectionQueryKey(queryKey: readonly unknown[]): RunsC
 
 export function useRuns(options?: RunsQueryOptions) {
   const search = normalizeRunsSearch(options?.search) ?? undefined;
-  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : searchDrivenCollectionQueryOptions;
+  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : refetchOnMountQueryOptions;
   return useQuery({
     // Only unsearched runs collections are stream-owned. Search results rely on
     // fetch-on-open/search semantics because the collection stream cannot
@@ -232,7 +232,7 @@ export function useRuns(options?: RunsQueryOptions) {
 
 export function useInfiniteRuns(options?: InfiniteRunsQueryOptions) {
   const search = normalizeRunsSearch(options?.search) ?? undefined;
-  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : searchDrivenCollectionQueryOptions;
+  const freshnessOptions = search === undefined ? streamOwnedCollectionQueryOptions : refetchOnMountQueryOptions;
   return useInfiniteQuery({
     queryKey: infiniteRunsCollectionQueryKey(options),
     queryFn: ({ pageParam, signal }: { pageParam?: string; signal: AbortSignal }) =>
@@ -411,18 +411,23 @@ export function useAgents() {
   });
 }
 
-function fetchProviderModels(refresh: boolean) {
+function fetchProviderModels(refresh: boolean, signal?: AbortSignal) {
 	return apiFetch<ProviderModelsResponse>("/provider/models", {
 		params: { refresh },
+		signal,
 	});
 }
 
+// The model catalog does not poll. Listing models spawns an OpenCode
+// subprocess, and a one-minute poll against a one-minute server cache meant an
+// open planner tab guaranteed one spawn a minute forever. The catalog only
+// changes when the operator changes their OpenCode installation, which is what
+// the explicit Retry control is for; the server keeps its own cache warm.
 export function useProviderModels(options?: RunDetailQueryOptions) {
   return useQuery({
 	queryKey: providerModelsQueryKey,
-	queryFn: () => fetchProviderModels(false),
+	queryFn: ({ signal }) => fetchProviderModels(false, signal),
 	enabled: options?.enabled ?? true,
-	refetchInterval: 60_000,
   });
 }
 
@@ -430,7 +435,12 @@ export function useRefreshProviderModels() {
 	const qc = useQueryClient();
 	return useMutation({
 		mutationFn: () => fetchProviderModels(true),
-		onSuccess: (response) => {
+		onMutate: async () => {
+			await qc.cancelQueries({ queryKey: providerModelsQueryKey, exact: true });
+			return { dataUpdatedAt: qc.getQueryState(providerModelsQueryKey)?.dataUpdatedAt ?? 0 };
+		},
+		onSuccess: async (response) => {
+			await qc.cancelQueries({ queryKey: providerModelsQueryKey, exact: true });
 			qc.setQueryData(providerModelsQueryKey, response);
 		},
 	});
@@ -488,7 +498,7 @@ function retryRunDetailQuery(failureCount: number, error: unknown): boolean {
   if (error instanceof ApiError && error.status === 404) {
     return false;
   }
-  return failureCount < 3;
+  return shouldRetryApiQuery(failureCount, error, 3);
 }
 
 function normalizeRunsSearch(search?: string): string | null {
@@ -636,8 +646,6 @@ export function useCreateFinalApproval(runId: string) {
         method: "POST",
         headers: {
           "Idempotency-Key": key,
-          "X-Actor-Id": "allfather",
-          "X-Role-Id": "allfather",
         },
         body: JSON.stringify(body),
       }),
@@ -662,8 +670,6 @@ export function useCreatePlanApproval(runId: string) {
         method: "POST",
         headers: {
           "Idempotency-Key": key,
-          "X-Actor-Id": "allfather",
-          "X-Role-Id": "allfather",
         },
         body: JSON.stringify(body),
       }),

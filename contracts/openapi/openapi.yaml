@@ -6,19 +6,645 @@ info:
     name: Proprietary
     url: https://kingdom.local/license
 servers:
-  - url: https://api.kingdom.local/api/v1
+  - url: http://127.0.0.1:8080/api/v1
+    description: Default direct-loopback runtime. Remote bearer access uses the operator-configured HTTPS address.
 security:
-  - ActorIdHeader: []
-    RoleIdHeader: []
+  - BearerAuth: []
+  - BrowserSession: []
 paths:
+  /auth/session:
+    post:
+      tags: [auth]
+      operationId: createAuthSession
+      summary: Create or reuse a browser session from a direct loopback request.
+      description: Available only to an exact same-origin browser request whose immediate peer and Host are loopback. The operation accepts no query or request body.
+      security: []
+      parameters:
+        - $ref: "#/components/parameters/BrowserBootstrap"
+        - $ref: "#/components/parameters/Origin"
+      responses:
+        "200":
+          description: Existing browser session reused.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "201":
+          description: Browser session created.
+          headers:
+            Set-Cookie:
+              schema: { type: string }
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthSession"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "403":
+          $ref: "#/components/responses/ForbiddenError"
+        "429":
+          $ref: "#/components/responses/ErrorResponse"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
+  /connections:
+    get:
+      tags: [connections]
+      operationId: listConnections
+      summary: List saved external-source connections without credential material.
+      responses:
+        "200":
+          description: Saved connections.
+          content: { application/json: { schema: { $ref: "#/components/schemas/ConnectionList" } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    post:
+      tags: [connections]
+      operationId: createConnection
+      summary: Save GitHub App installation metadata.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateConnectionRequest" } } }
+      responses:
+        "201":
+          description: Connection created.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows:
+    get:
+      tags: [connections]
+      operationId: getCurrentGitHubManifestFlow
+      summary: Resume the latest restart-scoped GitHub manifest flow bound to this browser session and origin.
+      responses:
+        "200": { description: Current safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubManifestFlowStatus" } } } }
+        "204": { description: No active flow is bound to this browser session and origin. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    post:
+      tags: [connections]
+      operationId: startGitHubManifestFlow
+      summary: Start user-owned GitHub App manifest registration for this exact browser session and origin.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubManifestFlowRequest" } } }
+      responses:
+        "201": { description: Transient GitHub form action and manifest. The response is replayable only within the current process and is never persisted., content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubManifestFlowPayload" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/setup-options:
+    get:
+      tags: [connections]
+      operationId: getGitHubSetupOptions
+      summary: Report whether this local runtime has the public shared GitHub App configured.
+      responses:
+        "200": { description: Safe setup options., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubSetupOptions" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/device-flows:
+    get:
+      tags: [connections]
+      operationId: getCurrentGitHubDeviceFlow
+      summary: Discover the unfinished shared-App flow bound to this browser session and exact origin.
+      responses:
+        "200": { description: Current safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "204": { description: No unfinished flow is bound to this browser session and origin. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    post:
+      tags: [connections]
+      operationId: startGitHubDeviceFlow
+      summary: Start restart-scoped GitHub device authorization bound to this browser session and exact origin.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/StartGitHubDeviceFlowRequest" } } }
+      responses:
+        "200": { description: Existing unfinished flow for the same binding and intent., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "201": { description: Safe device authorization instructions without provider device or token secrets., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        "429": { $ref: "#/components/responses/ErrorResponse" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/device-flows/{id}:
+    get:
+      tags: [connections]
+      operationId: getGitHubDeviceFlow
+      summary: Read safe status for a shared-App flow bound to this browser and origin.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+      responses:
+        "200": { description: Safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      tags: [connections]
+      operationId: discardGitHubDeviceFlow
+      summary: Discard an unfinished shared-App flow bound to this browser session and exact origin.
+      description: Clears memory-only provider authorization and token state. A flow with provider or durable work in flight conflicts until that work settles.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: Flow discarded. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/device-flows/{id}/poll:
+    post:
+      tags: [connections]
+      operationId: pollGitHubDeviceFlow
+      summary: Perform one server-paced provider device authorization poll.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        "429": { $ref: "#/components/responses/ErrorResponse" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/device-flows/{id}/candidates:
+    post:
+      tags: [connections]
+      operationId: refreshGitHubDeviceCandidates
+      summary: Re-fetch exact eligible installations after the user installs the App without reauthorizing.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Safe refreshed candidates., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubDeviceFlowStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/device-flows/{id}/finalize:
+    post:
+      tags: [connections]
+      operationId: finalizeGitHubDeviceFlow
+      summary: Re-verify selected installations and atomically finalize a connection, or reauthorize the exact complete saved installation set.
+      parameters:
+        - $ref: "#/components/parameters/DeviceFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/FinalizeGitHubDeviceFlowRequest" } } }
+      responses:
+        "201": { description: Healthy finalized connection., content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+  /connections/github/manifest-flows/{id}:
+    get:
+      tags: [connections]
+      operationId: getGitHubManifestFlow
+      summary: Read safe status for a flow bound to this browser session and exact origin.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+      responses:
+        "200": { description: Safe flow status., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubManifestFlowStatus" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      tags: [connections]
+      operationId: discardGitHubManifestFlow
+      summary: Abandon an unfinished flow bound to this browser session and exact origin.
+      description: Discards memory-only flow state and zeroes its transient secrets so abandoned setup stops presenting itself as resumable.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: Flow discarded. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/{id}/conversion:
+    post:
+      tags: [connections]
+      operationId: convertGitHubManifestFlow
+      summary: Exchange the one-time manifest code and prepare installation.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Transient installation URL., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubInstallationURL" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/{id}/installation:
+    post:
+      tags: [connections]
+      operationId: getGitHubManifestInstallationURL
+      summary: Resume installation for a converted manifest flow.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Transient installation URL., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubInstallationURL" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/{id}/authorization:
+    post:
+      tags: [connections]
+      operationId: authorizeGitHubManifestFlow
+      summary: Start explicit temporary GitHub App user authorization with PKCE.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Transient GitHub authorization URL., content: { application/json: { schema: { $ref: "#/components/schemas/GitHubAuthorizationURL" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/{id}/completion:
+    post:
+      tags: [connections]
+      operationId: completeGitHubManifestFlow
+      summary: Prove user and App installation ownership and atomically finalize a healthy connection.
+      parameters:
+        - $ref: "#/components/parameters/ManifestFlowId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "201": { description: Healthy finalized connection., content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/manifest-callback:
+    get:
+      tags: [connections]
+      operationId: receiveGitHubManifestCallback
+      summary: Receive a one-time GitHub manifest callback without relying on the browser session cookie.
+      security: []
+      parameters:
+        - { name: state, in: query, required: true, schema: { type: string, minLength: 32, maxLength: 128 } }
+        - { name: code, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 256 } }
+      responses:
+        "303": { description: Redirect to the stored exact-origin Connections page without callback query data., headers: { Location: { schema: { type: string, format: uri } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/setup-callback:
+    get:
+      tags: [connections]
+      operationId: receiveGitHubSetupCallback
+      summary: Record an untrusted claimed installation identity under one-time state authority.
+      security: []
+      parameters:
+        - { name: state, in: query, required: true, schema: { type: string, minLength: 32, maxLength: 128 } }
+        - { name: installation_id, in: query, required: true, schema: { type: string, pattern: "^[1-9][0-9]{0,31}$" } }
+        - { name: setup_action, in: query, required: true, schema: { type: string, enum: [install] } }
+      responses:
+        "303": { description: Redirect to the stored exact-origin Connections page without callback query data., headers: { Location: { schema: { type: string, format: uri } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/github/manifest-flows/oauth-callback:
+    get:
+      tags: [connections]
+      operationId: receiveGitHubOAuthCallback
+      summary: Receive a one-time temporary GitHub App OAuth callback without relying on the browser session cookie.
+      security: []
+      parameters:
+        - { name: state, in: query, required: true, schema: { type: string, minLength: 32, maxLength: 128 } }
+        - { name: code, in: query, required: true, schema: { type: string, minLength: 1, maxLength: 256 } }
+      responses:
+        "303": { description: Redirect to the stored exact-origin Connections page without callback query data., headers: { Location: { schema: { type: string, format: uri } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}:
+    parameters:
+      - $ref: "#/components/parameters/ConnectionId"
+    get:
+      tags: [connections]
+      operationId: getConnection
+      summary: Get saved connection metadata and redacted credential state.
+      responses:
+        "200": { description: Connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    patch:
+      tags: [connections]
+      operationId: updateConnection
+      summary: Edit metadata or enable or disable a saved connection.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/UpdateConnectionRequest" } } }
+      responses:
+        "200": { description: Updated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+    delete:
+      tags: [connections]
+      operationId: deleteConnection
+      summary: Tombstone a connection and remove its local credential.
+      description: Tombstone the connection and remove its local key without deleting provenance. This does not uninstall the GitHub App.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "204": { description: Connection removed. }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/health-checks:
+    post:
+      tags: [connections]
+      operationId: checkConnectionHealth
+      summary: Validate App identity, installation state, and exact permissions.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Validated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/installations:
+    put:
+      tags: [connections]
+      operationId: setConnectionInstallations
+      summary: Choose which App installations this connection covers.
+      description: >-
+        Replaces the set of installations the connection reads from. Every
+        installation is proved against the provider before it is stored, and an
+        installation already held by another live connection is refused.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/SetConnectionInstallationsRequest" } } }
+      responses:
+        "200": { description: Updated connection, content: { application/json: { schema: { $ref: "#/components/schemas/Connection" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/installation-candidates:
+    get:
+      tags: [connections]
+      operationId: listConnectionInstallationCandidates
+      summary: List the App installations this connection could cover.
+      description: >-
+        Lists installations the connection's own credential can see, each
+        flagged with whether the connection already covers it.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+      responses:
+        "200":
+          description: Installation candidates
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 1000
+                    items: { $ref: "#/components/schemas/GitHubInstallationCandidate" }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/repositories:
+    get:
+      tags: [connections]
+      operationId: listConnectionRepositories
+      summary: List repositories currently granted across the connection's installations.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: search, in: query, required: false, schema: { type: string, maxLength: 256 } }
+      responses:
+        "200": { description: Installation repositories, content: { application/json: { schema: { $ref: "#/components/schemas/RepositoryPage" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/repositories/{repositoryId}/issues:
+    get:
+      tags: [connections]
+      operationId: listConnectionIssues
+      summary: Browse or search issues in one granted repository.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/RepositoryId"
+        - $ref: "#/components/parameters/Cursor"
+        - { name: state, in: query, required: false, schema: { type: string, enum: [open, closed, all], default: open } }
+        - { name: search, in: query, required: false, schema: { type: string, maxLength: 256 } }
+      responses:
+        "200": { description: Issue-only results; pull requests are excluded., content: { application/json: { schema: { $ref: "#/components/schemas/IssuePage" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /connections/{id}/repositories/{repositoryId}/issues/{number}/preview:
+    get:
+      tags: [connections]
+      operationId: previewConnectionIssue
+      summary: Preview an issue without creating durable provenance.
+      description: Transient no-store issue preview. This operation creates no durable source or link.
+      parameters:
+        - $ref: "#/components/parameters/ConnectionId"
+        - $ref: "#/components/parameters/RepositoryId"
+        - { name: number, in: path, required: true, schema: { type: integer, minimum: 1 } }
+        - { name: include_comments, in: query, required: false, schema: { type: boolean, default: false } }
+      responses:
+        "200": { description: Issue preview, content: { application/json: { schema: { $ref: "#/components/schemas/IssuePreview" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-captures:
+    post:
+      tags: [external-sources]
+      operationId: captureExternalSource
+      summary: Capture an immutable issue snapshot for decree prefill.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/ExternalIntake" } } }
+      responses:
+        "201": { description: Compact durable capture identity., content: { application/json: { schema: { $ref: "#/components/schemas/CaptureResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-snapshots/{id}:
+    get:
+      tags: [external-sources]
+      operationId: getExternalSourceSnapshot
+      summary: Read one immutable external-source snapshot.
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      responses:
+        "200": { description: Immutable normalized snapshot., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalSnapshotResponse" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-snapshots/{id}/decree-text:
+    get:
+      tags: [external-sources]
+      operationId: getExternalSourceDecreeText
+      summary: Render a captured issue as decree text, including retained comments when the import selected them.
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+      responses:
+        "200": { description: Decree text for the snapshot., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalDecreeText" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-links/{id}/refreshes:
+    post:
+      tags: [external-sources]
+      operationId: refreshExternalSourceLink
+      summary: Manually check a linked source and append an observation.
+      parameters:
+        - $ref: "#/components/parameters/ExternalLinkId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "200": { description: Compact refresh result., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalRefreshResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-snapshots/{id}/comments:
+    get:
+      tags: [external-sources]
+      operationId: listExternalSourceSnapshotComments
+      summary: Read bounded immutable snapshot comments with opaque pagination.
+      parameters:
+        - $ref: "#/components/parameters/SnapshotId"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { description: Snapshot comments page., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalCommentPage" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-links/{id}/history:
+    get:
+      tags: [external-sources]
+      operationId: getExternalSourceLinkHistory
+      summary: Read immutable snapshot history for one linked source.
+      parameters:
+        - $ref: "#/components/parameters/ExternalLinkId"
+        - $ref: "#/components/parameters/Cursor"
+      responses:
+        "200": { description: Immutable source version history., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalHistoryPage" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-links/{id}/detachments:
+    post:
+      tags: [external-sources]
+      operationId: detachExternalSourceLink
+      summary: Remove a linked planning source from future planner operations.
+      description: Appends a detachment so the source stops feeding future planner operations. Provenance, history, and already-enqueued operation bindings are unchanged, and the same issue can be added again.
+      parameters:
+        - $ref: "#/components/parameters/ExternalLinkId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "201": { description: Source detached., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalDetachmentResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /external-source-links/{id}/adoptions:
+    post:
+      tags: [external-sources]
+      operationId: adoptExternalSourceLink
+      summary: Adopt the latest observed planning source explicitly.
+      description: Explicitly adopt the latest observed snapshot for future planning operations only.
+      parameters:
+        - $ref: "#/components/parameters/ExternalLinkId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      responses:
+        "201": { description: Snapshot adopted., content: { application/json: { schema: { $ref: "#/components/schemas/ExternalAdoptionResult" } } } }
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
   /health:
     get:
       tags: [system]
       operationId: getHealth
       summary: Read service health status.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           $ref: "#/components/responses/HealthResponse"
@@ -35,9 +661,8 @@ paths:
       operationId: createDecree
       summary: Create a decree entry.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -55,6 +680,10 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -64,8 +693,6 @@ paths:
       operationId: getDecree
       summary: Get a decree by ID.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/DecreeId"
       responses:
         "200":
@@ -89,8 +716,6 @@ paths:
       operationId: listPlanningSessions
       summary: List planning sessions ordered by recent activity.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/Limit"
       responses:
         "200":
@@ -110,9 +735,8 @@ paths:
       operationId: createPlanningSession
       summary: Create a planning session with the first question ready immediately.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -139,8 +763,6 @@ paths:
       operationId: getPlanningSession
       summary: Get a planning session by ID.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
       responses:
         "200":
@@ -162,10 +784,9 @@ paths:
       operationId: updatePlanningSession
       summary: Update a planning session title or planner model.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -192,10 +813,9 @@ paths:
       operationId: deletePlanningSession
       summary: Delete a planning session and its associated plans, messages, and context snapshots.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       responses:
         "204":
           description: Planning session deleted.
@@ -208,14 +828,46 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /planning-sessions/{id}/external-sources:
+    post:
+      tags: [planning, external-sources]
+      operationId: attachPlanningSessionExternalSource
+      summary: Attach a GitHub issue to an existing active planning session.
+      description: Fetches the issue before atomically capturing immutable provenance, creating a unique planning link, and adopting its initial snapshot for future operations. Transcript messages and the planning context snapshot are unchanged.
+      parameters:
+        - $ref: "#/components/parameters/PlanningSessionId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExternalIntake"
+      responses:
+        "201":
+          description: Attached planning source.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExternalProvenanceSummary"
+        "400":
+          $ref: "#/components/responses/BadRequestError"
+        "401":
+          $ref: "#/components/responses/UnauthorizedError"
+        "404":
+          $ref: "#/components/responses/NotFoundError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
+        default:
+          $ref: "#/components/responses/ErrorResponse"
+
   /planning-sessions/{id}/messages:
     get:
       tags: [planning]
       operationId: listPlanningSessionMessages
       summary: List planning session messages as a paginated transcript page.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/PlanningMessagesBefore"
@@ -241,8 +893,6 @@ paths:
       operationId: getPlanningSessionPlan
       summary: Get the current formalized plan for a planning session.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
       responses:
         "200":
@@ -265,9 +915,6 @@ paths:
       tags: [acp]
       operationId: listAcpAgents
       summary: List planner ACP agents.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: Available planner ACP agents.
@@ -288,8 +935,6 @@ paths:
       operationId: getAcpAgent
       summary: Get planner ACP agent metadata.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/AcpAgentName"
       responses:
         "200":
@@ -313,9 +958,8 @@ paths:
       operationId: createAcpRun
       summary: Create a planner ACP run backed by a durable planner operation.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -344,8 +988,6 @@ paths:
       operationId: getAcpRun
       summary: Get planner ACP run status and metadata.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/AcpRunId"
       responses:
         "200":
@@ -369,8 +1011,6 @@ paths:
       operationId: streamAcpRunEvents
       summary: Stream durable planner ACP run events with Last-Event-ID resume.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/AcpRunId"
         - $ref: "#/components/parameters/LastEventId"
       responses:
@@ -395,8 +1035,6 @@ paths:
       operationId: getAcpRunActivity
       summary: Get planner ACP run activity history for display.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/AcpRunId"
       responses:
         "200":
@@ -420,10 +1058,9 @@ paths:
       operationId: cancelAcpRun
       summary: Cancel a planner ACP run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/AcpRunId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: false
         content:
@@ -452,10 +1089,9 @@ paths:
       operationId: refreshPlanningSessionContext
       summary: Refresh the sanitized planning context snapshot for a session.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       responses:
         "200":
           description: Refreshed planning context snapshot.
@@ -478,10 +1114,9 @@ paths:
       operationId: activatePlanningMessageVariant
       summary: Switch the active variant for a planning message position.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - name: messageId
           in: path
           required: true
@@ -510,8 +1145,6 @@ paths:
       operationId: listPlanningMessageVariants
       summary: List all variants at the same position as the specified message.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/PlanningSessionId"
         - name: messageId
           in: path
@@ -541,9 +1174,8 @@ paths:
       operationId: publishWorkflow
       summary: Publish an immutable workflow version.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -569,9 +1201,6 @@ paths:
       tags: [roles]
       operationId: listRoles
       summary: List canonical agent roles.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: Canonical role metadata.
@@ -591,9 +1220,6 @@ paths:
       tags: [agents]
       operationId: listAgents
       summary: List all registered agents regardless of run association.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: All agents ordered by lineage depth and creation time.
@@ -614,8 +1240,6 @@ paths:
       operationId: listProviderModels
       summary: List available OpenCode provider models.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - name: refresh
           in: query
           required: false
@@ -642,9 +1266,6 @@ paths:
       tags: [system]
       operationId: getWorkspaceCapabilities
       summary: Read publish-mode capabilities for the configured project root.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: Workspace capabilities for decree issuance and run creation.
@@ -665,8 +1286,6 @@ paths:
       operationId: listRuns
       summary: List workflow runs with filtering, ranked search, and cursor pagination.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/Limit"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/RunStateFilter"
@@ -689,9 +1308,8 @@ paths:
       operationId: createRun
       summary: Start a workflow run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: true
         content:
@@ -720,8 +1338,6 @@ paths:
       operationId: streamRunCollectionEvents
       summary: Stream collection-level run updates over SSE with Last-Event-ID resume.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/LastEventId"
         - $ref: "#/components/parameters/Follow"
         - $ref: "#/components/parameters/PollMs"
@@ -745,8 +1361,6 @@ paths:
       operationId: getRun
       summary: Fetch run state snapshot.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -768,10 +1382,9 @@ paths:
       operationId: cancelRun
       summary: Cancel an active workflow run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
       requestBody:
         required: false
         content:
@@ -798,8 +1411,6 @@ paths:
       operationId: getRunPlan
       summary: Fetch the latest reviewable current plan snapshot for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -821,8 +1432,6 @@ paths:
       operationId: listRunPlanReviews
       summary: List durable allfather plan review history for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -844,8 +1453,6 @@ paths:
       operationId: listRunGovernanceDecisions
       summary: List durable allfather governance decision history for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
@@ -871,8 +1478,6 @@ paths:
       operationId: listRunArtifacts
       summary: List artifacts produced for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -894,8 +1499,6 @@ paths:
       operationId: getRunArtifactsArchive
       summary: Download all artifacts for a run as a zip archive.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -918,8 +1521,6 @@ paths:
       operationId: getRunGraph
       summary: Fetch run DAG graph snapshot.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -943,8 +1544,6 @@ paths:
       operationId: listRunExecutions
       summary: List durable execution attempts for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -968,8 +1567,6 @@ paths:
       operationId: getRunExecution
       summary: Fetch canonical detail for one durable execution attempt.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/AttemptId"
       responses:
@@ -994,8 +1591,6 @@ paths:
       operationId: getRunExecutionActivity
       summary: Fetch fine-grained provider activity (reasoning + tool calls) for one attempt.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/AttemptId"
       responses:
@@ -1020,8 +1615,6 @@ paths:
       operationId: listRunAgents
       summary: List agents that participated in a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
       responses:
         "200":
@@ -1045,8 +1638,6 @@ paths:
       operationId: getRunTimeline
       summary: Fetch paginated run timeline.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
@@ -1072,8 +1663,6 @@ paths:
       operationId: listRunMailboxMessages
       summary: List mailbox messages for a run.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/Limit"
         - name: thread_id
@@ -1118,8 +1707,6 @@ paths:
       operationId: getRunMailboxMessage
       summary: Fetch full mailbox message details.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/MessageId"
       responses:
@@ -1142,8 +1729,8 @@ paths:
       operationId: markRunMailboxMessageRead
       summary: Mark mailbox message as read.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/MessageId"
       responses:
@@ -1161,10 +1748,10 @@ paths:
       tags: [runs]
       operationId: retryNode
       summary: Queue a retry for one node.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/NodeKey"
       requestBody:
@@ -1184,6 +1771,8 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1192,10 +1781,10 @@ paths:
       tags: [runs]
       operationId: rerunFromNode
       summary: Queue rerun from a node.
+      description: Reopens a failed run or a cancelled run whose provider cancellation, completion projection, attempt settlement, and session leases have fully settled, then replays the selected workflow scope.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/NodeKey"
       requestBody:
@@ -1215,6 +1804,8 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
+        "409":
+          $ref: "#/components/responses/ConflictError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1224,9 +1815,8 @@ paths:
       operationId: createFinalApproval
       summary: Record allfather final decree confirmation or rework decision.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
       requestBody:
         required: true
@@ -1260,9 +1850,8 @@ paths:
       operationId: createPlanApproval
       summary: Record allfather plan approval or rework decision.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
         - $ref: "#/components/parameters/RunId"
       requestBody:
         required: true
@@ -1296,8 +1885,6 @@ paths:
       operationId: getArtifact
       summary: Fetch artifact metadata.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/ArtifactId"
       responses:
         "200":
@@ -1319,17 +1906,10 @@ paths:
       operationId: getArtifactContent
       summary: Fetch artifact content bytes.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/ArtifactId"
-        - name: download
-          in: query
-          required: false
-          schema:
-            type: boolean
       responses:
         "200":
-          description: Artifact content.
+          description: Artifact content delivered as a download.
           content:
             application/octet-stream:
               schema:
@@ -1339,88 +1919,6 @@ paths:
           $ref: "#/components/responses/BadRequestError"
         "401":
           $ref: "#/components/responses/UnauthorizedError"
-        default:
-          $ref: "#/components/responses/ErrorResponse"
-
-  /artifacts/{id}/preview-session:
-    post:
-      tags: [artifacts]
-      operationId: createArtifactPreviewSession
-      summary: Create a short-lived browser preview session for a previewable artifact.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
-        - $ref: "#/components/parameters/IdempotencyKey"
-        - $ref: "#/components/parameters/ArtifactId"
-      requestBody:
-        required: false
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/CreateArtifactPreviewSessionRequest"
-      responses:
-        "201":
-          description: Preview session created.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/CreateArtifactPreviewSessionResult"
-        "400":
-          $ref: "#/components/responses/BadRequestError"
-        "401":
-          $ref: "#/components/responses/UnauthorizedError"
-        "404":
-          $ref: "#/components/responses/NotFoundError"
-        default:
-          $ref: "#/components/responses/ErrorResponse"
-
-  /preview/{token}:
-    get:
-      tags: [artifacts]
-      operationId: getArtifactPreviewContent
-      summary: Fetch preview root content by token.
-      description: Returns inline preview content using the artifact MIME type recorded for the preview session.
-      security: []
-      parameters:
-        - $ref: "#/components/parameters/PreviewToken"
-      responses:
-        "200":
-          description: Preview content bytes.
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        "404":
-          $ref: "#/components/responses/NotFoundError"
-        default:
-          $ref: "#/components/responses/ErrorResponse"
-
-  /preview/{token}/{assetPath}:
-    get:
-      tags: [artifacts]
-      operationId: getArtifactPreviewAssetContent
-      summary: Fetch linked preview asset content by token and relative path.
-      description: |
-        Browser preview HTML may request linked assets under this route.
-
-        `assetPath` is an opaque slash-preserving relative path emitted by the preview content. This route intentionally stays outside the strict request-validation middleware because standard OpenAPI path parameters do not model arbitrary nested asset paths without changing the public browser URL contract.
-      security: []
-      parameters:
-        - $ref: "#/components/parameters/PreviewToken"
-        - $ref: "#/components/parameters/PreviewAssetPath"
-      responses:
-        "200":
-          description: Preview asset content bytes.
-          content:
-            application/octet-stream:
-              schema:
-                type: string
-                format: binary
-        "400":
-          $ref: "#/components/responses/BadRequestError"
-        "404":
-          $ref: "#/components/responses/NotFoundError"
         default:
           $ref: "#/components/responses/ErrorResponse"
 
@@ -1430,8 +1928,6 @@ paths:
       operationId: streamEvents
       summary: Stream run events over SSE.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/RunIdQuery"
         - $ref: "#/components/parameters/LastEventId"
         - $ref: "#/components/parameters/Follow"
@@ -1455,9 +1951,6 @@ paths:
       tags: [metrics]
       operationId: getMetricsRuntime
       summary: Fetch runtime health metrics.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: Runtime health metrics payload.
@@ -1477,9 +1970,6 @@ paths:
       tags: [metrics]
       operationId: getDashboardSnapshot
       summary: Fetch the Throne Room dashboard snapshot.
-      parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
       responses:
         "200":
           description: Dashboard snapshot payload.
@@ -1500,8 +1990,6 @@ paths:
       operationId: getRealmAnalyticsSnapshot
       summary: Fetch the Realm Analytics page snapshot.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/WindowMinutes"
       responses:
         "200":
@@ -1523,8 +2011,6 @@ paths:
       operationId: getRealmAnalyticsExecutionDetailSnapshot
       summary: Fetch aggregate execution detail or an exact selected-run snapshot for Realm Analytics.
       parameters:
-        - $ref: "#/components/parameters/ActorId"
-        - $ref: "#/components/parameters/RoleId"
         - $ref: "#/components/parameters/WindowMinutes"
         - name: run_id
           in: query
@@ -1551,37 +2037,50 @@ paths:
 
 components:
   securitySchemes:
-    ActorIdHeader:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Local operator credential read from a protected credential file.
+    BrowserSession:
       type: apiKey
       in: header
-      name: X-Actor-Id
-    RoleIdHeader:
-      type: apiKey
-      in: header
-      name: X-Role-Id
+      name: Cookie
+      description: Browser-managed HttpOnly cookie. The concrete cookie name is origin-scoped and starts with `kingdom_session_`; programmatic clients use BearerAuth.
+      x-kingdom-cookie-name-prefix: kingdom_session_
 
   parameters:
-    ActorId:
-      name: X-Actor-Id
-      in: header
-      required: true
-      schema:
-        type: string
-        minLength: 1
-    RoleId:
-      name: X-Role-Id
-      in: header
-      required: true
-      schema:
-        type: string
-        minLength: 1
     IdempotencyKey:
       name: Idempotency-Key
       in: header
       required: true
+      description: Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys.
+      schema:
+        type: string
+        maxLength: 128
+        pattern: '^kd1\.[0-9]+\.[0-9]+\.[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?\.[A-Za-z0-9_-]{22}$'
+    CSRFToken:
+      name: X-CSRF-Token
+      in: header
+      required: false
+      description: Required for cookie-authenticated mutations; bearer-authenticated calls omit it.
       schema:
         type: string
         minLength: 1
+    BrowserBootstrap:
+      name: X-Kingdom-Browser-Bootstrap
+      in: header
+      required: true
+      schema:
+        type: string
+        enum: ["1"]
+    Origin:
+      name: Origin
+      in: header
+      required: true
+      schema:
+        type: string
+        format: uri
     RunId:
       name: id
       in: path
@@ -1603,6 +2102,51 @@ components:
       schema:
         type: string
         minLength: 1
+    ConnectionId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ManifestFlowId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    DeviceFlowId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 16
+        maxLength: 128
+    RepositoryId:
+      name: repositoryId
+      in: path
+      required: true
+      description: Provider-native repository ID returned by installation discovery.
+      schema:
+        type: string
+        minLength: 1
+    SnapshotId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    ExternalLinkId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
     NodeKey:
       name: nodeKey
       in: path
@@ -1614,21 +2158,6 @@ components:
       name: id
       in: path
       required: true
-      schema:
-        type: string
-        minLength: 1
-    PreviewToken:
-      name: token
-      in: path
-      required: true
-      schema:
-        type: string
-        minLength: 1
-    PreviewAssetPath:
-      name: assetPath
-      in: path
-      required: true
-      description: Relative preview asset path as emitted by preview content. Browser requests may include nested slash-separated segments.
       schema:
         type: string
         minLength: 1
@@ -1798,11 +2327,11 @@ components:
           example:
             error:
               code: policy_violation
-              message: missing authentication headers
+              message: authentication required
               retryable: false
               category: core
               details: {}
-              correlation_id: api.require_actor_headers
+              correlation_id: api.auth
               occurred_at: "2026-04-30T12:00:00Z"
     ForbiddenError:
       description: Canonical authorization error response envelope.
@@ -1813,12 +2342,11 @@ components:
           example:
             error:
               code: policy_violation
-              message: plan approval endpoint is allfather-only
+              message: same-origin CSRF validation failed
               retryable: false
               category: core
-              details:
-                role_id: chancellor
-              correlation_id: api.create_plan_approval
+              details: {}
+              correlation_id: api.auth.csrf
               occurred_at: "2026-04-30T12:00:00Z"
     NotFoundError:
       description: Canonical missing-resource error response envelope.
@@ -1869,6 +2397,20 @@ components:
               occurred_at: "2026-04-30T12:00:00Z"
 
   schemas:
+    AuthSession:
+      type: object
+      additionalProperties: false
+      required: [actor_id, role_id, csrf_token, expires_at]
+      properties:
+        actor_id:
+          type: string
+        role_id:
+          type: string
+        csrf_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
     HealthResponse:
       type: object
       additionalProperties: false
@@ -2459,6 +3001,8 @@ components:
                   llm_model_unavailable,
                   llm_context_overflow,
                   llm_invalid_response,
+                  provider_incomplete_turn,
+                  provider_cancelled,
                   agent_unresponsive,
                   session_lease_expired,
                   tool_execution_failed,
@@ -2466,6 +3010,8 @@ components:
                   container_oom_killed,
                   event_sequence_gap,
                   idempotency_conflict,
+                  idempotency_key_expired,
+                  idempotency_pending,
                 ]
             message:
               type: string
@@ -2484,6 +3030,9 @@ components:
             occurred_at:
               type: string
               format: date-time
+            retry_at:
+              type: string
+              format: date-time
       example:
         error:
           code: policy_violation
@@ -2494,10 +3043,414 @@ components:
           correlation_id: idempotency-middleware
           occurred_at: "2026-04-30T12:00:00Z"
 
+    Connection:
+      type: object
+      additionalProperties: false
+      required: [connection_id, provider, credential_strategy, display_name, app_id, client_id, app_slug, installations, lifecycle, health_class, credential_state, created_at, updated_at]
+      properties:
+        connection_id: { type: string, minLength: 1 }
+        provider: { type: string, enum: [github] }
+        credential_strategy: { type: string, enum: [app_private_key, user_access_token] }
+        display_name: { type: string, minLength: 1 }
+        app_id: { type: string, minLength: 1 }
+        client_id: { type: string, minLength: 1 }
+        app_slug: { type: string, pattern: "^(?:|[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?)$" }
+        installations:
+          type: array
+          maxItems: 500
+          items: { $ref: "#/components/schemas/ConnectionInstallation" }
+        lifecycle: { type: string, enum: [enabled, disabled, removal_pending, removed] }
+        health_class: { type: string, enum: [missing_credential, never_checked, healthy, permission_mismatch, revoked, suspended, rate_limited, unavailable, disabled, removal_pending, removed] }
+        failure_class: { type: string }
+        credential_state: { type: string, enum: [missing, present] }
+        last_checked_at: { type: string, format: date-time }
+        last_success_at: { type: string, format: date-time }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    ConnectionInstallation:
+      type: object
+      additionalProperties: false
+      required: [installation_id]
+      properties:
+        installation_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        account_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        account_login: { type: string, minLength: 1, maxLength: 100 }
+    SetConnectionInstallationsRequest:
+      type: object
+      additionalProperties: false
+      required: [installation_ids]
+      properties:
+        installation_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+    ConnectionList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Connection" } }
+    CreateConnectionRequest:
+      type: object
+      additionalProperties: false
+      required: [provider, credential_strategy, display_name, app_id, client_id, installation_id]
+      properties:
+        provider: { type: string, enum: [github] }
+        credential_strategy: { type: string, enum: [app_private_key] }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        app_id: { type: string, minLength: 1, maxLength: 64 }
+        client_id: { type: string, minLength: 1, maxLength: 128 }
+        app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
+        installation_id: { type: string, minLength: 1, maxLength: 64 }
+
+    StartGitHubManifestFlowRequest:
+      type: object
+      additionalProperties: false
+      required: [owner_type]
+      properties:
+        owner_type: { type: string, enum: [personal, organization] }
+        organization: { type: string, pattern: "^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$" }
+    StartGitHubManifestFlowPayload:
+      type: object
+      additionalProperties: false
+      required: [flow_id, form_action, manifest, expires_at]
+      properties:
+        flow_id: { type: string, minLength: 16, maxLength: 128 }
+        form_action: { type: string, format: uri, pattern: "^https://github\\.com/" }
+        manifest: { type: string, minLength: 1, maxLength: 16384 }
+        expires_at: { type: string, format: date-time }
+    GitHubManifestFlowStatus:
+      type: object
+      additionalProperties: false
+      required: [flow_id, stage, expires_at]
+      properties:
+        flow_id: { type: string, minLength: 16, maxLength: 128 }
+        stage: { type: string, enum: [awaiting_app_creation, app_created, converting_app, awaiting_installation, installation_received, awaiting_authorization, authorization_received, validating_connection, completed, failed] }
+        expires_at: { type: string, format: date-time }
+        app_name: { type: string, minLength: 1, maxLength: 120 }
+        app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
+        connection_id: { type: string, minLength: 1 }
+        failure: { type: string, minLength: 1, maxLength: 256 }
+    GitHubInstallationURL:
+      type: object
+      additionalProperties: false
+      required: [installation_url]
+      properties:
+        installation_url: { type: string, format: uri, pattern: "^https://github\\.com/apps/" }
+    GitHubAuthorizationURL:
+      type: object
+      additionalProperties: false
+      required: [authorization_url]
+      properties:
+        authorization_url: { type: string, format: uri, pattern: "^https://github\\.com/login/oauth/authorize" }
+    GitHubSetupOptions:
+      type: object
+      additionalProperties: false
+      required: [shared_enabled]
+      properties:
+        shared_enabled: { type: boolean }
+        app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
+        install_url: { type: string, format: uri, pattern: "^https://github\\.com/apps/" }
+    StartGitHubDeviceFlowRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        connection_id: { type: string, minLength: 1, maxLength: 128 }
+    GitHubInstallationCandidate:
+      type: object
+      additionalProperties: false
+      required: [installation_id, display_name, account_id, account_login, app_id, client_id, app_slug]
+      properties:
+        installation_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+        account_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        account_login: { type: string, minLength: 1, maxLength: 100 }
+        app_id: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        client_id: { type: string, minLength: 1, maxLength: 128 }
+        app_slug: { type: string, pattern: "^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$" }
+        repository_selection: { type: string, enum: [all, selected] }
+        connected: { type: boolean, description: Whether this connection already covers the installation. }
+    GitHubDeviceFlowStatus:
+      type: object
+      additionalProperties: false
+      required: [flow_id, stage, expires_at, interval_seconds, candidates]
+      properties:
+        flow_id: { type: string, minLength: 16, maxLength: 128 }
+        stage: { type: string, enum: [starting_authorization, awaiting_authorization, discovering_installations, selecting_installation, needs_installation, finalizing, completed, access_denied, expired, failed] }
+        user_code: { type: string, pattern: "^[A-Z0-9-]{4,32}$" }
+        verification_uri: { type: string, format: uri, pattern: "^https://github\\.com/login/device$" }
+        reconnect_connection_id: { type: string, minLength: 1, maxLength: 128, description: Saved connection being reauthorized. No other reconnect identity or credential state is exposed. }
+        expires_at: { type: string, format: date-time }
+        interval_seconds: { type: integer, minimum: 0, maximum: 60, description: Zero only while provider authorization startup is reserved. }
+        retry_at: { type: string, format: date-time }
+        install_url: { type: string, format: uri, pattern: "^https://github\\.com/apps/" }
+        candidates: { type: array, maxItems: 1000, items: { $ref: "#/components/schemas/GitHubInstallationCandidate" } }
+        connection_id: { type: string, minLength: 1 }
+        failure: { type: string, minLength: 1, maxLength: 256 }
+    FinalizeGitHubDeviceFlowRequest:
+      type: object
+      additionalProperties: false
+      required: [installation_ids, display_name]
+      properties:
+        installation_ids:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items: { type: string, pattern: "^[1-9][0-9]{0,31}$" }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+    UpdateConnectionRequest:
+      type: object
+      additionalProperties: false
+      minProperties: 1
+      properties:
+        enabled: { type: boolean }
+        display_name: { type: string, minLength: 1, maxLength: 120 }
+    Repository:
+      type: object
+      additionalProperties: false
+      required: [id, locator, canonical_url]
+      properties:
+        id: { type: string, minLength: 1 }
+        locator: { type: string, pattern: "^[^/]+/[^/]+$" }
+        canonical_url: { type: string, format: uri }
+    RepositoryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/Repository" } }
+        next_cursor: { type: string, minLength: 1 }
+    NormalizedIssue:
+      type: object
+      additionalProperties: false
+      required: [title, body, state, repository, issue_number, canonical_url, created_at, updated_at]
+      properties:
+        title: { type: string }
+        body: { type: string }
+        state: { type: string, enum: [open, closed] }
+        repository: { type: string, pattern: "^[^/]+/[^/]+$" }
+        issue_number: { type: integer, minimum: 1 }
+        canonical_url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+    IssueSummary:
+      type: object
+      additionalProperties: false
+      required: [native_id, issue, comment_count]
+      properties:
+        native_id: { type: string, minLength: 1 }
+        issue: { $ref: "#/components/schemas/NormalizedIssue" }
+        comment_count: { type: integer, minimum: 0 }
+    IssuePage:
+      type: object
+      additionalProperties: false
+      required: [items, incomplete_results, search_result_cap]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/IssueSummary" } }
+        next_cursor: { type: string, minLength: 1 }
+        incomplete_results: { type: boolean }
+        search_result_cap: { type: integer, enum: [1000] }
+    ExternalImportProfile:
+      type: object
+      additionalProperties: false
+      required: [include_comments]
+      properties:
+        include_comments: { type: boolean, default: false, description: "The comment count is always captured. When enabled, at most 100 comment bodies, 32 KiB each and 128 KiB aggregate, are retained." }
+    ExternalComment:
+      type: object
+      additionalProperties: false
+      required: [provider_comment_id, author, body, canonical_url, created_at, updated_at, original_bytes, retained_bytes]
+      properties:
+        provider_comment_id: { type: string, minLength: 1 }
+        author: { type: string }
+        body: { type: string }
+        canonical_url: { type: string, format: uri }
+        created_at: { type: string, format: date-time }
+        updated_at: { type: string, format: date-time }
+        original_bytes: { type: integer, minimum: 0 }
+        retained_bytes: { type: integer, minimum: 0, maximum: 32768 }
+        truncation_reason: { type: string, enum: [comment_byte_limit, aggregate_byte_limit] }
+    IssuePreview:
+      type: object
+      additionalProperties: false
+      description: Transient normalized preview with safe truncation metadata. Responses never include credentials, tokens, or provider errors.
+      required: [native_id, repository_id, issue, profile, comment_count, comments, fetched_comment_count, fetched_comment_pages, omitted_comment_count, omitted_comment_pages, etag_present]
+      properties:
+        native_id: { type: string, minLength: 1 }
+        repository_id: { type: string, minLength: 1 }
+        issue: { $ref: "#/components/schemas/NormalizedIssue" }
+        profile: { $ref: "#/components/schemas/ExternalImportProfile" }
+        comment_count: { type: integer, minimum: 0 }
+        comments: { type: array, items: { $ref: "#/components/schemas/ExternalComment" } }
+        fetched_comment_count: { type: integer, minimum: 0 }
+        fetched_comment_pages: { type: integer, minimum: 0 }
+        omitted_comment_count: { type: integer, minimum: 0 }
+        omitted_comment_pages: { type: integer, minimum: 0 }
+        etag_present: { type: boolean }
+    ExternalIntake:
+      type: object
+      additionalProperties: false
+      required: [connection_id, repository_id, issue_number]
+      properties:
+        connection_id: { type: string, minLength: 1 }
+        repository_id: { type: string, minLength: 1 }
+        issue_number: { type: integer, minimum: 1 }
+        include_comments: { type: boolean, default: false }
+    CaptureResult:
+      type: object
+      additionalProperties: false
+      required: [source_id, snapshot_id]
+      properties:
+        source_id: { type: string, minLength: 1 }
+        snapshot_id: { type: string, minLength: 1 }
+    ExternalDecreeText:
+      type: object
+      additionalProperties: false
+      description: The issue body, followed by the retained comment bodies when the import selected them, framed as external evidence.
+      required: [markdown]
+      properties:
+        markdown: { type: string }
+
+    ExternalSnapshotResponse:
+      type: object
+      additionalProperties: false
+      description: Immutable normalized snapshot metadata. Comment bodies are available only through the paginated comments route.
+      required: [snapshot_id, source_id, issue, profile, provider_updated_at, fetched_at, comment_count, fetched_comment_count, fetched_comment_pages, omitted_comment_count, omitted_comment_pages, retained_comment_count, retained_comment_bytes, comments_truncated]
+      properties:
+        snapshot_id: { type: string, minLength: 1 }
+        source_id: { type: string, minLength: 1 }
+        issue: { $ref: "#/components/schemas/NormalizedIssue" }
+        profile: { $ref: "#/components/schemas/ExternalImportProfile" }
+        provider_updated_at: { type: string, format: date-time }
+        fetched_at: { type: string, format: date-time }
+        comment_count: { type: integer, minimum: 0 }
+        fetched_comment_count: { type: integer, minimum: 0 }
+        fetched_comment_pages: { type: integer, minimum: 0 }
+        omitted_comment_count: { type: integer, minimum: 0 }
+        omitted_comment_pages: { type: integer, minimum: 0 }
+        retained_comment_count: { type: integer, minimum: 0, maximum: 100 }
+        retained_comment_bytes: { type: integer, minimum: 0, maximum: 131072 }
+        comments_truncated: { type: boolean }
+    ExternalLink:
+      type: object
+      additionalProperties: false
+      required: [link_id, target_kind, target_id, source_id, used_snapshot_id, latest_snapshot_id, status, row_version, provider, repository, canonical_url, issue_number, created_at]
+      properties:
+        link_id: { type: string, minLength: 1 }
+        target_kind: { type: string, enum: [planning_session, decree] }
+        target_id: { type: string, minLength: 1 }
+        source_id: { type: string, minLength: 1 }
+        used_snapshot_id: { type: string, minLength: 1 }
+        latest_snapshot_id: { type: string, minLength: 1 }
+        active_snapshot_id: { type: string, minLength: 1 }
+        status: { $ref: "#/components/schemas/ExternalSourceStatus" }
+        checked_at: { type: string, format: date-time }
+        row_version: { type: integer, minimum: 1 }
+        provider: { type: string, enum: [github] }
+        repository: { type: string }
+        canonical_url: { type: string, format: uri }
+        issue_number: { type: integer, minimum: 1 }
+        created_at: { type: string, format: date-time }
+    ExternalRefreshChanges:
+      type: object
+      additionalProperties: false
+      required: [title, body, state, repository, issue_number, canonical_url, created_at, updated_at, comment_count, comments]
+      properties:
+        title: { type: boolean }
+        body: { type: boolean }
+        state: { type: boolean }
+        repository: { type: boolean }
+        issue_number: { type: boolean }
+        canonical_url: { type: boolean }
+        created_at: { type: boolean }
+        updated_at: { type: boolean }
+        comment_count: { type: boolean }
+        comments: { type: boolean }
+    ExternalRefreshResult:
+      type: object
+      additionalProperties: false
+      required: [link, outcome, snapshot_created, changes, message]
+      properties:
+        link: { $ref: "#/components/schemas/ExternalLink" }
+        outcome: { type: string, enum: [unchanged, changed, superseded, inaccessible_or_missing, deleted, rate_limited, connection_disabled, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response] }
+        snapshot_created: { type: boolean }
+        changes: { $ref: "#/components/schemas/ExternalRefreshChanges" }
+        retry_at: { type: string, format: date-time }
+        message: { type: string, minLength: 1 }
+    ExternalCommentPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ExternalComment" } }
+        next_cursor: { type: string, minLength: 1 }
+    ExternalHistoryEntry:
+      type: object
+      additionalProperties: false
+      required: [snapshot_id, provider_updated_at, fetched_at, content_digest]
+      properties:
+        snapshot_id: { type: string, minLength: 1 }
+        predecessor_snapshot_id: { type: string, minLength: 1 }
+        provider_updated_at: { type: string, format: date-time }
+        fetched_at: { type: string, format: date-time }
+        content_digest: { type: string, minLength: 64, maxLength: 64 }
+    ExternalHistoryPage:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items: { type: array, items: { $ref: "#/components/schemas/ExternalHistoryEntry" } }
+        next_cursor: { type: string, minLength: 1 }
+    ExternalAdoptionResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [adopted] }
+    ExternalDetachmentResult:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: { type: string, enum: [detached] }
+    ExternalProvenanceSummary:
+      type: object
+      additionalProperties: false
+      required: [link_id, provider, repository, issue_number, canonical_url, used_snapshot_id, latest_snapshot_id, status]
+      properties:
+        link_id: { type: string, minLength: 1 }
+        provider: { type: string, enum: [github] }
+        repository: { type: string }
+        issue_number: { type: integer, minimum: 1 }
+        canonical_url: { type: string, format: uri }
+        used_snapshot_id: { type: string, minLength: 1 }
+        active_snapshot_id: { type: string, minLength: 1 }
+        latest_snapshot_id: { type: string, minLength: 1 }
+        status: { $ref: "#/components/schemas/ExternalSourceStatus" }
+
+    ExternalSourceStatus:
+      type: string
+      enum: [never_checked, unchanged, changed, inaccessible_or_missing, deleted, rate_limited, connection_disabled, service_unavailable, revoked, permission_mismatch, timeout, malformed_response, oversized_response]
+
+    PlanningLineage:
+      type: object
+      additionalProperties: false
+      required: [planning_session_id, planning_draft_id]
+      properties:
+        planning_session_id:
+          type: string
+          minLength: 1
+        planning_draft_id:
+          type: string
+          minLength: 1
+
     CreateDecreeRequest:
       type: object
       additionalProperties: false
       required: [decree_title, decree_text]
+      not:
+        required: [planning_lineage, external_source_snapshot_id]
       properties:
         decree_title:
           type: string
@@ -2508,6 +3461,12 @@ components:
         metadata:
           type: object
           additionalProperties: true
+        planning_lineage:
+          $ref: "#/components/schemas/PlanningLineage"
+        external_source_snapshot_id:
+          type: string
+          minLength: 1
+          description: Immutable snapshot selected through direct GitHub intake. Planned decree provenance is derived server-side and must not use this field.
       example:
         decree_title: Stabilize decree issuance flow
         decree_text: Audit the decree issuance path, remove drift, and ship the clean contract.
@@ -2533,7 +3492,7 @@ components:
     DecreeDetail:
       type: object
       additionalProperties: false
-      required: [decree_id, decree_title, decree_text, created_at]
+      required: [decree_id, decree_title, decree_text, created_at, external_sources]
       properties:
         decree_id:
           type: string
@@ -2550,6 +3509,10 @@ components:
         created_at:
           type: string
           format: date-time
+        external_sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExternalProvenanceSummary"
 
     CreatePlanningSessionRequest:
       type: object
@@ -2651,7 +3614,7 @@ components:
         - $ref: "#/components/schemas/PlanningSessionSummary"
         - type: object
           additionalProperties: false
-          required: [project_root, auto_title_eligible, model_selection]
+          required: [project_root, auto_title_eligible, model_selection, external_sources]
           properties:
             project_root:
               type: string
@@ -2660,6 +3623,10 @@ components:
               type: boolean
             model_selection:
               $ref: "#/components/schemas/PlanningAgentModelSelection"
+            external_sources:
+              type: array
+              items:
+                $ref: "#/components/schemas/ExternalProvenanceSummary"
 
     PlanningReplyOperationRequest:
       type: object
@@ -3840,7 +4807,12 @@ components:
           minLength: 1
         state:
           type: string
-          enum: [pending, ready, starting, running, succeeded, failed, blocked, cancelled, skipped]
+          # `rework` is an operator-facing projection, not a durable node
+          # status: a review or validation node that asked for changes is
+          # recorded as `failed` with a rework failure code, because the
+          # workflow engine treats it as a loop-back. Reporting that as a
+          # failure reads as a broken step, so the graph reports it as rework.
+          enum: [pending, ready, starting, running, succeeded, failed, rework, blocked, cancelled, skipped]
         required_role:
           type: string
           minLength: 1
@@ -4250,11 +5222,14 @@ components:
     ArtifactResponse:
       type: object
       additionalProperties: false
-      required: [artifact_id, name, mime, size_bytes, sha256, download_url]
+      required: [artifact_id, artifact_action, name, mime, size_bytes]
       properties:
         artifact_id:
           type: string
           minLength: 1
+        artifact_action:
+          type: string
+          enum: [write, delete]
         name:
           type: string
           minLength: 1
@@ -4270,25 +5245,6 @@ components:
         download_url:
           type: string
           format: uri
-
-    CreateArtifactPreviewSessionRequest:
-      type: object
-      additionalProperties: false
-
-    CreateArtifactPreviewSessionResult:
-      type: object
-      additionalProperties: false
-      required: [token, preview_url, expires_at]
-      properties:
-        token:
-          type: string
-          minLength: 1
-        preview_url:
-          type: string
-          minLength: 1
-        expires_at:
-          type: string
-          format: date-time
 
     RunArtifactsResponse:
       type: object
@@ -4306,7 +5262,7 @@ components:
     RunArtifactItem:
       type: object
       additionalProperties: false
-      required: [artifact_id, artifact_kind, name, mime, path, size_bytes, sha256, created_at, previewable, content_url, download_url]
+      required: [artifact_id, artifact_kind, artifact_action, name, mime, path, size_bytes, created_at]
       properties:
         artifact_id:
           type: string
@@ -4314,6 +5270,9 @@ components:
         artifact_kind:
           type: string
           enum: [deliverable, verification, orchestration_meta]
+        artifact_action:
+          type: string
+          enum: [write, delete]
         name:
           type: string
           minLength: 1
@@ -4332,11 +5291,6 @@ components:
         created_at:
           type: string
           format: date-time
-        previewable:
-          type: boolean
-        content_url:
-          type: string
-          minLength: 1
         download_url:
           type: string
           minLength: 1
