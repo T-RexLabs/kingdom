@@ -311,6 +311,7 @@ func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithIsolatedResponse
 		Adapter:          opencode.NewMemoryAdapter(),
 		ProviderEngine:   "opencode",
 		DispatchInterval: 20 * time.Millisecond,
+		WorkspaceRoot:    t.TempDir(),
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
