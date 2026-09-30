@@ -220,6 +220,7 @@ function TimeEndpointField({ id, label, draft, onChange, onNow, error, descripti
   const calendar = useRef<HTMLInputElement>(null);
   const timestamp = parseAnalyticsTimestamp(draft.value.trim());
   const selected = parseLocalTimestamp(draft.value.trim()) ?? (timestamp === null ? null : new Date(timestamp));
+  const selectedDay = selected ? localDateValue(selected) : parseLocalDate(draft.value.trim()) ? draft.value.trim() : "";
   return (
     <div>
       <div className="mb-1.5 flex min-h-7 items-center justify-between gap-2">
@@ -233,18 +234,19 @@ function TimeEndpointField({ id, label, draft, onChange, onNow, error, descripti
           className="min-w-0 flex-1 bg-transparent px-3 py-2.5 font-mono text-sm outline-none placeholder:text-foreground-subtle"
         />
         <div className="relative flex shrink-0">
-          <Button type="button" variant="ghost" aria-label={`Choose ${label} date and time`}
+          <Button type="button" variant="ghost" aria-label={`Choose ${label} date`}
             aria-controls={`${id}-calendar`} className="h-auto min-h-11 w-11 rounded-none border-l border-border bg-surface-raised px-0"
             onClick={() => calendar.current?.showPicker()}
           >
             <CalendarDays className="h-4 w-4" aria-hidden="true" />
           </Button>
-          {/* Keep relative drafts empty in the native control so selecting today commits a timestamp. */}
-          <input ref={calendar} id={`${id}-calendar`} type="datetime-local" step="0.001" tabIndex={-1} aria-hidden="true"
-            value={selected ? localTimestampValue(selected).replace(" ", "T") : ""}
+          {/* Calendars choose dates only; preserve an explicitly entered clock in the text field.
+              Keep relative drafts unselected so choosing today commits a calendar day. */}
+          <input ref={calendar} id={`${id}-calendar`} type="date" tabIndex={-1} aria-hidden="true"
+            value={selectedDay}
             onChange={(event) => {
-              const date = parseLocalTimestamp(event.target.value);
-              onChange({ value: date ? localTimestampValue(date) : event.target.value });
+              const day = event.target.value;
+              onChange({ value: day && selected ? `${day} ${localTimestampValue(selected).slice(11)}` : day });
             }}
             className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
           />
