@@ -1,6 +1,5 @@
 import userEvent from "@testing-library/user-event";
 import { render, screen } from "@testing-library/react";
-import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "@/api/schema";
 import { RunExecutionActivity } from "./run-execution-activity";
@@ -30,9 +29,15 @@ vi.mock("./run-live-activity", () => ({
   selectLiveRunActivity: () => [],
 }));
 vi.mock("@/features/activity/activity-history", () => ({
-  ActivityHistory: (props: { headerActions?: ReactNode }) => {
+  ActivityHistory: (props: { items: Array<{ label: string }> }) => {
     state.historyProps(props);
-    return <div>{props.headerActions}History</div>;
+    return (
+      <div>
+        {props.items.map((item, i) => (
+          <p key={i}>{item.label}</p>
+        ))}
+      </div>
+    );
   },
 }));
 
@@ -43,12 +48,12 @@ describe("focused provider activity", () => {
     state.pending = false;
     state.historyProps.mockClear();
   });
-  it("keeps counts and provenance guidance inside View Options", async () => {
+  it("keeps the canonical response inline with activity behind one disclosure and no view options", async () => {
     const absent = { availability: "not_provided" as const };
     state.items = [
       {
-        id: "progress",
-        event_id: "progress",
+        id: "p",
+        event_id: "p",
         sequence: 1,
         kind: "progress",
         label: "Processing",
@@ -60,31 +65,32 @@ describe("focused provider activity", () => {
         message: absent,
       },
     ];
-    render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
-    expect(screen.getByText("0 Shown · 1 Loaded")).not.toBeVisible();
-    expect(
-      screen.getByText(/routine progress events hidden/),
-    ).not.toBeVisible();
-    expect(
-      screen.getByText(/Messages and activity are provider observations/),
-    ).not.toBeVisible();
-    await userEvent.click(screen.getByText("View Options"));
-    expect(screen.getByText("0 Shown · 1 Loaded")).toBeVisible();
-    expect(screen.getByText(/routine progress events hidden/)).toBeVisible();
-    expect(
-      screen.getByText(/Messages and activity are provider observations/),
-    ).toBeVisible();
-    const progress = screen.getByRole("checkbox", { name: "Routine Progress" });
-    await userEvent.click(progress);
-    expect(progress).toHaveFocus();
-    expect(progress.closest("details")).toHaveAttribute("open");
-    expect(state.historyProps).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        items: [expect.objectContaining({ kind: "progress" })],
-      }),
+    render(
+      <RunExecutionActivity
+        runId="run"
+        attemptId="a"
+        status="succeeded"
+        detail={
+          {
+            attempt_id: "a",
+            output_status: "settled",
+            settlement_status: "succeeded",
+            output_text: "## Final answer",
+          } as import("@/api/hooks").RunExecutionDetail
+        }
+      />,
     );
+    expect(screen.getByRole("heading", { name: "Final answer" })).toBeVisible();
+    expect(screen.queryByText("View Options")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(state.historyProps).not.toHaveBeenCalled();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show Activity" }),
+    );
+    expect(screen.getByText("Processing")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Final answer" })).toBeVisible();
   });
-  it("passes complete canonical descriptors to the shared history reader immediately", () => {
+  it("passes complete canonical descriptors when activity is opened", async () => {
     const absent = { availability: "not_provided" as const };
     state.items = [
       {
@@ -113,6 +119,9 @@ describe("focused provider activity", () => {
     expect(
       screen.getByRole("heading", { name: "Provider Activity" }),
     ).toBeInTheDocument();
+    await userEvent.click(
+      screen.getByRole("button", { name: "Show Activity" }),
+    );
     expect(state.historyProps).toHaveBeenLastCalledWith(
       expect.objectContaining({
         items: [
@@ -140,56 +149,6 @@ describe("focused provider activity", () => {
       ),
     ).toBeInTheDocument();
   });
-  it("keeps routine progress available only through explicit View Options", async () => {
-    const absent = { availability: "not_provided" as const };
-    const base = {
-      occurred_at: "2026-09-30T10:00:00Z",
-      recorded_at: "2026-09-30T10:00:00Z",
-      input: absent,
-      output: absent,
-      reasoning: absent,
-      message: absent,
-    };
-    state.items = [
-      {
-        ...base,
-        id: "p",
-        event_id: "p",
-        sequence: 1,
-        kind: "progress",
-        label: "Processing",
-      },
-      {
-        ...base,
-        id: "m",
-        event_id: "m",
-        sequence: 2,
-        kind: "message",
-        label: "Provider Message",
-      },
-    ];
-    render(
-      <RunExecutionActivity runId="run" attemptId="a" status="succeeded" />,
-    );
-    expect(state.historyProps).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        items: [expect.objectContaining({ kind: "message" })],
-      }),
-    );
-    await userEvent.click(screen.getByText("View Options"));
-    await userEvent.click(
-      screen.getByRole("checkbox", { name: "Routine Progress" }),
-    );
-    expect(state.historyProps).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        items: [
-          expect.objectContaining({ kind: "progress" }),
-          expect.objectContaining({ kind: "message" }),
-        ],
-      }),
-    );
-  });
-
   it("does not imply a complete empty conversation while earlier history remains unloaded", () => {
     state.items = [];
     state.gaps = [
@@ -206,7 +165,7 @@ describe("focused provider activity", () => {
     );
     expect(
       screen.getByText(
-        "No messages, thoughts, or tool calls appear in this loaded window. Load earlier activity below.",
+        "No messages, thoughts, or tool calls appear in this loaded window. Open activity to load earlier history.",
       ),
     ).toBeInTheDocument();
     expect(

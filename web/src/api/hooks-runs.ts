@@ -1,6 +1,5 @@
 import { skipToken, useInfiniteQuery, useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
-import { historyItems } from "./history-pages";
 import { useActivityHistory } from "./hooks-activity";
 import { dashboardSnapshotQueryKey, analyticsQueryKey, runtimeMetricsQueryKey } from "./hooks-metrics";
 import { manualRefetchQueryOptions, refetchOnMountQueryOptions, streamOwnedCollectionQueryOptions } from "./query-freshness";
@@ -17,9 +16,6 @@ import type {
   CreateRunRequest,
   WorkOrderDetail,
   GovernanceDecisionsResponse,
-  MailboxFilters,
-  MailboxMessageDetail,
-  MailboxMessagesResponse,
   MutationWithBody,
   MutationWithValue,
   ProviderModelsResponse,
@@ -28,7 +24,6 @@ import type {
 	RetryExecutionStopResult,
   RerunFromNodeResult,
 	RolesResponse,
-	RunAgentsResponse,
 	RunExecutionDetail,
 	RunExecutionsResponse,
 	RunNodeAttemptsResponse,
@@ -76,12 +71,7 @@ export const runQueryKeys = {
 	executionActivity: (runId: string, attemptId: string) => ["runs", runId, "executions", "activity", attemptId] as const,
 	timelineRoot: (runId: string) => ["runs", runId, "timeline"] as const,
 	timeline: (runId: string, limit: number) => ["runs", runId, "timeline", limit] as const,
-	agents: (runId: string) => ["runs", runId, "agents"] as const,
-  mailboxRoot: (runId: string) => ["runs", runId, "mailbox"] as const,
-  mailboxList: (runId: string, communicationType: string) =>
-    ["runs", runId, "mailbox", "list", communicationType] as const,
-  mailboxDetail: (runId: string, messageId: string) =>
-    ["runs", runId, "mailbox", "detail", messageId] as const,
+
 };
 
 export const providerModelsQueryKey = ["provider-models"] as const;
@@ -94,9 +84,7 @@ export type RunQuerySurface =
 	| "governanceHistory"
 	| "graph"
 	| "executions"
-	| "timeline"
-	| "agents"
-	| "mailbox";
+	| "timeline";
 
 interface RunDetailRecoveryInvalidation {
 	queryKey: readonly unknown[];
@@ -111,8 +99,6 @@ const RUN_DETAIL_RECOVERY_SURFACES: readonly RunQuerySurface[] = [
 	"graph",
 	"executions",
 	"timeline",
-	"agents",
-	"mailbox",
 ];
 
 function runQuerySurfaceInvalidation(runId: string, surface: RunQuerySurface): RunDetailRecoveryInvalidation {
@@ -131,10 +117,7 @@ function runQuerySurfaceInvalidation(runId: string, surface: RunQuerySurface): R
 			return { queryKey: runQueryKeys.executions(runId), exact: false };
 		case "timeline":
 			return { queryKey: runQueryKeys.timelineRoot(runId), exact: false };
-		case "agents":
-			return { queryKey: runQueryKeys.agents(runId), exact: true };
-		case "mailbox":
-			return { queryKey: runQueryKeys.mailboxRoot(runId), exact: false };
+
 	}
 }
 
@@ -475,38 +458,6 @@ export function useWorkspaceCapabilities() {
   });
 }
 
-export function useRunAgents(runId: string, options?: RunDetailQueryOptions) {
-	return useQuery({
-		queryKey: runQueryKeys.agents(runId),
-    queryFn: () => apiFetch<RunAgentsResponse>(`/runs/${runId}/agents`),
-    enabled: !!runId && (options?.enabled ?? true),
-    retry: retryRunDetailQuery,
-    ...manualRefetchQueryOptions,
-	});
-}
-
-export function useMailbox(runId: string, filters?: MailboxFilters, options?: RunDetailQueryOptions) {
-  const communicationType = filters?.communicationType ?? "";
-  return useInfiniteQuery({
-    queryKey: runQueryKeys.mailboxList(runId, communicationType),
-    queryFn: ({ pageParam, signal }) =>
-      apiFetch<MailboxMessagesResponse>(`/runs/${runId}/mailbox/messages`, {
-        signal,
-        params: {
-          limit: 100,
-          cursor: pageParam,
-          communication_type: filters?.communicationType,
-        },
-      }),
-    initialPageParam: undefined as string | undefined,
-    getNextPageParam: (page) => page.next_cursor,
-    select: (data) => ({ run_id: runId, items: historyItems(data.pages, (item) => item.message_id) }),
-    enabled: !!runId && (options?.enabled ?? true),
-    retry: retryRunDetailQuery,
-    ...manualRefetchQueryOptions,
-  });
-}
-
 export function useRunPlanReviews(runId: string, options?: RunDetailQueryOptions) {
   return useInfiniteQuery({
     queryKey: ["runs", runId, "plan-reviews"],
@@ -516,18 +467,6 @@ export function useRunPlanReviews(runId: string, options?: RunDetailQueryOptions
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (page) => page.next_cursor,
     enabled: Boolean(runId) && (options?.enabled ?? true),
-    retry: retryRunDetailQuery,
-    ...manualRefetchQueryOptions,
-  });
-}
-
-export function useMailboxMessage(runId: string, messageId?: string | null, options?: RunDetailQueryOptions) {
-  const trimmedMessageId = messageId?.trim() ?? "";
-  return useQuery({
-    queryKey: runQueryKeys.mailboxDetail(runId, trimmedMessageId),
-    queryFn: runId && trimmedMessageId && (options?.enabled ?? true)
-      ? () => apiFetch<MailboxMessageDetail>(`/runs/${runId}/mailbox/messages/${trimmedMessageId}`)
-      : skipToken,
     retry: retryRunDetailQuery,
     ...manualRefetchQueryOptions,
   });
@@ -585,14 +524,10 @@ function invalidateRunGovernanceQueries(qc: ReturnType<typeof useQueryClient>, r
 
 function invalidateRunExecutionAffectedQueries(qc: ReturnType<typeof useQueryClient>, runId: string) {
 	return Promise.all(
-		runQuerySurfaceInvalidations(runId, ["graph", "executions", "timeline", "agents"]).map((invalidation) =>
+		runQuerySurfaceInvalidations(runId, ["graph", "executions", "timeline"]).map((invalidation) =>
 			qc.invalidateQueries(invalidation),
 		),
 	);
-}
-
-function invalidateRunMailboxQueries(qc: ReturnType<typeof useQueryClient>, runId: string) {
-	return qc.invalidateQueries({ queryKey: runQueryKeys.mailboxRoot(runId) });
 }
 
 function invalidateRunGovernanceMutationQueries(qc: ReturnType<typeof useQueryClient>, runId: string) {
@@ -608,7 +543,6 @@ function invalidateRunGovernanceMutationQueries(qc: ReturnType<typeof useQueryCl
 function invalidateRunRerunQueries(qc: ReturnType<typeof useQueryClient>, runId: string) {
 	return Promise.all([
 		invalidateRunGovernanceMutationQueries(qc, runId),
-		invalidateRunMailboxQueries(qc, runId),
 	]);
 }
 
@@ -617,7 +551,6 @@ function invalidateRunCancelQueries(qc: ReturnType<typeof useQueryClient>, runId
 		invalidateRunsCollectionQueries(qc),
 		invalidateRunDetailQueries(qc, runId),
 		invalidateRunExecutionAffectedQueries(qc, runId),
-		invalidateRunMailboxQueries(qc, runId),
 	]);
 }
 

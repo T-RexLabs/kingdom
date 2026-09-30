@@ -1,7 +1,7 @@
 export const RUN_DETAIL_TABS = ["workflow", "execution"] as const;
 export type RunDetailTab = (typeof RUN_DETAIL_TABS)[number];
 export type RunDetailPanel = "files" | "plan" | "details";
-export type RunDetailSection = "context" | "mailbox" | "audit";
+export type RunDetailSection = "context" | "audit";
 export type RunDetailSearch = {
   tab?: RunDetailTab;
   panel?: RunDetailPanel;
@@ -23,9 +23,7 @@ export function parseRunDetailSearch(
     result.panel = search.panel;
   if (
     result.panel === "details" &&
-    (search.section === "context" ||
-      search.section === "mailbox" ||
-      search.section === "audit")
+    (search.section === "context" || search.section === "audit")
   )
     result.section = search.section;
   return result;

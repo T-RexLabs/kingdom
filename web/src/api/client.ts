@@ -138,9 +138,10 @@ export async function apiFetch<T>(
   path: string,
   options?: RequestInit & {
     params?: Record<string, string | number | boolean | undefined>;
+    responseType?: "json" | "text";
   }
 ): Promise<T> {
-  const { params, ...fetchOpts } = options ?? {};
+  const { params, responseType = "json", ...fetchOpts } = options ?? {};
 
   let url = `${API_BASE}${path}`;
   if (params) {
@@ -185,7 +186,7 @@ export async function apiFetch<T>(
 
   if (res.status === 204) return undefined as T;
 
-  return res.json();
+  return responseType === "text" ? res.text() as Promise<T> : res.json();
 }
 
 export class ApiError extends Error {

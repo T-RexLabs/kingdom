@@ -135,24 +135,6 @@ export function RunDiagnostics({
               </>
             )}
           </dl>
-          {detail?.execution_mode === "runtime_owned" &&
-            detail.output_status === "observed" &&
-            detail.output_text && (
-              <details key={detail.attempt_id}>
-                <summary className="min-h-10 cursor-pointer py-2 hover:text-foreground">
-                  Recorded Output
-                </summary>
-                <p className="mb-3">
-                  Recorded output from this runtime-owned step.
-                </p>
-                <pre
-                  aria-label="Exact recorded runtime output"
-                  className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs"
-                >
-                  {detail.output_text}
-                </pre>
-              </details>
-            )}
         </>
       )}
     </div>

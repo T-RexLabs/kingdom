@@ -27,7 +27,9 @@ vi.mock("@/components/ui/relative-time", () => ({
   RelativeTime: ({ iso }: { iso: string }) => <span>{iso}</span>,
 }));
 vi.mock("./run-conversation", () => ({
-  RunInstructions: () => <div>Actual issued work brief</div>,
+  RunInstructions: () => <div>Complete dispatched instructions</div>,
+  RunFinalResponse: () => <div>Canonical final response</div>,
+  RunRuntimeResponse: () => <div>Runtime response</div>,
 }));
 vi.mock("./timeline-panel", () => ({
   TimelinePanel: () => <div data-testid="timeline-panel" />,
@@ -168,10 +170,31 @@ function renderSurface(
 }
 
 describe("focused execution inspector", () => {
+  it("adds Final Response only for the exact settled attempt and preserves the mounted conversation", async () => {
+    const props = renderSurface({
+      detail: {
+        ...execution(),
+        settlement_status: "succeeded",
+        output_status: "settled",
+        output_text: "The final answer.",
+      },
+    });
+    const conversation = screen.getByTestId("run-execution-activity");
+    await userEvent.click(screen.getByRole("tab", { name: "Final Response" }));
+    expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-current");
+    expect(
+      screen.getByRole("tabpanel", { name: "Final Response" }),
+    ).toBeVisible();
+    expect(conversation).not.toBeVisible();
+    await userEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    expect(screen.getByTestId("run-execution-activity")).toBe(conversation);
+    expect(conversation).toBeVisible();
+  });
+
   it("keeps instructions behind a tab and preserves the read-only conversation when switching views", async () => {
     renderSurface();
     expect(
-      screen.queryByText("Actual issued work brief"),
+      screen.queryByText("Complete dispatched instructions"),
     ).not.toBeInTheDocument();
     expect(
       screen.queryByRole("button", { name: "Attempt Details" }),
@@ -182,7 +205,7 @@ describe("focused execution inspector", () => {
     expect(
       screen.getByRole("tabpanel", { name: "Instructions" }),
     ).toBeVisible();
-    expect(screen.getByText("Actual issued work brief")).toBeVisible();
+    expect(screen.getByText("Complete dispatched instructions")).toBeVisible();
     expect(conversation).not.toBeVisible();
     await userEvent.click(screen.getByRole("tab", { name: "Conversation" }));
     expect(screen.getByTestId("run-execution-activity")).toBe(conversation);

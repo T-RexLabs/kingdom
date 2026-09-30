@@ -73,38 +73,6 @@ it("offers retry when the exact attempt read fails without pretending no attempt
   expect(retry).toHaveBeenCalledOnce();
 });
 
-it("retains exact runtime-owned plan decision output behind Recorded Output", async () => {
-  const runtime = {
-    ...detail,
-    node_id: "plan_decision",
-    status: "succeeded" as const,
-    execution_mode: "runtime_owned" as const,
-    provider_invocation_id: undefined,
-    provider_session_id: undefined,
-    settlement_status: "not_applicable" as const,
-    output_status: "observed" as const,
-    output_text:
-      "Operator requested rework: keep the **original** constraints.",
-  };
-  render(
-    <RunDiagnostics
-      detail={runtime}
-      isLoading={false}
-      errorMessage={null}
-      onRetry={vi.fn()}
-    />,
-  );
-  expect(
-    screen.getByLabelText("Exact recorded runtime output"),
-  ).not.toBeVisible();
-  await userEvent.click(screen.getByText("Recorded Output"));
-  expect(screen.getByLabelText("Exact recorded runtime output")).toBeVisible();
-  expect(
-    screen.getByLabelText("Exact recorded runtime output").textContent,
-  ).toBe(runtime.output_text);
-  expect(screen.queryByText("Final Response")).not.toBeInTheDocument();
-});
-
 it("uses fresh exact detail over stale history while retaining history-only lineage", () => {
   const history = {
     ...detail,

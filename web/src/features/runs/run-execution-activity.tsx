@@ -1,19 +1,13 @@
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useRunExecutionActivity } from "@/api/hooks-runs";
 import type { RunExecution, RunExecutionDetail } from "@/api/hooks";
 import {
   activityItemFromApi,
   buildActivityState,
 } from "@/features/activity/activity-view";
-import {
-  RunFinalResponse,
-  type RunResponseDisclosure,
-} from "./run-conversation";
-import {
-  hasSettledResponse,
-  repeatsSettledResponse,
-} from "./run-conversation-state";
-import { ActivityHistory } from "@/features/activity/activity-history";
+import { RunFinalResponse } from "./run-conversation";
+import { hasSettledResponse } from "./run-conversation-state";
+import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 import {
   isActiveExecutionStatus,
@@ -40,10 +34,7 @@ function RunAttemptActivity({
   status,
   detail,
 }: RunActivityProps) {
-  const [responseDisclosure, setResponseDisclosure] =
-    useState<RunResponseDisclosure>({ response: false, source: false });
   const isRunning = isActiveExecutionStatus(status);
-  const [showProgress, setShowProgress] = useState(false);
   const durable = useRunExecutionActivity(runId, attemptId, {
     refetchIntervalMs: isRunning ? 1_500 : false,
   });
@@ -58,72 +49,25 @@ function RunAttemptActivity({
     [durable.data?.items, liveItems],
   );
 
-  const visibleItems = showProgress
-    ? state.items
-    : state.items.filter((item) => item.kind !== "progress");
-  const hiddenProgress = state.items.length - visibleItems.length;
   const hasFinished =
     status === "succeeded" || status === "failed" || status === "cancelled";
-  const viewOptions = (
-    <details className="max-w-lg text-xs text-foreground-muted">
-      <summary className="min-h-9 cursor-pointer py-2 font-medium">
-        View Options
-      </summary>
-      <div className="space-y-2 rounded-lg border border-border bg-surface p-3">
-        <p>
-          {visibleItems.length} Shown · {state.items.length} Loaded
-        </p>
-        <label className="flex min-h-10 cursor-pointer items-center gap-2">
-          <input
-            type="checkbox"
-            checked={showProgress}
-            onChange={(event) => setShowProgress(event.target.checked)}
-          />
-          Routine Progress
-        </label>
-        {hiddenProgress > 0 && (
-          <p>{hiddenProgress} routine progress events hidden.</p>
-        )}
-        <p>
-          Messages and activity are provider observations. Only the final
-          response marked by Kingdom settlement is canonical; activity cannot
-          approve or complete a run.
-        </p>
-      </div>
-    </details>
-  );
 
   if (!attemptId)
     return (
-      <p className="rounded-xl border border-border p-6 text-sm text-foreground-muted">
+      <p className="py-6 text-sm text-foreground-muted">
         This step has not recorded an attempt yet.
       </p>
     );
   return (
     <section className="space-y-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
-      {durable.isLoading && (
-        <p className="text-sm text-foreground-muted">Loading activity…</p>
-      )}
-      {durable.isError && (
-        <p role="alert" className="text-sm text-status-failed">
-          Activity could not be loaded.{" "}
-          <button
-            type="button"
-            className="min-h-9 underline"
-            onClick={() => void durable.refetch()}
-          >
-            Retry
-          </button>
-        </p>
-      )}
       {!durable.isLoading &&
         !durable.isError &&
-        !visibleItems.length &&
+        !state.items.length &&
         !hasSettledResponse(detail) && (
           <p className="py-6 text-sm text-foreground-muted">
             {durable.gaps.length > 0
-              ? "No messages, thoughts, or tool calls appear in this loaded window. Load earlier activity below."
+              ? "No messages, thoughts, or tool calls appear in this loaded window. Open activity to load earlier history."
               : isQueuedExecutionStatus(status)
                 ? "This attempt is queued. Provider activity will appear when it starts."
                 : isRunning
@@ -140,26 +84,18 @@ function RunAttemptActivity({
           New live activity is awaiting durable reconciliation.
         </p>
       )}
-      <ActivityHistory
-        headerActions={viewOptions}
-        conclusion={
-          hasSettledResponse(detail) ? (
-            <RunFinalResponse
-              key={detail.attempt_id}
-              detail={detail}
-              disclosure={responseDisclosure}
-              onDisclosureChange={setResponseDisclosure}
-              repeated={repeatsSettledResponse(detail, state.items)}
-            />
-          ) : undefined
-        }
+      <ActivityDisclosure
         scopeKey={JSON.stringify([runId, attemptId])}
-        items={visibleItems}
+        items={state.items}
         gaps={durable.gaps}
+        isLoading={durable.isLoading}
+        error={durable.error}
+        retry={() => durable.refetch()}
         isLoadingMore={durable.isLoadingMore}
         loadError={durable.loadError}
         loadMore={durable.loadMore}
       />
+      <RunFinalResponse key={attemptId} detail={detail} />
     </section>
   );
 }

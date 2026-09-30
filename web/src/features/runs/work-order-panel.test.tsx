@@ -98,30 +98,12 @@ describe("work order panel", () => {
     });
   });
 
-  it("shows the work order title inline and opens the full work order in a read modal", async () => {
-    const user = userEvent.setup();
-    render(
-      <WorkOrderPanel
-        run={baseRun}
-        roles={baseRoles}
-      />,
-    );
-
-    // The sidebar stays compact: title is shown, but the body lives behind a modal.
-    expect(screen.getByText("Royal Landing Page")).toBeInTheDocument();
-    expect(screen.queryByText("Build the new experience.")).not.toBeInTheDocument();
-    expect(screen.queryByText("Metadata")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Open work order settings" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Read work order" }));
-
-    // The dialog is named by its visible heading, which for an issued
-    // work order is the work order title itself.
-    const dialog = screen.getByRole("dialog", { name: "Royal Landing Page" });
-    expect(within(dialog).getByText("Build the new experience.")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    expect(screen.queryByRole("dialog", { name: "Royal Landing Page" })).not.toBeInTheDocument();
+  it("shows the complete work order immediately without a nested read dialog", () => {
+    render(<WorkOrderPanel run={baseRun} roles={baseRoles} />);
+    expect(screen.getByText("Royal Landing Page")).toBeVisible();
+    expect(screen.getByText("Build the new experience.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Read work order" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open work order settings" })).toBeVisible();
   });
 
   it("opens a work order settings modal with structured run configuration", async () => {
@@ -263,7 +245,6 @@ describe("work order panel", () => {
     }));
     const user = userEvent.setup();
     render(<WorkOrderPanel run={baseRun} roles={baseRoles} />);
-    await user.click(screen.getByRole("button", { name: "Read work order" }));
     expect(screen.getByRole("link", { name: /owner\/repo#7/i })).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.getByRole("link", { name: /owner\/other#8/i })).toBeInTheDocument();
     const firstSource = screen.getByRole("region", { name: "Issued source owner/repo#7" });
@@ -289,10 +270,8 @@ describe("work order panel", () => {
       },
       isLoading: false, error: null, refetch: refetchWorkOrder,
     });
-    const user = userEvent.setup();
     render(<WorkOrderPanel run={baseRun} roles={baseRoles} />);
 
-    await user.click(screen.getByRole("button", { name: "Read work order" }));
 
     expect(screen.getByText(/GitHub App access was revoked/i)).toBeInTheDocument();
     expect(screen.getByText(/run the connection health check/i)).toBeInTheDocument();
@@ -322,7 +301,6 @@ describe("work order panel", () => {
     }));
     const user = userEvent.setup();
     render(<WorkOrderPanel run={baseRun} roles={baseRoles} />);
-    await user.click(screen.getByRole("button", { name: "Read work order" }));
     await user.click(screen.getByRole("button", { name: "Check GitHub source owner/repo#7" }));
 
     await user.click(await screen.findByRole("button", { name: "Retry GitHub source owner/repo#7" }));

@@ -37,23 +37,6 @@ export function patchRunDetailFields(
   });
 }
 
-export function incrementRunTabCount(
-  qc: QueryClient,
-  runId: string,
-  key: "activity_events" | "messages",
-): void {
-  qc.setQueryData<RunDetailSummary>(runQueryKeys.detail(runId), (current) => {
-    if (!current) return current;
-    return {
-      ...current,
-      tab_counts: {
-        ...current.tab_counts,
-        [key]: (current.tab_counts?.[key] ?? 0) + 1,
-      },
-    };
-  });
-}
-
 export function applyRunStreamHighWaterMark(
 	qc: QueryClient,
 	runId: string,

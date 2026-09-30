@@ -175,9 +175,6 @@ vi.mock("./run-live-status", () => ({ RunLiveStatus: ({ onSelect }: { onSelect: 
 
 vi.mock("./timeline-panel", () => ({ TimelinePanel: (props: unknown) => { timelinePanelPropsMock(props); return <div>timeline</div>; } }));
 
-vi.mock("./agent-detail-panel", () => ({
-  AgentDetailPanel: () => <div>agents</div>,
-}));
 
 vi.mock("./run-execution-surface", () => ({
 	RunExecutionSurface: (props: {
@@ -207,9 +204,6 @@ vi.mock("./run-execution-surface", () => ({
 	},
 }));
 
-vi.mock("./mailbox-panel", () => ({
-  MailboxPanel: () => <div>mailbox</div>,
-}));
 
 vi.mock("./governance-actions", () => ({
   GovernanceActions: (props: { finalApprovalCardRef?: Ref<HTMLDivElement> }) => {
@@ -407,7 +401,7 @@ describe("run detail page", () => {
 
 	it("subscribes the run-detail page to the canonical run SSE hook", () => {
 	  render(<RunDetailPage />);
-	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["timeline", "agents", "mailbox"]);
+	  expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", true, true, ["timeline"]);
 	});
 
 	it("marks the full recovery scope stale while the run stream is retrying", async () => {
@@ -430,7 +424,7 @@ describe("run detail page", () => {
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "agents"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).not.toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "mailbox"], exact: false, refetchType: "active" });
-		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["timeline", "agents", "mailbox"] });
+		expect(queryClient.getQueryData(runSurfaceFreshnessQueryKey("run-1"))).toEqual({ dirtySurfaces: ["timeline"] });
 	});
 
 	it("bootstrap-refetches the run-detail recovery scope when reopening from stale cache without a resume cursor", async () => {
@@ -453,12 +447,10 @@ describe("run detail page", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "executions"], exact: false, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "graph"], exact: true, refetchType: "active" });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false, refetchType: "active" });
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "agents"], exact: true, refetchType: "active" });
-		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "mailbox"], exact: false, refetchType: "active" });
 		invalidateSpy.mockRestore();
 	});
 
-	it("keeps hidden audit, context and message queries lazy while observing the graph and selected attempt", () => {
+	it("keeps Audit lazy while observing the graph and selected attempt", () => {
 	  render(<RunDetailPage />);
 
 	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
@@ -466,9 +458,9 @@ describe("run detail page", () => {
 	  expect(useRunExecutionMock).toHaveBeenCalledWith("run-1", "attempt-1", { enabled: true });
 	  expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
 	  expect(useTimelineMock).toHaveBeenCalledWith("run-1", 50, { enabled: false });
-	  expect(useRunAgentsMock).toHaveBeenCalledWith("run-1", { enabled: false });
-	  expect(useMailboxMock).toHaveBeenCalledWith("run-1", {}, { enabled: false });
-	  expect(useMailboxMessageMock).toHaveBeenCalledWith("run-1", null, { enabled: false });
+	  expect(useRunAgentsMock).not.toHaveBeenCalled();
+	  expect(useMailboxMock).not.toHaveBeenCalled();
+	  expect(useMailboxMessageMock).not.toHaveBeenCalled();
 	});
 
 	it("supplies logical nodes to the graph fallback and opens its node in Activity", async () => {
@@ -499,16 +491,16 @@ describe("run detail page", () => {
 		expect(screen.queryByText("graph")).not.toBeInTheDocument();
 	});
 
-	it("enables only the active agents tab query for a running run", () => {
-	  mockSearch.panel = "details"; mockSearch.section = "context";
-
-	  render(<RunDetailPage />);
-
-	  expect(useRunExecutionsMock).toHaveBeenCalledWith("run-1", { enabled: true });
-	  expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
-	  expect(useRunAgentsMock).toHaveBeenCalledWith("run-1", { enabled: true });
-	  expect(useMailboxMock).toHaveBeenCalledWith("run-1", {}, { enabled: false });
-	});
+  it("keeps Run Details limited to work order settings and Audit without roster or messages", () => {
+    mockSearch.panel = "details"; mockSearch.section = "context";
+    render(<RunDetailPage />);
+    expect(screen.getByRole("button", { name: "Work Order and Settings" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Audit" })).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Messages" })).not.toBeInTheDocument();
+    expect(useRunAgentsMock).not.toHaveBeenCalled();
+    expect(useMailboxMock).not.toHaveBeenCalled();
+    expect(screen.queryByText("Attempt Record")).not.toBeInTheDocument();
+  });
 
 	it("fetches graph context when the activity tab is opened directly", () => {
 		mockSearch.tab = "execution";
@@ -943,7 +935,7 @@ describe("run detail page", () => {
 	});
 
 
-  it("opens quiet exact diagnostics without another response panel and pins that attempt across retries", async () => {
+  it("keeps exact attempt evidence within Audit and pins that attempt across retries", async () => {
     mockSearch.tab = "workflow";
     const original = runExecution({
       attempt_id: "attempt-answer",
@@ -964,7 +956,9 @@ describe("run detail page", () => {
     expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
       enabled: false,
     });
-    await userEvent.click(within(modal).getByText("Diagnostics"));
+    await userEvent.click(within(modal).getByRole("button", { name: "Audit" }));
+    rerender(<RunDetailPage />);
+    await userEvent.click(within(modal).getByText("Attempt Record"));
     await waitFor(() =>
       expect(within(modal).getByText("attempt-answer")).toBeVisible(),
     );
@@ -992,7 +986,7 @@ describe("run detail page", () => {
     expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
       enabled: true,
     });
-    await userEvent.click(within(modal).getByText("Diagnostics"));
+    await userEvent.click(within(modal).getByText("Attempt Record"));
     await waitFor(() =>
       expect(useRunExecutionMock.mock.calls.at(-1)?.[2]).toEqual({
         enabled: false,
@@ -1375,7 +1369,7 @@ describe("run detail page", () => {
 	      .toBeInTheDocument();
 	    expect(screen.getByRole("link", { name: "Back to runs" })).toBeInTheDocument();
 	    expect(screen.queryByText("Loading run...")).not.toBeInTheDocument();
-	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["timeline", "agents", "mailbox"]);
+	    expect(useRunEventStreamMock).toHaveBeenCalledWith("run-1", false, true, ["timeline"]);
   });
 
 	it("transitions from pending to loaded without violating hook order", () => {
@@ -1399,21 +1393,6 @@ describe("run detail page", () => {
 		mockRun.display_state = "running";
 	});
 
-	it("refetches a dirty hidden agents surface when the tab becomes visible", async () => {
-		const { queryClient, rerender } = render(<RunDetailPage />);
-
-		await act(async () => {
-			queryClient.setQueryData(runSurfaceFreshnessQueryKey("run-1"), { dirtySurfaces: ["agents"] });
-		});
-
-		mockSearch.panel = "details"; mockSearch.section = "context";
-		rerender(<RunDetailPage />);
-		await act(async () => {
-			await Promise.resolve();
-		});
-
-		expect(agentsRefetchMock).toHaveBeenCalledTimes(1);
-	});
 
 	it("refetches a dirty executions surface when the tab becomes visible", async () => {
 		const { queryClient, rerender } = render(<RunDetailPage />);

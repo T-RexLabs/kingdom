@@ -7,13 +7,9 @@ import {
   useInfiniteRunNodeAttempts,
   useRunGraph,
   useTimeline,
-  useRunAgents,
   useRoles,
-  useMailbox,
-  useMailboxMessage,
   useCancelRun,
   useRetryExecutionStop,
-  type MailboxFilters,
   type CancelRunRequest,
 } from "@/api/hooks";
 import {
@@ -44,8 +40,6 @@ import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { ArrowLeft, Shield, AlertTriangle, XCircle } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
-import { AgentDetailPanel } from "./agent-detail-panel";
-import { MailboxPanel } from "./mailbox-panel";
 import { RunExecutionSurface } from "./run-execution-surface";
 import { selectRunExecutionNode } from "./run-execution-selection";
 import { RunExecutionPicker } from "./run-execution-picker";
@@ -56,7 +50,6 @@ import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { GovernanceActions } from "./governance-actions";
 import { CurrentPlanPanel } from "./current-plan-panel";
 import { WorkOrderPanel } from "./work-order-panel";
-import { buildMailboxPresentation } from "./mailbox-lanes";
 import {
   mergeTimelineEvents,
   readCanonicalTimelineCoverage,
@@ -113,7 +106,10 @@ export function RunDetailPage() {
   const panel = search.panel;
   const detailSection = search.section ?? "context";
   const [diagnosticsRunId, setDiagnosticsRunId] = useState<string | null>(null);
-  const diagnosticsOpen = panel === "details" && diagnosticsRunId === runId;
+  const diagnosticsOpen =
+    panel === "details" &&
+    detailSection === "audit" &&
+    diagnosticsRunId === runId;
   const runQuery = useRun(runId);
   const run = runQuery.data;
   const runReady = runQuery.isSuccess;
@@ -122,24 +118,15 @@ export function RunDetailPage() {
   const graphVisible = true;
   const timelineVisible = panel === "details" && detailSection === "audit";
   const executionsQueryActive = graphVisible;
-  const agentsVisible = panel === "details" && detailSection === "context";
-  const mailboxVisible = panel === "details" && detailSection === "mailbox";
+  const contextVisible = panel === "details" && detailSection === "context";
   const hiddenRunQuerySurfaces = useMemo(
     () =>
       hiddenRunDetailSurfaces({
         graphVisible,
         executionsQueryActive,
         timelineVisible,
-        agentsVisible,
-        mailboxVisible,
       }),
-    [
-      agentsVisible,
-      executionsQueryActive,
-      graphVisible,
-      mailboxVisible,
-      timelineVisible,
-    ],
+    [executionsQueryActive, graphVisible, timelineVisible],
   );
   const graphQuery = useRunGraph(runId, { enabled: runReady && graphVisible });
   const graph = graphQuery.data;
@@ -172,12 +159,6 @@ export function RunDetailPage() {
   const liveTimelineQuery = useLiveTimelineEvents(runId);
   const liveTimelineSyncQuery = useLiveTimelineSyncState(runId);
   const runSurfaceFreshnessQuery = useRunSurfaceFreshness(runId);
-  const agentsQuery = useRunAgents(runId, {
-    enabled: runReady && agentsVisible,
-  });
-  const agents = agentsQuery.data;
-  const agentsAreFetching = agentsQuery.isFetching;
-  const refetchAgents = agentsQuery.refetch;
   const [selectedExecution, setSelectedExecution] =
     useState<SelectedExecutionState | null>(null);
   const storedSelectedExecution =
@@ -230,13 +211,6 @@ export function RunDetailPage() {
     ],
   );
   const { data: roles } = useRoles();
-  const [mailboxFilters, setMailboxFilters] = useState<MailboxFilters>({});
-  const mailboxQuery = useMailbox(runId, mailboxFilters, {
-    enabled: runReady && mailboxVisible,
-  });
-  const mailbox = mailboxQuery.data;
-  const mailboxIsFetching = mailboxQuery.isFetching;
-  const refetchMailbox = mailboxQuery.refetch;
   const cancelRun = useCancelRun(runId);
   const retryExecutionStop = useRetryExecutionStop(runId);
   const recoverableCancel = useRecoverableMutation(
@@ -286,10 +260,6 @@ export function RunDetailPage() {
   const isTimelineFetchInFlight =
     timelineQuery.isFetching || timelineQuery.isFetchingNextPage;
   const [timelineRetryWakeTick, setTimelineRetryWakeTick] = useState(0);
-  const mailboxPresentation = useMemo(
-    () => buildMailboxPresentation(mailbox?.items ?? []),
-    [mailbox?.items],
-  );
   const timelineErrorMessage = timelineQuery.isError
     ? queryErrorMessage(
         timelineQuery.error,
@@ -343,24 +313,6 @@ export function RunDetailPage() {
     });
   }, [activeTab, navigate, runId]);
 
-  const roleDescriptions = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const role of roles?.items ?? []) {
-      map[role.role_id] = role.description;
-    }
-    return map;
-  }, [roles?.items]);
-
-  // Mailbox detail state
-  const [selectedMessageId, setSelectedMessageId] = useState<string | null>(
-    null,
-  );
-  const mailboxMessageQuery = useMailboxMessage(runId, selectedMessageId, {
-    enabled: runReady && mailboxVisible,
-  });
-  const messageDetail = mailboxMessageQuery.data;
-  const mailboxMessageIsFetching = mailboxMessageQuery.isFetching;
-  const refetchMailboxMessage = mailboxMessageQuery.refetch;
   const canCancelRun =
     run?.status === "running" ||
     run?.status === "pending" ||
@@ -377,8 +329,6 @@ export function RunDetailPage() {
   const graphDirty = dirtyRunSurfaceSet.has("graph");
   const executionsDirty = dirtyRunSurfaceSet.has("executions");
   const timelineDirty = dirtyRunSurfaceSet.has("timeline");
-  const agentsDirty = dirtyRunSurfaceSet.has("agents");
-  const mailboxDirty = dirtyRunSurfaceSet.has("mailbox");
 
   const runStreamState = useRunEventStream(
     runId,
@@ -642,65 +592,6 @@ export function RunDetailPage() {
   ]);
 
   useEffect(() => {
-    if (!runId || !agentsVisible || !agentsDirty || agentsAreFetching) {
-      return;
-    }
-    void Promise.resolve(refetchAgents())
-      .then((result) => {
-        if (isSuccessfulQueryResult(result)) {
-          clearRunQuerySurfacesDirty(queryClient, runId, ["agents"]);
-        }
-      })
-      .catch(() => {
-        // leave dirty so the next visible retry can reconcile it
-      });
-  }, [
-    agentsAreFetching,
-    agentsDirty,
-    agentsVisible,
-    queryClient,
-    refetchAgents,
-    runId,
-  ]);
-
-  useEffect(() => {
-    if (
-      !runId ||
-      !mailboxVisible ||
-      !mailboxDirty ||
-      mailboxIsFetching ||
-      mailboxMessageIsFetching
-    ) {
-      return;
-    }
-    const refreshes: Array<Promise<unknown>> = [
-      Promise.resolve(refetchMailbox()),
-    ];
-    if (selectedMessageId) {
-      refreshes.push(Promise.resolve(refetchMailboxMessage()));
-    }
-    void Promise.all(refreshes)
-      .then((results) => {
-        if (results.every((result) => isSuccessfulQueryResult(result))) {
-          clearRunQuerySurfacesDirty(queryClient, runId, ["mailbox"]);
-        }
-      })
-      .catch(() => {
-        // leave dirty so the next visible retry can reconcile it
-      });
-  }, [
-    mailboxDirty,
-    mailboxIsFetching,
-    mailboxMessageIsFetching,
-    mailboxVisible,
-    queryClient,
-    refetchMailbox,
-    refetchMailboxMessage,
-    runId,
-    selectedMessageId,
-  ]);
-
-  useEffect(() => {
     if (!timelineVisible || hiddenTimelineRetryAtMs === null) {
       return;
     }
@@ -732,8 +623,6 @@ export function RunDetailPage() {
           graphVisible,
           executionsQueryActive,
           timelineVisible,
-          agentsVisible,
-          mailboxVisible,
         }),
       );
       invalidateRunQuerySurfaces(
@@ -743,8 +632,6 @@ export function RunDetailPage() {
           graphVisible,
           executionsQueryActive,
           timelineVisible,
-          agentsVisible,
-          mailboxVisible,
         }),
       );
     };
@@ -758,10 +645,8 @@ export function RunDetailPage() {
       window.clearInterval(timer);
     };
   }, [
-    agentsVisible,
     executionsQueryActive,
     graphVisible,
-    mailboxVisible,
     queryClient,
     run,
     runId,
@@ -817,14 +702,6 @@ export function RunDetailPage() {
       attemptId: null,
     });
   }, [runId, selectedExecutionNodeId]);
-
-  const handleSelectMessage = useCallback((messageId: string | null) => {
-    if (!messageId) {
-      setSelectedMessageId(null);
-      return;
-    }
-    setSelectedMessageId((prev) => (prev === messageId ? null : messageId));
-  }, []);
 
   const handleCloseCancelDialog = () => {
     if (!cancelRun.isPending && !recoverableCancel.hasPendingRecovery) {
@@ -948,13 +825,6 @@ export function RunDetailPage() {
   const validationReworkWaves = run.validation_rework_waves;
   const reviewAutoSucceededCount = run.review_auto_succeeded_count;
   const validationAutoSucceededCount = run.validation_auto_succeeded_count;
-  const mailboxErrorMessage =
-    !mailboxQuery.data && mailboxQuery.isError
-      ? queryErrorMessage(
-          mailboxQuery.error,
-          "The messages could not be loaded right now.",
-        )
-      : null;
   const connected = runStreamState === "open";
   const startedLabel = run.started_at
     ? formatExactTime(run.started_at)
@@ -1332,8 +1202,7 @@ export function RunDetailPage() {
             >
               {(
                 [
-                  ["context", "Brief and Settings"],
-                  ["mailbox", "Messages"],
+                  ["context", "Work Order and Settings"],
                   ["audit", "Audit"],
                 ] as const
               ).map(([id, label]) => (
@@ -1405,7 +1274,7 @@ export function RunDetailPage() {
               )}
             </div>
           )}
-          {agentsVisible && (
+          {contextVisible && (
             <div className="space-y-5">
               <WorkOrderPanel run={run} roles={roles?.items ?? []} />
               <div className="rounded-xl border border-border p-5 text-sm">
@@ -1449,40 +1318,9 @@ export function RunDetailPage() {
                   </dl>
                 )}
               </div>
-              {agentsQuery.isError ? (
-                <TabError
-                  message={queryErrorMessage(
-                    agentsQuery.error,
-                    "Run agents could not be loaded.",
-                  )}
-                  onRetry={() => void agentsQuery.refetch()}
-                />
-              ) : (
-                <AgentDetailPanel
-                  agents={agents?.items ?? []}
-                  roleDescriptions={roleDescriptions}
-                />
-              )}
             </div>
           )}
-          {mailboxVisible && (
-            <div className="h-[36rem] min-h-0">
-              <MailboxPanel
-                presentation={mailboxPresentation}
-                hasMore={mailboxQuery.hasNextPage}
-                isLoadingMore={mailboxQuery.isFetchingNextPage}
-                loadMoreError={mailboxQuery.isFetchNextPageError}
-                onLoadMore={() => void mailboxQuery.fetchNextPage()}
-                isLoading={mailboxQuery.isPending && !mailboxQuery.data}
-                errorMessage={mailboxErrorMessage}
-                onRetry={() => void mailboxQuery.refetch()}
-                onSelectMessage={handleSelectMessage}
-                selectedDetail={selectedMessageId ? messageDetail : null}
-                filters={mailboxFilters}
-                onChangeFilters={setMailboxFilters}
-              />
-            </div>
-          )}
+
           {timelineVisible && (
             <div className="space-y-3">
               {timelineErrorMessage && (
@@ -1505,7 +1343,7 @@ export function RunDetailPage() {
               </div>
             </div>
           )}
-          {panel === "details" && (
+          {timelineVisible && (
             <details
               open={diagnosticsOpen}
               className="mt-6 border-t border-border pt-3"
@@ -1523,7 +1361,7 @@ export function RunDetailPage() {
               }}
             >
               <summary className="min-h-10 cursor-pointer py-2 text-sm text-foreground-muted hover:text-foreground">
-                Diagnostics
+                Attempt Record
               </summary>
               {diagnosticsOpen && (
                 <div className="pt-3">
@@ -1600,14 +1438,10 @@ function degradedRunRefreshSurfaces({
   graphVisible,
   executionsQueryActive,
   timelineVisible,
-  agentsVisible,
-  mailboxVisible,
 }: {
   graphVisible: boolean;
   executionsQueryActive: boolean;
   timelineVisible: boolean;
-  agentsVisible: boolean;
-  mailboxVisible: boolean;
 }) {
   const surfaces: RunQuerySurface[] = [
     "detail",
@@ -1624,12 +1458,6 @@ function degradedRunRefreshSurfaces({
   if (timelineVisible) {
     surfaces.push("timeline");
   }
-  if (agentsVisible) {
-    surfaces.push("agents");
-  }
-  if (mailboxVisible) {
-    surfaces.push("mailbox");
-  }
   return surfaces;
 }
 
@@ -1637,14 +1465,10 @@ function hiddenRunDetailSurfaces({
   graphVisible,
   executionsQueryActive,
   timelineVisible,
-  agentsVisible,
-  mailboxVisible,
 }: {
   graphVisible: boolean;
   executionsQueryActive: boolean;
   timelineVisible: boolean;
-  agentsVisible: boolean;
-  mailboxVisible: boolean;
 }) {
   const surfaces: RunQuerySurface[] = [];
   if (!graphVisible) {
@@ -1655,12 +1479,6 @@ function hiddenRunDetailSurfaces({
   }
   if (!timelineVisible) {
     surfaces.push("timeline");
-  }
-  if (!agentsVisible) {
-    surfaces.push("agents");
-  }
-  if (!mailboxVisible) {
-    surfaces.push("mailbox");
   }
   return surfaces;
 }
@@ -1750,7 +1568,7 @@ function CancelRunDialog({
     >
       <p className={MODAL_BODY_TEXT_CLASS}>
         This stops further loop scheduling for this run. Existing work remains
-        visible in the run timeline, DAG, and mailbox.
+        visible in the run timeline and workflow.
       </p>
     </ConfirmDialog>
   );

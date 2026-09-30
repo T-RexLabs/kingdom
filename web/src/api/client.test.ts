@@ -32,6 +32,12 @@ describe("shouldRetryApiMutation", () => {
 });
 
 describe("apiFetch", () => {
+  it("preserves complete text responses without JSON parsing or whitespace normalization", async () => {
+    const text = "  Complete prompt\n\tExact whitespace.\n";
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(text, { headers: { "Content-Type": "text/plain" } })));
+    await expect(apiFetch<string>("/runs/r/executions/a/instructions", { responseType: "text" })).resolves.toBe(text);
+  });
+
   it("tracks the nonsecret binding and clears it when authentication is lost", () => {
     setCSRFToken("secret-csrf", "binding-one");
     expect(currentAuthBinding()).toBe("binding-one");

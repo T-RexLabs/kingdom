@@ -15,8 +15,6 @@ const RUN_SURFACE_DIRTY_ORDER: readonly RunQuerySurface[] = [
 	"graph",
 	"executions",
 	"timeline",
-	"agents",
-	"mailbox",
 ];
 
 function initialRunSurfaceFreshnessState(): RunSurfaceFreshnessState {

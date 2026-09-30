@@ -24,6 +24,9 @@ describe("run detail tabs", () => {
     expect(
       parseRunDetailSearch({ panel: "details", section: "execution" }),
     ).toEqual({ panel: "details" });
+    expect(
+      parseRunDetailSearch({ panel: "details", section: "mailbox" }),
+    ).toEqual({ panel: "details" });
     expect(parseRunDetailSearch({ panel: "more", section: "context" })).toEqual(
       {},
     );

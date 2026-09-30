@@ -7,7 +7,12 @@ import type {
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunExecutionActivity } from "./run-execution-activity";
 import { RoleIdentity } from "@/theme";
-import { RunInstructions } from "./run-conversation";
+import {
+  RunInstructions,
+  RunFinalResponse,
+  RunRuntimeResponse,
+} from "./run-conversation";
+import { hasSettledResponse } from "./run-conversation-state";
 import { presentRunNodeExecution } from "./run-execution-presentation";
 import { useId, useState, type ReactNode } from "react";
 
@@ -62,17 +67,35 @@ export function RunExecutionSurface({
   stopRetryErrorMessage: string | null;
   children?: ReactNode;
 }) {
-  const [view, setView] = useState<"conversation" | "instructions">(
-    "conversation",
-  );
+  const [selectedView, setSelectedView] = useState<{
+    scopeKey: string;
+    value: "conversation" | "instructions" | "response";
+  } | null>(null);
   const viewsId = useId();
   const node = nodes.find((item) => item.node_id === selectedNodeId);
   const current = node?.current_execution;
   const selectedID = selectedAttemptId ?? current?.attempt_id;
   const history = attempts.find((item) => item.attempt_id === selectedID);
   const selectedDetail = detail?.attempt_id === selectedID ? detail : null;
+  const hasResponse = hasSettledResponse(selectedDetail);
+  const scopeKey = JSON.stringify([run.run_id, selectedID ?? selectedNodeId]);
+  const requestedView =
+    selectedView?.scopeKey === scopeKey ? selectedView.value : "conversation";
+  const view =
+    requestedView === "response" && !hasResponse
+      ? "conversation"
+      : requestedView;
+  const setView = (value: "conversation" | "instructions" | "response") => {
+    if (value !== "conversation" && selectedID) onSelectAttempt(selectedID);
+    setSelectedView({ scopeKey, value });
+  };
+  const views = [
+    "conversation",
+    "instructions",
+    ...(hasResponse ? ["response" as const] : []),
+  ] as const;
   const execution =
-    selectedID === current?.attempt_id ? current : (history ?? selectedDetail);
+    selectedDetail ?? (selectedID === current?.attempt_id ? current : history);
   const historical = !!selectedID && selectedID !== current?.attempt_id;
   const presentation = node
     ? presentRunNodeExecution(
@@ -196,19 +219,22 @@ export function RunExecutionSurface({
           if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key))
             return;
           event.preventDefault();
-          const next =
+          const index = views.indexOf(view);
+          const nextIndex =
             event.key === "Home"
-              ? "conversation"
+              ? 0
               : event.key === "End"
-                ? "instructions"
-                : view === "conversation"
-                  ? "instructions"
-                  : "conversation";
+                ? views.length - 1
+                : (index +
+                    (event.key === "ArrowRight" ? 1 : -1) +
+                    views.length) %
+                  views.length;
+          const next = views[nextIndex];
           setView(next);
           document.getElementById(`${viewsId}-${next}`)?.focus();
         }}
       >
-        {(["conversation", "instructions"] as const).map((item) => (
+        {views.map((item) => (
           <button
             key={item}
             id={`${viewsId}-${item}`}
@@ -220,7 +246,11 @@ export function RunExecutionSurface({
             className={`min-h-10 border-b-2 ${view === item ? "border-accent text-foreground" : "border-transparent hover:text-foreground"}`}
             onClick={() => setView(item)}
           >
-            {item === "conversation" ? "Conversation" : "Instructions"}
+            {item === "conversation"
+              ? "Conversation"
+              : item === "instructions"
+                ? "Instructions"
+                : "Final Response"}
           </button>
         ))}
       </div>
@@ -231,9 +261,23 @@ export function RunExecutionSurface({
         hidden={view !== "instructions"}
       >
         {view === "instructions" && (
-          <RunInstructions workOrderId={run.work_order_id} />
+          <RunInstructions
+            runId={run.run_id}
+            attemptId={selectedID ?? null}
+            executionMode={node?.execution_ownership}
+          />
         )}
       </div>
+      {hasResponse && (
+        <div
+          id={`${viewsId}-response-panel`}
+          role="tabpanel"
+          aria-labelledby={`${viewsId}-response`}
+          hidden={view !== "response"}
+        >
+          <RunFinalResponse key={selectedID} detail={selectedDetail} />
+        </div>
+      )}
       <div
         id={`${viewsId}-conversation-panel`}
         role="tabpanel"
@@ -257,12 +301,15 @@ export function RunExecutionSurface({
             detail={selectedDetail}
           />
         )}
-        {node?.execution_ownership === "runtime_owned" && (
-          <p className="py-5 text-sm text-foreground-muted">
-            Kingdom owns this step. Its transitions appear in Run Details under
-            Audit; it does not produce provider thoughts or tool calls.
-          </p>
-        )}
+        {node?.execution_ownership === "runtime_owned" &&
+          (selectedDetail?.output_status === "observed" &&
+          selectedDetail.output_text ? (
+            <RunRuntimeResponse key={selectedID} detail={selectedDetail} />
+          ) : (
+            <p className="py-5 text-sm text-foreground-muted">
+              Kingdom handles this step. Its transitions appear in Audit.
+            </p>
+          ))}
         {children}
       </div>
     </section>

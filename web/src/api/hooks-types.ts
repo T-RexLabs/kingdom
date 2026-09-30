@@ -35,7 +35,6 @@ export type RunGraphEdge = components["schemas"]["RunGraphEdge"];
 export type RunGraphResponse = components["schemas"]["RunGraphResponse"];
 export type RunAgent = components["schemas"]["RunAgent"];
 export type RunParticipant = components["schemas"]["RunParticipant"];
-export type RunAgentsResponse = components["schemas"]["RunAgentsResponse"];
 export type RunExecution = components["schemas"]["RunExecution"];
 export type RunExecutionDetail = components["schemas"]["RunExecutionDetail"];
 export type RunExecutionsResponse = components["schemas"]["RunExecutionsResponse"];
@@ -56,9 +55,6 @@ export type RunModelSelection = components["schemas"]["RunModelSelection"];
 export type RunModelSelectionEntry = components["schemas"]["RunModelSelectionEntry"];
 export type TimelineEvent = components["schemas"]["TimelineEvent"];
 export type RunTimelineResponse = components["schemas"]["RunTimelineResponse"];
-export type MailboxMessage = components["schemas"]["RunMailboxMessageSummary"];
-export type MailboxMessagesResponse = components["schemas"]["RunMailboxMessagesResponse"];
-export type MailboxMessageDetail = components["schemas"]["RunMailboxMessageDetail"];
 export type WorkOrderDetail = components["schemas"]["WorkOrderDetail"];
 export type PlanningSessionSummary = components["schemas"]["PlanningSessionSummary"];
 export type PlanningSessionDetail = components["schemas"]["PlanningSessionDetail"];
@@ -94,10 +90,6 @@ export type AnalyticsSelectedRun = components["schemas"]["AnalyticsSelectedRun"]
 export type AnalyticsExecutionDetail = components["schemas"]["AnalyticsExecutionDetail"];
 export type AnalyticsExecutionDetailSnapshot = components["schemas"]["AnalyticsExecutionDetailSnapshot"];
 export type AnalyticsSnapshot = components["schemas"]["AnalyticsSnapshot"];
-
-export interface MailboxFilters {
-  communicationType?: string;
-}
 
 export type CreateWorkOrderRequest = components["schemas"]["CreateWorkOrderRequest"];
 export type CreateWorkOrderResult = components["schemas"]["CreateWorkOrderResult"];

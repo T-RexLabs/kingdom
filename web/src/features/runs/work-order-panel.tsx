@@ -14,66 +14,65 @@ import { Button } from "@/components/ui/button";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal-shell";
 import { modelDisplayLabel } from "@/features/work-orders/provider-model-selection";
-import { ExternalSourceCoordinate, ExternalSourceStrip } from "@/features/connections/external-source-strip";
-import { externalSourceFailureGuidance, externalSourceStatusNotice } from "@/features/connections/external-source-status";
+import {
+  ExternalSourceCoordinate,
+  ExternalSourceStrip,
+} from "@/features/connections/external-source-strip";
+import {
+  externalSourceFailureGuidance,
+  externalSourceStatusNotice,
+} from "@/features/connections/external-source-status";
 import { ExternalSourceComparison } from "@/features/connections/external-source-comparison";
 import { roleTitle } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { isSkipReviewValidationWorkflowId } from "@/lib/workflows";
-import { ChevronRight, Loader2, RefreshCw, Scroll, Settings2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 
-export function WorkOrderPanel({ run, roles = [] }: { run: RunSummary; roles?: Role[] }) {
-  const [readOpen, setReadOpen] = useState(false);
+export function WorkOrderPanel({
+  run,
+  roles = [],
+}: {
+  run: RunSummary;
+  roles?: Role[];
+}) {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const { data: workOrder, isLoading, error, refetch } = useWorkOrder(run.work_order_id);
+  const {
+    data: workOrder,
+    isLoading,
+    error,
+    refetch,
+  } = useWorkOrder(run.work_order_id);
   const providerModelsQuery = useProviderModels({ enabled: settingsOpen });
   const providerModels = providerModelsQuery.data?.items ?? [];
   const workOrderTitle = workOrder?.work_order_title?.trim();
 
   return (
     <>
-      <section className="rounded-md border border-border bg-surface-raised/40 p-3">
-        <div className="flex items-center gap-2 rounded-md border border-border bg-background p-3">
-          <button
-            type="button"
-            onClick={() => setReadOpen(true)}
-            className="flex min-w-0 flex-1 items-center gap-2 text-left transition-colors hover:text-accent"
-            aria-label="Read work order"
-          >
-            <Scroll className="h-4 w-4 shrink-0 text-accent" />
-            <div className="min-w-0">
-              <h2 className="truncate text-sm font-semibold text-foreground">Work Order</h2>
-              <p className="truncate text-xs text-foreground-subtle">
-                {workOrderTitle ?? (isLoading ? "Loading work order…" : "View the work order")}
-              </p>
-            </div>
-            <ChevronRight className="ml-auto h-3.5 w-3.5 shrink-0 text-foreground-subtle" />
-          </button>
-
+      <section aria-label="Work order" className="space-y-5">
+        <div className="flex items-start justify-between gap-4">
+          <h2 className="font-display text-xl text-foreground">
+            {workOrderTitle || "Work Order"}
+          </h2>
           <Button
             type="button"
             variant="ghost"
-            size="icon"
-            className="h-8 w-8 shrink-0"
+            size="sm"
             aria-label="Open work order settings"
-            title="Work Order settings"
             onClick={() => setSettingsOpen(true)}
           >
-            <Settings2 className="h-4 w-4" />
+            Settings
           </Button>
         </div>
+        <WorkOrderContent
+          text={workOrder?.work_order_text}
+          sources={workOrder?.external_sources}
+          isLoading={isLoading}
+          hasError={Boolean(error) || !workOrder}
+          onRefreshed={() => {
+            void refetch();
+          }}
+        />
       </section>
-
-      <WorkOrderReadDialog
-        open={readOpen}
-        title={workOrderTitle}
-        text={workOrder?.work_order_text}
-        sources={workOrder?.external_sources}
-        isLoading={isLoading}
-        hasError={Boolean(error) || !workOrder}
-        onRefreshed={() => { void refetch(); }}
-        onClose={() => setReadOpen(false)}
-      />
 
       <WorkOrderSettingsDialog
         open={settingsOpen}
@@ -87,56 +86,51 @@ export function WorkOrderPanel({ run, roles = [] }: { run: RunSummary; roles?: R
   );
 }
 
-function WorkOrderReadDialog({
-  open,
-  title,
+function WorkOrderContent({
   text,
   sources,
   isLoading,
   hasError,
-  onClose,
   onRefreshed,
 }: {
-  open: boolean;
-  title?: string;
   text?: string;
   sources?: WorkOrderDetail["external_sources"];
   isLoading: boolean;
   hasError: boolean;
-  onClose: () => void;
   onRefreshed: () => void;
 }) {
+  if (isLoading)
+    return <p className="text-sm text-foreground-muted">Loading work order…</p>;
+  if (hasError)
+    return (
+      <p role="alert" className="text-sm text-status-failed">
+        Work order could not be loaded.{" "}
+        <button type="button" className="underline" onClick={onRefreshed}>
+          Retry Work Order
+        </button>
+      </p>
+    );
   return (
-    // `workbench` because the work order text and its source cards arrive
-    // separately; an auto-height panel would re-centre itself as they land.
-    <Modal
-      open={open}
-      onClose={onClose}
-      size="lg"
-      height="workbench"
-      title={title && title !== "" ? title : "Work Order"}
-      caption={title && title !== "" ? "Work Order" : undefined}
-    >
-        <div>
-          {isLoading ? (
-            <p className="text-sm text-foreground-subtle">Loading work order…</p>
-          ) : hasError ? (
-            <p className="text-sm text-foreground-subtle">Work Order not available.</p>
-          ) : (
-            <div>
-              {sources && sources.length > 0 ? (
-                <section aria-label="Issued work order sources" className="mb-4 space-y-2">
-                  <p className="text-[10px] font-medium uppercase tracking-[0.18em] text-foreground-subtle">{sources.length} GitHub {sources.length === 1 ? "source" : "sources"}</p>
-                  <div className="grid gap-3 lg:grid-cols-2">
-                    {sources.map((source) => <IssuedWorkOrderSourceCard key={source.link_id} source={source} onRefreshed={onRefreshed} />)}
-                  </div>
-                </section>
-              ) : null}
-              <MarkdownBlock content={text ?? ""} className="text-sm text-foreground-muted" />
-            </div>
-          )}
-        </div>
-    </Modal>
+    <div className="space-y-5">
+      <MarkdownBlock
+        content={text ?? ""}
+        className="text-[15px] leading-7 text-foreground"
+      />
+      {sources && sources.length > 0 && (
+        <section aria-label="Issued work order sources" className="space-y-3">
+          <h3 className="text-sm font-medium text-foreground-muted">
+            GitHub Sources
+          </h3>
+          {sources.map((source) => (
+            <IssuedWorkOrderSourceCard
+              key={source.link_id}
+              source={source}
+              onRefreshed={onRefreshed}
+            />
+          ))}
+        </section>
+      )}
+    </div>
   );
 }
 
