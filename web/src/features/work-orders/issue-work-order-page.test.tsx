@@ -270,6 +270,74 @@ describe("issue work order page", () => {
     expect(screen.getByRole("switch", { name: "Use for All Agents" })).toBeVisible();
   });
 
+  it.each([false, true])("retains a confirmed run for local draft cleanup without reissuing (remount: %s)", async (remount) => {
+    const user = userEvent.setup();
+    let view = render(<IssueWorkOrderPage />);
+    await selectGlobalModel(user);
+    await user.clear(screen.getByLabelText("Title"));
+    await user.type(screen.getByLabelText("Title"), "Already dispatched work");
+    const originalSetItem = Storage.prototype.setItem;
+    const storage = vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (
+        key.startsWith("kingdom:work-order-draft:") &&
+        JSON.parse(value).title === "" &&
+        createRunMutate.mock.calls.length > 0
+      ) {
+        throw new DOMException("Storage unavailable", "SecurityError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    try {
+      await user.click(screen.getByRole("button", { name: "Issue Work Order" }));
+      await waitFor(() => expect(createRunMutate).toHaveBeenCalledOnce());
+      expect(navigate).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("Title")).toBeDisabled();
+      expect(
+        screen.getByRole("switch", { name: "Require Human Approval" }),
+      ).toBeDisabled();
+      expect(
+        screen.queryByRole("button", { name: "Start New Work Order" }),
+      ).not.toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Open Run" })).toBeEnabled();
+      const draftKey = Object.keys(sessionStorage).find((key) =>
+        key.startsWith("kingdom:work-order-draft:"),
+      )!;
+      expect(JSON.parse(sessionStorage.getItem(draftKey)!).title).toBe(
+        "Already dispatched work",
+      );
+
+      if (remount) {
+        view.unmount();
+        view = render(<IssueWorkOrderPage />);
+      }
+      await user.click(screen.getByRole("button", { name: "Open Run" }));
+      expect(navigate).not.toHaveBeenCalled();
+      expect(createWorkOrderMutate).toHaveBeenCalledOnce();
+      expect(createRunMutate).toHaveBeenCalledOnce();
+
+      storage.mockRestore();
+      await user.click(screen.getByRole("button", { name: "Open Run" }));
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith({
+          to: "/runs/$runId",
+          params: { runId: "run-1" },
+          replace: true,
+        }),
+      );
+      expect(JSON.parse(sessionStorage.getItem(draftKey)!).title).toBe("");
+      expect(
+        Object.keys(sessionStorage).some((key) =>
+          key.startsWith("kingdom:work-order-dispatch:"),
+        ),
+      ).toBe(false);
+      expect(createWorkOrderMutate).toHaveBeenCalledOnce();
+      expect(createRunMutate).toHaveBeenCalledOnce();
+    } finally {
+      storage.mockRestore();
+      view.unmount();
+    }
+  });
+
   it("renders issue work order content", () => {
     renderWithReviewOptions(<IssueWorkOrderPage />);
     expect(screen.getByRole("heading", { name: "New Work Order" })).toBeInTheDocument();

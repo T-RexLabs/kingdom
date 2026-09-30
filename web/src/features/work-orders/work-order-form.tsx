@@ -112,7 +112,7 @@ export type WorkOrderDispatchResult = {
   run: RunSummary;
 };
 
-type DispatchPhase = "submitting_work_order" | "work_order_recovery" | "submitting_run" | "run_recovery";
+type DispatchPhase = "submitting_work_order" | "work_order_recovery" | "submitting_run" | "run_recovery" | "completed";
 
 type RecoveryMode = "fresh" | "replay" | "pending";
 
@@ -131,6 +131,7 @@ type DispatchSession = {
   runKey?: string;
   runRequest?: Omit<CreateRunRequest, "work_order_id">;
   runRecoveryMode?: RecoveryMode;
+  completedResult?: WorkOrderDispatchResult;
 };
 
 const creationStorageKeyFor = (workspace: string, scope: string) => `kingdom:work-order-draft:v1:${API_BASE}:${JSON.stringify([workspace, scope])}`;
@@ -150,6 +151,7 @@ function savedDispatch(workspace: string): DispatchSession | null {
   if (!saved) return null;
   const request = { ...JSON.parse(saved), restored: true } as DispatchSession;
   if (!request.workOrderKey || !request.workOrderBody) throw new Error("The saved dispatch request is unreadable. Resolve its outcome before issuing another work order.");
+  if (request.phase === "completed" && !request.completedResult?.run?.run_id) throw new Error("The confirmed run result is unreadable. Keep this dispatch guarded before issuing another work order.");
   if (request.phase === "submitting_work_order") return { ...request, phase: "work_order_recovery", workOrderRecoveryMode: "replay" };
   if (request.phase === "submitting_run") return { ...request, phase: "run_recovery", runRecoveryMode: "replay" };
   return request;
@@ -330,10 +332,17 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
   const selectedDraftKey = [planningSessionId ?? "", selectedPlanningDraft?.planning_draft_id ?? ""].join("::");
   const [appliedDraftKey, setAppliedDraftKey] = useState(savedDraft.appliedDraftKey ?? "");
 
+  const creationDraft = useMemo<CreationDraft>(() => ({
+    title, text, origin, appliedDraftKey, skipReviewsAndValidations, runUntilAllApprove,
+    maxExecutionReviewCyclesInput, maxValidationReworkCyclesInput, operatorApprovalRequired,
+    useGlobalModel, globalSelection, agentSelectionsByRole, useGitWorktree, publishModeInitialized,
+  }), [title, text, origin, appliedDraftKey, skipReviewsAndValidations, runUntilAllApprove, maxExecutionReviewCyclesInput, maxValidationReworkCyclesInput, operatorApprovalRequired, useGlobalModel, globalSelection, agentSelectionsByRole, useGitWorktree, publishModeInitialized]);
+
   useEffect(() => {
-    try { sessionStorage.setItem(creationStorageKey, JSON.stringify({ title, text, origin, appliedDraftKey, skipReviewsAndValidations, runUntilAllApprove, maxExecutionReviewCyclesInput, maxValidationReworkCyclesInput, operatorApprovalRequired, useGlobalModel, globalSelection, agentSelectionsByRole, useGitWorktree, publishModeInitialized } satisfies CreationDraft)); }
+    if (dispatchSession?.phase === "completed") return;
+    try { sessionStorage.setItem(creationStorageKey, JSON.stringify(creationDraft)); }
     catch { setDispatchError("This browser could not save your draft. Keep this page open until storage is available."); }
-  }, [creationStorageKey, title, text, origin, appliedDraftKey, skipReviewsAndValidations, runUntilAllApprove, maxExecutionReviewCyclesInput, maxValidationReworkCyclesInput, operatorApprovalRequired, useGlobalModel, globalSelection, agentSelectionsByRole, useGitWorktree, publishModeInitialized]);
+  }, [creationStorageKey, creationDraft, dispatchSession?.phase]);
 
   const setCurrentDispatchSession = (next: DispatchSession | null) => {
     if (next) sessionStorage.setItem(dispatchStorageKey, JSON.stringify(next));
@@ -483,11 +492,42 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
     createRun.reset();
   };
 
+  const finishDispatch = (session: DispatchSession) => {
+    const result = session.completedResult;
+    if (!result) return;
+    // Retain known success even if storage fails. Retrying this phase only
+    // clears local state; it must never enter the mutation recovery path.
+    dispatchSessionRef.current = session;
+    setDispatchSession(session);
+    try {
+      sessionStorage.setItem(dispatchStorageKey, JSON.stringify(session));
+      sessionStorage.setItem(
+        creationStorageKey,
+        JSON.stringify({
+          ...creationDraft,
+          title: "",
+          text: "",
+          origin: { kind: "manual" },
+          appliedDraftKey: "",
+        } satisfies CreationDraft),
+      );
+      prepareForNextWorkOrder();
+    } catch {
+      setDispatchError("The run was created, but this browser could not clear its saved draft. Keep this page open and retry opening the run.");
+      return;
+    }
+    onDispatched?.(result);
+  };
+
   const issueAndRun = async (event: React.FormEvent) => {
     event.preventDefault();
     setDispatchError("");
 
     const activeSession = dispatchSessionRef.current;
+    if (activeSession?.phase === "completed") {
+      finishDispatch(activeSession);
+      return;
+    }
     if (activeSession?.phase === "submitting_work_order" || activeSession?.phase === "submitting_run") {
       return;
     }
@@ -626,10 +666,9 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
     };
     setCurrentDispatchSession(session);
 
+    let run: RunSummary;
     try {
-      const run = await runRecovery.mutateAsync(runRequest, nextRunKey, { binding: session.runBinding ?? "", generation: session.runGeneration ?? -1, restored: session.restored ?? false });
-      prepareForNextWorkOrder();
-      onDispatched?.({ workOrderId, run });
+      run = await runRecovery.mutateAsync(runRequest, nextRunKey, { binding: session.runBinding ?? "", generation: session.runGeneration ?? -1, restored: session.restored ?? false });
     } catch (error) {
       setDispatchError(error instanceof Error ? error.message : "The run outcome could not be confirmed.");
       const recoveryMode = classifyRecoveryMode(error);
@@ -640,7 +679,9 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
         runKey: nextRunKey,
         runRecoveryMode: recoveryMode,
       });
+      return;
     }
+    finishDispatch({ ...session, phase: "completed", completedResult: { workOrderId, run } });
   };
 
   const handleReset = () => {
@@ -681,6 +722,7 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
   const hasWorkOrderContent = title.trim() !== "" || text.trim() !== "" || origin.kind !== "manual";
 
 	const dispatchPhase = dispatchSession?.phase ?? null;
+	const isCompleted = dispatchPhase === "completed";
 	const isSubmitting = dispatchPhase === "submitting_work_order" || dispatchPhase === "submitting_run";
 	const canIssueWorkOrder = title.trim() !== "" && text.trim() !== "" && normalizedGlobalSelection.model.trim() !== "";
 	const workOrderRecoveryMode = dispatchSession?.workOrderRecoveryMode ?? null;
@@ -694,13 +736,13 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
 	  : normalizedGlobalSelection.model.trim() !== "");
 	const hasIssuedWorkOrder = Boolean(dispatchSession?.workOrderId);
 	const workOrderLocked = isSubmitting || hasIssuedWorkOrder || (isRecoveringWorkOrder && workOrderRecoveryMode !== "fresh");
-	const runControlsLocked = isSubmitting || isRecoveringWorkOrder || (isRecoveringRun && runRecoveryMode !== "fresh");
+	const runControlsLocked = isCompleted || isSubmitting || isRecoveringWorkOrder || (isRecoveringRun && runRecoveryMode !== "fresh");
 	const gitWorktreeToggleDisabled = runControlsLocked || workspaceCapabilities.isLoading || !gitWorktreeAvailable;
 	const reviewControlsDisabled = runControlsLocked || skipReviewsAndValidations || runUntilAllApprove;
 	const skipToggleDisabled = runControlsLocked;
-	const canSubmit = isRecoveringRun ? canRetryRunStart : isRecoveringWorkOrder && workOrderRecoveryMode !== "fresh" ? true : canIssueWorkOrder;
+	const canSubmit = isCompleted || (isRecoveringRun ? canRetryRunStart : isRecoveringWorkOrder && workOrderRecoveryMode !== "fresh" ? true : canIssueWorkOrder);
 	const submitDisabled = isSubmitting || !canSubmit;
-	const submitLabel = isSubmitting
+	const submitLabel = isCompleted ? "Open Run" : isSubmitting
 	  ? "Dispatching..."
 	  : isRecoveringWorkOrder
 	    ? workOrderRecoveryMode !== "fresh"
@@ -1104,12 +1146,13 @@ function WorkOrderFormContent({ initialPlanningLineage, onDispatched, workspace 
 	            )}
 
             {dispatchSession && (isRecoveringWorkOrder || isRecoveringRun) && <details className="rounded-lg border border-border px-4 py-3 text-xs text-foreground-muted"><summary className="cursor-pointer font-medium">Recovery Details</summary><dl className="mt-3 grid gap-2"><dt>Request</dt><dd className="break-all font-mono">{isRecoveringRun ? dispatchSession.runKey : dispatchSession.workOrderKey}</dd><dt>Work Title</dt><dd>{dispatchSession.workOrderBody.work_order_title}</dd><dt>Original Model</dt><dd className="break-all font-mono">{dispatchSession.runRequest?.model_selection?.global?.model}</dd></dl></details>}
+            {isCompleted && <p role="status" className="text-sm text-foreground-muted">The run has already been created. Opening it will only clear this saved draft.</p>}
             {dispatchError && <div role="alert"><ErrorBanner message={dispatchError} /></div>}
             <div className="flex flex-wrap items-center gap-2 border-t border-border pt-6">
 	              <Button type="submit" disabled={submitDisabled}>
 	                {submitLabel}
               </Button>
-	              {!isPendingRecovery && !isReplayRecovery ? (
+	              {!isCompleted && !isPendingRecovery && !isReplayRecovery ? (
 	                <Button type="button" variant={secondaryActionVariant} onClick={secondaryActionHandler} disabled={isSubmitting}>
 	                  {secondaryActionLabel}
 	                </Button>
