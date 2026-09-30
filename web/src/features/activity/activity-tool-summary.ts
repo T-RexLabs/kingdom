@@ -22,6 +22,16 @@ export function activityToolSummary(item: ActivityItem): string {
   const name = item.toolName.toLowerCase();
   const action = actions[name] ?? item.toolName;
   if (["bash", "shell"].includes(name) && item.toolTitle && item.toolTitle.length <= 120 && !/[\r\n]/.test(item.toolTitle)) return item.toolTitle;
+  if (name === "glob") {
+    try {
+      const input: unknown = JSON.parse(item.inputContent?.preview ?? item.input ?? "");
+      if (input && typeof input === "object" && "pattern" in input && typeof input.pattern === "string") {
+        return `${action} ${input.pattern.split(/\r?\n/)[0]}`;
+      }
+    } catch {
+      // A bounded or absent input preview still has the provider's summary.
+    }
+  }
   if (["webfetch", "websearch", "glob", "grep"].includes(name)) return item.label.split(/\r?\n/)[0];
   if (!["read", "write", "edit"].includes(name)) return action;
   try {

@@ -50,6 +50,24 @@ afterEach(() => {
 });
 
 describe("compact activity preview", () => {
+  it("keeps recent real tool calls visible when routine phases follow, including after settlement", () => {
+    const tools: ActivityItem[] = ["glob", "read", "bash", "grep"].map((name, index) => ({
+      id: name, eventId: name, sequence: index + 1, kind: "tool", toolName: name,
+      toolStatus: name === "glob" ? "failed" : "completed", label: `Observed ${name}`,
+    }));
+    const view = render(<ActivityDisclosure {...props} items={[tools[0], { id: "phase", eventId: "phase", sequence: 5, kind: "progress", label: "Provider Step Completed" }]} />);
+    expect(screen.getByRole("list", { name: "Recent tool calls" })).toHaveTextContent("Observed glob");
+    expect(screen.getByText("Failed")).toBeVisible();
+    expect(screen.queryByText("Provider Step Completed")).not.toBeInTheDocument();
+    view.rerender(<ActivityDisclosure {...props} completionBehavior="keep-open" isLive={false} hasFinalResponse items={[...tools, { id: "phase", eventId: "phase", sequence: 5, kind: "progress", label: "Provider Step Completed" }]} />);
+    const list = screen.getByRole("list", { name: "Recent tool calls" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(3);
+    expect(list).not.toHaveTextContent("Observed glob");
+    expect(list).toHaveTextContent("Observed grep");
+    expect(screen.queryByText("Provider Step Completed")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", {name: "Show Activity"})).toBeVisible();
+  });
+
   it("keeps clipped reasoning readable without hidden keyboard links, while exact Markdown stays interactive", async () => {
     const view = render(
       <ActivityDisclosure
@@ -318,11 +336,8 @@ describe("compact activity preview", () => {
       name: "Provider activity preview",
     });
     expect(within(preview).queryByRole("status")).not.toBeInTheDocument();
-    expect(
-      within(preview)
-        .getByText(/Last Activity:/)
-        .closest("p"),
-    ).toHaveTextContent("Searching the route handler");
+    expect(within(preview).getByRole("list", { name: "Recent tool calls" })).toHaveTextContent("Searching the route handler");
+    expect(within(preview).getByText("Last Reported: Running")).toBeVisible();
     view.rerender(
       <ActivityDisclosure
         {...props}

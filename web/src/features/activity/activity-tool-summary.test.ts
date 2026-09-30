@@ -11,6 +11,9 @@ const tool = (overrides: Partial<ActivityItem>): ActivityItem => ({
   ...overrides,
 });
 describe("quiet tool summaries", () => {
+  it("shows the glob pattern without repeating its workspace path or failure status", () => {
+    expect(activityToolSummary(tool({ toolName: "glob", label: "glob failed for **/* in /private/workspace", input: '{"pattern":"**/*","path":"/private/workspace"}' }))).toBe("Find Files **/*");
+  });
   it.each(["webfetch", "websearch", "glob", "grep"])("preserves the real target or query in %s activity", (toolName) => {
     expect(activityToolSummary(tool({ toolName, label: "Searching the exact target" }))).toBe("Searching the exact target");
   });

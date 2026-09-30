@@ -1,4 +1,5 @@
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
+import { Wrench } from "lucide-react";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { useTextReveal } from "@/lib/use-text-reveal";
 import { ActivityChecklist } from "./activity-checklist";
@@ -49,7 +50,31 @@ export function ActivityPreview({
           </button>
         </p>
       )}
-      {preview.action ? (
+      {preview.tools.length > 0 && (
+        <ul aria-label="Recent tool calls" className="space-y-1">
+          {preview.tools.map((item) => (
+            <li
+              key={JSON.stringify([item.invocationId, item.id])}
+              className="flex min-w-0 items-start gap-2 py-1 text-xs text-foreground-muted"
+            >
+              <Wrench aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <p
+                role={isLive && preview.actionItem === item ? "status" : undefined}
+                title={activityToolSummary(item)}
+                className="min-w-0 flex-1 truncate"
+              >
+                {activityToolSummary(item)}
+              </p>
+              {item.toolStatus && (
+                <span className={`shrink-0 text-[11px] ${["failed", "error"].includes(item.toolStatus) ? "text-status-failed" : "text-foreground-subtle"}`}>
+                  {toolStateLabel(item.toolStatus, isLive)}
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {preview.action && !(preview.actionItem && preview.tools.includes(preview.actionItem)) ? (
         <p
           role={isLive ? "status" : undefined}
           className="truncate text-xs font-medium text-foreground-muted"
@@ -57,7 +82,7 @@ export function ActivityPreview({
           {!isLive && <span className="font-normal">Last Activity: </span>}
           {preview.action}
         </p>
-      ) : isLive ? (
+      ) : isLive && !preview.action ? (
         <p role="status" className="text-xs text-foreground-muted">
           Waiting for provider activity.
         </p>
@@ -114,15 +139,20 @@ function selectPreview(items: ActivityItem[]) {
   let remaining = REASONING_PREVIEW_CHARACTERS;
   let incomplete = false;
   let action: string | undefined;
-  let processing: string | undefined;
+  let progress: string | undefined;
+  let actionItem: ActivityItem | undefined;
+  const tools: ActivityItem[] = [];
   let checklist: ActivityItem | undefined;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = items[index];
-    if (!action && item.kind !== "message") {
-      if (item.kind === "progress" && item.label === "Processing")
-        processing = item.label;
-      else
-        action = item.kind === "tool" ? activityToolSummary(item) : item.label;
+    if (!progress && item.kind === "progress") progress = item.label;
+    if (!action && (item.kind === "tool" || item.kind === "thinking")) {
+      action = item.kind === "tool" ? activityToolSummary(item) : item.label;
+      actionItem = item;
+    }
+    if (item.kind === "tool" && tools.length < 3 &&
+      !["todowrite", "todoread"].includes(item.toolName?.toLowerCase() ?? "")) {
+      tools.unshift(item);
     }
     if (
       !checklist &&
@@ -161,7 +191,14 @@ function selectPreview(items: ActivityItem[]) {
   return {
     reasoning: reasoning.join("\n\n"),
     incomplete,
-    action: action ?? processing,
+    action: action ?? progress,
+    actionItem,
+    tools,
     checklist,
   };
+}
+
+function toolStateLabel(status: string, isLive: boolean): string {
+  const label = ({ pending: "Pending", running: "Running", completed: "Done", failed: "Failed", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] ?? status;
+  return !isLive && ["pending", "running"].includes(status) ? `Last Reported: ${label}` : label;
 }
