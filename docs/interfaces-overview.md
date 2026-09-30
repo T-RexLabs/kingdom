@@ -92,7 +92,7 @@ Capabilities:
 - set review and validation loop controls in **Review Options**
 - choose a global model
 - optionally expand **Customize Role Models** to set per-role model overrides
-- issue a work order directly or from a planning draft
+- issue a work order directly or from a planning draft; confirmed issuance clears the draft and opens the created run
 
 ### `Runs` (`/runs` and `/runs/{runId}`)
 
@@ -100,7 +100,7 @@ Run detail starts in **Workflow**, which displays the stored workflow DAG. The t
 
 - **Workflow**: actual topology, live execution state, and node selection.
 - **Agent Activity**: the selected agent and attempt's read-only conversation, provider reasoning, compact tool actions, and canonical final response. **Instructions** reads the complete immutable prompt body prepared for the selected attempt, without reconstructing it from the issued brief. **Final Response** appears when a canonical settled response exists and also remains inline in the conversation.
-- **View Plan**: the plan and its review history, with current approval/rework controls where applicable.
+- **View Plan**: a readable plan document with one scrolling surface, followed by operator guidance and current approval/rework controls where applicable.
 - **Run Files**: artifact downloads and publication results.
 - **Run Details**: the full issued work order, source context, inline settings, and audit history. Settings do not open a second dialog.
 
@@ -123,7 +123,7 @@ Activity semantics:
 
 When a stale provider process cannot be proven quiescent, Activity shows the attempt as paused and exposes **Retry Stop** only for its addressable guardian. That action requests one further bounded stop; it does not bypass quiescence, workspace restoration, or the cancellation handoff.
 
-**Run Files** includes bounded artifact provenance pages with canonical deliverable, audit evidence, and deletion distinctions. File downloads and **Download All** return complete stored content; the UI does not execute or preview arbitrary artifact bytes inline. Publication entry pages preserve structured path actions, results, and conflict reasons independently of execution settlement.
+**Run Files** defaults to **All** and supports producer-agent filtering across bounded pages. Compact file rows retain canonical deliverable, audit evidence, and deletion distinctions without raw provenance disclosures. File downloads and **Download All** return complete stored content; the UI does not execute or preview arbitrary artifact bytes inline. A separate **Publication Results** disclosure selects the exact attempt and preserves structured path actions, results, and conflict reasons independently of execution settlement.
 
 ### `Agents` (`/agents`)
 
