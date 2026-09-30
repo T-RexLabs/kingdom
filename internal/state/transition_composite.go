@@ -2486,27 +2486,11 @@ func (s *TransitionService) TerminalizeRunAndCancelLiveNodes(ctx context.Context
 	if strings.TrimSpace(transition.OccurredAt) == "" {
 		transition.OccurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin run terminalization transaction: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	if err := s.terminalizeRunAndCancelLiveNodesTx(ctx, tx, req); err != nil {
-		return err
-	}
-
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit run terminalization transaction: %w", err)
-	}
-	committed = true
-	return nil
+	req.Transition = transition
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		return s.terminalizeRunAndCancelLiveNodesTx(ctx, tx, req)
+	}, sqlitex.Options{})
+	return err
 }
 
 func (s *TransitionService) terminalizeRunAndCancelLiveNodesTx(ctx context.Context, tx *sql.Tx, req RunTerminalizationRequest) error {
