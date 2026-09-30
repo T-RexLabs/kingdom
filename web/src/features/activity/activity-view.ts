@@ -29,6 +29,12 @@ export type ActivityItem = {
   occurredAt?: string;
 };
 
+// Conversation history contains work, while canonical response readers own the
+// reply. Retain message observations in the model for storage and diagnostics.
+export function isConversationActivity(item: ActivityItem): boolean {
+  return item.kind === "thinking" || item.kind === "tool";
+}
+
 export type ActivitySourceEntry = {
   id: string;
   label: string;

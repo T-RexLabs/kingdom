@@ -36,7 +36,7 @@ import { RelativeTime } from "@/components/ui/relative-time";
 import { cn } from "@/lib/utils";
 import { useRecoverableMutation } from "@/lib/use-recoverable-mutation";
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { ArrowLeft, Shield, AlertTriangle, XCircle } from "lucide-react";
+import { ArrowLeft, Shield, AlertTriangle, XCircle, FileText, FolderOpen, Settings2 } from "lucide-react";
 import { Link } from "@tanstack/react-router";
 import { DAGVisualization } from "./dag-visualization";
 import { RunExecutionSurface } from "./run-execution-surface";
@@ -937,29 +937,38 @@ export function RunDetailPage() {
             </div>
             <nav
               aria-label="Run resources"
-              className="flex flex-wrap gap-x-5 text-xs text-foreground-muted"
+              className="flex flex-wrap gap-2"
             >
-              <button
+              <Button
                 type="button"
-                className="min-h-9 hover:text-foreground"
+                variant="outline"
+                size="sm"
+                className="min-h-9"
                 onClick={() => openPanel("plan")}
               >
+                <FileText aria-hidden="true" className="h-3.5 w-3.5" />
                 View Plan
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="min-h-9 hover:text-foreground"
+                variant="outline"
+                size="sm"
+                className="min-h-9"
                 onClick={() => openPanel("files")}
               >
+                <FolderOpen aria-hidden="true" className="h-3.5 w-3.5" />
                 Run Files
-              </button>
-              <button
+              </Button>
+              <Button
                 type="button"
-                className="min-h-9 hover:text-foreground"
+                variant="outline"
+                size="sm"
+                className="min-h-9"
                 onClick={() => openPanel("details")}
               >
+                <Settings2 aria-hidden="true" className="h-3.5 w-3.5" />
                 Run Details
-              </button>
+              </Button>
             </nav>
             <RunReworkSummary run={run} />
             <RunLiveStatus

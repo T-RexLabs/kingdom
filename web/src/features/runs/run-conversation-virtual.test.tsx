@@ -110,6 +110,8 @@ it("keeps the inline settled response outside virtual activity and resets its so
   expect(screen.queryByTestId("virtuoso-scroller")).not.toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Show Activity" }));
   const scroller = await screen.findByTestId("virtuoso-scroller");
+  expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
+  expect(screen.getAllByRole("heading", { name: "Canonical Result" })).toHaveLength(1);
   await waitFor(() =>
     expect(within(scroller).getByText("Tool 100")).toBeVisible(),
   );

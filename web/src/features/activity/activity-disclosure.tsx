@@ -4,7 +4,7 @@ import {
   ActivityHistory,
   type ActivityHistoryControls,
 } from "./activity-history";
-import type { ActivityItem } from "./activity-view";
+import { isConversationActivity, type ActivityItem } from "./activity-view";
 import { ActivityPreview } from "./activity-preview";
 
 type ActivityDisclosureProps = ActivityHistoryControls & {
@@ -40,7 +40,7 @@ function ScopedActivityDisclosure({
   };
   const panelId = useId();
   const visibleItems = useMemo(
-    () => history.items.filter((item) => item.kind !== "progress"),
+    () => history.items.filter(isConversationActivity),
     [history.items],
   );
   const hasHistory = visibleItems.length > 0 || history.gaps.length > 0;
@@ -108,7 +108,7 @@ function ScopedActivityDisclosure({
                 !isLoading &&
                 !readError && (
                   <p className="py-2 text-xs text-foreground-muted">
-                    No thinking, tool calls, or messages in the loaded activity.
+                    No thinking or tool calls in the loaded activity.
                   </p>
                 )}
               {hasHistory ? (

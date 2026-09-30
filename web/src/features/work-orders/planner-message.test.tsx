@@ -158,8 +158,7 @@ describe("PlannerMessageCard", () => {
     expect(screen.queryByRole("button", { name: "Hide Activity" })).not.toBeInTheDocument();
   });
 
-  it("keeps routine events and provider message copies behind explicit inspection", async () => {
-    const user = userEvent.setup();
+  it("omits provider message copies while retaining the canonical reply", () => {
     mockUseAcpRunActivity.mockReturnValue({
       data: {
         items: [
@@ -212,19 +211,7 @@ describe("PlannerMessageCard", () => {
     expect(
       screen.queryByText("Provider observed reply"),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "Show Activity" }));
-    expect(screen.queryByText("Provider Session Started")).not.toBeInTheDocument();
-    expect(
-      screen.queryByText("raw provider lifecycle detail"),
-    ).not.toBeInTheDocument();
-    await waitFor(() =>
-      expect(screen.getByText("Observed Provider Reply")).toBeVisible(),
-    );
-    expect(
-      screen.queryByText("Provider observed reply"),
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByText("Observed Provider Reply"));
-    expect(await screen.findByText("Provider observed reply")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Canonical reply")).toHaveLength(1);
   });
 

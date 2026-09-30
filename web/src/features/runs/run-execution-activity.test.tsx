@@ -92,6 +92,13 @@ describe("focused provider activity", () => {
     state.pending = false;
     state.historyProps.mockClear();
   });
+  it("explains a finished attempt with only hidden message observations and no settled reply", () => {
+    state.items = [{ ...observedThoughtAndTool()[0], kind: "message", label: "Provider Message" }];
+    render(<RunExecutionActivity runId="run" attemptId="a" status="cancelled" />);
+    expect(screen.getByText("No thinking, tool activity, or settled response is available for this attempt.")).toBeVisible();
+    expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+  });
   it("keeps the canonical response inline without routine lifecycle rows or view options", async () => {
     const absent = { availability: "not_provided" as const };
     state.items = [
@@ -345,7 +352,7 @@ describe("focused provider activity", () => {
     );
     expect(
       screen.getByText(
-        "No provider messages, thoughts, or tool activity were recorded for this attempt.",
+        "No thinking, tool activity, or settled response is available for this attempt.",
       ),
     ).toBeInTheDocument();
   });
@@ -365,12 +372,12 @@ describe("focused provider activity", () => {
     );
     expect(
       screen.getByText(
-        "No messages, thoughts, or tool calls appear in this loaded window. Open activity to load earlier history.",
+        "No thinking or tool calls appear in this loaded window. Open activity to load earlier history.",
       ),
     ).toBeInTheDocument();
     expect(
       screen.queryByText(
-        "No provider messages, thoughts, or tool activity were recorded for this attempt.",
+        "No thinking, tool activity, or settled response is available for this attempt.",
       ),
     ).not.toBeInTheDocument();
     state.gaps = [];

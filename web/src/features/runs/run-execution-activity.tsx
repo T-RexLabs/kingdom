@@ -4,6 +4,7 @@ import type { RunExecution, RunExecutionDetail } from "@/api/hooks";
 import {
   activityItemFromApi,
   buildActivityState,
+  isConversationActivity,
 } from "@/features/activity/activity-view";
 import { RunFinalResponse } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
@@ -65,15 +66,15 @@ function RunAttemptActivity({
       {!isRunning &&
         !durable.isLoading &&
         !durable.isError &&
-        !state.items.length &&
+        !state.items.some(isConversationActivity) &&
         !hasSettledResponse(detail) && (
           <p className="py-6 text-sm text-foreground-muted">
             {durable.gaps.length > 0
-              ? "No messages, thoughts, or tool calls appear in this loaded window. Open activity to load earlier history."
+              ? "No thinking or tool calls appear in this loaded window. Open activity to load earlier history."
               : isQueuedExecutionStatus(status)
                 ? "This attempt is queued. Provider activity will appear when it starts."
                 : hasFinished
-                  ? "No provider messages, thoughts, or tool activity were recorded for this attempt."
+                  ? "No thinking, tool activity, or settled response is available for this attempt."
                   : "No provider activity has been recorded yet."}
           </p>
         )}

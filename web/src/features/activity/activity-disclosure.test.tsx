@@ -1,5 +1,5 @@
 import { useState, type PropsWithChildren } from "react";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { VirtuosoMockContext } from "react-virtuoso";
@@ -85,7 +85,7 @@ describe("shared activity disclosure", () => {
     expect(screen.getByText("Saved provider thought")).toBeVisible();
   });
 
-  it("shows the real read and observed message without surrounding provider lifecycle rows", async () => {
+  it.each(["collapse", "keep-open"] as const)("omits provider message copies from %s activity while keeping tools", async (completionBehavior) => {
     const labels = [
       "Launching Provider",
       "Opening Session",
@@ -112,6 +112,7 @@ describe("shared activity disclosure", () => {
     render(
       <ActivityDisclosure {...settledPlanner}
         scopeKey="one-read"
+        completionBehavior={completionBehavior}
         items={items}
         gaps={[]}
         isLoadingMore={false}
@@ -123,8 +124,8 @@ describe("shared activity disclosure", () => {
     await userEvent.click(
       screen.getByRole("button", { name: "Show Activity" }),
     );
-    await waitFor(() => expect(screen.getByText("Read app.tsx")).toBeVisible());
-    expect(screen.getByText("Provider Message")).toBeVisible();
+    await waitFor(() => expect(within(screen.getByRole("region", { name: "Provider activity history" })).getByText("Read app.tsx")).toBeVisible());
+    expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
     for (const label of [
       "Launching Provider",
       "Opening Session",
@@ -134,7 +135,15 @@ describe("shared activity disclosure", () => {
     ]) {
       expect(screen.queryByText(label)).not.toBeInTheDocument();
     }
-    expect(document.querySelectorAll("[data-activity-event]")).toHaveLength(2);
+    expect(document.querySelectorAll("[data-activity-event]")).toHaveLength(1);
+  });
+
+  it.each(["collapse", "keep-open"] as const)("does not create an empty %s disclosure for message-only history", (completionBehavior) => {
+    render(<ActivityDisclosure {...settledPlanner} completionBehavior={completionBehavior}
+      scopeKey="messages-only" items={[{ id: "m", eventId: "m", sequence: 1, kind: "message", label: "Provider Message" }]}
+      gaps={[]} isLoadingMore={false} loadError={null} loadMore={vi.fn()} />, { wrapper: Wrapper });
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
   });
 
   it("omits the activity disclosure when the complete loaded history only contains routine progress", () => {
@@ -199,7 +208,7 @@ describe("shared activity disclosure", () => {
     );
     expect(
       screen.getByText(
-        "No thinking, tool calls, or messages in the loaded activity.",
+        "No thinking or tool calls in the loaded activity.",
       ),
     ).toBeVisible();
     await waitFor(() =>

@@ -1,7 +1,7 @@
 import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
 import type { PlannerMessageActivityState } from "./use-planner-message-activity";
 
-/** The persisted message tree owns the reply; provider messages are optional inspection. */
+/** The persisted message tree owns the reply; activity shows thinking and tools. */
 export function PlannerMessageActivity({
   scopeKey,
   activity,
