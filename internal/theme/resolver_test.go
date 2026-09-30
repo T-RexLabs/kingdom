@@ -1,0 +1,180 @@
+package theme
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	themecontract "kingdom/contracts/theme"
+)
+
+func resolverForTest(t *testing.T) *Resolver {
+	t.Helper()
+	r, err := NewResolver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+func draftForTest() map[string]any {
+	return map[string]any{"schemaVersion": 1, "resolverVersion": 1, "id": "custom", "version": "1.0.0", "name": "Custom", "base": map[string]any{"id": DefaultID, "version": "1.0.0"}}
+}
+func rawForTest(t *testing.T, value any) []byte {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return raw
+}
+func TestBuiltinsAndInheritedThemeAreComplete(t *testing.T) {
+	r := resolverForTest(t)
+	if len(r.Builtins()) != 4 {
+		t.Fatal("expected all four themes")
+	}
+	for _, p := range r.Builtins() {
+		t.Run(p.Manifest.ID, func(t *testing.T) {
+			if len(p.Manifest.Identities) != 14 {
+				t.Fatal("role catalog incomplete")
+			}
+			if p.Manifest.Base != nil {
+				t.Fatal("built-in must be independent")
+			}
+			if _, err := r.Resolve(rawForTest(t, p.Manifest), nil); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	p, err := r.Resolve(rawForTest(t, draftForTest()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Manifest.Icons["role.builder"] == "" || p.Manifest.Typography.Body == "" {
+		t.Fatal("inheritance incomplete")
+	}
+	raw, err := themecontract.Files.ReadFile("fixtures/harbor-workshop.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = r.Resolve(raw, nil); err != nil {
+		t.Fatal(err)
+	}
+}
+func TestThemeInputBoundaries(t *testing.T) {
+	r := resolverForTest(t)
+	tests := map[string]func(map[string]any){
+		"voice":         func(m map[string]any) { m["voice"] = "pirate" },
+		"runtime":       func(m map[string]any) { m["runtime"] = map[string]any{"model": "anything"} },
+		"css":           func(m map[string]any) { m["css"] = "body {}" },
+		"unknown token": func(m map[string]any) { m["tokens"] = map[string]string{"gold": "#112233"} },
+		"unknown role":  func(m map[string]any) { m["identities"] = map[string]any{"king": map[string]string{"name": "King"}} },
+		"second icon source": func(m map[string]any) {
+			m["identities"] = map[string]any{"builder": map[string]string{"icon": "lucide:hammer"}}
+		},
+		"unknown icon":    func(m map[string]any) { m["icons"] = map[string]string{"role.builder": "lucide:not-a-real-symbol"} },
+		"unknown font":    func(m map[string]any) { m["typography"] = map[string]string{"body": "bundled:remote-font"} },
+		"missing base":    func(m map[string]any) { m["base"] = map[string]string{"id": DefaultID, "version": "99.0.0"} },
+		"incomplete root": func(m map[string]any) { delete(m, "base") },
+		"invisible text":  func(m map[string]any) { m["tokens"] = map[string]string{"text.primary": "#0d1110"} },
+		"empty name":      func(m map[string]any) { m["name"] = "   " },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			m := draftForTest()
+			mutate(m)
+			_, err := r.Resolve(rawForTest(t, m), nil)
+			var validation *ValidationError
+			if !errors.As(err, &validation) {
+				t.Fatalf("expected validation error, got %v", err)
+			}
+		})
+	}
+	for _, raw := range [][]byte{[]byte(`{"schemaVersion":1,"schemaVersion":2}`), []byte(`{} {}`), []byte{'{', '"', 'x', '"', ':', '"', 0xff, '"', '}'}} {
+		if _, err := r.Resolve(raw, nil); err == nil {
+			t.Fatal("ambiguous/invalid JSON accepted")
+		}
+	}
+}
+func TestPaletteKeepsExplicitOverridesAndResolvedIdentity(t *testing.T) {
+	r := resolverForTest(t)
+	m := draftForTest()
+	m["palette"] = map[string]string{"accent": "#65bac5"}
+	m["tokens"] = map[string]string{"chart.grid": "#182f32"}
+	p, err := r.Resolve(rawForTest(t, m), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Manifest.Tokens["accent.base"] != "#65bac5" || p.Manifest.Tokens["chart.grid"] != "#182f32" {
+		t.Fatal("wrong override order")
+	}
+	flattened, err := r.Resolve(rawForTest(t, p.Manifest), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if flattened.ResolvedDigest != p.ResolvedDigest {
+		t.Fatal("flattening changed revision identity")
+	}
+	spaced := append([]byte("\n  "), rawForTest(t, m)...)
+	other, err := r.Resolve(spaced, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SourceDigest == other.SourceDigest || p.ResolvedDigest != other.ResolvedDigest {
+		t.Fatal("source and resolved identity conflated")
+	}
+	// Returned data is not a mutable reference into the built-in registry.
+	p.Manifest.Icons["role.builder"] = "lucide:circle"
+	next, err := r.Resolve(rawForTest(t, draftForTest()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if next.Manifest.Icons["role.builder"] == "lucide:circle" {
+		t.Fatal("mutable built-in leaked")
+	}
+}
+
+const safeSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M2 3 L20 21" fill="none" stroke="currentColor" stroke-width="2"/></svg>`
+
+func assetDraft(path string) map[string]any {
+	m := draftForTest()
+	m["assets"] = map[string]any{"tool": Asset{Path: path, MediaType: "image/svg+xml"}}
+	m["icons"] = map[string]string{"role.builder": "asset:tool"}
+	return m
+}
+func TestAssetReferencesAndDigestIgnoreIncidentalPaths(t *testing.T) {
+	r := resolverForTest(t)
+	m := assetDraft("assets/tool.svg")
+	p, err := r.Resolve(rawForTest(t, m), map[string][]byte{"assets/tool.svg": []byte(safeSVG)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved, err := r.Resolve(rawForTest(t, assetDraft("assets/another-name.svg")), map[string][]byte{"assets/another-name.svg": []byte(safeSVG)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.ResolvedDigest != moved.ResolvedDigest || p.SourceDigest == moved.SourceDigest {
+		t.Fatal("digest depends on archive path")
+	}
+	for _, files := range []map[string][]byte{nil, {"assets/tool.svg": []byte(safeSVG), "secret": []byte("no")}, {"assets/tool.svg": bytes.Repeat([]byte("x"), MaxAssetBytes+1)}} {
+		if _, err := r.Resolve(rawForTest(t, m), files); err == nil {
+			t.Fatal("invalid asset set accepted")
+		}
+	}
+	for _, svg := range []string{`<svg viewBox="0 0 24 24" onload="alert(1)"/>`, `<svg viewBox="0 0 24 24"><script>alert(1)</script></svg>`, `<svg viewBox="0 0 24 24"><use href="https://example.com/x"/></svg>`, `<!DOCTYPE svg [<!ENTITY x SYSTEM "file:///etc/passwd">]><svg viewBox="0 0 24 24">&x;</svg>`, `<svg viewBox="0 0 24 24"><path d="M0 0" fill="url(https://example.com)"/></svg>`, `<svg viewBox="0 0 24 24"><foreignObject/></svg>`, `<svg viewBox="0 0 24 24"><path style="fill:red"/></svg>`} {
+		if _, err := r.Resolve(rawForTest(t, m), map[string][]byte{"assets/tool.svg": []byte(svg)}); err == nil {
+			t.Fatalf("unsafe SVG accepted: %s", svg)
+		}
+	}
+}
+
+func TestBuiltinTokensMatchCanonicalPaletteResolver(t *testing.T) {
+	r := resolverForTest(t)
+	for _, p := range r.Builtins() {
+		for key, expected := range derivePalette(p.Manifest.Palette) {
+			if p.Manifest.Tokens[key] != expected {
+				t.Errorf("%s token %s = %s, canonical palette resolves %s", p.Manifest.ID, key, p.Manifest.Tokens[key], expected)
+			}
+		}
+	}
+}

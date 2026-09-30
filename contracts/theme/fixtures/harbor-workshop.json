@@ -1,0 +1,38 @@
+{
+  "$schema": "../theme.schema.json",
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "harbor-workshop",
+  "version": "1.0.0",
+  "name": "Harbor Workshop",
+  "description": "A custom maritime presentation based on Nautilus.",
+  "base": {
+    "id": "nautilus",
+    "version": "1.0.0"
+  },
+  "palette": {
+    "accent": "#236575"
+  },
+  "typography": {
+    "body": "bundled:system-sans",
+    "display": "bundled:system-serif",
+    "mono": "bundled:system-mono"
+  },
+  "icons": {
+    "nav.planning": "lucide:compass",
+    "role.builder": "lucide:wrench",
+    "work-order": "lucide:map"
+  },
+  "identities": {
+    "builder": {
+      "name": "Chief Engineer",
+      "description": "Implements and verifies approved work.",
+      "lore": "Turns a clear course into a seaworthy result."
+    }
+  },
+  "copy": {
+    "workOrder.singular": "Mission",
+    "workOrder.plural": "Missions",
+    "brand.tagline": "A steady course. A capable crew."
+  }
+}

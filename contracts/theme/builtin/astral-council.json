@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "astral-council",
+  "version": "1.0.0",
+  "name": "Astral Council",
+  "description": "A thoughtful council among the stars.",
+  "colorScheme": "dark",
+  "palette": {
+    "canvas": "#13111e",
+    "surface": "#211d30",
+    "text": "#f0eafb",
+    "accent": "#c7abfa"
+  },
+  "tokens": {
+    "canvas": "#13111e",
+    "surface.base": "#211d30",
+    "surface.inset": "#191625",
+    "surface.elevated": "#2a2639",
+    "surface.overlay": "#2f2b3e",
+    "text.primary": "#f0eafb",
+    "text.secondary": "#bfbaca",
+    "text.subtle": "#a39eae",
+    "text.inverse": "#000000",
+    "border.default": "#4f4a5d",
+    "border.strong": "#898496",
+    "accent.base": "#c7abfa",
+    "accent.hover": "#ccb3fa",
+    "accent.pressed": "#ae95db",
+    "accent.foreground": "#000000",
+    "accent.subtle": "#352e48",
+    "focus.ring": "#c7abfa",
+    "focus.offset": "#211d30",
+    "selection.background": "#c7abfa",
+    "selection.foreground": "#000000",
+    "control.disabledBackground": "#1a1727",
+    "control.disabledForeground": "#898496",
+    "code.background": "#13111e",
+    "code.foreground": "#f0eafb",
+    "tool.background": "#1e1a2c",
+    "tool.border": "#4f4a5d",
+    "chart.axis": "#bfbaca",
+    "chart.grid": "#403c4e",
+    "dag.edge": "#9c98a7",
+    "dag.edgeCompleted": "#c7abfa",
+    "dag.edgeActive": "#c7abfa",
+    "dag.nodeActiveBackground": "#322b44",
+    "status.neutral.background": "#2a283a",
+    "status.neutral.foreground": "#86929c",
+    "status.neutral.border": "#7b8993",
+    "status.running.background": "#242843",
+    "status.running.foreground": "#4b91f0",
+    "status.running.border": "#438cef",
+    "status.attention.background": "#33292f",
+    "status.attention.foreground": "#d99325",
+    "status.attention.border": "#d99325",
+    "status.succeeded.background": "#222a37",
+    "status.succeeded.foreground": "#2aa372",
+    "status.succeeded.border": "#28a271",
+    "status.failed.background": "#342335",
+    "status.failed.foreground": "#e16b73",
+    "status.failed.border": "#dd555e",
+    "status.cancelled.background": "#2d253f",
+    "status.cancelled.foreground": "#a480cb",
+    "status.cancelled.border": "#9970c5",
+    "status.rework.background": "#31243c",
+    "status.rework.foreground": "#c874ae",
+    "status.rework.border": "#c265a5",
+    "chart.category1": "#c7abfa",
+    "chart.category2": "#438cef",
+    "chart.category3": "#28a271",
+    "chart.category4": "#9970c5",
+    "chart.category5": "#d99325",
+    "chart.category6": "#c265a5",
+    "chart.category7": "#39a6ab",
+    "chart.category8": "#dd555e"
+  },
+  "typography": {
+    "body": "bundled:dm-sans",
+    "display": "bundled:instrument-serif",
+    "mono": "bundled:jetbrains-mono",
+    "bodyWeight": 400,
+    "headingWeight": 400
+  },
+  "surfaces": {
+    "radius": 10,
+    "borderWidth": 1,
+    "elevation": "soft",
+    "ornamentation": "balanced"
+  },
+  "icons": {
+    "nav.overview": "lucide:orbit",
+    "nav.planning": "lucide:book-open",
+    "nav.runs": "lucide:workflow",
+    "nav.agents": "lucide:users-round",
+    "nav.analytics": "lucide:chart-no-axes-combined",
+    "nav.connections": "lucide:link",
+    "nav.appearance": "lucide:palette",
+    "work-order": "lucide:file-text",
+    "node.work-intake": "lucide:inbox",
+    "node.advisor-consultation": "lucide:messages-square",
+    "node.advisory-synthesis": "lucide:combine",
+    "node.plan-drafting": "lucide:notebook-pen",
+    "node.plan-decision": "lucide:circle-check",
+    "node.execution-kickoff": "lucide:play",
+    "node.implementation": "lucide:hammer",
+    "node.execution-review": "lucide:shield-check",
+    "node.quality-validation": "lucide:scan-eye",
+    "node.security-validation": "lucide:moon",
+    "node.completion": "lucide:circle-check-big",
+    "brand": "lucide:orbit",
+    "role.operator": "lucide:orbit",
+    "role.governance": "lucide:sparkles",
+    "role.coordinator": "lucide:network",
+    "role.plan-author": "lucide:map",
+    "role.architecture-advisor": "lucide:telescope",
+    "role.risk-advisor": "lucide:shield",
+    "role.systems-advisor": "lucide:gem",
+    "role.usability-advisor": "lucide:footprints",
+    "role.builder": "lucide:hammer",
+    "role.reviewer": "lucide:shield-check",
+    "role.qa-validator": "lucide:scan-eye",
+    "role.security-validator": "lucide:moon",
+    "role.resilience-validator": "lucide:zap",
+    "role.planning-assistant": "lucide:book-open"
+  },
+  "identities": {
+    "operator": {
+      "name": "Pathfinder",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "governance": {
+      "name": "Council",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "coordinator": {
+      "name": "Envoy",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "plan-author": {
+      "name": "Starmapper",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "architecture-advisor": {
+      "name": "Astronomer",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "risk-advisor": {
+      "name": "Warden",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "systems-advisor": {
+      "name": "Steward",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "usability-advisor": {
+      "name": "Wayfarer",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "builder": {
+      "name": "Artificer",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "reviewer": {
+      "name": "Sentinel",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "qa-validator": {
+      "name": "Observer",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "security-validator": {
+      "name": "Watcher",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "resilience-validator": {
+      "name": "Trickster",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    },
+    "planning-assistant": {
+      "name": "Archivist",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "A voice in the council, guided by evidence and a shared destination."
+    }
+  },
+  "copy": {
+    "overview.welcome": "Clear intent. Observable progress.",
+    "planning.emptyTitle": "Start with an Idea",
+    "planning.emptyDescription": "Describe the outcome you want. Work through the details, then turn the conversation into a plan.",
+    "agents.heading": "The Council",
+    "appearance.description": "Choose the world your work lives in.",
+    "workOrder.singular": "Quest",
+    "workOrder.plural": "Quests",
+    "brand.tagline": "Shared intent. New horizons."
+  },
+  "artwork": {},
+  "assets": {}
+}

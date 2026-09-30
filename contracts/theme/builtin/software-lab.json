@@ -1,0 +1,211 @@
+{
+  "schemaVersion": 1,
+  "resolverVersion": 1,
+  "id": "software-lab",
+  "version": "1.0.0",
+  "name": "Software Lab",
+  "description": "Clear thinking and precise tools.",
+  "colorScheme": "light",
+  "palette": {
+    "canvas": "#f4f6fa",
+    "surface": "#ffffff",
+    "text": "#172235",
+    "accent": "#235fe0"
+  },
+  "tokens": {
+    "canvas": "#f4f6fa",
+    "surface.base": "#ffffff",
+    "surface.inset": "#f8fafc",
+    "surface.elevated": "#f5f5f6",
+    "surface.overlay": "#eff0f1",
+    "text.primary": "#172235",
+    "text.secondary": "#485160",
+    "text.subtle": "#5c6370",
+    "text.inverse": "#ffffff",
+    "border.default": "#ccced3",
+    "border.strong": "#797e86",
+    "accent.base": "#235fe0",
+    "accent.hover": "#2258cb",
+    "accent.pressed": "#3e71dd",
+    "accent.foreground": "#ffffff",
+    "accent.subtle": "#e5ecfb",
+    "focus.ring": "#235fe0",
+    "focus.offset": "#ffffff",
+    "selection.background": "#235fe0",
+    "selection.foreground": "#ffffff",
+    "control.disabledBackground": "#fafbfd",
+    "control.disabledForeground": "#8b919a",
+    "code.background": "#f4f6fa",
+    "code.foreground": "#172235",
+    "tool.background": "#fcfdfe",
+    "tool.border": "#ccced3",
+    "chart.axis": "#485160",
+    "chart.grid": "#dcdee1",
+    "dag.edge": "#6b7380",
+    "dag.edgeCompleted": "#235fe0",
+    "dag.edgeActive": "#235fe0",
+    "dag.nodeActiveBackground": "#e9effc",
+    "status.neutral.background": "#f2f3f4",
+    "status.neutral.foreground": "#657079",
+    "status.neutral.border": "#7b8993",
+    "status.running.background": "#ecf4fd",
+    "status.running.foreground": "#356fbd",
+    "status.running.border": "#438cef",
+    "status.attention.background": "#fbf4e9",
+    "status.attention.foreground": "#96651a",
+    "status.attention.border": "#c88722",
+    "status.succeeded.background": "#eaf6f1",
+    "status.succeeded.foreground": "#1f7e58",
+    "status.succeeded.border": "#28a271",
+    "status.failed.background": "#fceeef",
+    "status.failed.foreground": "#ba474f",
+    "status.failed.border": "#dd555e",
+    "status.cancelled.background": "#f5f1f9",
+    "status.cancelled.foreground": "#825fa7",
+    "status.cancelled.border": "#9970c5",
+    "status.rework.background": "#f9f0f6",
+    "status.rework.foreground": "#a15489",
+    "status.rework.border": "#c265a5",
+    "chart.category1": "#235fe0",
+    "chart.category2": "#438cef",
+    "chart.category3": "#28a271",
+    "chart.category4": "#9970c5",
+    "chart.category5": "#c88722",
+    "chart.category6": "#c265a5",
+    "chart.category7": "#38a3a8",
+    "chart.category8": "#dd555e"
+  },
+  "typography": {
+    "body": "bundled:dm-sans",
+    "display": "bundled:dm-sans",
+    "mono": "bundled:jetbrains-mono",
+    "bodyWeight": 400,
+    "headingWeight": 600
+  },
+  "surfaces": {
+    "radius": 10,
+    "borderWidth": 1,
+    "elevation": "soft",
+    "ornamentation": "minimal"
+  },
+  "icons": {
+    "nav.overview": "lucide:flask-conical",
+    "nav.planning": "lucide:messages-square",
+    "nav.runs": "lucide:workflow",
+    "nav.agents": "lucide:users-round",
+    "nav.analytics": "lucide:chart-no-axes-combined",
+    "nav.connections": "lucide:link",
+    "nav.appearance": "lucide:palette",
+    "work-order": "lucide:file-text",
+    "node.work-intake": "lucide:inbox",
+    "node.advisor-consultation": "lucide:messages-square",
+    "node.advisory-synthesis": "lucide:combine",
+    "node.plan-drafting": "lucide:notebook-pen",
+    "node.plan-decision": "lucide:circle-check",
+    "node.execution-kickoff": "lucide:play",
+    "node.implementation": "lucide:code-xml",
+    "node.execution-review": "lucide:git-pull-request",
+    "node.quality-validation": "lucide:test-tube-diagonal",
+    "node.security-validation": "lucide:scan-face",
+    "node.completion": "lucide:circle-check-big",
+    "brand": "lucide:flask-conical",
+    "role.operator": "lucide:user-round",
+    "role.governance": "lucide:workflow",
+    "role.coordinator": "lucide:network",
+    "role.plan-author": "lucide:clipboard-list",
+    "role.architecture-advisor": "lucide:blocks",
+    "role.risk-advisor": "lucide:shield-alert",
+    "role.systems-advisor": "lucide:gauge",
+    "role.usability-advisor": "lucide:accessibility",
+    "role.builder": "lucide:code-xml",
+    "role.reviewer": "lucide:git-pull-request",
+    "role.qa-validator": "lucide:test-tube-diagonal",
+    "role.security-validator": "lucide:scan-face",
+    "role.resilience-validator": "lucide:activity",
+    "role.planning-assistant": "lucide:messages-square"
+  },
+  "identities": {
+    "operator": {
+      "name": "Operator",
+      "description": "Issues work and makes human approval decisions.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "governance": {
+      "name": "Governance",
+      "description": "Records runtime-owned plan decisions and completion.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "coordinator": {
+      "name": "Coordinator",
+      "description": "Synthesizes advisory perspectives and coordinates clear handoffs.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "plan-author": {
+      "name": "Plan Author",
+      "description": "Turns intent into an execution-ready plan and refines rework.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "architecture-advisor": {
+      "name": "Architecture Advisor",
+      "description": "Advises on functional, architectural and contract fit.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "risk-advisor": {
+      "name": "Risk Advisor",
+      "description": "Advises on security, trust boundaries, resilience and risk.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "systems-advisor": {
+      "name": "Systems Advisor",
+      "description": "Advises on performance, scalability, efficiency and maintainability.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "usability-advisor": {
+      "name": "Usability Advisor",
+      "description": "Advises on usability, operability and support burden.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "builder": {
+      "name": "Builder",
+      "description": "Implements the approved plan and verifies the resulting changes.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "reviewer": {
+      "name": "Reviewer",
+      "description": "Reviews implementation against the work brief and approved plan.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "qa-validator": {
+      "name": "QA Validator",
+      "description": "Validates functional behavior, tests and requirement coverage.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "security-validator": {
+      "name": "Security Validator",
+      "description": "Validates security posture and reported security concerns.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "resilience-validator": {
+      "name": "Resilience Validator",
+      "description": "Validates recovery, chaos and failure-mode behavior.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    },
+    "planning-assistant": {
+      "name": "Planning Assistant",
+      "description": "Helps clarify intent and produce a reviewable plan in conversation.",
+      "lore": "A specialist in the lab, making progress visible and dependable."
+    }
+  },
+  "copy": {
+    "overview.welcome": "Clear intent. Observable progress.",
+    "planning.emptyTitle": "Start with an Idea",
+    "planning.emptyDescription": "Describe the outcome you want. Work through the details, then turn the conversation into a plan.",
+    "agents.heading": "The Lab Team",
+    "appearance.description": "Choose the world your work lives in.",
+    "workOrder.singular": "Task",
+    "workOrder.plural": "Tasks",
+    "brand.tagline": "Clear intent. Reliable execution."
+  },
+  "artwork": {},
+  "assets": {}
+}
