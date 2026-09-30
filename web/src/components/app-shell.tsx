@@ -190,17 +190,17 @@ function SidebarContent() {
             aria-hidden="true"
             className={cn(
               "h-1.5 w-1.5 rounded-full",
-              health.data?.status === "ok"
-                ? "bg-status-succeeded"
-                : health.isError
-                  ? "bg-status-failed"
+              health.isError
+                ? "bg-status-failed"
+                : health.data?.status === "ok"
+                  ? "bg-status-succeeded"
                   : "bg-foreground-subtle",
             )}
           />
-          {health.data?.status === "ok"
-            ? "Local Runtime"
-            : health.isError
-              ? "Runtime Unavailable"
+          {health.isError
+            ? "Runtime Unavailable"
+            : health.data?.status === "ok"
+              ? "Local Runtime"
               : "Connecting…"}
         </div>
         <p className="text-xs leading-relaxed text-foreground-subtle">

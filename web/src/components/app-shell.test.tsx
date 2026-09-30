@@ -5,6 +5,7 @@ import { AppShell } from "./app-shell";
 
 let routerLocation = { pathname: "/runs" };
 let previewing = false;
+let healthError = false;
 const cancelPreview = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -22,7 +23,7 @@ vi.mock("@tanstack/react-router", () => ({
   useRouterState: () => ({ location: routerLocation }),
 }));
 vi.mock("@/api/hooks", () => ({
-  useHealth: () => ({ data: { status: "ok" } }),
+  useHealth: () => ({ data: { status: "ok" }, isError: healthError }),
   useWorkspaceCapabilities: () => ({
     data: { project_root: "/projects/Atlas" },
   }),
@@ -54,6 +55,7 @@ describe("app shell", () => {
   beforeEach(() => {
     routerLocation = { pathname: "/runs" };
     previewing = false;
+    healthError = false;
     cancelPreview.mockClear();
   });
   it("keeps navigation stable across themes and appearance in settings", () => {
@@ -74,6 +76,14 @@ describe("app shell", () => {
     );
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
+  });
+  it("does not claim the runtime is healthy after a failed refresh", () => {
+    const view = render(<AppShell>content</AppShell>);
+    expect(screen.getByText("Local Runtime")).toBeInTheDocument();
+    healthError = true;
+    view.rerender(<AppShell>content</AppShell>);
+    expect(screen.getByText("Runtime Unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Local Runtime")).not.toBeInTheDocument();
   });
   it("closes the mobile drawer on navigation and restores focus", async () => {
     const user = userEvent.setup();

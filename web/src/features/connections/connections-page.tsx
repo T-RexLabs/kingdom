@@ -1500,7 +1500,7 @@ export function ConnectionsPage() {
               busy={!!operation}
               onBlocked={reportSetupWindowBlocked}
             />
-            {setupOptions.shared_enabled && manifestFlowLive ? (
+            {manifestFlowLive ? (
               <div className="flex flex-wrap gap-2">
                 <Button
                   type="button"

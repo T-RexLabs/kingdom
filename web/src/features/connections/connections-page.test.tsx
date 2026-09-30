@@ -1142,14 +1142,14 @@ describe("ConnectionsPage", () => {
     expect(assign).not.toHaveBeenCalled();
   });
 
-  it("never auto-opens private setup and lets an unfinished flow be resumed or abandoned", async () => {
+  it.each([true, false])("never auto-opens private setup and permits resume/abandon with shared setup %s", async (sharedEnabled) => {
     let discardMethod = "";
     let discardKey = "";
     let currentFlowRequests = 0;
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith("/connections") && (!init?.method || init.method === "GET")) return json({ items: [] });
-      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: true });
+      if (url.endsWith("/connections/github/setup-options")) return json({ shared_enabled: sharedEnabled });
       if (url.endsWith("/connections/github/manifest-flows") && (!init?.method || init.method === "GET")) {
         currentFlowRequests++;
         return json({ flow_id: "flow-1234567890123456", stage: "awaiting_app_creation", expires_at: "2099-08-15T13:00:00Z" });
