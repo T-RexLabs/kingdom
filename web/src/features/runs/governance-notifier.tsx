@@ -128,7 +128,7 @@ function removeStaleGovernanceNotifications<TNotification>(
 }
 
 function summaryMessage(summary: PendingGovernanceSummary) {
-	const latestLabel = summary.latestRun.decree_title || summary.latestRun.run_id;
+	const latestLabel = summary.latestRun.work_order_title || summary.latestRun.run_id;
 	if (summary.items.length === 1) {
 		return latestLabel;
 	}
@@ -221,9 +221,13 @@ export function GovernanceNotifierMount() {
 			writeDismissed(latest);
 		};
 		const action = {
-			label: "Open Runs",
+			label: summary.items.length === 1 ? "Open Run" : "Open Runs",
 			onClick: () => {
-				void navigate({ to: "/runs" });
+				if (summary.items.length === 1) {
+					void navigate({ to: "/runs/$runId", params: { runId: summary.items[0].run.run_id } });
+				} else {
+					void navigate({ to: "/runs" });
+				}
 			},
 		};
 		if (!existing) {

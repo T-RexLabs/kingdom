@@ -6,6 +6,7 @@ import { AppShell } from "./app-shell";
 let routerLocation = { pathname: "/runs" };
 let previewing = false;
 let healthError = false;
+let themeError: string | null = null;
 const cancelPreview = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
   Link: ({
@@ -33,6 +34,7 @@ vi.mock("@/theme", () => ({
     <span aria-hidden="true" data-icon={slot} />
   ),
   useTheme: () => ({
+    error: themeError,
     isPreviewing: previewing,
     cancelPreview,
     theme: { name: "My Theme", copy: { "brand.tagline": "Clear intent." } },
@@ -56,6 +58,7 @@ describe("app shell", () => {
     routerLocation = { pathname: "/runs" };
     previewing = false;
     healthError = false;
+    themeError = null;
     cancelPreview.mockClear();
   });
   it("keeps navigation stable across themes and appearance in settings", () => {
@@ -84,6 +87,16 @@ describe("app shell", () => {
     view.rerender(<AppShell>content</AppShell>);
     expect(screen.getByText("Runtime Unavailable")).toBeInTheDocument();
     expect(screen.queryByText("Local Runtime")).not.toBeInTheDocument();
+  });
+  it("exposes theme fallback from work screens without repeating the appearance error", () => {
+    themeError = "Your selected theme is unavailable. Your saved preference is preserved.";
+    const view = render(<AppShell>current work</AppShell>);
+    expect(screen.getByRole("alert")).toHaveTextContent(themeError);
+    expect(screen.getByRole("link", { name: "Review Appearance" })).toHaveAttribute("href", "/appearance");
+    expect(screen.getByText("current work")).toBeInTheDocument();
+    routerLocation = { pathname: "/appearance" };
+    view.rerender(<AppShell>appearance controls</AppShell>);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
   it("closes the mobile drawer on navigation and restores focus", async () => {
     const user = userEvent.setup();

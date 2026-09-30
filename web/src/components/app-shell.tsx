@@ -24,7 +24,7 @@ const secondaryNavigation = [
 export function AppShell({ children }: { children: ReactNode }) {
   const { location } = useRouterState();
   const { helpOpen, closeHelp, shortcuts, pendingG } = useKeyboardShortcuts();
-  const { isPreviewing, cancelPreview, theme } = useTheme();
+  const { isPreviewing, cancelPreview, theme, error: themeError } = useTheme();
   const [openAt, setOpenAt] = useState<object | null>(null);
   const menuRef = useRef<HTMLButtonElement>(null);
   const mobileOpen = openAt === location;
@@ -82,6 +82,14 @@ export function AppShell({ children }: { children: ReactNode }) {
                 Exit Preview
               </button>
             </div>
+          </div>
+        )}
+        {themeError && !location.pathname.startsWith("/appearance") && (
+          <div role="alert" className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-border bg-surface px-page py-2 text-sm">
+            <span>{themeError}</span>
+            <Link to="/appearance" className="text-accent underline underline-offset-4">
+              Review Appearance
+            </Link>
           </div>
         )}
         <main
