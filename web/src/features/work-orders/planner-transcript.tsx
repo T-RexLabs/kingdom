@@ -430,7 +430,7 @@ export function PlannerTranscript({
       <Virtuoso
         ref={virtuosoRef}
         scrollerRef={setVirtuosoScroller}
-        className="flex-1 min-h-0 overflow-x-hidden py-4"
+        className="flex-1 min-h-0 overflow-x-hidden pt-4 pb-2"
         alignToBottom
         data={items}
         totalCount={Math.max(totalCount, firstItemIndex + items.length)}

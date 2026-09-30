@@ -29,6 +29,17 @@ vi.mock("@/api/hooks", async () => {
 });
 
 describe("PlannerMessageCard", () => {
+  it("does not reserve timestamp metadata beneath a live assistant response", () => {
+    const { container } = render(<PlannerMessageCard message={{ planning_message_id: "live", planning_session_id: "s", role: "assistant", content_markdown: "", created_at: "2026-06-12T10:00:00Z" }} isStreaming />);
+    expect(container.querySelector(".text-\\[10px\\]")).not.toBeInTheDocument();
+  });
+
+  it("keeps completed reply actions and time in one compact metadata row", () => {
+    const { container } = render(<PlannerMessageCard message={{ planning_message_id: "done", planning_session_id: "s", role: "assistant", content_markdown: "Done", created_at: "2026-06-12T10:00:00Z" }} onRegenerate={() => {}} />);
+    const timestamp = container.querySelector("time");
+    expect(timestamp).toHaveAttribute("datetime", "2026-06-12T10:00:00Z");
+    expect(timestamp?.parentElement).toContainElement(screen.getByRole("button", { name: "Regenerate reply" }));
+  });
   let restoreGeometry: () => void;
   beforeEach(() => {
     restoreGeometry = mockActivityScrollGeometry();

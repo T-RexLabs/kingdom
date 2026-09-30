@@ -150,36 +150,31 @@ export function PlannerMessageCard({
               </>
             )}
           </div>
-          {isAssistant ? (
-            hasVariants || showRegenerate ? (
-              <div className="flex items-center gap-1.5 opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100">
-                {hasVariants ? (
-                  <PlannerVariantNavigator
-                    sessionId={sessionId}
-                    messageId={message.planning_message_id}
-                    currentVariantIndex={currentVariantIndex}
-                    variantCount={variantCount}
-                    onActivateVariant={onActivateVariant}
-                  />
-                ) : null}
-                {showRegenerate ? (
-                  <button
-                    type="button"
-                    onClick={onRegenerate}
-                    aria-label="Regenerate reply"
-                    className="flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-surface-raised/80 text-foreground-subtle transition-colors hover:border-accent/40 hover:text-accent"
-                  >
-                    <RefreshCw className="h-3 w-3" />
-                  </button>
-                ) : null}
-              </div>
-            ) : null
-          ) : !isProcessing && onEdit ? (
-            <PlannerEditAction onEdit={onEdit} />
-          ) : null}
-          <span className="block text-[10px] text-foreground-subtle/0 transition-colors group-hover:text-foreground-subtle/70">
-            {formatTimestamp(message.created_at)}
-          </span>
+          {!isAssistantStreaming && (
+            <div className="flex min-h-6 items-center gap-2 text-[10px] text-foreground-subtle opacity-70 transition-opacity sm:opacity-0 sm:group-hover:opacity-100 focus-within:opacity-100">
+              {hasVariants ? (
+                <PlannerVariantNavigator
+                  sessionId={sessionId}
+                  messageId={message.planning_message_id}
+                  currentVariantIndex={currentVariantIndex}
+                  variantCount={variantCount}
+                  onActivateVariant={onActivateVariant}
+                />
+              ) : null}
+              {showRegenerate ? (
+                <button
+                  type="button"
+                  onClick={onRegenerate}
+                  aria-label="Regenerate reply"
+                  className="flex h-6 w-6 items-center justify-center rounded-md border border-border/40 bg-surface-raised/80 text-foreground-subtle transition-colors hover:border-accent/40 hover:text-accent"
+                >
+                  <RefreshCw className="h-3 w-3" />
+                </button>
+              ) : null}
+              {!isAssistant && !isProcessing && onEdit ? <PlannerEditAction onEdit={onEdit} /> : null}
+              <time dateTime={message.created_at}>{formatTimestamp(message.created_at)}</time>
+            </div>
+          )}
         </div>
         {!isAssistant ? (
           <div className="mt-1 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-accent/10 text-accent/70">
