@@ -1,4 +1,5 @@
-import { useEffect, useReducer, useRef, type Dispatch } from "react";
+import { useEffect, useMemo, useReducer, useRef, useSyncExternalStore, type Dispatch } from "react";
+import type { QueryClient } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 import { API_BASE, buildAuthHeaders } from "@/api/client";
 import type { AcpRun, AcpRunEvent, PlanningMessage, PlanningSessionDetail } from "@/api/hooks";
@@ -94,7 +95,63 @@ function reducer(state: OperationStreamState, action: OperationStreamAction): Op
   }
 }
 
+type SharedProjection = { owner: symbol | null; result: UsePlannerOperationResult };
+class SharedPlannerStream {
+  private listeners = new Set<() => void>();
+  private consumers = new Set<symbol>();
+  private snapshot: SharedProjection = { owner: null, result: initialState };
+  getSnapshot = () => this.snapshot;
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  attach(token: symbol) {
+    this.consumers.add(token);
+    if (!this.snapshot.owner) this.publish({ ...this.snapshot, owner: token });
+    return () => {
+      this.consumers.delete(token);
+      if (this.snapshot.owner === token) this.publish({ ...this.snapshot, owner: this.consumers.values().next().value ?? null });
+    };
+  }
+  update(token: symbol, result: UsePlannerOperationResult) {
+    if (this.snapshot.owner === token && this.snapshot.result !== result) this.publish({ ...this.snapshot, result });
+  }
+  get hasConsumers() { return this.consumers.size > 0; }
+  private publish(next: SharedProjection) { this.snapshot = next; this.listeners.forEach((listener) => listener()); }
+}
+const sharedStreams = new WeakMap<QueryClient, Map<string, SharedPlannerStream>>();
+function sharedStream(client: QueryClient, runId: string) {
+  let streams = sharedStreams.get(client);
+  if (!streams) { streams = new Map(); sharedStreams.set(client, streams); }
+  let stream = streams.get(runId);
+  if (!stream) { stream = new SharedPlannerStream(); streams.set(runId, stream); }
+  return stream;
+}
+
+/** All visible/background consumers share one ACP subscription per operation.
+ * The elected consumer owns the existing reducer; ownership transfer replays
+ * canonical ACP events, while the display projection stays available. */
 export function usePlannerOperation(operation?: AcpRun | null): UsePlannerOperationResult {
+  const client = useQueryClient();
+  const runId = operation?.run_id ?? "__pending__";
+  const shared = useMemo(() => sharedStream(client, runId), [client, runId]);
+  const token = useRef(Symbol("planner-stream-consumer")).current;
+  const snapshot = useSyncExternalStore(shared.subscribe, shared.getSnapshot, shared.getSnapshot);
+  const ownsStream = snapshot.owner === token;
+  const result = useOwnedPlannerOperation(ownsStream ? operation : null);
+  useEffect(() => {
+    const detach = shared.attach(token);
+    return () => {
+      detach();
+      queueMicrotask(() => {
+        if (!shared.hasConsumers && sharedStreams.get(client)?.get(runId) === shared) sharedStreams.get(client)?.delete(runId);
+      });
+    };
+  }, [client, runId, shared, token]);
+  useEffect(() => {
+    if (ownsStream && (!operation || result.operation?.operationId === operation.run_id)) shared.update(token, result);
+  }, [shared, token, ownsStream, result, operation]);
+  return operation ? snapshot.result : initialState;
+}
+
+function useOwnedPlannerOperation(operation?: AcpRun | null): UsePlannerOperationResult {
   const [state, dispatch] = useReducer(reducer, initialState);
   const ownerRef = useRef<{
     runId: string;
@@ -208,7 +265,7 @@ export function reconcileTerminalOperationSnapshot(
           conversation_state: "ready",
           current_run_id: undefined,
         };
-  applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+  if (operationOwnsSessionPointer(queryClient, operation)) applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
   void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id), exact: true });
   void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
   if (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate") {
@@ -323,7 +380,9 @@ export function patchPlannerTerminalCaches(
 	if (event.type === "run.failed" || event.type === "run.cancelled") {
 		void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
 	}
-	applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+	if (operationOwnsSessionPointer(queryClient, operation)) applyPlanningSessionFields(queryClient, operation.planning_session_id, fields);
+  void queryClient.invalidateQueries({ queryKey: plannerKeys.detail(operation.planning_session_id), exact: true });
+  void queryClient.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
 }
 
 function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | null {
@@ -344,11 +403,17 @@ function sessionPatchFields(value: unknown): Partial<PlanningSessionDetail> | nu
   return Object.keys(fields).length > 0 ? fields : null;
 }
 
+function operationOwnsSessionPointer(queryClient: QueryClient, operation: AcpRun): boolean {
+  const session = queryClient.getQueryData<PlanningSessionDetail>(plannerKeys.detail(operation.planning_session_id));
+  return (operation.agent_name === "planner-generate-title" ? session?.current_title_run_id : session?.current_run_id) === operation.run_id;
+}
+
 function patchPlanningCaches(
   queryClient: ReturnType<typeof useQueryClient>,
   operation: AcpRun,
   event: AcpRunEvent,
 ) {
+  if (!operationOwnsSessionPointer(queryClient, operation)) return;
   if (event.type === "message.completed" && (operation.agent_name === "planner-reply" || operation.agent_name === "planner-regenerate")) {
     const message = planningMessageFromEvent(operation, event);
     if (message) {

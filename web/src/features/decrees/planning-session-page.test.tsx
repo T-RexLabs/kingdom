@@ -126,7 +126,7 @@ vi.mock("./use-planner-operation", () => ({
 
 vi.mock("./global-formalize-context", () => ({
   useGlobalFormalize: () => ({
-    current: null,
+    entries: [],
     trackFormalize: vi.fn(),
     clearFormalize: vi.fn(),
   }),

@@ -24,6 +24,8 @@ export type TranscriptCallbacks = {
   sessionId?: string;
   isProcessing?: boolean;
   editingMessageId?: string | null;
+  editText?: string;
+  onEditChange?: (text: string) => void;
 };
 
 const LATEST_VISIBILITY_THRESHOLD_PX = 80;
@@ -41,6 +43,8 @@ function renderMessage(item: TranscriptItem, callbacks: TranscriptCallbacks, isF
       onRegenerate={callbacks.onRegenerate ? () => callbacks.onRegenerate?.(item.message.planning_message_id, item.message.parent_message_id) : undefined}
       isEditing={isEditing}
       onEditSubmit={callbacks.onEditSubmit}
+      editText={callbacks.editText}
+      onEditChange={callbacks.onEditChange}
       onEditCancel={callbacks.onEditCancel}
       isProcessing={callbacks.isProcessing}
       isFirstAssistant={isFirstAssistant}

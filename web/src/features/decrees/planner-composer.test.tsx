@@ -132,3 +132,12 @@ describe("PlannerComposer", () => {
     expect(screen.getByPlaceholderText("Type your response...")).toHaveFocus();
   });
 });
+
+
+it("does not send an Enter used by IME composition", () => {
+  const onSend = vi.fn();
+  render(<PlannerComposer value="Reply" onChange={() => {}} onSend={onSend} />);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", isComposing: true });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", keyCode: 229 });
+  expect(onSend).not.toHaveBeenCalled();
+});

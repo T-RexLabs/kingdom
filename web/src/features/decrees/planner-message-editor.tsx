@@ -3,14 +3,20 @@ import { useAutosizeTextarea } from "./use-autosize-textarea";
 
 export function PlannerMessageEditor({
   initialText,
+  value,
+  onChange,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
+  value?: string;
+  onChange?: (text: string) => void;
   onSubmit: (text: string) => void;
   onCancel: () => void;
 }) {
-  const [text, setText] = useState(initialText);
+  const [localText, setLocalText] = useState(initialText);
+  const text = value ?? localText;
+  const setText = onChange ?? setLocalText;
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const { isOverflowing } = useAutosizeTextarea({
     ref: textareaRef,
@@ -34,6 +40,7 @@ export function PlannerMessageEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSubmit();

@@ -1,4 +1,4 @@
-import { act, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PlannerMessageEditor } from "./planner-message-editor";
 
@@ -103,4 +103,13 @@ describe("PlannerMessageEditor", () => {
     expect(textarea).toHaveClass("overflow-y-auto");
     expect(textarea).toHaveStyle({ height: "320px" });
   });
+});
+
+
+it("does not submit or cancel while IME composition is active", () => {
+  const onSubmit = vi.fn(); const onCancel = vi.fn();
+  render(<PlannerMessageEditor initialText="Draft" onSubmit={onSubmit} onCancel={onCancel} />);
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter", isComposing: true });
+  fireEvent.keyDown(screen.getByRole("textbox"), { key: "Escape", isComposing: true });
+  expect(onSubmit).not.toHaveBeenCalled(); expect(onCancel).not.toHaveBeenCalled();
 });

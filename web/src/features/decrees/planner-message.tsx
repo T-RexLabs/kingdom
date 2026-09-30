@@ -20,6 +20,8 @@ export function PlannerMessageCard({
   onRegenerate,
   isEditing,
   onEditSubmit,
+  editText,
+  onEditChange,
   onEditCancel,
   isProcessing,
   isFirstAssistant,
@@ -39,6 +41,8 @@ export function PlannerMessageCard({
   onRegenerate?: () => void;
   isEditing?: boolean;
   onEditSubmit?: (text: string) => void;
+  editText?: string;
+  onEditChange?: (text: string) => void;
   onEditCancel?: () => void;
   isProcessing?: boolean;
   isFirstAssistant?: boolean;
@@ -94,6 +98,8 @@ export function PlannerMessageCard({
             {isEditing && onEditSubmit && onEditCancel ? (
               <PlannerMessageEditor
                 initialText={message.content_markdown}
+                value={editText}
+                onChange={onEditChange}
                 onSubmit={onEditSubmit}
                 onCancel={onEditCancel}
               />

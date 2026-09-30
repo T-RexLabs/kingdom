@@ -33,6 +33,8 @@ describe("formalize notifier", () => {
     const addNotification = vi.fn();
     const clearFormalize = vi.fn();
     const current = {
+      workspace: "/tmp/project",
+      kind: "formalize" as const,
       sessionId: "session-1",
       operationId: "operation-1",
       sessionTitle: "Plan the work",
@@ -44,7 +46,8 @@ describe("formalize notifier", () => {
       removeNotification: vi.fn(),
     };
     const formalizeContext = {
-      current,
+      entries: [current],
+      markNotified: vi.fn(),
       trackFormalize: vi.fn(),
       clearFormalize,
     };
@@ -52,7 +55,7 @@ describe("formalize notifier", () => {
       <StrictMode>
         <NotificationContext.Provider value={notificationContext}>
           <GlobalFormalizeContext.Provider value={formalizeContext}>
-            <FormalizeNotifier streamed={streamed} />
+            <FormalizeNotifier entry={current} streamed={streamed} />
           </GlobalFormalizeContext.Provider>
         </NotificationContext.Provider>
       </StrictMode>
@@ -67,4 +70,30 @@ describe("formalize notifier", () => {
     expect(addNotification).toHaveBeenCalledTimes(1);
     expect(clearFormalize).toHaveBeenCalledTimes(1);
   });
+});
+
+
+it("notifies and clears two formalizations independently, preserving late reconciliation", () => {
+  vi.useFakeTimers();
+  const addNotification = vi.fn();
+  const clearFormalize = vi.fn();
+  const markNotified = vi.fn();
+  const a = { workspace: "/tmp/project", sessionId: "a", operationId: "op-a", kind: "formalize" as const, sessionTitle: "A" };
+  const b = { ...a, sessionId: "b", operationId: "op-b", sessionTitle: "B" };
+  const context = { entries: [a, b], trackFormalize: vi.fn(), clearFormalize, markNotified };
+  const notifications = { notifications: new Map(), addNotification, updateNotification: vi.fn(), removeNotification: vi.fn() };
+  const renderBoth = (reconciled: boolean) => <NotificationContext.Provider value={notifications}><GlobalFormalizeContext.Provider value={context}>
+    <FormalizeNotifier entry={a} streamed={{ ...terminalFormalize, operationId: "op-a", activityReconciled: reconciled }} />
+    <FormalizeNotifier entry={b} streamed={{ ...terminalFormalize, operationId: "op-b" }} />
+  </GlobalFormalizeContext.Provider></NotificationContext.Provider>;
+  try {
+    const view = render(renderBoth(false));
+    expect(addNotification.mock.calls.map(([notice]) => notice.message)).toEqual(["A", "B"]);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(clearFormalize.mock.calls).toEqual([["op-b"]]);
+    view.rerender(renderBoth(true));
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(clearFormalize.mock.calls).toEqual([["op-b"], ["op-a"]]);
+    expect(addNotification).toHaveBeenCalledTimes(2);
+  } finally { vi.useRealTimers(); }
 });

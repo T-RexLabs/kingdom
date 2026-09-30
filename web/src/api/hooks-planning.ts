@@ -22,6 +22,7 @@ import { applyPlanningSessionFields } from "@/features/decrees/planner-session-c
 import { plannerKeys } from "@/features/decrees/planner-query-keys";
 import { useSlicedMutation } from "./use-sliced-mutation";
 import { historyItems } from "./history-pages";
+import { plannerWorkspaceState } from "@/features/decrees/planner-workspace-state";
 import type { components } from "./schema";
 
 const plannerQueryOptions = {
@@ -200,6 +201,7 @@ export function useDeletePlanningSession() {
         headers: { "Idempotency-Key": key },
       }),
     onSuccess: (_data, { value: sessionId }) => {
+      plannerWorkspaceState(qc).removeSession(sessionId);
       qc.invalidateQueries({ queryKey: plannerKeys.all() });
       qc.removeQueries({ queryKey: plannerKeys.detail(sessionId) });
       qc.removeQueries({ queryKey: plannerKeys.messages(sessionId) });
@@ -208,7 +210,7 @@ export function useDeletePlanningSession() {
   });
 }
 
-export function useCreatePlanningOperation(sessionId: string) {
+export function useCreatePlanningOperation() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ body, key }: MutationWithBody<CreateAcpRunRequest>) =>
@@ -217,13 +219,14 @@ export function useCreatePlanningOperation(sessionId: string) {
         headers: { "Idempotency-Key": key },
         body: JSON.stringify(body),
       }),
-    onSuccess: (run) => {
+    onSuccess: (run, { body }) => {
+      const owningSessionId = body.planning_session_id;
       qc.setQueryData<AcpRun>(plannerKeys.operation(run.run_id), run);
-      applyPlanningSessionFields(qc, sessionId, {
+      applyPlanningSessionFields(qc, owningSessionId, {
         conversation_state: "processing",
         current_run_id: run.run_id,
       });
-      void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
+      void qc.invalidateQueries({ queryKey: plannerKeys.detail(owningSessionId) });
     },
   });
 }

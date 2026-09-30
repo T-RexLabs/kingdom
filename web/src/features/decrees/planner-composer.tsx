@@ -34,7 +34,7 @@ export function PlannerComposer({
         disabled={disabled}
         onChange={(event) => onChange(event.target.value)}
         onKeyDown={(event) => {
-          if (disabled) return;
+          if (disabled || event.nativeEvent.isComposing || event.keyCode === 229) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
             if (sendDisabled) return;

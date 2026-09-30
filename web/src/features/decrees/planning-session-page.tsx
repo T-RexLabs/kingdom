@@ -124,9 +124,10 @@ export function PlanningSessionPage() {
 	const messagePages = usePlannerMessagePages(sessionId);
   const userMessageCount = messagePages.messages.filter((m) => m.role === "user").length;
   const [showPlanModal, setShowPlanModal] = useState(false);
-  const { activeOperation, activeOperationId, connection, operationQueryState, recoveryKind, retryReplyRecovery, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
+  const { activeOperation, activeOperationId, connection, operationQueryState, recoveryKind, recoveryBlocked, recovery, stop, retryReplyRecovery, setActiveOperationId, submitReply, startFormalize, createOperation, regenerate, activateVariant } =
     usePlannerSessionController(session);
-  const { current: globalFormalize, trackFormalize } = useGlobalFormalize();
+  const { entries: formalizeEntries, trackFormalize } = useGlobalFormalize();
+  const globalFormalize = formalizeEntries.find((entry) => entry.sessionId === sessionId);
 	const draftQuery = usePlanningSessionDraft(showPlanModal || session?.current_draft_id ? sessionId : undefined);
 	const [titleStreamRunID, setTitleStreamRunID] = useState<string | undefined>(session?.current_title_run_id);
 	if (session?.current_title_run_id && session.current_title_run_id !== titleStreamRunID) {
@@ -642,10 +643,11 @@ export function PlanningSessionPage() {
         connection={connection}
         operationQueryState={operationQueryState}
         replyRecoveryPending={recoveryKind === "reply"}
+        recoveryBlocked={recoveryBlocked}
+        recovery={recovery}
+        stop={stop}
         onRetryReplyRecovery={retryReplyRecovery}
-        onSubmitReply={({ text, answer, parentMessageId }) =>
-          submitReply({ text, answer, parentMessageId })
-        }
+        onSubmitReply={submitReply}
         onRegenerate={({ messageId, parentMessageId }) => regenerate({ messageId, parentMessageId })}
         onActivateVariant={({ messageId }) => activateVariant({ messageId })}
       />

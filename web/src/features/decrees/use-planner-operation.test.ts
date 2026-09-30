@@ -146,3 +146,14 @@ describe("reconcileTerminalOperationSnapshot", () => {
     expect(qc.getQueryState(plannerKeys.messages("ps_1"))?.isInvalidated).toBe(true);
   });
 });
+
+
+describe("late planner completion ownership", () => {
+  it("cannot clear a newer operation or move its active branch during replay", () => {
+    const qc = new QueryClient();
+    qc.setQueryData(plannerKeys.detail("ps_1"), buildSession({ current_run_id: "new-run", active_leaf_message_id: "new-leaf" }));
+    reconcileTerminalOperationSnapshot(qc, buildRun());
+    patchPlannerTerminalCaches(qc, buildRun(), buildEvent());
+    expect(qc.getQueryData(plannerKeys.detail("ps_1"))).toMatchObject({ current_run_id: "new-run", active_leaf_message_id: "new-leaf", conversation_state: "processing" });
+  });
+});

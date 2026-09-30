@@ -214,4 +214,25 @@ describe("usePlannerOperation", () => {
     expect(hook.result.current.operation?.operationId).toBe("acp-run-2");
     expect(hook.result.current.operation?.replyText).toBe("");
   });
+  it("shares one stream between page and background consumers and transfers ownership", async () => {
+    const operation = buildOperation();
+    const first = renderHook(() => usePlannerOperation(operation), { wrapper: Wrapper });
+    const second = renderHook(() => usePlannerOperation(operation), { wrapper: Wrapper });
+    await flush();
+    expect(subscribeSSEMock).toHaveBeenCalledTimes(1);
+    const initial = subscribeSSEMock.mock.calls[0][0] as StreamSubscription;
+    await act(async () => { await initial.onEvent({ id: "acp-run-1:1", type: "message.part", data: JSON.stringify({ text: "Shared text" }) }); });
+    expect(first.result.current.operation?.replyText).toBe("Shared text");
+    expect(second.result.current.operation?.replyText).toBe("Shared text");
+    first.unmount();
+    await flush();
+    expect(initial.signal.aborted).toBe(true);
+    expect(subscribeSSEMock).toHaveBeenCalledTimes(2);
+    const transferred = subscribeSSEMock.mock.calls[1][0] as StreamSubscription;
+    await act(async () => { await transferred.onEvent({ id: "acp-run-1:1", type: "message.part", data: JSON.stringify({ text: "Shared text" }) }); });
+    expect(second.result.current.operation?.replyText).toBe("Shared text");
+    second.unmount();
+    expect(transferred.signal.aborted).toBe(true);
+  });
+
 });

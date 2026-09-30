@@ -1,215 +1,86 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, type ReactNode } from "react";
+import { ApiError } from "@/api/client";
 import { usePlanningOperation } from "@/api/hooks";
 import { useNotifications } from "@/components/notifications";
 import { router } from "@/router";
 import { GlobalFormalizeContext, useGlobalFormalize, type FormalizeEntry } from "./global-formalize-context";
 import { isPlannerOperationTerminal, type PlannerOperationState } from "./planner-operation-controller";
 import { usePlannerOperation } from "./use-planner-operation";
+import { useTrackedPlannerOperations } from "./use-planner-workspace-state";
+import type { TrackedPlannerOperation } from "./planner-workspace-state";
 
-const STORAGE_KEY = "kingdom:pending-formalize";
+function notificationId(operationId: string) { return `formalize-${operationId}`; }
 
-function readStorage(): FormalizeEntry | null {
-  try {
-    const raw = sessionStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as FormalizeEntry;
-    if (parsed.sessionId && parsed.operationId) return parsed;
-  } catch {
-    // ignore corrupt storage
-  }
-  return null;
-}
-
-function writeStorage(entry: FormalizeEntry) {
-  sessionStorage.setItem(STORAGE_KEY, JSON.stringify(entry));
-}
-
-function clearStorage() {
-  sessionStorage.removeItem(STORAGE_KEY);
-}
-
-function notificationId(operationId: string) {
-  return `formalize-${operationId}`;
-}
-
-/**
- * Owns the public loading-toast behavior plus the persisted entry
- * state. NO data fetching, NO terminal-effect orchestration — those
- * live in FormalizeNotifier so the Provider remains test-driveable
- * without mocking data hooks, and the orchestrator can be exercised
- * with plain props.
- */
 export function GlobalFormalizeProvider({ children }: { children: ReactNode }) {
-  const [entry, setEntry] = useState<FormalizeEntry | null>(() => readStorage());
+  const { store, operations } = useTrackedPlannerOperations();
   const { addNotification, removeNotification } = useNotifications();
-
-  const trackFormalize = useCallback(
-    (sessionId: string, operationId: string, sessionTitle: string) => {
-      // Remove any prior tracked notification before starting a fresh
-      // formalize. Without this, a new formalize started during the
-      // previous one's dismiss window would leave the old terminal
-      // toast ("Plan Ready"/"Plan Failed"/"Plan Cancelled") visible
-      // alongside the new "Generating Plan" loading toast — confusing
-      // UX with mismatched titles. Mirrors clearFormalize's shape:
-      // both methods need to know `entry` to clean up its
-      // notification before mutating the tracker.
-      if (entry) {
-        removeNotification(notificationId(entry.operationId));
-      }
-      const next = { sessionId, operationId, sessionTitle };
-      setEntry(next);
-      writeStorage(next);
-      addNotification({
-        id: notificationId(operationId),
-        title: "Generating Plan",
-        message: sessionTitle || undefined,
-        status: "loading",
-      });
-    },
-    [entry, addNotification, removeNotification],
-  );
-
-  const clearFormalize = useCallback(() => {
-    if (entry) {
-      removeNotification(notificationId(entry.operationId));
-    }
-    setEntry(null);
-    clearStorage();
-  }, [entry, removeNotification]);
-
-  return (
-    <GlobalFormalizeContext.Provider value={{ current: entry, trackFormalize, clearFormalize }}>
-      {children}
-    </GlobalFormalizeContext.Provider>
-  );
+  const entries = useMemo(() => operations.filter((entry) => entry.kind === "formalize"), [operations]);
+  const trackFormalize = useCallback((sessionId: string, operationId: string, sessionTitle: string) => {
+    // The controller registers the known operation before notifying. Never
+    // invent a workspace identity or replace another session's registration.
+    const entry = store.getOperations().find((item) => item.operationId === operationId && item.sessionId === sessionId);
+    if (!entry) return;
+    store.trackOperation({ ...entry, sessionTitle });
+    addNotification({ id: notificationId(operationId), title: "Generating Plan", message: sessionTitle || undefined, status: "loading" });
+  }, [store, addNotification]);
+  const clearFormalize = useCallback((operationId: string) => {
+    removeNotification(notificationId(operationId));
+    store.finishOperation(operationId);
+  }, [store, removeNotification]);
+  const markNotified = useCallback((operationId: string) => store.markNotified(operationId), [store]);
+  return <GlobalFormalizeContext.Provider value={{ entries, trackFormalize, clearFormalize, markNotified }}>{children}</GlobalFormalizeContext.Provider>;
 }
 
-/**
- * Pure orchestrator: reads `current` from the public context, takes
- * `streamed` as a prop, runs the latch + addNotification on terminal.
- * Tests drive this with plain useState-backed props instead of
- * mocking the underlying data hooks.
- *
- * The dismiss path uses the existing public clearFormalize from
- * context — no new context method needed. By the time dismissDelay
- * elapses, the toast has already auto-faded (autoDismissMs <
- * dismissDelay for every terminal branch), so clearFormalize's
- * removeNotification is an idempotent no-op against a missing id;
- * what it actually accomplishes is clearing the in-memory entry +
- * (idempotent) clearStorage so subsequent trackFormalize calls
- * start clean.
- */
-export function FormalizeNotifier({ streamed }: { streamed: PlannerOperationState | null }) {
-  const { current, clearFormalize } = useGlobalFormalize();
+export function FormalizeNotifier({ entry, streamed }: { entry: FormalizeEntry; streamed: PlannerOperationState | null }) {
+  const { clearFormalize, markNotified } = useGlobalFormalize();
   const { addNotification } = useNotifications();
-  const terminalHandledRef = useRef<string | null>(null);
-  const dismissTimerRef = useRef<{
-    operationId: string;
-    timer: ReturnType<typeof setTimeout>;
-  } | null>(null);
-
-  // Reset the latch whenever the tracked operation changes (or
-  // clears entirely). Op IDs are server-issued and never collide,
-  // so the previous-op latch wouldn't actually swallow a fresh
-  // operation's terminal — but resetting on transition makes the
-  // lifecycle easier to reason about and shields against any
-  // future ID source change.
+  const handledRef = useRef(entry.notified ?? false);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dismissedRef = useRef(false);
+  useEffect(() => () => { if (timerRef.current) { clearTimeout(timerRef.current); timerRef.current = null; } }, []);
   useEffect(() => {
-    const scheduledDismiss = dismissTimerRef.current;
-    if (scheduledDismiss && scheduledDismiss.operationId !== current?.operationId) {
-      clearTimeout(scheduledDismiss.timer);
-      dismissTimerRef.current = null;
-    }
-    if (terminalHandledRef.current && terminalHandledRef.current !== current?.operationId) {
-      terminalHandledRef.current = null;
-    }
-  }, [current?.operationId]);
-
-  useEffect(() => () => {
-    if (dismissTimerRef.current) {
-      clearTimeout(dismissTimerRef.current.timer);
-      dismissTimerRef.current = null;
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!current || !streamed) return;
-    if (streamed.operationId !== current.operationId) return;
-    if (!isPlannerOperationTerminal(streamed.status)) return;
-
-    const dismissDelay = streamed.status === "error" ? 9000 : 5000;
-    if (terminalHandledRef.current !== current.operationId) {
-      terminalHandledRef.current = current.operationId;
+    if (!streamed || streamed.operationId !== entry.operationId || !isPlannerOperationTerminal(streamed.status)) return;
+    if (!handledRef.current) {
+      handledRef.current = true;
+      markNotified(entry.operationId);
       if (streamed.status === "done") {
         addNotification({
-          id: notificationId(current.operationId),
-          title: "Plan Ready",
-          message: current.sessionTitle || undefined,
-          status: "success",
-          autoDismissMs: 4000,
-          action: {
-            label: "View Plan",
-            onClick: () => {
-              void router.navigate({
-                to: "/decrees/planning/$sessionId",
-                params: { sessionId: current.sessionId },
-                search: { show_plan: true },
-              });
-            },
-          },
-        });
-      } else if (streamed.status === "cancelled") {
-        addNotification({
-          id: notificationId(current.operationId),
-          title: "Plan Generation Cancelled",
-          message: streamed.error ?? "Server restarted before the plan finished generating.",
-          status: "info",
-          autoDismissMs: 4000,
+          id: notificationId(entry.operationId), title: "Plan Ready", message: entry.sessionTitle || undefined, status: "success", autoDismissMs: 4000,
+          action: { label: "View Plan", onClick: () => { void router.navigate({ to: "/decrees/planning/$sessionId", params: { sessionId: entry.sessionId }, search: { show_plan: true } }); } },
         });
       } else {
         addNotification({
-          id: notificationId(current.operationId),
-          title: "Plan Failed",
-          message: streamed.error ?? "An error occurred",
-          status: "error",
-          autoDismissMs: 8000,
+          id: notificationId(entry.operationId), title: streamed.status === "cancelled" ? "Plan Generation Cancelled" : "Plan Failed",
+          message: streamed.error ?? (streamed.status === "cancelled" ? "Plan generation was cancelled." : "An error occurred"),
+          status: streamed.status === "cancelled" ? "info" : "error", autoDismissMs: streamed.status === "cancelled" ? 4000 : 8000,
         });
       }
-
-      // Clear persisted terminal work immediately so rehydration cannot duplicate the toast.
-      clearStorage();
     }
-
-    // Canonical plan completion must not keep the composer active, but its
-    // stream still owns late diagnostic activity until this durable marker.
     if (streamed.status === "done" && !streamed.activityReconciled) return;
-
-    const operationId = current.operationId;
-    if (dismissTimerRef.current?.operationId === operationId) return;
-    if (dismissTimerRef.current) {
-      clearTimeout(dismissTimerRef.current.timer);
-    }
-    const timer = setTimeout(() => {
-      if (dismissTimerRef.current?.timer !== timer) return;
-      dismissTimerRef.current = null;
-      clearFormalize();
-    }, dismissDelay);
-    dismissTimerRef.current = { operationId, timer };
-  }, [current, streamed, addNotification, clearFormalize]);
-
+    if (timerRef.current || dismissedRef.current) return;
+    timerRef.current = setTimeout(() => { timerRef.current = null; dismissedRef.current = true; clearFormalize(entry.operationId); }, streamed.status === "error" ? 9000 : 5000);
+  }, [entry, streamed, addNotification, clearFormalize, markNotified]);
   return null;
 }
 
-/**
- * Production composer: subscribes to the operation row + SSE stream
- * for the currently tracked entry, passes the streamed state to
- * FormalizeNotifier. Mounted exactly once at the app root inside
- * GlobalFormalizeProvider. Tests that exercise the latch can mount
- * FormalizeNotifier directly with controlled props instead.
- */
+function PlannerOperationTracker({ entry }: { entry: TrackedPlannerOperation }) {
+  const { store } = useTrackedPlannerOperations();
+  const { clearFormalize } = useGlobalFormalize();
+  const operationQuery = usePlanningOperation(entry.operationId);
+  useEffect(() => {
+    if (operationQuery.error instanceof ApiError && operationQuery.error.status === 404) clearFormalize(entry.operationId);
+  }, [operationQuery.error, entry.operationId, clearFormalize]);
+  const { operation } = usePlannerOperation(operationQuery.data ?? null);
+  useEffect(() => {
+    if (!operation || operation.operationId !== entry.operationId) return;
+    store.observeOperation(entry, operation);
+    if (entry.kind !== "formalize" && (operation.status === "error" || operation.status === "cancelled" || (operation.status === "done" && operation.activityReconciled))) store.finishOperation(entry.operationId);
+  }, [entry, operation, store]);
+  return entry.kind === "formalize" ? <FormalizeNotifier entry={entry} streamed={operation} /> : null;
+}
+
+/** One tracker per active/reconciling operation; no historical sessions mount. */
 export function FormalizeNotifierMount() {
-  const { current } = useGlobalFormalize();
-  const operationQuery = usePlanningOperation(current?.operationId);
-  const { operation: streamed } = usePlannerOperation(operationQuery.data ?? null);
-  return <FormalizeNotifier streamed={streamed} />;
+  const { operations } = useTrackedPlannerOperations();
+  return <>{operations.map((entry) => <PlannerOperationTracker key={entry.operationId} entry={entry} />)}</>;
 }

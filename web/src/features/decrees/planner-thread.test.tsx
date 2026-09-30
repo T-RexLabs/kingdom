@@ -1,7 +1,15 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import type { PlanningSessionDetail } from "@/api/hooks";
 import { PlannerThread } from "./planner-thread";
+
+beforeEach(() => sessionStorage.clear());
+const renderThread = (ui: ReactNode) => {
+  const client = new QueryClient();
+  return render(ui, { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
+};
 
 vi.mock("./use-planner-message-pages", () => ({
   usePlannerMessagePages: () => ({
@@ -39,7 +47,7 @@ const session: PlanningSessionDetail = {
 describe("PlannerThread ACP query state", () => {
   it("surfaces a query error with retry while leaving a ready composer enabled", () => {
     const retry = vi.fn();
-    render(
+    renderThread(
       <PlannerThread
         session={session}
         replyRecoveryPending={false}
@@ -66,7 +74,7 @@ describe("PlannerThread ACP query state", () => {
   });
 
   it("distinguishes loading from an active retry", () => {
-    const { rerender } = render(
+    const { rerender } = renderThread(
       <PlannerThread
         session={{ ...session, conversation_state: "processing" }}
         replyRecoveryPending={false}
@@ -110,7 +118,7 @@ describe("PlannerThread ACP query state", () => {
   it("keeps a new draft while explicitly retrying a retained reply", async () => {
     const onSubmitReply = vi.fn().mockResolvedValue(undefined);
     const onRetryReplyRecovery = vi.fn().mockResolvedValue(undefined);
-    const { rerender } = render(
+    const { rerender } = renderThread(
       <PlannerThread
         session={session}
         replyRecoveryPending
@@ -160,7 +168,42 @@ describe("PlannerThread ACP query state", () => {
     await waitFor(() => expect(onSubmitReply).toHaveBeenCalledWith({
       text: "Reply B",
       answer: { text: "Reply B" },
+      draft: { branch: "message-1", generation: 1, kind: "composer" },
     }));
     expect(composer).toHaveValue("");
+  });
+});
+
+
+describe("PlannerThread session ownership", () => {
+  it("keeps drafts separate when switching sessions and branches", () => {
+    const props = { replyRecoveryPending: false, onRetryReplyRecovery: vi.fn(), onSubmitReply: vi.fn(), onRegenerate: vi.fn(), onActivateVariant: vi.fn() };
+    const view = renderThread(<PlannerThread {...props} session={session} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Session A draft" } });
+    view.rerender(<PlannerThread {...props} session={{ ...session, planning_session_id: "session-b" }} />);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Session B draft" } });
+    view.rerender(<PlannerThread {...props} session={session} />);
+    expect(screen.getByRole("textbox")).toHaveValue("Session A draft");
+    view.rerender(<PlannerThread {...props} session={{ ...session, active_leaf_message_id: "other-branch" }} />);
+    expect(screen.getByRole("textbox")).toHaveValue("");
+    view.rerender(<PlannerThread {...props} session={session} />);
+    expect(screen.getByRole("textbox")).toHaveValue("Session A draft");
+  });
+
+  it("does not let an earlier send clear another session or later typing", async () => {
+    let finish!: () => void;
+    const onSubmitReply = vi.fn(() => new Promise<void>((resolve) => { finish = resolve; }));
+    const props = { replyRecoveryPending: false, onRetryReplyRecovery: vi.fn(), onSubmitReply, onRegenerate: vi.fn(), onActivateVariant: vi.fn() };
+    const view = renderThread(<PlannerThread {...props} session={session} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Submitted A" } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "New A" } });
+    view.rerender(<PlannerThread {...props} session={{ ...session, planning_session_id: "session-b" }} />);
+    fireEvent.change(screen.getByRole("textbox"), { target: { value: "Unsent B" } });
+    await act(async () => { finish(); });
+    expect(screen.getByRole("textbox")).toHaveValue("Unsent B");
+    view.rerender(<PlannerThread {...props} session={session} />);
+    expect(screen.getByRole("textbox")).toHaveValue("New A");
   });
 });

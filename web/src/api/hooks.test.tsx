@@ -43,6 +43,9 @@ import { providerModelsQueryKey, runQueryKeys } from "./hooks-runs";
 // Mock @/api/client so we can drive request/response timing.
 const apiFetchMock = vi.fn();
 vi.mock("./client", () => ({
+  API_BASE: "/api/v1",
+  currentAuthGeneration: () => 0,
+  currentAuthBinding: () => "",
   ApiError: class ApiError extends Error {
     public readonly status: number;
     constructor(status: number, message: string) {

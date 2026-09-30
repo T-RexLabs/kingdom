@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import type { PlanningSessionDetail } from "@/api/hooks";
 import { PlannerTranscript } from "./planner-transcript";
 import { PlannerComposer } from "./planner-composer";
@@ -10,6 +10,8 @@ import {
   type PlannerOperationState,
 } from "./planner-operation-controller";
 import type { PlannerConnection } from "./use-planner-operation";
+import { plannerScope, plannerScopeKey, type PlannerDraftSubmission } from "./planner-workspace-state";
+import { usePlannerSessionUI, useTrackedPlannerOperations } from "./use-planner-workspace-state";
 
 function buildAnswerPayloadForOption(option: { label: string; value: string }): AnswerPayload {
   return {
@@ -35,8 +37,14 @@ export function PlannerThread({
   onSubmitReply,
   onRegenerate,
   onActivateVariant,
+  stop,
+  recoveryBlocked,
+  recovery,
 }: {
   session: PlanningSessionDetail;
+  stop?: { available: boolean; pending: boolean; error?: string; onStop: () => Promise<void> };
+  recoveryBlocked?: boolean;
+  recovery?: { checking: boolean; onCheck: () => Promise<void>; pendingKind?: string | null; onRetry?: () => Promise<void> };
   operation?: PlannerOperationState | null;
   connection?: PlannerConnection;
   operationQueryState?: {
@@ -48,15 +56,30 @@ export function PlannerThread({
   };
   replyRecoveryPending: boolean;
   onRetryReplyRecovery: () => Promise<void> | void;
-  onSubmitReply: (payload: { text: string; answer?: AnswerPayload; parentMessageId?: string }) => Promise<void> | void;
+  onSubmitReply: (payload: { text: string; answer?: AnswerPayload; parentMessageId?: string; draft?: PlannerDraftSubmission }) => Promise<void> | void;
   onRegenerate: (payload: { messageId: string; parentMessageId?: string }) => Promise<void> | void;
   onActivateVariant: (payload: { messageId: string }) => Promise<void> | void;
 }) {
-  const [inputText, setInputText] = useState("");
-  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
-  const [followLatestRequest, setFollowLatestRequest] = useState(0);
-  const [retryingReplyRecovery, setRetryingReplyRecovery] = useState(false);
+  const scope = plannerScope(session);
+  const { store, state } = usePlannerSessionUI(scope);
   const messagePages = usePlannerMessagePages(session.planning_session_id);
+  const { operations } = useTrackedPlannerOperations();
+  const leaf = session.active_leaf_message_id ?? "root";
+  const leafSourceRun = messagePages.messages.find((message) => message.planning_message_id === leaf)?.source_run_id;
+  const continuation = operations.find((entry) => entry.workspace === scope.workspace && entry.sessionId === scope.sessionId && entry.draftBranch
+    && (entry.operationId === session.current_run_id || entry.operationId === leafSourceRun));
+  const branch = state.leafBranches[leaf] ?? continuation?.draftBranch ?? leaf;
+  useEffect(() => {
+    if (branch === leaf) return;
+    store.updateSession({ workspace: scope.workspace, sessionId: scope.sessionId }, (current) => current.leafBranches[leaf] === branch ? current : { ...current, leafBranches: { ...current.leafBranches, [leaf]: branch } });
+  }, [store, scope.workspace, scope.sessionId, leaf, branch]);
+  const draft = store.draft(scope, branch);
+  const inputText = draft.text;
+  const editingMessageId = session.conversation_state === "ready" ? draft.editing?.messageId ?? null : null;
+  const setInputText = (text: string) => store.setText(scope, branch, text);
+  const draftIdentity = `${plannerScopeKey(scope)}:${branch}`;
+  const retryingReplyRecovery = state.request?.kind === "reply" && state.request.phase === "submitting";
+  const retryingSessions = useRef(new Set<string>());
   const composerTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Parse the growing reply text exactly once per delta, not four times per
@@ -95,71 +118,64 @@ export function PlannerThread({
   const isLoading = messagePages.isLoading;
   const composerDisabled = session.conversation_state !== "ready";
 
-  // Clear editing state when an operation starts
-  useEffect(() => {
-    if (session.conversation_state === "processing") {
-      setEditingMessageId(null);
-    }
-  }, [session.conversation_state]);
+  const sendingRef = useRef(new Set<string>());
+  const requestFollowLatest = () => store.updateSession(scope, (current) => ({ ...current, followLatestRequest: current.followLatestRequest + 1 }));
 
-  const sendingRef = useRef(false);
-
-  const sendText = async (text: string, answer?: AnswerPayload, parentMessageId?: string) => {
-    if (replyRecoveryPending || sendingRef.current) return;
+  const sendText = async (text: string, answer?: AnswerPayload, parentMessageId?: string, draftKind?: "composer" | "edit") => {
+    if (replyRecoveryPending || recoveryBlocked || recovery?.pendingKind || sendingRef.current.has(draftIdentity)) return;
     const trimmed = text.trim();
     if (!trimmed) return;
-    sendingRef.current = true;
+    const generation = draftKind === "edit" ? draft.editing?.generation : draft.generation;
+    sendingRef.current.add(draftIdentity);
     try {
-      await onSubmitReply({ text: trimmed, answer, parentMessageId });
-      setFollowLatestRequest((current) => current + 1);
-      // Only clear the composer once the mutation has resolved successfully.
-      // If onSubmitReply throws (e.g. network failure), the controller has
-      // already restored the snapshot — keep the user's typed text in the
-      // box so they can retry without re-typing.
-      setInputText("");
+      await onSubmitReply({ text: trimmed, answer, parentMessageId, ...(draftKind && generation !== undefined ? { draft: { branch, generation, kind: draftKind } } : {}) });
+      requestFollowLatest();
+      if (draftKind && generation !== undefined) store.clearSubmittedDraft(scope, branch, generation, draftKind === "edit");
     } catch {
-      // The planner page owns mutation error reporting; keep this draft intact.
+      // The controller owns recovery; retain the originating draft, including edits.
     } finally {
-      sendingRef.current = false;
+      sendingRef.current.delete(draftIdentity);
     }
   };
 
   const handleRetryReplyRecovery = async () => {
-    if (!replyRecoveryPending || retryingReplyRecovery) return;
-    setRetryingReplyRecovery(true);
+    if (!replyRecoveryPending || retryingSessions.current.has(draftIdentity)) return;
+    retryingSessions.current.add(draftIdentity);
     try {
       await onRetryReplyRecovery();
-      setFollowLatestRequest((current) => current + 1);
+      requestFollowLatest();
     } catch {
       // The planner page surfaces the mutation error; the composer draft stays untouched.
     } finally {
-      setRetryingReplyRecovery(false);
+      retryingSessions.current.delete(draftIdentity);
     }
   };
 
   const handleEditMessage = (messageId: string) => {
-    setEditingMessageId(messageId);
+    const item = transcript.items.find((candidate) => candidate.message.planning_message_id === messageId);
+    if (item) store.updateDraft(scope, branch, (current) => ({ ...current, editing: { messageId, text: item.message.content_markdown, generation: (current.editing?.generation ?? 0) + 1 } }));
   };
 
   const handleEditSubmit = (text: string) => {
     const editingItem = transcript.items.find((item) => item.message.planning_message_id === editingMessageId);
     if (!editingItem) return;
-    setEditingMessageId(null);
     // Editing branches a new sibling off the edited message's parent.
-    void sendText(text, undefined, editingItem.message.parent_message_id);
+    void sendText(text, undefined, editingItem.message.parent_message_id, "edit");
   };
 
   const handleEditCancel = () => {
-    setEditingMessageId(null);
+    store.updateDraft(scope, branch, (current) => ({ ...current, editing: undefined }));
   };
 
   const handleRegenerate = async (messageId: string, parentMessageId?: string) => {
-    await onRegenerate({ messageId, parentMessageId });
-    setFollowLatestRequest((current) => current + 1);
+    try {
+      await onRegenerate({ messageId, parentMessageId });
+      requestFollowLatest();
+    } catch { /* The session controller exposes the retained request and error. */ }
   };
 
   const handleActivateVariant = (messageId: string) => {
-    void onActivateVariant({ messageId });
+    void Promise.resolve(onActivateVariant({ messageId })).catch(() => {});
   };
 
   const handleTypeYourAnswer = (questionId: string) => {
@@ -194,7 +210,8 @@ export function PlannerThread({
           onLoadPrevious={() => {
             void messagePages.fetchPreviousPage();
           }}
-          followLatestRequest={followLatestRequest}
+          key={plannerScopeKey(scope)}
+          followLatestRequest={state.followLatestRequest}
           callbacks={{
             onSelect: (questionId, option) => {
               if (questionId !== transcript.activeQuestionId) return;
@@ -215,6 +232,8 @@ export function PlannerThread({
             sessionId: session.planning_session_id,
             isProcessing: composerDisabled,
             editingMessageId,
+            editText: draft.editing?.text,
+            onEditChange: (text) => store.updateDraft(scope, branch, (current) => current.editing ? { ...current, editing: { ...current.editing, text, generation: current.editing.generation + 1 } } : current),
           }}
         />
       )}
@@ -270,7 +289,17 @@ export function PlannerThread({
         </div>
       ) : null}
 
-      {replyRecoveryPending ? (
+      {state.storageUnavailable ? <p role="status" className="mx-4 mt-2 text-sm text-foreground-subtle">Browser storage is unavailable. Drafts are kept only while this page remains open.</p> : null}
+      {recoveryBlocked ? <p role="alert" className="mx-4 mt-2 text-sm text-status-failed">A previous planner request has an unresolved outcome from an earlier browser session. Your draft is preserved. Sending and retrying are blocked until that request can be verified. {recovery ? <button type="button" disabled={recovery.checking} onClick={() => void recovery.onCheck()} className="ml-2 underline">{recovery.checking ? "Checking..." : "Check Previous Request"}</button> : null}</p> : null}
+      {stop?.available ? <div className="mx-4 mt-2 flex items-center gap-2">
+        <button type="button" disabled={stop.pending || recoveryBlocked} onClick={() => void stop.onStop().catch(() => {})} className="rounded-md border border-border px-3 py-1.5 text-sm disabled:opacity-50">{stop.pending ? "Stopping..." : "Stop"}</button>
+        {stop.error ? <span role="alert" className="text-sm text-status-failed">{stop.error}</span> : null}
+      </div> : null}
+      {recovery?.pendingKind && recovery.pendingKind !== "reply" && recovery.pendingKind !== "stop" && !recoveryBlocked ? <div role="status" className="mx-4 mt-2 text-sm text-foreground-subtle">
+        A previous planner request could not be confirmed. Your draft is preserved.
+        <button type="button" onClick={() => void recovery.onRetry?.().catch(() => {})} className="ml-2 underline">Retry Previous Request</button>
+      </div> : null}
+      {replyRecoveryPending && !recoveryBlocked ? (
         <div
           role="status"
           className="mx-4 mt-2 flex items-center gap-3 rounded-xl border border-border/40 bg-surface-raised/40 p-3 text-sm text-foreground-subtle"
@@ -293,11 +322,11 @@ export function PlannerThread({
         <PlannerComposer
           value={inputText}
           disabled={composerDisabled}
-          sendDisabled={replyRecoveryPending}
+          sendDisabled={replyRecoveryPending || recoveryBlocked || Boolean(recovery?.pendingKind)}
           textareaRef={composerTextareaRef}
           onChange={setInputText}
           onSend={() => {
-            void sendText(inputText, inputText.trim() ? { text: inputText.trim() } : undefined);
+            void sendText(inputText, inputText.trim() ? { text: inputText.trim() } : undefined, undefined, "composer");
           }}
         />
       </div>
