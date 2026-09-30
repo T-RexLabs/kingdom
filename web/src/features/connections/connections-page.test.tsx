@@ -6,11 +6,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ConnectionsPage } from "./connections-page";
 import { IssuePicker } from "./issue-picker";
 
-// The picker links to this page when nothing is connected; ConnectionsPage
-// itself never touches the router, so a plain anchor is enough here.
-vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
-}));
+const route = vi.hoisted(() => ({ search: {} as { connection?: string }, listeners: new Set<() => void>() }));
+vi.mock("@tanstack/react-router", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    Link: ({ children, to }: { children: ReactNode; to: string }) => <a href={to}>{children}</a>,
+    useSearch: ({ select }: { select: (search: { connection?: string }) => string }) => React.useSyncExternalStore((listener) => { route.listeners.add(listener); return () => { route.listeners.delete(listener); }; }, () => select(route.search)),
+    useNavigate: () => ({ search }: { search: { connection?: string } }) => { route.search = search; for (const listener of route.listeners) listener(); },
+  };
+});
+afterEach(() => { route.search = {}; });
 
 // A fresh client per test. The connections list is one shared cache entry in
 // the app, so a client reused across tests would let one test's list satisfy
@@ -18,6 +23,24 @@ vi.mock("@tanstack/react-router", () => ({
 function render(ui: ReactElement) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return renderBare(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+}
+
+async function startSharedUI(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Add Connection" }));
+  await user.click(await within(screen.getByRole("dialog", { name: "Add Connection" })).findByRole("button", { name: "Connect GitHub" }));
+}
+async function startPrivateUI(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Add Connection" }));
+  await user.click(within(screen.getByRole("dialog", { name: "Add Connection" })).getByRole("button", { name: "Create a Private GitHub App" }));
+  await user.click(within(screen.getByRole("dialog", { name: "Create a Private GitHub App" })).getByRole("button", { name: "Create Private App on GitHub" }));
+}
+async function openManualUI(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole("button", { name: "Add Connection" }));
+  await user.click(within(screen.getByRole("dialog", { name: "Add Connection" })).getByRole("button", { name: "Use Manual Setup" }));
+}
+async function openConnection() {
+  await userEvent.click(await screen.findByRole("button", { name: /^Manage / }));
+  await userEvent.click(screen.getByText("Manage Connection"));
 }
 
 const connection = (displayName: string, appID = "1") => ({
@@ -114,9 +137,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(
-      await screen.findByRole("button", { name: "Connect GitHub" }),
-    );
+    await startSharedUI(user);
     const dialog = await screen.findByRole("dialog", {
       name: "Connect GitHub",
     });
@@ -124,9 +145,6 @@ describe("ConnectionsPage", () => {
     expect(
       within(dialog).getByRole("link", { name: /open github/i }),
     ).toHaveAttribute("href", "https://github.com/login/device");
-    expect(
-      screen.getByRole("button", { name: "Create a Private GitHub App" }),
-    ).toBeInTheDocument();
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
     expectIdempotencyScope(startIdempotencyKey, "device-start");
@@ -169,11 +187,11 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
     await waitFor(() => expect(pollRequested).toBe(true));
     await user.click(screen.getByRole("button", { name: "Close dialog" }));
-    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add Connection" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Resume Setup" }));
     expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
     expect(starts).toBe(1);
@@ -217,7 +235,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     await waitFor(() => expect(screen.getByText("KEEP-CODE")).toBeInTheDocument());
     await user.click(screen.getByRole("button", { name: "Close dialog" }));
     await act(async () => {
@@ -268,10 +286,10 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(await screen.findByText("OLD1-CODE")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Discard Setup" }));
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(await screen.findByText("NEW2-CODE")).toBeInTheDocument();
 
     await act(async () => {
@@ -319,7 +337,7 @@ describe("ConnectionsPage", () => {
     }));
     const user = userEvent.setup();
     const view = render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     await waitFor(() => expect(pollStarted).toBe(true));
 
     view.unmount();
@@ -377,7 +395,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
 
     expect(
       await screen.findByText("GitHub authorization could not be completed. Start again."),
@@ -431,7 +449,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(await screen.findByText(/retrying safely/i)).toBeInTheDocument();
     await waitFor(() => expect(pollAttempts).toBe(2));
     expect(keys[1]).toBe(keys[0]);
@@ -514,7 +532,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     await waitFor(() => expect(pollAttempts).toBe(1));
     await new Promise((resolve) => window.setTimeout(resolve, 50));
     expect(pollAttempts).toBe(1);
@@ -563,7 +581,7 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     await user.click(await screen.findByRole("button", { name: "Start Again" }));
 
     expect(await screen.findByText("NEW2-CODE")).toBeInTheDocument();
@@ -635,7 +653,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await screen.findByText("Shared");
     await waitFor(() => expect(currentReads).toBe(1));
-    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
 
     expect(await screen.findByText("GitHub Reconnect in Progress")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -692,6 +710,7 @@ describe("ConnectionsPage", () => {
     }));
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Shared");
     await waitFor(() => expect(currentReads).toBe(1));
 
@@ -727,7 +746,7 @@ describe("ConnectionsPage", () => {
     render(<ConnectionsPage />);
     await waitFor(() => expect(currentReads).toBe(1));
 
-    await user.click(screen.getByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(screen.getByText("Preparing GitHub...")).toBeInTheDocument();
     expect(await screen.findByText("GitHub authorization is already being started", {}, { timeout: 2500 })).toBeInTheDocument();
     expect(currentReads).toBe(1 + 5);
@@ -785,11 +804,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(
-      await screen.findByRole("button", {
-        name: "Create a Private GitHub App",
-      }),
-    );
+    await startPrivateUI(user);
     await waitFor(() => expect(submit).toHaveBeenCalledOnce());
     expect(startBody).toEqual({ owner_type: "personal" });
     expectIdempotencyScope(startIdempotencyKey, "manifest-start");
@@ -875,9 +890,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(
-      await screen.findByRole("button", { name: /use manual setup/i }),
-    );
+    await openManualUI(user);
     const dialog = await screen.findByRole("dialog", {
       name: /manual github app setup/i,
     });
@@ -910,7 +923,7 @@ describe("ConnectionsPage", () => {
     });
   });
 
-  // The reported bug: add a connection, go to the planner or the decree form,
+  // The reported bug: add a connection, go to the planner or the work order form,
   // and the import trigger is still the setup link. Both surfaces read the
   // shared connections entry, so the fix is that creating one invalidates it.
   it("stops offering setup on other surfaces as soon as a connection exists", async () => {
@@ -944,7 +957,7 @@ describe("ConnectionsPage", () => {
       await screen.findByRole("link", { name: /connect an issue tracker/i }),
     ).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: /use manual setup/i }));
+    await openManualUI(user);
     const dialog = await screen.findByRole("dialog", { name: /manual github app setup/i });
     for (const [label, value] of [
       ["Display Name", "Manual"],
@@ -1041,8 +1054,8 @@ describe("ConnectionsPage", () => {
     const user = userEvent.setup();
     render(<ConnectionsPage />);
 
-    await user.click(await screen.findByRole("button", { name: "Create a Private GitHub App" }));
-    const alert = await screen.findByRole("alert");
+    await startPrivateUI(user);
+    const alert = await within(screen.getByRole("dialog", { name: "Create a Private GitHub App" })).findByRole("alert");
     expect(alert).toHaveTextContent("Private App setup could not start");
     expect(alert).toHaveTextContent("Bad Gateway");
     await user.click(within(alert).getByRole("button", { name: "Retry This Step" }));
@@ -1263,6 +1276,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
 
     await screen.findByText("Original");
     await user.click(screen.getByRole("button", { name: /edit/i }));
@@ -1307,6 +1321,7 @@ describe("ConnectionsPage", () => {
     }));
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
 
     await user.click(await screen.findByRole("button", { name: /edit/i }));
     const editForm = screen.getByRole("heading", { name: /edit connection/i }).closest("form");
@@ -1331,6 +1346,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await user.click(await screen.findByRole("button", { name: /edit/i }));
     const editForm = screen
       .getByRole("heading", { name: /edit connection/i })
@@ -1363,6 +1379,7 @@ describe("ConnectionsPage", () => {
       ),
     );
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Half removed");
     // Removal genuinely did not complete, so hiding the connection would lie.
     expect(screen.getByText(/removal did not finish/i)).toBeInTheDocument();
@@ -1402,6 +1419,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await user.click(await screen.findByRole("button", { name: /remove/i }));
     expect(
       await screen.findByRole("dialog", { name: /remove me/i }),
@@ -1450,6 +1468,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await user.click(await screen.findByRole("button", { name: /remove/i }));
     const dialog = await screen.findByRole("dialog", {
       name: /remove me/i,
@@ -1491,11 +1510,12 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await user.click(await screen.findByRole("button", { name: /check/i }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /GitHub App or installation is inaccessible/i,
     );
-    expect(await screen.findByText("revoked")).toBeInTheDocument();
+    expect(await screen.findByText("Reconnect Required")).toBeInTheDocument();
   });
 
   it("guides permission mismatch repair with the exact App configuration", async () => {
@@ -1507,6 +1527,7 @@ describe("ConnectionsPage", () => {
     );
 
     render(<ConnectionsPage />);
+    await openConnection();
 
     expect(await screen.findByText(/zero subscribed events and no additional permissions/i)).toBeInTheDocument();
   });
@@ -1541,6 +1562,7 @@ describe("ConnectionsPage", () => {
     );
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
 
     await user.click(await screen.findByRole("button", { name: /check/i }));
     const alert = await screen.findByRole("alert");
@@ -1554,6 +1576,7 @@ describe("ConnectionsPage", () => {
       vi.fn(async () => json({ items: [connection("Rotatable")] })),
     );
     render(<ConnectionsPage />);
+    await openConnection();
 
     await screen.findByText("Rotatable");
     expect(
@@ -1582,6 +1605,7 @@ describe("ConnectionsPage", () => {
       ),
     );
     render(<ConnectionsPage />);
+    await openConnection();
 
     await screen.findByText("Needs key");
     expect(
@@ -1624,6 +1648,7 @@ describe("ConnectionsPage", () => {
       }),
     );
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Shared");
     expect(
       screen.getByRole("button", { name: "Reconnect Connection" }),
@@ -1693,7 +1718,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     expect(await screen.findByText("@octocat")).toBeInTheDocument();
 
     // The reported defect: with one installation present there was no route to
@@ -1726,6 +1751,7 @@ describe("ConnectionsPage", () => {
       }),
     );
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Kingdom Issues");
     expect(
       screen.getByRole("link", { name: /Manage Repositories on GitHub/ }),
@@ -1751,6 +1777,7 @@ describe("ConnectionsPage", () => {
       }),
     );
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Pending Check");
     // Guard against a vacuous pass: the action row must actually be rendered.
     expect(screen.getByRole("button", { name: "Check" })).toBeInTheDocument();
@@ -1802,7 +1829,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
 
     // Both accounts are tickable at once; neither deselects the other.
     await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
@@ -1858,7 +1885,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
     await user.click(await screen.findByRole("checkbox", { name: /@enkiid/ }));
     expect(screen.getByRole("link", { name: "Install on Another Account" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Manage Repositories on GitHub" })).toBeInTheDocument();
@@ -1937,6 +1964,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Shared");
     await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
 
@@ -2008,7 +2036,8 @@ describe("ConnectionsPage", () => {
     expect(await screen.findByText("GitHub Reconnect in Progress")).toBeInTheDocument();
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(polls).toBe(0);
-    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Add Connection" })).toBeDisabled();
+    await openConnection();
     expect(screen.getByRole("button", { name: "Reconnect Connection" })).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Resume Setup" }));
@@ -2022,7 +2051,8 @@ describe("ConnectionsPage", () => {
     await user.click(screen.getByRole("button", { name: "Discard Setup" }));
     await waitFor(() => expect(discarded).toBe(true));
     expect(screen.queryByText("GitHub Reconnect in Progress")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "All Connections" }));
+    expect(screen.getByRole("button", { name: "Add Connection" })).toBeEnabled();
     expect(window.localStorage.length).toBe(0);
     expect(window.sessionStorage.length).toBe(0);
   });
@@ -2112,7 +2142,7 @@ describe("ConnectionsPage", () => {
     expect(statusReads).toBe(1);
     expect(connectionReads).toBe(2);
     expect(screen.queryByText("GitHub Setup in Progress")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Connect GitHub" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Add Connection" })).toBeEnabled();
   });
 
   it("adopts canonical failure after a definitive installation refresh failure", async () => {
@@ -2161,7 +2191,7 @@ describe("ConnectionsPage", () => {
     }));
     const user = userEvent.setup();
     render(<ConnectionsPage />);
-    await user.click(await screen.findByRole("button", { name: "Connect GitHub" }));
+    await startSharedUI(user);
 
     await user.click(await screen.findByRole("button", { name: "Refresh Installations" }));
     expect(await screen.findByText("GitHub installations could not be refreshed. Reconnect to continue.")).toBeInTheDocument();
@@ -2202,6 +2232,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Shared");
     await user.click(screen.getByRole("button", { name: "Reconnect Connection" }));
     expect(await screen.findByText("Some Saved Installations Are Missing")).toBeInTheDocument();
@@ -2249,6 +2280,7 @@ describe("ConnectionsPage", () => {
 
     const user = userEvent.setup();
     render(<ConnectionsPage />);
+    await openConnection();
     await screen.findByText("Kingdom Issues");
     await user.click(screen.getByRole("button", { name: "Change" }));
 
@@ -2258,6 +2290,6 @@ describe("ConnectionsPage", () => {
     await user.click(screen.getByRole("button", { name: /Save Installations/ }));
     await waitFor(() => expect(saved).toBeDefined());
     expect(saved).toEqual({ installation_ids: ["11", "2"] });
-    expect(await screen.findByText("never checked")).toBeInTheDocument();
+    expect(await screen.findByText("Not Checked")).toBeInTheDocument();
   });
 });

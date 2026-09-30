@@ -1,57 +1,59 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { TimeRangePicker } from "./time-range-picker";
 
-describe("time range picker component", () => {
-  it("associates the From and To labels with their inputs", async () => {
+describe("rolling time window", () => {
+  it("preserves presets and describes the actual API rolling-window scope", async () => {
+    const onChange = vi.fn();
     const user = userEvent.setup();
-
-    render(<TimeRangePicker value={1440} onChange={() => undefined} />);
-
-    await user.click(screen.getByRole("button", { name: "Custom time range" }));
-
-    expect(screen.getByLabelText("From")).toHaveValue("now-1d");
-    expect(screen.getByLabelText("To")).toHaveValue("now");
+    render(<TimeRangePicker value={1440} onChange={onChange} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Time Window" }),
+      "30",
+    );
+    expect(onChange).toHaveBeenCalledWith(30);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Time Window" }),
+      "custom",
+    );
+    expect(screen.getByRole("dialog")).toHaveTextContent("ending now");
+    expect(screen.queryByLabelText("To")).not.toBeInTheDocument();
   });
-
-  it("does not revive an invalid draft when the selected value cycles", async () => {
+  it("accepts minute-precision custom windows and rejects fractional/out-of-range values", async () => {
+    const onChange = vi.fn();
     const user = userEvent.setup();
-    const { rerender } = render(<TimeRangePicker value={1440} onChange={() => undefined} />);
-
-    await user.click(screen.getByRole("button", { name: "Custom time range" }));
-    const fromInput = screen.getByLabelText("From");
-    await user.clear(fromInput);
-    await user.type(fromInput, "invalid");
-    await user.click(screen.getByRole("button", { name: "Apply time range" }));
-    expect(screen.getByText(/Invalid 'From' expression/)).toBeInTheDocument();
-
-    rerender(<TimeRangePicker value={60} onChange={() => undefined} />);
-
-    expect(screen.getByLabelText("From")).toHaveValue("now-1h");
-    expect(screen.getByLabelText("To")).toHaveValue("now");
-    expect(screen.queryByText(/Invalid 'From' expression/)).not.toBeInTheDocument();
-
-    rerender(<TimeRangePicker value={1440} onChange={() => undefined} />);
-
-    expect(screen.getByLabelText("From")).toHaveValue("now-1d");
-    expect(screen.getByLabelText("To")).toHaveValue("now");
-    expect(screen.queryByText(/Invalid 'From' expression/)).not.toBeInTheDocument();
+    render(<TimeRangePicker value={1440} onChange={onChange} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Time Window" }),
+      "custom",
+    );
+    for (const invalid of ["", "0", "1.5", "525601"]) {
+      await user.clear(screen.getByLabelText("Minutes"));
+      if (invalid) await user.type(screen.getByLabelText("Minutes"), invalid);
+      await user.click(screen.getByRole("button", { name: "Apply Window" }));
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+      expect(onChange).not.toHaveBeenCalled();
+    }
+    await user.clear(screen.getByLabelText("Minutes"));
+    await user.type(screen.getByLabelText("Minutes"), "97");
+    await user.click(screen.getByRole("button", { name: "Apply Window" }));
+    expect(onChange).toHaveBeenCalledWith(97);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
-
-  it("does not revive an unsubmitted custom draft when the selected value cycles", async () => {
+  it("resets stale draft state when the selected URL window changes", async () => {
     const user = userEvent.setup();
-    const { rerender } = render(<TimeRangePicker value={1440} onChange={() => undefined} />);
-
-    await user.click(screen.getByRole("button", { name: "Custom time range" }));
-    const fromInput = screen.getByLabelText("From");
-    await user.clear(fromInput);
-    await user.type(fromInput, "now-2h");
-
-    rerender(<TimeRangePicker value={60} onChange={() => undefined} />);
-    expect(screen.getByLabelText("From")).toHaveValue("now-1h");
-
-    rerender(<TimeRangePicker value={1440} onChange={() => undefined} />);
-    expect(screen.getByLabelText("From")).toHaveValue("now-1d");
+    const change = vi.fn();
+    const view = render(<TimeRangePicker value={1440} onChange={change} />);
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Time Window" }),
+      "custom",
+    );
+    await user.clear(screen.getByLabelText("Minutes"));
+    await user.type(screen.getByLabelText("Minutes"), "invalid");
+    view.rerender(<TimeRangePicker value={60} onChange={change} />);
+    expect(screen.getByLabelText("Minutes")).toHaveValue("60");
+    view.rerender(<TimeRangePicker value={1440} onChange={change} />);
+    expect(screen.getByLabelText("Minutes")).toHaveValue("1440");
   });
 });

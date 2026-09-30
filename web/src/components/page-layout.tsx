@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
 
 export function PageHeader({ children, className }: { children: ReactNode; className?: string }) {
-  return <header className={cn("flex h-[76px] items-center border-b border-border px-page", className)}>{children}</header>;
+  return <header className={cn("flex h-12 shrink-0 items-center sm:h-[76px] border-b border-border px-page", className)}>{children}</header>;
 }
 
 /**

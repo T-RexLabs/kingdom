@@ -1,31 +1,51 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppShell } from "./app-shell";
 
 let routerLocation = { pathname: "/runs" };
-
+let previewing = false;
+const cancelPreview = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, to, className }: { children: React.ReactNode; to: string; className?: string }) => (
-    <a href={to} className={className}>
+  Link: ({
+    children,
+    to,
+    ...props
+  }: {
+    children: React.ReactNode;
+    to: string;
+  }) => (
+    <a href={to} {...props}>
       {children}
     </a>
   ),
   useRouterState: () => ({ location: routerLocation }),
 }));
-
 vi.mock("@/api/hooks", () => ({
   useHealth: () => ({ data: { status: "ok" } }),
+  useWorkspaceCapabilities: () => ({
+    data: { project_root: "/projects/Atlas" },
+  }),
 }));
-
+vi.mock("@/theme", () => ({
+  ThemeIcon: ({ slot }: { slot: string }) => (
+    <span aria-hidden="true" data-icon={slot} />
+  ),
+  useTheme: () => ({
+    isPreviewing: previewing,
+    cancelPreview,
+    theme: { name: "My Theme", copy: { "brand.tagline": "Clear intent." } },
+  }),
+}));
 vi.mock("@/hooks/use-keyboard-shortcuts", () => ({
-  useKeyboardShortcuts: () => ({ helpOpen: false, closeHelp: vi.fn(), shortcuts: [], pendingG: false }),
+  useKeyboardShortcuts: () => ({
+    helpOpen: false,
+    closeHelp: vi.fn(),
+    shortcuts: [],
+    pendingG: false,
+  }),
 }));
-
-vi.mock("@/components/shortcuts-help", () => ({
-  ShortcutsHelp: () => null,
-}));
-
+vi.mock("@/components/shortcuts-help", () => ({ ShortcutsHelp: () => null }));
 vi.mock("@/components/notifications", () => ({
   NotificationStack: () => null,
 }));
@@ -33,48 +53,52 @@ vi.mock("@/components/notifications", () => ({
 describe("app shell", () => {
   beforeEach(() => {
     routerLocation = { pathname: "/runs" };
+    previewing = false;
+    cancelPreview.mockClear();
   });
-
-  it("routes both brand labels to throne room", () => {
-    render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>,
+  it("keeps navigation stable across themes and appearance in settings", () => {
+    render(<AppShell>content</AppShell>);
+    const mainNav = screen.getByRole("navigation", { name: "Main" });
+    expect(
+      within(mainNav)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(["Overview", "Planning", "Runs", "Agents", "Analytics"]);
+    expect(within(mainNav).getByRole("link", { name: "Runs" })).toHaveAttribute(
+      "aria-current",
+      "page",
     );
-
-    const kingdomLinks = screen.getAllByRole("link", { name: /Kingdom/i });
-    expect(kingdomLinks.length).toBeGreaterThan(1);
-    for (const link of kingdomLinks) {
-      expect(link).toHaveAttribute("href", "/");
-    }
+    expect(screen.getByRole("link", { name: "Appearance" })).toHaveAttribute(
+      "href",
+      "/appearance",
+    );
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+    expect(screen.getByText("Atlas")).toBeInTheDocument();
   });
-
-  it("closes mobile navigation on route changes without remounting desktop navigation", async () => {
+  it("closes the mobile drawer on navigation and restores focus", async () => {
     const user = userEvent.setup();
-    const view = render(
-      <AppShell>
-        <div>content</div>
-      </AppShell>,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Toggle navigation" }));
-    const toggle = screen.getByRole("button", { name: "Toggle navigation" });
-    const sidebar = screen.getByRole("complementary");
-    expect(sidebar).toHaveClass("translate-x-0");
-
-    const runsLink = screen.getByRole("link", { name: "Runs" });
-    runsLink.focus();
-    expect(runsLink).toHaveFocus();
-
+    const view = render(<AppShell>content</AppShell>);
+    const desktop = screen.getByRole("complementary");
+    const toggle = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(toggle);
+    const dialog = screen.getByRole("dialog", { name: "Navigation" });
+    within(dialog).getByRole("link", { name: "Runs" }).focus();
     routerLocation = { pathname: "/agents" };
-    view.rerender(
-      <AppShell>
-        <div>content</div>
-      </AppShell>,
+    view.rerender(<AppShell>content</AppShell>);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByRole("complementary")).toBe(desktop);
+    await waitFor(() => expect(toggle).toHaveFocus());
+  });
+  it("makes full-app preview reversible without a global selector", async () => {
+    previewing = true;
+    render(<AppShell>content</AppShell>);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Only you can see this preview.",
     );
-
-    expect(screen.getByRole("complementary")).toBe(sidebar);
-    expect(sidebar).toHaveClass("-translate-x-full");
-    expect(toggle).toHaveFocus();
+    expect(
+      screen.getByRole("link", { name: "Back to Editor" }),
+    ).toHaveAttribute("href", "/appearance/create");
+    await userEvent.click(screen.getByRole("button", { name: "Exit Preview" }));
+    expect(cancelPreview).toHaveBeenCalledOnce();
   });
 });

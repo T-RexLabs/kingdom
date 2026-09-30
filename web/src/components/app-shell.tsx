@@ -1,191 +1,212 @@
 import { Link, useRouterState } from "@tanstack/react-router";
+import { Menu, X } from "lucide-react";
+import { type ReactNode, useRef, useState } from "react";
+import { useHealth, useWorkspaceCapabilities } from "@/api/hooks";
 import { cn } from "@/lib/utils";
-import {
-  Crown,
-  Scroll,
-  Play,
-  Users,
-  Shield,
-  Menu,
-  X,
-  Keyboard,
-  BarChart3,
-  Link2,
-} from "lucide-react";
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { useHealth } from "@/api/hooks";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { NotificationStack } from "@/components/notifications";
+import { ModalDialog } from "@/components/ui/modal-dialog";
+import { ThemeIcon, useTheme } from "@/theme";
 
-const navigation = [
-  { name: "Throne Room", href: "/", icon: Crown },
-  { name: "Decrees", href: "/decrees", icon: Scroll },
-  { name: "Runs", href: "/runs", icon: Play },
-  { name: "Agents", href: "/agents", icon: Users },
-  { name: "Connections", href: "/connections", icon: Link2 },
-  { name: "Realm Analytics", href: "/realm-analytics", icon: BarChart3 },
+const primaryNavigation = [
+  { name: "Overview", href: "/", icon: "nav.overview" },
+  { name: "Planning", href: "/work-orders/planning", icon: "nav.planning" },
+  { name: "Runs", href: "/runs", icon: "nav.runs" },
+  { name: "Agents", href: "/agents", icon: "nav.agents" },
+  { name: "Analytics", href: "/analytics", icon: "nav.analytics" },
+] as const;
+const secondaryNavigation = [
+  { name: "Connections", href: "/connections", icon: "nav.connections" },
+  { name: "Appearance", href: "/appearance", icon: "nav.appearance" },
 ] as const;
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const router = useRouterState();
+  const { location } = useRouterState();
   const { helpOpen, closeHelp, shortcuts, pendingG } = useKeyboardShortcuts();
-
+  const { isPreviewing, cancelPreview, theme } = useTheme();
+  const [openAt, setOpenAt] = useState<object | null>(null);
+  const menuRef = useRef<HTMLButtonElement>(null);
+  const mobileOpen = openAt === location;
   return (
-    <div className="flex h-screen">
-      <NavigationFrame routeLocation={router.location} />
-
-      {/* Main content.
-
-          The shell is a fixed viewport: `main` sizes itself to the window and
-          never scrolls. Scrolling belongs to one place inside each page —
-          `PageContent` — so the page header stays pinned and the operator only
-          ever sees a single scrollbar. Every routed page root must therefore be
-          `h-full min-h-0` and manage its own overflow. */}
-      <main className="flex-1 overflow-hidden pt-12 md:pt-0">{children}</main>
-
-      {/* Keyboard shortcuts overlay */}
+    <div className="flex h-dvh min-h-0 bg-background text-foreground">
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-[100] focus:rounded-lg focus:bg-surface focus:p-3"
+      >
+        Skip to content
+      </a>
+      <aside
+        className="hidden w-56 shrink-0 flex-col border-r border-border bg-background-secondary md:flex"
+        aria-label="Workspace navigation"
+      >
+        <SidebarContent />
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
+          <button
+            ref={menuRef}
+            type="button"
+            onClick={() => setOpenAt(location)}
+            aria-label="Open navigation"
+            aria-expanded={mobileOpen}
+            className="rounded-md p-2 hover:bg-surface-raised"
+          >
+            <Menu size={20} />
+          </button>
+          <Brand />
+        </header>
+        {isPreviewing && (
+          <div
+            className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-accent/30 bg-accent/10 px-page py-2 text-sm"
+            role="status"
+          >
+            <span>
+              Previewing <strong>{theme.name}</strong>
+              <span className="ml-2 text-foreground-muted">
+                Only you can see this preview.
+              </span>
+            </span>
+            <div className="flex gap-4">
+              <Link
+                to="/appearance/create"
+                className="underline underline-offset-4"
+              >
+                Back to Editor
+              </Link>
+              <button
+                type="button"
+                onClick={cancelPreview}
+                className="underline underline-offset-4"
+              >
+                Exit Preview
+              </button>
+            </div>
+          </div>
+        )}
+        <main
+          id="main-content"
+          tabIndex={-1}
+          className="min-h-0 flex-1 overflow-hidden outline-none"
+        >
+          {children}
+        </main>
+      </div>
+      <ModalDialog
+        open={mobileOpen}
+        onClose={() => setOpenAt(null)}
+        ariaLabel="Navigation"
+        getFinalFocus={() => menuRef.current}
+        overlayClassName="justify-start p-0"
+        panelClassName="relative flex h-dvh w-72 max-w-[85vw] flex-col rounded-none bg-background-secondary p-0"
+      >
+        <button
+          type="button"
+          onClick={() => setOpenAt(null)}
+          aria-label="Close navigation"
+          className="absolute right-3 top-5 rounded-md p-2 hover:bg-surface-raised"
+        >
+          <X size={18} />
+        </button>
+        <SidebarContent />
+      </ModalDialog>
       <ShortcutsHelp
         open={helpOpen}
         onClose={closeHelp}
         shortcuts={shortcuts}
         pendingG={pendingG}
       />
-
-      {/* Global notification cards */}
       <NotificationStack />
     </div>
   );
 }
-
-function NavigationFrame({ routeLocation }: { routeLocation: object }) {
-  const [mobileOpenLocation, setMobileOpenLocation] = useState<object | null>(null);
-  const toggleRef = useRef<HTMLButtonElement>(null);
-  const sidebarRef = useRef<HTMLElement>(null);
-  const wasMobileOpenRef = useRef(false);
-  const mobileOpen = mobileOpenLocation === routeLocation;
-  const toggleMobile = useCallback(
-    () => setMobileOpenLocation((current) => (current === routeLocation ? null : routeLocation)),
-    [routeLocation],
-  );
-
-  useEffect(() => {
-    const wasMobileOpen = wasMobileOpenRef.current;
-    wasMobileOpenRef.current = mobileOpen;
-    if (wasMobileOpen && !mobileOpen && sidebarRef.current?.contains(document.activeElement)) {
-      toggleRef.current?.focus();
-    }
-  }, [mobileOpen]);
-
+function Brand() {
   return (
-    <>
-      {/* Mobile header */}
-      <div className="fixed top-0 left-0 right-0 z-40 flex h-12 items-center border-b border-border bg-surface px-3 md:hidden">
-        <button
-          ref={toggleRef}
-          onClick={toggleMobile}
-          className="rounded-md p-1.5 text-foreground-muted hover:text-foreground"
-          aria-label="Toggle navigation"
-        >
-          {mobileOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
-        </button>
-        <Link to="/" className="ml-3 flex items-center gap-2 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40">
-          <Shield className="h-5 w-5 text-gold" />
-          <span className="font-display text-sm font-bold text-gold">Kingdom</span>
-        </Link>
-      </div>
-
-      {/* Backdrop */}
-      {mobileOpen && (
-        <div
-          className="fixed inset-0 z-40 bg-black/50 md:hidden"
-          onClick={() => setMobileOpenLocation(null)}
-        />
-      )}
-
-      {/* Sidebar */}
-      <aside
-        ref={sidebarRef}
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 flex w-56 flex-col border-r border-border bg-surface transition-transform duration-200 md:visible md:static md:translate-x-0",
-          mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full",
-        )}
-      >
-        <SidebarContent />
-      </aside>
-    </>
+    <Link
+      to="/"
+      className="flex w-fit items-center gap-2.5 rounded-md text-accent"
+    >
+      <ThemeIcon slot="brand" className="h-5 w-5" />
+      <span className="font-display text-2xl">Kingdom</span>
+    </Link>
   );
 }
-
 function SidebarContent() {
-  const router = useRouterState();
-  const currentPath = router.location.pathname;
-  const { data: health } = useHealth();
-
+  const { location } = useRouterState();
+  const { theme } = useTheme();
+  const health = useHealth();
+  const workspace = useWorkspaceCapabilities();
+  const projectPath = workspace.data?.project_root;
+  const name =
+    projectPath?.split(/[\\/]/).filter(Boolean).at(-1) ?? "Workspace";
+  function links(items: typeof primaryNavigation | typeof secondaryNavigation) {
+    return items.map((item) => {
+      const active =
+        item.href === "/"
+          ? location.pathname === "/"
+          : location.pathname.startsWith(item.href);
+      return (
+        <Link
+          key={item.href}
+          to={item.href}
+          aria-current={active ? "page" : undefined}
+          className={cn(
+            "flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm transition-colors",
+            active
+              ? "bg-accent/10 text-accent"
+              : "text-foreground-muted hover:bg-surface-raised hover:text-foreground",
+          )}
+        >
+          <ThemeIcon slot={item.icon} className="h-[18px] w-[18px] shrink-0" />
+          {item.name}
+        </Link>
+      );
+    });
+  }
   return (
     <>
-      {/* Logo / Brand */}
-      <Link
-        to="/"
-        className="flex h-[76px] items-center gap-3 border-b border-border px-4 transition-colors hover:bg-surface-raised/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40"
+      <div className="px-6 pb-7 pt-7">
+        <Brand />
+      </div>
+      <div
+        className="mx-4 mb-7 rounded-lg border border-border bg-surface px-3 py-3"
+        title={projectPath}
       >
-        <Shield className="h-7 w-7 text-gold" />
-        <div>
-          <h1 className="font-display text-lg font-bold tracking-wide text-gold">
-            Kingdom
-          </h1>
-          <p className="text-[10px] uppercase tracking-widest text-foreground-subtle">
-            Orchestrator
-          </p>
-        </div>
-      </Link>
-
-      {/* Navigation */}
-      <nav className="flex-1 space-y-0.5 px-2 py-3">
-        {navigation.map((item) => {
-          const isActive =
-            item.href === "/"
-              ? currentPath === "/"
-              : currentPath.startsWith(item.href);
-
-          return (
-            <Link
-              key={item.href}
-              to={item.href}
-              className={cn(
-                "flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors",
-                isActive
-                  ? "bg-gold/10 text-gold"
-                  : "text-foreground-muted hover:bg-surface-raised hover:text-foreground"
-              )}
-            >
-              <item.icon className="h-4 w-4" />
-              {item.name}
-            </Link>
-          );
-        })}
-      </nav>
-
-      {/* Keyboard shortcut hint + system status footer */}
-      <div className="border-t border-border px-4 py-3">
-        <div className="mb-2 flex items-center gap-2 text-xs text-foreground-subtle">
-          <Keyboard className="h-3 w-3" />
-          <span>
-            Press <kbd className="rounded border border-border bg-background px-1 font-mono text-[10px]">?</kbd> for shortcuts
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <div
-            className={cn(
-              "h-2 w-2 rounded-full",
-              health?.status === "ok" ? "bg-status-succeeded" : "bg-status-failed"
-            )}
-          />
-          <span className="text-xs text-foreground-subtle">
-            {health?.status === "ok" ? "System Online" : "Connecting..."}
-          </span>
+        <div className="truncate text-sm font-medium">{name}</div>
+        <div className="mt-1 text-xs text-foreground-muted">
+          Local Workspace
         </div>
       </div>
+      <nav aria-label="Main" className="space-y-1 px-4">
+        {links(primaryNavigation)}
+      </nav>
+      <div className="min-h-8 flex-1" />
+      <nav aria-label="Settings" className="space-y-1 px-4">
+        {links(secondaryNavigation)}
+      </nav>
+      <footer className="space-y-4 px-7 pb-6 pt-6">
+        <div className="flex items-center gap-2.5 text-xs text-foreground-muted">
+          <span
+            aria-hidden="true"
+            className={cn(
+              "h-1.5 w-1.5 rounded-full",
+              health.data?.status === "ok"
+                ? "bg-status-succeeded"
+                : health.isError
+                  ? "bg-status-failed"
+                  : "bg-foreground-subtle",
+            )}
+          />
+          {health.data?.status === "ok"
+            ? "Local Runtime"
+            : health.isError
+              ? "Runtime Unavailable"
+              : "Connecting…"}
+        </div>
+        <p className="text-xs leading-relaxed text-foreground-subtle">
+          {theme.copy["brand.tagline"]}
+        </p>
+      </footer>
     </>
   );
 }
