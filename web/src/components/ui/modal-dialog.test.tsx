@@ -1,12 +1,32 @@
-import { render, waitFor, within } from "@testing-library/react";
+import { act, render, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { useRef, useState } from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { OVERLAY_ROOT_ID, OVERLAY_Z_INDEX, SCENE_ROOT_ID } from "@/lib/overlay-system";
 import { ModalDialog } from "./modal-dialog";
 import { PopoverListbox } from "./popover-listbox";
 
 describe("modal dialog", () => {
+	afterEach(() => vi.restoreAllMocks());
+	it("does not steal focus when one dialog hands off to another", async () => {
+		const frames: FrameRequestCallback[] = [];
+		vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => { frames.push(callback); return frames.length; });
+		const user = userEvent.setup();
+		function Handoff() {
+			const [step, setStep] = useState(0);
+			return <><button onClick={() => setStep(1)}>Begin</button>
+				{step === 1 && <ModalDialog open onClose={() => setStep(0)} ariaLabel="Choose setup"><button onClick={() => setStep(2)}>Manual setup</button></ModalDialog>}
+				{step === 2 && <ModalDialog open onClose={() => setStep(0)} ariaLabel="Manual setup"><input aria-label="Display name" /></ModalDialog>}
+			</>;
+		}
+		const view = render(<Handoff />);
+		await user.click(view.getByRole("button", { name: "Begin" }));
+		await user.click(within(document.getElementById(OVERLAY_ROOT_ID)!).getByRole("button", { name: "Manual setup" }));
+		const input = within(document.getElementById(OVERLAY_ROOT_ID)!).getByRole("textbox", { name: "Display name" });
+		expect(input).toHaveFocus();
+		act(() => { for (const callback of frames.splice(0)) callback(0); });
+		expect(input).toHaveFocus();
+	});
 	it("moves focus into the dialog before hiding the scene", async () => {
 		const user = userEvent.setup();
 		const sceneRoot = document.getElementById(SCENE_ROOT_ID) as HTMLElement;

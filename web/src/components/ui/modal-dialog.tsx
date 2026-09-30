@@ -30,7 +30,7 @@ interface ModalDialogProps {
  *
  * The Phase 4 remediation batch replaces hand-rolled overlays that visually
  * looked modal but left keyboard focus behind the backdrop. Floating UI keeps
- * the behavior consistent across decree, planning, and run-detail dialogs.
+ * the behavior consistent across work order, planning, and run-detail dialogs.
  */
 export function ModalDialog({
   open,
@@ -79,12 +79,16 @@ export function ModalDialog({
       const previousFocus = previousFocusRef.current;
       previousFocusRef.current = null;
       window.requestAnimationFrame(() => {
+        // A setup flow may replace this dialog in the same render. Its newly
+        // focused control owns the handoff; a delayed restore must not send
+        // typing back into the obscured page.
+        if (document.activeElement?.closest(`[${MODAL_PANEL_ATTRIBUTE}]`)) return;
         const finalFocus = resolveFinalFocus();
-        if (finalFocus && finalFocus.isConnected && !finalFocus.matches(":disabled")) {
+        if (finalFocus && finalFocus.isConnected && !finalFocus.matches(":disabled") && !finalFocus.closest("[inert]")) {
           finalFocus.focus();
           return;
         }
-        if (previousFocus?.isConnected) {
+        if (previousFocus?.isConnected && !previousFocus.closest("[inert]")) {
           previousFocus.focus();
         }
       });
