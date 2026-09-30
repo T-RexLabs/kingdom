@@ -1,7 +1,7 @@
-import { useId, useState } from "react";
+import { useId, useRef, useState } from "react";
 import { useInteractions } from "@floating-ui/react";
-import { CalendarDays, ChevronDown, Clock } from "lucide-react";
-import type { AnalyticsTimeRange } from "@/lib/analytics-time-range";
+import { CalendarDays, ChevronDown } from "lucide-react";
+import { parseAnalyticsTimestamp, type AnalyticsTimeRange } from "@/lib/analytics-time-range";
 import { cn } from "@/lib/utils";
 import { usePopoverFloating } from "@/lib/use-popover-floating";
 import { Button } from "./button";
@@ -114,7 +114,7 @@ export function TimeRangePicker({
           style={panelStyle}
           modalOwned={modalOwned}
           floatingProps={getFloatingProps({ "aria-labelledby": `${id}-title` })}
-          initialFocus={2}
+          initialFocus={0}
           className="w-[24rem] max-w-[calc(100vw-1rem)]"
         >
           <CustomWindow
@@ -147,17 +147,85 @@ function calendarRangeLabel(range: Extract<AnalyticsTimeRange, { kind: "absolute
   return formatter.formatRange(new Date(range.startAt), new Date(new Date(range.endAt).getTime() - 1));
 }
 
+function nextLocalDay(date: Date): Date {
+  const next = new Date(date);
+  // Calendar days can be 23 or 25 hours, or begin after a midnight DST jump.
+  next.setDate(next.getDate() + 1);
+  next.setHours(0, 0, 0, 0);
+  return next;
+}
+
+function endpointDraft(timestamp: string, endpoint: "from" | "to"): string {
+  const instant = new Date(timestamp);
+  const day = localDateValue(new Date(instant.getTime() - (endpoint === "to" ? 1 : 0)));
+  const midnight = parseLocalDate(day);
+  const boundary = midnight && (endpoint === "to" ? nextLocalDay(midnight) : midnight);
+  // Keep precise endpoints precise when reopening a mixed or timestamp range.
+  return boundary?.getTime() === instant.getTime() ? day : timestamp;
+}
+
+function relativeMinutes(value: string): number | null {
+  const expression = /^now\s*-\s*(\d+(?:\.\d+)?)\s*(m|h|d)$/i.exec(value.trim());
+  const minutes = expression ? Number(expression[1]) * MINUTES_PER_UNIT[expression[2].toLowerCase()] : 0;
+  return Number.isSafeInteger(minutes) && minutes >= 1 && minutes <= 525600 ? minutes : null;
+}
+
+function endpointDate(value: string, endpoint: "from" | "to", now: number): Date | null {
+  const trimmed = value.trim();
+  if (/^now$/i.test(trimmed)) return new Date(now);
+  const minutes = relativeMinutes(trimmed);
+  if (minutes !== null) return new Date(now - minutes * 60_000);
+  const day = parseLocalDate(trimmed);
+  if (day) return endpoint === "to" ? nextLocalDay(day) : day;
+  const timestamp = parseAnalyticsTimestamp(trimmed);
+  return timestamp === null ? null : new Date(timestamp);
+}
+
+function TimeEndpointField({ id, label, value, onChange, error, descriptionId }: {
+  id: string;
+  label: "From" | "To";
+  value: string;
+  onChange: (value: string) => void;
+  error: boolean;
+  descriptionId: string;
+}) {
+  const calendar = useRef<HTMLInputElement>(null);
+  return (
+    <div>
+      <label htmlFor={id} className={fieldLabelClass}>{label}</label>
+      <div className="flex items-stretch gap-2">
+        <input id={id} type="text" value={value} autoComplete="off" spellCheck={false}
+          onChange={(event) => onChange(event.target.value)}
+          aria-invalid={error} aria-describedby={descriptionId} className={cn(fieldClass, "font-mono")}
+        />
+        <div className="relative flex shrink-0">
+          <Button type="button" variant="outline" aria-label={`Choose ${label} date`}
+            aria-controls={`${id}-calendar`} className="h-auto min-h-10 w-10 px-0"
+            onClick={() => calendar.current?.showPicker()}
+          >
+            <CalendarDays className="h-4 w-4" aria-hidden="true" />
+          </Button>
+          {/* Anchor the native calendar beside its trigger. Only preselect literal dates, so
+              choosing today replaces “Now” instead of being swallowed as an unchanged value. */}
+          <input ref={calendar} id={`${id}-calendar`} type="date" tabIndex={-1} aria-hidden="true"
+            value={parseLocalDate(value.trim()) ? value.trim() : ""}
+            onChange={(event) => onChange(event.target.value)}
+            className="pointer-events-none absolute inset-0 h-full w-full opacity-0"
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CustomWindow({ id, initial, onApply }: {
   id: string;
   initial: AnalyticsTimeRange;
   onApply: (range: AnalyticsTimeRange) => void;
 }) {
-  const [mode, setMode] = useState(initial.kind);
-  const [draft, setDraft] = useState(`now-${durationLabel(initial.kind === "relative" ? initial.minutes : 1440)}`);
-  const [fromDate, setFromDate] = useState(() => localDateValue(initial.kind === "absolute"
-    ? new Date(initial.startAt) : new Date(Date.now() - initial.minutes * 60_000)));
-  const [toDate, setToDate] = useState(() => localDateValue(initial.kind === "absolute"
-    ? new Date(new Date(initial.endAt).getTime() - 1) : new Date()));
+  const [from, setFrom] = useState(() => initial.kind === "relative"
+    ? `now-${durationLabel(initial.minutes)}` : endpointDraft(initial.startAt, "from"));
+  const [to, setTo] = useState(() => initial.kind === "relative" ? "Now" : endpointDraft(initial.endAt, "to"));
   const [error, setError] = useState("");
   const descriptionId = `${id}-help${error ? ` ${id}-error` : ""}`;
   return (
@@ -166,84 +234,44 @@ function CustomWindow({ id, initial, onApply }: {
       className="min-h-0 overflow-y-auto p-5"
       onSubmit={(event) => {
         event.preventDefault();
-        if (mode === "absolute") {
-          const start = parseLocalDate(fromDate);
-          const end = parseLocalDate(toDate);
-          if (!start || !end) {
-            setError("Choose a valid start and end date.");
-            return;
-          }
-          if (end < start) {
-            setError("The end date must be on or after the start date.");
-            return;
-          }
-          // Advance the local calendar day, not 24 hours: selected days may span daylight-saving changes.
-          end.setDate(end.getDate() + 1);
-          end.setHours(0, 0, 0, 0);
-          if (end.getFullYear() > 9999) {
-            setError("Choose an end date before December 31, 9999.");
-            return;
-          }
-          onApply({ kind: "absolute", startAt: start.toISOString(), endAt: end.toISOString() });
+        const minutes = relativeMinutes(from);
+        if (minutes !== null && /^now$/i.test(to.trim())) {
+          onApply({ kind: "relative", minutes });
           return;
         }
-        const expression = /^now\s*-\s*(\d+(?:\.\d+)?)\s*(m|h|d)$/i.exec(draft.trim());
-        const minutes = expression ? Number(expression[1]) * (MINUTES_PER_UNIT[expression[2].toLowerCase()] ?? 0) : 0;
-        if (!Number.isSafeInteger(minutes) || minutes < 1 || minutes > 525600) {
-          setError("Enter a window such as now-90m, now-36h or now-14d, from 1 minute to 365 days in whole minutes.");
+        const now = Date.now();
+        const start = endpointDate(from, "from", now);
+        const end = endpointDate(to, "to", now);
+        if (!start || !end) {
+          setError("Enter a date (YYYY-MM-DD), a timestamp, Now, or a relative time such as now-90m. Relative times support 1 minute to 365 days in whole minutes.");
           return;
         }
-        onApply({ kind: "relative", minutes });
+        if (start.getUTCFullYear() < 0 || end.getUTCFullYear() > 9999) {
+          setError("Choose dates within the years 0000 to 9999.");
+          return;
+        }
+        if (end <= start) {
+          setError("The end must be after the start. Calendar dates include the whole day.");
+          return;
+        }
+        onApply({ kind: "absolute", startAt: start.toISOString(), endAt: end.toISOString() });
       }}
     >
       <h2 id={`${id}-title`} className="text-sm font-semibold">Custom Time Window</h2>
-      <div role="group" aria-label="Window mode" className="mt-4 grid grid-cols-2 gap-1 rounded-md border border-border bg-background p-1">
-        {(["relative", "absolute"] as const).map((option) => (
-          <Button key={option} type="button" variant="ghost" size="sm" aria-pressed={mode === option}
-            onClick={() => { setMode(option); setError(""); }}
-            className={cn(mode === option && "bg-accent/15 text-accent hover:bg-accent/20 hover:text-accent")}
-          >
-            {option === "absolute" ? <CalendarDays className="h-3.5 w-3.5" aria-hidden="true" /> : <Clock className="h-3.5 w-3.5" aria-hidden="true" />}
-            {option === "absolute" ? "Date Range" : "Relative"}
-          </Button>
-        ))}
-      </div>
       <p id={`${id}-help`} className="mt-3 text-xs leading-relaxed text-foreground-muted">
-        {mode === "absolute" ? `Includes both dates in ${Intl.DateTimeFormat().resolvedOptions().timeZone}.` : "Show a rolling window of activity ending now."}
+        Type now-1d, Now, or a date. Calendar dates include the whole day in {Intl.DateTimeFormat().resolvedOptions().timeZone}.
       </p>
       <div className="mt-5 space-y-4">
-        <div>
-          <label htmlFor={`${id}-from`} className={fieldLabelClass}>From</label>
-          {mode === "absolute" ? (
-            <input id={`${id}-from`} type="date" value={fromDate}
-              onChange={(event) => { setFromDate(event.target.value); setError(""); }}
-              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "min-w-0")}
-            />
-          ) : (
-            <input id={`${id}-from`} type="text" value={draft} autoComplete="off" spellCheck={false}
-              onChange={(event) => { setDraft(event.target.value); setError(""); }}
-              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "font-mono")}
-            />
-          )}
-          {mode === "relative" && <p className="mt-2 text-xs leading-relaxed text-foreground-muted">Use now-90m, now-36h or now-14d. Up to 365 days.</p>}
-        </div>
-        <div>
-          <label htmlFor={`${id}-to`} className={fieldLabelClass}>To</label>
-          {mode === "absolute" ? (
-            <input id={`${id}-to`} type="date" value={toDate}
-              onChange={(event) => { setToDate(event.target.value); setError(""); }}
-              aria-invalid={Boolean(error)} aria-describedby={descriptionId} className={cn(fieldClass, "min-w-0")}
-            />
-          ) : (
-            <input id={`${id}-to`} type="text" value="Now" readOnly tabIndex={-1}
-              className={cn(fieldClass, "bg-surface-raised text-foreground-muted")}
-            />
-          )}
-        </div>
+        <TimeEndpointField id={`${id}-from`} label="From" value={from}
+          onChange={(value) => { setFrom(value); setError(""); }} error={Boolean(error)} descriptionId={descriptionId}
+        />
+        <TimeEndpointField id={`${id}-to`} label="To" value={to}
+          onChange={(value) => { setTo(value); setError(""); }} error={Boolean(error)} descriptionId={descriptionId}
+        />
       </div>
       {error && <p id={`${id}-error`} role="alert" className="mt-3 text-xs leading-relaxed text-status-failed">{error}</p>}
       <div className="mt-5 flex justify-end border-t border-border pt-4">
-        <Button type="submit" size="sm">{mode === "absolute" ? "Apply Range" : "Apply Window"}</Button>
+        <Button type="submit" size="sm">Apply Window</Button>
       </div>
     </form>
   );

@@ -18,7 +18,7 @@ export interface AnalyticsSearch {
   view?: "runs" | "usage" | "reliability";
 }
 
-function parseTimestamp(value: unknown): number | null {
+export function parseAnalyticsTimestamp(value: unknown): number | null {
   if (typeof value !== "string") return null;
   const parts = RFC3339.exec(value);
   if (!parts) return null;
@@ -40,8 +40,8 @@ export function validateAnalyticsSearch(search: Record<string, unknown>): Analyt
     next.view = search.view;
   }
   if (typeof search.run_id === "string" && search.run_id.trim()) next.run_id = search.run_id;
-  const start = parseTimestamp(search.start_at);
-  const end = parseTimestamp(search.end_at);
+  const start = parseAnalyticsTimestamp(search.start_at);
+  const end = parseAnalyticsTimestamp(search.end_at);
   if (start !== null && end !== null && end > start) {
     next.start_at = new Date(start).toISOString();
     next.end_at = new Date(end).toISOString();
