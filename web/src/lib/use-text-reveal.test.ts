@@ -42,9 +42,56 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
 });
 
 describe("useTextReveal", () => {
+  it("shows every new text revision immediately under reduced motion without scheduling frames", () => {
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      matches: true,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })));
+    const { result, rerender } = renderHook(
+      ({ text }) => useTextReveal(text, true, "zero"),
+      { initialProps: { text: "" } },
+    );
+    rerender({ text: "Newly observed reasoning" });
+    expect(result.current.displayText).toBe("Newly observed reasoning");
+    expect(result.current.isStreamActive).toBe(false);
+    expect(result.current.hasCaughtUpToTarget).toBe(true);
+    expect(rafCallbacks).toHaveLength(0);
+  });
+
+  it("responds to a reduced-motion change during reveal and resumes only for later text", () => {
+    let reduced = false;
+    let notify: (() => void) | undefined;
+    const remove = vi.fn();
+    vi.stubGlobal("matchMedia", vi.fn(() => ({
+      get matches() { return reduced; },
+      addEventListener: (_event: string, listener: () => void) => { notify = listener; },
+      removeEventListener: remove,
+    })));
+    const { result, rerender, unmount } = renderHook(
+      ({ text }) => useTextReveal(text, true),
+      { initialProps: { text: "" } },
+    );
+    rerender({ text: "Partially revealed reasoning" });
+    act(() => advanceAndFlush(THROTTLE_MS + 1));
+    expect(result.current.displayText).not.toBe("Partially revealed reasoning");
+    act(() => { reduced = true; notify?.(); });
+    expect(result.current.displayText).toBe("Partially revealed reasoning");
+    expect(result.current.isStreamActive).toBe(false);
+    act(() => { reduced = false; notify?.(); });
+    expect(result.current.displayText).toBe("Partially revealed reasoning");
+    rerender({ text: "Partially revealed reasoning with more" });
+    expect(result.current.displayText).toBe("Partially revealed reasoning");
+    act(() => advanceAndFlush(THROTTLE_MS + 1));
+    expect(result.current.displayText.length).toBeGreaterThan("Partially revealed reasoning".length);
+    unmount();
+    expect(remove).toHaveBeenCalledWith("change", expect.any(Function));
+  });
+
   it("returns targetText directly when not streaming", () => {
     const { result } = renderHook(() => useTextReveal("Hello world", false));
     expect(result.current.displayText).toBe("Hello world");
