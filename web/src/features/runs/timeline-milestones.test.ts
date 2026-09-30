@@ -3,6 +3,25 @@ import type { RunExecution, RunGraphNode, TimelineEvent } from "@/api/hooks-type
 import { buildRawEventLabel, buildTimelineLookups, synthesizeMilestones } from "./timeline-milestones";
 
 describe("timeline milestones", () => {
+  it.each([
+    ["attempt.progress", "runtime_completion_observation", "QA Review Completion Observed"],
+    ["attempt.failed", "execution_review_rework", "QA Review Requested Rework"],
+    ["attempt.retry_queued", "", "QA Review Retry Queued"],
+  ])("uses title case for %s without changing role acronyms or event content", (eventType, reasonCode, label) => {
+    const event: TimelineEvent = {
+      event_id: "evt-title",
+      run_event_seq: 1,
+      attempt_seq: 1,
+      event_type: eventType,
+      reason_code: reasonCode,
+      emitted_at: "2026-03-18T11:40:00Z",
+      payload_json: { node_id: "qa_review", note: "Leave this sentence alone." },
+    };
+    const before = JSON.stringify(event);
+    expect(buildRawEventLabel(event, buildTimelineLookups([event], [])).label).toBe(label);
+    expect(JSON.stringify(event)).toBe(before);
+  });
+
 	it.each([
 		["run.retry_reopened", "operator_retry", "Manual Retry Scheduled - Attempt 1"],
 		["run.rerun_reopened", "operator_rerun", "Manual Rerun Scheduled - Attempt 1"],
@@ -144,7 +163,7 @@ describe("timeline milestones", () => {
 		const lookups = buildTimelineLookups([event], nodes);
 		const milestones = synthesizeMilestones([event], nodes, [], lookups);
 
-		expect(buildRawEventLabel(event, lookups)).toEqual({ label: "Plan Drafting final governance rework queued" });
+		expect(buildRawEventLabel(event, lookups)).toEqual({ label: "Plan Drafting Final Governance Rework Queued" });
 		expect(milestones).toEqual(expect.arrayContaining([
 			expect.objectContaining({ label: "Plan Drafting", detail: "Final Governance Rework Queued", status: "ready" }),
 		]));
@@ -174,7 +193,7 @@ describe("timeline milestones", () => {
     const lookups = buildTimelineLookups(events, nodes);
 
 		expect(buildRawEventLabel(events[0], lookups)).toEqual({
-			label: "Plan Decision awaiting approval",
+			label: "Plan Decision Awaiting Approval",
 			detail: undefined,
 		});
 	});
@@ -254,11 +273,11 @@ describe("timeline milestones", () => {
 		const lookups = buildTimelineLookups([retryQueued, progress, provisionalText], nodes);
 
 		expect(buildRawEventLabel(retryQueued, lookups)).toEqual({
-			label: "Implementation retry queued",
+			label: "Implementation Retry Queued",
 			detail: undefined,
 		});
 		expect(buildRawEventLabel(progress, lookups)).toEqual({
-			label: "Implementation Provider running",
+			label: "Implementation Provider Running",
 			detail: undefined,
 		});
 		expect(buildRawEventLabel(provisionalText, lookups)).toEqual({
@@ -301,7 +320,7 @@ describe("timeline milestones", () => {
 
 		const lookups = buildTimelineLookups([recovered], nodes, executions);
 		expect(buildRawEventLabel(recovered, lookups)).toEqual({
-			label: "Implementation blocked",
+			label: "Implementation Blocked",
 			detail: undefined,
 		});
 
@@ -909,7 +928,7 @@ describe("timeline milestones", () => {
     const lookups = buildTimelineLookups([event], nodes);
 
 		expect(buildRawEventLabel(event, lookups)).toEqual({
-		  label: "Security Validation failed",
+		  label: "Security Validation Failed",
 		  detail: "Kingdom could not confirm a clean finish for this step.",
 		});
   });
@@ -1111,7 +1130,7 @@ describe("timeline milestones", () => {
 
 		expect(milestones).toEqual(expect.arrayContaining([
 			expect.objectContaining({
-				label: "Run cancelled",
+				label: "Run Cancelled",
 				status: "cancelled",
 			}),
 		]));

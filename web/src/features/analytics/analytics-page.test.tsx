@@ -440,6 +440,38 @@ describe("AnalyticsPage", () => {
     }
   });
 
+  it("gives the role plots room to fill their panels without an oversized label gutter", async () => {
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
+      window_minutes: 1440,
+    });
+    setDefaultResponse(
+      "/analytics/execution-detail",
+      aggregateExecutionDetailSnapshot,
+      { window_minutes: 1440 },
+    );
+    installApiFetchMock();
+    const user = userEvent.setup();
+    render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+
+    await screen.findByText("Execution Duration by Role");
+    expect(screen.getByTestId("horizontal-bar-chart").parentElement).toHaveClass(
+      "h-[320px]",
+    );
+    expect(screen.getByTestId("stacked-bar-chart").parentElement).toHaveClass(
+      "h-[320px]",
+    );
+
+    await user.click(screen.getByRole("button", { name: "Usage" }));
+    const tokenHeading = await screen.findByText("Tokens by Role");
+    const tokenCard = tokenHeading.closest(".ui-card") as HTMLElement;
+    const tokenPlot = within(tokenCard).getByTestId(
+      "horizontal-bar-chart",
+    ).parentElement;
+    expect(tokenPlot).toHaveClass("max-h-[360px]", "overflow-y-auto");
+    expect(tokenPlot).not.toHaveClass("min-h-[250px]");
+    expect(tokenPlot?.parentElement).toHaveClass("items-start");
+  });
+
   it("renders recent runs with canonical awaiting-decision state and action-required cues", async () => {
     setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
       window_minutes: 1440,
@@ -819,8 +851,7 @@ describe("AnalyticsPage", () => {
 
     await screen.findByText("Windowed work order (24h)");
 
-    await user.click(screen.getByRole("button", { name: "Time Window" }));
-    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
 
@@ -892,8 +923,7 @@ describe("AnalyticsPage", () => {
       { window_minutes: 30 },
     );
 
-    await user.click(screen.getByRole("button", { name: "Time Window" }));
-    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
     expect(screen.getByText("Windowed work order (24h)")).toBeInTheDocument();
     expect(
@@ -938,8 +968,7 @@ describe("AnalyticsPage", () => {
     expect(screen.getByText("17")).toBeInTheDocument();
 
     apiFetchMock.mockClear();
-    await user.click(screen.getByRole("button", { name: "Time Window" }));
-    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
     expect(screen.getByText("17")).toBeInTheDocument();
@@ -1030,8 +1059,7 @@ describe("AnalyticsPage", () => {
       { window_minutes: 30 },
     );
 
-    await user.click(screen.getByRole("button", { name: "Time Window" }));
-    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
     expect(chartRenderSpies.horizontal).not.toHaveBeenCalled();
     expect(chartRenderSpies.stacked).not.toHaveBeenCalled();
@@ -1265,8 +1293,7 @@ describe("AnalyticsPage", () => {
     });
 
     apiFetchMock.mockClear();
-    await user.click(screen.getByRole("button", { name: "Time Window" }));
-    await user.click(screen.getByRole("option", { name: "Last 30 Minutes" }));
+    await user.click(screen.getByRole("button", { name: "Last 30 Minutes" }));
 
     await screen.findByText("Windowed work order (30m)");
     expect(screen.getAllByText("260").length).toBeGreaterThan(0);

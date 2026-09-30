@@ -3,6 +3,27 @@ import { describe, expect, it } from "vitest";
 import { HorizontalBarChart } from "./horizontal-bar-chart";
 
 describe("horizontal bar chart", () => {
+  it("puts each label and value above a full-width track instead of reserving a label gutter", () => {
+    const { container, getByText } = render(
+      <HorizontalBarChart
+        data={[
+          { label: "Architecture Advisor With a Long Department Name", value: 42 },
+          { label: "Reviewer", value: 21 },
+        ]}
+      />,
+    );
+
+    const label = getByText("Architecture Advisor With a Long Department Name");
+    const value = getByText("42");
+    const bar = container.querySelector<HTMLElement>(".bar");
+    const rowHeader = label.parentElement;
+    expect(rowHeader).toContainElement(value);
+    expect(rowHeader).not.toContainElement(bar);
+    expect(rowHeader?.nextElementSibling).toContainElement(bar);
+    expect(bar?.parentElement).toHaveClass("w-full");
+    expect(rowHeader?.parentElement).toHaveStyle({ minHeight: "40px" });
+  });
+
   it("retains long labels and values in a responsive chart without fixed SVG margins", () => {
     const label = "Architecture Advisor With a Long Department Name";
     const value = "1,234,567,890,123";
@@ -81,6 +102,20 @@ describe("horizontal bar chart", () => {
     expect(getByRole("img")).toHaveAccessibleDescription(
       "Architecture Advisor With an Extended Role Label: 42; Reviewer: 21",
     );
+  });
+
+  it("scales subsecond durations across the full track", () => {
+    const { container } = render(
+      <HorizontalBarChart
+        data={[
+          { label: "Builder", value: 0.5 },
+          { label: "Reviewer", value: 0.25 },
+        ]}
+      />,
+    );
+    const bars = container.querySelectorAll<HTMLElement>(".bar");
+    expect(bars[0].style.width).toBe("100%");
+    expect(bars[1].style.width).toBe("50%");
   });
 
   it("uses explicit empty-state height for vertical centering", () => {

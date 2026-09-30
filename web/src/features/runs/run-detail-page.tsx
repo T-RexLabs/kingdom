@@ -1203,7 +1203,7 @@ export function RunDetailPage() {
           {panel === "details" && (
             <nav
               aria-label="Run detail sections"
-              className="mb-6 flex flex-wrap gap-2 border-b border-border pb-3"
+              className="mb-6 flex flex-wrap gap-5 border-b border-border"
             >
               {(
                 [
@@ -1211,15 +1211,15 @@ export function RunDetailPage() {
                   ["audit", "Audit"],
                 ] as const
               ).map(([id, label]) => (
-                <Button
+                <button
                   key={id}
-                  variant="ghost"
-                  size="sm"
+                  type="button"
                   aria-pressed={detailSection === id}
+                  className={`min-h-11 border-b-2 px-1 pb-3 text-sm transition-colors ${detailSection === id ? "border-accent text-accent" : "border-transparent text-foreground-muted hover:text-foreground"}`}
                   onClick={() => openPanel("details", id)}
                 >
                   {label}
-                </Button>
+                </button>
               ))}
             </nav>
           )}
@@ -1280,7 +1280,7 @@ export function RunDetailPage() {
                   onRetry={() => void timelineQuery.refetch()}
                 />
               )}
-              <div className="h-[34rem]">
+              <div className="h-[clamp(12rem,calc(85dvh-18rem),34rem)]">
                 <TimelinePanel
                   events={timelineItems}
                   graph={graph}

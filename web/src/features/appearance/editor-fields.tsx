@@ -350,10 +350,10 @@ export function EditorIdentity({
         </div>
       </details>
       <details className="appearance-form-section">
-        <summary className="text-sm">UI Copy</summary>
+        <summary className="text-sm">App Wording</summary>
         <p className="appearance-help mt-3">
-          Plain text only. Operational outcomes and generated responses are not
-          theme copy.
+          Customize the headings, welcome messages, and work order names shown
+          throughout the App.
         </p>
         <div className="mt-4 space-y-4">
           {Object.keys(defaultTheme.copy).map((key) => (

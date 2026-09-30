@@ -6,9 +6,56 @@ import { buildTimelineLookups, synthesizeMilestones } from "./timeline-milestone
 import { orderMilestonesForDisplay } from "./timeline-ordering";
 
 describe("timeline panel", () => {
+  it("shows a cancellation reason once while retaining its canonical code in the record", async () => {
+    const user = userEvent.setup();
+    render(<TimelinePanel events={[{
+      event_id: "evt-cancel",
+      run_event_seq: 1,
+      attempt_seq: 1,
+      event_type: "run.state_changed",
+      reason_code: "run_cancelled_by_user",
+      emitted_at: "2026-03-18T11:40:00Z",
+      payload_json: { status: "cancelled" },
+    }]} hasMore={false} />);
+    await user.click(screen.getByRole("button", { name: "Raw Events" }));
+    expect(screen.getAllByText("Run Cancelled by User", { exact: false })).toHaveLength(1);
+    expect(screen.queryByText("run cancelled by user", { exact: true })).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Run Cancelled.*Run Cancelled by User/i }));
+    expect(screen.getByText("run_cancelled_by_user")).toBeInTheDocument();
+  });
+
 	beforeEach(() => {
 		vi.restoreAllMocks();
 	});
+
+  it("shows the active audit view and keeps complete records available even without a payload", async () => {
+    const user = userEvent.setup();
+    render(<TimelinePanel events={[{
+      event_id: "evt-empty-record",
+      run_event_seq: 42,
+      attempt_seq: 7,
+      event_type: "attempt.started",
+      reason_code: "provider_dispatch",
+      emitted_at: "2026-03-18T11:40:00Z",
+      payload_json: {},
+    }]} hasMore />);
+
+    expect(screen.getByRole("button", { name: "Activity", pressed: true })).toBeInTheDocument();
+    expect(screen.getByText(/1 milestone.*1 loaded event/i)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Raw Events" }));
+    expect(screen.getByRole("button", { name: "Raw Events", pressed: true })).toBeInTheDocument();
+    const record = screen.getByRole("button", { name: /Node started/i });
+    record.focus();
+    await user.keyboard("{Enter}");
+    expect(record).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("evt-empty-record")).toBeInTheDocument();
+    expect(screen.getByText("attempt.started")).toBeInTheDocument();
+    expect(screen.getByText("provider_dispatch")).toBeInTheDocument();
+    expect(screen.getByText("2026-03-18T11:40:00Z")).toBeInTheDocument();
+    expect(screen.getByText("42")).toBeInTheDocument();
+    expect(screen.getByText("7")).toBeInTheDocument();
+    expect(screen.getByTestId("timeline-json-payload")).toHaveTextContent("{}");
+  });
 
 	it("preserves canonical milestone sequence even when timestamps move backward", () => {
 		expect(orderMilestonesForDisplay([
@@ -154,7 +201,7 @@ describe("timeline panel", () => {
 			/>,
 		);
 
-		expect(screen.getByText("Plan Decision awaiting approval")).toBeInTheDocument();
+		expect(screen.getByText("Plan Decision Awaiting Approval")).toBeInTheDocument();
 		expect(screen.queryByText(/Crown-handled/i)).not.toBeInTheDocument();
 		expect(screen.queryByText(/authority/i)).not.toBeInTheDocument();
 	});
@@ -201,12 +248,12 @@ describe("timeline panel", () => {
 			/>,
 		);
 
-		expect(screen.queryByText("Implementation response received")).not.toBeInTheDocument();
+		expect(screen.queryByText("Implementation Response Received")).not.toBeInTheDocument();
 		expect(screen.getByText("Implementation")).toBeInTheDocument();
 
 		await user.click(screen.getByRole("button", { name: /Raw Events/i }));
 
-		expect(screen.getByText("Implementation response received")).toBeInTheDocument();
+		expect(screen.getByText("Implementation Response Received")).toBeInTheDocument();
 	});
 
   it("keeps the default timeline focused on the step outcome instead of response mailbox noise", () => {
@@ -251,7 +298,7 @@ describe("timeline panel", () => {
 		);
 
 		expect(screen.getByText("Execution Review")).toBeInTheDocument();
-		expect(screen.queryByText("Execution Review response received")).not.toBeInTheDocument();
+		expect(screen.queryByText("Execution Review Response Received")).not.toBeInTheDocument();
 	});
 
 	it("shows the newest raw events first inside an expanded milestone", async () => {
@@ -291,9 +338,9 @@ describe("timeline panel", () => {
 
 		await user.click(screen.getByRole("button", { name: /Plan Drafting/i }));
 
-		expect(screen.getAllByText(/Plan Drafting (failed|started)/).map((node) => node.textContent)).toEqual([
-			"Plan Drafting failed",
-			"Plan Drafting started",
+		expect(screen.getAllByText(/Plan Drafting (Failed|Started)/).map((node) => node.textContent)).toEqual([
+			"Plan Drafting Failed",
+			"Plan Drafting Started",
 		]);
 	});
 

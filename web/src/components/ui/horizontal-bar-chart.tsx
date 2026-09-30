@@ -1,4 +1,4 @@
-import { Fragment, memo } from "react";
+import { memo } from "react";
 
 export interface BarDatum {
   label: string;
@@ -24,7 +24,7 @@ export const HorizontalBarChart = memo(function HorizontalBarChart({
   data,
   ariaLabel = "Horizontal bar chart",
   width,
-  barHeight = 28,
+  barHeight = 40,
   emptyHeight = 250,
   formatValue = (v) => v.toLocaleString(),
 }: HorizontalBarChartProps) {
@@ -39,7 +39,7 @@ export const HorizontalBarChart = memo(function HorizontalBarChart({
     );
   }
 
-  const maxValue = data.reduce((max, datum) => Math.max(max, datum.value), 1);
+  const maxValue = data.reduce((max, datum) => Math.max(max, datum.value), 0) || 1;
 
   return (
     <div
@@ -48,27 +48,33 @@ export const HorizontalBarChart = memo(function HorizontalBarChart({
       aria-description={data
         .map((datum) => `${datum.label}: ${formatValue(datum.value)}`)
         .join("; ")}
-      style={{ width, gridAutoRows: `minmax(${barHeight}px, auto)` }}
-      className="grid w-full min-w-0 max-w-full grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_fit-content(25%)] items-center gap-x-2 py-1"
+      style={{ width }}
+      className="w-full min-w-0 max-w-full"
     >
       {data.map((datum, index) => (
-        <Fragment key={`${datum.label}-${index}`}>
-          <span className="label min-w-0 break-words py-1 text-right text-[11px] leading-snug text-foreground-muted">
-            {datum.label}
-          </span>
-          <div className="min-w-0">
+        <div
+          key={`${datum.label}-${index}`}
+          style={{ minHeight: barHeight }}
+          className="horizontal-bar-row flex min-w-0 flex-col justify-center gap-1.5 py-1"
+        >
+          <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_fit-content(35%)] items-start gap-x-3">
+            <span className="label min-w-0 break-words text-xs leading-snug text-foreground-muted">
+              {datum.label}
+            </span>
+            <span className="value min-w-0 break-all text-right font-mono text-[11px] leading-snug text-foreground-subtle">
+              {formatValue(datum.value)}
+            </span>
+          </div>
+          <div className="bar-track w-full min-w-0 overflow-hidden rounded-sm bg-border/30">
             <div
-              className="bar h-3 rounded-sm opacity-80"
+              className="bar h-2 rounded-sm opacity-80"
               style={{
                 width: `${(Math.max(0, datum.value) / maxValue) * 100}%`,
                 backgroundColor: datum.color ?? "var(--color-accent)",
               }}
             />
           </div>
-          <span className="value min-w-0 break-all py-1 font-mono text-[11px] leading-snug text-foreground-subtle">
-            {formatValue(datum.value)}
-          </span>
-        </Fragment>
+        </div>
       ))}
     </div>
   );

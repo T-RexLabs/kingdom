@@ -516,7 +516,7 @@ function RunAnalyticsSection({
               Terminal runs grouped by when they were created.
             </p>
           </CardHeader>
-          <CardContent className="h-[250px]">
+          <CardContent className="h-[320px]">
             <StackedBarChart
               ariaLabel="Run outcomes over time"
               data={deferredOutcomeBars}
@@ -533,10 +533,11 @@ function RunAnalyticsSection({
               duration.
             </p>
           </CardHeader>
-          <CardContent className="h-[250px] overflow-y-auto [scrollbar-gutter:stable]">
+          <CardContent className="h-[320px] overflow-y-auto [scrollbar-gutter:stable]">
             <HorizontalBarChart
               ariaLabel="Average execution duration by role"
               data={deferredDurationByRoleBars}
+              emptyHeight={320}
               formatValue={formatDuration}
             />
           </CardContent>
@@ -986,8 +987,8 @@ function ExecutionDetailSection({
                   <Skeleton className="h-8 w-full" />
                 </div>
               ) : (
-                <div className="grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_1px_minmax(320px,0.9fr)] lg:items-stretch">
-                  <div className="min-h-[250px] lg:pr-4">
+                <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.1fr)_1px_minmax(0,0.9fr)]">
+                  <div className="max-h-[360px] min-w-0 overflow-y-auto [scrollbar-gutter:stable] lg:pr-4">
                     <HorizontalBarChart
                       ariaLabel="Tokens by role"
                       data={deferredByRoleBars}
@@ -999,7 +1000,7 @@ function ExecutionDetailSection({
                     className="hidden self-stretch bg-border lg:block"
                     aria-hidden="true"
                   />
-                  <div className="max-h-[360px] overflow-auto lg:pl-1">
+                  <div className="max-h-[360px] min-w-0 overflow-auto [scrollbar-gutter:stable] lg:pl-1">
                     {scopedTokenStats.byRole.length > 0 && (
                       <TokenRoleBreakdownList roles={scopedTokenStats.byRole} />
                     )}

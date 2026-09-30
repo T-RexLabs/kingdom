@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { Activity, AlertTriangle, CheckCircle2, ChevronDown, ChevronRight, Flag, Play, RotateCw, XCircle } from "lucide-react";
 import { formatTimestamp, cn } from "@/lib/utils";
 import type { TimelineEvent } from "@/api/hooks";
-import { accentTextClass, runStatusBadgeClass, runStatusDotClass, runStatusTextClass } from "./run-detail-tones";
+import { accentTextClass, runStatusTextClass } from "./run-detail-tones";
 import { buildRawEventLabel, isNoiseReasonCode, specialReasonLabel } from "./timeline-milestones";
 import { attemptEventIconKey, badgeToneForLabel, isReworkTimelineEvent, timelineEventTone, type AttemptEventIconKey } from "./run-status-semantics";
 import type { TimelineLookups } from "./timeline-types";
@@ -20,187 +20,110 @@ const RAW_EVENT_ICONS: Record<string, typeof Play> = {
   "escalation.raised": AlertTriangle,
 };
 
-export function RawEventsDetail({
-  events,
-  lookups,
-}: {
-  events: TimelineEvent[];
-  lookups: TimelineLookups;
-}) {
+export function RawEventsDetail({ events, lookups }: { events: TimelineEvent[]; lookups: TimelineLookups }) {
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
-  const orderedEvents = useMemo(
-    () => [...events].sort(compareTimelineEventDisplayTime).reverse(),
-    [events],
-  );
-
-  if (orderedEvents.length === 0) {
-    return null;
-  }
+  const orderedEvents = useMemo(() => [...events].sort(compareTimelineEventDisplayTime).reverse(), [events]);
+  if (orderedEvents.length === 0) return null;
 
   return (
-    <div className="ml-2 min-w-0 space-y-0.5 border-l border-border pl-2">
-	      {orderedEvents.map((event) => {
-	        const isOpen = expandedEventId === event.event_id;
-	        const hasPayload = !!event.payload_json && Object.keys(event.payload_json).length > 0;
-	        const payloadId = `${event.event_id}-payload`;
-	        const relative = formatTimestamp(event.emitted_at);
-	        const { label, detail } = buildRawEventLabel(event, lookups);
-	        const reasonCode = event.reason_code ?? "";
-	        const showReason = !detail && reasonCode && !isNoiseReasonCode(reasonCode);
-
-	        return (
-	          <div key={event.event_id}>
-	            {hasPayload ? (
-	              <button
-	                type="button"
-	                onClick={() => setExpandedEventId(isOpen ? null : event.event_id)}
-	                aria-expanded={isOpen}
-	                aria-controls={payloadId}
-	                className={cn(
-	                  "min-w-0 w-full rounded-md px-2.5 py-1 text-left transition-colors",
-	                  "cursor-pointer hover:bg-surface-raised",
-	                  isOpen && "bg-surface-raised",
-	                )}
-	              >
-	                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-	                  <span className="min-w-0 flex-1 text-wrap-anywhere text-[10px] text-foreground-subtle">
-	                    {label}
-	                    {detail ? ` · ${detail}` : ""}
-	                    {showReason ? ` · ${reasonCode.replace(/_/g, " ")}` : ""}
-	                  </span>
-	                  <span className="shrink-0 text-[10px] text-foreground-subtle">{relative}</span>
-	                  {isOpen
-	                    ? <ChevronDown className="h-3 w-3 shrink-0 text-foreground-subtle" />
-	                    : <ChevronRight className="h-3 w-3 shrink-0 text-foreground-subtle" />}
-	                </div>
-	              </button>
-	            ) : (
-	              <div className="min-w-0 w-full rounded-md px-2.5 py-1 text-left">
-	                <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-	                  <span className="min-w-0 flex-1 text-wrap-anywhere text-[10px] text-foreground-subtle">
-	                    {label}
-	                    {detail ? ` · ${detail}` : ""}
-	                    {showReason ? ` · ${reasonCode.replace(/_/g, " ")}` : ""}
-	                  </span>
-	                  <span className="shrink-0 text-[10px] text-foreground-subtle">{relative}</span>
-	                </div>
-	              </div>
-	            )}
-	            {isOpen && hasPayload && <JsonPayloadCard id={payloadId} payload={event.payload_json} className="mt-0.5" />}
-	          </div>
-	        );
-	      })}
-    </div>
+    <ol aria-label="Milestone events" className="min-w-0 border-l border-border pl-2">
+      {orderedEvents.map((event) => (
+        <RawEventRow
+          key={event.event_id}
+          event={event}
+          isExpanded={expandedEventId === event.event_id}
+          onToggle={() => setExpandedEventId(expandedEventId === event.event_id ? null : event.event_id)}
+          lookups={lookups}
+        />
+      ))}
+    </ol>
   );
 }
 
-export function RawEventRow({
-  event,
-  isLast,
-  isExpanded,
-  onToggle,
-	lookups,
-}: {
+export function RawEventRow({ event, isExpanded, onToggle, lookups }: {
   event: TimelineEvent;
-  isLast: boolean;
   isExpanded: boolean;
   onToggle: () => void;
-	lookups: TimelineLookups;
+  lookups: TimelineLookups;
 }) {
-	const eventTone = timelineEventTone(event);
-	const reworkEvent = isReworkTimelineEvent(event);
-	const Icon = reworkEvent
-		? RotateCw
-		: RAW_EVENT_ICONS[(attemptEventIconKey(event) ?? event.event_type) as AttemptEventIconKey | string] ?? Activity;
-	const dotClass = event.event_type === "attempt.retry_scheduled"
-		? "bg-role-loki"
-		: runStatusDotClass(eventTone);
-	const iconClass = event.event_type === "attempt.retry_scheduled"
-		? accentTextClass("loki")
-		: runStatusTextClass(eventTone);
-	const hasPayload = !!event.payload_json && Object.keys(event.payload_json).length > 0;
-	const payloadId = `${event.event_id}-payload`;
-	const relative = formatTimestamp(event.emitted_at);
-	const badge = specialReasonLabel(event);
+  const eventTone = timelineEventTone(event);
+  const Icon = isReworkTimelineEvent(event) ? RotateCw : RAW_EVENT_ICONS[(attemptEventIconKey(event) ?? event.event_type) as AttemptEventIconKey | string] ?? Activity;
+  const iconClass = event.event_type === "attempt.retry_scheduled" ? accentTextClass("loki") : runStatusTextClass(eventTone);
+  const detailId = `${event.event_id}-detail`;
+  const badge = specialReasonLabel(event);
   const { label, detail } = buildRawEventLabel(event, lookups);
   const reasonCode = event.reason_code ?? "";
-  const showReason = !detail && reasonCode && !isNoiseReasonCode(reasonCode);
+  const showReason = !detail && !badge && reasonCode && !isNoiseReasonCode(reasonCode);
 
   return (
-    <div className="group relative flex min-w-0 gap-3">
-      <div className="relative flex flex-col items-center">
-        <div
-          className={cn(
-            "z-10 mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full border-2 border-background",
-            dotClass,
+    <li className="min-w-0 border-b border-border last:border-b-0">
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={isExpanded}
+        aria-controls={detailId}
+        className={cn(
+          "grid w-full min-w-0 grid-cols-[1rem_minmax(0,1fr)_auto] items-start gap-x-3 px-3 py-3.5 text-left transition-colors sm:px-4",
+          "hover:bg-surface-raised focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent",
+          isExpanded && "bg-surface-raised/60",
+        )}
+      >
+        <Icon aria-hidden="true" className={cn("mt-0.5 h-4 w-4", iconClass)} />
+        <span className="min-w-0 space-y-1.5">
+          <span className="block text-wrap-anywhere text-sm text-foreground">{label}</span>
+          {(detail || showReason || badge) && (
+            <span className="flex flex-wrap gap-x-3 gap-y-1 text-xs leading-relaxed">
+              {(detail || showReason) && <span className="text-wrap-anywhere text-foreground-muted">{detail || reasonCode.replace(/_/g, " ")}</span>}
+              {badge && <span className={cn("text-wrap-anywhere", runStatusTextClass(badgeToneForLabel(badge, eventTone)))}>{badge}</span>}
+            </span>
           )}
-        />
-        {!isLast && <div className="w-px flex-1 bg-border" />}
-      </div>
-	  <div className="min-w-0 flex-1 pb-2">
-		{hasPayload ? (
-		  <button
-			type="button"
-			onClick={onToggle}
-			aria-expanded={isExpanded}
-			aria-controls={payloadId}
-			className={cn(
-			  "min-w-0 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-left transition-colors",
-			  "hover:border-border-strong hover:bg-surface-raised",
-			  isExpanded && "border-border-strong bg-surface-raised",
-			)}
-		  >
-			<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-			  <Icon className={cn("h-3.5 w-3.5 shrink-0", iconClass)} />
-			  <span className="min-w-0 flex-1 text-wrap-anywhere text-xs text-foreground">{label}</span>
-			  {detail && <span className="text-wrap-anywhere text-[10px] text-foreground-subtle">{detail}</span>}
-			  {showReason && <span className="text-wrap-anywhere text-[10px] text-foreground-subtle">{reasonCode.replace(/_/g, " ")}</span>}
-	            {badge && (
-	              <span className={cn("inline-flex items-center rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium", runStatusBadgeClass(badgeToneForLabel(badge, eventTone)))}>
-	                {badge}
-	              </span>
-	            )}
-			  <span className="shrink-0 text-[10px] text-foreground-subtle">{relative}</span>
-			  {isExpanded
-				? <ChevronDown className="h-3 w-3 shrink-0 text-foreground-subtle" />
-				: <ChevronRight className="h-3 w-3 shrink-0 text-foreground-subtle" />}
-			</div>
-		  </button>
-		) : (
-		  <div className="min-w-0 w-full rounded-md border border-border bg-surface px-2.5 py-1.5 text-left">
-			<div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-			  <Icon className={cn("h-3.5 w-3.5 shrink-0", iconClass)} />
-			  <span className="min-w-0 flex-1 text-wrap-anywhere text-xs text-foreground">{label}</span>
-			  {detail && <span className="text-wrap-anywhere text-[10px] text-foreground-subtle">{detail}</span>}
-			  {showReason && <span className="text-wrap-anywhere text-[10px] text-foreground-subtle">{reasonCode.replace(/_/g, " ")}</span>}
-	            {badge && (
-	              <span className={cn("inline-flex items-center rounded-md border border-border px-1.5 py-0.5 text-[10px] font-medium", runStatusBadgeClass(badgeToneForLabel(badge, eventTone)))}>
-	                {badge}
-	              </span>
-	            )}
-			  <span className="shrink-0 text-[10px] text-foreground-subtle">{relative}</span>
-			</div>
-		  </div>
-		)}
-		{isExpanded && hasPayload && <JsonPayloadCard id={payloadId} payload={event.payload_json} className="mt-1" />}
-	  </div>
+        </span>
+        <span className="flex items-start gap-2.5 pl-1 text-xs text-foreground-subtle">
+          <span className="flex flex-col items-end gap-1.5">
+            <time dateTime={event.emitted_at} title={event.emitted_at} className="whitespace-nowrap">{formatTimestamp(event.emitted_at)}</time>
+            <span className="font-mono tabular-nums" title="Event sequence">#{event.run_event_seq}</span>
+          </span>
+          {isExpanded ? <ChevronDown aria-hidden="true" className="mt-0.5 h-3.5 w-3.5" /> : <ChevronRight aria-hidden="true" className="mt-0.5 h-3.5 w-3.5" />}
+        </span>
+      </button>
+      {isExpanded && (
+        <section id={detailId} aria-label="Event record" className="min-w-0 space-y-4 px-3 pb-4 pt-2 sm:px-4">
+          <dl className="grid min-w-0 grid-cols-1 gap-x-6 gap-y-3 text-xs sm:grid-cols-2">
+            <RecordField label="Event Type" value={event.event_type} />
+            <RecordField label="Recorded At" value={event.emitted_at} />
+            <RecordField label="Event ID" value={event.event_id} />
+            <RecordField label="Reason Code" value={event.reason_code || "—"} />
+            <RecordField label="Run Sequence" value={event.run_event_seq} />
+            <RecordField label="Attempt Sequence" value={event.attempt_seq} />
+          </dl>
+          <div className="min-w-0 space-y-2">
+            <h4 className="text-xs font-medium text-foreground-muted">Payload</h4>
+            <JsonPayloadCard payload={event.payload_json} />
+          </div>
+        </section>
+      )}
+    </li>
+  );
+}
+
+function RecordField({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="min-w-0 space-y-1">
+      <dt className="text-foreground-subtle">{label}</dt>
+      <dd className="text-wrap-anywhere font-mono text-foreground">{value}</dd>
     </div>
   );
 }
 
-function JsonPayloadCard({ payload, className, id }: { payload: unknown; className?: string; id?: string }) {
+function JsonPayloadCard({ payload }: { payload: unknown }) {
   const normalizedPayload = useMemo(() => normalizeJsonValue(payload), [payload]);
 
   return (
     <div
-		id={id}
       data-testid="timeline-json-payload"
-      className={cn(
-        "w-full max-w-full overflow-x-auto rounded-md border border-border bg-background px-3 py-2",
-        className,
-      )}
+      className="w-full max-w-full overflow-x-auto rounded-md border border-border bg-background p-4"
     >
-      <pre className="text-[11px] font-mono leading-relaxed">{renderJsonValue(normalizedPayload, 0)}</pre>
+      <pre className="text-xs font-mono leading-relaxed">{renderJsonValue(normalizedPayload, 0)}</pre>
     </div>
   );
 }
