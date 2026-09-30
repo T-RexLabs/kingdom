@@ -107,11 +107,11 @@ Database backups do not include `.kingdom/secrets`; retain that directory separa
 ### 5. Use Kingdom
 
 1. Open the web UI.
-2. Go to `Work Orders`.
-3. Choose a global model from the models OpenCode exposes.
-4. Start with `Planning Sessions` or issue a work order directly.
-5. Follow the run under `Runs`.
-6. Inspect the graph, Activity, agents, messages, and published output.
+2. Open **Planning** to develop a brief, or create new work directly.
+3. Choose a model from the models OpenCode exposes.
+4. Review the brief, approval choice, and delivery location before issuing it.
+5. Follow the run under **Runs** through **Workflow** and **Agent Activity**.
+6. Open **Run Files** for deliverables or **Run Details** for source context, diagnostics, messages, and audit history.
 
 Planning-session lists and run messages load history in pages. Use **Load More Sessions** in the planning rail, **Load Older Sessions** beside **From Plan**, or **Load Older Messages** in the message lanes to continue through older history. Message-lane counts say “loaded” while additional pages remain.
 

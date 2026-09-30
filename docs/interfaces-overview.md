@@ -73,7 +73,7 @@ Capabilities:
 - attach or remove planning sources
 - generate and view a plan draft
 
-The **Context** tab exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
+Planning keeps **Chat** and **Plan** as its primary views. **Attach Source** opens source selection directly, and **Sources** opens linked-source management when sources exist. The **Project Context** dialog exposes **Refresh Context** and paginated **Included Files** and **Excluded Files** inspection. Refresh creates a new filesystem context snapshot without fabricating a planner operation.
 
 Planning-session lists expose continuation through **Load More Sessions** in the planning rail and **Load Older Sessions** beside **From Plan**. Context snapshot responses contain summaries rather than file arrays; `GET /planning-sessions/{id}/context/{snapshotId}/entries` returns included or excluded metadata in ordinal pages. Planner operations bind every active source snapshot when enqueued, so later source changes affect future operations only.
 
@@ -87,22 +87,20 @@ Capabilities:
 
 - create a work order
 - choose workflow and approval settings
-- set review and validation loop controls
+- set review and validation loop controls in **Review Options**
 - choose a global model
-- optionally set per-role model overrides
+- optionally expand **Customize Role Models** to set per-role model overrides
 - issue a work order directly or from a planning draft
 
 ### `Runs` (`/runs` and `/runs/{runId}`)
 
-Run detail starts in `Workflow`, which displays the stored workflow DAG. `Workflow`, `Activity`, and `Output` are the primary destinations; quieter secondary views retain the plan, context, messages, and audit history:
+Run detail starts in **Workflow**, which displays the stored workflow DAG. The two primary views are **Workflow** and **Agent Activity**. Quiet contextual actions keep supporting material available without competing with the conversation:
 
-- `Workflow`: actual workflow topology, live execution state, and node selection
-- `Activity`: provider-emitted execution activity for the selected agent and attempt
-- `Output`: response evidence, diagnostics, publication results, and run artifacts
-- `Plan`: the approved plan and its review history
-- `Context`: the issued work order and source context
-- `Messages`: run mailbox communication
-- `Audit`: durable workflow and operator event history
+- **Workflow**: actual topology, live execution state, and node selection.
+- **Agent Activity**: the selected agent and attempt's conversation, provider reasoning, compact tool actions, and canonical final response.
+- **View Plan**: the plan and its review history, with current approval/rework controls where applicable.
+- **Run Files**: artifact downloads and publication results.
+- **Run Details**: issued brief/source context, execution diagnostics, messages, and audit history.
 
 The run surface is also where operators handle manual approvals when approvals are not autonomous.
 
@@ -110,18 +108,18 @@ Activity semantics:
 
 - Activity presents one canonical logical workflow-node projection, then lets the operator select its paged physical attempt history
 - Agent Activity shows real provider messages as readable conversation with reasoning and tool records; View Options reveals routine progress markers without changing the recorded history
-- provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. View Settled Response opens Output for the same selected attempt
+- provider message observations retain exact content, invocation/part identity, and complete content pages; they never settle an attempt. The conversation renders the canonical final response for that same selected attempt separately from settlement diagnostics
 - a `starting`, `running`, or `blocked` predecessor remains selected while a replacement is only queued, so a stale-process handoff is visible rather than hidden by the queued retry
 - primary execution status is intentionally simple: queued, starting, running, verifying, succeeded, failed, or cancelled
 - attempt detail carries the nuanced settlement and output qualifiers operators need for trust and debugging
-- Output keeps canonical settled responses and verdicts distinct from explicitly labelled observed or provisional evidence; neither activity nor an observed response implies success
+- The conversation keeps canonical settled responses distinct from observed or provisional evidence; neither activity nor an observed response implies success
 - canonical output and settled review/validation verdicts come from durable runtime-owned settlement, not mailbox text, stream text, or export diagnostics
 - all provider-backed work order attempts settle from a valid server-observed terminal response and node-specific output validation
 - Audit exposes the event timeline separately from provider activity
 
 When a stale provider process cannot be proven quiescent, Activity shows the attempt as paused and exposes **Retry Stop** only for its addressable guardian. That action requests one further bounded stop; it does not bypass quiescence, workspace restoration, or the cancellation handoff.
 
-Output includes bounded artifact provenance pages with canonical deliverable, audit evidence, and deletion distinctions. File downloads and **Download All** return complete stored content; the UI does not execute or preview arbitrary artifact bytes inline. Publication entry pages preserve structured path actions, results, and conflict reasons independently of execution settlement.
+**Run Files** includes bounded artifact provenance pages with canonical deliverable, audit evidence, and deletion distinctions. File downloads and **Download All** return complete stored content; the UI does not execute or preview arbitrary artifact bytes inline. Publication entry pages preserve structured path actions, results, and conflict reasons independently of execution settlement.
 
 ### `Agents` (`/agents`)
 
