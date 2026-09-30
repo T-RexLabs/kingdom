@@ -9,12 +9,13 @@ import { plannerScope, plannerWorkspaceState } from "./planner-workspace-state";
 import { usePlannerSessionController } from "./use-planner-session-controller";
 
 const createOperation = vi.fn();
+const activateVariant = vi.fn();
 const mockUsePlanningOperation = vi.fn();
 const mockUsePlannerOperation = vi.fn();
 
 vi.mock("@/api/hooks", () => ({
   newIdempotencyKey: () => "variant-key",
-  useActivateVariant: () => ({ mutateAsync: vi.fn() }),
+  useActivateVariant: () => ({ mutateAsync: activateVariant }),
   useCreatePlanningOperation: () => ({ mutateAsync: createOperation, error: null }),
   usePlanningOperation: (...args: unknown[]) => mockUsePlanningOperation(...args),
 }));
@@ -58,6 +59,7 @@ describe("usePlannerSessionController mutation recovery", () => {
   beforeEach(() => {
     sessionStorage.clear();
     createOperation.mockReset();
+    activateVariant.mockReset();
     mockUsePlanningOperation.mockReset();
     mockUsePlanningOperation.mockReturnValue({
       data: null,
@@ -69,6 +71,31 @@ describe("usePlannerSessionController mutation recovery", () => {
     });
     mockUsePlannerOperation.mockReset();
     mockUsePlannerOperation.mockReturnValue({ operation: null, connection: { state: "idle" } });
+  });
+
+  it("recovers a restored branch activation after renewal and refreshes the owning transcript", async () => {
+    setCSRFToken("token", "original-binding");
+    activateVariant.mockRejectedValueOnce(new TypeError("Response lost"));
+    const original = renderHook(() => usePlannerSessionController(session), { wrapper });
+    await act(async () => { await expect(original.result.current.activateVariant({ messageId: "branch-message" })).rejects.toThrow("Response lost"); });
+    const { key } = activateVariant.mock.calls[0][0];
+    original.unmount();
+    setCSRFToken("renewed-token", "renewed-binding");
+    const client = new QueryClient();
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ state: "completed", response_status: 200, response_body: { planning_session_id: session.planning_session_id, planning_message_id: "branch-message" } }), { status: 200 }));
+    try {
+      const restored = renderHook(() => usePlannerSessionController(session), { wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider> });
+      await act(async () => { await restored.result.current.recovery.onCheck(); });
+      expect(restored.result.current.recovery.pendingKind).toBeNull();
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0][0]).toBe(`/api/v1/mutation-outcomes/${encodeURIComponent(key)}?operation=planning-message-activate`);
+      expect(fetch.mock.calls[0][1]?.method ?? "GET").toBe("GET");
+      expect(activateVariant).toHaveBeenCalledOnce();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: plannerKeys.messages(session.planning_session_id) });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: plannerKeys.detail(session.planning_session_id) });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["planning-sessions", session.planning_session_id, "variants"] });
+    } finally { fetch.mockRestore(); }
   });
 
   it.each(["reply", "regenerate", "formalize", "stop"] as const)("does not send %s if the exact request cannot be journaled", async (kind) => {

@@ -57,8 +57,8 @@ describe("PlanningSourcesPanel recovery", () => {
     await waitFor(() => expect(screen.queryByRole("button", { name: "Recover Source Request" })).not.toBeInTheDocument());
   });
 
-  it("keeps a source request unresolved after authentication changes and allows state readback", async () => {
-    const fetchMock = vi.fn(async () => { throw new TypeError("Connection lost"); });
+  it.each(["unknown", "pending"])("keeps a source request unresolved after authentication changes when its outcome is %s", async (state) => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("Connection lost")).mockResolvedValueOnce(new Response(JSON.stringify({ state }), { status: 200 }));
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     const original = mount();
@@ -69,10 +69,33 @@ describe("PlanningSourcesPanel recovery", () => {
     const readState = vi.fn(async () => undefined);
     mount([source], readState);
     await user.click(screen.getByRole("button", { name: "Recover Source Request" }));
-    expect(await screen.findByText(/belongs to an earlier browser session/)).toBeInTheDocument();
+    expect(await screen.findByText(new RegExp(`original request outcome is ${state}`))).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh Source State" }));
     expect(readState).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toContain("operation=external-source-refresh");
+    expect(fetchMock.mock.calls[1][1]?.method ?? "GET").toBe("GET");
     expect(screen.getByRole("button", { name: "Recover Source Request" })).toBeInTheDocument();
+  });
+
+  it.each(["refresh", "adopt", "detach"])("recovers the retained %s outcome after renewal without mutating a different source", async (action) => {
+    const result = action === "refresh" ? { outcome: "unchanged", snapshot_created: false } : { status: action === "adopt" ? "adopted" : "detached" };
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("Connection lost")).mockResolvedValueOnce(new Response(JSON.stringify({ state: "completed", response_status: 201, response_body: result }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const original = mount();
+    await startAction(user, action);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const key = new Headers(fetchMock.mock.calls[0][1]?.headers).get("Idempotency-Key");
+    original.unmount();
+    setCSRFToken("new-token", "binding-replacement");
+    const onChanged = vi.fn(async () => undefined);
+    mount([{ ...source, link_id: "different-source", issue_number: 2 }], onChanged);
+    await user.click(screen.getByRole("button", { name: "Recover Source Request" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Recover Source Request" })).not.toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/mutation-outcomes/${encodeURIComponent(key!)}?operation=external-source-${action}`);
+    expect(fetchMock.mock.calls[1][1]?.method ?? "GET").toBe("GET");
+    expect(onChanged).toHaveBeenCalledOnce();
   });
 });

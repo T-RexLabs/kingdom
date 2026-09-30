@@ -10,7 +10,7 @@ export function PlanningContextPanel({ session, onChanged }: { session: Planning
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const entries = usePlanningContextEntries(session.planning_session_id, session.context_snapshot_id ?? "", kind);
-  const refresh = usePlanningMutationJournal("planning-context-refresh", (_body: Record<string, never>, key) => apiFetch<components["schemas"]["RefreshPlanningSessionContextResult"]>(`/planning-sessions/${session.planning_session_id}/context/refresh`, { method: "POST", headers: { "Idempotency-Key": key } }), session.planning_session_id);
+  const refresh = usePlanningMutationJournal("planning-context-refresh", (_body: Record<string, never>, key) => apiFetch<components["schemas"]["RefreshPlanningSessionContextResult"]>(`/planning-sessions/${session.planning_session_id}/context/refresh`, { method: "POST", headers: { "Idempotency-Key": key } }), session.planning_session_id, "planning-context-refresh");
   const refreshContext = async () => {
     setBusy(true); setError("");
     try { await refresh.mutateAsync({}); await onChanged(); } catch (failure) { setError(failure instanceof Error ? failure.message : "Context could not be refreshed."); } finally { setBusy(false); }

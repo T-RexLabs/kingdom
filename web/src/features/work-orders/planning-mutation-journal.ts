@@ -1,6 +1,7 @@
-import { API_BASE, ApiError, apiFetch, currentAuthBinding, currentAuthGeneration } from "@/api/client";
+import { API_BASE, apiFetch, currentAuthBinding, currentAuthGeneration } from "@/api/client";
 import type { components } from "@/api/schema";
 import { shouldRetainMutationRequest } from "@/lib/use-recoverable-mutation";
+import { decodeMutationOutcome, type OutcomeOperation } from "@/lib/mutation-outcome";
 
 export type JournalRequest<T> = {
   key: string;
@@ -10,7 +11,7 @@ export type JournalRequest<T> = {
   restored: boolean;
 };
 export type RequestBinding = Pick<JournalRequest<unknown>, "binding" | "generation" | "restored">;
-export type OutcomeOperation = "planning-session-create" | "planning-operation-create" | "work-order-create" | "run-create";
+export type OutcomeOperationSelector<T> = OutcomeOperation | ((request: T) => OutcomeOperation);
 const prefix = `kingdom:planning-mutations:v1:${API_BASE}:`;
 
 /** This contains user intent and a nonsecret binding ID, never credentials or domain caches. */
@@ -49,7 +50,7 @@ export class PlanningMutationJournal {
       ? request.binding === currentAuthBinding()
       : !request.restored && request.generation === currentAuthGeneration();
   }
-  async execute<T, R>(identity: string, body: T, key: string, send: (body: T, key: string) => Promise<R>, operation?: OutcomeOperation, origin?: RequestBinding): Promise<R> {
+  async execute<T, R>(identity: string, body: T, key: string, send: (body: T, key: string) => Promise<R>, operation?: OutcomeOperationSelector<T>, origin?: RequestBinding, onRecovered?: (result: R, request: T) => void): Promise<R> {
     const running = this.executing.get(identity);
     if (running) return running as Promise<R>;
     const retained = this.get<T>(identity);
@@ -57,27 +58,30 @@ export class PlanningMutationJournal {
     if (!retained) this.set(identity, request);
     const execute = async () => {
       let authoritative = false;
+      const readOnlyRecovery = !this.canReplay(request);
       try {
         let result: R;
-        if (this.canReplay(request)) {
+        if (!readOnlyRecovery) {
           result = await send(request.body, request.key);
         } else {
           if (!operation) throw new Error("This request belongs to an earlier browser session. Its outcome is unresolved; another request cannot safely be sent.");
-          const outcome = await apiFetch<components["schemas"]["MutationOutcome"]>(`/mutation-outcomes/${encodeURIComponent(request.key)}`, { params: { operation } });
-          if (outcome.state !== "completed" || !outcome.response_status) {
+          const outcomeOperation = typeof operation === "function" ? operation(request.body) : operation;
+          const outcome = await apiFetch<components["schemas"]["MutationOutcome"]>(`/mutation-outcomes/${encodeURIComponent(request.key)}`, { params: { operation: outcomeOperation } });
+          const decoded = decodeMutationOutcome(outcome);
+          if (decoded.state === "unresolved") {
+            if (outcome.state === "completed") throw new Error("The original request outcome could not be verified. Keep this recovery request; no mutation was sent.");
             throw new Error(`The original request outcome is ${outcome.state}. Keep this recovery request; a new request could duplicate the action.`);
           }
           authoritative = true;
-          if (outcome.response_status >= 400) {
-            const error = outcome.response_body?.error as components["schemas"]["ErrorEnvelope"]["error"] | undefined;
-            throw new ApiError(outcome.response_status, { message: error?.message ?? "The original request was rejected.", code: error?.code ?? "unknown", category: error?.category ?? "core", details: error?.details ?? {}, correlationId: error?.correlation_id ?? "mutation-outcome", retryable: error?.retryable ?? false });
-          }
-          result = outcome.response_body as R;
+          if (decoded.state === "rejected") throw decoded.error;
+          result = decoded.value as R;
+          onRecovered?.(result, request.body);
         }
         this.set(identity, null);
         return result;
       } catch (error) {
-        if (authoritative || !shouldRetainMutationRequest(error, Boolean(retained))) this.set(identity, null);
+        // A failed read describes the lookup, never the original mutation.
+        if (authoritative || (!readOnlyRecovery && !shouldRetainMutationRequest(error, Boolean(retained)))) this.set(identity, null);
         throw error;
       }
     };

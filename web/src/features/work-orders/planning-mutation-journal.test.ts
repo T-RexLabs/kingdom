@@ -62,4 +62,42 @@ describe("ordinary planning mutation journal", () => {
     expect(send).not.toHaveBeenCalled();
     expect(new PlanningMutationJournal().get("create")).toBeNull();
   });
+
+  it("keeps the original request when an outcome lookup itself is rejected", async () => {
+    const journal = new PlanningMutationJournal();
+    await expect(journal.execute("title", { title: "Original" }, "original-key", async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    setCSRFToken("renewed", "renewed-binding");
+    const send = vi.fn();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: { code: "policy_violation", message: "Lookup denied", category: "core", details: {}, retryable: false, correlation_id: "outcome-lookup" } }), { status: 403 })));
+    await expect(new PlanningMutationJournal().execute("title", { title: "Different" }, "different-key", send, "planning-session-create")).rejects.toThrow("Lookup denied");
+    expect(send).not.toHaveBeenCalled();
+    expect(new PlanningMutationJournal().get("title")?.key).toBe("original-key");
+  });
+
+  it("selects the outcome operation from the retained request and releases a definitive original rejection", async () => {
+    type SourceRequest = { action: "adopt" | "detach"; link: string };
+    const original: SourceRequest = { action: "adopt", link: "original-link" };
+    await expect(new PlanningMutationJournal().execute("source", original, "original-key", async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    setCSRFToken("renewed", "renewed-binding");
+    const fetch = vi.fn(async () => new Response(JSON.stringify({ state: "completed", response_status: 409, response_body: { error: { code: "policy_violation", message: "Original adoption rejected", category: "core", details: {}, correlation_id: "original-response", retryable: false } } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetch);
+    const send = vi.fn();
+    await expect(new PlanningMutationJournal().execute<SourceRequest, unknown>("source", { action: "detach", link: "different-link" }, "replacement-key", send, (request) => request.action === "adopt" ? "external-source-adopt" : "external-source-detach")).rejects.toThrow("Original adoption rejected");
+    expect(fetch).toHaveBeenCalledWith("/api/v1/mutation-outcomes/original-key?operation=external-source-adopt", expect.objectContaining({ credentials: "same-origin" }));
+    expect(send).not.toHaveBeenCalled();
+    expect(new PlanningMutationJournal().get("source")).toBeNull();
+  });
+
+  it.each([
+    { state: "completed", response_status: 200 },
+    { state: "completed", response_status: 302, response_body: {} },
+  ])("does not discard the guard for an unverifiable completed outcome: %j", async (outcome) => {
+    await expect(new PlanningMutationJournal().execute("create", {}, "original-key", async () => { throw new TypeError("lost"); })).rejects.toThrow();
+    setCSRFToken("renewed", "renewed-binding");
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify(outcome), { status: 200 })));
+    const send = vi.fn();
+    await expect(new PlanningMutationJournal().execute("create", {}, "replacement-key", send, "planning-session-create")).rejects.toThrow();
+    expect(send).not.toHaveBeenCalled();
+    expect(new PlanningMutationJournal().get("create")?.key).toBe("original-key");
+  });
 });

@@ -15,6 +15,7 @@ import { useInteractions } from "@floating-ui/react";
 import { ChevronDown, ExternalLink, Github, Loader2, RefreshCw, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import { usePlanningMutationJournal } from "./use-planning-mutation-journal";
+import type { OutcomeOperation } from "@/lib/mutation-outcome";
 
 type PlanningExternalSource = PlanningSessionDetail["external_sources"][number];
 
@@ -24,6 +25,7 @@ type SourceAction = "refresh" | "adopt" | "detach";
 type SourceRequest = { action: SourceAction; linkId: string; label: string };
 type SourceResult = ExternalRefreshResult | components["schemas"]["ExternalAdoptionResult"] | components["schemas"]["ExternalDetachmentResult"];
 const sourceActionPath: Record<SourceAction, string> = { refresh: "refreshes", adopt: "adoptions", detach: "detachments" };
+const sourceOutcomeOperation: Record<SourceAction, OutcomeOperation> = { refresh: "external-source-refresh", adopt: "external-source-adopt", detach: "external-source-detach" };
 
 async function sendSourceRequest(request: SourceRequest, key: string): Promise<SourceResult> {
   return apiFetch(`/external-source-links/${encodeURIComponent(request.linkId)}/${sourceActionPath[request.action]}`, {
@@ -51,7 +53,7 @@ export function PlanningSourcesPanel({
   const [reviewing, setReviewing] = useState<PlanningExternalSource>();
   const [resolving, setResolving] = useState(false);
   const [recoveryError, setRecoveryError] = useState("");
-  const sourceJournal = usePlanningMutationJournal("planning-source-write", sendSourceRequest, JSON.stringify([workspace, sessionId]));
+  const sourceJournal = usePlanningMutationJournal("planning-source-write", sendSourceRequest, JSON.stringify([workspace, sessionId]), (request) => sourceOutcomeOperation[request.action]);
   const mutateSource = async (action: SourceAction, source: PlanningExternalSource) => {
     setRecoveryError("");
     return sourceJournal.mutateAsync({ action, linkId: source.link_id, label: sourceLabel(source) });

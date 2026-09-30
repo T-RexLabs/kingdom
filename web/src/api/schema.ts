@@ -1917,7 +1917,7 @@ export interface components {
             state: "unknown" | "pending" | "completed";
             /** @description Original response status, present only for completed outcomes. */
             response_status?: number;
-            /** @description Original allowlisted nonsecret result body, present only for completed outcomes. No credentials or response headers. */
+            /** @description Original allowlisted nonsecret result body, present only for completed outcomes with a body. Completed 204 outcomes omit this field. No credentials or response headers. */
             response_body?: {
                 [key: string]: unknown;
             };
@@ -4072,7 +4072,7 @@ export interface operations {
     getMutationOutcome: {
         parameters: {
             query: {
-                operation: "planning-session-create" | "planning-operation-create" | "work-order-create" | "run-create";
+                operation: "planning-session-create" | "planning-operation-create" | "planning-session-update" | "planning-session-delete" | "planning-context-refresh" | "planning-message-activate" | "planning-source-attach" | "external-source-refresh" | "external-source-adopt" | "external-source-detach" | "theme-source-save" | "theme-source-delete" | "theme-publish" | "theme-unpublish" | "theme-import" | "work-order-create" | "run-create";
             };
             header?: never;
             path: {

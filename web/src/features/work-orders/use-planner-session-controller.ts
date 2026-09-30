@@ -6,7 +6,7 @@ import { newIdempotencyKey } from "@/lib/idempotency";
 import { shouldRetainMutationRequest } from "@/lib/use-recoverable-mutation";
 import { isPlannerOperationTerminal, type AnswerPayload, type PlannerOperationState } from "./planner-operation-controller";
 import { usePlannerOperation } from "./use-planner-operation";
-import { applyPlanningSessionFields } from "./planner-session-cache";
+import { applyPlanningSessionFields, invalidatePlanningBranch } from "./planner-session-cache";
 import { plannerKeys } from "./planner-query-keys";
 import type { components } from "@/api/schema";
 import { plannerScope, type PlannerDraftSubmission, type PlannerPendingRequest } from "./planner-workspace-state";
@@ -24,7 +24,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
   const { store, state } = usePlannerSessionUI(scope);
   const createOperationMutation = useCreatePlanningOperation();
   const activateVariantMutation = useActivateVariant(sessionId);
-  const branchRecovery = usePlanningMutationJournal("planning-branch", (messageId: string, key) => activateVariantMutation.mutateAsync({ value: messageId, key }), sessionId);
+  const branchRecovery = usePlanningMutationJournal("planning-branch", (messageId: string, key) => activateVariantMutation.mutateAsync({ value: messageId, key }), sessionId, "planning-message-activate", (message) => invalidatePlanningBranch(queryClient, message.planning_session_id));
   const operationId = state.trackedOperationId ?? session?.current_run_id;
   const activeOperationQuery = usePlanningOperation(operationId);
   const { operation: streamed, connection } = usePlannerOperation(activeOperationQuery.data ?? null);

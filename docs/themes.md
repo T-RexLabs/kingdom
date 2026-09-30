@@ -10,7 +10,7 @@ Open **Appearance** to choose an exact package revision. The choice is stored in
 
 **Save Source** writes shared editable files. **Publish Revision** makes that exact saved source available in Appearance. **Use This Revision** is a separate personal choice. If a source changed since it was opened, keep or download the local draft before reloading the shared source. A published ID/version is immutable: increment the version or create a copy with a new ID for different resolved content.
 
-An uncertain shared mutation keeps its original request and idempotency key. Retry in the original browser session; a changed session may inspect the current shared state but cannot treat a matching state as proof that the original operation finished. Keep the draft backup while its outcome is unresolved.
+An uncertain shared mutation keeps its original request and idempotency key. In the original browser session, recovery can retry that exact request. After session renewal, recovery only reads the retained result for the same local operator and original key; it never replays the mutation. A matching current theme is not proof of completion. Unknown or pending results remain unresolved, so keep the draft backup until the original result is confirmed.
 
 ## Author With Files or an Agent
 

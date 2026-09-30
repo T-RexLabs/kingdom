@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -78,6 +79,7 @@ func TestMutationOutcomeOrdinaryPlanningUpdatesAndEmptyDeletion(t *testing.T) {
 	}{
 		{"planning-session-update", "PATCH /planning-sessions/{id}", `{"title":"Saved title"}`, http.StatusOK},
 		{"planning-session-delete", "DELETE /planning-sessions/{id}", "", http.StatusNoContent},
+		{"planning-context-refresh", "POST /planning-sessions/{id}/context/refresh", `{"session":{"planning_session_id":"session"},"context_snapshot":{}}`, http.StatusOK},
 		{"planning-message-activate", "PUT /planning-sessions/{id}/messages/{messageId}/activate", `{"planning_message_id":"selected-branch"}`, http.StatusOK},
 		{"planning-source-attach", "POST /planning-sessions/{id}/external-sources", `{"source_id":"source"}`, http.StatusCreated},
 		{"external-source-refresh", "POST /external-source-links/{id}/refreshes", `{"outcome":"unchanged","snapshot_created":false}`, http.StatusOK},
@@ -118,6 +120,14 @@ func TestMutationOutcomeOrdinaryPlanningUpdatesAndEmptyDeletion(t *testing.T) {
 			if tc.status == http.StatusNoContent {
 				if _, ok := value["response_body"]; ok {
 					t.Fatalf("204 should omit response body: %#v", value)
+				}
+			} else {
+				var expected map[string]any
+				if err := json.Unmarshal([]byte(tc.body), &expected); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(value["response_body"], expected) {
+					t.Fatalf("outcome changed original body: %#v", value)
 				}
 			}
 			if _, err := db.Exec(`UPDATE idempotency_keys SET actor_id = 'another-actor' WHERE idempotency_key_id = 'ordinary-recovery'`); err != nil {

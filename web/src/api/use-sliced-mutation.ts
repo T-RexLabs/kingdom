@@ -1,6 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
 import { useRef } from "react";
 import { usePlanningMutationJournal } from "@/features/work-orders/use-planning-mutation-journal";
+import type { OutcomeOperation } from "@/lib/mutation-outcome";
 
 /**
  * Sentinel returned by superseded mutation invocations. mutationFn
@@ -23,10 +24,11 @@ export function useSlicedMutation<TVars, TResponse>(
   mutationFn: (vars: TVars, signal: AbortSignal) => Promise<TResponse>,
   onLatestSuccess: (result: TResponse) => void,
   identity = "default",
+  operation?: OutcomeOperation,
 ) {
   const queues = useRef(new Map<string, { generation: number; tail: Promise<void> }>());
   const recovery = usePlanningMutationJournal<TVars, TResponse>(
-    "planning-field", (vars) => mutationFn(vars, new AbortController().signal), identity,
+    "planning-field", (vars) => mutationFn(vars, new AbortController().signal), identity, operation,
   );
 
   const mutation = useMutation<TResponse | SupersededResult, Error, TVars>({

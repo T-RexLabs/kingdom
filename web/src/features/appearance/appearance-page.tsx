@@ -168,8 +168,8 @@ export function AppearancePage() {
         <div className="appearance-notice">
           <p>
             The previous shared change needs recovery. Recovery retries only in
-            the original browser session. A renewed session checks shared state
-            without replaying the change.
+            the original browser session. A renewed session reads the exact saved
+            outcome without replaying the change. Unknown outcomes stay pending.
           </p>
           <Button
             variant="outline"

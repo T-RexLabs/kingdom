@@ -377,6 +377,27 @@ describe("PlanningSessionPage", () => {
     expect(sent[1]).toEqual(sent[0]);
   });
 
+  it("recovers an attachment outcome after renewal without another attachment request", async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new TypeError("Connection lost")).mockResolvedValueOnce(new Response(JSON.stringify({ state: "completed", response_status: 201, response_body: { link_id: "original-link" } }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+    const original = render(<PlanningSessionPage />);
+    await openPlanningSources(user);
+    await user.click(screen.getByRole("button", { name: "Add GitHub Issue" }));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+    const key = new Headers(fetchMock.mock.calls[0][1]?.headers).get("Idempotency-Key");
+    original.unmount();
+    queryClientMock = { invalidateQueries, setQueryData, setQueriesData };
+    setCSRFToken("renewed-token", "renewed-binding");
+    render(<PlanningSessionPage />);
+    await user.click(screen.getByRole("button", { name: "Recover Source Attachment" }));
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Recover Source Attachment" })).not.toBeInTheDocument());
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1][0]).toBe(`/api/v1/mutation-outcomes/${encodeURIComponent(key!)}?operation=planning-source-attach`);
+    expect(fetchMock.mock.calls[1][1]?.method ?? "GET").toBe("GET");
+    expect(refetchPlanningSession).toHaveBeenCalledOnce();
+  });
+
   it("lists every source as one row and says nothing about a current one", async () => {
     const base = mockUsePlanningSession().data;
     mockUsePlanningSession.mockReturnValue({

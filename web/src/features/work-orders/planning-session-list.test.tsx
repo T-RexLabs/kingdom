@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReactElement, ReactNode } from "react";
 import { PlanningSessionList } from "./planning-session-list";
 import { setCSRFToken } from "@/api/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { plannerKeys } from "./planner-query-keys";
 
 function render(ui: ReactElement) {
   return renderPlanning(<VirtuosoMockContext.Provider value={{ viewportHeight: 600, itemHeight: 76 }}>{ui}</VirtuosoMockContext.Provider>);
@@ -73,6 +75,38 @@ vi.mock("@/api/hooks", () => ({
 }));
 
 describe("planning session list", () => {
+  it("resolves a restored deletion's 204 outcome and removes its canonical cache after renewal", async () => {
+    const user = userEvent.setup();
+    deleteMutate.mockReset().mockRejectedValueOnce(new TypeError("Response lost"));
+    navigate.mockClear();
+    const original = render(<PlanningSessionList />);
+    await user.click(screen.getByRole("button", { name: "Delete Session two" }));
+    await user.click(screen.getByRole("button", { name: "Delete Session" }));
+    await waitFor(() => expect(deleteMutate).toHaveBeenCalledOnce());
+    const { key } = deleteMutate.mock.calls[0][0];
+    original.unmount();
+    setCSRFToken("renewed-token", "renewed-binding");
+    const client = new QueryClient();
+    client.setQueryData(plannerKeys.detail("session-2"), { planning_session_id: "session-2" });
+    client.setQueryData(plannerKeys.messages("session-2"), { pages: [] });
+    client.setQueryData(plannerKeys.plan("session-2"), { planning_draft_id: "draft-2" });
+    client.setQueryData(plannerKeys.detail("session-1"), { planning_session_id: "session-1" });
+    const fetch = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ state: "completed", response_status: 204 }), { status: 200 }));
+    try {
+      render(<QueryClientProvider client={client}><PlanningSessionList /></QueryClientProvider>);
+      await user.click(screen.getByRole("button", { name: "Resolve Deletion" }));
+      await waitFor(() => expect(screen.queryByRole("button", { name: "Resolve Deletion" })).not.toBeInTheDocument());
+      expect(fetch).toHaveBeenCalledOnce();
+      expect(fetch.mock.calls[0][0]).toBe(`/api/v1/mutation-outcomes/${encodeURIComponent(key)}?operation=planning-session-delete`);
+      expect(fetch.mock.calls[0][1]?.method ?? "GET").toBe("GET");
+      expect(deleteMutate).toHaveBeenCalledOnce();
+      expect(client.getQueryData(plannerKeys.detail("session-2"))).toBeUndefined();
+      expect(client.getQueryData(plannerKeys.messages("session-2"))).toBeUndefined();
+      expect(client.getQueryData(plannerKeys.plan("session-2"))).toBeUndefined();
+      expect(client.getQueryData(plannerKeys.detail("session-1"))).toBeDefined();
+      expect(navigate).toHaveBeenCalledWith({ to: "/work-orders/planning" });
+    } finally { fetch.mockRestore(); }
+  });
   it("loads older sessions inside the rail and disables duplicate requests", async () => {
     pagination.hasNextPage = true;
     const { rerender } = render(<PlanningSessionList />);

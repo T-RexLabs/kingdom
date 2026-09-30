@@ -71,7 +71,7 @@ paths:
           required: true
           schema:
             type: string
-            enum: [planning-session-create, planning-operation-create, work-order-create, run-create]
+            enum: [planning-session-create, planning-operation-create, planning-session-update, planning-session-delete, planning-context-refresh, planning-message-activate, planning-source-attach, external-source-refresh, external-source-adopt, external-source-detach, theme-source-save, theme-source-delete, theme-publish, theme-unpublish, theme-import, work-order-create, run-create]
       responses:
         "200":
           description: Retained mutation outcome, or an explicit unknown result.
@@ -3130,7 +3130,7 @@ components:
         response_body:
           type: object
           additionalProperties: true
-          description: Original allowlisted nonsecret result body, present only for completed outcomes. No credentials or response headers.
+          description: Original allowlisted nonsecret result body, present only for completed outcomes with a body. Completed 204 outcomes omit this field. No credentials or response headers.
     HealthResponse:
       type: object
       additionalProperties: false

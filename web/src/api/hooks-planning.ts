@@ -18,11 +18,10 @@ import type {
   PlanningSessionListResponse,
   UpdatePlanningSessionRequest,
 } from "./hooks-types";
-import { applyPlanningSessionFields } from "@/features/work-orders/planner-session-cache";
+import { applyPlanningSessionFields, invalidatePlanningBranch, removeDeletedPlanningSession } from "@/features/work-orders/planner-session-cache";
 import { plannerKeys } from "@/features/work-orders/planner-query-keys";
 import { useSlicedMutation } from "./use-sliced-mutation";
 import { historyItems } from "./history-pages";
-import { plannerWorkspaceState } from "@/features/work-orders/planner-workspace-state";
 import type { components } from "./schema";
 
 const plannerQueryOptions = {
@@ -144,6 +143,7 @@ export function useUpdatePlanningSessionTitle(sessionId: string) {
       void qc.invalidateQueries({ queryKey: plannerKeys.listPrefix() });
     },
     `${sessionId}:title`,
+    "planning-session-update",
   );
 }
 
@@ -170,6 +170,7 @@ export function useUpdatePlanningSessionModelSelection(sessionId: string) {
       });
     },
     `${sessionId}:model`,
+    "planning-session-update",
   );
 }
 
@@ -203,11 +204,7 @@ export function useDeletePlanningSession() {
         headers: { "Idempotency-Key": key },
       }),
     onSuccess: (_data, { value: sessionId }) => {
-      plannerWorkspaceState(qc).removeSession(sessionId);
-      qc.invalidateQueries({ queryKey: plannerKeys.all() });
-      qc.removeQueries({ queryKey: plannerKeys.detail(sessionId) });
-      qc.removeQueries({ queryKey: plannerKeys.messages(sessionId) });
-      qc.removeQueries({ queryKey: plannerKeys.plan(sessionId) });
+      removeDeletedPlanningSession(qc, sessionId);
     },
   });
 }
@@ -268,10 +265,7 @@ export function useActivateVariant(sessionId: string) {
         headers: { "Idempotency-Key": key },
       }),
     onSuccess: (message) => {
-      const owningSessionId = message.planning_session_id;
-      qc.invalidateQueries({ queryKey: plannerKeys.messages(owningSessionId) });
-      qc.invalidateQueries({ queryKey: plannerKeys.detail(owningSessionId) });
-      qc.invalidateQueries({ queryKey: ["planning-sessions", owningSessionId, "variants"] });
+      invalidatePlanningBranch(qc, message.planning_session_id);
     },
   });
 }

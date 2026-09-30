@@ -2,6 +2,20 @@ import type { InfiniteData, QueryClient } from "@tanstack/react-query";
 import { mapHistoryPages } from "@/api/history-pages";
 import type { PlanningSessionDetail, PlanningSessionListResponse } from "@/api/hooks";
 import { plannerKeys } from "./planner-query-keys";
+import { plannerWorkspaceState } from "./planner-workspace-state";
+
+/** Apply the same canonical cleanup after a delete response or outcome readback. */
+export function removeDeletedPlanningSession(qc: QueryClient, sessionId: string): void {
+  plannerWorkspaceState(qc).removeSession(sessionId);
+  void qc.invalidateQueries({ queryKey: plannerKeys.all() });
+  qc.removeQueries({ queryKey: plannerKeys.detail(sessionId) });
+}
+
+export function invalidatePlanningBranch(qc: QueryClient, sessionId: string): void {
+  void qc.invalidateQueries({ queryKey: plannerKeys.messages(sessionId) });
+  void qc.invalidateQueries({ queryKey: plannerKeys.detail(sessionId) });
+  void qc.invalidateQueries({ queryKey: ["planning-sessions", sessionId, "variants"] });
+}
 
 /**
  * Fields that exist on both PlanningSessionDetail and the list-item

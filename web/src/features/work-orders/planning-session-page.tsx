@@ -64,6 +64,7 @@ export function PlanningSessionPage() {
       body: JSON.stringify(intake),
     }),
     sessionId,
+    "planning-source-attach",
   );
   const [attachmentBusy, setAttachmentBusy] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");

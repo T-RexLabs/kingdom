@@ -9,12 +9,15 @@ import { useEffect, useState } from "react";
 import { Virtuoso } from "react-virtuoso";
 import { getPlanningSessionDisplayTitle, hasPlaceholderTitle } from "./planning-session-title";
 import { usePlanningMutationJournal } from "./use-planning-mutation-journal";
+import { useQueryClient } from "@tanstack/react-query";
+import { removeDeletedPlanningSession } from "./planner-session-cache";
 
 function displaySessionTitle(session: PlanningSessionSummary): string {
   return getPlanningSessionDisplayTitle(session, "New session");
 }
 
 export function PlanningSessionList({ onSelect }: { onSelect?: () => void } = {}) {
+  const queryClient = useQueryClient();
   const [search, setSearch] = useState("");
   const [query, setQuery] = useState("");
   useEffect(() => {
@@ -30,6 +33,8 @@ export function PlanningSessionList({ onSelect }: { onSelect?: () => void } = {}
     "planning-delete",
     (sessionId: string, key) => deletePlanningSession.mutateAsync({ value: sessionId, key }),
     workspace.data?.project_root ?? "__pending__",
+    "planning-session-delete",
+    (_result, sessionId) => removeDeletedPlanningSession(queryClient, sessionId),
   );
   const sessions = data?.items ?? [];
   const [recoveryError, setRecoveryError] = useState("");

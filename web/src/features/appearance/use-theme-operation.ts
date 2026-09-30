@@ -1,6 +1,11 @@
 import { useSyncExternalStore } from "react";
-import { ApiError, currentAuthBinding } from "@/api/client";
+import { ApiError, apiFetch, currentAuthBinding } from "@/api/client";
+import type { components } from "@/api/schema";
 import { newIdempotencyKey } from "@/lib/idempotency";
+import {
+  decodeMutationOutcome,
+  type OutcomeOperation,
+} from "@/lib/mutation-outcome";
 import { shouldRetainMutationRequest } from "@/lib/use-recoverable-mutation";
 import { themeAPI, themeError, type SharedThemeRequest } from "./theme-api";
 import {
@@ -28,15 +33,26 @@ function isRetryBoundaryError(error: unknown) {
       error.code === "idempotency_key_expired")
   );
 }
-function sameAssets(
-  left: Record<string, string>,
-  right: Record<string, string>,
-) {
-  const names = Object.keys(left);
-  return (
-    names.length === Object.keys(right).length &&
-    names.every((name) => left[name] === right[name])
-  );
+const themeOutcomeRoutes = {
+  "PUT /themes/{id}/source": "theme-source-save",
+  "DELETE /themes/{id}/source": "theme-source-delete",
+  "POST /themes/{id}/publish": "theme-publish",
+  "DELETE /themes/{id}": "theme-unpublish",
+  "POST /themes/import": "theme-import",
+} satisfies Record<string, OutcomeOperation>;
+
+function themeOutcomeOperation(request: SharedThemeRequest) {
+  if (!validSharedRequest(request)) throw new Error(unresolvedMessage);
+  const path =
+    request.path === "/themes/import"
+      ? request.path
+      : request.path.replace(/^\/themes\/[^/]+/, "/themes/{id}");
+  const operation =
+    themeOutcomeRoutes[
+      `${request.method} ${path}` as keyof typeof themeOutcomeRoutes
+    ];
+  if (!operation) throw new Error(unresolvedMessage);
+  return operation;
 }
 export class ThemeOperation {
   private state: OperationState = {
@@ -167,38 +183,6 @@ export class ThemeOperation {
       throw error;
     }
   };
-  private async desiredStateMatches(
-    request: SharedThemeRequest,
-  ): Promise<boolean> {
-    const id = request.path.split("/")[2];
-    if (request.method === "PUT" && request.path.endsWith("/source")) {
-      const expected = request.body as {
-        source: string;
-        assets: Record<string, string>;
-      };
-      const current = await themeAPI.source(id);
-      return (
-        current.source === expected.source &&
-        sameAssets(current.assets, expected.assets)
-      );
-    }
-    if (request.method === "DELETE" && request.path.endsWith("/source")) {
-      try {
-        await themeAPI.source(id);
-        return false;
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return true;
-        throw error;
-      }
-    }
-    if (request.verify) {
-      await themeAPI.revision(request.verify);
-      return true;
-    }
-    if (request.method === "DELETE")
-      return !(await themeAPI.catalog()).items.some((item) => item.id === id);
-    return false;
-  }
   retry = async () => {
     const pending = this.state.pending;
     if (!pending) throw new Error("No theme operation needs recovery.");
@@ -212,21 +196,29 @@ export class ThemeOperation {
         request: pending.request,
         result: await this.run(pending.request),
       };
-    // Current desired state cannot prove an older request has finished. Keep
-    // its guard until an exact outcome is available; never replay in a renewed
-    // browser binding or convert a matching readback into mutation success.
+    // Only the retained request's exact durable outcome can clear this guard.
+    // A renewed browser binding may read that outcome, but cannot replay it.
     this.update({ busy: true, pending, error: null });
+    let authoritative = false;
     try {
       if (pending.origin !== window.location.origin || !currentAuthBinding())
         throw new Error(unresolvedMessage);
-      const matches = await this.desiredStateMatches(pending.request);
-      throw new Error(
-        matches
-          ? `The current shared state matches this change, but ${unresolvedMessage[0].toLowerCase()}${unresolvedMessage.slice(1)}`
-          : unresolvedMessage,
+      const outcome = await apiFetch<components["schemas"]["MutationOutcome"]>(
+        `/mutation-outcomes/${encodeURIComponent(pending.key)}`,
+        { params: { operation: themeOutcomeOperation(pending.request) } },
       );
+      const decoded = decodeMutationOutcome(outcome);
+      if (decoded.state === "unresolved") throw new Error(unresolvedMessage);
+      authoritative = true;
+      if (decoded.state === "rejected") throw decoded.error;
+      this.update({ busy: false, pending: null, error: null });
+      return { request: pending.request, result: decoded.value };
     } catch (error) {
-      this.update({ busy: false, pending, error });
+      this.update({
+        busy: false,
+        pending: authoritative ? null : pending,
+        error,
+      });
       throw error;
     }
   };

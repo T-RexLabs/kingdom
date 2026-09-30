@@ -1,7 +1,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { ApiError, setCSRFToken } from "@/api/client";
+import * as apiClient from "@/api/client";
 import { newIdempotencyKey } from "@/lib/idempotency";
-import { themeAPI } from "./theme-api";
+import { themeAPI, type SharedThemeRequest } from "./theme-api";
 import { ThemeOperation, validStoredAttempt } from "./use-theme-operation";
 
 beforeEach(() => {
@@ -120,7 +121,7 @@ it("does not dispatch an unjournaled request when recovery storage is full", asy
   expect(mutate).toHaveBeenCalledTimes(1);
 });
 
-it("never replays a pending change with a renewed browser binding", async () => {
+it("recovers the exact completed save after renewal without replay or desired-state authority", async () => {
   const source = {
     source: '{"id":"custom"}',
     assets: {},
@@ -131,6 +132,13 @@ it("never replays a pending change with a renewed browser binding", async () => 
     .spyOn(themeAPI, "mutate")
     .mockRejectedValue(new TypeError("lost response"));
   const read = vi.spyOn(themeAPI, "source").mockResolvedValue(source);
+  const outcome = vi
+    .spyOn(apiClient, "apiFetch")
+    .mockResolvedValue({
+      state: "completed",
+      response_status: 200,
+      response_body: source,
+    });
   const operation = new ThemeOperation("binding");
   await expect(
     operation.run({
@@ -139,18 +147,26 @@ it("never replays a pending change with a renewed browser binding", async () => 
       body: { source: source.source, assets: {}, expected_source_digest: "" },
     }),
   ).rejects.toThrow();
+  const original = operation.getSnapshot().pending!;
   setCSRFToken("new-csrf", "renewed-session");
-  await expect(operation.retry()).rejects.toThrow(
-    /current shared state matches.*unresolved/,
-  );
+  await expect(operation.retry()).resolves.toEqual({
+    request: original.request,
+    result: source,
+  });
   expect(mutate).toHaveBeenCalledTimes(1);
-  expect(read).toHaveBeenCalledWith("custom");
-  expect(operation.getSnapshot().pending).not.toBeNull();
+  expect(read).not.toHaveBeenCalled();
+  expect(outcome).toHaveBeenCalledWith(
+    `/mutation-outcomes/${encodeURIComponent(original.key)}`,
+    { params: { operation: "theme-source-save" } },
+  );
+  expect(operation.getSnapshot().pending).toBeNull();
+  expect(new ThemeOperation("binding").getSnapshot().pending).toBeNull();
 });
 it("retains unmatched cross-binding outcomes and never sends a new key or draft", async () => {
   const mutate = vi
     .spyOn(themeAPI, "mutate")
     .mockRejectedValue(new TypeError("lost response"));
+  vi.spyOn(apiClient, "apiFetch").mockResolvedValue({ state: "unknown" });
   vi.spyOn(themeAPI, "source").mockResolvedValue({
     source: '{"id":"custom","name":"another edit"}',
     assets: {},
@@ -177,6 +193,172 @@ it("retains unmatched cross-binding outcomes and never sends a new key or draft"
   await expect(
     operation.run({ method: "DELETE", path: "/themes/custom" }),
   ).rejects.toThrow(/Recover/);
+});
+
+it.each([
+  {
+    operation: "theme-source-save",
+    request: {
+      method: "PUT",
+      path: "/themes/custom/source",
+      body: {
+        source: '{"id":"custom"}',
+        assets: {},
+        expected_source_digest: "",
+      },
+    },
+    status: 200,
+  },
+  {
+    operation: "theme-source-delete",
+    request: {
+      method: "DELETE",
+      path: "/themes/custom/source",
+      body: { expected_source_digest: "a".repeat(64) },
+    },
+    status: 204,
+  },
+  {
+    operation: "theme-publish",
+    request: {
+      method: "POST",
+      path: "/themes/custom/publish",
+      body: { expected_source_digest: "a".repeat(64) },
+      verify: { id: "custom", resolvedDigest: "b".repeat(64) },
+    },
+    status: 201,
+  },
+  {
+    operation: "theme-unpublish",
+    request: { method: "DELETE", path: "/themes/custom" },
+    status: 204,
+  },
+  {
+    operation: "theme-import",
+    request: {
+      method: "POST",
+      path: "/themes/import",
+      body: { archive: "cGs=" },
+      verify: { id: "custom", resolvedDigest: "b".repeat(64) },
+    },
+    status: 201,
+  },
+])(
+  "reads the exact $operation outcome after reload and renewal",
+  async ({ operation: kind, request, status }) => {
+    const mutate = vi
+      .spyOn(themeAPI, "mutate")
+      .mockRejectedValue(new TypeError("lost response"));
+    const body = status === 204 ? undefined : { id: "original-result" };
+    const outcome = vi
+      .spyOn(apiClient, "apiFetch")
+      .mockResolvedValue({
+        state: "completed",
+        response_status: status,
+        response_body: body,
+      });
+    const original = new ThemeOperation(kind);
+    await expect(original.run(request as SharedThemeRequest)).rejects.toThrow(
+      "lost response",
+    );
+    const pending = original.getSnapshot().pending!;
+    setCSRFToken("new-csrf", "renewed-session");
+    const restored = new ThemeOperation(kind);
+    await expect(restored.retry()).resolves.toEqual({
+      request: pending.request,
+      result: body,
+    });
+    expect(outcome).toHaveBeenCalledWith(
+      `/mutation-outcomes/${encodeURIComponent(pending.key)}`,
+      { params: { operation: kind } },
+    );
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(restored.getSnapshot().pending).toBeNull();
+    expect(new ThemeOperation(kind).getSnapshot().pending).toBeNull();
+  },
+);
+
+it.each([
+  { state: "unknown" },
+  { state: "pending" },
+  { state: "completed" },
+  { state: "completed", response_status: 200 },
+])(
+  "keeps incomplete outcome $state/$response_status unresolved",
+  async (outcome) => {
+    const mutate = vi
+      .spyOn(themeAPI, "mutate")
+      .mockRejectedValue(new TypeError("lost response"));
+    vi.spyOn(apiClient, "apiFetch").mockResolvedValue(outcome);
+    const operation = new ThemeOperation("unresolved");
+    await expect(
+      operation.run({ method: "DELETE", path: "/themes/custom" }),
+    ).rejects.toThrow();
+    const pending = operation.getSnapshot().pending;
+    setCSRFToken("new-csrf", "renewed-session");
+    await expect(operation.retry()).rejects.toThrow(/unresolved/);
+    expect(operation.getSnapshot().pending).toEqual(pending);
+    expect(mutate).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("clears a definitively rejected original change while preserving its canonical error", async () => {
+  const mutate = vi
+    .spyOn(themeAPI, "mutate")
+    .mockRejectedValue(new TypeError("lost response"));
+  vi.spyOn(apiClient, "apiFetch").mockResolvedValue({
+    state: "completed",
+    response_status: 409,
+    response_body: {
+      error: {
+        message: "Source changed",
+        code: "dependency_blocked",
+        category: "core",
+        retryable: false,
+        details: { expected: "original" },
+        correlation_id: "original-request",
+      },
+    },
+  });
+  const operation = new ThemeOperation("rejected");
+  await expect(
+    operation.run({ method: "DELETE", path: "/themes/custom" }),
+  ).rejects.toThrow();
+  setCSRFToken("new-csrf", "renewed-session");
+  await expect(operation.retry()).rejects.toMatchObject({
+    status: 409,
+    code: "dependency_blocked",
+    correlationId: "original-request",
+    details: { expected: "original" },
+  });
+  expect(operation.getSnapshot().pending).toBeNull();
+  expect(new ThemeOperation("rejected").getSnapshot().pending).toBeNull();
+  expect(mutate).toHaveBeenCalledTimes(1);
+});
+
+it("keeps the original request when outcome readback itself fails authentication", async () => {
+  const mutate = vi
+    .spyOn(themeAPI, "mutate")
+    .mockRejectedValue(new TypeError("lost response"));
+  vi.spyOn(apiClient, "apiFetch").mockRejectedValue(
+    new ApiError(401, {
+      message: "Session expired",
+      code: "policy_violation",
+      category: "core",
+      retryable: false,
+      details: {},
+      correlationId: "auth",
+    }),
+  );
+  const operation = new ThemeOperation("expired-read");
+  await expect(
+    operation.run({ method: "DELETE", path: "/themes/custom" }),
+  ).rejects.toThrow();
+  const pending = operation.getSnapshot().pending;
+  setCSRFToken("new-csrf", "renewed-session");
+  await expect(operation.retry()).rejects.toThrow("Session expired");
+  expect(operation.getSnapshot().pending).toEqual(pending);
+  expect(mutate).toHaveBeenCalledTimes(1);
 });
 
 it("rejects malformed stored bodies and preserves a blocking recovery marker", async () => {
