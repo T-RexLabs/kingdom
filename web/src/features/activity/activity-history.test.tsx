@@ -116,7 +116,7 @@ describe("full provider content", () => {
     );
     expect(load).toHaveBeenCalledWith("older");
   });
-  it("shows observed provider messages as readable conversation without expanding technical metadata", async () => {
+  it("shows observed provider messages on inspection without expanding technical metadata", async () => {
     const content = availableActivityContent(
       "## Recommendation\nProceed with the page.",
     );
@@ -152,15 +152,16 @@ describe("full provider content", () => {
       </VirtuosoMockContext.Provider>,
       { wrapper: wrapper() },
     );
+    await userEvent.click(await screen.findByText("Provider Message"));
     expect(
       await screen.findByRole("heading", { name: "Recommendation" }),
     ).toBeVisible();
     expect(screen.getByText("Proceed with the page.")).toBeVisible();
-    expect(screen.getByText("Provider Message")).not.toBeVisible();
-    expect(screen.getByText("Provider Observation")).not.toBeVisible();
+    expect(screen.getByText("Provider Message")).toBeVisible();
+    expect(screen.queryByText("Provider Observation")).not.toBeInTheDocument();
     expect(screen.queryByText(/bytes loaded/)).not.toBeInTheDocument();
-    expect(screen.getByText("inv")).not.toBeVisible();
-    await userEvent.click(screen.getByText("Message Details"));
+    expect(screen.queryByText("inv")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByText("Event Details"));
     expect(screen.getByText("Provider Observation")).toBeVisible();
     expect(screen.getByText(`${content.byte_length} Bytes`)).toBeVisible();
   });
@@ -191,6 +192,28 @@ describe("full provider content", () => {
     expect(
       screen.getByText(`16 of ${content.byte_length} bytes loaded.`),
     ).toBeVisible();
+  });
+
+  it.each(["todowrite", "todoread"])("renders the actual %s task snapshot without inventing unknown task statuses", async (toolName) => {
+    const content = availableActivityContent(JSON.stringify({ todos: [
+      { content: "Inspect the existing route", status: "completed" },
+      { content: "Implement the change", status: "in_progress" },
+      { content: "Wait for review", status: "awaiting_review" },
+    ] }));
+    render(
+      <VirtuosoMockContext.Provider value={{ viewportHeight: 400, itemHeight: 100 }}>
+        <ActivityHistory scopeKey="tasks" items={[{
+          id: "t", eventId: "e", sequence: 1, kind: "tool", toolName,
+          label: "Tool Call", [toolName === "todowrite" ? "inputContent" : "outputContent"]: content,
+        }]} gaps={[]} isLoadingMore={false} loadError={null} loadMore={vi.fn()} />
+      </VirtuosoMockContext.Provider>,
+      { wrapper: wrapper() },
+    );
+    await waitFor(() => expect(screen.getByText("Inspect the existing route")).toBeVisible());
+    expect(screen.getByText("1 of 3 Completed")).toBeVisible();
+    expect(screen.getByText("In Progress")).toBeVisible();
+    expect(screen.getByText("awaiting_review")).toBeVisible();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("shows running tools quietly without inferring activity from an unspecified status", async () => {
@@ -328,7 +351,6 @@ describe("full provider content", () => {
       >
         <ActivityHistory
           scopeKey="planner-message"
-          messageDisplay="inspection"
           items={[
             {
               id: "p",

@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Virtuoso, type ListRange, type VirtuosoHandle } from "react-virtuoso";
 import { apiFetch } from "@/api/client";
@@ -7,6 +7,7 @@ import type { ActivityGap } from "@/api/activity-history";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { formatExactTime } from "@/lib/date-time";
 import { activityToolSummary } from "./activity-tool-summary";
+import { ActivityChecklist } from "./activity-checklist";
 import type { ActivityContent, ActivityItem } from "./activity-view";
 import {
   initialActivityPosition,
@@ -23,15 +24,11 @@ export type ActivityHistoryControls = {
 type HistoryProps = {
   scopeKey: string;
   items: ActivityItem[];
-  messageDisplay?: "conversation" | "inspection";
-  headerActions?: ReactNode;
-  conclusion?: ReactNode;
 } & ActivityHistoryControls;
 type HistoryRow = {
   key: string;
   item?: ActivityItem;
   gap?: ActivityGap;
-  conclusion?: boolean;
   sequence: number;
 };
 type Expansion = {
@@ -51,11 +48,7 @@ function VirtualActivityHistory({
   isLoadingMore,
   loadError,
   loadMore,
-  messageDisplay = "conversation",
-  headerActions,
-  conclusion,
 }: HistoryProps) {
-  const hasConclusion = !!conclusion;
   const rows = useMemo<HistoryRow[]>(
     () =>
       [
@@ -69,17 +62,8 @@ function VirtualActivityHistory({
           gap,
           sequence: gap.through + 0.5,
         })),
-        ...(hasConclusion
-          ? [
-              {
-                key: "canonical-response",
-                conclusion: true,
-                sequence: Infinity,
-              },
-            ]
-          : []),
       ].sort((left, right) => left.sequence - right.sequence),
-    [items, gaps, hasConclusion],
+    [items, gaps],
   );
   const list = useRef<VirtuosoHandle>(null);
   const [contentHeight, setContentHeight] = useState<number | null>(null);
@@ -125,7 +109,7 @@ function VirtualActivityHistory({
           Activity could not be loaded. Try again.
         </p>
       ) : null}
-      {(!atBottom || headerActions) && <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 text-xs text-foreground-muted">
+      {!atBottom && <div className="flex min-h-9 flex-wrap items-center justify-between gap-3 text-xs text-foreground-muted">
         <div className="ml-auto flex items-start gap-3">
           {!atBottom && (
             <button
@@ -142,7 +126,6 @@ function VirtualActivityHistory({
               Jump to Latest
             </button>
           )}
-          {headerActions}
         </div>
       </div>}
       {rows.length > 0 ? (
@@ -189,7 +172,6 @@ function VirtualActivityHistory({
               ) : row.item ? (
                 <ActivityHistoryRow
                   item={row.item}
-                  messageDisplay={messageDisplay}
                   expanded={
                     expanded[
                       JSON.stringify([row.item.invocationId, row.item.id])
@@ -203,17 +185,15 @@ function VirtualActivityHistory({
                     )
                   }
                 />
-              ) : row.conclusion ? (
-                conclusion
               ) : null}
             </div>
           )}
         />
-      ) : !headerActions ? (
+      ) : (
         <p className="text-xs text-foreground-muted">
           No provider activity has been recorded.
         </p>
-      ) : null}
+      )}
     </div>
   );
 }
@@ -222,43 +202,17 @@ function ActivityHistoryRow({
   item,
   expanded,
   setExpanded,
-  messageDisplay,
 }: {
   item: ActivityItem;
-  messageDisplay: "conversation" | "inspection";
   expanded: Expansion;
   setExpanded: (field: keyof Expansion, open: boolean) => void;
 }) {
-  if (item.kind === "message" && messageDisplay === "conversation") {
-    return (
-      <article
-        data-activity-event={item.eventId}
-        className="group/message py-5"
-      >
-        <ActivityContentReader
-          label="Message"
-          presentation="message"
-          content={item.messageContent ?? { availability: "not_provided" }}
-        />
-        <div className="mt-1 text-[11px] text-foreground-subtle">
-          <details
-            open={expanded.row ?? false}
-            onToggle={(event) => {
-              if (event.target === event.currentTarget)
-                setExpanded("row", event.currentTarget.open);
-            }}
-            className="min-w-0 flex-1"
-          >
-            <summary className="w-fit cursor-pointer py-1 opacity-60 transition-opacity hover:opacity-100 focus-visible:opacity-100 group-hover/message:opacity-100">
-              Message Details
-            </summary>
-            <ActivityMetadata item={item} />
-          </details>
-        </div>
-      </article>
-    );
-  }
+  const checklistTool = item.kind === "tool" ? item.toolName?.toLowerCase() : undefined;
+  const isChecklist = checklistTool === "todowrite" || checklistTool === "todoread";
+  const checklistContent = checklistTool === "todoread" ? item.outputContent : item.inputContent;
+  const checklistExpanded = checklistTool === "todoread" ? expanded.output : expanded.input;
   return (
+    <>
     <details
       data-activity-event={item.eventId}
       open={expanded.row ?? false}
@@ -313,12 +267,14 @@ function ActivityHistoryRow({
                 open={expanded.input ?? false}
                 onOpenChange={(open) => setExpanded("input", open)}
                 content={item.inputContent ?? { availability: "not_provided" }}
+                checklist={checklistTool === "todowrite"}
               />
               <ActivityContentReader
                 label="Output"
                 open={expanded.output ?? false}
                 onOpenChange={(open) => setExpanded("output", open)}
                 content={item.outputContent ?? { availability: "not_provided" }}
+                checklist={checklistTool === "todoread"}
               />
             </>
           ) : null}
@@ -351,6 +307,8 @@ function ActivityHistoryRow({
         </div>
       )}
     </details>
+    {isChecklist && (!expanded.row || !checklistExpanded) && checklistContent && <ActivityChecklist content={checklistContent} />}
+    </>
   );
 }
 
@@ -441,7 +399,9 @@ export function ActivityContentReader({
   open: controlledOpen,
   onOpenChange,
   presentation = "disclosure",
+  checklist = false,
 }: {
+  checklist?: boolean;
   presentation?: "disclosure" | "message" | "reasoning";
   label: string;
   content: ActivityContent;
@@ -497,6 +457,7 @@ export function ActivityContentReader({
         </p>
       ) : (
         <>
+          {checklist && <ActivityChecklist content={{ ...content, preview: text }} />}
           {presentation !== "disclosure" ? (
             <div>
               <MarkdownBlock

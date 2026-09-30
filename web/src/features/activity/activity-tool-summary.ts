@@ -12,6 +12,7 @@ const actions: Record<string, string> = {
   websearch: "Search the Web",
   apply_patch: "Apply Changes",
   todowrite: "Update Tasks",
+  todoread: "Read Tasks",
   task: "Delegate Task",
 };
 

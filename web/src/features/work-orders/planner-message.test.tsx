@@ -58,7 +58,7 @@ describe("PlannerMessageCard", () => {
     expect(row).toHaveClass("justify-end");
   });
 
-  it("shows meaningful activity before the canonical reply without opening a provider inspector", async () => {
+  it("keeps one Show Activity disclosure above the canonical reply", async () => {
     mockUseAcpRunActivity.mockReturnValue({
       data: {
         items: [
@@ -98,6 +98,12 @@ describe("PlannerMessageCard", () => {
         activityRunId="run-1"
       />,
     );
+    const disclosure = screen.getByRole("button", { name: "Show Activity" });
+    expect(disclosure).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByText("Compare the existing layout before editing.")).not.toBeInTheDocument();
+    expect(screen.queryByText("View Options")).not.toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    await userEvent.click(disclosure);
     const thinking = await screen.findByText(
       "Compare the existing layout before editing.",
     );
@@ -137,7 +143,7 @@ describe("PlannerMessageCard", () => {
     expect(
       screen.queryByText("Provider Session Started"),
     ).not.toBeInTheDocument();
-    expect(screen.getByText("View Options")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Show Activity" })).toBeInTheDocument();
   });
 
   it("keeps routine events and provider message copies behind explicit inspection", async () => {
@@ -194,19 +200,13 @@ describe("PlannerMessageCard", () => {
     expect(
       screen.queryByText("Provider observed reply"),
     ).not.toBeInTheDocument();
-    await user.click(screen.getByText("View Options"));
-    await user.click(
-      screen.getByRole("checkbox", { name: "Routine Progress" }),
-    );
+    await user.click(screen.getByRole("button", { name: "Show Activity" }));
     await waitFor(() =>
       expect(screen.getByText("Provider Session Started")).toBeVisible(),
     );
     expect(
       screen.queryByText("raw provider lifecycle detail"),
     ).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("checkbox", { name: "Provider Messages" }),
-    );
     await waitFor(() =>
       expect(screen.getByText("Observed Provider Reply")).toBeVisible(),
     );
@@ -246,6 +246,7 @@ describe("PlannerMessageCard", () => {
       />,
     );
     const activity = screen.getByRole("region", { name: "Planner activity" });
+    await userEvent.click(within(activity).getByRole("button", { name: "Show Activity" }));
     await userEvent.click(
       await within(activity).findByRole("button", { name: "Load Events" }),
     );
@@ -324,6 +325,7 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText("Thinking")).toBeInTheDocument();
     expect(
       await screen.findByText("Recovered durable reasoning"),
@@ -356,6 +358,7 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(
       await screen.findByText("Determine the best next action"),
     ).toBeInTheDocument();
@@ -429,6 +432,7 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText(/First reasoning step/)).toBeInTheDocument();
     expect(
       await screen.findByText(
@@ -475,7 +479,7 @@ describe("PlannerMessageCard", () => {
     expect(question.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("shows meaningful live tool records and keeps routine progress optional", async () => {
+  it("shows real live tools and progress inside the activity disclosure", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -495,8 +499,9 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText("Read Page")).toBeInTheDocument();
-    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Processing")).toBeVisible());
     expect(
       await screen.findByText("Searching ACP activity handlers"),
     ).toBeInTheDocument();
@@ -523,10 +528,11 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     await waitFor(() =>
       expect(screen.getAllByText("Read Page")).toHaveLength(3),
     );
     expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
-    expect(screen.queryByText("Processing")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("Processing")).toBeVisible());
   });
 });
