@@ -1,5 +1,6 @@
 import { defaultTheme } from "./contract";
-import { imageAssetURL, themeFonts } from "./assets";
+import { builtinAssetURLs, imageAssetURL, themeFonts } from "./assets";
+import { applyBrowserBrand } from "./browser-brand";
 import type { ThemeState } from "./controller";
 
 export function tokenVariable(slot: string): string {
@@ -32,10 +33,8 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
   for (const [key, value] of Object.entries(attributes)) root.setAttribute(key, value);
   const chromeColor = root === document.documentElement ? document.querySelector<HTMLMetaElement>('meta[name="theme-color"]') : null;
   const previousChromeColor = chromeColor?.content;
-  const favicon = root === document.documentElement ? document.querySelector<HTMLLinkElement>('link[rel="icon"]') : null;
-  const previousIcon = favicon?.getAttribute("href");
   const brandAsset = imageAssetURL(theme, assetURLs, theme.icons.brand);
-  if (favicon && brandAsset) favicon.setAttribute("href", brandAsset);
+  const restoreBrowserBrand = root === document.documentElement ? applyBrowserBrand(brandAsset, theme.tokens.canvas) : undefined;
   if (chromeColor) chromeColor.content = theme.tokens.canvas;
   const loaded: FontFace[] = [];
   let disposed = false;
@@ -49,10 +48,7 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
   }
   return () => {
     disposed = true;
-    if (favicon && previousIcon !== undefined) {
-      if (previousIcon === null) favicon.removeAttribute("href");
-      else favicon.setAttribute("href", previousIcon);
-    }
+    restoreBrowserBrand?.();
     if (chromeColor && previousChromeColor !== undefined) chromeColor.content = previousChromeColor;
     for (const font of loaded) document.fonts.delete(font);
     for (const [key, [value, priority]] of Object.entries(previous)) {
@@ -69,5 +65,5 @@ export function applyPresentation(state: Pick<ThemeState, "theme" | "assetURLs" 
 // Call once before mounting authentication/loading surfaces. The actual pinned
 // revision remains behind ThemeProvider's workspace-aware loading boundary.
 export function initializeDefaultPresentation(): () => void {
-  return applyPresentation({ theme: defaultTheme, assetURLs: {}, activePackage: null });
+  return applyPresentation({ theme: defaultTheme, assetURLs: builtinAssetURLs(defaultTheme), activePackage: null });
 }

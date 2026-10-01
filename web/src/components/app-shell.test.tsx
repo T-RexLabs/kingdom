@@ -71,6 +71,9 @@ describe("app shell", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     await user.click(toggle);
     expect(within(sidebar).getByRole("button", { name: "Expand navigation" })).toHaveAttribute("aria-expanded", "false");
+    expect(sidebar).toHaveClass("w-16");
+    expect(within(sidebar).getByRole("link", { name: "Kingdom" })).toHaveAttribute("href", "/");
+    expect(within(sidebar).getByRole("link", { name: "Kingdom" })).toHaveAttribute("title", "Kingdom");
     for (const name of ["Overview", "Planning", "Runs", "Agents", "Analytics", "Connections", "Appearance"]) {
       expect(within(sidebar).getByRole("link", { name })).toHaveAttribute("title", name);
     }
@@ -81,6 +84,7 @@ describe("app shell", () => {
     expect(screen.getByRole("button", { name: "Expand navigation" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Expand navigation" }));
     expect(screen.getByRole("button", { name: "Collapse navigation" })).toBeInTheDocument();
+    expect(screen.getByRole("complementary", { name: "Workspace navigation" })).toHaveClass("w-56");
   });
   it("keeps mobile navigation expanded independently from the desktop preference", async () => {
     const user = userEvent.setup();

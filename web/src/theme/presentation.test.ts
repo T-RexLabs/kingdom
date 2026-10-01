@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { builtInThemes, canonicalRoleName, defaultTheme, resolvedManifest, roleIdentity, themePackage } from "./contract";
 import { applyPresentation, tokenVariable } from "./presentation";
 import { imageAssetURL, previewAssets, revisionAssetURL, themeFonts } from "./assets";
+import * as browserBrand from "./browser-brand";
 import iconCatalog from "../../../contracts/theme/lucide-icons.json?raw";
 import { iconNames } from "lucide-react/dynamic";
 
@@ -21,6 +22,21 @@ describe("canonical presentation contract", () => {
     expect(canonicalRoleName("future-advisor")).toBe("Future Advisor");
     expect(roleIdentity(defaultTheme, "future-advisor").name).toBe("Future Advisor");
   });
+  it.each(["minimal", "balanced", "high", "ludicrous"] as const)("accepts a %s revision and restores the previous ornamentation after preview", (ornamentation) => {
+    const manifest = JSON.parse(JSON.stringify({ ...defaultTheme, surfaces: { ...defaultTheme.surfaces, ornamentation } }));
+    const pkg = themePackage({ manifest, sourceDigest: "a".repeat(64), resolvedDigest: "b".repeat(64) });
+    expect(pkg.manifest.surfaces).toEqual({ ...defaultTheme.surfaces, ornamentation });
+    const root = document.createElement("div");
+    root.dataset.ornamentation = "balanced";
+    const restore = applyPresentation({ theme: pkg.manifest, assetURLs: {}, activePackage: pkg }, root);
+    expect(root.dataset.ornamentation).toBe(ornamentation);
+    restore();
+    expect(root.dataset.ornamentation).toBe("balanced");
+  });
+  it.each(["unbounded", "crazy"])("rejects unsupported ornamentation %s in a resolved revision", (ornamentation) => {
+    const manifest = { ...defaultTheme, surfaces: { ...defaultTheme.surfaces, ornamentation } };
+    expect(() => resolvedManifest(manifest)).toThrow("not a complete supported presentation");
+  });
   it("applies all tokens and restores root appearance after a light preview", () => {
     const root = document.createElement("div");
     root.style.setProperty("--theme-canvas", "#112233");
@@ -34,24 +50,27 @@ describe("canonical presentation contract", () => {
     expect(root.getAttribute("data-color-scheme")).toBe("dark");
     expect(root.style.getPropertyValue("--theme-font-display")).toBe("");
   });
-  it("applies classic chrome and restores the previous document and browser icon", () => {
+  it("applies classic chrome and browser branding without changing scoped samples", () => {
     const theme = builtInThemes.find((item) => item.id === "workstation-98")!;
-    const icon = document.createElement("link");
-    icon.rel = "icon"; icon.href = "/original.svg"; document.head.append(icon);
+    const restoreBrowserBrand = vi.fn();
+    const renderBrand = vi.spyOn(browserBrand, "applyBrowserBrand").mockReturnValue(restoreBrowserBrand);
     document.documentElement.dataset.chrome = "flat";
     const assetID = theme.icons.brand.slice(6);
     const restore = applyPresentation({ theme, activePackage: null, assetURLs: { [assetID]: "/brand.svg" } });
-    expect(document.documentElement.dataset.chrome).toBe("classic");
-    expect(document.documentElement.style.getPropertyValue("--theme-font-body")).toContain("Tahoma");
-    expect(icon.getAttribute("href")).toBe("/brand.svg");
-    const sample = document.createElement("div");
-    const restoreSample = applyPresentation({ theme: defaultTheme, activePackage: null, assetURLs: {} }, sample);
-    expect(sample.dataset.chrome).toBe("flat");
-    expect(icon.getAttribute("href")).toBe("/brand.svg");
-    restoreSample(); restore();
+    try {
+      expect(document.documentElement.dataset.chrome).toBe("classic");
+      expect(document.documentElement.style.getPropertyValue("--theme-font-body")).toContain("Tahoma");
+      expect(renderBrand).toHaveBeenCalledWith("/brand.svg", theme.tokens.canvas);
+      const sample = document.createElement("div");
+      const restoreSample = applyPresentation({ theme: defaultTheme, activePackage: null, assetURLs: {} }, sample);
+      expect(sample.dataset.chrome).toBe("flat");
+      expect(renderBrand).toHaveBeenCalledTimes(1);
+      restoreSample();
+      expect(restoreBrowserBrand).not.toHaveBeenCalled();
+    } finally { restore(); renderBrand.mockRestore(); }
     expect(document.documentElement.dataset.chrome).toBe("flat");
-    expect(icon.getAttribute("href")).toBe("/original.svg");
-    icon.remove(); delete document.documentElement.dataset.chrome;
+    expect(restoreBrowserBrand).toHaveBeenCalledOnce();
+    delete document.documentElement.dataset.chrome;
   });
   it("previews inherited built-in icons without revoking static URLs", () => {
     const manifest = structuredClone(builtInThemes.find((theme) => theme.id === "workstation-98")!);

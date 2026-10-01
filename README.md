@@ -243,7 +243,9 @@ The operator surfaces share one theme and navigation system:
 - `Appearance`: personal theme selection and shared theme authoring
 
 
-Appearance offers personal theme selection and a shared, file-friendly theme editor. See [Themes and Appearance](docs/themes.md) for package authoring, private previews, publication, and import/export.
+Appearance offers personal theme selection and a shared, file-friendly theme editor. Ornamentation ranges from **Minimal** through **Balanced**, **High**, and **Ludicrous Mode**, adding accent lines and panel corners through extravagant frames, Rexie among mountain peaks, claw-mark buttons, and stomping navigation icons. Backgrounds stay solid; Ludicrous flourishes are brief and respect reduced motion. See [Themes and Appearance](docs/themes.md) for level details, package authoring, private previews, publication, and import/export.
+
+The crowned Technology Rex is the bundled logo and favicon. In every ornamentation mode, the logo and wordmark stay still until you hover for three uninterrupted seconds. Rexie then crashes into the wordmark, scatters its letters out of view, and lets out a comic “RAAWR!” that stays clear of him; reduced-motion preferences keep Rexie static and the text readable.
 
 ## Contributing to Kingdom
 

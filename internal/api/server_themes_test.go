@@ -81,7 +81,7 @@ func TestThemeLifecycleKeepsPreviewPrivateAndRevisionsPinned(t *testing.T) {
 		}
 		return res.Body.Bytes()
 	}
-	source := `{"schemaVersion":1,"resolverVersion":1,"id":"test-theme","version":"1.0.0","name":"Test Theme","base":{"id":"obsidian-court","version":"1.0.0"}}`
+	source := `{"schemaVersion":1,"resolverVersion":1,"id":"test-theme","version":"1.0.0","name":"Test Theme","base":{"id":"obsidian-court","version":"1.1.0"}}`
 	draft := gen.ThemeDraftRequest{Source: source, Assets: map[string][]byte{}}
 	var preview theme.Package
 	if err := json.Unmarshal(request("POST", "/themes/validate", "validate-preview", draft, 200), &preview); err != nil {
@@ -125,7 +125,7 @@ func TestThemeArchiveValidationDoesNotPublishOrSaveSource(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ThemeStore: store})
-	source := []byte(`{"schemaVersion":1,"resolverVersion":1,"id":"private-preview","version":"1.0.0","name":"Private Preview","base":{"id":"obsidian-court","version":"1.0.0"}}`)
+	source := []byte(`{"schemaVersion":1,"resolverVersion":1,"id":"private-preview","version":"1.0.0","name":"Private Preview","base":{"id":"obsidian-court","version":"1.1.0"}}`)
 	pkg, err := store.Resolver().Resolve(source, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +168,7 @@ func TestThemeStylingWarningsDoNotBlockPreviewSaveOrPublish(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ThemeStore: store})
-	const source = `{"schemaVersion":1,"resolverVersion":1,"id":"experimental-theme","version":"1.0.0","name":"Experimental Theme","base":{"id":"obsidian-court","version":"1.0.0"},"tokens":{"text.primary":"#0d1110"},"surfaces":{"radius":128.5,"borderWidth":0},"typography":{"bodyWeight":250.5,"headingWeight":900}}`
+	const source = `{"schemaVersion":1,"resolverVersion":1,"id":"experimental-theme","version":"1.0.0","name":"Experimental Theme","base":{"id":"obsidian-court","version":"1.1.0"},"tokens":{"text.primary":"#0d1110"},"surfaces":{"radius":128.5,"borderWidth":0},"typography":{"bodyWeight":250.5,"headingWeight":900}}`
 	request := func(method, path string, body map[string]any, status int) []byte {
 		t.Helper()
 		res := performJSONRequest(t, handler, requestSpec{method: method, path: "/api/v1" + path, idempotencyKey: method + path, body: body})

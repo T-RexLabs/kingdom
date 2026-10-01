@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "resolverVersion": 1,
   "id": "workstation-98",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Workstation 98",
   "description": "A warm sepia desktop for a dependable corporate team.",
   "colorScheme": "light",
@@ -91,7 +91,7 @@
     "iconRendering": "original"
   },
   "icons": {
-    "brand": "asset:workstation",
+    "brand": "asset:brand",
     "nav.overview": "asset:workstation",
     "nav.planning": "asset:conversation",
     "nav.runs": "asset:network",
@@ -319,6 +319,10 @@
       "path": "assets/workstation-98/approve.svg",
       "mediaType": "image/svg+xml",
       "license": "Original Kingdom artwork."
+    },
+    "brand": {
+      "path": "assets/brand/technology-rex-black.svg",
+      "mediaType": "image/svg+xml"
     }
   }
 }

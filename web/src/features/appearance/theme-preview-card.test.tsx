@@ -2,10 +2,34 @@ import { render, screen } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { builtInThemes } from "@/theme";
-import { themePackage } from "@/theme/contract";
+import { resolvedManifest, themePackage } from "@/theme/contract";
 import { ThemePreviewCard } from "./theme-preview-card";
 
 vi.mock("lucide-react/dynamic", () => ({ iconNames: ["circle", "flask-conical", "crown"], DynamicIcon: ({ name }: { name: string }) => <span data-testid="package-icon">{name}</span> }));
+it("keeps High and Ludicrous Mode previews independent of each other and the active document", () => {
+  const activeOrnamentation = document.documentElement.getAttribute("data-ornamentation");
+  document.documentElement.dataset.ornamentation = "balanced";
+  const high = resolvedManifest({ ...builtInThemes[0], name: "High Sample", surfaces: { ...builtInThemes[0].surfaces, ornamentation: "high" } });
+  const ludicrous = resolvedManifest({ ...builtInThemes[0], name: "Ludicrous Sample", surfaces: { ...builtInThemes[0].surfaces, ornamentation: "ludicrous" } });
+  try {
+    const view = render(<><ThemePreviewCard manifest={high} /><ThemePreviewCard manifest={ludicrous} /></>);
+    const highSample = screen.getByLabelText("High Sample presentation sample");
+    const ludicrousSample = screen.getByLabelText("Ludicrous Sample presentation sample");
+    expect(highSample).toHaveAttribute("data-ornamentation", "high");
+    expect(ludicrousSample).toHaveAttribute("data-ornamentation", "ludicrous");
+    expect(document.documentElement).toHaveAttribute("data-ornamentation", "balanced");
+    view.rerender(<><ThemePreviewCard manifest={{ ...high, surfaces: { ...high.surfaces, ornamentation: "minimal" } }} /><ThemePreviewCard manifest={ludicrous} /></>);
+    expect(highSample).toHaveAttribute("data-ornamentation", "minimal");
+    expect(ludicrousSample).toHaveAttribute("data-ornamentation", "ludicrous");
+    expect(document.documentElement).toHaveAttribute("data-ornamentation", "balanced");
+    view.unmount();
+    expect(document.documentElement).toHaveAttribute("data-ornamentation", "balanced");
+  } finally {
+    if (activeOrnamentation === null) delete document.documentElement.dataset.ornamentation;
+    else document.documentElement.setAttribute("data-ornamentation", activeOrnamentation);
+  }
+});
+
 it("uses each package's typography and brand icon without changing the active document theme", () => {
   const lab = builtInThemes.find((theme) => theme.id === "software-lab")!;
   const theme = { ...structuredClone(lab), icons: { ...lab.icons, brand: "lucide:flask-conical" } };

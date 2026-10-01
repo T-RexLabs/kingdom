@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { cn } from "@/lib/utils";
+import { LudicrousRegalia } from "./ludicrous-regalia";
 
 export function PageHeader({ children, className }: { children: ReactNode; className?: string }) {
-  return <header className={cn("ui-page-header flex h-12 shrink-0 items-center sm:h-[76px] border-b border-border px-page", className)}>{children}</header>;
+  return <><header className={cn("ui-page-header flex h-12 shrink-0 items-center sm:h-[76px] border-b border-border px-page", className)}>{children}</header><LudicrousRegalia /></>;
 }
 
 /**

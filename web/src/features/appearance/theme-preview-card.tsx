@@ -3,6 +3,7 @@ import { builtinAssetURLs, imageAssetURL, revisionAssets, type ThemeAssetURLs } 
 import { canonicalRoleName, type IconSlot, type RoleID } from "@/theme/contract";
 import { applyPresentation } from "@/theme/presentation";
 import { ManifestIcon } from "@/theme/theme-icon";
+import { LudicrousRegalia } from "@/components/ludicrous-regalia";
 import type { ResolvedThemeManifest, ThemePackage } from "@/theme";
 import "./theme-preview-card.css";
 
@@ -70,8 +71,10 @@ function ControlSample({ manifest, urls }: SampleProps) {
     <SampleHeading>An Idea Becomes Reality</SampleHeading>
     <p>A clear plan. A team with purpose. Every step in view.</p>
     <code className="theme-code theme-preview-code" style={{ fontFamily: "var(--theme-font-mono)" }}>const progress = 98;</code>
-    <div className="theme-preview-actions"><SampleButton>Plan</SampleButton><SampleButton active>Build</SampleButton><SampleButton>Review</SampleButton></div>
-    <div className="theme-preview-status-row"><span>Status</span><span className="ui-badge theme-preview-success">Complete</span></div>
+    <div className="theme-surface theme-preview-panel theme-preview-stack">
+      <div className="theme-preview-actions"><SampleButton>Plan</SampleButton><SampleButton active>Build</SampleButton><SampleButton>Review</SampleButton></div>
+      <div className="theme-preview-status-row"><span>Status</span><span className="ui-badge theme-preview-success">Complete</span></div>
+    </div>
     <div className="theme-preview-divider theme-preview-stack">
       <p className="theme-preview-secondary">Native Controls</p>
       <label className="theme-preview-native-check"><input type="checkbox" defaultChecked className="theme-native-checkbox" /> Checkbox</label>
@@ -119,6 +122,7 @@ export function ThemePreviewCard({ manifest, pkg, files, compact = false, role =
       <div className="theme-study-rail" style={{ borderColor: colors["border.default"], color: colors["accent.base"] }}><ManifestIcon theme={manifest} assetURLs={urls} slot="brand" title={compact ? undefined : "Brand icon"} size={24} />{compact ? <><i /><i /><i /></> : navigation.map(({ slot, label }) => <ManifestIcon key={slot} theme={manifest} assetURLs={urls} slot={slot} title={`${label} navigation icon`} size={18} />)}</div>
       <div className="theme-preview-content">
         <div className="ui-window-titlebar theme-preview-titlebar" style={classic ? undefined : { color: colors["text.secondary"] }}><span>Theme Sample</span><span>{compact ? "Typography & Color" : contexts.find((item) => item.value === pane)?.label}</span></div>
+        <LudicrousRegalia />
         <div className="theme-ornament theme-preview-ornament" aria-hidden="true" />
         {compact ? <><SampleHeading>An Idea Becomes Reality</SampleHeading><div className="theme-preview-actions" aria-hidden="true">{["Plan", "Build", "Review"].map((step) => <span key={step} className="ui-button ui-button--outline theme-preview-button" style={classic ? undefined : { borderRadius: "var(--theme-radius)" }}>{step}</span>)}</div></> : <div id={`${id}-panel`} role="tabpanel" aria-labelledby={`${id}-${pane}`} tabIndex={0} className="theme-preview-panel-content" key={pane}>
           {pane === "overview" && <OverviewSample manifest={manifest} urls={urls} />}

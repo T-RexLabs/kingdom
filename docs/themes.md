@@ -2,6 +2,8 @@
 
 Appearance changes presentation across Kingdom. It does not change workflow authority, execution configuration, approvals, or generated replies. The five bundled themes are Obsidian Court, Nautilus, Astral Council, Software Lab, and Workstation 98. Operational status meanings and canonical role responsibilities remain consistent in every theme.
 
+The bundled themes share the crowned Technology Rex logo and matching browser icon in version `1.1.0`. File-authored themes should reference that exact bundled base version. The brand remains an editable theme slot. In every ornamentation mode, the Kingdom logo and title remain still until the pointer has hovered over them for three uninterrupted seconds; there is no immediate greeting animation. Then Rexie approaches the wordmark; the impact scatters its letters and produces a brief, jagged comic-book “RAAWR!” burst in every level before Rexie takes a walk. The burst keeps a broad, outlined silhouette and legible lettering rather than a rounded chat bubble. It sits beside Rexie; the original brand header position stays fixed. On mobile it sits beyond the wordmark. The resting and animated brand Rexie share one 52 px size, including during recoil: the animation must never enlarge or shrink him. The letters remain opaque and tumble out of view through movement, never fading away. The collapsed sidebar keeps Rexie stepping in place. Moving away or clicking restores the usual brand. Reduced-motion preferences show a static Rexie and keep the wordmark readable, and touch interaction continues to navigate normally.
+
 ## Choose and Preview
 
 Open **Appearance** to choose an exact package revision. The choice is stored in this browser for the workspace's stable presentation ID; publishing a theme does not change anyone else's selection. If a pinned revision becomes unavailable, the app uses the bundled default and reports the problem without erasing the saved preference.
@@ -22,7 +24,7 @@ For coordinated automated editing, use the authenticated source API and its `exp
 
 Version 1 supports one exact bundled base, or a complete standalone manifest. It does not support arbitrary inheritance chains. Palette overrides derive semantic tokens deterministically; explicit token overrides win afterward. Exported packages are complete standalone manifests, while editing a published revision retrieves the preserved authored source and inheritance intent.
 
-**Workstation 98** brings classic desktop chrome in a warm sepia palette: parchment surfaces, beige beveled controls, cream inset fields, espresso window title bars, square menus, matching pixel-art Kingdom branding, and 1990s corporate role titles. The underlying actions, status meanings, and canonical responsibilities stay the same. Its original icons ship locally; it does not depend on Windows assets or remote fonts.
+**Workstation 98** brings classic desktop chrome in a warm sepia palette: parchment surfaces, beige beveled controls, cream inset fields, espresso window title bars, square menus, pixel-art navigation, the shared Technology Rex brand, and 1990s corporate role titles. The underlying actions, status meanings, and canonical responsibilities stay the same. Its original icons ship locally; it does not depend on Windows assets or remote fonts.
 
 A theme can change:
 
@@ -32,6 +34,21 @@ A theme can change:
 - Fixed plain-text UI copy slots. These do not accept HTML, Markdown, template expressions, operational status overrides, or prompt fragments.
 
 Generated-reply voice is neutral and application-owned. A future voice feature requires a separately versioned execution configuration and an explicit session/run snapshot; adding presentation fields must not silently alter prompts or work already underway.
+
+### Ornamentation
+
+`surfaces.ornamentation` controls application-owned decorative details:
+
+| Level | Details |
+| --- | --- |
+| `minimal` | Plain surfaces without decorative accents. |
+| `balanced` | Small accent lines on page headers and previews. |
+| `high` | Stronger header accents and decorative panel corners. |
+| `ludicrous` (Ludicrous Mode) | A bolder 72 px Rexie in a continuous landscape of layered mountains, low ground, and ferns, extravagant double-and-dashed frames, embossed headings, claw-mark buttons with dust, and stomping navigation icons. The landscape uses the dinosaur motif, without a mode-name plaque or star decorations. |
+
+All levels keep header and window-title backgrounds solid in Modern and Classic Desktop styles; ornamentation never introduces background gradients. Minimal, Balanced, and High add static decoration. Ludicrous Mode adds brief flourishes on entry and interaction, never continuous ambient movement. Hover or focus a primary action for claw marks and dust, hover or focus a navigation item for a stomp, or hover the mountain scene to make its Rexie stomp. Decorations must not move control hit targets, obscure labels, or alter operational statuses. Reduced motion retains static decoration; forced colors removes it. Rexie's size, three-second hover trigger, and comic roar remain independent of the ornamentation level.
+
+Corner radius, border width, elevation, typography, icons, and artwork remain separate settings. Draft previews apply their own ornamentation without changing the active App until you choose **Preview in App**. The Ludicrous preview includes the same mountain scene and primary-action flourishes as the App.
 
 ## Share and Maintain Packages
 

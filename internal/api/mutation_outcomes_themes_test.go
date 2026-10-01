@@ -73,7 +73,7 @@ func TestThemeMutationOutcomesAcrossBrowserBindings(t *testing.T) {
 		handler.ServeHTTP(res, req)
 		return res
 	}
-	source := `{"schemaVersion":1,"resolverVersion":1,"id":"outcome-theme","version":"1.0.0","name":"Outcome Theme","base":{"id":"obsidian-court","version":"1.0.0"}}`
+	source := `{"schemaVersion":1,"resolverVersion":1,"id":"outcome-theme","version":"1.0.0","name":"Outcome Theme","base":{"id":"obsidian-court","version":"1.1.0"}}`
 	resolved, err := store.Resolver().Resolve([]byte(source), nil)
 	if err != nil {
 		t.Fatal(err)

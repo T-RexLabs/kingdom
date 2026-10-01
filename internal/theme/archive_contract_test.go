@@ -15,7 +15,12 @@ func TestArchiveHTTPBudgetMatchesCanonicalPackageBudget(t *testing.T) {
 	manifest := draftForTest()
 	assets := map[string]any{}
 	for i := 0; i < 4; i++ {
-		assets[fmt.Sprintf("image%d", i)] = map[string]any{"path": fmt.Sprintf("assets/image%d.svg", i), "mediaType": "image/svg+xml"}
+		id := fmt.Sprintf("image%d", i)
+		if i == 0 {
+			// Include the inherited brand slot within the exact package budget.
+			id = "brand"
+		}
+		assets[id] = map[string]any{"path": fmt.Sprintf("assets/image%d.svg", i), "mediaType": "image/svg+xml"}
 	}
 	manifest["assets"] = assets
 	prefix, suffix := `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">`, `</svg>`

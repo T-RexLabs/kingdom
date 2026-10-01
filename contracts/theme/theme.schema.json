@@ -309,7 +309,9 @@
         "ornamentation": {
           "enum": [
             "minimal",
-            "balanced"
+            "balanced",
+            "high",
+            "ludicrous"
           ]
         },
         "chrome": {

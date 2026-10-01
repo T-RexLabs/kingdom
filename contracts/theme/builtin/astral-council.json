@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "resolverVersion": 1,
   "id": "astral-council",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Astral Council",
   "description": "A thoughtful council among the stars.",
   "colorScheme": "dark",
@@ -108,7 +108,7 @@
     "node.quality-validation": "lucide:scan-eye",
     "node.security-validation": "lucide:moon",
     "node.completion": "lucide:circle-check-big",
-    "brand": "lucide:orbit",
+    "brand": "asset:brand",
     "role.operator": "lucide:orbit",
     "role.governance": "lucide:sparkles",
     "role.coordinator": "lucide:network",
@@ -207,5 +207,10 @@
     "brand.tagline": "Shared intent. New horizons."
   },
   "artwork": {},
-  "assets": {}
+  "assets": {
+    "brand": {
+      "path": "assets/brand/technology-rex-white.svg",
+      "mediaType": "image/svg+xml"
+    }
+  }
 }
