@@ -47,6 +47,9 @@ func TestWorkstationThemePresentation(t *testing.T) {
 				t.Fatalf("%s does not use an original pixel asset", slot)
 			}
 			asset := p.Manifest.Assets[reference[6:]]
+			if slot == "brand" {
+				continue // The shared Technology Rex brand is validated separately.
+			}
 			if !bytes.Contains(p.Assets[asset.Path], []byte("<rect")) {
 				t.Fatalf("%s has no embedded pixel geometry", slot)
 			}
@@ -56,15 +59,16 @@ func TestWorkstationThemePresentation(t *testing.T) {
 	t.Fatal("Workstation 98 built-in is missing")
 }
 
-func TestExistingThemeDigests(t *testing.T) {
+func TestBuiltinThemeRevisionDigests(t *testing.T) {
 	want := map[string]string{
-		"astral-council": "2ce82240b1b709e3affe56d9406a85d65c2411f8875a8a9c440c7c43939f0b40",
-		"nautilus":       "c58afb750336e78f055d5d4ec65516a76a0fd389546481f67f98689b628bc680",
-		"obsidian-court": "3dc6cea4927d577f6bb95d5a153e0a62c4f357a5b524709fcb4706c142de09f0",
-		"software-lab":   "a822d1eaba88deeddb429ace83ac7d1f5b88941a408356722dc1fd0ec18aec11",
+		"astral-council": "847a058fa380856124a1f903a8eacc30feb26a971dab78d173f2cd2b871251d1",
+		"nautilus":       "be98e68c4213f234735e796afed39ab114131931ecc73d25422b8d3756eba5fe",
+		"obsidian-court": "e6cbf420833435bb56451a9c7aec44b896a5c0662d522b5f6bb55a352ca2fa19",
+		"software-lab":   "7058d319649896731b28f56c5a6c548ec2481041018ebc97fd7f755ca79f9ccc",
+		"workstation-98": "1df4437cdcfbe2fd77ada6cb2d2a21b0519f002efea2ffb1644630f61277d9c2",
 	}
 	for _, p := range resolverForTest(t).Builtins() {
-		if digest, ok := want[p.Manifest.ID]; ok && p.ResolvedDigest != digest {
+		if digest := want[p.Manifest.ID]; p.Manifest.Version != "1.1.0" || p.ResolvedDigest != digest {
 			t.Errorf("%s revision changed: %s", p.Manifest.ID, p.ResolvedDigest)
 		}
 	}
@@ -72,7 +76,7 @@ func TestExistingThemeDigests(t *testing.T) {
 
 func workstationDraft() map[string]any {
 	m := draftForTest()
-	m["base"] = map[string]string{"id": "workstation-98", "version": "1.0.0"}
+	m["base"] = map[string]string{"id": "workstation-98", "version": "1.1.0"}
 	return m
 }
 

@@ -18,7 +18,7 @@ func resolverForTest(t *testing.T) *Resolver {
 	return r
 }
 func draftForTest() map[string]any {
-	return map[string]any{"schemaVersion": 1, "resolverVersion": 1, "id": "custom", "version": "1.0.0", "name": "Custom", "base": map[string]any{"id": DefaultID, "version": "1.0.0"}}
+	return map[string]any{"schemaVersion": 1, "resolverVersion": 1, "id": "custom", "version": "1.0.0", "name": "Custom", "base": map[string]any{"id": DefaultID, "version": "1.1.0"}}
 }
 func rawForTest(t *testing.T, value any) []byte {
 	t.Helper()
@@ -107,7 +107,7 @@ func TestPaletteKeepsExplicitOverridesAndResolvedIdentity(t *testing.T) {
 	if p.Manifest.Tokens["accent.base"] != "#65bac5" || p.Manifest.Tokens["chart.grid"] != "#182f32" {
 		t.Fatal("wrong override order")
 	}
-	flattened, err := r.Resolve(rawForTest(t, p.Manifest), nil)
+	flattened, err := r.Resolve(rawForTest(t, p.Manifest), p.Assets)
 	if err != nil {
 		t.Fatal(err)
 	}

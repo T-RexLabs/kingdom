@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "resolverVersion": 1,
   "id": "nautilus",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Nautilus",
   "description": "A capable crew and a steady course.",
   "colorScheme": "light",
@@ -108,7 +108,7 @@
     "node.quality-validation": "lucide:binoculars",
     "node.security-validation": "lucide:radar",
     "node.completion": "lucide:circle-check-big",
-    "brand": "lucide:compass",
+    "brand": "asset:brand",
     "role.operator": "lucide:ship-wheel",
     "role.governance": "lucide:anchor",
     "role.coordinator": "lucide:compass",
@@ -207,5 +207,10 @@
     "brand.tagline": "A steady course. A capable crew."
   },
   "artwork": {},
-  "assets": {}
+  "assets": {
+    "brand": {
+      "path": "assets/brand/technology-rex-black.svg",
+      "mediaType": "image/svg+xml"
+    }
+  }
 }

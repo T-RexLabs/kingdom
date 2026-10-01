@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "resolverVersion": 1,
   "id": "obsidian-court",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "name": "Obsidian Court",
   "description": "Ink, brass and quiet ceremony.",
   "colorScheme": "dark",
@@ -108,7 +108,7 @@
     "node.quality-validation": "lucide:binoculars",
     "node.security-validation": "lucide:bird",
     "node.completion": "lucide:circle-check-big",
-    "brand": "lucide:crown",
+    "brand": "asset:brand",
     "role.operator": "lucide:crown",
     "role.governance": "lucide:landmark",
     "role.coordinator": "lucide:scroll-text",
@@ -207,5 +207,10 @@
     "brand.tagline": "Purpose, craft and a clear record."
   },
   "artwork": {},
-  "assets": {}
+  "assets": {
+    "brand": {
+      "path": "assets/brand/technology-rex-white.svg",
+      "mediaType": "image/svg+xml"
+    }
+  }
 }
