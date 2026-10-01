@@ -3755,7 +3755,7 @@ export interface components {
                 /** @enum {string} */
                 elevation?: "flat" | "soft";
                 /** @enum {string} */
-                ornamentation?: "minimal" | "balanced";
+                ornamentation?: "minimal" | "balanced" | "high" | "ludicrous";
                 /**
                  * @description Application-owned structural styling. Omission uses flat chrome.
                  * @enum {string}

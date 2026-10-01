@@ -6878,7 +6878,9 @@ components:
               "ornamentation": {
                 "enum": [
                   "minimal",
-                  "balanced"
+                  "balanced",
+                  "high",
+                  "ludicrous"
                 ],
                 "type": "string"
               },
