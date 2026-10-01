@@ -191,19 +191,11 @@
   .ui-window-header {
     padding: 0;
   }
-  :scope[data-ornamentation="minimal"] .ui-window-titlebar {
-    background-image: none;
-    background-color: var(--theme-accent-base);
-  }
   .ui-window-titlebar {
     align-items: start;
     gap: 8px;
     padding: 6px 8px;
-    background: linear-gradient(
-      90deg,
-      var(--theme-accent-base),
-      var(--theme-accent-hover)
-    );
+    background: var(--theme-accent-base);
     color: var(--theme-accent-foreground);
   }
   .ui-window-title {
@@ -492,7 +484,6 @@
       border-color: CanvasText;
       box-shadow: none;
     }
-    :scope[data-ornamentation="minimal"] .ui-window-titlebar,
     .ui-window-titlebar {
       background: Highlight;
       color: HighlightText;

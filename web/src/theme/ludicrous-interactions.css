@@ -1,0 +1,78 @@
+/* Dinosaur mischief belongs to the artwork, never the control's hit target.
+   Each theme preview owns its effects, independently of the surrounding App. */
+@scope ([data-ornamentation]) to ([data-ornamentation]) {
+  :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]) {
+    position: relative;
+  }
+
+  :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before,
+  :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    background: var(--theme-accent-base);
+  }
+
+  /* Claw marks and kicked-up dust stay beyond the label and never replace a border,
+     background, shadow, or focus indicator supplied by the control profile. */
+  :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before {
+    inset-inline-start: 8px;
+    inset-block-start: -10px;
+    width: 2px;
+    height: 13px;
+    border-radius: 100% 0 100% 0;
+    box-shadow: 5px 0 var(--theme-accent-base), 10px 0 var(--theme-accent-base);
+    transform: rotate(20deg);
+    transform-origin: bottom;
+  }
+
+  :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::after {
+    inset-inline-end: 4px;
+    inset-block-start: -5px;
+    width: 3px;
+    height: 3px;
+    border-radius: 50%;
+    box-shadow: -6px -3px 0 -.5px var(--theme-accent-base), 5px -1px 0 -.5px var(--theme-accent-base);
+  }
+
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    :scope[data-ornamentation="ludicrous"] .ui-nav-item:not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible) > .ui-nav-icon {
+      animation: ludicrous-nav-stomp 620ms ease-out both;
+    }
+
+    :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before {
+      animation: ludicrous-action-claw 460ms ease-out both;
+    }
+
+    :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::after {
+      animation: ludicrous-action-dust 640ms ease-out both;
+    }
+  }
+
+  @media (forced-colors: active) {
+    :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::before,
+    :scope[data-ornamentation="ludicrous"] :is(.ui-button--default, .theme-preview-button[data-active]):not(:disabled):not([aria-disabled="true"]):is(:hover, :focus-visible)::after {
+      content: none;
+      animation: none;
+    }
+  }
+}
+
+@keyframes ludicrous-nav-stomp {
+  0%, 100% { transform: translateY(0) rotate(0); }
+  30% { transform: translateY(-5px) rotate(-12deg); }
+  52% { transform: translateY(1px) rotate(7deg); }
+  76% { transform: translateY(-2px) rotate(-4deg); }
+}
+
+@keyframes ludicrous-action-claw {
+  0% { transform: translateY(-6px) rotate(20deg) scaleY(.15); }
+  65% { transform: translateY(1px) rotate(20deg) scaleY(1.1); }
+  100% { transform: translateY(0) rotate(20deg) scaleY(1); }
+}
+
+@keyframes ludicrous-action-dust {
+  0% { transform: translateY(5px) scale(.25); }
+  60% { transform: translateY(-4px) scale(1.1); }
+  100% { transform: translateY(0) scale(1); }
+}

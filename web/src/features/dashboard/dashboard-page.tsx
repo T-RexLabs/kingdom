@@ -1,5 +1,6 @@
 import { useDeferredValue, useMemo, type ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
+import { cn } from "@/lib/utils";
 import {
   useDashboardSnapshot,
   useInfiniteRuns,
@@ -9,6 +10,7 @@ import {
 } from "@/api/hooks";
 import { WorkspacePage } from "@/components/workspace-page";
 import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button-variants";
 import { Badge } from "@/components/ui/badge";
 import { RelativeTime } from "@/components/ui/relative-time";
 import { Sparkline } from "@/components/ui/sparkline";
@@ -40,13 +42,13 @@ export function DashboardPage() {
         <>
           <Link
             to="/work-orders/planning"
-            className="rounded-lg border border-border px-4 py-2.5 text-sm hover:bg-surface"
+            className={cn(buttonVariants({ variant: "outline" }), "rounded-lg py-2.5")}
           >
             Plan Work
           </Link>
           <Link
             to="/work-orders/new"
-            className="rounded-lg bg-accent px-4 py-2.5 text-sm font-medium text-accent-foreground hover:bg-accent-bright"
+            className={cn(buttonVariants(), "rounded-lg py-2.5")}
           >
             New {workOrderName}
           </Link>

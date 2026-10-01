@@ -1,6 +1,8 @@
 @import "tailwindcss";
 @import "./theme/fonts.css";
 @import "./theme/classic-theme.css";
+@import "./theme/ornamentation.css";
+@import "./theme/ludicrous-interactions.css";
 
 /* Semantic application vocabulary. Values come from the canonical resolved
    theme; layout, interaction, focus and state meaning remain application-owned. */
@@ -99,27 +101,6 @@ input::placeholder, textarea::placeholder { color: var(--theme-text-subtle); opa
 .theme-role-identity { display: inline-flex; align-items: center; gap: 0.65rem; min-width: 0; }
 .theme-role-name { display: block; }
 .theme-role-responsibility { display: block; font-size: 0.75rem; color: var(--theme-text-secondary); }
-.theme-ornament { pointer-events: none; }
-/* Each draft preview owns its ornament setting, independently of the page. */
-@scope ([data-ornamentation]) to ([data-ornamentation]) {
-  :scope[data-ornamentation="minimal"] .theme-ornament { display: none; }
-  :scope[data-ornamentation="balanced"] .ui-page-header { position: relative; }
-  :scope[data-ornamentation="balanced"] .ui-page-header::after {
-    content: "";
-    position: absolute;
-    pointer-events: none;
-    left: var(--spacing-page);
-    bottom: 4px;
-    width: 2.5rem;
-    height: 2px;
-    background: var(--theme-accent-base);
-    opacity: .6;
-  }
-  :scope[data-chrome="flat"][data-ornamentation="balanced"] .ui-page-header,
-  :scope[data-chrome="flat"][data-ornamentation="balanced"] .ui-window-titlebar {
-    background-image: linear-gradient(110deg, color-mix(in srgb, var(--theme-accent-base), transparent 91%), transparent 65%);
-  }
-}
 @scope ([data-chrome="flat"]) to ([data-chrome]) {
   .ui-card:not(.border-0), .ui-field, [data-ui-field], .ui-button--outline,
   .ui-inset-panel, .ui-workspace-info, .appearance-input,

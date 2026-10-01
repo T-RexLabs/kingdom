@@ -1,9 +1,52 @@
 import { useState } from "react";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
 import { EditorColors, EditorIdentity } from "./editor-fields";
 import { newDraft, parseDraft } from "./draft-store";
+import { defaultTheme } from "@/theme";
+
+it("offers four ornamentation levels and changes only the selected setting", async () => {
+  const user = userEvent.setup();
+  const initial = parseDraft(newDraft().source)!;
+  initial.surfaces = { radius: 12, borderWidth: 2, elevation: "soft", chrome: "classic", iconRendering: "original" };
+  initial.palette = { accent: "#c5aa77" };
+  function Editor() {
+    const [manifest, change] = useState(initial);
+    return <><EditorColors manifest={manifest} disabled={false} change={change} /><output data-testid="draft">{JSON.stringify(manifest)}</output></>;
+  }
+  render(<Editor />);
+  const choices = [
+    ["Minimal", "minimal", /plain surfaces/i],
+    ["Balanced", "balanced", /small accent lines/i],
+    ["High", "high", /stronger header accents/i],
+    ["Ludicrous Mode", "ludicrous", /mountain kingdom/i],
+  ] as const;
+  for (const [label, value, description] of choices) {
+    await user.click(screen.getByRole("button", { name: "Ornamentation" }));
+    expect(screen.getAllByRole("option").map((option) => option.textContent)).toEqual(choices.map(([name]) => name));
+    await user.click(screen.getByRole("option", { name: label }));
+    expect(screen.getByRole("button", { name: "Ornamentation" })).toHaveTextContent(label);
+    expect(screen.getByText(description)).toBeInTheDocument();
+    expect(JSON.parse(screen.getByTestId("draft").textContent!)).toEqual({ ...initial, surfaces: { ...initial.surfaces, ornamentation: value } });
+  }
+});
+
+it("describes inherited ornamentation and prevents changes while the editor is disabled", async () => {
+  const user = userEvent.setup();
+  const change = vi.fn();
+  const manifest = parseDraft(newDraft().source)!;
+  const resolved = { ...defaultTheme, surfaces: { ...defaultTheme.surfaces, ornamentation: "ludicrous" as const } };
+  render(<EditorColors manifest={manifest} resolved={resolved} disabled change={change} />);
+  const selector = screen.getByRole("button", { name: "Ornamentation" });
+  expect(selector).toHaveTextContent("Ludicrous Mode");
+  expect(selector).toBeDisabled();
+  expect(screen.getByText(/mountain kingdom/i)).toBeInTheDocument();
+  await user.click(selector);
+  expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  expect(change).not.toHaveBeenCalled();
+  expect(manifest.surfaces).toBeUndefined();
+});
 
 it("lets users clear inherited text before typing a replacement without changing canonical responsibility", () => {
   function Editor() {

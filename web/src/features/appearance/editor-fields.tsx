@@ -20,6 +20,12 @@ const fontLabels: Record<string, string> = {
   "bundled:classic-sans": "Classic Windows (Tahoma)",
   "bundled:jetbrains-mono": "JetBrains Mono",
 };
+const ornamentationOptions = [
+  { value: "minimal", label: "Minimal", description: "Plain surfaces without decorative accents." },
+  { value: "balanced", label: "Balanced", description: "Small accent lines on page headers and previews." },
+  { value: "high", label: "High", description: "Stronger header accents and decorative panel corners." },
+  { value: "ludicrous", label: "Ludicrous Mode", description: "Rexie's mountain kingdom, extravagant frames, claw-mark buttons, and stomping navigation icons. Motion rests when reduced motion is on." },
+];
 const roles = Object.keys(defaultTheme.identities) as RoleID[];
 import {
   objectValue,
@@ -78,6 +84,7 @@ export function EditorColors({
       (theme) => theme.id === stringAt(manifest, "base", "id"),
     ) ?? defaultTheme;
   const view = resolved ?? base;
+  const ornamentation = optionalStringAt(manifest, "surfaces", "ornamentation") ?? view.surfaces.ornamentation;
   const explicitTokens = Object.keys(objectValue(manifest.tokens)).length > 0;
   const update = (path: string[], value: unknown) =>
     change(setDraftField(manifest, path, value));
@@ -211,16 +218,15 @@ export function EditorColors({
               }
               options={[{ value: "flat", label: "Flat" }, { value: "soft", label: "Soft" }]}
           />
-          <SelectField id="theme-ornamentation" label="Ornamentation" disabled={disabled}
-              value={
-                optionalStringAt(manifest, "surfaces", "ornamentation") ??
-                view.surfaces.ornamentation
-              }
-              onChange={(next) =>
-                update(["surfaces", "ornamentation"], next)
-              }
-              options={[{ value: "minimal", label: "Minimal" }, { value: "balanced", label: "Balanced" }]}
-          />
+          <div className="space-y-2">
+            <SelectField id="theme-ornamentation" label="Ornamentation" disabled={disabled}
+              value={ornamentation}
+              onChange={(next) => update(["surfaces", "ornamentation"], next)}
+              options={ornamentationOptions}
+            />
+            <p className="appearance-help">{ornamentationOptions.find((option) => option.value === ornamentation)?.description} All levels use solid backgrounds.</p>
+            {ornamentation === "ludicrous" && <p className="appearance-help">Tiny arms. Absolutely no restraint.</p>}
+          </div>
           <div className="space-y-2 sm:col-span-2">
           <SelectField id="theme-color-scheme" label="Native Control Scheme" disabled={disabled}
               value={

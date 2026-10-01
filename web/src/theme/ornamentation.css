@@ -1,0 +1,233 @@
+/* Each preview owns its level. Ludicrous adds finite theatrical flourishes;
+   every boundary resets the variables so a surrounding theme cannot leak in. */
+.ludicrous-regalia { display: none; }
+
+@scope ([data-ornamentation]) to ([data-ornamentation]) {
+  :scope {
+    --ornament-rule-width: 2.5rem;
+    --ornament-rule-opacity: .6;
+  }
+  :scope[data-ornamentation="high"] {
+    --ornament-rule-width: 5rem;
+    --ornament-rule-opacity: .8;
+  }
+  :scope[data-ornamentation="ludicrous"] {
+    --ornament-rule-width: 7.5rem;
+    --ornament-rule-opacity: 1;
+  }
+
+  :scope .theme-ornament {
+    position: relative;
+    width: var(--ornament-rule-width);
+    max-width: 100%;
+    pointer-events: none;
+  }
+  :scope[data-ornamentation="minimal"] .theme-ornament {
+    /* Keep the sample's spacing stable when switching levels. */
+    visibility: hidden;
+  }
+
+  :scope:not([data-ornamentation="minimal"]) .ui-page-header {
+    position: relative;
+  }
+  :scope:not([data-ornamentation="minimal"]) .ui-page-header::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    inset-inline-start: var(--spacing-page);
+    bottom: 4px;
+    width: var(--ornament-rule-width);
+    max-width: calc(100% - var(--spacing-page) * 2);
+    height: 2px;
+    background: var(--theme-accent-base);
+    opacity: var(--ornament-rule-opacity);
+  }
+
+  /* Panel ornaments stay inside the existing padding and never change the
+     border, shadow, radius, or layout. Interactive controls retain their chrome. */
+  :scope:is([data-ornamentation="high"], [data-ornamentation="ludicrous"]) :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button)) {
+    position: relative;
+  }
+  :scope:is([data-ornamentation="high"], [data-ornamentation="ludicrous"]) :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before,
+  :scope:is([data-ornamentation="high"], [data-ornamentation="ludicrous"]) :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::after {
+    content: "";
+    position: absolute;
+    pointer-events: none;
+    width: 1.25rem;
+    max-width: calc(100% - 8px);
+    height: 1.25rem;
+    max-height: calc(100% - 8px);
+    border: 0 solid var(--theme-accent-base);
+    opacity: .5;
+  }
+  :scope:is([data-ornamentation="high"], [data-ornamentation="ludicrous"]) :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before {
+    inset: 4px auto auto 4px;
+    border-top-width: 1px;
+    border-left-width: 1px;
+    border-top-left-radius: max(0px, calc(var(--theme-radius) - 4px));
+  }
+  :scope:is([data-ornamentation="high"], [data-ornamentation="ludicrous"]) :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::after {
+    inset: auto 4px 4px auto;
+    border-bottom-width: 1px;
+    border-right-width: 1px;
+    border-bottom-right-radius: max(0px, calc(var(--theme-radius) - 4px));
+  }
+
+  :scope[data-ornamentation="ludicrous"] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before,
+  :scope[data-ornamentation="ludicrous"] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::after {
+    width: auto;
+    max-width: none;
+    height: auto;
+    max-height: none;
+    border-width: 1px;
+  }
+  :scope[data-ornamentation="ludicrous"] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before {
+    inset: 3px;
+    border-width: 3px;
+    border-style: double;
+    border-radius: max(0px, calc(var(--theme-radius) - 3px));
+    opacity: .8;
+  }
+  :scope[data-ornamentation="ludicrous"] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::after {
+    inset: 8px;
+    border-style: dashed;
+    border-radius: max(0px, calc(var(--theme-radius) - 8px));
+    opacity: .4;
+  }
+
+  :scope[data-ornamentation="ludicrous"] .ui-page-header::after,
+  :scope[data-ornamentation="ludicrous"] .theme-ornament {
+    border-block: 1px solid var(--theme-accent-base);
+    border-radius: 0;
+    background: none;
+  }
+  :scope[data-ornamentation="ludicrous"] .ui-page-header::before,
+  :scope[data-ornamentation="ludicrous"] .theme-ornament::before {
+    content: "";
+    position: absolute;
+    z-index: 1;
+    pointer-events: none;
+    width: 7px;
+    height: 7px;
+    border: 1px solid var(--theme-accent-base);
+    background: var(--theme-canvas);
+    transform: rotate(45deg);
+  }
+  :scope[data-ornamentation="ludicrous"] .ui-page-header::after {
+    height: 5px;
+  }
+  :scope[data-ornamentation="ludicrous"] .ui-page-header::before {
+    inset-inline-start: calc(var(--spacing-page) + var(--ornament-rule-width) / 2 - 3.5px);
+    bottom: 3px;
+  }
+  :scope[data-ornamentation="ludicrous"] .theme-ornament::before {
+    left: calc(50% - 3.5px);
+    top: calc(50% - 3.5px);
+  }
+
+  /* A separate band keeps the spectacle out of breadcrumbs and header actions.
+     Only the decoration moves; controls, text, and their hit targets stay put. */
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia {
+    display: block;
+    position: relative;
+    flex: 0 0 auto;
+    min-width: 0;
+    height: 104px;
+    overflow: clip;
+    color: var(--theme-accent-base);
+    background: var(--theme-canvas);
+    border-bottom: 1px solid var(--theme-border-default);
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia-rex {
+    position: absolute;
+    left: min(calc(50% + 20px), calc(100% - 80px));
+    bottom: 12px;
+    width: 72px;
+    height: 72px;
+    /* Weight lives outside the mask so the outline cannot be clipped away. */
+    filter: drop-shadow(.55px 0 0 currentColor) drop-shadow(-.55px 0 0 currentColor) drop-shadow(0 .35px 0 currentColor);
+    pointer-events: none;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-regalia-rex > span {
+    display: block;
+    width: 100%;
+    height: 100%;
+    background: currentColor;
+    mask: url("/t-rex-black.svg") center / contain no-repeat;
+    pointer-events: none;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-landscape {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-range-far {
+    fill: color-mix(in srgb, var(--theme-accent-base) 10%, var(--theme-canvas));
+    stroke: color-mix(in srgb, var(--theme-accent-base) 25%, var(--theme-canvas));
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-range-near {
+    fill: color-mix(in srgb, var(--theme-accent-base) 18%, var(--theme-canvas));
+    stroke: color-mix(in srgb, var(--theme-accent-base) 40%, var(--theme-canvas));
+  }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-ridge-detail { stroke: currentColor; opacity: .25; }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-ground { fill: var(--theme-surface-base); }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-fern { opacity: .5; }
+  :scope[data-ornamentation="ludicrous"] .ludicrous-dust { opacity: .45; }
+  :scope[data-ornamentation="ludicrous"] .theme-preview-content .ludicrous-regalia {
+    height: 104px;
+    margin-bottom: .75rem;
+    border-radius: var(--theme-radius);
+  }
+  :scope[data-ornamentation="ludicrous"] .theme-preview-content .theme-ornament { display: none; }
+  :scope[data-ornamentation="ludicrous"] :is(.ui-page-content h1, .theme-preview-heading) {
+    text-shadow: 1px 1px var(--theme-canvas), 2px 2px color-mix(in srgb, var(--theme-accent-base) 45%, transparent);
+  }
+
+  @media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+    :scope[data-ornamentation="ludicrous"] .ludicrous-landscape {
+      animation: ludicrous-terrain-arrival 900ms ease-out both;
+    }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia:hover .ludicrous-regalia-rex {
+      animation: ludicrous-rex-stomp 700ms ease-in-out both;
+    }
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia:hover .ludicrous-dust {
+      animation: ludicrous-terrain-dust 700ms ease-out both;
+    }
+    :scope[data-ornamentation="ludicrous"] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before {
+      animation: ludicrous-frame-arrival 700ms ease-out both;
+    }
+  }
+
+  @media (forced-colors: active) {
+    :scope[data-ornamentation="ludicrous"] .ludicrous-regalia { display: none; }
+    :scope[data-ornamentation="ludicrous"] :is(.ui-page-content h1, .theme-preview-heading) { text-shadow: none; }
+    :scope .theme-ornament { visibility: hidden; }
+    :scope[data-ornamentation] .ui-page-header::before,
+    :scope[data-ornamentation] .ui-page-header::after,
+    :scope[data-ornamentation] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::before,
+    :scope[data-ornamentation] :is(.ui-card:not(.border-0), .ui-inset-panel, .theme-surface):not(:is(button, [role="button"], .ui-button))::after {
+      content: none;
+    }
+  }
+}
+
+@keyframes ludicrous-terrain-arrival {
+  from { transform: translateY(20px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+@keyframes ludicrous-rex-stomp {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+  50% { transform: translateY(1px); }
+  75% { transform: translateY(-2px); }
+}
+@keyframes ludicrous-terrain-dust {
+  0%, 100% { transform: translate(0, 0); }
+  50% { transform: translate(-5px, -7px); }
+}
+@keyframes ludicrous-frame-arrival {
+  from { clip-path: inset(0 50%); }
+  to { clip-path: inset(0); }
+}
