@@ -7,6 +7,7 @@ import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
 import { NotificationStack } from "@/components/notifications";
 import { ModalDialog } from "@/components/ui/modal-dialog";
+import { KingdomBrand } from "@/components/kingdom-brand";
 import { ThemeIcon, useTheme } from "@/theme";
 
 const primaryNavigation = [
@@ -57,7 +58,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <SidebarContent collapsed={collapsed} onToggle={toggleNavigation} />
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="ui-mobile-header flex h-14 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
+        <header className="ui-mobile-header flex min-h-16 shrink-0 items-center gap-3 border-b border-border px-4 md:hidden">
           <button
             ref={menuRef}
             type="button"
@@ -68,7 +69,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           >
             <Menu size={20} />
           </button>
-          <Brand />
+          <KingdomBrand />
         </header>
         {isPreviewing && (
           <div
@@ -142,19 +143,6 @@ export function AppShell({ children }: { children: ReactNode }) {
     </div>
   );
 }
-function Brand({ collapsed = false }: { collapsed?: boolean }) {
-  return (
-    <Link
-      to="/"
-      aria-label="Kingdom"
-      title={collapsed ? "Kingdom" : undefined}
-      className="ui-brand flex w-fit items-center gap-2.5 rounded-md text-accent"
-    >
-      <ThemeIcon slot="brand" className="h-5 w-5" />
-      <span className={collapsed ? "sr-only" : "font-display text-2xl"}>Kingdom</span>
-    </Link>
-  );
-}
 function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; onToggle?: () => void }) {
   const { location } = useRouterState();
   const { theme } = useTheme();
@@ -184,7 +172,7 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
               : "text-foreground-muted hover:bg-surface-raised hover:text-foreground",
           )}
         >
-          <ThemeIcon slot={item.icon} className="h-[18px] w-[18px] shrink-0" />
+          <ThemeIcon slot={item.icon} className="ui-nav-icon h-[18px] w-[18px] shrink-0" />
           <span className={collapsed ? "sr-only" : undefined}>{item.name}</span>
         </Link>
       );
@@ -192,8 +180,8 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
   }
   return (
     <>
-      <div className={cn("flex gap-3 pb-6 pt-6", collapsed ? "flex-col items-center px-2" : "items-center justify-between pl-6 pr-3")}>
-        <Brand collapsed={collapsed} />
+      <div className={cn("flex gap-2 pb-6 pt-6", collapsed ? "flex-col items-center px-2" : "items-center justify-between pl-4 pr-3")}>
+        <KingdomBrand collapsed={collapsed} />
         {onToggle && <button
           type="button"
           onClick={onToggle}

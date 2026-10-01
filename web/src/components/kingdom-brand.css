@@ -1,0 +1,165 @@
+/* The delayed brand animation is independent of ornamentation. */
+.kingdom-brand {
+  /* One size for the resting icon and moving sprite prevents a reveal jump. */
+  --brand-size: 52px;
+  --brand-gap: 8px;
+  --brand-impact-time: 420ms;
+  /* Rexie's nose meets the wordmark's left edge at the end of the approach. */
+  --brand-impact-x: var(--brand-gap);
+}
+.kingdom-brand[data-collapsed="true"] { padding-inline: 0; }
+.kingdom-brand[data-collapsed="true"] .kingdom-brand-scene { overflow-clip-margin: 104px; }
+.kingdom-brand-scene {
+  /* Theme chrome may pad the link; contact is relative to its content. */
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--brand-gap);
+  /* Flying letters leave this stage without creating page scrollbars. */
+  overflow: clip;
+  overflow-clip-margin: 48px;
+  /* Moving artwork must not move the hit target or interrupt the hover. */
+  pointer-events: none;
+}
+.kingdom-brand-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+.kingdom-brand-title { white-space: nowrap; }
+.kingdom-brand-letter {
+  display: inline-block;
+  transform-origin: 50% 65%;
+  --letter-lift: -26px;
+  --letter-fall: -90px;
+  --letter-spin: -240deg;
+}
+.kingdom-brand-letter:nth-child(2) { --letter-lift: 12px; --letter-fall: 80px; --letter-spin: 190deg; }
+.kingdom-brand-letter:nth-child(3) { --letter-lift: -38px; --letter-fall: -60px; --letter-spin: -180deg; }
+.kingdom-brand-letter:nth-child(4) { --letter-lift: 24px; --letter-fall: 110px; --letter-spin: 300deg; }
+.kingdom-brand-letter:nth-child(5) { --letter-lift: -10px; --letter-fall: 30px; --letter-spin: 220deg; }
+.kingdom-brand-letter:nth-child(6) { --letter-lift: -46px; --letter-fall: -110px; --letter-spin: -300deg; }
+.kingdom-brand-letter:nth-child(7) { --letter-lift: 32px; --letter-fall: 120px; --letter-spin: 260deg; }
+.kingdom-brand-icon,
+.kingdom-brand-rex-stage {
+  /* Apply weight outside the masked child so the mask cannot trim it off. */
+  filter: drop-shadow(0.3px 0 0 currentColor) drop-shadow(-0.3px 0 0 currentColor);
+}
+.kingdom-brand-rex-stage {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.kingdom-brand-rex {
+  position: absolute;
+  top: calc((100% - var(--brand-size)) / 2);
+  left: 0;
+  width: var(--brand-size);
+  height: var(--brand-size);
+  background: currentColor;
+  mask: url("/t-rex-black.svg") center / contain no-repeat;
+}
+.kingdom-brand[data-brand-state="rex"] .kingdom-brand-icon { visibility: hidden; }
+.kingdom-brand[data-brand-state="rex"] .kingdom-brand-rex-stage { visibility: visible; }
+.kingdom-brand-roar { display: none; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .kingdom-brand[data-brand-state="rex"] .kingdom-brand-rex {
+    animation:
+      kingdom-brand-approach var(--brand-impact-time) ease-in both,
+      kingdom-brand-roam 3.2s linear var(--brand-impact-time) infinite,
+      kingdom-brand-impact 220ms ease-out var(--brand-impact-time) both,
+      kingdom-brand-step 360ms ease-in-out infinite;
+  }
+  .kingdom-brand[data-brand-state="rex"]:not([data-collapsed="true"]) .kingdom-brand-letter {
+    /* Letters stay fully opaque: impact crushes, spins, and throws them out. */
+    animation: kingdom-brand-crash 680ms linear var(--brand-impact-time) both;
+  }
+  .kingdom-brand[data-brand-state="rex"][data-collapsed="true"] .kingdom-brand-rex {
+    animation: kingdom-brand-step 360ms ease-in-out infinite;
+  }
+}
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  /* The roar is part of Rexie's system-wide collision, at the same 3s + impact
+     timing in every mode. Its bottom stays above Rexie's highest footstep. */
+  .kingdom-brand[data-brand-state="rex"] .kingdom-brand-roar {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: absolute;
+    left: calc(var(--brand-size) + var(--brand-gap) + 36px);
+    top: calc((100% - 34px) / 2);
+    width: 78px;
+    height: 34px;
+    color: var(--theme-accent-foreground);
+    font: 900 12px/1.2 var(--theme-font-body);
+    white-space: nowrap;
+    text-align: center;
+    animation: kingdom-brand-roar 1100ms ease-out var(--brand-impact-time) both;
+  }
+  .kingdom-brand-roar svg {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    fill: var(--theme-accent-base);
+    stroke: var(--theme-accent-foreground);
+    stroke-width: 1.5px;
+    stroke-linejoin: round;
+  }
+  .kingdom-brand-roar > span {
+    position: relative;
+    transform: skewX(-7deg);
+    letter-spacing: .2px;
+  }
+  .kingdom-brand[data-brand-state="rex"][data-collapsed="true"] .kingdom-brand-roar {
+    left: calc(var(--brand-size) + var(--brand-gap) + 36px);
+    width: 56px;
+    height: 30px;
+    font-size: 10px;
+  }
+  @media (width < 48rem) {
+    /* The mobile logo sits against the viewport top: reserve the empty space
+       beyond the wordmark instead of sending its speech bubble offscreen. */
+    .ui-mobile-header .kingdom-brand-scene { overflow-clip-margin: 92px; }
+    .ui-mobile-header .kingdom-brand[data-brand-state="rex"] .kingdom-brand-roar {
+      left: calc(100% + 12px);
+      top: calc((100% - 34px) / 2);
+    }
+  }
+}
+@media (forced-colors: active) {
+  .kingdom-brand-rex { background: CanvasText; forced-color-adjust: none; }
+}
+@keyframes kingdom-brand-approach {
+  0% { left: 0; }
+  30% { left: -4px; }
+  100% { left: var(--brand-impact-x); }
+}
+@keyframes kingdom-brand-impact {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(-3px); }
+  65% { transform: translateX(1px); }
+}
+@keyframes kingdom-brand-crash {
+  0% { transform: translate(0, 0) rotate(0) scale(1); }
+  12% { transform: translate(4px, 0) rotate(5deg) scale(0.8, 1.15); }
+  40% { transform: translate(65px, var(--letter-lift)) rotate(calc(var(--letter-spin) * 0.35)) scale(1); }
+  100% { transform: translate(calc(100vw + 10rem), var(--letter-fall)) rotate(var(--letter-spin)) scale(1); }
+}
+@keyframes kingdom-brand-roam {
+  0%, 100% { left: var(--brand-impact-x); scale: 1 1; }
+  45% { left: max(var(--brand-impact-x), calc(100% - var(--brand-size))); scale: 1 1; animation-timing-function: step-end; }
+  45.01% { left: max(var(--brand-impact-x), calc(100% - var(--brand-size))); scale: -1 1; }
+  95% { left: var(--brand-impact-x); scale: -1 1; animation-timing-function: step-end; }
+  95.01% { left: var(--brand-impact-x); scale: 1 1; }
+}
+@keyframes kingdom-brand-step {
+  0%, 100% { translate: 0 0; }
+  50% { translate: 0 -1.5px; }
+}
+@keyframes kingdom-brand-roar {
+  0% { transform: translateY(-4px); opacity: 0; }
+  15%, 80% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(-3px); opacity: 0; }
+}

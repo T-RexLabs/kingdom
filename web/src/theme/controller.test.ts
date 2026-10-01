@@ -54,8 +54,13 @@ describe("personal theme selection", () => {
     const controller = new ThemeController(client());
     await controller.initialize();
     expect(controller.getSnapshot().theme.id).toBe(defaultTheme.id);
+    expect(controller.getSnapshot().assetURLs[defaultTheme.icons.brand.slice(6)]).toBeTruthy();
     expect(controller.getSnapshot().error).toContain("unavailable");
     expect(JSON.parse(localStorage.getItem(preferenceKey("workspace-one"))!)).toEqual(saved);
+  });
+  it("provides the bundled brand before the theme catalog is available", () => {
+    const controller = new ThemeController(client());
+    expect(controller.getSnapshot().assetURLs[defaultTheme.icons.brand.slice(6)]).toBeTruthy();
   });
   it("retries the pinned package after an initial revision read failure", async () => {
     const api = client();

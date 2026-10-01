@@ -1,7 +1,7 @@
 import { apiFetch } from "@/api/client";
 import type { components } from "@/api/schema";
 import { defaultTheme, themePackage, validReference, type ResolvedThemeManifest, type ThemeCatalog, type ThemePackage, type ThemeReference } from "./contract";
-import { previewAssets, revisionAssets, type ThemeAssetURLs } from "./assets";
+import { builtinAssetURLs, previewAssets, revisionAssets, type ThemeAssetURLs } from "./assets";
 import { readPreference, writePreference } from "./preferences";
 
 export type ThemeClient = {
@@ -23,7 +23,7 @@ export type ThemeState = {
   error: string | null;
 };
 export class ThemeController {
-  private state: ThemeState = { catalog: null, selected: null, activePackage: null, theme: defaultTheme, assetURLs: {}, isPreviewing: false, loading: true, error: null };
+  private state: ThemeState = { catalog: null, selected: null, activePackage: null, theme: defaultTheme, assetURLs: builtinAssetURLs(defaultTheme), isPreviewing: false, loading: true, error: null };
   private listeners = new Set<() => void>();
   private selectedPackage: ThemePackage | null = null;
   private selectionRequest = 0;
@@ -55,7 +55,7 @@ export class ThemeController {
     this.releasePreview?.();
     this.releasePreview = undefined;
     this.selectedPackage = pkg;
-    this.update({ activePackage: pkg, selected: pkg ? { id: pkg.manifest.id, resolvedDigest: pkg.resolvedDigest } : null, theme: pkg?.manifest ?? defaultTheme, assetURLs: pkg ? revisionAssets(pkg) : {}, isPreviewing: false, loading: false });
+    this.update({ activePackage: pkg, selected: pkg ? { id: pkg.manifest.id, resolvedDigest: pkg.resolvedDigest } : null, theme: pkg?.manifest ?? defaultTheme, assetURLs: pkg ? revisionAssets(pkg) : builtinAssetURLs(defaultTheme), isPreviewing: false, loading: false });
   }
   refreshCatalog = async () => {
     const request = ++this.catalogRequest;
