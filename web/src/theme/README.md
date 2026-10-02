@@ -1,17 +1,55 @@
 # Shared Presentation Layer
 
-Call `initializeDefaultPresentation()` once before mounting the app to style its authentication/loading surfaces. Mount `ThemeProvider` inside the authenticated local-session boundary. It applies the synchronous bundled default to the document root, then keeps application children behind a loading boundary until the workspace catalog and personally pinned revision have been checked. Only `{id, resolvedDigest}` is persisted, under a key containing the server's nonsecret workspace ID. A missing package or failed read falls back safely without erasing the saved preference; `error` exposes the recovery message.
+This guide is for contributors building UI that responds to the active theme. The manifest contract and asset rules live in [`contracts/theme/README.md`](../../../contracts/theme/README.md). The shared presentation code is under this directory.
 
-Use `useTheme()` for `theme`, `activePackage`, `selected`, `catalog`, `error`, `isPreviewing`, `refreshCatalog`, `selectTheme`, `previewTheme` and `cancelPreview`. Selection occurs in Appearance; there is no global selector. `selectTheme(reference)` resolves to `false` if a newer selection or preview superseded it. It persists only after the exact requested revision loads and validates. A successful server-side publication does not itself change anyone's personal choice.
+## Mounting and Startup
 
-`previewTheme(package, assets)` accepts the canonical `/themes/validate` result and the exact base64 asset map submitted with that draft. Keep validation response ordering tied to that request's source/assets; never mix a result with a later edit. Preview is local and reversible, does not write preferences, and never publishes. `cancelPreview()` restores the pinned appearance. Asset object URLs are revoked on replacement, cancellation and unmount. The owner of a preview/editor decides when leaving that flow should restore the prior appearance.
+Call `initializeDefaultPresentation()` once before mounting authentication and loading surfaces. Then mount [`ThemeProvider`](theme-provider.tsx) inside the authenticated local session boundary. The default theme styles the page immediately. `ThemeProvider` keeps application content behind a loading surface until it has loaded the workspace catalog and checked the person's saved theme. See [`presentation.ts`](presentation.ts) for root styling and [`preferences.ts`](preferences.ts) for browser preference storage.
 
-`ThemeIcon`, `RoleIdentity`, `RolePortrait`, `ThemeArtwork` and `ThemeCopy` share package slots. `useThemeToken`, `useRoleIdentity` and `useThemeCopy` support existing components. Role identities include the canonical responsibility alongside the themed name; unknown future roles receive a neutral label and icon. Generated replies and operational labels remain application-owned.
+The selected preference is only `{id, resolvedDigest}`. It is stored in browser `localStorage` under a key that includes the server's nonsecret workspace ID. If the saved revision is missing or cannot be read, Kingdom falls back to Obsidian Court and preserves the preference. `error` exposes the recovery message.
 
-`index.css` maps Tailwind's semantic `background`, `surface`, `foreground`, `accent` and status vocabulary to theme values. It also emits the corresponding `--color-*` variables for SVG/D3 consumers. There are no role-specific hue mappings: identity uses accent and status uses its semantic tone. Direct token variables use `--theme-` plus a kebab-case slot, such as `--theme-dag-node-active-background`.
+## Read and Change Theme State
 
-For new DAG components, use `.dag-node`, `.dag-edge` and `.dag-agent-icon` with `data-provider-running="true"` only while that provider is currently running. Historical attempts and generic run activity must not set that flag. Completed edges may set `data-completed="true"`. The motion layer keeps a static visible state when reduced motion is enabled. `.theme-status` with `data-tone` provides the foreground/background/border triplet; always render a status word or icon too.
+Use `useTheme()` from [`context.ts`](context.ts) inside `ThemeProvider`. It provides:
 
-Resolved manifests and built-in fixtures come directly from `contracts/theme`, using generated API types and the same canonical JSON Schema. No palette derivation exists in the browser. CSS strings, HTML and storage-supplied token maps are never accepted. Images use isolated same-origin/blob resources; authored SVG is never inserted into the DOM. Font files are self-hosted with fixed fallback stacks and browser sanitization.
+* `theme` and `activePackage` for the resolved presentation
+* `selected`, `catalog`, `error`, and `isPreviewing` for current state
+* `refreshCatalog()`, `selectTheme()`, `previewTheme()`, and `cancelPreview()` for changes
 
-The optional `surfaces.chrome` profile is `flat` (default) or `classic`; `applyPresentation` sets an explicit `data-chrome` boundary even for defaults. Shared `ui-*` hooks receive classic styles inside a bounded CSS scope, so flat samples inside a classic page stay isolated. Use shared primitives instead of deriving new control chrome at call sites. `surfaces.iconRendering` preserves mask rendering by default; `original` uses isolated full-color images with the same error fallback. Browser branding follows the active asset brand and is restored when a private preview ends. Bundled asset URLs can fill inherited validated preview assets; uploaded draft bytes take precedence, and only allocated blob URLs are revoked.
+Selection belongs to the **Appearance** page. There is no global theme selector. `selectTheme(reference)` loads and validates the exact requested revision before saving its reference. It returns `false` when a newer selection or preview has already taken over. Publishing a revision on the server never changes a person's selection by itself.
+
+## Keep Preview Data Together
+
+`previewTheme(package, assets)` accepts the canonical `/themes/validate` result and the exact base64 asset map submitted with that draft. Pass them from the same validation request. Never pair a response with assets from a newer edit.
+
+Preview is private and reversible. It does not publish or save the selected preference. `cancelPreview()` restores the pinned revision. Preview asset URLs are revoked when replaced, cancelled, or unmounted. The editor or preview owner decides when navigation out of its flow should cancel the preview.
+
+The Appearance editor stores its draft and pending operation in `sessionStorage`. Keep the source and validation result from the same edit together until the user saves, publishes, or discards the draft.
+
+## Use Shared Theme Components
+
+[`primitives.tsx`](primitives.tsx) provides `ThemeIcon`, `RoleIdentity`, `RolePortrait`, `ThemeArtwork`, and `ThemeCopy` for the package's supported slots. Use `useThemeToken()`, `useRoleIdentity()`, and `useThemeCopy()` for existing components.
+
+Role identities show the canonical responsibility alongside the themed name. Unknown future roles get a neutral label and icon. Generated replies and operational labels remain application owned.
+
+## Style Through Semantic Tokens
+
+[`index.css`](../index.css) maps Tailwind's `background`, `surface`, `foreground`, `accent`, and status vocabulary to resolved theme values. It also defines `--color-*` variables for SVG and D3 consumers. Roles use the accent color, and statuses use their semantic tones.
+
+Use shared UI primitives for controls. `surfaces.chrome` chooses `flat` or `classic` control styling, and `surfaces.iconRendering` chooses `mask` or `original` artwork colors. `applyPresentation()` always sets a `data-chrome` boundary, including for the default `flat` style. The bounded scope in [`classic-theme.css`](classic-theme.css) keeps classic controls inside their own boundary. A flat sample inside a classic page must remain flat.
+
+## Preserve Status and Motion Meaning
+
+For DAG components, use `.dag-node`, `.dag-edge`, and `.dag-agent-icon`. Set `data-provider-running="true"` only while that provider is running now. Historical attempts and general run activity are not evidence that a provider is running. Completed edges may use `data-completed="true"`.
+
+Reduced motion must retain a clear static state. `.theme-status` with `data-tone` supplies a foreground, background, and border color; render a status word or icon as well. Theme colors never replace the meaning or label of an operational status.
+
+## Keep Assets Inside The Boundary
+
+Resolved manifests and bundled fixtures use the canonical schema and generated API types. The browser does not derive palettes. Do not accept CSS strings, HTML, or token maps from storage.
+
+[`assets.ts`](assets.ts) builds image and font URLs from validated asset IDs. Revision assets use the authenticated revision route. Uploaded preview assets use the exact submitted bytes as isolated blob resources. Authored SVG stays an image and is never inserted into the document. Fonts load from local files, use fixed fallback stacks, and still pass through browser decoding and sanitization.
+
+Bundled SVG URLs may fill missing preview assets inherited from a built in theme. Draft upload bytes take priority. Revoke only blob URLs allocated by the preview; bundled URLs and revision URLs are owned elsewhere. Browser branding follows the active theme asset and is restored when a private preview ends.
+
+For bundled font provenance and update steps, see [`fonts/README.md`](fonts/README.md).

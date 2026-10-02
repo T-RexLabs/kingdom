@@ -1,340 +1,64 @@
 # How Runs Work
 
-This document explains how work moves through Kingdom today, from optional planning through work order closure.
+Kingdom gives a request a clear path through the crew and keeps the decisions, attempts, and results together. You can start in Planning or create a Work Order right away.
 
-## Two Separate Lifecycles
+## Choose where to start
 
-Kingdom has two related but separate lifecycles:
+### Shape a task in Planning
 
-1. Planning sessions
-2. Work Order execution runs
+Use the Planning workspace to work through a task, add project context, and shape a plan. When it is ready, issue a Work Order from that plan. You can also keep a planning session open without starting a run.
 
-Planning sessions are optional. A work order can be issued directly without using the planner first.
+### Create a Work Order
 
-## Planning Session Lifecycle
+Create a Work Order directly when you already know what needs doing. Planning is optional. The default workflow still gives the request planning and approval steps before implementation.
 
-Planning domain resources live under `/planning-sessions`; durable provider activity is exposed through `/api/v1/acp`.
+Before each run, choose a global model. Kingdom uses your OpenCode setup to list and run models. You can choose separate models for individual roles when you need to.
 
-### What a Planning Session Stores
+## Follow the work
 
-- `lifecycle_state`
-- `conversation_state`
-- `active_leaf_message_id`
-- `current_operation_id`
-- `current_title_operation_id`
-- `current_draft_id`
-- `context_snapshot_id`
-- canonical planning messages
-- planning drafts
+Open **Runs** to see current and finished work. A run keeps the workflow, execution activity, results, and approval state in one place.
 
-### Planner Operations
+The default workflow, `work-order-v1`, usually moves through these stages:
 
-Planner work is not request-scoped. It runs as a durable planning operation with stored events and status.
+In this workflow, separate advisor roles consider the request before a planner role drafts the run’s plan. This is different from the Planning workspace above.
 
-Current operation types:
+| Stage | What happens |
+| --- | --- |
+| Planning | Advisors look at the request from different angles. The planner turns their input into a plan. |
+| Plan decision | Kingdom approves the plan automatically or waits for you, based on the approval setting. |
+| Build | The builder works in the run’s project workspace. |
+| Review | A reviewer checks the changes and can ask for another pass. |
+| Validate | The quality and security validators check the result. |
+| Final decision | Kingdom closes the run automatically or waits for your decision. |
 
-- `reply`
-- `regenerate`
-- `formalize`
-- `generate_title`
+Some steps record a decision or hand the work to the next role. They do not call an LLM. The workflow definition lists every role and step.
 
-Important behavior:
+## Decide how much to oversee
 
-- `reply` appends the next assistant answer to the transcript.
-- `regenerate` creates an alternate assistant answer for an existing turn.
-- assistant answers can have multiple variants.
-- one assistant variant can be activated as the canonical transcript entry.
-- `formalize` produces the current planning draft.
-- interactive `reply` / `regenerate` output uses the structured-question contract; `formalize` returns a titled Markdown plan without that protocol, and `generate_title` returns only a title line.
-- `generate_title` runs as a durable planner operation through `POST /api/v1/acp/runs`, uses the session's dedicated title-operation lane, and updates the session title only after server-owned settlement succeeds.
-- `generate_title` does not claim the session's interactive `current_operation_id` slot or change `conversation_state`, so title generation can run in the background while interactive planning continues.
-- context refresh exists as an explicit API call on the session.
-- planner stream text and `message.part` events are provisional operator feedback; `message.completed` is committed atomically with the canonical message, draft, or title, provider settlement, and `run.completed`.
-- provider-backed planner work settles through planner-specific runtime-owned invocation, evidence, and settlement records before canonical planning tables are updated.
-- planner success uses the provider's adjudicated terminal success plus non-empty runtime-assembled output; process exit, provisional stream text, and export output are not success authority.
-- planner operations persist canonical state through planning message variants, drafts, and session fields; planner settlement records authorize those writes but do not replace the planning tables as transcript/draft/session truth.
-- stale recovery consults durable ACP operation progress before retrying; observed progress can suppress an automatic retry but cannot create a canonical message or draft without settlement.
+With `governance.autonomous_approvals: true`, Kingdom approves the plan and final result automatically. Set it to `false` to pause at both gates so you can approve or ask for changes.
 
-### Planning Context and History
+Plan rework returns the work to planning. Review and validation rework can send it back through another build and review cycle. The default workflow sets the usual cycle caps, and you can change them for a Work Order. The separate `run_until_all_approve` option keeps review and validation going until they pass.
 
-Each session starts with a durable context snapshot. Capture records all included/excluded file metadata under the project enumeration rules, without a fixed prefix; it never captures source-file contents. Only the project-shape summary enters the planner prompt. Snapshot responses omit file arrays, and the API exposes included/excluded entries through signed ordinal pagination.
+The **Skip Reviews and Validations** workflow omits those checks by design. Choose it only when that is what you want.
 
-Every provider-backed operation binds the active context snapshot and every active linked-source snapshot when it is enqueued. GitHub comment bodies default off; when enabled, intake captures every page and complete bodies. Source adoption or removal changes future operations only. Prompt assembly reads the immutable bindings and complete canonical transcript text; external evidence stays separately framed as untrusted material.
+## See what changed
 
-Canonical planner text is stored through SQLite content manifests and chunks. Session-list pagination continues through retained history rather than imposing a retention ceiling; the web UI exposes **Load More Sessions** and **Load Older Sessions**. Individual text/read responses may still materialize in memory.
+The builder’s saved changes appear as artifacts and, depending on `publish.mode`, may also be written to the project or a managed worktree. Kingdom compares work with a saved baseline. If a file changed outside the run, Kingdom leaves that version in place and records a conflict.
 
-### Planner Streaming and Recovery
+Only successful builder work contributes the current deliverable set. Earlier and failed attempts stay available as evidence. Other roles leave response records rather than project file changes.
 
-Planning operation events stream from:
+With `publish.mode: direct`, Kingdom works against the project and publishes changes into its configured root. With `publish.mode: git_worktree`, it creates a separate worktree for the run and publishes there. The exact snapshot rules are in the [architecture guide](system-architecture.md).
 
-- `GET /api/v1/acp/runs/{runId}/events`
+## When a run stops
 
-The stream supports:
+Kingdom may retry some failures automatically, based on the canonical rules in `policies/retry_policy.yaml`. It does not retry every error, and observed work can make an automatic retry unsafe. The run activity shows the decision and its reason.
 
-- SSE `id:` frames
-- `Last-Event-ID` replay/resume
-- keepalive frames
-- recovery after runtime restart or page refresh
+If a provider process may still be running, Kingdom holds the run in a blocked state until it can prove that the process stopped. **Retry Stop** authorizes one more bounded stop request for an eligible blocked attempt. It does not skip the safety checks.
 
-If the client exhausts SSE retries, the web planner falls back to polling the planning-operation row until the operation reaches a terminal state.
+You can use **Retry** or **Rerun** when a run is eligible to reopen. If Kingdom reports `idempotency_pending` after an interrupted request, continue with the same request key. A new key could repeat an action whose result is still unknown.
 
-### Issuing a Work Order from a Plan
+## Other ways to operate
 
-When the operator issues a work order from a planning session, the client supplies:
+Use the web app for the full workflow. Use `kd help` for the current CLI commands and `kd help <command>` for their options. The [OpenAPI contract](../contracts/openapi/openapi.yaml) defines the API.
 
-- `planning_session_id`
-- `planning_draft_id`
-
-Kingdom derives the following immutable lineage from the draft's unique successful formalize operation and attaches all three values to work order metadata:
-
-- `planning_context_snapshot_id`
-
-That lineage is attached only at work order issuance time. Planning itself does not mutate a work order run.
-
-## Run Creation Lifecycle
-
-Work Order execution starts when a work order is created and a run is started for it.
-
-A run carries:
-
-- work order id
-- workflow id
-- approval mode
-- review and validation loop controls
-- model selection
-
-Current model-selection contract:
-
-- a global model is required for OpenCode runs
-- role overrides are optional
-- `/roles` defines which roles appear in the override selector
-
-## Canonical Workflow: `work-order-v1`
-
-The seeded workflow definition contains these nodes.
-
-| Node ID | Required Role | Purpose |
-| ------- | ------------- | ------- |
-| `work_intake` | `governance` | Record royal intake and open advisory consultation |
-| `architecture_consultation` | `architecture-advisor` | Functional-fit, architecture-fit, and precedent counsel |
-| `risk_consultation` | `risk-advisor` | Security, trust-boundary, and resilience counsel |
-| `systems_consultation` | `systems-advisor` | Performance, scalability, efficiency, and maintainability counsel |
-| `usability_consultation` | `usability-advisor` | Usability, operability, and day-2 practicality counsel |
-| `advisory_synthesis` | `coordinator` | Synthesize advisory counsel into clear downstream direction |
-| `plan_drafting` | `plan-author` | Draft the execution-ready plan and rework deltas |
-| `plan_decision` | `governance` | Approve the plan or request plan rework |
-| `execution_kickoff` | `plan-author` | Record the runtime-owned execution handoff after plan approval |
-| `implementation` | `builder` | Perform implementation |
-| `execution_review` | `reviewer` | Perform execution review |
-| `quality_validation` | `qa-validator` | Functional validation |
-| `security_validation` | `security-validator` | Security validation |
-| `completion` | `governance` | Close the work order |
-
-Notes:
-
-- `work_intake` is a runtime-owned deterministic node. It records ceremonial intake, persists the opening response snapshot, and advances the workflow without invoking OpenCode.
-- `plan_decision` is a runtime-owned deterministic governance node. It does not invoke OpenCode; it stays pending at the plan approval gate until approval or rework is recorded, then persists a deterministic response snapshot.
-- `execution_kickoff` is a runtime-owned deterministic handoff node. It records that approved work has moved into implementation and opens the builder/review/validation phase without invoking OpenCode.
-- `completion` is a runtime-owned deterministic ceremonial node. It does not invoke OpenCode; it persists the final ceremonial summary before the run either auto-succeeds or pauses for operator final approval.
-- The canonical role catalog also includes `resilience-validator`, but the seeded workflow does not currently include a Loki node.
-- The default workflow metadata sets `max_execution_review_cycles=5` and `max_validation_rework_cycles=5`.
-
-## Bundled Alternate Workflow: `work-order-skip-review-validation-v1`
-
-Kingdom also ships a built-in alternate workflow for runs that intentionally bypass quality gates.
-
-It keeps the same planning path through `execution_kickoff`, runs `implementation`, and then routes directly to `completion`.
-
-Notes:
-
-- `execution_review` and `validation_gates` nodes are absent from this workflow by design.
-- review and validation caps default to `0` for runs created from this workflow.
-- the web work order form and `kd` CLI expose this mode as `Skip Reviews and Validations` and disable or reject review-loop controls when selected.
-
-## Governance and Rework
-
-### Plan Approval
-
-Plan drafting must complete before execution begins.
-
-- If `governance.autonomous_approvals=true`, the runtime auto-approves the plan and then completes `plan_decision` without a provider call.
-- If `governance.autonomous_approvals=false`, the run pauses for an operator plan decision while `plan_decision` remains pending.
-
-Plan rework behavior:
-
-- operator plan rework is uncapped
-- a rework decision records `needs_rework` plan state, persists feedback in the plan review record, and reopens `advisory_synthesis` plus `plan_drafting`
-- plan state can move from `needs_rework` back to `in_plan_review` for another planning pass
-
-### Execution Review and Validation
-
-After builder execution:
-
-1. `reviewer` emits exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
-2. validation roles inspect the result and emit exactly one `VERDICT: PASS` or `VERDICT: REWORK` line as the first non-empty line of the response
-
-Rework behavior:
-
-- review rework uses `max_execution_review_cycles`
-- validation rework uses `max_validation_rework_cycles`
-- review rework is wave-settled across all review nodes for a given persisted wave lineage before runtime queues another builder/review cycle
-- `run_until_all_approve=true` causes the runtime to keep reworking until review and validation pass instead of stopping at the normal cap
-- a boundary `REWORK` still queues the next builder/review or builder/review/validation wave
-- once a queued review or validation node becomes ready at or beyond the configured cap, runtime auto-succeeds that node without provider dispatch
-- explicit stored cap `0` means the first ready review/validation attempt auto-succeeds immediately
-- review attempts and settled validation-wave outcomes remain as executed; cap auto-success applies only to queued ready review/validation nodes skipped instead of dispatching another provider-backed loop
-- validation rework is counted by settled wave, not by individual validator node
-- workflows that omit `execution_review` and `validation_gates` skip this phase entirely and proceed directly to final closure
-
-### Final Approval
-
-Successful workflow progression is not enough for terminal success on its own.
-
-- `completion` completes before the final governance gate and does not invoke OpenCode.
-- If `governance.autonomous_approvals=true`, final acceptance is automatic.
-- If `governance.autonomous_approvals=false`, the run pauses at `awaiting_human_confirmation` until operator records `confirm` or `rework`.
-- Final `confirm` transitions the work order to `succeeded`.
-- Final `rework` records durable operator feedback, reopens the work order from `plan_drafting`, and requires the revised plan to return to operator plan approval before execution resumes.
-
-## Workspace Lifecycle
-
-Before execution, the runtime resolves one shared execution target for the run.
-
-### `publish.mode=direct`
-
-- the current project root is the source root and publish target
-- Kingdom captures tracked source files into one runtime-owned run-scoped execution target
-- retries and non-canonical side effects are reset from trusted runtime-owned snapshot state instead of from per-attempt seeded copies
-
-### `publish.mode=git_worktree`
-
-- the project root must be a valid non-bare git working tree
-- Kingdom creates or reuses a detached sibling worktree under `../kingdom-worktrees/<repo>/<work-order-title-slug>-<run_id>/` next to the repository's main worktree root
-- if the configured project root is nested inside the repository, execution is scoped back to that same relative subdirectory inside the linked worktree
-- that scoped project directory becomes the shared execution and publish target for the run
-- terminal worktree cleanup is bounded and resumable; Retry/Rerun cancels cleanup before deletion starts, but returns `409 dependency_blocked` once deletion begins until filesystem removal and Git pruning finish. A later dispatch recreates the checkout from its pinned seed commit.
-
-### Snapshot Tracking
-
-Kingdom captures runtime-owned filesystem snapshots for tracked files in the execution target.
-
-Those snapshots record the trusted builder baseline and later attempt deltas so the runtime can restore, diff, and publish without per-attempt seeded copies.
-
-Capture, diff, and restoration stream file bytes and traverse metadata incrementally, using digest-addressed blobs and a disposable disk-backed manifest index. There are no fixed file-size, aggregate workspace-byte, entry-count, or directory-depth workload ceilings. Snapshot lineage depth, no-follow path validation, trusted restoration, and resumable cleanup batches remain enforced.
-
-Tracked snapshot capture ignores:
-
-- `.git`
-- `.hg`
-- `.svn`
-- `.jj`
-- `.kingdom`
-- `kingdom-artifacts`
-- symlinks
-- non-regular filesystem entries
-
-## Execution Lifecycle
-
-Kingdom launches OpenCode directly on the host against the prepared workspace for provider-backed work order execution nodes.
-
-Important runtime behavior:
-
-- `work_intake`, `execution_kickoff`, `plan_decision`, and `completion` are runtime-owned and deterministic; they do not open OpenCode sessions.
-- execution is session-based via `opencode run --format json`
-- runtime creates a provider invocation record before dispatching every provider-backed work order execution attempt. Completion mode is a runtime-owned node-class contract, not workflow-authored configuration.
-- strict mode validates managed OpenCode assets, binary availability, and agent resolution
-- runtime continues across non-terminal `step_finish` reasons such as `tool-calls` and `unknown`; OpenCode can also continue within a command after an intermediate `stop` during compaction or tool use. Completion selects the final completed assistant step after process exit and stream drainage.
-- every provider-backed work order node, including builder execution, uses `server_response`: success requires the strict server-observed terminal response and node-specific output validation.
-- runtime-owned nodes are `not_applicable` and do not have provider completion authority.
-- direct-mode response-only planning and advisory nodes use attempt-scoped isolated copies without durable execution-target or snapshot rows; the first workspace-owning attempt captures its baseline from the then-current project.
-- runtime validates active attempt, invocation, lease, guardian, and node-contract lineage for every settlement.
-- canonical settled response text and identity belong to the same final completed assistant step. Synthetic continuation text and earlier answers cannot fill an empty final step, and runtime must not concatenate multiple answers into one settled response body.
-- every provider terminal observation first commits a lease-fenced SQLite handoff-pending marker, then enters the orchestration-written handoff under `<runtime workspace root>/provider-completion/handoffs/`, then crosses the durable lease-fenced handoff before settlement. If pending or file publication fails, a recovery-required marker records the exact lease generation and is written only after guardian quiescence, provider-reported quiescence, or an unlaunched starting state proves there is no live process to preserve. Startup replays file-only and SQLite handoffs after guardian evidence and before lost-handoff recovery.
-- handoff envelopes reference complete terminal text and invocation diagnostics by invocation ID, digest, and size. Content is durably staged before envelope publication, verified into SQLite chunks during ingestion, and retained there after settlement. Compact envelope limits do not cap the referenced content.
-- workspace-backed execution sessions place an OpenCode `.git` discovery marker at the exact execution root; nested scopes in managed Git worktrees use a `.git` file pointing at the linked worktree's existing metadata, preserving the parent worktree's status and diff behavior. A worktree-root scope retains its linked-worktree marker. `GIT_CEILING_DIRECTORIES` above the root is defense in depth because OpenCode performs its own upward `.git` walk. Its built-in file-tool boundary uses lexical checks and does not confine symlink targets or arbitrary shell commands; it is not OS-level confinement.
-- each provider command has a durable guardian. Its acknowledged ownership and file-backed quiescence evidence are ingested before terminal settlement; cleanup after ingestion is replayable evidence debt, not proof loss.
-- server-response success requires all of: normalized terminal reason `stop`; final turn and step IDs; a positive final stream sequence; non-empty canonical terminal text; no pending or non-terminal tool calls; no events after the terminal response; clean process exit with both output streams drained; and no timeout, cancellation, provider error, malformed stream data, or conflicting terminal evidence.
-- settlement is atomic: it records canonical evidence and settlement, terminal attempt state, token usage, and the durable completion outbox handoff together. Later outbox projection advances the workflow but cannot alter settlement truth.
-- `opencode export` is diagnostic only for provider-backed work order execution; it can add operator-facing context for the active invocation but cannot create or repair settlement, while the complete live stream remains canonical evidence for response-first completion
-- `attempt_outbox` replay is failure-isolated: retryable projection failures stay `pending` with failure bookkeeping, while unrecoverable replay payload problems are dead-lettered to `failed` so one poison row does not block newer durable completions
-- mailbox rows are latest-state projections for operator views; append-only run events remain the durable timeline/audit source
-- provider output and complete invocation stdout/stderr diagnostics have no fixed byte ceiling; bounded activity/output previews and stderr tails are display projections, not substitutes for canonical content. Provider context-window limits and active timeouts still apply.
-
-## Artifact Lifecycle
-
-Artifact persistence and publication are separate steps.
-
-### Persistence
-
-Artifact metadata is written to `artifacts`.
-
-Content manifests are written to `artifact_contents`, and canonical bytes to ordered `artifact_content_chunks` in the same transaction as artifact metadata. Downloads, archive exports, and publication stream those chunks.
-
-### Builder Output
-
-- builder output is derived from runtime-owned snapshot diffs
-- only files changed or deleted relative to the trusted snapshot baseline are treated as canonical builder artifacts
-- noisy dependency, cache, and package-management files are excluded from reviewer-facing deliverable manifests
-- review and validation nodes inspect the shared execution target directly; runtime no longer materializes a separate `hydrated/` tree
-
-### Non-Builder Output
-
-- non-builder roles are response-first
-- runtime writes a markdown snapshot of the role response into the workspace
-- that snapshot becomes the persisted artifact for the attempt
-
-### Publication
-
-After persistence, Kingdom may publish artifacts into the operator-visible output root.
-
-For `publish_mode=direct`, publication is per-path and best-effort. If a destination path changed outside Kingdom during the run, Kingdom records a path conflict with a simple reason and leaves that external change untouched while still publishing non-conflicting paths.
-
-- builder deliverables publish into the project root in `direct` mode
-- builder deliverables publish into the run worktree in `git_worktree` mode
-- non-builder outputs publish under `kingdom-artifacts/<work-order-slug>-<run_id>/...`
-
-## Event Streaming
-
-Kingdom exposes two important SSE channels:
-
-- `GET /api/v1/events/stream` for run events
-- `GET /api/v1/acp/runs/{runId}/events` for planner operation events
-
-Both are intended to support replay/resume with `Last-Event-ID`.
-
-## Activity and Attempt History
-
-`GET /runs/{id}/executions` returns one canonical logical projection for each workflow node. It is the list used by the run Activity surface, including the visible current execution, attempt count, latest activity, failure, and recovery state.
-
-`GET /runs/{id}/nodes/{nodeId}/attempts` returns paged durable physical attempt history for the selected node, newest first. Its response also identifies the current logical node run and attempt, even when that attempt is not on the requested page.
-
-When stale recovery has queued a replacement but the predecessor is `starting`, `running`, or `blocked`, both projections select that predecessor as current. This preserves the live cancellation/quiescence barrier until the replacement actually starts or runs.
-
-## Cancellation and Automatic Recovery
-
-Cancellation of a launched provider attempt is durable work, not a best-effort side effect. `attempt_cancel_outbox` records the requested stop and its handoff state. Kingdom dispatches a bounded stop through the attempt's guardian, waits for durable quiescence, restores the trusted workspace when the node owns one, then projects terminal state and releases a fenced stale retry.
-
-If quiescence cannot be proven, the node remains `blocked` and the cancellation handoff remains pending. Kingdom does not repeatedly send stops. **Retry Stop** is available only for an `agent_unresponsive` blocked attempt whose guardian remains addressable; it authorizes one additional bounded stop request. Explicit Retry and Rerun reopen failed runs, or cancelled runs only after cancellation, completion projection, attempt settlement, and session leases are quiescent.
-
-Automatic retry decisions are durable. Each `retry_decisions` record retains the failure code, operator-safe reason, meaningful-progress result, retry index and maximum, policy and provider delay, absolute due time, source/target lineage, dispatch state, and resolution. Restart recovery uses the persisted due time and lease-fenced dispatch; it does not recreate a decision or launch early.
-
-## Terminal States
-
-The important run outcomes are:
-
-- `succeeded`
-- `failed`
-- `cancelled`
-- `awaiting_human_confirmation`
-
-Key rule:
-
-- `succeeded` requires legal workflow progression and final authority acceptance
-- `cancelled` runs retain their attempt history and can be reopened by explicit Retry or Rerun only after cancellation and completion work has fully settled
-
-Artifact existence does not decide whether the run succeeds.
-
-## Related Docs
-
-- [`docs/system-architecture.md`](system-architecture.md)
-- [`docs/interfaces-overview.md`](interfaces-overview.md)
+For setup and access, see [GitHub Connections](github-connections-runbook.md). For local development, see [Local Setup and Verification](local-setup-and-verification.md).

@@ -1,54 +1,39 @@
-# Config Reference
+# Configuration
 
-This document explains the fields in `.kingdom/config.yaml`.
+Kingdom reads its local settings from `.kingdom/config.yaml` when `kd summon` starts. `kd init` creates this file with values that work for a local setup. Most operators can leave it as it is.
 
-It is intentionally limited to the actual config file shape used by local installed-mode Kingdom.
-Unknown fields are rejected so retired or misspelled settings cannot be silently ignored.
+Edit the file when you want to change where runs publish their work, whether Kingdom pauses for approval, or how it finds OpenCode. A setting in this file is a default for the local runtime. Changing it does not rewrite choices already saved on a run.
 
-## What This File Controls
+Unknown fields are rejected. Keep the field names and nesting shown below.
 
-- local runtime listen address
-- API base path
-- no credentials or operator authority; local authentication lives under `.kingdom/secrets/`
-- provider startup and binary settings
-- publish mode defaults
-- worktree retention behavior
-- default local approval mode
+## Example
 
-This file does not define workflow structure, retry policy, role permissions, or per-run model selection rules.
-
-It also never contains local operator credentials, GitHub private keys, App/client secrets, OAuth tokens, or installation tokens. Operator auth lives at `.kingdom/secrets/operator-token`; private App keys use `.kingdom/secrets/github-apps/`, and shared user tokens use `.kingdom/secrets/github-user-tokens/`. SQLite stores only opaque credential handles.
-
-GitHub provider origins are not configurable. Production registration, OAuth, and device flow use `https://github.com`; API exchanges use `https://api.github.com` with REST version `2026-03-10`. Manifest callback URLs come only from the authenticated browser request's direct origin. Shared device flow is browser-session/origin bound but callback-free.
-
-## File Shape
-
-The current config file shape is:
+This shows the supported shape. `kd init` writes the local paths for your project and includes the official public GitHub App identifiers by default.
 
 ```yaml
-version: <string>
-kingdom_home: <path>
-db_path: <path>
+version: v1
+kingdom_home: /path/to/project/.kingdom
+db_path: /path/to/project/.kingdom/kingdom.db
 
 governance:
-  autonomous_approvals: <bool>
+  autonomous_approvals: true
 
 publish:
-  mode: <direct|git_worktree>
-  worktree_retention: <duration|never>
+  mode: direct
+  worktree_retention: 1h
 
 server:
-  listen: <host:port>
-  base_path: <path>
+  listen: 127.0.0.1:8080
+  base_path: /api/v1
 
 provider:
   engine: opencode
-  strict: <bool>
+  strict: true
   governance_mode: autonomous
-  binary_path: <path>
-  model: <string>
-  agent: <string>
-  skip_permissions: <bool>
+  binary_path: ""
+  model: ""
+  agent: ""
+  skip_permissions: true
 
 github:
   shared_app:
@@ -56,103 +41,50 @@ github:
     client_id: Iv23li1tLBTzhr70LA1J
 ```
 
-## Field Reference
+## Settings
 
-### Top-level fields
+### Local files
 
-- `version`
-  - config version string written by Kingdom
-- `kingdom_home`
-  - path to the local `.kingdom/` directory
-- `db_path`
-  - path to the SQLite database file
+`version` is written as `v1`. `kingdom_home` points to the local `.kingdom` directory, and `db_path` points to the SQLite database. These paths decide which local Kingdom data the runtime opens, so leave them as written unless you are deliberately moving that data.
 
-### `governance`
+### Approvals
 
-- `autonomous_approvals`
-  - default: `true`
-  - when `true`, Kingdom auto-approves plan and final closure
-  - when `false`, Kingdom pauses for operator approval at both gates
+`governance.autonomous_approvals` defaults to `true`. Kingdom moves through its plan and final approval gates without pausing. Set it to `false` to have Kingdom wait for you at both gates. This is the default for new runs; it does not change runs that already exist.
 
-### `publish`
+### Where run changes go
 
-- `mode`
-  - supported values: `direct`, `git_worktree`
-  - default local behavior is `direct`
-  - `git_worktree` requires a valid non-bare git worktree
+`publish.mode` is `direct` by default. Use `git_worktree` to keep each run's work in its own Git worktree. It requires a Git repository with a working tree. Bare repositories cannot use this mode.
 
-- `worktree_retention`
-  - default: `1h`
-  - accepts a positive duration like `30m` or `2h`, or `never`
-  - controls how long terminal run worktrees are kept before cleanup
+`publish.worktree_retention` defaults to `1h`. Set a positive duration such as `30m` or `2h` to choose how long to keep each run worktree after its run ends. Set it to `never` to turn off automatic cleanup. This setting only applies when `publish.mode` is `git_worktree`.
 
-### `server`
+### Local web address
 
-- `listen`
-  - required
-  - default scaffold value is `127.0.0.1:8080`
-  - `kd summon --listen`, `--host`, and `--port` can override this value for a single summon process without rewriting the config file
+`server.listen` defaults to `127.0.0.1:8080`. Installed Kingdom listens on loopback only. Keep it on a loopback address for local use. The `--listen`, `--host`, and `--port` options to `kd summon` can override the address for that process without changing this file.
 
-- `base_path`
-  - required
-  - default scaffold value is `/api/v1`
-  - normalized on read, so values like `v1` become `/v1`
-  - cannot be `/`, malformed, or collide with a built-in web route or static-asset prefix
-  - injected into the embedded web UI so browser API and SSE requests use the same configured path
+`server.base_path` defaults to `/api/v1` and must be a valid path prefix. Kingdom adds a leading slash to values such as `v1`, but rejects the root path, malformed paths, and paths that conflict with Kingdom's web routes or static assets. Kingdom uses this path for API and browser requests. Keep the default unless you have a specific reason to serve the API under another path.
 
-### `provider`
+### OpenCode
 
-- `engine`
-  - required runtime value: `opencode`
-  - no other provider engine is supported
+`provider.engine` must be `opencode`. There is no other supported engine.
 
-- `strict`
-  - default: `true`
-  - when `true`, summon validates managed OpenCode assets, binary availability, and agent resolution before readiness
+`provider.strict` is set to `true` by `kd init`. At startup, this checks the managed OpenCode files, the binary, and role resolution before Kingdom reports ready. Set it to `false` only when debugging a local setup.
 
-- `governance_mode`
-  - required value: `autonomous`
-  - `manual` is not implemented
+`provider.governance_mode` must be `autonomous`. Manual provider governance is not implemented.
 
-- `binary_path`
-  - optional path to the `opencode` binary
+`provider.binary_path` is optional. Set it when the `opencode` binary is not available on your `PATH`.
 
-- `model`
-  - optional summon-time provider default
-  - does not remove the requirement for explicit per-run global model selection
+`provider.model` and `provider.agent` are optional defaults for OpenCode. A run still needs an explicit global model choice.
 
-- `agent`
-  - optional summon-time provider default agent
+`provider.skip_permissions` defaults to `true` and keeps OpenCode runs from stopping for interactive permission prompts.
 
-- `skip_permissions`
-  - default: `true`
-  - keeps local execution non-interactive so permission prompts do not block runs
+### GitHub App identifiers
 
-### `github.shared_app`
+`github.shared_app.slug` and `github.shared_app.client_id` identify the public App used by Kingdom's shared setup. `kd init` fills in Kingdom's official App. To turn off shared setup, leave both values blank. Set both or leave both blank; setting only one prevents startup.
 
-- `slug` and `client_id` are public identifiers and must both be set or both be blank.
-- `kd init` defaults to Kingdom's official public App: `kingdom-issue-importer` / `Iv23li1tLBTzhr70LA1J`.
-- both blank disable the branded shared setup and leave private Manifest setup primary.
-- exactly one set is a startup error.
-- never configure a client secret, App private key, or owner credential. The App must be public/installable, have device flow and expiring user tokens enabled, request exactly metadata read plus Issues read, and subscribe to no events.
-- standalone `kingdomd` uses `--github-shared-app-slug` / `KINGDOM_GITHUB_SHARED_APP_SLUG` and `--github-shared-app-client-id` / `KINGDOM_GITHUB_SHARED_APP_CLIENT_ID` with the same two-field rule.
+Do not put secrets in this file. GitHub private keys, OAuth tokens, installation tokens, and the local operator token are stored under `.kingdom/secrets/`. The database stores opaque credential handles.
 
-## Practical Guidance
+## Related Guides
 
-- Change `publish.mode` to `git_worktree` when you want run output isolated from the main working tree.
-- Keep `provider.strict=true` unless you are deliberately relaxing startup validation during local debugging.
-- Set `provider.binary_path` only when `opencode` is not already available on your `PATH`.
-- Treat `provider.model` and `provider.agent` as summon-time defaults only, not as substitutes for per-run choices.
-- Change `server.base_path` only if you are intentionally serving the API from a different path prefix.
+For commands and the operator workflow, see the [README](../README.md). For GitHub setup and credential handling, see the [GitHub connections guide](github-connections-runbook.md). The [system architecture](system-architecture.md) explains behavior that configuration does not change.
 
-## Content Handling and Policy Boundaries
-
-There are no config fields for a run-wide attempt budget, provider output-byte ceiling, tracked workspace file-size/aggregate-size/entry-count/directory-depth ceiling, or external-source/comment retention cap. The runtime uses disk staging, chunked canonical content, and paginated reads for those workloads; individual scalar and read-response allocations can still grow with content.
-
-Per-error automatic retry allowances remain in `policies/retry_policy.yaml`. Review and validation cycle caps, ready-node auto-success, and `run_until_all_approve` remain workflow/per-run controls. Active provider timeouts remain in `policies/opencode_provider_policy.yaml`: strict startup, first event, stream inactivity, cancellation grace/force, and activity-gated node wall-clock budgets. Guardian metadata, snapshot lineage, recovery batches, and GitHub setup/discovery boundaries are still enforced. Removing content ceilings does not disable those controls or enlarge a model's context window.
-
-## Related Sources
-
-- `internal/cli/install_mode.go`: local config parsing, defaults, and validation
-- `kd --help`: CLI entrypoint help
-- `docs/system-architecture.md`: runtime invariants and behavior not controlled by config
+Implementation defaults and validation live in `internal/cli/install_mode.go`.

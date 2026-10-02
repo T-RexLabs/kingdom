@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Kingdom workflow · Light · Diagram Design</title>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500;600&family=Noto+Serif:ital@0;1&family=Noto+Sans+KR:wght@400;500;600&family=Noto+Serif+KR:wght@400&family=Noto+Sans+TC:wght@400;500;600&family=Noto+Serif+TC:wght@400&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --color-paper: #f3eee2;
+      --color-ink: #0d1110;
+      --color-muted: #5e645d;
+      --font-sans: 'Geist', system-ui, sans-serif;
+      --font-serif: 'Instrument Serif', 'Noto Serif', serif;
+      --font-mono: 'Geist Mono', ui-monospace, monospace;
+    }
+    body {
+      font-family: var(--font-sans);
+      background: var(--color-paper);
+      color: var(--color-ink);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2rem;
+    }
+    .frame { max-width: 1120px; width: 100%; }
+    .eyebrow {
+      font-family: var(--font-mono);
+      font-size: 8px;
+      font-weight: 500;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--color-muted);
+      margin-bottom: 8px;
+    }
+    h1 {
+      font-family: var(--font-serif);
+      font-size: clamp(1.75rem, 3vw, 2.25rem);
+      font-weight: 400;
+      line-height: 1.15;
+      color: var(--color-ink);
+      margin-bottom: 20px;
+    }
+    .diagram-container { width: 100%; overflow-x: auto; }
+    svg { width: 100%; min-width: 960px; display: block; }
+    @media print {
+      .diagram-container { overflow-x: visible; }
+      svg { min-width: 0; }
+    }
+  </style>
+</head>
+<body>
+  <main class="frame">
+    <p class="eyebrow">Kingdom · Workflow</p>
+    <h1>From Goal to Inspected Work</h1>
+    <figure class="diagram-container">
+      <svg viewBox="0 0 960 600" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="kingdom-workflow-light-title kingdom-workflow-light-desc">
+        <title id="kingdom-workflow-light-title">Kingdom workflow</title>
+        <desc id="kingdom-workflow-light-desc">Flowchart showing the optional planning path into a Work Order, a governed Run, and the changes, decisions, and evidence an operator can inspect.</desc>
+        <defs>
+          <marker id="arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#5e645d"/></marker>
+          <marker id="arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#846521"/></marker>
+          <marker id="arrow-link" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#846521"/></marker>
+        </defs>
+
+        <rect width="100%" height="100%" fill="#f3eee2"/>
+
+        <!-- Connectors: the optional plan and direct paths rejoin before the Work Order. -->
+        <path d="M 480 120 V 160" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 552 196 H 648" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 480 232 V 284" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 768 224 V 280 Q 768 288 760 288 H 488" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 480 292 V 316" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 480 364 V 388" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+        <path d="M 480 452 V 476" fill="none" stroke="#5e645d" stroke-width="1.2" marker-end="url(#arrow)"/>
+
+        <!-- Branch labels are masked and separated from their strokes. -->
+        <rect x="584" y="176" width="32" height="12" rx="2" fill="#f3eee2"/>
+        <text x="600" y="185" fill="#5e645d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">YES</text>
+        <rect x="492" y="252" width="24" height="12" rx="2" fill="#f3eee2"/>
+        <text x="504" y="261" fill="#5e645d" font-size="8" font-family="'Geist Mono', monospace" text-anchor="middle" letter-spacing="0.06em">NO</text>
+
+        <!-- Start: oval. -->
+        <rect x="396" y="72" width="168" height="48" rx="24" fill="rgba(13,17,16,0.03)" stroke="#9c9a92" stroke-width="1"/>
+        <text x="480" y="101" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Your goal</text>
+
+        <!-- Decision: diamond. -->
+        <polygon points="480,160 552,196 480,232 408,196" fill="#ebe5d8" stroke="#0d1110" stroke-width="1"/>
+        <text x="480" y="200" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Plan first?</text>
+
+        <!-- Optional planning action. -->
+        <rect x="648" y="168" width="240" height="56" rx="6" fill="rgba(13,17,16,0.02)" stroke="rgba(13,17,16,0.20)" stroke-width="1" stroke-dasharray="4,3"/>
+        <text x="768" y="192" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Planning session</text>
+        <text x="768" y="210" fill="#5e645d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">counsel shapes the brief</text>
+
+        <!-- Merge point. -->
+        <circle cx="480" cy="288" r="4" fill="#0d1110"/>
+
+        <!-- Shared assignment. -->
+        <rect x="352" y="316" width="256" height="48" rx="6" fill="#ebe5d8" stroke="#0d1110" stroke-width="1"/>
+        <text x="480" y="338" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Work Order</text>
+        <text x="480" y="356" fill="#5e645d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">one clear assignment</text>
+
+        <!-- Governed Run: the focal step. -->
+        <rect x="320" y="388" width="320" height="64" rx="6" fill="rgba(132,101,33,0.08)" stroke="#846521" stroke-width="1.2"/>
+        <text x="480" y="415" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Governed Run</text>
+        <text x="480" y="435" fill="#5e645d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">Build · Review · Validate</text>
+
+        <!-- End: oval. -->
+        <rect x="344" y="476" width="272" height="56" rx="28" fill="rgba(13,17,16,0.03)" stroke="#9c9a92" stroke-width="1"/>
+        <text x="480" y="498" fill="#0d1110" font-size="12" font-weight="600" font-family="'Geist', sans-serif" text-anchor="middle">Inspect the result</text>
+        <text x="480" y="516" fill="#5e645d" font-size="9" font-family="'Geist Mono', monospace" text-anchor="middle">changes · decisions · evidence</text>
+      </svg>
+    </figure>
+  </main>
+</body>
+</html>
