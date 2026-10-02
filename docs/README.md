@@ -1,37 +1,27 @@
-# Docs Guide
+# Kingdom Docs
 
-  Each document should answer one clear question. If a file starts duplicating OpenAPI, policy files, workflow JSON, or low-level code constants, it should usually be trimmed rather than expanded.
+The root [README](../README.md) is the best place to meet Kingdom and get it running. These guides answer the next questions, whether you run Kingdom or help build it.
 
-## Read These First
+## I run Kingdom
 
-- [`system-architecture.md`](system-architecture.md): the accepted architecture, invariants, and design boundaries
-- [`how-runs-work.md`](how-runs-work.md): how planning, work orders, runs, reviews, and closure work end to end
-- [`local-setup-and-verification.md`](local-setup-and-verification.md): how to install, run, and verify Kingdom locally
+1. [How Runs Work](how-runs-work.md) explains Planning, Work Orders, approvals, results, and recovery.
+2. [Config Reference](config-reference.md) explains the settings in `.kingdom/config.yaml`.
+3. [GitHub Connections](github-connections-runbook.md) covers setup, access, and removal.
+4. [Themes and Appearance](themes.md) shows how to choose or make a theme.
 
-## Reference Docs
+## Contribute to Kingdom
 
-- [`themes.md`](themes.md): personal appearance, shared packages, and file/agent theme authoring.
-- [`github-connections-runbook.md`](github-connections-runbook.md): GitHub App setup, key lifecycle, recovery, and operator disclosures.
+1. [Local Setup and Verification](local-setup-and-verification.md) explains how to install, change, and check the code.
+2. [System Architecture](system-architecture.md) explains how the runtime fits together and the rules it must preserve.
+3. [OpenAPI](../contracts/openapi/openapi.yaml) defines the HTTP contract.
+4. [Policies](../policies/) define role authority, network access, and automatic retry behavior.
 
-- [`interfaces-overview.md`](interfaces-overview.md): the main web, CLI, API, metrics, and streaming interfaces
-- [`data-and-storage.md`](data-and-storage.md): durable data model and storage notes
-- [`errors-and-retries.md`](errors-and-retries.md): runtime error categories and retry behavior
-- [`config-reference.md`](config-reference.md): important operator-facing defaults and override guidance
+## Commands
 
-Use `kd --help` and `kd help <command>` for the CLI source of truth.
+For command options, run `kd help` or `kd help <command>`. The CLI help follows the installed version.
 
-## Canonical Sources Of Truth
+For policy defaults, read the files in `policies/`. For workflow steps, read the definitions in `internal/bootstrapassets/files/workflows/`. For API routes and request shapes, use OpenAPI.
 
-- API routes and schemas: `contracts/openapi/openapi.yaml`
-- Runtime policies: `policies/*.yaml`
-- Seeded workflows: `internal/bootstrapassets/files/workflows/*.json`
-- Product invariants: [`system-architecture.md`](system-architecture.md)
+For the meaning of runtime error codes, see the [error code matrix](../contracts/fixtures/error_codes/error_matrix.v1.json).
 
-## Naming Rule
-
-Prefer plain-language file names that tell the reader what question the document answers.
-
-Examples:
-
-- `how-runs-work.md` is better than `runtime_flow.md`
-- `data-and-storage.md` is better than `state_storage.md`
+The architecture guide is the place for accepted design boundaries. It points to these more specific sources rather than copying every setting or route into another page.

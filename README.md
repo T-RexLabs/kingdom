@@ -25,7 +25,7 @@ Your LLM crew plans the work, builds it, and checks the result.
 
 <h2 id="watch">Watch the Work Unfold</h2>
 
-Start in Planning, or create a Work Order directly to send it to the crew. The crew moves through Build, Review, and Validate. Follow its progress and decisions as it works.
+Start in Planning to work through an idea, or create a Work Order when you know what needs doing. A Work Order follows the default path through planning, approval, Build, Review, validation, and final decision. Follow the crew, its decisions, and evidence as it goes.
 
 <picture>
   <source srcset="docs/assets/kingdom%2Dworkflow%2Ddark.svg" media="(prefers&#45;color&#45;scheme: dark)">
@@ -63,13 +63,13 @@ kd init
 kd summon
 ```
 
-Open the local URL printed by Kingdom. In Planning, work through the task with advisors, or create a Work Order to send it straight to the crew. Choose a model before each run, even if OpenCode already has a default model set.
+Open the local URL printed by Kingdom. In Planning, work through the task and shape a plan, then issue a Work Order. Or create a Work Order directly if you already know what needs doing. Choose a model before each run, even if OpenCode already has a default model set.
 
 Kingdom uses OpenCode to list models and run them. Your OpenCode setup can use local or hosted models.
 
 ## Make It Yours
 
-Connect GitHub to bring issues into Planning or a new Work Order.  Pick a personal theme or create a theme package to share with your team. Keep it calm or let Rexie steal the show.
+Connect GitHub to bring issues into Planning or a new Work Order. Pick a personal theme or create a theme package to share with your team. Keep it calm or let Rexie steal the show.
 
 * [Set Up GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * [Explore Themes and Appearance](docs/themes.md)
@@ -91,7 +91,6 @@ make verify
 The Go runtime serves the embedded web app and the `kd` command. SQLite stores workflow and audit data. OpenCode runs the model roles. Start here when changing the system:
 
 * [System Architecture](docs/system%2Darchitecture.md): design boundaries and invariants
-* [Data and Storage](docs/data%2Dand%2Dstorage.md): durable state and recovery
 * [OpenAPI Contract](contracts/openapi/openapi.yaml): HTTP API source of truth
 * [Runtime Policies](policies/): retry and provider behavior
 * [Seeded Workflows](internal/bootstrapassets/files/workflows/): workflow definitions
@@ -101,7 +100,7 @@ The Go runtime serves the embedded web app and the `kd` command. SQLite stores w
 
 * Learn how Planning, Work Orders, and Runs fit together: [How Runs Work](docs/how%2Druns%2Dwork.md)
 * Configure your local runtime: [Config Reference](docs/config%2Dreference.md)
-* Connect a GitHub App: [GitHub Connections Runbook](docs/github%2Dconnections%2Drunbook.md)
+* Connect a GitHub App: [GitHub Connections](docs/github%2Dconnections%2Drunbook.md)
 * Build or verify Kingdom locally: [Local Setup and Verification](docs/local%2Dsetup%2Dand%2Dverification.md)
 * Find the rest of the docs: [Docs Guide](docs/README.md)
 

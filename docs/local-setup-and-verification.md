@@ -1,145 +1,61 @@
 # Local Setup and Verification
 
-This document explains how to install Kingdom locally, verify it, and run a realistic local development loop.
+Use this guide when changing Kingdom itself. If you only want to run it on a project, start with the [root README](../README.md).
 
-## Toolchain Setup
+## Install the tools
+
+Kingdom pins its Go, Node, and pnpm versions in the Makefile. Check them with `make tool-versions`. You also need OpenCode installed and signed in to the providers you plan to use.
+
+From the repository root, run:
 
 ```bash
 make install
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-`make install`:
+Corepack uses the pinned pnpm version to install and build the web app. The command also installs `kd`. It does not change your shell settings, so add the Go bin folder to your PATH again in a new terminal if needed.
 
-- enables Corepack
-- prepares the pinned pnpm version
-- installs the frontend and JavaScript tooling dependencies under `web/`
-- builds the embedded web UI
-- installs `kd`
+## Check your changes
 
-`make install` is the only setup command required for a brand new local install.
+`make help` lists the supported targets. The main checks are:
 
-Run `make` or `make help` to list the supported public make targets.
+| Command | What it checks |
+| --- | --- |
+| `make verify` | Go and web checks, race checks, vet, coverage, and generated contracts. |
+| `make test-web` | Web app unit tests. |
+| `make lint-web` | Web app lint rules. |
+| `make contracts-check` | Generated API types and theme contracts. |
 
-Targets that need JavaScript tooling, such as `make openapi-lint`, reuse the dependencies installed under `web/`.
+These commands can take time and may use local dependencies. Choose a check that matches the change, or run `make verify` before sharing a larger change.
 
-## Main Verification Commands
+## Check an installed runtime
 
-| Command | What It Runs |
-| ------- | ------------ |
-| `make test` | `go test ./...` after building web assets |
-| `make test-web` | frontend unit tests |
-| `make lint-web` | frontend ESLint with zero warnings allowed |
-| `make test-race` | race-enabled tests for `internal/state/...`, `internal/planning/...`, and `internal/api/...` |
-| `make vet` | `go vet ./...` |
-| `make coverage-core` | core coverage gate via `scripts/check_core_coverage.sh` |
-| `make contracts-check` | regenerate OpenAPI types and verify no checked-in diff |
-| `make verify` | `test`, `test-web`, `lint-web`, `test-race`, `vet`, `coverage-core`, and `contracts-check` |
-
-## Recommended Local Runtime Verification
-
-When you need to verify the real installed-mode runtime:
+Use this when a change needs a real Kingdom process and browser session. Make a fresh directory under `kd-sandbox/` for every check:
 
 ```bash
-make install
-
-mkdir -p kd-sandbox/local-runtime-check
-cd kd-sandbox/local-runtime-check
+mkdir -p kd-sandbox/my-runtime-check
+cd kd-sandbox/my-runtime-check
 
 kd init
-kd summon
+kd summon --port 18080
 ```
 
-To fully reset a local install before re-initializing:
+Pick a free port other than 8080 and replace `18080` if it is already in use. Open the URL printed by Kingdom.
 
-```bash
-kd clean
-kd init
-```
+In the browser, open **Planning**, select a model, and start a planning session or create a Work Order. Follow its run under **Runs** and inspect the workflow, execution, result, and approval state. If manual approvals are on, try both approval gates.
 
-Then open `http://127.0.0.1:8080` and walk the product through a real work order flow.
+The fresh directory keeps this check separate from the repository and from your other projects. When you are done, stop Kingdom in that directory with `kd summon stop`. Do not use `kd clean` unless you intend to remove that directory’s entire `.kingdom/` state.
 
-Recommended manual verification:
+## Run the web app while developing
 
-1. Open `Work Orders`.
-2. Choose a global model.
-3. Create a planning session or issue a work order directly.
-4. Follow the run under `Runs`.
-5. Inspect graph, timeline, agents, and mailbox.
-6. If manual approvals are enabled, confirm the plan and final gate.
+`make dev-web` starts Vite at `http://localhost:5173`. The proxy in `web/vite.config.ts` currently sends API and health requests to `localhost:8080`. For an installed runtime check, use the embedded web app at the URL printed by `kd summon --port <free port>` instead.
 
-## Recommended Repository Development Loop
+Kingdom serves the built web app from the Go process. Rebuild it with `make install` when you need to check the embedded version.
 
-When you are iterating on the checked-out source tree, use the existing split workflow instead of treating `kd summon` as a hot-reload server.
+## Useful boundaries
 
-Terminal A, from a disposable workspace under `kd-sandbox/`:
+`kd init` creates a local `.kingdom/` directory with config, runtime state, and managed OpenCode role profiles. Do not edit managed profiles directly. Kingdom checks them at startup.
 
-```bash
-mkdir -p kd-sandbox/local-dev
-cd kd-sandbox/local-dev
+The installed runtime listens on loopback. A port flag changes the local port for that process. It does not enable remote access.
 
-kd init
-kd summon
-```
-
-Terminal B, from the repository root:
-
-```bash
-make dev-web
-```
-
-Use `http://127.0.0.1:5173` while iterating on the frontend. Vite provides frontend hot reload and proxies API plus health traffic to the summoned runtime on `127.0.0.1:8080`.
-
-Expected behavior:
-
-- edits under `web/` should reload through Vite
-- edits under `cmd/`, `internal/`, `.kingdom/config.yaml`, `.kingdom/policies/`, or `.kingdom/schemas/` require restarting `kd summon`
-- final runtime verification should always happen against `http://127.0.0.1:8080` so you exercise the embedded UI path
-
-## Local Server Contract
-
-`kd init` writes a local `.kingdom/` workspace and managed OpenCode profiles under `.kingdom/opencode/agents/` in the project root.
-
-`kd summon`:
-
-- ensures the SQLite schema exists
-- loads policies, schemas, workflows, and config from `.kingdom/`
-- seeds canonical roles
-- validates managed OpenCode assets and agent resolution in strict mode when enabled
-- starts the API at `http://127.0.0.1:8080/api/v1`
-- serves the web UI from the same process
-- accepts runtime-only address overrides via `--listen <host:port>` or symmetric `--host <host>` and `--port <port>` flags
-
-## Installed-Mode Notes
-
-- `publish.mode=direct` publishes builder deliverables into the project root.
-- `publish.mode=git_worktree` publishes into a detached linked worktree under `../kingdom-worktrees/<repo>/<work-order-title-slug>-<run_id>/` next to the repository's main worktree root, then scopes back to the configured project root inside that checkout.
-- `governance.autonomous_approvals=true` auto-approves plan and final closure.
-- `governance.autonomous_approvals=false` pauses at both approval gates for operator decisions.
-- OpenCode runs still require an explicit per-run global model selection even if summon config contains provider defaults.
-
-## Troubleshooting
-
-- `listen tcp 127.0.0.1:8080: bind: address already in use`
-  - if another summon is using the port, run `kd summon status` and `kd summon stop`
-  - if another local service is using the port, stop it or change `server.listen`
-- `summon already running with pid=<pid>`
-  - use `kd summon status`, then `kd summon stop`
-- `summon readiness timeout`
-  - run `kd summon logs --follow`
-  - inspect `.kingdom/logs/summon.log`
-  - verify `http://127.0.0.1:8080/healthz`
-  - verify authenticated `GET /api/v1/health`
-- changes visible at `:8080` but not `:5173`
-  - confirm `make dev-web` is running from the repo root
-  - use `http://127.0.0.1:5173` for Vite-based frontend iteration
-- changes under Go or `.kingdom/` paths are not taking effect
-  - stop and restart `kd summon`; backend, config, policy, and schema changes are not hot-reloaded in-process
-- `initialize opencode session adapter`
-  - install `opencode` or set `provider.binary_path`
-- `git_worktree` workspace preparation failure
-  - ensure `git` is installed and the project root is a valid non-bare worktree
-- missing publish output in the project root
-  - confirm the run reached `succeeded`
-  - inspect `publish.mode`
-  - inspect `GET /api/v1/runs/{id}/artifacts`
+Configuration lives in `.kingdom/config.yaml`. The [Config Reference](config-reference.md) explains its fields. The [System Architecture](system-architecture.md) explains runtime boundaries and recovery.
