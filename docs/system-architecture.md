@@ -1,6 +1,6 @@
 # System Architecture
 
-Kingdom runs planned work through a local crew of LLM roles. One Go service serves the web app and API. The `kd` command initializes and starts Kingdom, then uses that same API for command line operations. SQLite keeps the durable work record. OpenCode runs model work in a prepared project workspace.
+Kingdom runs planned work through LLM roles. One Go service serves the web app and API. The `kd` command initializes and starts Kingdom, then uses that same API for command line operations. SQLite keeps the durable work record. OpenCode runs model work in a prepared project workspace.
 
 This guide is a map of the current system and the rules that shape it. Use the source map below when you need implementation detail.
 
