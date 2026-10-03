@@ -73,7 +73,7 @@ vet: $(WEB_DIST_INDEX) ## Run `go vet ./...`
 	$(GO) vet ./...
 
 coverage-core: tools-check $(WEB_DIST_INDEX) ## Check the core coverage gate
-	./scripts/check_core_coverage.sh $(CORE_COVERAGE_MIN)
+	GO="$(GO)" ./scripts/check_core_coverage.sh $(CORE_COVERAGE_MIN)
 
 scripts-check: ## Run lightweight script verification checks
 	@set -e; for script in scripts/*.sh; do bash -n "$$script"; done

@@ -5,6 +5,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROFILE_PATH="$ROOT_DIR/.tmp/core.cover.out"
 MIN_COVERAGE="${1:-72.0}"
+COVERAGE_GO="${GO:-go}"
 
 mkdir -p "$ROOT_DIR/.tmp"
 
@@ -14,7 +15,7 @@ pushd "$ROOT_DIR" >/dev/null
 # services as well as package-local tests. Instrument the core packages across
 # those consumers so the gate measures real behavioral coverage rather than
 # treating integration-owned paths as uncovered.
-go test \
+"$COVERAGE_GO" test \
   -coverpkg=./internal/core/workflow,./internal/state,./internal/core/policyguard,./internal/core/schemas \
   -coverprofile="$PROFILE_PATH" \
   ./internal/core/workflow \
@@ -25,7 +26,7 @@ go test \
   ./internal/api \
   ./internal/orchestration
 
-TOTAL_COVERAGE="$(go tool cover -func="$PROFILE_PATH" | awk '/^total:/ {gsub("%", "", $3); print $3}')"
+TOTAL_COVERAGE="$("$COVERAGE_GO" tool cover -func="$PROFILE_PATH" | awk '/^total:/ {gsub("%", "", $3); print $3}')"
 
 python3 - "$TOTAL_COVERAGE" "$MIN_COVERAGE" <<'PY'
 import sys

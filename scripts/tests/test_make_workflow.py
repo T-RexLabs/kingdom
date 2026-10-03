@@ -26,7 +26,7 @@ class MakeWorkflowTests(unittest.TestCase):
         shutil.copy(ROOT / 'web/package.json', self.root / 'web/package.json')
         for name in ('web/pnpm-lock.yaml', 'web/pnpm-workspace.yaml', 'go.sum'):
             (self.root / name).touch()
-        for name in ('scripts/check_tool_versions.py',):
+        for name in ('scripts/check_tool_versions.py', 'scripts/check_core_coverage.sh'):
             if (ROOT / name).exists():
                 shutil.copy(ROOT / name, self.root / name)
         (self.root / 'scripts/tests/test_fixture.py').write_text('import unittest\nclass FixtureTest(unittest.TestCase):\n    def test_fixture(self):\n        self.assertTrue(True)\n')
@@ -73,6 +73,11 @@ elif name == 'pnpm' and args == ['build']:
     (dist / 'index.html').write_text('built')
     for asset in (root / 'web/public').iterdir():
         (dist / asset.name).write_text(asset.read_text())
+elif name == 'go' and args[:1] == ['test'] and any(arg.startswith('-coverprofile=') for arg in args):
+    profile = next(arg.split('=', 1)[1] for arg in args if arg.startswith('-coverprofile='))
+    pathlib.Path(profile).write_text('mode: set\\n')
+elif name == 'go' and args[:2] == ['tool', 'cover']:
+    print('total: (statements) 80.0%')
 elif name == 'go' and args[:1] == ['build']:
     destination = pathlib.Path(args[args.index('-o') + 1])
     destination.parent.mkdir(exist_ok=True)
@@ -97,6 +102,22 @@ elif name == 'pnpm' and args[:2] == ['exec', 'openapi-typescript']:
 
     def calls(self) -> list[list[str]]:
         return [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+
+    def test_coverage_uses_checked_go_override_for_tests_and_profile(self) -> None:
+        checked_tools = self.root / 'checked-tools'
+        checked_tools.mkdir()
+        checked_go = checked_tools / 'go'
+        checked_go.symlink_to(self.root / 'fake_tool.py')
+        unchecked_go = self.tools / 'go'
+        unchecked_go.unlink()
+        unchecked_go.write_text('#!/bin/sh\nprintf "unchecked PATH Go used\\n" >&2\nexit 91\n')
+        unchecked_go.chmod(0o755)
+        result = self.make('coverage-core', f'GO={checked_go}')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls()
+        self.assertTrue(any(call[:2] == ['go', 'test'] and '-coverpkg=./internal/core/workflow,./internal/state,./internal/core/policyguard,./internal/core/schemas' in call for call in calls))
+        self.assertTrue(any(call[:3] == ['go', 'tool', 'cover'] for call in calls))
+        self.assertIn('core package coverage gate passed: 80.0% >= 72.0%', result.stdout)
 
     def test_deleted_web_asset_and_go_source_rebuild_existing_outputs(self) -> None:
         first = self.make('build')
