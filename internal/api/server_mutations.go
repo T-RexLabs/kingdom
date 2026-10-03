@@ -318,6 +318,10 @@ func (s *Server) handleCreateRun(w http.ResponseWriter, r *http.Request) {
 		s.writeInternalError(w, "create run failed")
 		return
 	}
+	if err := state.CaptureRunAgentConfigurationSnapshotTx(r.Context(), tx, runID, now); err != nil {
+		s.writeInternalError(w, "capture run agent configuration failed")
+		return
+	}
 
 	payloadRaw, err := json.Marshal(map[string]any{
 		"run_id":        runID,

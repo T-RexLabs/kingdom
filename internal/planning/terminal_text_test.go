@@ -46,7 +46,7 @@ func TestReferencedPlannerReplyParsingDoesNotMaterializeWholeResponse(t *testing
 	runtime.GC()
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
-	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{StreamObservation: providerexecution.InvocationStreamObservation{CanonicalTerminalTextRef: &ref, TerminalTextOpener: staged.Open}}, false)
+	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{StreamObservation: providerexecution.InvocationStreamObservation{CanonicalTerminalTextRef: &ref, TerminalTextOpener: staged.Open}}, false, nil)
 	runtime.ReadMemStats(&after)
 	if err != nil {
 		t.Fatal(err)
@@ -78,7 +78,7 @@ func plannerTextForTest(t *testing.T, inline string, source *state.PlanningTextS
 }
 
 func parseStructuredQuestion(text string) (string, *StructuredQuestion) {
-	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: text}, false)
+	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: text}, false, nil)
 	if err != nil {
 		panic(err)
 	}
@@ -96,7 +96,11 @@ func parseStructuredQuestion(text string) (string, *StructuredQuestion) {
 }
 
 func parseFormalizedOutput(text string) (string, string, error) {
-	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: text}, true)
+	catalog, err := state.CanonicalPromptCatalog()
+	if err != nil {
+		return "", "", err
+	}
+	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: text}, true, catalog.IsRecognizedPlanSectionHeading)
 	if err != nil {
 		return "", "", err
 	}
@@ -134,7 +138,7 @@ func TestStreamedPlannerParserPreservesSingleLongProseLine(t *testing.T) {
 	body := strings.Repeat("complete 界 ", 200000) + "body-tail"
 	question := "Proceed with the plan?"
 	input := body + "\n\n" + question + "\n\n```structured_question\n{\"prompt\":\"" + question + "\",\"type\":\"yes_no\"}\n```"
-	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: input}, false)
+	parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: input}, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

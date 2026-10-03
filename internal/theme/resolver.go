@@ -256,6 +256,12 @@ func (r *Resolver) Resolve(raw []byte, files map[string][]byte) (Package, error)
 	if strings.TrimSpace(m.Name) == "" {
 		return Package{}, invalid("/name", "empty", "Provide a theme name.")
 	}
+	if m.AgentVoice != "" {
+		m.AgentVoice = strings.TrimSpace(m.AgentVoice)
+		if m.AgentVoice == "" {
+			return Package{}, invalid("/agentVoice", "empty", "Describe the agent voice or leave it unset.")
+		}
+	}
 	for role, id := range m.Identities {
 		if strings.TrimSpace(id.Name) == "" || strings.TrimSpace(id.Description) == "" {
 			return Package{}, invalid("/identities/"+role, "empty", "Name and description must contain text.")
@@ -322,6 +328,10 @@ func (r *Resolver) Resolve(raw []byte, files map[string][]byte) (Package, error)
 }
 func mergeManifest(base, overlay Manifest) Manifest {
 	base.ID, base.Version, base.Name, base.Description = overlay.ID, overlay.Version, overlay.Name, overlay.Description
+	// Voice is authored by this theme revision, rather than inherited from the
+	// visual base. Applying a visual theme must not unexpectedly inherit model
+	// behavior from its base package.
+	base.AgentVoice = overlay.AgentVoice
 	if overlay.ColorScheme != "" {
 		base.ColorScheme = overlay.ColorScheme
 	}

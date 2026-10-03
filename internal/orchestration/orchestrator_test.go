@@ -2,13 +2,11 @@ package orchestration
 
 import (
 	"context"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strings"
 	"testing"
 
-	"kingdom/internal/core/rolecomm"
+	"kingdom/internal/prompts"
 	"kingdom/internal/state"
 	"kingdom/internal/workspace"
 )
@@ -16,21 +14,26 @@ import (
 func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "work_intake", "nr_1", "governance", "work_intake", "Build a homepage", "coordinator", "Approved plan goes here", "Please draft an actionable execution approach.", "")
 
-	if !strings.Contains(prompt, "You provide governance: define intent, constraints, acceptance criteria, and risk posture.") {
+	if !strings.Contains(prompt, "You provide governance: define intent, constraints, priorities, acceptance criteria, and risk posture.") {
 		t.Fatalf("expected governance system prompt preamble, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "write or edit concrete files in the current workspace") {
 		t.Fatalf("expected universal write mandate removed from prompt, got:\n%s", prompt)
 	}
-	for _, expected := range []string{"System Role:", "Kingdom Rules:", "Run Context:", "Final Checks:", "Current Assignment:", "Current Work Order:"} {
+	for _, expected := range []string{"Protected Role Instruction:", "Communication Style:", "Agent Guidance:", "Kingdom Contract:", "Run Context:", "Final Checks:", "Current Assignment:", "Current Work Order:"} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
 		}
+	}
+	if strings.LastIndex(prompt, "Final Checks:") < strings.Index(prompt, "Run Context:") {
+		t.Fatalf("expected protected Final Checks to follow the complete streamed Run Context, got:\n%s", prompt)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(prompt), "- This is a runtime-owned transition; do not invoke provider completion tools.") {
+		t.Fatalf("expected protected Final Checks to be the final prompt content, got:\n%s", prompt)
 	}
 	if strings.Contains(prompt, "kingdom_complete_attempt") {
 		t.Fatalf("expected runtime-owned prompt to omit completion tool guidance, got:\n%s", prompt)
@@ -53,7 +56,7 @@ func TestBuildNodePromptUsesPlainLanguageSections(t *testing.T) {
 	if strings.Contains(prompt, "PlanningGuardrail:") || strings.Contains(prompt, "Execution Metadata:") || strings.Contains(prompt, "DelegatorInstruction:") || strings.Contains(prompt, "ApprovedPlan:") {
 		t.Fatalf("expected legacy prompt labels removed, got:\n%s", prompt)
 	}
-	for _, forbidden := range []string{"RunID:", "NodeID:", "NodeRunID:", "RoleID:", "NodeClass:", "DelegatorRoleID:"} {
+	for _, forbidden := range []string{"System Role:", "Agent Voice:", "Additional Role Guidance:", "Kingdom Rules:", "RunID:", "NodeID:", "NodeRunID:", "RoleID:", "NodeClass:", "DelegatorRoleID:"} {
 		if strings.Contains(prompt, forbidden) {
 			t.Fatalf("expected raw execution metadata %q to be omitted, got:\n%s", forbidden, prompt)
 		}
@@ -99,8 +102,7 @@ func TestBuildNodePromptUsesServerResponseCompletionForProviderNodes(t *testing.
 func TestBuildNodePromptValidationGateIncludesDelegatorInstructionWithoutHydratedMetadata(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "quality_validation", "nr_1", "qa-validator", "validation_gates", "Build a homepage", "coordinator", "Approved plan content", "Check the delivered homepage end-to-end and report verdict.", "")
 
@@ -121,22 +123,21 @@ func TestBuildNodePromptValidationGateIncludesDelegatorInstructionWithoutHydrate
 func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_drafting", "nr_1", "plan-author", "plan_drafting", "Build a homepage", "coordinator", "Approved plan content", "Refine scope and acceptance criteria.", "prior context")
 
 	if !strings.Contains(prompt, "Planning Constraints:") {
 		t.Fatalf("expected planning guardrail section in planning prompt, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Do not claim completed implementation work.") {
+	if !strings.Contains(prompt, "Do not claim implementation work, code changes, file delivery, test execution, or produced artifacts as completed work.") {
 		t.Fatalf("expected planning guardrail instruction text, got:\n%s", prompt)
 	}
 	for _, expected := range []string{
-		"Resolve unspecified implementation details using repository evidence",
+		"inspect the repository and make concrete decisions",
 		"authoritative external sources",
-		"as executable plan work rather than approval gates",
-		"do not invent internal ratification",
+		"Do not defer implementation for internal research, design review, security review, or ratification",
+		"do not invent additional approval gates",
 	} {
 		if !strings.Contains(prompt, expected) {
 			t.Fatalf("expected planning prompt to include %q, got:\n%s", expected, prompt)
@@ -159,8 +160,7 @@ func TestBuildNodePromptPlanningNodesIncludePlanningGuardrail(t *testing.T) {
 func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "architecture_consultation", "nr_1", "architecture-advisor", "advisor_consultation", "Build a homepage", "governance", "Approved plan content", "Advise on scope and risk.", "")
 
@@ -175,8 +175,7 @@ func TestBuildNodePromptAdvisorNodesIncludeResponseFirstWorkspaceGuardrail(t *te
 func TestAdvisorPromptIncludesFullWorkOrderOnce(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 	workOrder := "unique-work-order-marker " + strings.Repeat("complete work order content ", 1024)
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "architecture_consultation", "nr_1", "architecture-advisor", "advisor_consultation", workOrder, "governance", "", "Advise through the architecture lens.", "")
 	if got := strings.Count(prompt, strings.TrimSpace(workOrder)); got != 1 {
@@ -190,8 +189,7 @@ func TestAdvisorPromptIncludesFullWorkOrderOnce(t *testing.T) {
 func TestBuildNodePromptExecutionKickoffOmitsPlanningGuardrail(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_kickoff", "nr_1", "plan-author", "execution_kickoff", "Build a homepage", "governance", "Approved plan content", "Authorize execution kickoff and delegation framing.", "prior context")
 
@@ -206,8 +204,7 @@ func TestBuildNodePromptExecutionKickoffOmitsPlanningGuardrail(t *testing.T) {
 func TestBuildNodePromptNonOwnerNodeSanitizesControlCommandLines(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(),
 		"run_1",
@@ -239,8 +236,7 @@ func TestBuildNodePromptNonOwnerNodeSanitizesControlCommandLines(t *testing.T) {
 func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	reviewPrompt := loop.buildNodePrompt(context.Background(), "run_1", "execution_review", "nr_1", "reviewer", "execution_review", "Build feature", "plan-author", "Plan", "Review it", "")
 	if !strings.Contains(reviewPrompt, "Response Format Requirements:") || !strings.Contains(reviewPrompt, "RequiredControlLine: VERDICT: PASS|REWORK") {
@@ -248,7 +244,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"You are issuing the final review outcome for this node now, not a progress update.",
-		"The first non-empty line must be exactly: VERDICT: PASS or VERDICT: REWORK.",
+		"Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.",
 		"If implementation evidence is missing, incomplete, or uncertain, choose VERDICT: REWORK.",
 	} {
 		if !strings.Contains(reviewPrompt, expected) {
@@ -262,7 +258,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 	}
 	for _, expected := range []string{
 		"You are issuing the final validation outcome for this node now, not a progress update.",
-		"The first non-empty line must be exactly: VERDICT: PASS or VERDICT: REWORK.",
+		"Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.",
 		"If any requirement remains blocked, unverified, or uncertain, choose VERDICT: REWORK.",
 	} {
 		if !strings.Contains(validatorPrompt, expected) {
@@ -275,8 +271,7 @@ func TestBuildNodePromptOwnerNodeIncludesMinimalResponseContract(t *testing.T) {
 func TestBuildNodePromptGovernancePlanDecisionOmitsRoyalVerdictContract(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
+	loop := &orchestrationLoop{}
 
 	prompt := loop.buildNodePrompt(context.Background(), "run_1", "plan_decision", "nr_1", "governance", "plan_decision", "Strategic work order", "plan-author", "Plan", "Decide approval state", "")
 	if regexp.MustCompile(`(?im)^\s*ROYAL_VERDICT\s*:`).MatchString(prompt) {
@@ -289,9 +284,6 @@ func TestBuildNodePromptGovernancePlanDecisionOmitsRoyalVerdictContract(t *testi
 
 func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
 	t.Parallel()
-
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
 
 	tests := []struct {
 		roleID    string
@@ -323,7 +315,7 @@ func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "advisor_consultation", "nr_1")
+			prompt := defaultRoleSystemPromptForTest(t, tc.roleID, "advisor_consultation")
 			if !strings.Contains(prompt, tc.expected) {
 				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
 			}
@@ -334,63 +326,13 @@ func TestRenderSystemPromptAdvisorRolesRemainDistinct(t *testing.T) {
 	}
 }
 
-func TestDefaultDelegatorInstructionForDispatchAdvisorRolesRemainDistinct(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		roleID   string
-		expected string
-	}{
-		{
-			roleID:   "architecture-advisor",
-			expected: "fits the existing architecture and public contracts",
-		},
-		{
-			roleID:   "risk-advisor",
-			expected: "trust boundaries, abuse resistance, blast radius",
-		},
-		{
-			roleID:   "systems-advisor",
-			expected: "performance under load, scalability as demand grows, resource efficiency",
-		},
-		{
-			roleID:   "usability-advisor",
-			expected: "usability, operator burden, support burden, day-2 friction",
-		},
-	}
-
-	for _, tt := range tests {
-		tc := tt
-		t.Run(tc.roleID, func(t *testing.T) {
-			instruction := defaultDelegatorInstructionForDispatch("architecture_consultation", tc.roleID)
-			if !strings.Contains(instruction, tc.expected) {
-				t.Fatalf("expected fallback instruction for %s to include %q, got:\n%s", tc.roleID, tc.expected, instruction)
-			}
-			if !strings.Contains(instruction, "Keep the response freeform but decision-ready") {
-				t.Fatalf("expected fallback instruction for %s to include freeform guidance, got:\n%s", tc.roleID, instruction)
-			}
-			if !strings.Contains(instruction, "If key evidence is missing") {
-				t.Fatalf("expected fallback instruction for %s to include uncertainty guidance, got:\n%s", tc.roleID, instruction)
-			}
-		})
-	}
-
-	if got := defaultDelegatorInstructionForDispatch("plan_drafting", "architecture-advisor"); got != "" {
-		t.Fatalf("expected non-advisor node fallback instruction to stay empty, got %q", got)
-	}
-}
-
 func TestRenderSystemPromptCoordinatorStaysAtCoordinationAndSynthesis(t *testing.T) {
 	t.Parallel()
-
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
-
-	prompt := loop.renderSystemPrompt("coordinator", "run_1", "advisory_synthesis", "nr_1")
+	prompt := defaultRoleSystemPromptForTest(t, "coordinator", "advisory_synthesis")
 
 	for _, expected := range []string{
 		"responsible for advisory synthesis and explicit handoffs",
-		"advisory counsel into a coherent direction of travel",
+		"advisory counsel into a coherent direction and handoffs",
 		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
 		"Distinguish implementation work from genuine external dependencies.",
 		"Keep every handoff explicit in scope, owner, expected outcome, and major constraint.",
@@ -401,25 +343,26 @@ func TestRenderSystemPromptCoordinatorStaysAtCoordinationAndSynthesis(t *testing
 		}
 	}
 
-	if !strings.Contains(prompt, "Do not drift into low-level solutioning or claim implementation work") {
-		t.Fatalf("expected coordinator prompt to avoid implementation posture, got:\n%s", prompt)
+	for _, boundary := range []string{
+		"Stay in coordination and synthesis. Do not drift into low-level solutioning unless a technical detail materially changes scope, risk, or delegation quality.",
+		"Do not claim implementation work, code changes, file delivery, test execution, or produced artifacts as completed work.",
+	} {
+		if !strings.Contains(prompt, boundary) {
+			t.Fatalf("expected coordinator prompt to avoid implementation posture, got:\n%s", prompt)
+		}
 	}
 }
 
 func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 	t.Parallel()
-
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
-
-	prompt := loop.renderSystemPrompt("plan-author", "run_1", "plan_drafting", "nr_1")
+	prompt := defaultRoleSystemPromptForTest(t, "plan-author", "plan_drafting")
 
 	for _, expected := range []string{
 		"responsible for execution-ready planning",
-		"Turn work order intent and coordinator guidance into a clear, execution-ready plan",
+		"turn work order intent and coordinator guidance into a clear, execution-ready plan",
 		"Decompose work into execution-ready implementation slices.",
 		"scoped delta plan that preserves what remains valid and changes only what is necessary.",
-		"Produce an execution-ready plan, not an approval memo.",
+		"Produce execution-ready planning output, not an approval memo.",
 		"authoritative external sources",
 		"Do not block the whole plan while feasible implementation or verification work exists.",
 	} {
@@ -438,11 +381,7 @@ func TestRenderSystemPromptCouncilMemberStaysAtPlanningLayer(t *testing.T) {
 
 func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
 	t.Parallel()
-
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
-
-	prompt := loop.renderSystemPrompt("builder", "run_1", "implementation", "nr_1")
+	prompt := defaultRoleSystemPromptForTest(t, "builder", "delegated_execution")
 
 	for _, expected := range []string{
 		"responsible for implementing and verifying the requested outcome",
@@ -468,9 +407,6 @@ func TestRenderSystemPromptBuilderStaysAtImplementationLayer(t *testing.T) {
 func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
 	t.Parallel()
 
-	policy := loadRoleCommunicationPolicyForOrchestratorTest(t)
-	loop := &orchestrationLoop{roleComm: policy}
-
 	tests := []struct {
 		roleID    string
 		expected  string
@@ -488,7 +424,7 @@ func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
 		},
 		{
 			roleID:    "security-validator",
-			expected:  "secret-handling, data-exposure, and blast-radius weaknesses",
+			expected:  "secret-handling, data-exposure, unsafe failure paths, and blast-radius weaknesses",
 			forbidden: "operator-visible behavior",
 		},
 	}
@@ -496,7 +432,11 @@ func TestRenderSystemPromptReviewerAndValidatorsStayDistinct(t *testing.T) {
 	for _, tt := range tests {
 		tc := tt
 		t.Run(tc.roleID, func(t *testing.T) {
-			prompt := loop.renderSystemPrompt(tc.roleID, "run_1", "validation_node", "nr_1")
+			nodeClass := "validation_gates"
+			if tc.roleID == "reviewer" {
+				nodeClass = "execution_review"
+			}
+			prompt := defaultRoleSystemPromptForTest(t, tc.roleID, nodeClass)
 			if !strings.Contains(prompt, tc.expected) {
 				t.Fatalf("expected %s prompt to include %q, got:\n%s", tc.roleID, tc.expected, prompt)
 			}
@@ -549,23 +489,15 @@ func TestRunPathNamingNormalizesAndTruncates(t *testing.T) {
 	}
 }
 
-func loadRoleCommunicationPolicyForOrchestratorTest(t *testing.T) rolecomm.Policy {
+func defaultRoleSystemPromptForTest(t *testing.T, roleID, nodeClass string) string {
 	t.Helper()
-
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve caller")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
-
-	policy, err := rolecomm.LoadPolicyFromFile(
-		filepath.Join(repoRoot, "policies", "role_communication_policy.yaml"),
-		filepath.Join(repoRoot, "contracts", "schemas", "role_communication_policy.schema.json"),
-		state.CanonicalRoleIDs(),
-	)
+	catalog, err := state.CanonicalPromptCatalog()
 	if err != nil {
-		t.Fatalf("load role communication policy: %v", err)
+		t.Fatalf("load canonical prompt catalog: %v", err)
 	}
-
-	return policy
+	instruction, err := catalog.ExecutionSystemPrompt(prompts.ExecutionSystemPromptInput{RoleID: roleID, NodeClass: nodeClass, AgentGuidance: catalog.RolePolicy.Roles[roleID].DefaultGuidance})
+	if err != nil {
+		t.Fatalf("load protected instruction for %s: %v", roleID, err)
+	}
+	return instruction
 }

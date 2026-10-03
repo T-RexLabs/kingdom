@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { useRunExecutionInstructions } from "./hooks-execution-instructions";
@@ -59,6 +59,39 @@ it("does not automatically retry a missing recorded prompt or substitute current
   );
   await waitFor(() => expect(view.result.current.isError).toBe(true));
   expect(view.result.current.data).toBeUndefined();
+  expect(fetchPrompt).toHaveBeenCalledOnce();
+  view.unmount();
+  client.clear();
+});
+
+it("rechecks a preparing attempt until instructions are captured, then freezes the successful result", async () => {
+  client = new QueryClient();
+  fetchPrompt.mockRejectedValueOnce(new ApiError(404, {
+    code: "dependency_blocked", message: "Not dispatched yet", retryable: false,
+    category: "core", details: {}, correlationId: "test",
+  })).mockResolvedValue("# System Instructions\nCaptured immutable instructions");
+  const view = renderHook(() => useRunExecutionInstructions("run", "preparing", true, true), { wrapper });
+  await waitFor(() => expect(view.result.current.isError).toBe(true));
+  await waitFor(() => expect(view.result.current.data).toContain("Captured immutable instructions"), { timeout: 3_000 });
+  expect(fetchPrompt).toHaveBeenCalledTimes(2);
+  await act(() => new Promise((resolve) => setTimeout(resolve, 1_600)));
+  expect(fetchPrompt).toHaveBeenCalledTimes(2);
+  view.unmount();
+  client.clear();
+});
+
+it("stops checking when an unrecorded attempt becomes terminal", async () => {
+  client = new QueryClient();
+  fetchPrompt.mockRejectedValue(new ApiError(404, {
+    code: "dependency_blocked", message: "Missing", retryable: false,
+    category: "core", details: {}, correlationId: "test",
+  }));
+  const view = renderHook(({ pending }) => useRunExecutionInstructions("run", "stopped", true, pending), {
+    wrapper, initialProps: { pending: true },
+  });
+  await waitFor(() => expect(view.result.current.isError).toBe(true));
+  view.rerender({ pending: false });
+  await act(() => new Promise((resolve) => setTimeout(resolve, 1_600)));
   expect(fetchPrompt).toHaveBeenCalledOnce();
   view.unmount();
   client.clear();

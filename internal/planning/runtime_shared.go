@@ -64,6 +64,10 @@ func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningO
 	if err != nil {
 		return AgentContext{}, err
 	}
+	agentConfiguration, err := d.store.LoadAgentConfiguration(ctx, session.PlanningSessionID)
+	if err != nil {
+		return AgentContext{}, err
+	}
 	var writeExternal func(context.Context, io.Writer) error
 	if len(snapshotIDs) > 0 {
 		writeExternal = func(ctx context.Context, out io.Writer) error {
@@ -76,6 +80,9 @@ func (d runtimeDeps) agentContext(ctx context.Context, operation state.PlanningO
 		Title:                effectiveSessionTitle(session),
 		ProjectRoot:          session.ProjectRoot,
 		ContextSummary:       snapshot.SummaryMarkdown,
+		VoiceInstruction:     agentConfiguration.Role.Voice.Instruction,
+		GuidanceInstruction:  agentConfiguration.Role.GuidanceText,
+		PromptCatalog:        agentConfiguration.PromptCatalog,
 		WriteExternalContext: writeExternal,
 		ExternalSnapshotIDs:  snapshotIDs,
 		VisitMessages:        messages,

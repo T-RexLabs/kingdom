@@ -773,8 +773,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
-		RoleCommPolicyPath:         filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
-		RoleCommSchemaPath:         filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
 		RuntimeRoot:                filepath.Join(cfg.KingdomHome, "runtime"),
 		RetryEngine:                runtimeInstance.RetryEngine(),
@@ -2452,8 +2450,6 @@ func bootstrapPathsFromConfig(cfg installConfig) kingdom.BootstrapPaths {
 		ProviderPolicySchemaPath: filepath.Join(cfg.KingdomHome, "schemas", "opencode_provider_policy.schema.json"),
 		RolePolicyPath:           filepath.Join(cfg.KingdomHome, "policies", "role_policy.yaml"),
 		NetworkPolicyPath:        filepath.Join(cfg.KingdomHome, "policies", "network_policy.yaml"),
-		RoleCommPolicyPath:       filepath.Join(cfg.KingdomHome, "policies", "role_communication_policy.yaml"),
-		RoleCommPolicySchemaPath: filepath.Join(cfg.KingdomHome, "schemas", "role_communication_policy.schema.json"),
 	}
 }
 

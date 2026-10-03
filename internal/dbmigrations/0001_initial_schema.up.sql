@@ -1691,6 +1691,7 @@ CREATE TABLE execution_prompt_refs (
     run_id TEXT NOT NULL REFERENCES workflow_runs(run_id),
     node_run_id TEXT NOT NULL REFERENCES node_runs(node_run_id),
     content_id TEXT NOT NULL REFERENCES request_contents(content_id),
+    system_content_id TEXT NOT NULL REFERENCES request_contents(content_id),
     created_at TEXT NOT NULL,
     FOREIGN KEY(attempt_id,run_id,node_run_id) REFERENCES attempt_executions(attempt_id,run_id,node_run_id)
 );

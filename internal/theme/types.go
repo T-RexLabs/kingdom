@@ -64,6 +64,7 @@ type Manifest struct {
 	Version         string              `json:"version"`
 	Name            string              `json:"name"`
 	Description     string              `json:"description,omitempty"`
+	AgentVoice      string              `json:"agentVoice,omitempty"`
 	Base            *Reference          `json:"base,omitempty"`
 	ColorScheme     string              `json:"colorScheme,omitempty"`
 	Palette         map[string]string   `json:"palette,omitempty"`

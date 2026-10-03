@@ -9,12 +9,10 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/prompts"
 	"kingdom/internal/state"
 )
 
-func projectWorkOrderForNode(_ string, text string) string {
-	return strings.TrimSpace(stripControlCommandLines(text))
-}
 func joinInstructionBlocks(parts ...string) string {
 	var nonempty []string
 	for _, part := range parts {
@@ -39,21 +37,33 @@ func formatExecutionFailureContexts(contexts []executionFailureContext) string {
 	return joinInstructionBlocks(parts...)
 }
 
-// Independent string oracle for exact section/stripping compatibility tests.
+// Test-only representation of provider-visible system and streamed context
+// prompts. Runtime dispatch builds these through their separate canonical paths.
 func (o *orchestrationLoop) buildNodePrompt(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, workOrderText, delegatorRoleID, approvedPlan, delegatorInstruction, priorWithholdContext string) string {
 	classID := resolvedNodeClass(nodeID, nodeClass)
-	frame := o.buildNodePromptFrame(ctx, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRoleID)
-	blocks := []string{renderPromptSection("Current Assignment", frame.Assignment), renderPromptSection("Current Work Order", firstNonEmptyString(projectWorkOrderForNode(classID, workOrderText), "No work order text was provided."))}
-	if plan := stripControlCommandLines(approvedPlan); plan != "" && classID != workflow.NodeClassDelegatedExecution {
-		blocks = append(blocks, renderPromptSection("Approved Plan", plan))
+	catalog, err := state.CanonicalPromptCatalog()
+	if err != nil {
+		return ""
 	}
-	if guidance := stripControlCommandLines(delegatorInstruction); guidance != "" {
-		blocks = append(blocks, renderPromptSection("Upstream Guidance", guidance))
+	role, ok := catalog.RolePolicy.Roles[roleID]
+	if !ok {
+		return ""
 	}
-	if frame.Evidence != "" {
-		blocks = append(blocks, renderPromptSection("Builder Evidence Summary", frame.Evidence))
+	systemPrompt, err := catalog.ExecutionSystemPrompt(prompts.ExecutionSystemPromptInput{
+		RoleID:        roleID,
+		NodeClass:     classID,
+		AgentGuidance: role.DefaultGuidance,
+	})
+	if err != nil {
+		return ""
 	}
-	return joinInstructionBlocks(renderPromptSection("System Role", frame.System), renderPromptSection("Kingdom Rules", frame.Rules), renderPromptSection("Run Context", joinPromptBlocks(blocks...)), renderPromptSection("Final Checks", frame.Checks)) + "\n"
+	behavior := workflow.BehaviorForNode(nodeID, nodeClass)
+	finalChecks := catalog.FinalChecksSection(classID, behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse)
+	contextDoc := o.buildNodeContextDocument(
+		ctx, runID, nodeID, nodeClass, delegatorRoleID, finalChecks,
+		promptLiteral(workOrderText), promptLiteral(approvedPlan), promptLiteral(delegatorInstruction),
+	)
+	return joinInstructionBlocks(systemPrompt, promptFixtureText(ctx, contextDoc)) + "\n"
 }
 
 // Only fixture assertions materialize these replay streams. Keeping these

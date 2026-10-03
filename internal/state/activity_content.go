@@ -66,6 +66,12 @@ func persistActivityEventTx(ctx context.Context, tx *sql.Tx, scope ActivityScope
 	} else {
 		payload["occurred_at_observed"] = true
 	}
+	planningSessionID := ""
+	if scope.OperationID != "" {
+		if err := tx.QueryRowContext(ctx, `SELECT planning_session_id FROM planning_operations WHERE operation_id=?`, scope.OperationID).Scan(&planningSessionID); err != nil {
+			return "", fmt.Errorf("resolve planning activity content owner: %w", err)
+		}
+	}
 	for _, field := range activityFields {
 		content := sources[field].Normalized()
 		if err := content.Validate(); err != nil {
@@ -77,7 +83,13 @@ func persistActivityEventTx(ctx context.Context, tx *sql.Tx, scope ActivityScope
 			if err != nil {
 				return "", err
 			}
-			_, writeErr := WriteRequestContentTx(ctx, tx, id, RequestContentSource{Reader: reader, SHA256: content.SHA256, SizeBytes: *content.ByteLength}, recordedAt)
+			source := RequestContentSource{Reader: reader, SHA256: content.SHA256, SizeBytes: *content.ByteLength}
+			var writeErr error
+			if planningSessionID != "" {
+				_, writeErr = WritePlanningRequestContentTx(ctx, tx, planningSessionID, id, source, recordedAt)
+			} else {
+				_, writeErr = WriteRequestContentTx(ctx, tx, id, source, recordedAt)
+			}
 			if err := errors.Join(writeErr, reader.Close()); err != nil {
 				return "", err
 			}

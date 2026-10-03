@@ -1,14 +1,12 @@
 package state
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
-	"text/template"
 
 	"kingdom/internal/core/rolecomm"
 )
@@ -215,7 +213,7 @@ func mailboxThreadIDForEvent(runID, attemptID string) string {
 }
 
 func renderMailboxRoleplayBody(policy rolecomm.Policy, fromRole, toRole string, req EventMailboxMirrorRequest) string {
-	templateConfig := resolveMailboxTemplate(policy, fromRole)
+	templateConfig := policy.MailboxTemplateForRole(fromRole)
 	toTitle := roleTitleFromID(toRole)
 	fromTitle := roleTitleFromID(fromRole)
 	data := map[string]string{
@@ -233,10 +231,10 @@ func renderMailboxRoleplayBody(policy rolecomm.Policy, fromRole, toRole string, 
 		"RecipientRole":  strings.TrimSpace(toRole),
 		"RecipientTitle": toTitle,
 	}
-	opening := renderMirrorTemplateOrFallback(templateConfig.SalutationTemplate, data, fmt.Sprintf("To the %s,", toTitle))
-	body := renderMirrorTemplateOrFallback(templateConfig.BodyTemplate, data, fmt.Sprintf("I report `%s` for run `%s`.\n%s", data["EventType"], data["RunID"], data["ReasonText"]))
-	signoff := renderMirrorTemplateOrFallback(templateConfig.SignoffTemplate, data, "In service,")
-	signature := renderMirrorTemplateOrFallback(templateConfig.SignatureTemplate, data, fromTitle)
+	opening := rolecomm.RenderTemplate(templateConfig.SalutationTemplate, data, fmt.Sprintf("To the %s,", toTitle))
+	body := rolecomm.RenderTemplate(templateConfig.BodyTemplate, data, fmt.Sprintf("I report `%s` for run `%s`.\n%s", data["EventType"], data["RunID"], data["ReasonText"]))
+	signoff := rolecomm.RenderTemplate(templateConfig.SignoffTemplate, data, "In service,")
+	signature := rolecomm.RenderTemplate(templateConfig.SignatureTemplate, data, fromTitle)
 	return strings.Join([]string{
 		opening,
 		"",
@@ -280,13 +278,6 @@ func mirrorOperationalSummary(req EventMailboxMirrorRequest) string {
 	return ""
 }
 
-func resolveMailboxTemplate(policy rolecomm.Policy, roleID string) rolecomm.MailboxCommunicationConfig {
-	if roleTemplate, ok := policy.Roles[strings.TrimSpace(roleID)]; ok {
-		return roleTemplate.MailboxTemplate
-	}
-	return policy.DefaultRoleTemplate.MailboxTemplate
-}
-
 func roleTitleFromID(roleID string) string {
 	trimmed := strings.TrimSpace(roleID)
 	if trimmed == "" {
@@ -319,29 +310,6 @@ func sanitizeMailboxToken(value string) string {
 		return "unknown"
 	}
 	return clean
-}
-
-func renderMirrorTemplateOrFallback(rawTemplate string, data map[string]string, fallback string) string {
-	trimmedTemplate := strings.TrimSpace(rawTemplate)
-	if trimmedTemplate == "" {
-		return fallback
-	}
-
-	tmpl, err := template.New("mirror").Option("missingkey=zero").Parse(trimmedTemplate)
-	if err != nil {
-		return fallback
-	}
-
-	var buffer bytes.Buffer
-	if err := tmpl.Execute(&buffer, data); err != nil {
-		return fallback
-	}
-
-	rendered := strings.TrimSpace(buffer.String())
-	if rendered == "" {
-		return fallback
-	}
-	return rendered
 }
 
 func firstNonEmptyMirror(values ...string) string {

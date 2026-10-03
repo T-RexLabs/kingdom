@@ -11,6 +11,8 @@ import (
 
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/prompts"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/securefs"
 	"kingdom/internal/state"
 )
@@ -255,7 +257,7 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 			}
 		}
 		upstream := stripControlCommandLines(o.latestScopedInstructionForNode(ctx, runID, "advisory_synthesis", deterministicAgentIDForRole("governance"), delegator))
-		return promptInstructions(append(feedback, promptLiteral(firstNonEmptyString(upstream, planningSafeInstructionFallback(class))))...), scoped, nil
+		return promptInstructions(append(feedback, promptLiteral(upstream))...), scoped, nil
 	case workflow.NodeClassDelegatedExecution:
 		doc, err := o.builderInstructionDocument(ctx, runID, promptLiteral(scoped), approved, a)
 		return doc, scoped, err
@@ -264,50 +266,69 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 	}
 }
 
-func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, delegator string) (*promptFile, string, error) {
+type dispatchPromptConfiguration struct {
+	SystemPrompt string
+	InlineConfig string
+}
+
+func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, delegator string) (*promptFile, string, dispatchPromptConfiguration, error) {
 	a := &promptAssembly{ctx: ctx}
 	defer a.close()
 	workOrder, err := o.workOrderTextForRun(ctx, run.RunID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	approved, err := o.approvedPlanDocument(ctx, run.RunID)
 	if err != nil {
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	guidance, scoped, err := o.dispatchGuidanceDocument(ctx, run.RunID, node.NodeID, node.NodeClass, attempt.Attempt, delegator, attempt.AgentID, approved, a)
 	if err != nil {
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	prepared, err := a.prepare(guidance)
 	if err != nil {
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
-	if prepared.size == 0 {
-		fallback := defaultDelegatorInstructionForDispatch(node.NodeID, node.RequiredRole)
-		guidance = promptLiteral(fallback)
-		if scoped == "" {
-			scoped = stripControlCommandLines(fallback)
-		}
-	} else {
-		guidance = promptPrepared(prepared)
+	guidance = promptPrepared(prepared)
+	agentConfigurationSnapshot, err := state.LoadRunAgentConfigurationSnapshot(ctx, o.db, run.RunID)
+	if err != nil {
+		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("load run agent configuration snapshot: %w", err)
 	}
-	doc := o.buildNodePromptDocument(ctx, run.RunID, node.NodeID, attempt.NodeRunID, node.RequiredRole, node.NodeClass, o.roleIDForAgent(ctx, delegator), promptSource(workOrder), approved, guidance)
+	roleConfiguration := agentConfigurationSnapshot.ForRole(node.RequiredRole)
+	behavior := workflow.BehaviorForNode(node.NodeID, node.NodeClass)
+	systemPrompt, err := agentConfigurationSnapshot.PromptCatalog.ExecutionSystemPrompt(prompts.ExecutionSystemPromptInput{
+		RoleID: node.RequiredRole, NodeClass: resolvedNodeClass(node.NodeID, node.NodeClass),
+		CommunicationStyle: roleConfiguration.Voice.Instruction, AgentGuidance: roleConfiguration.GuidanceText,
+	})
+	if err != nil {
+		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("compose run-pinned agent system prompt: %w", err)
+	}
+	agentName := strings.TrimSpace(o.providerPolicy.AgentForRole(node.RequiredRole))
+	inlineConfig, err := opencode.ExecutionAgentInlineConfig(agentName, systemPrompt)
+	if err != nil {
+		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("compose invocation-scoped provider config: %w", err)
+	}
+	finalChecks := agentConfigurationSnapshot.PromptCatalog.FinalChecksSection(
+		resolvedNodeClass(node.NodeID, node.NodeClass),
+		behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse,
+	)
+	doc := o.buildNodeContextDocument(ctx, run.RunID, node.NodeID, node.NodeClass, o.roleIDForAgent(ctx, delegator), finalChecks, promptSource(workOrder), approved, guidance)
 	file, err := preparePromptDocument(ctx, doc)
 	if err != nil {
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
-	// buildNodePrompt's wire framing ends with one newline.
+	// The streamed context framing ends with one newline.
 	if _, err := file.WriteString("\n"); err != nil {
 		file.Close()
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	file.size++
 	h := sha256.New()
 	if _, err := securefs.Copy(ctx, h, io.NewSectionReader(file.File, 0, file.size)); err != nil {
 		file.Close()
-		return nil, "", err
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	file.sha = hex.EncodeToString(h.Sum(nil))
-	return file, scoped, nil
+	return file, scoped, dispatchPromptConfiguration{SystemPrompt: systemPrompt, InlineConfig: inlineConfig}, nil
 }

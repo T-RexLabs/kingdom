@@ -45,6 +45,7 @@ type Summary struct {
 	Description    string `json:"description,omitempty"`
 	ResolvedDigest string `json:"resolvedDigest"`
 	Builtin        bool   `json:"builtin"`
+	AgentVoice     string `json:"agentVoice,omitempty"`
 }
 type Catalog struct {
 	WorkspaceID string       `json:"workspaceID"`
@@ -228,7 +229,7 @@ func (s *Store) sourceIDs() ([]string, error) {
 }
 
 func summarize(p Package, builtin bool) Summary {
-	return Summary{p.Manifest.ID, p.Manifest.Version, p.Manifest.Name, p.Manifest.Description, p.ResolvedDigest, builtin}
+	return Summary{p.Manifest.ID, p.Manifest.Version, p.Manifest.Name, p.Manifest.Description, p.ResolvedDigest, builtin, p.Manifest.AgentVoice}
 }
 func (s *Store) ReadRevision(id, digest string) (Package, error) {
 	if !packageIDPattern.MatchString(id) || !digestPattern.MatchString(digest) {

@@ -408,3 +408,46 @@ export function EditorIdentity({
     </fieldset>
   );
 }
+
+export function EditorAgentVoice({
+  manifest,
+  disabled,
+  change,
+}: {
+  manifest: ThemeManifest;
+  disabled: boolean;
+  change: (next: ThemeManifest) => void;
+}) {
+  return (
+    <fieldset disabled={disabled} className="max-w-3xl space-y-5">
+      <div>
+        <h2 className="text-base font-medium">Communication Style</h2>
+        <p className="appearance-help mt-2">
+          Describe how agents should communicate when this style is selected on
+          the Agents page. Keep this to tone and wording; Kingdom still controls
+          each role’s responsibilities and required output.
+        </p>
+      </div>
+      <Field
+        label="Style Guidance"
+        help="This text is included as communication-style guidance. It is not applied until selected as the workspace style or a role override on the Agents page."
+      >
+        <textarea
+          className="appearance-input min-h-40"
+          maxLength={2000}
+          value={manifest.agentVoice ?? ""}
+          placeholder="Use calm, concise nautical language. Address the team as a crew and use sailing metaphors sparingly."
+          onChange={(event) =>
+            change(
+              setDraftField(
+                manifest,
+                ["agentVoice"],
+                event.target.value || undefined,
+              ),
+            )
+          }
+        />
+      </Field>
+    </fieldset>
+  );
+}

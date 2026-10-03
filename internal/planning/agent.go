@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/prompts"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -43,6 +44,9 @@ type AgentContext struct {
 	Title                string
 	ProjectRoot          string
 	ContextSummary       string
+	VoiceInstruction     string
+	GuidanceInstruction  string
+	PromptCatalog        prompts.Catalog
 	ExternalContext      string
 	ExternalSnapshotIDs  []string
 	Messages             []state.PlanningMessage

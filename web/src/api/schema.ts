@@ -621,6 +621,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/agent-configuration": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read shared agent communication style and role guidance settings. */
+        get: operations["getAgentConfiguration"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-configuration/workspace-voice": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set the shared communication style used by agents by default. */
+        put: operations["updateWorkspaceAgentVoice"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-configuration/roles/{roleId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set working guidance and an optional communication style override for one role. */
+        put: operations["updateAgentRoleConfiguration"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/agent-configuration/roles/{roleId}/guidance/reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset role guidance to its canonical default. */
+        post: operations["resetAgentRoleGuidance"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/work-orders": {
         parameters: {
             query?: never;
@@ -1308,8 +1376,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Read the complete immutable prompt body prepared for this attempt.
-         * @description Returns the exact stored body consumed by provider dispatch, with verified content and run/attempt lineage. Never reconstructs historical instructions from current settings or the work-order brief.
+         * Read the immutable Kingdom-owned provider instructions for this attempt.
+         * @description Returns verified immutable system and user instructions with Markdown channel headings, including the initial invocation metadata. These are Kingdom-owned inputs; provider-added environment and tool prompts are outside Kingdom visibility. Historical instructions are never reconstructed from current settings.
          */
         get: operations["getExecutionInstructions"];
         put?: never;
@@ -1885,6 +1953,66 @@ export interface components {
             code: string;
             message: string;
         };
+        AgentVoiceSelection: {
+            /**
+             * @description Use neutral-v1 for the built-in default or theme for an exact theme revision.
+             * @enum {string}
+             */
+            kind: "neutral-v1" | "theme" | "custom";
+            theme_id?: string;
+            theme_digest?: string;
+            /** @description Required for a custom communication style; forbidden for other styles. */
+            instruction?: string;
+        };
+        AgentVoiceSource: {
+            /**
+             * @description The selected built-in, theme, or custom communication style.
+             * @enum {string}
+             */
+            kind: "neutral-v1" | "theme" | "custom";
+            theme_id?: string;
+            theme_digest?: string;
+        };
+        AgentVoice: {
+            source: components["schemas"]["AgentVoiceSource"];
+            /** @description Resolved instruction for theme and custom communication styles. */
+            instruction?: string;
+        };
+        AgentWorkspaceConfiguration: {
+            voice: components["schemas"]["AgentVoice"];
+            row_version: number;
+        };
+        AgentRoleConfiguration: {
+            role_id: string;
+            default_guidance: string;
+            /** @description Explicit role override, or null when the role uses its default guidance. */
+            guidance_override: string | null;
+            effective_guidance: string;
+            effective_voice: components["schemas"]["AgentVoice"];
+            voice_override?: components["schemas"]["AgentVoice"];
+            row_version: number;
+        };
+        AgentConfiguration: {
+            workspace: components["schemas"]["AgentWorkspaceConfiguration"];
+            roles: components["schemas"]["AgentRoleConfiguration"][];
+            prompt_catalog_digest: string;
+        };
+        UpdateWorkspaceAgentVoiceRequest: {
+            expected_row_version: number;
+            voice: components["schemas"]["AgentVoiceSelection"];
+        };
+        UpdateAgentRoleConfigurationRequest: {
+            expected_row_version: number;
+            expected_prompt_catalog_digest: string;
+            /** @description Null inherits the canonical role default; a string is an explicit override, including an empty string. */
+            guidance_override: string | null;
+            /** @description Explicit role communication style, or null to inherit the workspace style. */
+            voice_override: components["schemas"]["AgentVoiceSelection"] | null;
+        };
+        ResetAgentRoleGuidanceRequest: {
+            expected_row_version: number;
+            expected_prompt_catalog_digest: string;
+        };
         ThemeCatalog: {
             /** @description Editable source IDs discovered on explicit refresh, including invalid drafts. */
             sources: string[];
@@ -1894,6 +2022,7 @@ export interface components {
                 version: string;
                 name: string;
                 description?: string;
+                agentVoice?: string;
                 resolvedDigest: string;
                 builtin: boolean;
             }[];
@@ -3662,6 +3791,8 @@ export interface components {
             version: string;
             name: string;
             description?: string;
+            /** @description Optional communication-style guidance for agents. Responsibilities, runtime rules, and required output formats remain controlled by Kingdom. */
+            agentVoice?: string;
             base?: {
                 /** @enum {string} */
                 id: "obsidian-court" | "nautilus" | "astral-council" | "software-lab" | "workstation-98";
@@ -5291,6 +5422,133 @@ export interface operations {
             default: components["responses"]["ErrorResponse"];
         };
     };
+    getAgentConfiguration: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Current workspace and role-level agent configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentConfiguration"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    updateWorkspaceAgentVoice: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateWorkspaceAgentVoiceRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated shared voice configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentWorkspaceConfiguration"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            404: components["responses"]["NotFoundError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    updateAgentRoleConfiguration: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                roleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateAgentRoleConfigurationRequest"];
+            };
+        };
+        responses: {
+            /** @description Updated role-specific agent configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRoleConfiguration"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
+    resetAgentRoleGuidance: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Versioned mutation key carrying its issue time, bounded TTL, operation scope, and cryptographic nonce. Bundled clients use a 24-hour TTL; servers reject TTLs above seven days and permanently reject expired keys. */
+                "Idempotency-Key": components["parameters"]["IdempotencyKey"];
+                /** @description Required for cookie-authenticated mutations; bearer-authenticated calls omit it. */
+                "X-CSRF-Token"?: components["parameters"]["CSRFToken"];
+            };
+            path: {
+                roleId: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetAgentRoleGuidanceRequest"];
+            };
+        };
+        responses: {
+            /** @description Role guidance reset to its canonical default. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRoleConfiguration"];
+                };
+            };
+            400: components["responses"]["BadRequestError"];
+            401: components["responses"]["UnauthorizedError"];
+            409: components["responses"]["ConflictError"];
+            default: components["responses"]["ErrorResponse"];
+        };
+    };
     createWorkOrder: {
         parameters: {
             query?: never;
@@ -6546,13 +6804,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Complete verified prompt text, preserving whitespace. */
+            /** @description Verified Kingdom-owned instructions in a Markdown document with explicit system and user channel boundaries. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "text/plain": string;
+                    "text/markdown": string;
                 };
             };
             400: components["responses"]["BadRequestError"];

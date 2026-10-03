@@ -4,6 +4,7 @@ import { ApiError } from "@/api/client";
 import { useRunExecutionInstructions } from "@/api/hooks-execution-instructions";
 import { hasSettledResponse } from "./run-conversation-state";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
+import { isActiveExecutionStatus, isQueuedExecutionStatus } from "./run-status-semantics";
 
 export function RunFinalResponse({
   detail,
@@ -83,16 +84,21 @@ export function RunInstructions({
   runId,
   attemptId,
   executionMode,
+  status,
 }: {
   runId: string;
   attemptId: string | null;
   executionMode?: RunExecution["execution_mode"];
+  status?: RunExecution["status"];
 }) {
+  const [sourceOpen, setSourceOpen] = useState(false);
   const runtimeOwned = executionMode === "runtime_owned";
+  const pendingDispatch = isQueuedExecutionStatus(status) || isActiveExecutionStatus(status);
   const query = useRunExecutionInstructions(
     runId,
     attemptId,
     executionMode === "provider_backed",
+    pendingDispatch,
   );
   const notRecorded =
     query.error instanceof ApiError && query.error.status === 404;
@@ -110,7 +116,9 @@ export function RunInstructions({
         <p className="text-sm text-foreground-muted">Loading instructions…</p>
       ) : notRecorded ? (
         <p className="text-sm text-foreground-muted">
-          No provider instructions were recorded for this attempt.
+          {pendingDispatch
+            ? "Provider instructions will appear when this attempt is dispatched."
+            : "No provider instructions were recorded for this attempt."}
         </p>
       ) : query.error ? (
         <p role="alert" className="text-sm text-status-failed">
@@ -124,12 +132,35 @@ export function RunInstructions({
           </button>
         </p>
       ) : query.data !== undefined ? (
-        <pre
-          aria-label="Exact attempt instructions"
-          className="whitespace-pre-wrap break-words font-sans text-[15px] leading-7 text-foreground"
-        >
-          {query.data}
-        </pre>
+        <>
+          <p className="text-sm text-foreground-muted">
+            Captured system and user instructions from Kingdom. OpenCode also adds environment and tool context.
+          </p>
+          <MarkdownBlock
+            content={query.data}
+            className="text-[15px] leading-7 text-foreground"
+          />
+          <details
+            open={sourceOpen}
+            onToggle={(event) => {
+              if (event.target === event.currentTarget)
+                setSourceOpen(event.currentTarget.open);
+            }}
+            className="text-xs text-foreground-muted"
+          >
+            <summary className="w-fit cursor-pointer py-2">
+              Instruction Details
+            </summary>
+            {sourceOpen && (
+              <pre
+                aria-label="Exact attempt instructions"
+                className="max-h-80 overflow-auto whitespace-pre-wrap break-words font-mono text-xs"
+              >
+                {query.data}
+              </pre>
+            )}
+          </details>
+        </>
       ) : null}
     </section>
   );

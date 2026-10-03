@@ -30,7 +30,7 @@ func insertPlanningDraft(ctx context.Context, exec sqlExecutor, req CreatePlanni
 	if err := validatePlanningTextContent(ctx, req.TextSource, true); err != nil {
 		return PlanningDraft{}, err
 	}
-	ref, err := persistPlanningText(ctx, exec, PlanningDraftContentID(req.PlanningDraftID), req.TextSource, req.CreatedAt)
+	ref, err := persistPlanningText(ctx, exec, req.PlanningSessionID, PlanningDraftContentID(req.PlanningDraftID), req.TextSource, req.CreatedAt)
 	if err != nil {
 		return PlanningDraft{}, err
 	}

@@ -201,7 +201,7 @@ func TestValidatePlanningContextSnapshotCreatePreservesFullFileJSON(t *testing.T
 
 func TestPlanningContentBundleRollsBackAndSealsCompleteEntries(t *testing.T) {
 	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	applyAllMigrationsForRunCollectionEventTest(t, db)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 	at := "2026-04-21T16:14:00Z"
@@ -829,7 +829,7 @@ func TestPlanningStoreOperationPagingUsesLimitAndCursor(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	applyAllMigrationsForRunCollectionEventTest(t, db)
 
 	store := NewPlanningStore(db)
 	ctx := context.Background()

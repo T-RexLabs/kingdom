@@ -16,6 +16,14 @@ vi.mock("@/api/hooks", () => ({
   usePlanningSessions: () => emptyQuery,
   useAgents: () => emptyQuery,
   useRoles: () => ({ data: { items: [{ role_id: "builder", description: "Builds the work." }] } }),
+  useAgentConfiguration: () => ({
+    data: { workspace: { voice: { source: { kind: "neutral-v1" } }, row_version: 1 }, roles: [{ role_id: "builder", guidance_text: "", row_version: 0 }] },
+    isLoading: false,
+    refetch: vi.fn(),
+  }),
+  useUpdateAgentRoleConfiguration: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useResetAgentRoleGuidance: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useUpdateWorkspaceAgentVoice: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useWorkspaceCapabilities: () => ({ data: { project_root: "/test" } }),
 }));
 vi.mock("@/features/work-orders/use-create-planning-session-navigation", () => ({

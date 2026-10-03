@@ -20,6 +20,9 @@ func (s *PlanningStore) CreateSession(ctx context.Context, req CreatePlanningSes
 	if err != nil {
 		return PlanningSession{}, err
 	}
+	if err := CapturePlanningAgentConfigurationSnapshotTx(ctx, tx, row.PlanningSessionID, req.CreatedAt); err != nil {
+		return PlanningSession{}, rollbackPlanningTx(tx, "create planning session", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return PlanningSession{}, &CommitOutcomeUnknownError{Operation: "create planning session", ResourceID: req.PlanningSessionID, Cause: err}
 	}
@@ -35,7 +38,7 @@ func insertPlanningSession(ctx context.Context, exec sqlExecutor, req CreatePlan
 	if err := validatePlanningTextContent(ctx, req.TitleSource, true); err != nil {
 		return PlanningSession{}, err
 	}
-	ref, err := persistPlanningText(ctx, exec, "planning-session:"+req.PlanningSessionID+":title", req.TitleSource, req.CreatedAt)
+	ref, err := persistPlanningText(ctx, exec, req.PlanningSessionID, "planning-session:"+req.PlanningSessionID+":title", req.TitleSource, req.CreatedAt)
 	if err != nil {
 		return PlanningSession{}, err
 	}
@@ -133,6 +136,9 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 	if err != nil {
 		return PlanningSession{}, rollbackPlanningTx(tx, "create planning session bundle", err)
 	}
+	if err := CapturePlanningAgentConfigurationSnapshotTx(ctx, tx, session.PlanningSessionID, req.Session.CreatedAt); err != nil {
+		return PlanningSession{}, rollbackPlanningTx(tx, "create planning session bundle", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return PlanningSession{}, &CommitOutcomeUnknownError{Operation: "create planning session bundle", ResourceID: strings.TrimSpace(req.Session.PlanningSessionID), Cause: err}
 	}
@@ -143,6 +149,15 @@ func (s *PlanningStore) CreateSessionBundle(ctx context.Context, req CreatePlann
 		}
 	}
 	return session, nil
+}
+
+// LoadAgentConfiguration returns the immutable Plan Author settings captured
+// when the planning session was created.
+func (s *PlanningStore) LoadAgentConfiguration(ctx context.Context, planningSessionID string) (PlanningPromptConfigurationSnapshot, error) {
+	if s == nil || s.db == nil {
+		return PlanningPromptConfigurationSnapshot{}, fmt.Errorf("planning store is required")
+	}
+	return LoadPlanningAgentConfiguration(ctx, s.db, planningSessionID)
 }
 
 func (s *PlanningStore) UpdateSession(ctx context.Context, req UpdatePlanningSessionRequest) error {
@@ -191,7 +206,7 @@ func updatePlanningSession(ctx context.Context, exec sqlExecutor, req UpdatePlan
 		if req.TitleSource.SizeBytes <= 0 {
 			return fmt.Errorf("planning session title is required")
 		}
-		ref, err := persistPlanningText(ctx, exec, req.TitleContentID, req.TitleSource, req.UpdatedAt)
+		ref, err := persistPlanningText(ctx, exec, req.PlanningSessionID, req.TitleContentID, req.TitleSource, req.UpdatedAt)
 		if err != nil {
 			return err
 		}

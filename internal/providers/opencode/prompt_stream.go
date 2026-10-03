@@ -116,3 +116,9 @@ func writeRequestPrompt(ctx context.Context, req ExecuteRequest, invocationID st
 	}
 	return nil
 }
+
+// WriteInvocationPrompt uses the provider dispatch framing for a captured context
+// and its immutable invocation identity. It owns and closes the opened source.
+func WriteInvocationPrompt(ctx context.Context, open func(context.Context) (io.ReadCloser, error), attemptID, invocationID string, dst io.Writer) error {
+	return writeRequestPrompt(ctx, ExecuteRequest{OpenPrompt: open, AttemptID: attemptID}, invocationID, dst)
+}

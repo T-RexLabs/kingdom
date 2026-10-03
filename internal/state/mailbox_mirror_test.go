@@ -4,8 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -148,21 +146,9 @@ func queryMailboxMessageSource(t *testing.T, db *sql.DB, messageID string) strin
 
 func loadRoleCommunicationPolicyForStateTest(t *testing.T) rolecomm.Policy {
 	t.Helper()
-
-	_, thisFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("resolve caller")
-	}
-	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "..", ".."))
-
-	policy, err := rolecomm.LoadPolicyFromFile(
-		filepath.Join(repoRoot, "policies", "role_communication_policy.yaml"),
-		filepath.Join(repoRoot, "contracts", "schemas", "role_communication_policy.schema.json"),
-		CanonicalRoleIDs(),
-	)
+	catalog, err := CanonicalPromptCatalog()
 	if err != nil {
-		t.Fatalf("load role communication policy: %v", err)
+		t.Fatalf("load canonical prompt catalog: %v", err)
 	}
-
-	return policy
+	return rolecomm.FromCatalog(catalog)
 }

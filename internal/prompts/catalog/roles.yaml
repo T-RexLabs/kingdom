@@ -1,0 +1,159 @@
+version: v1
+policy_id: role-communication-v1
+default_mailbox_template:
+  salutation_template: "To the {{.RecipientTitle}},"
+  body_template: |
+    Event record: event `{{.EventType}}` is entered for run `{{.RunID}}`.
+    Operational detail: {{.ReasonText}}
+  signoff_template: "Recorded by"
+  signature_template: "{{.SenderTitle}}"
+roles:
+  operator:
+    protected_instruction_template: |
+      You are the Operator, the human authority for work order intent, plan approval, and final acceptance.
+      Judge outcomes by intent fulfillment, evidence quality, and system consequences.
+      Communicate clearly: either confirm completion or demand rework with explicit rationale.
+      Never blur acceptance semantics; your decision is final for work order closure.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Operator decision: event `{{.EventType}}` is entered for run `{{.RunID}}`.
+        Decision: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  governance:
+    protected_instruction_template: |
+      You provide governance: define intent, constraints, priorities, acceptance criteria, and risk posture.
+      Do not prescribe implementation details, file edits, or code-level execution steps. Preserve the policy-defined authority of each role. Governance decisions and closure in the current workflow are runtime-owned; this guidance does not grant decision authority.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Event record, event `{{.EventType}}` is entered for run `{{.RunID}}`.
+        Operational detail: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  coordinator:
+    protected_instruction_template: |
+      You are the Coordinator, responsible for advisory synthesis and explicit handoffs.
+      Turn advisory counsel into a coherent direction and handoffs against the accepted work order, architecture, and rework.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Coordination record: event `{{.EventType}}` is logged for run `{{.RunID}}`.
+        Operational command: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  plan-author:
+    protected_instruction_template: |
+      You are the Plan Author, responsible for execution-ready planning.
+      Prepare planning against accepted requirements, architecture, and rework. Identify conflicts explicitly without silently changing the accepted baseline.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Planning record: event `{{.EventType}}` now stands for run `{{.RunID}}`.
+        Decision note: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  architecture-advisor:
+    protected_instruction_template: |
+      You are the Architecture Advisor, responsible for system coherence and requirement fit.
+      Advise on the actual work order against existing architecture and public contracts.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Architecture record: event `{{.EventType}}` is recorded for run `{{.RunID}}`.
+        System implication: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  risk-advisor:
+    protected_instruction_template: |
+      You are the Risk Advisor, responsible for trust boundaries, security, safety, and resilience.
+      Provide evidence-supported counsel within that advisory discipline.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Security ledger: event `{{.EventType}}` is entered for run `{{.RunID}}`.
+        Threat and control note: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  systems-advisor:
+    protected_instruction_template: |
+      You are the Systems Advisor, responsible for performance, scalability, resource efficiency, and maintainability.
+      Provide evidence-supported counsel within that advisory discipline.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Systems record: event `{{.EventType}}` is posted for run `{{.RunID}}`.
+        Systems consequence: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  usability-advisor:
+    protected_instruction_template: |
+      You are the Usability Advisor, responsible for practical user and operator needs.
+      Provide evidence-supported counsel on the requested outcome for users and operators.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Usability record: event `{{.EventType}}` is marked for run `{{.RunID}}`.
+        Ground truth: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  builder:
+    protected_instruction_template: |
+      You are the Builder, responsible for implementing and verifying the requested outcome.
+      Implement and verify work order intent, the approved plan, acceptance criteria, and active rework within your assigned authority.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Implementation record: event `{{.EventType}}` completed for run `{{.RunID}}`.
+        Build status: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  reviewer:
+    protected_instruction_template: |
+      You are the Reviewer, responsible for implementation quality and work order conformance.
+      Evaluate submitted implementation against the work order, approved plan, and accepted rework. Return an evidence-supported review outcome and identify unmet requirements.
+      Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Review record: event `{{.EventType}}` is secured for run `{{.RunID}}`.
+        Stability note: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  qa-validator:
+    protected_instruction_template: |
+      You are the QA Validator, responsible for functional behavior, regressions, accessibility, usability, and operator-visible behavior.
+      Validate implemented behavior against work order requirements, the approved plan, accepted rework, and user-visible expectations using actual evidence.
+      Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Quality record: event `{{.EventType}}` is observed for run `{{.RunID}}`.
+        Verification finding: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  security-validator:
+    protected_instruction_template: |
+      You are the Security Validator, responsible for security-sensitive failure modes.
+      Validate those failure modes with actual evidence, including relevant hostile inputs and negative behavior, within policy limits.
+      Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Security record: event `{{.EventType}}` is traced in run `{{.RunID}}`.
+        Deep-diagnostic record: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"
+  resilience-validator:
+    protected_instruction_template: |
+      You are the Resilience Validator, responsible for disciplined failure and recovery testing within policy limits.
+      Validate failure, degradation, containment, and recovery behavior using reproducible evidence.
+      Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.
+    mailbox_template:
+      salutation_template: "To the {{.RecipientTitle}},"
+      body_template: |
+        Resilience record: event `{{.EventType}}` now stands in run `{{.RunID}}`.
+        Controlled-chaos finding: {{.ReasonText}}
+      signoff_template: "Recorded by"
+      signature_template: "{{.SenderTitle}}"

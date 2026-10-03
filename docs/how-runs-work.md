@@ -18,6 +18,8 @@ Before each run, choose a global model. Kingdom uses your OpenCode setup to list
 
 Open **Runs** to see current and finished work. A run keeps the workflow, execution activity, results, and approval state in one place.
 
+Workspace preparation appears before provider work begins and remains visible after reopening a run. Agent Activity provides scrollable conversation history, captured instructions rendered as Markdown, and an attempt selector when earlier attempts exist. Review and validation outcomes that request another pass are labeled **Rework Requested**, while execution errors remain **Failed**.
+
 The default workflow, `work-order-v1`, usually moves through these stages:
 
 In this workflow, separate advisor roles consider the request before a planner role drafts the run’s plan. This is different from the Planning workspace above.

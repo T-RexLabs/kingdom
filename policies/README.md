@@ -6,7 +6,7 @@ These files define Kingdom's canonical runtime policy. Execution starts with no 
 - `network_policy.yaml`: outbound domain allow lists by role and node class.
 - `retry_policy.yaml`: retry classes, error code mapping, backoff, and escalation.
 - `opencode_provider_policy.yaml`: OpenCode provider timeouts, agent mapping, and retry boundaries. Model selection stays per run.
-- `role_communication_policy.yaml`: system prompt and mailbox templates for each canonical role.
+- Agent instructions and mailbox templates live in the embedded catalog under `internal/prompts/catalog/`.
 
 ## Editing Principles
 
@@ -21,7 +21,7 @@ These files define Kingdom's canonical runtime policy. Execution starts with no 
 - Edit `network_policy.yaml` when a role or node class needs outbound access to a specific domain.
 - Edit `retry_policy.yaml` when an error code needs a different retry class, backoff, or escalation path.
 - Edit `opencode_provider_policy.yaml` when startup validation, dispatch timeouts, stream inactivity windows, or role to agent mappings change.
-- Edit `role_communication_policy.yaml` when shipped role prompts or mailbox templates change.
+- Edit `internal/prompts/catalog/` when shipped role instructions, default guidance, planning contracts, node contracts, communication styles, or mailbox templates change.
 
 ## Timeout Behavior
 

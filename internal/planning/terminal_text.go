@@ -84,7 +84,7 @@ func trimPlannerRange(ctx context.Context, file *os.File, span textRange) (textR
 // parsePlannerTerminal stages verified provider bytes once, then processes
 // prose incrementally. Only structured-question metadata and the title line
 // are decoded as scalar values; a long prose line never becomes a Go string.
-func parsePlannerTerminal(ctx context.Context, metadata ProviderExecutionMetadata, formalize bool) (result *parsedPlannerTerminal, err error) {
+func parsePlannerTerminal(ctx context.Context, metadata ProviderExecutionMetadata, formalize bool, isRecognizedHeading func(string) bool) (result *parsedPlannerTerminal, err error) {
 	result = &parsedPlannerTerminal{}
 	defer func() {
 		if err != nil {
@@ -240,7 +240,7 @@ func parsePlannerTerminal(ctx context.Context, metadata ProviderExecutionMetadat
 		return result, err
 	}
 	if formalize {
-		result.title, span, err = parsePlannerPlan(ctx, prose.file, span)
+		result.title, span, err = parsePlannerPlan(ctx, prose.file, span, isRecognizedHeading)
 		if err != nil {
 			return result, err
 		}
@@ -325,7 +325,7 @@ func plannerRangePrefix(file *os.File, span textRange, n int) ([]byte, error) {
 	return raw, err
 }
 
-func parsePlannerPlan(ctx context.Context, file *os.File, span textRange) (string, textRange, error) {
+func parsePlannerPlan(ctx context.Context, file *os.File, span textRange, isRecognizedHeading func(string) bool) (string, textRange, error) {
 	var title string
 	var titleSpan textRange
 	body := textRange{span.end, span.end}
@@ -377,7 +377,7 @@ func parsePlannerPlan(ctx context.Context, file *os.File, span textRange) (strin
 				}
 				heading.WriteRune(unicode.ToLower(ch))
 			}
-			active = isRecognizedPlanSectionHeading(heading.String())
+			active = isRecognizedHeading != nil && isRecognizedHeading(heading.String())
 			return nil
 		}
 		if active && !bytes.HasPrefix(prefix, []byte("#")) {

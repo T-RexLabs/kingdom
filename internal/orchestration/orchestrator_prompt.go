@@ -1,17 +1,14 @@
 package orchestration
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"fmt"
 	"io"
 	"regexp"
 	"strings"
-	"text/template"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/verdict"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/state"
@@ -46,97 +43,6 @@ WHERE wr.run_id = ?`, runID).Scan(&workOrderTitle)
 		return "", err
 	}
 	return workOrderTitle, nil
-}
-
-type nodePromptFrame struct{ System, Rules, Assignment, Checks, Evidence string }
-
-func (o *orchestrationLoop) buildNodePromptFrame(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRoleID string) nodePromptFrame {
-	classID := resolvedNodeClass(nodeID, nodeClass)
-	systemPreamble := o.renderSystemPrompt(roleID, runID, nodeID, nodeRunID)
-	planningConstraints := ""
-	if classID == "plan_drafting" {
-		planningConstraints = strings.Join([]string{
-			"- Return planning output only: plan deltas, acceptance criteria, dependency notes, and verification scope.",
-			"- Do not claim completed implementation work.",
-			"- Do not present code changes, delivered files, or test execution as finished work.",
-			"- Resolve unspecified implementation details using repository evidence and, when correctness depends on current external facts, authoritative external sources. State material assumptions.",
-			"- Treat investigation, design, security hardening, implementation, and verification as executable plan work rather than approval gates.",
-			"- Preserve gates required by the work order, runtime policy, or accepted architecture, but do not invent internal ratification. If an unavailable external dependency affects one slice, isolate it and plan all independent work.",
-		}, "\n")
-	}
-	responseOnlyConstraints := ""
-	if classID == workflow.NodeClassAdvisorConsultation || classID == workflow.NodeClassAdvisorySynthesis || classID == workflow.NodeClassPlanDrafting {
-		responseOnlyConstraints = strings.Join([]string{
-			"- You may inspect current project files when needed.",
-			"- Do not create, edit, rename, or delete project files for this node.",
-			"- Return advice, synthesis, or planning output only.",
-			"- Implementation changes belong to delegated execution after plan approval.",
-		}, "\n")
-	}
-	protectedRuntimePaths := ""
-	if classID == workflow.NodeClassDelegatedExecution || classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
-		protectedRuntimePaths = strings.Join([]string{
-			"- Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not work order deliverables.",
-			"- Ignore those paths when checking whether only the intended project files changed, unless the work order explicitly targets them.",
-			"- Never delete, modify, or \"clean up\" those runtime-managed paths as part of work order work or rework.",
-		}, "\n")
-	}
-	responseContract := nodeResponseContractForClass(classID)
-	rulesBlocks := []string{}
-	if trimmedConstraints := strings.TrimSpace(planningConstraints); trimmedConstraints != "" {
-		rulesBlocks = append(rulesBlocks, renderPromptSection("Planning Constraints", trimmedConstraints))
-	}
-	if trimmedConstraints := strings.TrimSpace(responseOnlyConstraints); trimmedConstraints != "" {
-		rulesBlocks = append(rulesBlocks, renderPromptSection("Response-Only Constraints", trimmedConstraints))
-	}
-	if trimmedConstraints := strings.TrimSpace(protectedRuntimePaths); trimmedConstraints != "" {
-		rulesBlocks = append(rulesBlocks, renderPromptSection("Protected Runtime Paths", trimmedConstraints))
-	}
-	if classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
-		inspectionRules := []string{
-			"- Inspect this attempt's private copy of the implementation pinned when the attempt was admitted. Other attempts cannot change this copy.",
-			"- Report findings in your response; changes in this workspace are discarded and do not repair the implementation.",
-		}
-		if classID == workflow.NodeClassValidationGates {
-			inspectionRules = append(inspectionRules,
-				"- Generated dependencies and caches are not implementation content and may be absent. Use the project's documented setup and test commands to prepare this private environment when required.",
-				"- Record the checks actually run and their results. Explain any environment limitation that prevents validation; do not report an unexecuted check as passing.",
-			)
-		}
-		rulesBlocks = append(rulesBlocks, renderPromptSection("Inspection Workspace", strings.Join(inspectionRules, "\n")))
-	}
-	if responseContract != "" {
-		rulesBlocks = append(rulesBlocks, renderPromptSection("Response Format Requirements", responseContract))
-	}
-
-	builderEvidence := ""
-	if classID == "execution_review" || classID == "validation_gates" {
-		builderEvidence = o.builderEvidenceManifestForRun(ctx, runID)
-	}
-	rulesBody := joinPromptBlocks(rulesBlocks...)
-	if strings.TrimSpace(rulesBody) == "" {
-		rulesBody = "- No additional node-specific rules."
-	}
-
-	return nodePromptFrame{System: systemPreamble, Rules: rulesBody, Assignment: currentAssignmentForNodeClass(classID, delegatorRoleID), Checks: finalChecksForNodeClass(classID), Evidence: builderEvidence}
-}
-
-func finalChecksForNodeClass(nodeClass string) string {
-	behavior := workflow.BehaviorForNode("", nodeClass)
-	lines := []string{}
-	switch behavior.ProviderCompletionMode {
-	case workflow.ProviderCompletionModeServerResponse:
-		lines = append(lines,
-			"- Return the complete final response directly in your final assistant message.",
-			"- Kingdom settles this node from the validated terminal provider response.",
-		)
-	default:
-		lines = append(lines, "- This is a runtime-owned transition; do not invoke provider completion tools.")
-	}
-	if strings.TrimSpace(nodeClass) == workflow.NodeClassExecutionReview || strings.TrimSpace(nodeClass) == workflow.NodeClassValidationGates {
-		lines = append(lines, "- Your first non-empty line must be `VERDICT: PASS` or `VERDICT: REWORK`.")
-	}
-	return strings.Join(lines, "\n")
 }
 
 func currentAssignmentForNodeClass(nodeClass, delegatorRoleID string) string {
@@ -196,49 +102,6 @@ func humanizePromptIdentifier(value string) string {
 	return strings.Join(parts, " ")
 }
 
-func renderPromptSection(title, body string) string {
-	trimmedBody := strings.TrimSpace(body)
-	if trimmedBody == "" {
-		return ""
-	}
-	return fmt.Sprintf("%s:\n%s", strings.TrimSpace(title), trimmedBody)
-}
-
-func joinPromptBlocks(blocks ...string) string {
-	trimmed := make([]string, 0, len(blocks))
-	for _, block := range blocks {
-		if section := strings.TrimSpace(block); section != "" {
-			trimmed = append(trimmed, section)
-		}
-	}
-	return strings.Join(trimmed, "\n\n")
-}
-
-func nodeResponseContractForClass(nodeClass string) string {
-	switch strings.TrimSpace(nodeClass) {
-	case "execution_review":
-		return strings.Join([]string{
-			"- You are issuing the final review outcome for this node now, not a progress update.",
-			"- RequiredControlLine: VERDICT: PASS|REWORK",
-			"- The first non-empty line must be exactly: VERDICT: PASS or VERDICT: REWORK.",
-			"- Do not place any text before the verdict line.",
-			"- If implementation evidence is missing, incomplete, or uncertain, choose VERDICT: REWORK.",
-			"- After the verdict line, give concise rationale and actionable rework guidance when needed.",
-		}, "\n")
-	case "validation_gates":
-		return strings.Join([]string{
-			"- You are issuing the final validation outcome for this node now, not a progress update.",
-			"- RequiredControlLine: VERDICT: PASS|REWORK",
-			"- The first non-empty line must be exactly: VERDICT: PASS or VERDICT: REWORK.",
-			"- Do not place any text before the verdict line.",
-			"- If any requirement remains blocked, unverified, or uncertain, choose VERDICT: REWORK.",
-			"- After the verdict line, give concise rationale and include blocking gates or fix items when useful.",
-		}, "\n")
-	default:
-		return ""
-	}
-}
-
 func stripControlCommandLines(text string) string {
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
@@ -270,53 +133,6 @@ func sanitizeFailureContextText(text string) string {
 		}
 	})
 	return strings.TrimSpace(rewritten)
-}
-
-func (o *orchestrationLoop) renderSystemPrompt(roleID, runID, nodeID, nodeRunID string) string {
-	rendered := strings.TrimSpace(renderRoleTemplateOrFallback(
-		o.roleComm,
-		roleID,
-		func(cfg rolecomm.RoleTemplate) string { return cfg.SystemPromptTemplate },
-		map[string]string{
-			"RoleID":    strings.TrimSpace(roleID),
-			"RunID":     strings.TrimSpace(runID),
-			"NodeID":    strings.TrimSpace(nodeID),
-			"NodeRunID": strings.TrimSpace(nodeRunID),
-		},
-		"You are a Kingdom agent. Execute your assigned role with discipline and return valid output.",
-	))
-	if rendered == "" {
-		return "You are a Kingdom agent. Execute your assigned role with discipline and return valid output."
-	}
-	return rendered
-}
-
-func renderRoleTemplateOrFallback(policy rolecomm.Policy, roleID string, extract func(rolecomm.RoleTemplate) string, data map[string]string, fallback string) string {
-	if extract == nil {
-		return fallback
-	}
-	selected := rolecomm.ResolveTemplate(policy, roleID)
-
-	rawTemplate := strings.TrimSpace(extract(selected))
-	if rawTemplate == "" {
-		return fallback
-	}
-
-	tmpl, err := template.New("role_prompt").Option("missingkey=zero").Parse(rawTemplate)
-	if err != nil {
-		return fallback
-	}
-
-	var buffer bytes.Buffer
-	if err := tmpl.Execute(&buffer, data); err != nil {
-		return fallback
-	}
-
-	rendered := strings.TrimSpace(buffer.String())
-	if rendered == "" {
-		return fallback
-	}
-	return rendered
 }
 
 func firstNonEmptyString(values ...string) string {
@@ -475,13 +291,6 @@ func (o *orchestrationLoop) operatorFinalReworkFeedbackForPlanAttempt(ctx contex
 	return fmt.Sprintf("Operator Final Rework Feedback:\n%s", feedback)
 }
 
-func planningSafeInstructionFallback(nodeClass string) string {
-	if nodeClass == "plan_drafting" {
-		return "Return a planning-only output: scoped execution delta, dependencies, acceptance criteria, and verification checkpoints. Do not claim completed implementation."
-	}
-	return "Return planning-only instructions and acceptance criteria."
-}
-
 func (o *orchestrationLoop) latestScopedInstructionForNode(ctx context.Context, runID, nodeID, fromAgentID, toAgentID string) string {
 	trimmedRunID := strings.TrimSpace(runID)
 	trimmedNodeID := strings.TrimSpace(nodeID)
@@ -599,33 +408,4 @@ func nullStringValue(value sql.NullString) string {
 		return ""
 	}
 	return strings.TrimSpace(value.String)
-}
-
-func defaultDelegatorInstructionForDispatch(nodeID, roleID string) string {
-	if nodeClassForNodeID(nodeID) != "advisor_consultation" {
-		return ""
-	}
-	roleLens := strings.TrimSpace(roleID)
-	if roleLens == "" {
-		roleLens = "advisor"
-	}
-	lensGuidance := "Focus on the strongest recommendation, why it follows from your role's lens, and the most important risks and tradeoffs."
-	switch roleLens {
-	case "architecture-advisor":
-		lensGuidance = "Focus on whether the work order satisfies the requested behavior, fits the existing architecture and public contracts, and avoids harmful precedent or system drift."
-	case "risk-advisor":
-		lensGuidance = "Focus on trust boundaries, abuse resistance, blast radius, recovery posture, and any residual risk that remains after mitigation."
-	case "systems-advisor":
-		lensGuidance = "Focus on performance under load, scalability as demand grows, resource efficiency, likely bottlenecks, and long-term maintainability."
-	case "usability-advisor":
-		lensGuidance = "Focus on usability, operator burden, support burden, day-2 friction, and what ordinary users or operators can realistically sustain."
-	}
-	return fmt.Sprintf(`Provide advisory counsel for this work order through the %s lens.
-
-- Return advice only. Do not claim implementation work, code edits, or produced artifacts.
-- Keep the response freeform but decision-ready: make a recommendation, explain it through your role's lens, and call out the most important risks and tradeoffs.
-- %s
-- If key evidence is missing, say what uncertainty materially affects the recommendation.
-
-Use the complete work order in the current run context when making your recommendation.`, roleLens, lensGuidance)
 }

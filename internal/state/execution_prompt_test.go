@@ -60,7 +60,7 @@ func TestPersistExecutionPromptRetriesConcurrentWALWriterWithExactSource(t *test
 					t.Fatalf("claim prompt lease: acquired=%t err=%v", acquired, err)
 				}
 				sum := sha256.Sum256([]byte(content))
-				return ExecutionPromptRequest{AttemptID: id, RunID: "run_1", NodeRunID: nodeRunID, LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion, CreatedAt: now, Source: RequestContentSource{Reader: strings.NewReader(content), SHA256: hex.EncodeToString(sum[:]), SizeBytes: int64(len(content))}}
+				return ExecutionPromptRequest{AttemptID: id, RunID: "run_1", NodeRunID: nodeRunID, LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion, CreatedAt: now, SystemPrompt: "Protected Role Instruction: Reviewer\nCommunication Style: Neutral\nAgent Guidance: exact captured guidance\nKingdom Contract: preserved", Source: RequestContentSource{Reader: strings.NewReader(content), SHA256: hex.EncodeToString(sum[:]), SizeBytes: int64(len(content))}}
 			}
 			content := strings.Repeat("first prompt\n", 6000) + "complete ending"
 			first := request("prompt_1", "nr_1", content)
@@ -118,6 +118,21 @@ func TestPersistExecutionPromptRetriesConcurrentWALWriterWithExactSource(t *test
 			if replay, err := PersistExecutionPrompt(ctx, db, first); err != nil || replay != ref {
 				t.Fatalf("idempotent prompt replay=%#v err=%v", replay, err)
 			}
+			systemReader, err := OpenRunExecutionSystemPrompt(ctx, db, first.RunID, first.AttemptID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			systemText, err := io.ReadAll(systemReader)
+			systemReader.Close()
+			if err != nil || string(systemText) != first.SystemPrompt {
+				t.Fatalf("captured system prompt=%q err=%v", systemText, err)
+			}
+			first.SystemPrompt = "changed system instructions"
+			first.Source.Reader = strings.NewReader(content)
+			if _, err := PersistExecutionPrompt(ctx, db, first); err == nil || !strings.Contains(err.Error(), "replay content conflicts") {
+				t.Fatalf("system mutation accepted: %v", err)
+			}
+
 			reader, err := OpenExecutionPrompt(ctx, db, first.AttemptID, ref)
 			if err != nil {
 				t.Fatal(err)

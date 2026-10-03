@@ -54,7 +54,7 @@ func seedMailboxReferencedContent(t *testing.T) mailboxContentFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err = tx.Exec(`INSERT INTO execution_prompt_refs(attempt_id,run_id,node_run_id,content_id,created_at) VALUES (?,?,?,?,'2026-09-30T10:00:00Z')`, f.attemptID, f.runID, f.nodeRunID, ref.ContentID); err != nil {
+	if _, err = tx.Exec(`INSERT INTO execution_prompt_refs(attempt_id,run_id,node_run_id,content_id,system_content_id,created_at) VALUES (?,?,?,?,?,'2026-09-30T10:00:00Z')`, f.attemptID, f.runID, f.nodeRunID, ref.ContentID, ref.ContentID); err != nil {
 		t.Fatal(err)
 	}
 	if err = tx.Commit(); err != nil {
