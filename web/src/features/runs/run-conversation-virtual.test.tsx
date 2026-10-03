@@ -107,8 +107,7 @@ it("keeps the inline settled response outside virtual activity and resets its so
   await user.click(within(response).getByText("Response Details"));
   expect(response.querySelector("pre")).toBeVisible();
   expect(response.querySelector("pre")?.textContent).toBe(data.text);
-  expect(screen.queryByTestId("virtuoso-scroller")).not.toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Show Activity" }));
+  expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
   const scroller = await screen.findByTestId("virtuoso-scroller");
   expect(screen.queryByText("Provider Message")).not.toBeInTheDocument();
   expect(screen.getAllByRole("heading", { name: "Canonical Result" })).toHaveLength(1);
@@ -130,7 +129,7 @@ it("keeps the inline settled response outside virtual activity and resets its so
   await waitFor(() =>
     expect(within(scroller).getByText("Tool 100")).toBeVisible(),
   );
-  await user.click(screen.getByRole("button", { name: "Hide Activity" }));
+
   expect(
     within(response).getByRole("heading", { name: "Canonical Result" }),
   ).toBeVisible();

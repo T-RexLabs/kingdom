@@ -114,6 +114,21 @@ func ActivityPayload(base map[string]any, activityID string, in ActivityInput) m
 		}
 
 		return payload
+	case "phase":
+		phase := strings.TrimSpace(in.Label)
+		label, ok := PhaseActivityLabel(phase)
+		if !ok {
+			return nil
+		}
+		payload := activityBasePayload(base, in, KingdomPhaseKind)
+		payload["phase"], payload["label"] = phase, label
+		if activityID != "" {
+			payload["activity_id"] = activityID
+		}
+		if occurredAt != "" {
+			payload["occurred_at"] = occurredAt
+		}
+		return payload
 	case "progress":
 		label := strings.TrimSpace(in.Label)
 		if label == "" {

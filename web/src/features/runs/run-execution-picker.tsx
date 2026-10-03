@@ -8,6 +8,7 @@ import { SelectField } from "@/components/ui/select-field";
 import { nodeLabel } from "@/lib/utils";
 import { statusLabel } from "@/lib/status-system";
 import { useTheme, roleIdentity } from "@/theme";
+import { executionDisplayStatus } from "./run-status-semantics";
 
 export function RunExecutionPicker({
   nodes,
@@ -74,7 +75,8 @@ export function RunExecutionPicker({
               : `${roleIdentity(theme, item.required_role).name} · ${nodeLabel(item.node_id)}`,
         }))}
       />
-      {(node?.attempt_count ?? 0) > 1 && (
+      {((node?.attempt_count ?? 0) > 1 ||
+        (!current && (node?.attempt_count ?? 0) > 0)) && (
         <SelectField
           id={`${pickerId}-attempt`}
           label="Attempt"
@@ -101,19 +103,10 @@ export function RunExecutionPicker({
               : []),
             ...options.map((item) => ({
               value: item.attempt_id,
-              label: `Attempt ${item.attempt} · ${statusLabel(item.status)}${item.attempt_id === current?.attempt_id ? " · Current" : ""}`,
+              label: `Attempt ${item.attempt} · ${executionDisplayStatus(item) === "rework" ? "Rework Requested" : statusLabel(item.status)}${item.attempt_id === current?.attempt_id ? " · Current" : ""}`,
             })),
           ]}
         />
-      )}
-      {!current && node?.attempt_count === 1 && options[0] && !selectedID && (
-        <button
-          type="button"
-          className="min-h-10 text-xs text-accent"
-          onClick={() => onSelectAttempt(options[0].attempt_id)}
-        >
-          View Previous Attempt
-        </button>
       )}
       {selectedID && selectedID !== current?.attempt_id && (
         <button

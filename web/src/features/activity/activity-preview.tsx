@@ -65,7 +65,7 @@ export function ActivityPreview({
               >
                 {activityToolSummary(item)}
               </p>
-              {item.toolStatus && (
+              {item.toolStatus && item.toolStatus !== "completed" && (
                 <span className={`shrink-0 text-[11px] ${["failed", "error"].includes(item.toolStatus) ? "text-status-failed" : "text-foreground-subtle"}`}>
                   {toolStateLabel(item.toolStatus, isLive)}
                 </span>
@@ -199,6 +199,6 @@ function selectPreview(items: ActivityItem[]) {
 }
 
 function toolStateLabel(status: string, isLive: boolean): string {
-  const label = ({ pending: "Pending", running: "Running", completed: "Done", failed: "Failed", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] ?? status;
+  const label = ({ pending: "Pending", running: "Running", failed: "Failed", error: "Error", cancelled: "Cancelled" } as Record<string, string>)[status] ?? status;
   return !isLive && ["pending", "running"].includes(status) ? `Last Reported: ${label}` : label;
 }

@@ -61,3 +61,13 @@ func TestActivityPayloadKeepsUnnamedObservedToolCall(t *testing.T) {
 		t.Fatalf("unnamed observed call was lost or invented metadata: %#v", payload)
 	}
 }
+
+func TestActivityPayloadWorkspacePreparation(t *testing.T) {
+	payload := ActivityPayload(map[string]any{"attempt_id": "preparing"}, "preparation-event", ActivityInput{Kind: "phase", Label: "workspace_preparing", OccurredAt: "2026-10-03T11:32:08Z"})
+	if payload["kind"] != KingdomPhaseKind || payload["phase"] != "workspace_preparing" || payload["label"] != "Preparing workspace" || payload["activity_id"] != "preparation-event" {
+		t.Fatalf("preparation payload=%#v", payload)
+	}
+	if ActivityPayload(nil, "unknown", ActivityInput{Kind: "phase", Label: "unknown"}) != nil {
+		t.Fatal("unknown phase produced activity")
+	}
+}

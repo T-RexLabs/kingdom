@@ -50,6 +50,36 @@ afterEach(() => {
 });
 
 describe("compact activity preview", () => {
+  it("omits completed tool labels while retaining failure status", () => {
+    const items: ActivityItem[] = [
+      {
+        id: "completed",
+        eventId: "completed-event",
+        sequence: 1,
+        kind: "tool",
+        toolName: "read",
+        toolStatus: "completed",
+        label: "Read README.md",
+      },
+      {
+        id: "failed",
+        eventId: "failed-event",
+        sequence: 2,
+        kind: "tool",
+        toolName: "bash",
+        toolStatus: "failed",
+        label: "Run formatter",
+      },
+    ];
+    render(<ActivityDisclosure {...props} items={items} isLive={false} />);
+
+    const list = screen.getByRole("list", { name: "Recent tool calls" });
+    expect(list).toHaveTextContent("Read");
+    expect(list).toHaveTextContent("Run Command");
+    expect(within(list).queryByText("Done")).not.toBeInTheDocument();
+    expect(within(list).getByText("Failed")).toBeVisible();
+  });
+
   it("keeps recent real tool calls visible when routine phases follow, including after settlement", () => {
     const tools: ActivityItem[] = ["glob", "read", "bash", "grep"].map((name, index) => ({
       id: name, eventId: name, sequence: index + 1, kind: "tool", toolName: name,

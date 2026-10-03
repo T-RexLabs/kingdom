@@ -8,12 +8,13 @@ import {
 } from "@/features/activity/activity-view";
 import { RunFinalResponse } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
-import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
+import { ActivityHistory } from "@/features/activity/activity-history";
 import { ActivitySources } from "@/features/activity/activity-sources";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 import {
   isActiveExecutionStatus,
   isQueuedExecutionStatus,
+  liveExecutionLabel,
 } from "./run-status-semantics";
 
 type RunActivityProps = {
@@ -53,6 +54,18 @@ function RunAttemptActivity({
 
   const hasFinished =
     status === "succeeded" || status === "failed" || status === "cancelled";
+  const conversationItems = useMemo(
+    () => state.items.filter(isConversationActivity),
+    [state.items],
+  );
+  const hasHistory = conversationItems.length > 0 || durable.gaps.length > 0;
+  const phaseLabel =
+    liveExecutionLabel(detail?.progress_reason_code, detail?.progress_event_type) ??
+    state.items.filter((item) => item.kind === "progress").at(-1)?.label;
+  const showPhase = Boolean(
+    phaseLabel &&
+      (isQueuedExecutionStatus(status) || (isRunning && !conversationItems.length)),
+  );
 
   if (!attemptId)
     return (
@@ -63,14 +76,40 @@ function RunAttemptActivity({
   return (
     <section className="space-y-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
+      {showPhase && (
+        <p role="status" className="py-2 text-sm text-foreground-muted">
+          {phaseLabel}
+        </p>
+      )}
+      {durable.isLoading && (
+        <p className="py-2 text-xs text-foreground-muted">Loading activity…</p>
+      )}
+      {durable.isError && (
+        <p role="alert" className="text-xs text-status-failed">
+          Activity could not be loaded.{" "}
+          <button
+            type="button"
+            className="min-h-9 underline"
+            onClick={() => void durable.refetch()}
+          >
+            Retry Activity
+          </button>
+        </p>
+      )}
+      {isRunning && !showPhase && !hasHistory && !durable.isLoading && !durable.isError && (
+        <p role="status" className="py-6 text-sm text-foreground-muted">
+          Waiting for provider activity.
+        </p>
+      )}
       {!isRunning &&
+        !showPhase &&
         !durable.isLoading &&
         !durable.isError &&
-        !state.items.some(isConversationActivity) &&
+        !conversationItems.length &&
         !hasSettledResponse(detail) && (
           <p className="py-6 text-sm text-foreground-muted">
             {durable.gaps.length > 0
-              ? "No thinking or tool calls appear in this loaded window. Open activity to load earlier history."
+              ? "No thinking or tool calls appear in this loaded window. Load earlier events below."
               : isQueuedExecutionStatus(status)
                 ? "This attempt is queued. Provider activity will appear when it starts."
                 : hasFinished
@@ -85,20 +124,16 @@ function RunAttemptActivity({
           New live activity is awaiting durable reconciliation.
         </p>
       )}
-      <ActivityDisclosure
-        scopeKey={JSON.stringify([runId, attemptId])}
-        isLive={isRunning}
-        hasFinalResponse={hasSettledResponse(detail)}
-        completionBehavior="keep-open"
-        items={state.items}
-        gaps={durable.gaps}
-        isLoading={durable.isLoading}
-        error={durable.error}
-        retry={() => durable.refetch()}
-        isLoadingMore={durable.isLoadingMore}
-        loadError={durable.loadError}
-        loadMore={durable.loadMore}
-      />
+      {hasHistory && (
+        <ActivityHistory
+          scopeKey={JSON.stringify([runId, attemptId])}
+          items={conversationItems}
+          gaps={durable.gaps}
+          isLoadingMore={durable.isLoadingMore}
+          loadError={durable.loadError}
+          loadMore={durable.loadMore}
+        />
+      )}
       <RunFinalResponse key={attemptId} detail={detail} />
       <ActivitySources sources={state.sources} />
     </section>

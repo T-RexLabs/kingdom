@@ -40,13 +40,14 @@ it("offers previous and current views symmetrically when used directly in contex
   };
   const view = render(<RunExecutionPicker {...props} />);
   await userEvent.click(
-    screen.getByRole("button", { name: "View Previous Attempt" }),
+    screen.getByRole("button", { name: "Select attempt" }),
   );
+  await userEvent.click(screen.getByRole("option", { name: "Attempt 1 · Failed" }));
   expect(props.onSelectAttempt).toHaveBeenCalledWith("previous");
   view.rerender(<RunExecutionPicker {...props} selectedAttemptId="previous" />);
   expect(
-    screen.queryByRole("button", { name: "Select attempt" }),
-  ).not.toBeInTheDocument();
+    screen.getByRole("button", { name: "Select attempt" }),
+  ).toHaveTextContent("Attempt 1 · Failed");
   await userEvent.click(
     screen.getByRole("button", { name: "Return to Current Step" }),
   );

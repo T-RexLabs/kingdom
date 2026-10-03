@@ -82,8 +82,10 @@ export function isActiveExecutionStatus(status?: string | null): boolean {
 export function isActiveProviderBackedExecution(execution?: {
 	status?: string | null;
 	execution_mode?: string | null;
+	progress_reason_code?: string | null;
 } | null): boolean {
-	return execution?.execution_mode === "provider_backed" && isActiveExecutionStatus(execution.status);
+	return execution?.execution_mode === "provider_backed" && (isActiveExecutionStatus(execution.status) ||
+		(isQueuedExecutionStatus(execution.status) && isPreLaunchProgressReasonCode(execution.progress_reason_code)));
 }
 
 export function isCurrentActivityExecutionStatus(status?: string | null): boolean {
@@ -92,6 +94,8 @@ export function isCurrentActivityExecutionStatus(status?: string | null): boolea
 
 function isPreLaunchProgressReasonCode(reasonCode?: string | null): boolean {
 	switch (normalizedToken(reasonCode)) {
+		case "preparation_admitted":
+		case "workspace_preparing":
 		case "workspace_prepared":
 		case "provider_launching":
 			return true;

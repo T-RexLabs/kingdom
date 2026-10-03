@@ -8,6 +8,12 @@ import (
 
 func PhaseActivityLabel(phase string) (string, bool) {
 	switch strings.TrimSpace(phase) {
+	case "preparation_admitted":
+		return "Preparation queued", true
+	case "workspace_preparing":
+		return "Preparing workspace", true
+	case "workspace_prepared":
+		return "Workspace prepared", true
 	case "provider_launching":
 		return "Launching provider", true
 	case "provider_session_open":
