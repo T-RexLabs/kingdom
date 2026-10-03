@@ -1,8 +1,25 @@
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repositoryRoot = fileURLToPath(new URL("../", import.meta.url));
+const assetDirectories = [
+  { source: "policies", target: "internal/bootstrapassets/files/policies", extension: ".yaml" },
+  { source: "contracts/schemas", target: "internal/bootstrapassets/files/schemas", extension: ".json" },
+];
+
+function assetDirectory(root, relativePath, allowMissing = false) {
+  let directory = root;
+  for (const component of relativePath.split("/")) {
+    directory = path.join(directory, component);
+    try {
+      if (!lstatSync(directory).isDirectory()) throw new Error(`Asset directory must be a real directory: ${directory}`);
+    } catch (error) {
+      if (!allowMissing || error.code !== "ENOENT") throw error;
+    }
+  }
+  return directory;
+}
 
 function assetNames(directory, extension) {
   return readdirSync(directory, { withFileTypes: true })
@@ -15,11 +32,11 @@ function assetNames(directory, extension) {
 }
 
 export function synchronizeBootstrapAssets(root, { check = false } = {}) {
-  const manifest = JSON.parse(readFileSync(path.join(root, "internal/bootstrapassets/manifest.json"), "utf8"));
+  const resolvedRoot = realpathSync(root);
   const changes = [];
-  for (const { source, target, extension } of manifest) {
-    const sourceDirectory = path.join(root, source);
-    const targetDirectory = path.join(root, target);
+  for (const { source, target, extension } of assetDirectories) {
+    const sourceDirectory = assetDirectory(resolvedRoot, source);
+    const targetDirectory = assetDirectory(resolvedRoot, target, true);
     const names = assetNames(sourceDirectory, extension);
     let targetNames;
     try {
@@ -44,7 +61,7 @@ export function synchronizeBootstrapAssets(root, { check = false } = {}) {
     }
   }
   if (check && changes.length) {
-    throw new Error(`Bootstrap assets are stale. Run make assets-generate.\n${changes.map(({ outputPath }) => path.relative(root, outputPath)).join("\n")}`);
+    throw new Error(`Bootstrap assets are stale. Run make assets-generate.\n${changes.map(({ outputPath }) => path.relative(resolvedRoot, outputPath)).join("\n")}`);
   }
   for (const { outputPath, content } of changes) {
     if (content === undefined) {

@@ -2,7 +2,6 @@ package bootstrapassets
 
 import (
 	"bytes"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -61,16 +60,11 @@ func TestWriteScaffoldDoesNotOverwriteWithoutForce(t *testing.T) {
 func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 	t.Parallel()
 
-	var manifest []struct{ Source, Target, Extension string }
-	raw, err := os.ReadFile("manifest.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := json.Unmarshal(raw, &manifest); err != nil {
-		t.Fatal(err)
-	}
-	for _, entry := range manifest {
-		bootstrapDir := strings.TrimPrefix(entry.Target, "internal/bootstrapassets/")
+	for _, entry := range []struct{ Source, Target, Extension string }{
+		{"policies", "files/policies", ".yaml"},
+		{"contracts/schemas", "files/schemas", ".json"},
+	} {
+		bootstrapDir := entry.Target
 		canonicalDir := entry.Source
 		t.Run(bootstrapDir, func(t *testing.T) {
 			t.Parallel()
