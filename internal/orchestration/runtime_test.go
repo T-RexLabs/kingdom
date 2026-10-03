@@ -1248,19 +1248,19 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 
 func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
-		invocation := h.addInvocation(t, index)
-		job := h.runningHandoffJob(t, invocation, index)
-		// This test joins complete projection as well as terminal ingestion.
-		// Each builder replay needs its workspace and snapshot authority.
-		job.workspacePath = t.TempDir()
-		job.baseSnapshotID = h.baselineSnapshotID
-		if err := h.fsStore.RestoreSnapshot(t.Context(), h.baselineSnapshotID, job.workspacePath); err != nil {
-			t.Fatalf("restore recovered attempt workspace %d: %v", index, err)
-		}
-		configureSuccessfulHandoff(&job, "Builder complete.")
-		persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:02Z")
+	invocation := h.addInvocation(t, 1)
+	job := h.baseHandoffJob(invocation, 1)
+	// Overflow the actual guard budget for one invocation. This proves that
+	// Start defers recovery without repeating unrelated builder projections.
+	const guardCount = providerlimits.StartupReplayMaxItems + 1
+	seedStartupGuardOverflow(t, h, invocation, job, guardCount)
+	job.workspacePath = t.TempDir()
+	job.baseSnapshotID = h.baselineSnapshotID
+	if err := h.fsStore.RestoreSnapshot(t.Context(), h.baselineSnapshotID, job.workspacePath); err != nil {
+		t.Fatalf("restore recovered attempt workspace: %v", err)
 	}
+	configureSuccessfulHandoff(&job, "Builder complete.")
+	persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:02Z")
 
 	rt, err := newMemoryRuntime(t, Config{
 		DB:            h.db,
@@ -1271,7 +1271,6 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	rt.completionEvery = time.Millisecond
 	firstFinishAttempt := make(chan struct{})
 	allowFirstFinishFailure := make(chan struct{})
 	var finishMu sync.Mutex
@@ -1282,6 +1281,12 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		call := finishCalls
 		finishMu.Unlock()
 		if call == 1 {
+			rt.mu.Lock()
+			started := rt.started
+			rt.mu.Unlock()
+			if !started {
+				return errors.New("startup guard overflow did not defer recovery to the background loop")
+			}
 			close(firstFinishAttempt)
 			<-allowFirstFinishFailure
 			return errors.New("injected startup finish failure")
@@ -1318,6 +1323,10 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	if !rt.startupRecoveryPending() || rt.startupRecoveryIsOpen() {
 		t.Fatalf("failed startup finish released deferred recovery: pending=%t open=%t", rt.startupRecoveryPending(), rt.startupRecoveryIsOpen())
 	}
+	if replayed := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_process_guards
+		WHERE provider_invocation_id=? AND lifecycle='quiescent' AND evidence_cleaned_at IS NOT NULL`, invocation.ProviderInvocationID); replayed != guardCount {
+		t.Fatalf("startup finish preceded guard replay: replayed=%d want=%d", replayed, guardCount)
+	}
 	close(allowFirstFinishFailure)
 	if err := rt.awaitStartupRecovery(ctx); err != nil {
 		t.Fatalf("deferred startup did not reopen recovery: %v", err)
@@ -1329,8 +1338,8 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		t.Fatalf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
 	}
 
-	deferredAttemptID := fmt.Sprintf("run_terminal_handoff:implementation:%d", providerlimits.StartupReplayMaxItems+1)
-	deferredInvocationID := fmt.Sprintf("pinv_terminal_handoff_%03d", providerlimits.StartupReplayMaxItems+1)
+	deferredAttemptID := invocation.AttemptID
+	deferredInvocationID := invocation.ProviderInvocationID
 	for {
 		// Capture the completion signal before inspecting state so a worker
 		// finishing during the queries cannot leave this wait asleep.
@@ -1366,6 +1375,44 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	// Join that work before the shared fixture cleanup closes its database.
 	if err := rt.GracefulClose(ctx); err != nil {
 		t.Fatalf("drain recovered runtime: %v", err)
+	}
+}
+
+func seedStartupGuardOverflow(t *testing.T, h terminalHandoffHarness, invocation executionstore.ProviderInvocation, job asyncExecutionResult, count int) {
+	t.Helper()
+	for ordinal := 1; ordinal <= count; ordinal++ {
+		ownership := processguardian.Ownership{
+			GuardID: fmt.Sprintf("guard_startup_%03d", ordinal), GuardianPID: ordinal + 1000,
+			GuardianIdentityToken: fmt.Sprintf("guardian-%03d", ordinal), ChildPID: ordinal + 2000,
+			ChildIdentityToken: fmt.Sprintf("child-%03d", ordinal), TreeID: ordinal + 2000,
+			TreeIdentityToken: fmt.Sprintf("tree-%03d", ordinal), Platform: "unix_process_group",
+			QuiescenceCapability: fmt.Sprintf("guardian-quiescence-%03d", ordinal),
+		}
+		if _, err := h.store.AcknowledgeProviderProcessGuard(t.Context(), executionstore.AcknowledgeProviderProcessGuardRequest{
+			GuardID: ownership.GuardID, ProviderInvocationID: invocation.ProviderInvocationID, AttemptID: invocation.AttemptID,
+			RunID: invocation.RunID, NodeRunID: invocation.NodeRunID, CommandOrdinal: int64(ordinal), Platform: ownership.Platform,
+			GuardianPID: int64(ownership.GuardianPID), GuardianIdentityToken: ownership.GuardianIdentityToken,
+			ChildPID: int64(ownership.ChildPID), ChildIdentityToken: ownership.ChildIdentityToken,
+			TreeID: strconv.Itoa(ownership.TreeID), TreeIdentityToken: ownership.TreeIdentityToken,
+			QuiescenceCapability: ownership.QuiescenceCapability, ExpectedLeaseOwner: job.expectedLeaseOwner, ExpectedLeaseVersion: job.expectedLeaseVersion,
+			StartedAt: "2026-03-01T11:59:59Z", AcknowledgedAt: "2026-03-01T11:59:59Z",
+		}); err != nil {
+			t.Fatalf("acknowledge startup process guard %d: %v", ordinal, err)
+		}
+		evidence, err := json.Marshal(struct {
+			Type   string                 `json:"type"`
+			Result processguardian.Result `json:"result"`
+		}{Type: "result", Result: processguardian.Result{Ownership: ownership, Quiescent: true}})
+		if err != nil {
+			t.Fatalf("marshal startup guard evidence: %v", err)
+		}
+		evidencePath := providerGuardEvidencePath(h.runtimeDir, ownership.GuardID)
+		if err := os.MkdirAll(filepath.Dir(evidencePath), 0o700); err != nil {
+			t.Fatalf("create startup guard evidence directory: %v", err)
+		}
+		if err := os.WriteFile(evidencePath, evidence, 0o600); err != nil {
+			t.Fatalf("write startup guard evidence: %v", err)
+		}
 	}
 }
 
