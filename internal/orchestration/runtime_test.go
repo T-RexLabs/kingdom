@@ -3451,42 +3451,53 @@ func TestDrainExecutionOutboxReplaysProviderIncompleteTurnForOwnerNode(t *testin
 	}
 }
 
-func TestRuntimeDispatchLoopCoversCanonicalRoleFamilies(t *testing.T) {
+func TestRuntimeDispatchCoversCanonicalRoleFamilies(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedCanonicalRoleCoverageRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
-		DB:               db,
-		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		GovernanceMode:   "autonomous",
-		DispatchInterval: 20 * time.Millisecond,
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		GovernanceMode: "autonomous",
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
-	defer func() {
-		if err := rt.Close(); err != nil {
-			t.Fatalf("close runtime: %v", err)
+	var nodeCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_nodes WHERE workflow_definition_id = 'wfdef_role_coverage'`).Scan(&nodeCount); err != nil {
+		t.Fatalf("count workflow nodes: %v", err)
+	}
+	// This test checks role coverage, not scheduler throughput. Advance one DAG
+	// stage per pass and wait for its admitted work and durable projections.
+	// The extra pass finalizes the run after its last node settles.
+	for pass := 0; pass < nodeCount+1 && queryRunStatus(t, db, "run_role_coverage") != "succeeded"; pass++ {
+		if err := rt.orchestrator.Tick(ctx); err != nil {
+			t.Fatalf("dispatch pass %d: %v", pass, err)
 		}
-	}()
-
-	awaitRunStatus(t, db, "run_role_coverage", 4*time.Second, 30*time.Millisecond, func(status string) error {
-		if status != "succeeded" {
-			var nodeID, nodeStatus, lastError string
-			_ = db.QueryRow(`SELECT node_id, node_status FROM node_runs WHERE run_id = 'run_role_coverage' AND node_status NOT IN ('succeeded', 'cancelled') ORDER BY node_id LIMIT 1`).Scan(&nodeID, &nodeStatus)
-			_ = db.QueryRow(`SELECT last_error FROM attempt_outbox WHERE run_id = 'run_role_coverage' AND status = 'pending' ORDER BY created_at LIMIT 1`).Scan(&lastError)
-			return fmt.Errorf("expected run to succeed, got %s (node=%s status=%s outbox_error=%s)", status, nodeID, nodeStatus, lastError)
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Fatalf("drain provider work on pass %d: %v", pass, err)
 		}
-		return nil
-	})
+		if err := rt.drainMaintenance(ctx); err != nil {
+			t.Fatalf("drain maintenance on pass %d: %v", pass, err)
+		}
+		if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+			t.Fatalf("drain execution projection on pass %d: %v", pass, err)
+		}
+	}
+	if status := queryRunStatus(t, db, "run_role_coverage"); status != "succeeded" {
+		var nodeID, nodeStatus, lastError string
+		_ = db.QueryRow(`SELECT node_id, node_status FROM node_runs WHERE run_id = 'run_role_coverage' AND node_status NOT IN ('succeeded', 'cancelled') ORDER BY node_id LIMIT 1`).Scan(&nodeID, &nodeStatus)
+		_ = db.QueryRow(`SELECT last_error FROM attempt_outbox WHERE run_id = 'run_role_coverage' AND status = 'pending' ORDER BY created_at LIMIT 1`).Scan(&lastError)
+		t.Fatalf("expected run to succeed after dispatching its %d nodes, got %s (node=%s status=%s outbox_error=%s)", nodeCount, status, nodeID, nodeStatus, lastError)
+	}
 
 	for _, roleID := range []string{"governance", "coordinator", "plan-author", "builder", "qa-validator"} {
 		var count int
