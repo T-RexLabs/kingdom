@@ -855,6 +855,9 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("queue outbox: %v", err)
 	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET failure_code=?, failure_text=? WHERE attempt_id=?`, "provider_error", "retained diagnostic", attemptID); err != nil {
+		t.Fatal(err)
+	}
 
 	pending, err := s.ListPendingOutbox(ctx, 10)
 	if err != nil {
@@ -862,6 +865,10 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 	}
 	if len(pending) != 1 || pending[0].OutboxID != "outbox_terminal_1" {
 		t.Fatalf("expected pending outbox record, got %#v", pending)
+	}
+	current, found, err := s.GetOutbox(ctx, pending[0].OutboxID)
+	if err != nil || !found || current != pending[0] || current.FailureCode != "provider_error" || current.FailureText != "retained diagnostic" {
+		t.Fatalf("point reader differs from page authority: current=%#v pending=%#v found=%t err=%v", current, pending[0], found, err)
 	}
 
 	if err := s.MarkOutboxPublished(ctx, "outbox_terminal_1", "2026-03-01T12:00:40Z"); err != nil {
@@ -874,6 +881,18 @@ func TestStoreListPendingOutboxAndPublish(t *testing.T) {
 	}
 	if len(pending) != 0 {
 		t.Fatalf("expected no pending outbox records after publish, got %#v", pending)
+	}
+	current, found, err = s.GetOutbox(ctx, "outbox_terminal_1")
+	if err != nil || !found || current.Status != "published" || current.PublishCount != 1 {
+		t.Fatalf("terminal authority unavailable: current=%#v found=%t err=%v", current, found, err)
+	}
+	if _, found, err := s.GetOutbox(ctx, "missing_outbox"); err != nil || found {
+		t.Fatalf("missing authority result: found=%t err=%v", found, err)
+	}
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, found, err := s.GetOutbox(canceled, "outbox_terminal_1"); found || !errors.Is(err, context.Canceled) {
+		t.Fatalf("reader lost cancellation error: found=%t err=%v", found, err)
 	}
 }
 

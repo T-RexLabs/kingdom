@@ -65,6 +65,26 @@ type completionProjectionDecision struct {
 const executionOutboxPassLimit = 64
 
 func (o *orchestrationLoop) projectExecutionOutboxRecord(ctx context.Context, rec executionstore.OutboxRecord) (bool, error) {
+	// A page can outlive the worker that publishes one of its records. Admission
+	// reserves the attempt, so reload authority before applying replay effects.
+	current, found, err := o.executionStore.GetOutbox(ctx, rec.OutboxID)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, fmt.Errorf("execution outbox %q is missing", rec.OutboxID)
+	}
+	if current.AttemptID != rec.AttemptID || current.RunID != rec.RunID || current.NodeRunID != rec.NodeRunID {
+		return false, fmt.Errorf("execution outbox %q lineage changed after admission", rec.OutboxID)
+	}
+	switch current.Status {
+	case "published", "failed":
+		return false, nil
+	case "pending":
+		rec = current
+	default:
+		return false, fmt.Errorf("execution outbox %q has unexpected status %q", rec.OutboxID, current.Status)
+	}
 	dequeuedAt := o.now().UTC().Format(time.RFC3339Nano)
 	result, hasResultPayload, decodeErr := decodeExecutionOutboxPayload(rec)
 	if !hasResultPayload && decodeErr == nil {

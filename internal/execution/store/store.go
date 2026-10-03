@@ -2058,22 +2058,7 @@ func (s *Store) ListPendingOutboxAfter(ctx context.Context, after, through Outbo
 		limit = 1
 	}
 
-	query := `SELECT ao.outbox_id,
-		        ao.attempt_id,
-		        ao.run_id,
-		        ao.node_run_id,
-		        ao.terminal_seq,
-		        ao.terminal_state,
-		        COALESCE(ae.state, ''),
-		        ao.payload_json,
-		        ao.status,
-		        ao.publish_attempts,
-		        COALESCE(ae.failure_code, ''),
-		        COALESCE(ae.failure_text, ''),
-		        ao.created_at
-		 FROM attempt_outbox ao
-		 LEFT JOIN attempt_executions ae ON ae.attempt_id = ao.attempt_id
-		 WHERE ao.status = 'pending'`
+	query := outboxRecordSelect + ` WHERE ao.status = 'pending'`
 	args := make([]any, 0, 5)
 	// Keep cursor predicates unconditional when present so SQLite can seek
 	// directly into the compound index instead of rescanning each prior page.
@@ -2095,8 +2080,8 @@ func (s *Store) ListPendingOutboxAfter(ctx context.Context, after, through Outbo
 
 	records := make([]OutboxRecord, 0)
 	for rows.Next() {
-		var rec OutboxRecord
-		if err := rows.Scan(&rec.OutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.TerminalSeq, &rec.TerminalState, &rec.AttemptState, &rec.PayloadJSON, &rec.Status, &rec.PublishCount, &rec.FailureCode, &rec.FailureText, &rec.CreatedAt); err != nil {
+		rec, err := scanOutboxRecord(rows)
+		if err != nil {
 			return nil, fmt.Errorf("scan pending outbox record: %w", err)
 		}
 		records = append(records, rec)

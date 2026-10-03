@@ -1280,7 +1280,11 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	if deadline, ok := t.Deadline(); ok {
+		cancel()
+		ctx, cancel = context.WithDeadline(t.Context(), deadline)
+	}
 	if err := rt.Start(ctx); err != nil {
 		cancel()
 		t.Fatalf("start runtime: %v", err)
@@ -1297,36 +1301,50 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		}
 	}()
 
-	<-firstFinishAttempt
+	select {
+	case <-firstFinishAttempt:
+	case <-ctx.Done():
+		t.Fatalf("startup did not reach its injected finish failure: %v", ctx.Err())
+	}
 	if !rt.startupRecoveryPending() || rt.startupRecoveryIsOpen() {
 		t.Fatalf("failed startup finish released deferred recovery: pending=%t open=%t", rt.startupRecoveryPending(), rt.startupRecoveryIsOpen())
 	}
 	close(allowFirstFinishFailure)
-	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
-		finishMu.Lock()
-		calls := finishCalls
-		finishMu.Unlock()
-		if calls < 2 || !rt.startupRecoveryIsOpen() {
-			return fmt.Errorf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
-		}
-		return nil
-	})
+	if err := rt.awaitStartupRecovery(ctx); err != nil {
+		t.Fatalf("deferred startup did not reopen recovery: %v", err)
+	}
+	finishMu.Lock()
+	calls := finishCalls
+	finishMu.Unlock()
+	if calls < 2 || !rt.startupRecoveryIsOpen() {
+		t.Fatalf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
+	}
 
 	deferredAttemptID := fmt.Sprintf("run_terminal_handoff:implementation:%d", providerlimits.StartupReplayMaxItems+1)
 	deferredInvocationID := fmt.Sprintf("pinv_terminal_handoff_%03d", providerlimits.StartupReplayMaxItems+1)
-	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
-		attempt, found, err := h.store.GetAttempt(context.Background(), deferredAttemptID)
+	for {
+		// Capture the completion signal before inspecting state so a worker
+		// finishing during the queries cannot leave this wait asleep.
+		rt.orchestrator.execMu.Lock()
+		changed := rt.orchestrator.maintenance.changed
+		rt.orchestrator.execMu.Unlock()
+		attempt, found, err := h.store.GetAttempt(ctx, deferredAttemptID)
 		if err != nil {
-			return err
+			t.Fatalf("load deferred attempt: %v", err)
 		}
-		if !found || attempt.State != "committed_success" {
-			return fmt.Errorf("deferred attempt state=%q found=%t", attempt.State, found)
+		_, settled, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, deferredInvocationID)
+		if err != nil {
+			t.Fatalf("load deferred terminal settlement: %v", err)
 		}
-		if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), deferredInvocationID); err != nil || !found {
-			return fmt.Errorf("deferred terminal handoff not settled: found=%t err=%v", found, err)
+		if found && attempt.State == "committed_success" && settled {
+			break
 		}
-		return nil
-	})
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatalf("deferred terminal handoff did not settle: attempt=%s state=%q found=%t settled=%t recovery_open=%t err=%v", deferredAttemptID, attempt.State, found, settled, rt.startupRecoveryIsOpen(), ctx.Err())
+		}
+	}
 
 	var staleCancelCount int
 	if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = ? AND reason_code = 'agent_unresponsive'`, deferredAttemptID).Scan(&staleCancelCount); err != nil {
@@ -1334,6 +1352,11 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	}
 	if staleCancelCount != 0 {
 		t.Fatalf("deferred handoff attempt was stale-fenced before settlement: cancel rows=%d", staleCancelCount)
+	}
+	// The final settlement can precede other recovered outbox projections.
+	// Join that work before the shared fixture cleanup closes its database.
+	if err := rt.GracefulClose(ctx); err != nil {
+		t.Fatalf("drain recovered runtime: %v", err)
 	}
 }
 
