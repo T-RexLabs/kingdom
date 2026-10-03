@@ -2,6 +2,7 @@ package bootstrapassets
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,14 +61,38 @@ func TestWriteScaffoldDoesNotOverwriteWithoutForce(t *testing.T) {
 func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 	t.Parallel()
 
-	for bootstrapDir, canonicalDir := range canonicalAssetDirs {
-		bootstrapDir := bootstrapDir
-		canonicalDir := canonicalDir
+	var manifest []struct{ Source, Target, Extension string }
+	raw, err := os.ReadFile("manifest.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(raw, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range manifest {
+		bootstrapDir := strings.TrimPrefix(entry.Target, "internal/bootstrapassets/")
+		canonicalDir := entry.Source
 		t.Run(bootstrapDir, func(t *testing.T) {
 			t.Parallel()
-			entries, err := listAssetFiles(bootstrapDir, "")
+			entries, err := listAssetFiles(bootstrapDir)
 			if err != nil {
 				t.Fatalf("list asset files: %v", err)
+			}
+			canonicalEntries, err := os.ReadDir(filepath.Join("..", "..", canonicalDir))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var names []string
+			for _, file := range canonicalEntries {
+				if strings.HasSuffix(file.Name(), entry.Extension) {
+					if !file.Type().IsRegular() {
+						t.Fatalf("canonical asset %s must be a regular file", file.Name())
+					}
+					names = append(names, file.Name())
+				}
+			}
+			if strings.Join(names, "\n") != strings.Join(entries, "\n") {
+				t.Fatalf("canonical and embedded asset names differ\ncanonical: %v\nembedded: %v", names, entries)
 			}
 			for _, name := range entries {
 				name := name
@@ -90,6 +115,43 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 				})
 			}
 		})
+	}
+}
+
+func TestWriteScaffoldUsesShippedAssetsInsideAnotherGoModule(t *testing.T) {
+	projectRoot := t.TempDir()
+	t.Chdir(projectRoot)
+	if err := os.WriteFile("go.mod", []byte("module unrelated\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir("policies", 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join("policies", "role_policy.yaml"), []byte("unrelated policy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	kingdomHome := filepath.Join(projectRoot, kingdomDirName)
+	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, assetDirectory := range []string{"policies", "schemas"} {
+		entries, err := embeddedFiles.ReadDir("files/" + assetDirectory)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, entry := range entries {
+			want, err := embeddedFiles.ReadFile("files/" + assetDirectory + "/" + entry.Name())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(filepath.Join(kingdomHome, assetDirectory, entry.Name()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("scaffolded %s must match shipped assets; got %q", entry.Name(), got)
+			}
+		}
 	}
 }
 
@@ -278,7 +340,7 @@ func TestManagedOpenCodeAgentProfilesOmitRetiredToolToggle(t *testing.T) {
 		t.Fatalf("list managed profiles: %v", err)
 	}
 	for _, profile := range profiles {
-		raw, err := readAssetFile("files/opencode/agents", "", profile)
+		raw, err := readAssetFile("files/opencode/agents", profile)
 		if err != nil {
 			t.Fatalf("read managed profile %s: %v", profile, err)
 		}

@@ -16,6 +16,8 @@ This guide is a map of the current system and the rules that shape it. Use the s
 
 The web app, command line, and API all work with the same local runtime. They do not each maintain a separate view of a run.
 
+`kd init` uses the policies, schemas, workflows, and role profiles shipped in the binary. It does not load scaffold assets from a nearby source checkout. The build checks that generated policy and schema copies match their canonical repository files.
+
 ## How Work Moves
 
 Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly.

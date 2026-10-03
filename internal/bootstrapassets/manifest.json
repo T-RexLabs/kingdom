@@ -1,0 +1,4 @@
+[
+  {"source": "policies", "target": "internal/bootstrapassets/files/policies", "extension": ".yaml"},
+  {"source": "contracts/schemas", "target": "internal/bootstrapassets/files/schemas", "extension": ".json"}
+]

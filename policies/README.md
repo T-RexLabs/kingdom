@@ -11,7 +11,7 @@ These files define Kingdom's canonical runtime policy. Execution starts with no 
 ## Editing Principles
 
 - Start with least privilege. New roles, tools, command classes, paths, and domains should remain denied until the runtime contract requires them.
-- Change the canonical policy file, not generated or embedded copies. `kd init` scaffolding and bootstrap assets derive from this directory.
+- Change the canonical policy file, then run `make assets-generate` to update the embedded copies. `make assets-check` checks file names and contents. `kd init` always uses the assets shipped in the binary, including when it runs inside another Go repository.
 - Keep policy changes aligned across layers. A role or node class change may also require updates to schemas, bootstrap assets, provider policy role mapping, and tests.
 - Remove unsupported policy options instead of leaving inactive configuration behind.
 
