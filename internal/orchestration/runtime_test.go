@@ -12352,23 +12352,14 @@ func TestRuntimeDispatchLoopCompletesCompletionWhenValidationNodeMissing(t *test
 		}
 	}()
 
-	manualApprovalRequired := false
-	// The dispatch loop is asynchronous and the repository verification runs
-	// package tests concurrently; leave scheduler and SQLite contention headroom.
+	// Autonomous approval owns this transition. Observing its intermediate
+	// awaiting state does not authorize a competing manual test approval.
 	awaitRunState(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
-		switch planState {
-		case "awaiting_plan_decision":
-			manualApprovalRequired = true
-			return nil
-		case "approved":
-			return nil
-		default:
+		if planState != "approved" {
 			return fmt.Errorf("plan_state=%s", planState)
 		}
+		return nil
 	})
-	if manualApprovalRequired {
-		approvePlanStateForRuntimeTest(t, db, "run_closure_no_validation")
-	}
 	awaitRunStatus(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(status string) error {
 		if status == "failed" {
 			var closureStatus string
@@ -13455,15 +13446,7 @@ func TestRuntimeDispatchLoopRenewsSessionHeartbeatWhileRunActive(t *testing.T) {
 	}()
 
 	haveLease := false
-	approvalRecorded := false
 	testutil.Eventually(t, 4*time.Second, 25*time.Millisecond, func() error {
-		if !approvalRecorded {
-			_, planState := queryRunState(t, db, "run_closure_no_validation")
-			if planState == "awaiting_plan_decision" {
-				approvePlanStateForRuntimeTestIfAwaiting(t, db, "run_closure_no_validation")
-				approvalRecorded = true
-			}
-		}
 		var totalLeases int
 		if err := db.QueryRow(`SELECT COUNT(1) FROM session_leases WHERE session_id LIKE 'session_run_closure_no_validation_%'`).Scan(&totalLeases); err != nil {
 			return fmt.Errorf("query total leases: %w", err)
@@ -13513,42 +13496,6 @@ func approvePlanStateForRuntimeTest(t *testing.T, db *sql.DB, runID string) {
 	if err != nil {
 		t.Fatalf("approve plan state for run %q: %v", runID, err)
 	}
-}
-
-func approvePlanStateForRuntimeTestIfAwaiting(t *testing.T, db *sql.DB, runID string) {
-	t.Helper()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	svc := state.NewTransitionService(db, nil)
-	err := svc.Apply(context.Background(), state.TransitionRequest{
-		TransitionID:    "tr_test_approve_if_awaiting_" + runID + "_" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		EventID:         "evt_test_approve_if_awaiting_" + runID + "_" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		RunID:           runID,
-		Entity:          state.EntityTypePlan,
-		FromState:       "awaiting_plan_decision",
-		ToState:         "approved",
-		ActorID:         "actor_test_governance",
-		RoleID:          "governance",
-		AuthoritySource: "runtime_test.manual_approval",
-		ReasonCode:      "governance_decision",
-		ReasonText:      "test approval",
-		CorrelationID:   "corr_test_approve_if_awaiting_" + runID,
-		CausationID:     "caus_test_approve_if_awaiting_" + runID,
-		OccurredAt:      now,
-		AttemptID:       "approval_test_if_awaiting_" + runID,
-		SchemaVersion:   "v1",
-		EventType:       "approval.recorded",
-		EventSeq:        1,
-		PayloadJSON:     `{"decision":"approve"}`,
-	})
-	if err == nil {
-		return
-	}
-	var conflict *state.StateConflictError
-	if errors.As(err, &conflict) && conflict.EntityType == state.EntityTypePlan && conflict.ExpectedState == "awaiting_plan_decision" && conflict.ActualState == "approved" {
-		return
-	}
-	t.Fatalf("approve plan state for run %q if awaiting: %v", runID, err)
 }
 
 func approvePlanStateAsOperatorForRuntimeTest(t *testing.T, db *sql.DB, runID string) {
