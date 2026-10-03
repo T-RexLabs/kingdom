@@ -816,7 +816,7 @@ export function PlanningSessionPage() {
               <MarkdownBlock content={draftQuery.data.work_order_text} />
             ) : (
               <div className="rounded-2xl border border-dashed border-border p-8 text-sm text-foreground-muted">
-                {draftQuery.isLoading
+                {draftQuery.isLoading || (draftQuery.isFetching && !draftQuery.data)
                   ? "Loading the saved plan..."
                   : formalizePending
                     ? "Generating your plan..."

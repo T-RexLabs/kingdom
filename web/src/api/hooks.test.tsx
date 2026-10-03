@@ -189,6 +189,7 @@ describe("cursor history queries", () => {
   });
 });
 
+
 describe("usePlanningOperation polling", () => {
   const acpRun = (status: "created" | "in-progress" | "completed") => ({
     run_id: "acp-run-1",
@@ -682,6 +683,18 @@ describe("execution query keys", () => {
 	  });
 
 	  expect(apiFetchMock).not.toHaveBeenCalled();
+	});
+
+	it("refreshes a plan invalidated while its review panel was closed", async () => {
+		apiFetchMock.mockResolvedValueOnce({ revision_status: "pending", content: "" });
+		const first = renderHook(() => useRunPlan("run-1"), { wrapper: makeWrapper(qc) });
+		await waitFor(() => expect(first.result.current.isSuccess).toBe(true));
+		first.unmount();
+		await qc.invalidateQueries({ queryKey: runQueryKeys.plan("run-1"), exact: true });
+		apiFetchMock.mockResolvedValueOnce({ revision_status: "ready", content: "## Approved Plan" });
+		const reopened = renderHook(() => useRunPlan("run-1"), { wrapper: makeWrapper(qc) });
+		await waitFor(() => expect(reopened.result.current.data?.content).toBe("## Approved Plan"));
+		expect(apiFetchMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("does not refetch stream-owned run detail summary surfaces on window focus", async () => {

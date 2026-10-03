@@ -70,6 +70,7 @@ let runPlanState: {
 };
 
 let runPlanLoading = false;
+let runPlanFetching = false;
 let runPlanError: Error | null = null;
 let runPlanAvailable = true;
 let queryClient: QueryClient;
@@ -82,6 +83,7 @@ vi.mock("@/api/hooks", () => ({
   useRunPlan: () => ({
     data: runPlanAvailable ? runPlanState : undefined,
     isLoading: runPlanLoading,
+    isFetching: runPlanFetching,
     error: runPlanError,
   }),
   useRunLatestGovernanceDecision: (...args: unknown[]) => useRunLatestGovernanceDecisionMock(...args),
@@ -165,6 +167,7 @@ describe("current plan panel", () => {
 			last_activity_at: "2026-03-06T10:00:00.000Z",
 		};
 		runPlanLoading = false;
+		runPlanFetching = false;
 		runPlanError = null;
 		runPlanAvailable = true;
   });
@@ -223,6 +226,33 @@ describe("current plan panel", () => {
     );
 
     expect(screen.queryByText(/Updated/i)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { loading: true, fetching: true, available: false, message: "Loading the current plan…" },
+    { loading: false, fetching: true, available: true, message: "Loading the current plan…" },
+    { loading: false, fetching: false, available: true, message: "Current plan revision is unavailable right now." },
+  ])("does not describe an approved plan as undrafted ($message)", ({ loading, fetching, available, message }) => {
+    runPlanLoading = loading;
+    runPlanFetching = fetching;
+    runPlanAvailable = available;
+    runPlanState = { ...runPlanState, content: "" };
+    render(<CurrentPlanPanel run={{
+      run_id: "run-1",
+      work_order_id: "wo-1",
+      work_order_title: "Title",
+      workflow_id: "work-order-v1",
+      autonomous_approvals: true,
+      status: "running",
+      display_state: "running",
+      plan_state: "approved",
+      created_at: "2026-03-06T10:00:00.000Z",
+      updated_at: "2026-03-06T10:00:00.000Z",
+      last_activity_at: "2026-03-06T10:00:00.000Z",
+      start_state: "not_started",
+    }} />);
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(screen.queryByText("Plan has not yet been drafted.")).not.toBeInTheDocument();
   });
 
   it("renders markdown tables in current plan content", () => {
