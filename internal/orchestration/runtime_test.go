@@ -10738,22 +10738,30 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		deadline = time.Now().Add(30 * time.Minute)
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder publication node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_publish_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder publication node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	// Dispatch returns after admission. Join preparation and provider execution
+	// before finalizing the durable handoff and projecting its artifacts.
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder preparation and provider execution: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder completion maintenance: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_publish_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder publication node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("expected published builder node to succeed, got %s", nodeStatus)
+	}
 
 	requests := adapter.requestsSnapshot()
 	if len(requests) != 1 {
