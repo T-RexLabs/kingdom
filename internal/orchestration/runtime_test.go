@@ -1250,7 +1250,16 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	h := newTerminalHandoffHarness(t)
 	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
 		invocation := h.addInvocation(t, index)
-		h.persistHandoffFileOnly(t, invocation, index, "2026-03-01T12:00:02Z")
+		job := h.runningHandoffJob(t, invocation, index)
+		// This test joins complete projection as well as terminal ingestion.
+		// Each builder replay needs its workspace and snapshot authority.
+		job.workspacePath = t.TempDir()
+		job.baseSnapshotID = h.baselineSnapshotID
+		if err := h.fsStore.RestoreSnapshot(t.Context(), h.baselineSnapshotID, job.workspacePath); err != nil {
+			t.Fatalf("restore recovered attempt workspace %d: %v", index, err)
+		}
+		configureSuccessfulHandoff(&job, "Builder complete.")
+		persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:02Z")
 	}
 
 	rt, err := newMemoryRuntime(t, Config{
