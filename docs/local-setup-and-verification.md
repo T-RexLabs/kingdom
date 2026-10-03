@@ -38,6 +38,8 @@ Race instrumentation increases the cost of the SQLite and recovery tests. The ra
 
 Keep useful logs and reports under a fresh task directory in `kd-sandbox/`. Report commands, results, skips, and artifact paths. A passing deterministic test does not prove live provider behavior or browser rendering.
 
+Save diagnostic Go source as `.go.txt` or a patch. A standalone `.go` file under `kd-sandbox/` is part of the root module and can be compiled by `go test ./...`.
+
 ## Check an Installed Runtime
 
 Use this when a change needs a real Kingdom process and browser session. Rebuild with `make install`, then make a fresh directory under `kd-sandbox/` for each check:
