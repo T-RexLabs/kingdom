@@ -39,7 +39,7 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 	}
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
-		t.Skip("live planner containment unavailable: opencode is not installed")
+		t.Fatal("live planner containment requires opencode to be installed")
 	}
 	projectRoot := t.TempDir()
 	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
@@ -77,12 +77,6 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 		t.FailNow()
 	}
 	if err != nil {
-		if strings.Contains(err.Error(), "status=403") {
-			t.Skipf("live planner containment unavailable for required %s: %v", livePlannerModel(), err)
-		}
-		if os.Getenv("KINGDOM_EXPECT_LIVE_MODEL_UNAVAILABLE") == "1" {
-			t.Skipf("live planner containment explicitly marked unavailable for required %s: %v", livePlannerModel(), err)
-		}
 		t.Fatalf("live planner invocation: %v", err)
 	}
 }
@@ -101,7 +95,7 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 	}
 	binary, err := exec.LookPath("opencode")
 	if err != nil {
-		t.Skip("live planner capability unavailable: opencode is not installed")
+		t.Fatal("live planner capability requires opencode to be installed")
 	}
 	projectRoot := t.TempDir()
 	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
@@ -135,9 +129,6 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 		ProviderInvocation: invocation,
 	}, nil)
 	if err != nil {
-		if strings.Contains(err.Error(), "status=403") {
-			t.Skipf("live planner capability unavailable for %s: %v", livePlannerModel(), err)
-		}
 		t.Fatalf("live planner invocation: %v", err)
 	}
 

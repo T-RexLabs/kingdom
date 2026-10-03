@@ -3,15 +3,25 @@ from __future__ import annotations
 import unittest
 import http.client
 import urllib.error
+import subprocess
 from tempfile import TemporaryDirectory
 from unittest import mock
 from pathlib import Path
 
 from scripts.e2e.models import RunRequest
-from scripts.e2e.runtime import RuntimeService, new_idempotency_key
+from scripts.e2e.runtime import CommandError, RuntimeService, new_idempotency_key
 
 
 class RuntimeServiceTests(unittest.TestCase):
+    def test_stop_summon_reports_nonzero_exit_and_output(self) -> None:
+        runtime = RuntimeService(Path("/tmp/kingdom"))
+        result = subprocess.CompletedProcess(["kd"], 1, "still running", "cannot prove shutdown")
+        with mock.patch("subprocess.run", return_value=result):
+            with self.assertRaises(CommandError) as raised:
+                runtime.stop_summon(Path("/tmp/config.yaml"))
+        self.assertEqual(raised.exception.return_code, 1)
+        self.assertEqual(raised.exception.stderr, "cannot prove shutdown")
+
     def test_new_idempotency_key_rejects_invalid_scope(self) -> None:
         with self.assertRaises(ValueError):
             new_idempotency_key("Invalid Scope")

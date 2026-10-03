@@ -326,7 +326,7 @@ def build_rework_analysis(
                     "matched": expected_model in observed,
                 }
             )
-    model_routing_ok = all(item["matched"] for item in model_routing_checks) if model_routing_checks else True
+    model_routing_ok = all(item["matched"] for item in model_routing_checks) if model_routing_checks else not (global_model.strip() or expected_overrides)
 
     run_started = parse_ts(str(run_row["created_at"] if run_row else ""))
     run_ended = parse_ts(str(run_row["updated_at"] if run_row else ""))
@@ -802,18 +802,57 @@ def brief_from_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
         "failure_classification": analysis.get("failure_classification"),
         "section_growth_ok": analysis.get("message_metrics", {}).get("section_growth_ok", True),
         "model_routing_ok": analysis.get("model_routing", {}).get("ok", True),
+        "pass": all(acceptance_checks(analysis).values()),
     }
 
 
-def write_summary(output_dir: Path) -> tuple[dict[str, Any], str]:
+def acceptance_checks(analysis: dict[str, Any]) -> dict[str, bool]:
+    """Gate the measurements already collected by the rework analysis."""
+    messages = analysis.get("message_metrics", {})
+    propagation = analysis.get("rework_propagation", {})
+    return {
+        "terminal_ok": analysis.get("terminal_status") in {"succeeded", "awaiting_human_confirmation"},
+        "execution_not_timeout": analysis.get("timeout_status") != "timeout",
+        "communication_evidence_present": messages.get("instruction_count", 0) > 0 and messages.get("response_count", 0) > 0,
+        "message_contract_ok": messages.get("message_contract_violations") == [],
+        "authority_ok": messages.get("authority_violations") == [],
+        "section_growth_ok": messages.get("section_growth_ok") is True,
+        "builder_execution_serial": messages.get("builder_overlap_detected") is False,
+        "model_routing_ok": analysis.get("model_routing", {}).get("ok") is True,
+        "reviewer_feedback_propagated": feedback_links_valid(propagation.get("reviewer_failures"), propagation.get("reviewer_links", []), "contains_review_failure_marker"),
+        "validator_feedback_propagated": feedback_links_valid(propagation.get("validator_reworks"), propagation.get("validator_links", []), "contains_validator_node_marker"),
+        "validator_wave_coalesced": propagation.get("coalesced_retry_after_wave_terminal") is True,
+    }
+
+
+def feedback_links_valid(expected_count: int | None, links: list[dict[str, Any]], marker: str) -> bool:
+    return expected_count is not None and expected_count >= 0 and len(links) == expected_count and all(
+        link.get("has_builder_retry") is True and (link.get("snippet_match") is True or link.get(marker) is True)
+        for link in links
+    )
+
+
+def write_summary(output_dir: Path, profile_ids: list[str] | None = None) -> tuple[dict[str, Any], str]:
     flow_reports: list[dict[str, Any]] = []
-    for analysis_path in sorted(output_dir.glob("*/report/analysis.json")):
-        flow_reports.append(json.loads(analysis_path.read_text(encoding="utf-8")))
+    analysis_paths = [output_dir / profile / "report/analysis.json" for profile in profile_ids] if profile_ids is not None else sorted(output_dir.glob("*/report/analysis.json"))
+    harness_results: list[dict[str, Any]] = []
+    for analysis_path in analysis_paths:
+        if analysis_path.exists():
+            flow_reports.append(json.loads(analysis_path.read_text(encoding="utf-8")))
+        harness_path = analysis_path.parent / "harness-result.json"
+        if harness_path.exists():
+            harness_results.append(json.loads(harness_path.read_text(encoding="utf-8")))
+    expected_count = len(analysis_paths)
     summary = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "profiles": flow_reports,
+        "harness_results": harness_results,
         "overall": {
             "profile_count": len(flow_reports),
+            "expected_profile_count": expected_count,
+            "pass": expected_count > 0 and len(flow_reports) == expected_count and len(harness_results) == expected_count
+            and all(all(acceptance_checks(profile).values()) for profile in flow_reports)
+            and all(result.get("status") == "passed" and result.get("runtime_stopped") is True for result in harness_results),
             "all_section_growth_ok": all(
                 profile["message_metrics"]["section_growth_ok"] for profile in flow_reports
             )
