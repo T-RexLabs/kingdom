@@ -26,7 +26,7 @@ class MakeWorkflowTests(unittest.TestCase):
         shutil.copy(ROOT / 'web/package.json', self.root / 'web/package.json')
         for name in ('web/pnpm-lock.yaml', 'web/pnpm-workspace.yaml', 'go.sum'):
             (self.root / name).touch()
-        for name in ('scripts/check_tool_versions.py', 'scripts/check_core_coverage.sh'):
+        for name in ('scripts/check_tool_versions.py', 'scripts/check_core_coverage.sh', 'scripts/test_cpu_budget.py'):
             if (ROOT / name).exists():
                 shutil.copy(ROOT / name, self.root / name)
         (self.root / 'scripts/tests/test_fixture.py').write_text('import unittest\nclass FixtureTest(unittest.TestCase):\n    def test_fixture(self):\n        self.assertTrue(True)\n')
@@ -52,6 +52,18 @@ root = pathlib.Path(os.environ['FIXTURE_ROOT'])
 versions = json.loads(os.environ['FIXTURE_VERSIONS'])
 with (root / 'calls.jsonl').open('a') as handle:
     handle.write(json.dumps([name, *args]) + '\\n')
+with (root / 'environment.jsonl').open('a') as handle:
+    handle.write(json.dumps({'name': name, 'args': args, 'cpus': os.environ.get('KINGDOM_TEST_CPUS'), 'gomaxprocs': os.environ.get('GOMAXPROCS')}) + '\\n')
+if name == 'go' and args[:1] in (['test'], ['vet']) and os.environ.get('ASSERT_HEAVY_SERIAL') == '1':
+    import time
+    sentinel = root / 'heavy-active'
+    try:
+        sentinel.mkdir()
+    except FileExistsError:
+        print('heavy verification commands overlapped', file=sys.stderr)
+        sys.exit(91)
+    time.sleep(0.1)
+    sentinel.rmdir()
 if name == 'go' and args[:1] == ['env']:
     print(root / 'bin')
 elif name == 'go' and args == ['version']:
@@ -96,12 +108,64 @@ elif name == 'pnpm' and args[:2] == ['exec', 'openapi-typescript']:
             (self.tools / name).symlink_to(tool_script)
         (self.tools / 'python3').symlink_to(sys.executable)
         self.env = {**os.environ, 'PATH': str(self.tools) + os.pathsep + os.environ['PATH'], 'FIXTURE_ROOT': str(self.root), 'FIXTURE_VERSIONS': json.dumps(versions)}
+        self.env.pop('KINGDOM_TEST_CPUS', None)
+        self.env.pop('GOMAXPROCS', None)
 
     def make(self, *targets: str, **env: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(['make', f'GO={self.tools / "go"}', f'NODE={self.tools / "node"}', f'PNPM={self.tools / "pnpm"}', *targets], cwd=self.root, env={**self.env, **env}, capture_output=True, text=True)
 
     def calls(self) -> list[list[str]]:
         return [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
+
+    def test_go_verification_targets_share_cpu_flags_and_environment(self) -> None:
+        result = self.make('test', 'test-race', 'test-integration', 'test-e2e', 'test-github-smoke', 'test-opencode-security-smoke', 'coverage-core', 'vet', 'KINGDOM_TEST_CPUS=3', 'GOMAXPROCS=99')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        environment = [json.loads(line) for line in (self.root / 'environment.jsonl').read_text().splitlines()]
+        tests = [call for call in environment if call['name'] == 'go' and call['args'][:1] == ['test']]
+        self.assertEqual(len(tests), 7)
+        for call in tests:
+            self.assertIn('-p=1', call['args'])
+            self.assertIn('-parallel=3', call['args'])
+            self.assertEqual(call['cpus'], '3')
+            self.assertEqual(call['gomaxprocs'], '3')
+        self.assertTrue(any('-race' in call['args'] for call in tests))
+        self.assertTrue(any(any(arg.startswith('-coverprofile=') for arg in call['args']) for call in tests))
+
+    def test_parallel_make_does_not_overlap_heavy_verification(self) -> None:
+        result = self.make('-j4', 'test', 'test-race', 'vet', ASSERT_HEAVY_SERIAL='1')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        heavy = [call for call in self.calls() if call[0] == 'go' and call[1] in ('test', 'vet')]
+        self.assertEqual(len(heavy), 3)
+
+    def test_invalid_cpu_budget_fails_before_invoking_tools(self) -> None:
+        for value in ('0', '-1', '1.5', '25%', 'invalid', '', '9007199254740992'):
+            with self.subTest(value=value):
+                result = self.make('test', f'KINGDOM_TEST_CPUS={value}')
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('KINGDOM_TEST_CPUS', result.stderr)
+                self.assertFalse((self.root / 'calls.jsonl').exists())
+
+    def test_cpu_budget_is_normalized_before_tool_invocation(self) -> None:
+        result = self.make('test', 'KINGDOM_TEST_CPUS= 003 ')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        environment = [json.loads(line) for line in (self.root / 'environment.jsonl').read_text().splitlines()]
+        test = next(call for call in environment if call['name'] == 'go' and call['args'][:1] == ['test'])
+        self.assertIn('-parallel=3', test['args'])
+        self.assertEqual(test['gomaxprocs'], '3')
+        self.assertEqual(test['cpus'], '3')
+
+    def test_standalone_coverage_uses_the_shared_default_cpu_budget(self) -> None:
+        environment = {**self.env, 'GO': str(self.tools / 'go')}
+        environment.pop('KINGDOM_TEST_CPUS', None)
+        environment['GOMAXPROCS'] = '99'
+        result = subprocess.run(['bash', 'scripts/check_core_coverage.sh'], cwd=self.root, env=environment, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = [json.loads(line) for line in (self.root / 'environment.jsonl').read_text().splitlines()]
+        test = next(call for call in calls if call['args'][:1] == ['test'])
+        self.assertIn('-p=1', test['args'])
+        self.assertIn('-parallel=2', test['args'])
+        self.assertEqual(test['gomaxprocs'], '2')
+        self.assertEqual(test['cpus'], '2')
 
     def test_coverage_uses_checked_go_override_for_tests_and_profile(self) -> None:
         checked_tools = self.root / 'checked-tools'

@@ -86,6 +86,8 @@ make verify
 
 `make verify` runs Go and web checks, race tests, vet, coverage, contracts, OpenAPI lint, script checks, and shipped asset checks. Use `make help` to see the available targets. The [local verification guide](docs/local%2Dsetup%2Dand%2Dverification.md) explains test selection and the explicit sandbox backend required by the frontend development server.
 
+Test concurrency defaults to two CPUs, locally and in CI. Make runs verification targets in sequence, including with `make -j`. Go runs one package at a time; Go tests and frontend workers use `KINGDOM_TEST_CPUS`. Use `make verify KINGDOM_TEST_CPUS=1` to reduce concurrency, or set a higher positive integer when more CPU capacity is available. This setting controls test concurrency, not a machine-wide CPU limit.
+
 ## For Maintainers
 
 The Go runtime serves the embedded web app and the `kd` command. SQLite stores workflow and audit data. OpenCode runs the model roles. Start here when changing the system:

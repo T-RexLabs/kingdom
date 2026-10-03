@@ -34,6 +34,10 @@ Run commands from the repository root. Start with the affected package or test, 
 
 `make verify` runs Go and web tests, web lint, race checks for state, planning, API, orchestration, process supervision, OpenCode, and execution storage, vet, core coverage, generated contract checks, OpenAPI lint, script checks, and shipped asset checks. The [Test Suites guide](../tests/README.md) explains what each layer proves.
 
+The shared test budget is `KINGDOM_TEST_CPUS`, with a default of `2` locally and in CI. Make runs targets in sequence even when you pass `-j`. Go builds and tests use one package process at a time (`-p=1`). Go tests use `-parallel` and `GOMAXPROCS` set to the budget; frontend tests use the same worker limit. Race checks and coverage keep their full package scope. Standalone `scripts/check_core_coverage.sh` uses the same default and environment variable.
+
+Use `make verify KINGDOM_TEST_CPUS=1` to reduce concurrency. Use `KINGDOM_TEST_CPUS=4 pnpm --dir web test` to set the budget for a direct frontend run. The value must be a positive decimal integer. This controls runner concurrency, not a machine-wide CPU limit: child processes and native tools can start additional threads. Direct `go test` commands do not use the Make settings; pass `GOMAXPROCS=2 go test -p=1 -parallel=2` before the package arguments for the same default budget.
+
 Race instrumentation increases the cost of the SQLite and recovery tests. The race suite has a 30-minute timeout per package. This is an upper bound, not an expected duration. Override it with `make test-race RACE_TEST_TIMEOUT=45m` when needed. Functional recovery tests wait for completion signals within the test deadline; they do not set a short performance limit.
 
 Keep useful logs and reports under a fresh task directory in `kd-sandbox/`. Report commands, results, skips, and artifact paths. A passing deterministic test does not prove live provider behavior or browser rendering.
