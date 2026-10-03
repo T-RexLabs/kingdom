@@ -29,6 +29,7 @@
 
 - Select checks by the changed behavior. The test selection table in `docs/local-setup-and-verification.md` gives starting points; add checks for affected consumers and failure paths.
 - Use `make verify` for the broader deterministic gate. It includes Go and web tests, lint, race checks, vet, core coverage, generated contracts, OpenAPI lint, script checks, and shipped asset checks.
+- Keep heavy checks within the shared CPU budget. Make defaults to `KINGDOM_TEST_CPUS=2`; for direct Go checks use `GOMAXPROCS=2 go test -p=1 -parallel=2` before the package arguments unless another budget is selected. Do not run independent heavy checks at the same time.
 - For runtime or UX changes, run `make install`, create a fresh directory under `kd-sandbox/`, run `kd init`, and run `kd summon` on an available port other than 8080. Verify the embedded app at the reported URL. Stop that sandbox runtime after the check.
 - For live runtime verification, use `OpenAI - GPT-5.6 Luna` with `None` thinking effort when model selection appears.
 - For frontend iteration, set `KINGDOM_DEV_BACKEND_URL` to the fresh sandbox runtime's HTTP loopback URL before `make dev-web`. The development server rejects port 8080 and remote backends.
