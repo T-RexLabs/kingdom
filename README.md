@@ -46,7 +46,7 @@ The current crew includes advisors, a planner, a builder, a reviewer, and valida
 
 <h2 id="firstmission">Start Your First Mission</h2>
 
-You’ll need Go 1.27.0, Node 26.2.0 with Corepack, and [OpenCode](https://opencode.ai/docs/) installed and authenticated for the providers you want to use.
+You’ll need Go 1.27.0, Node 26.2.0, pnpm 12.3.4, Python 3.13.12, and [OpenCode](https://opencode.ai/docs/) installed and authenticated for the providers you want to use. Install pnpm separately. The required tool versions are recorded in `.tool-versions`; `make tools-check` checks the active tools. Python runs tool preflight and development checks.
 
 From the Kingdom repository, build and install the `kd` command:
 
@@ -84,7 +84,7 @@ export PATH="$PATH:$(go env GOPATH)/bin"
 make verify
 ```
 
-`make verify` runs the main Go and web checks, race tests, vet, coverage, and contract checks. Use `make help` to see the available targets, including the frontend development server.
+`make verify` runs Go and web checks, race tests, vet, coverage, contracts, OpenAPI lint, script checks, and shipped asset checks. Use `make help` to see the available targets. The [local verification guide](docs/local%2Dsetup%2Dand%2Dverification.md) explains test selection and the explicit sandbox backend required by the frontend development server.
 
 ## For Maintainers
 

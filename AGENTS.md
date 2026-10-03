@@ -1,34 +1,47 @@
-## Repository Navigation
+# Repository Instructions
 
-### Source of truth and intent
+## Start Here
 
-- `docs/system-architecture.md`: accepted architecture, invariants, and design boundaries.
+- Read `docs/system-architecture.md` for runtime behavior, design changes, invariant work, or a broad repository review. Use focused references for small documentation or copy edits. Preserve accepted architecture, invariants, and trust boundaries unless the task explicitly changes them.
+- Check `git status` and inspect the relevant code and tests before implementation. Preserve work outside the current task.
+- Use `docs/local-setup-and-verification.md` for development commands and test selection, `tests/README.md` for evidence limits, and `README.md` for operator setup.
+- Use the architecture source map to locate the canonical layer. Read focused docs, policies, and contracts when the change affects them.
 
-### Operations and evidence
+## Plan and Authority
 
-- `README.md`: onboarding, workflow map, quickstart, and core commands.
+- For work with several steps or design decisions, state a concise, checkable plan in the conversation. Identify the outcome, affected boundaries, and verification. Adjust the plan when evidence changes.
+- Read-only reviews stay read-only. Do not start implementation when the user asked only for inspection or advice.
+- Once implementation is authorized, proceed with scoped edits, targeted checks, dependency setup, disposable fixtures, and local test processes. These routine actions do not need another approval.
+- Ask when an unresolved requirement changes scope or design, or when an action can destroy retained data, change an external account, publish, deploy, or send a message. Existing explicit authorization still applies.
+- Do not stop or use unrelated services. Do not use port 8080 for testing or evaluation.
+- Use focused subagents for independent research, review, or verification when useful. Give each agent one clear task and an ownership boundary. Do not create overlapping edits.
 
-## Session Start Checklist
+## Implementation
 
-1. Read `docs/system-architecture.md` for constraints and invariants.
-2. Review current code/test state (`git status`, targeted tests) before implementation.
+- Keep each batch scoped to its requirement. Prefer simple, maintainable changes in the canonical layer; fix the root cause.
+- For correctness bugs, reproduce the defect with a failing test first when practical. Protect invariants before larger refactors.
+- Do not preserve backward compatibility unless the user explicitly requires it. Remove dead code and unsupported surfaces within the authorized scope.
+- When a user correction reveals a repeatable defect or product invariant, add a regression test or a narrow clarification in the relevant docs. Do not add tests or tracked notes for conversational preferences alone.
+- Keep the UX clean, responsive, and professional. Review the final change for unnecessary complexity and regression risk.
+- If commits are requested, use semantic names and keep each commit scoped to a coherent batch.
 
-## Update Matrix (Where changes go)
+## Verification
 
-- Architecture or invariant changes: update `docs/system-architecture.md`.
-- Runtime/operator guidance changes: update `README.md` and relevant runbooks in `docs/`.
-- Verification evidence: include command output and artifacts in pull request notes and `kd-sandbox/` directories.
+- Select checks by the changed behavior. The test selection table in `docs/local-setup-and-verification.md` gives starting points; add checks for affected consumers and failure paths.
+- Use `make verify` for the broader deterministic gate. It includes Go and web tests, lint, race checks, vet, core coverage, generated contracts, OpenAPI lint, script checks, and shipped asset checks.
+- For runtime or UX changes, run `make install`, create a fresh directory under `kd-sandbox/`, run `kd init`, and run `kd summon` on an available port other than 8080. Verify the embedded app at the reported URL. Stop that sandbox runtime after the check.
+- For live runtime verification, use `OpenAI - GPT-5.6 Luna` with `None` thinking effort when model selection appears.
+- For frontend iteration, set `KINGDOM_DEV_BACKEND_URL` to the fresh sandbox runtime's HTTP loopback URL before `make dev-web`. The development server rejects port 8080 and remote backends.
+- Live checks are separate from deterministic checks. The GitHub smoke test permanently uninstalls its configured test App installation; follow its setup and authorization guidance before running it.
+- Before reporting completion, inspect the diff and report exact commands, results, skipped checks, and remaining limits. Preserve useful verification artifacts under the task's `kd-sandbox/` directory and cite their paths in the result or PR notes. A passing unit or fixture test does not prove browser behavior or live provider compatibility.
 
-## Engineering Bar
+## Contracts and Documentation
 
-- No duct-tape solutions.
-- Think long term.
-- Do not be lazy. No lazy implementations.
-- Prefer scalable, maintainable, reliable, and clean code.
-- Do not preserve backward compatibility unless the user explicitly asks for it.
-- Leave no legacy code or dead code behind.
-- Think in strategic coding standards, not tactical patches.
-- UX and UI must feel clean, responsive, and professional.
+- Update `docs/system-architecture.md` when accepted architecture or invariants change.
+- Update `README.md` and focused runbooks when operator behavior or runtime guidance changes. Update developer guides when the development workflow changes.
+- Edit canonical policies, schemas, and OpenAPI sources. Regenerate shipped copies and derived contracts with the supported Make targets; do not patch generated files directly.
+- Keep docs, policies, schemas, and contracts aligned with actual behavior. Do not use tracked docs for local planning notes.
+- `CLAUDE.md` references this file; keep one repository instruction source.
 
 ## UI Text Casing
 
@@ -36,76 +49,7 @@
 - **Sentence case** for descriptions, help text, empty states, errors, loading text, placeholders, and aria-labels that describe an action rather than name a control.
 - Preserve product spellings exactly: `GitHub`, `Kingdom`, `App`, `ID`.
 
-## Execution Rules
+## Communication
 
-- Preserve the accepted architecture and invariants from `docs/system-architecture.md`.
-- For correctness bugs, reproduce with a failing test first when practical.
-- Prefer fixing problems in the canonical layer instead of patching around the edges.
-- Delete unsupported or dead surfaces instead of keeping them around.
-- Do not start god-file refactors until earlier invariant fixes are protected by tests.
-- For runtime and UX verification, run `make install`, create a fresh directory under `kd-sandbox/`, run `kd init` in that directory, run `kd summon` on an available port other than `8080`, and verify in the browser at the URL reported by Kingdom. Never use port `8080` for testing or evaluating changes because it may already be in use by Kingdom itself or another important service.
-- For live runtime verification, use `OpenAI - GPT-5.6 Luna` with `None` thinking effort when model selection appears.
-- When creating commits, use semantic naming, keep them frequent, and scope each commit to the current batch only.
-- Keep edits scoped to the current batch only.
-- Update tracked repo docs (`README.md`, `docs/`, OpenAPI, policies, schemas) only when the actual product, runtime, or public contract changes. Do not churn tracked docs for local planning notes.
-
-## Workflow Orchestration
-
-### 1. Plan Mode Default
-
-- Enter plan mode for any non-trivial task (3+ steps or architectural decisions).
-- Plan mode is read-only: inspect, analyze, search, and delegate read-only exploration only.
-- During plan mode, do not edit files, change system state, or use write-side shell commands.
-- Ask clarifying questions when tradeoffs matter; do not make large assumptions about user intent.
-- If something goes sideways, stop and re-plan immediately. Do not keep pushing.
-- Use plan mode for verification steps, not just implementation.
-- Write detailed specs upfront to reduce ambiguity.
-
-### 2. Subagent Strategy
-
-- Use subagents liberally to keep the main context window clean.
-- Offload research, exploration, and parallel analysis to subagents.
-- For complex problems, throw more compute at it via subagents.
-- Keep one task per subagent for focused execution.
-
-### 3. Self-Improvement Loop
-
-- After any correction from the user, encode the lesson as a regression test or a clarified doc note in the touched area.
-- Write rules that prevent repeating the same mistake.
-- Ruthlessly iterate on these lessons until mistake rate drops.
-- Review recent failures/tests before coding when context is uncertain.
-
-### 4. Verification Before Done
-
-- Never mark a task complete without proving it works.
-- Diff behavior between main and your changes when relevant.
-- Ask yourself: "Would a staff engineer approve this?"
-- Run tests, check logs, and demonstrate correctness.
-
-### 5. Demand Elegance (Balanced)
-
-- For non-trivial changes, pause and ask: "Is there a more elegant way?"
-- If a fix feels hacky, re-implement the elegant solution with current understanding.
-- Prefer simple, obvious fixes over over-engineering.
-- Challenge your own work before presenting it.
-
-### 6. Autonomous Bug Fixing
-
-- When a bug is reported, do not start by changing implementation. Reproduce it with a failing test first when practical.
-- Point at logs, errors, and failing tests.
-- Have subagents attempt fixes and prove them with a passing test.
-
-## Task Management
-
-1. **Plan First**: write a concise, checkable execution plan in-session before major implementation.
-2. **Verify Plan**: check in before starting implementation.
-3. **Track Progress**: mark items complete as you go.
-4. **Explain Changes**: provide high-level summary at each step.
-5. **Document Results**: cite exact commands, outputs, and artifact paths used as evidence.
-6. **Capture Lessons**: add durable guardrails via tests or narrowly scoped documentation updates.
-
-## Core Principles
-
-- **Simplicity First**: make every change as simple as possible; minimize code impact.
-- **No Laziness**: find root causes; avoid temporary fixes; hold senior-engineer standards.
-- **Minimal Impact**: touch only what is necessary and avoid introducing regressions.
+- Use direct, formal language and ASD-STE100 Simplified Technical English when explaining technical topics.
+- Do not use emojis unless requested. Do not give time estimates unless asked.

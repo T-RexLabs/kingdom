@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 
+	"kingdom/internal/core/policyguard"
 	"kingdom/internal/dbmigrations"
 )
 
@@ -127,52 +128,43 @@ func TestEnsureCanonicalRolesRetriesBusyLock(t *testing.T) {
 	}
 }
 
-func TestCanonicalRoleDescriptionsMatchReadme(t *testing.T) {
+// Role policy defines the machine roles; seed code defines their UI metadata.
+// Operator is the human role and must not acquire machine execution permissions.
+func TestCanonicalRolesMatchPolicyAndPersistDescriptions(t *testing.T) {
 	t.Parallel()
 
-	raw, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	raw, err := os.ReadFile(filepath.Join("..", "..", "policies", "role_policy.yaml"))
 	if err != nil {
-		t.Fatalf("read README: %v", err)
+		t.Fatalf("read canonical role policy: %v", err)
+	}
+	var policy policyguard.RolePolicy
+	if err := yaml.Unmarshal(raw, &policy); err != nil {
+		t.Fatalf("decode canonical role policy: %v", err)
+	}
+	if _, ok := policy.Roles["operator"]; ok {
+		t.Fatal("human operator must not have a machine role policy")
+	}
+	if len(policy.Roles) != len(canonicalRoles)-1 {
+		t.Fatalf("expected policy to cover %d machine roles, got %d", len(canonicalRoles)-1, len(policy.Roles))
 	}
 
-	readmeDescriptions := make(map[string]string, len(canonicalRoles))
-	inCanonicalRolesTable := false
-	for _, line := range strings.Split(string(raw), "\n") {
-		trimmed := strings.TrimSpace(line)
-		switch trimmed {
-		case "### Canonical Roles":
-			inCanonicalRolesTable = true
-			continue
-		case "### Managed OpenCode Profiles":
-			inCanonicalRolesTable = false
-		}
-		if !inCanonicalRolesTable || !strings.HasPrefix(trimmed, "|") {
-			continue
-		}
-
-		cells := strings.Split(trimmed, "|")
-		if len(cells) < 4 {
-			continue
-		}
-
-		roleCell := strings.TrimSpace(cells[1])
-		descriptionCell := strings.TrimSpace(cells[2])
-		start := strings.Index(roleCell, "`")
-		end := strings.LastIndex(roleCell, "`")
-		if start == -1 || end <= start {
-			continue
-		}
-
-		readmeDescriptions[roleCell[start+1:end]] = descriptionCell
+	db := openRoleSeedTestDB(t)
+	applyRoleSeedMigration(t, db)
+	if err := EnsureCanonicalRoles(context.Background(), db, time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatalf("seed canonical roles: %v", err)
 	}
-
-	if len(readmeDescriptions) != len(canonicalRoles) {
-		t.Fatalf("expected README to define %d canonical role descriptions, got %d", len(canonicalRoles), len(readmeDescriptions))
-	}
-
 	for _, role := range canonicalRoles {
-		if got := readmeDescriptions[role.RoleID]; got != role.Description {
-			t.Fatalf("expected README description for %s to match canonical role seed\nseed:   %q\nreadme: %q", role.RoleID, role.Description, got)
+		if role.RoleID != "operator" {
+			if _, ok := policy.Roles[role.RoleID]; !ok {
+				t.Fatalf("canonical machine role %s has no policy", role.RoleID)
+			}
+		}
+		var description string
+		if err := db.QueryRow(`SELECT description FROM roles WHERE role_id = ?`, role.RoleID).Scan(&description); err != nil {
+			t.Fatalf("read description for %s: %v", role.RoleID, err)
+		}
+		if description == "" || description != role.Description {
+			t.Fatalf("expected persisted description for %s to match canonical seed: seed=%q persisted=%q", role.RoleID, role.Description, description)
 		}
 	}
 }

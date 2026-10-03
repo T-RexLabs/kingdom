@@ -1,25 +1,33 @@
 # Test Suites
 
-This directory contains Kingdom's Go integration and end to end suites. Run commands from the repository root.
+Run commands from the repository root. Use the [development check table](../docs/local-setup-and-verification.md#select-checks-by-the-change) to select checks for a change.
 
-## Integration Tests
+## Deterministic Checks
 
-The H2 integration suite is in `tests/integration/`:
+| Command | Evidence |
+| --- | --- |
+| `go test ./internal/<package>/...` | Behavior of the selected Go package and its fixtures. |
+| `make test-integration` | Cross-component state and workflow behavior in `tests/integration/` (the H2 suite). |
+| `make test-e2e` | API and orchestration flows in `tests/e2e/` (the H3 suite), with controlled provider fixtures. |
+| `make test-web` | Frontend logic and component behavior under Vitest and jsdom. |
+| `make test-race` | Race detector checks for state, planning, API, orchestration, process supervision, OpenCode, and execution storage. |
+| `make scripts-check` | Shell syntax, Python harness and build-workflow checks, and Node asset-generator checks. |
+| `make assets-check` | Complete file-set and byte equality for canonical and shipped assets. |
+| `make contracts-check openapi-lint` | Generated contract consistency and OpenAPI validation. |
+| `make verify` | The broader deterministic gate, including the above checks, web lint, vet, and core coverage. |
 
-```bash
-go test ./tests/integration/...
-```
+`make test` runs all Go packages. The Make test targets prepare the embedded web build when needed; a direct Go command can need an existing `web/dist/` build in a fresh checkout. Run `make build` first if the selected packages embed web assets.
 
-You can also run it with `make test-integration`.
+A deterministic end-to-end pass does not prove browser rendering, accessibility, or live provider compatibility. Frontend tests use jsdom rather than a full browser. Go tests can use temporary files, managed fixture processes, and local test servers; these are routine test resources and do not need external service credentials.
 
-## End to End Tests
+The OpenCode suite replays recorded 1.18.32 JSONL streams, including compaction and intermediate stop events. The fixtures prove handling of those streams. They do not certify every installed OpenCode version.
 
-The H3 suite is in `tests/e2e/`:
+## Browser and Live Checks
 
-```bash
-go test ./tests/e2e/...
-```
+For runtime and UX changes, follow the fresh installation, sandbox, browser, model selection, and cleanup steps in the [local verification guide](../docs/local-setup-and-verification.md#check-an-installed-runtime). Use an available port other than 8080.
 
-You can also run it with `make test-e2e`.
+Live OpenCode and GitHub tests are opt-in. Read their setup in the [controlled live checks guide](../docs/local-setup-and-verification.md#controlled-live-checks) and report skipped tests. The GitHub smoke permanently uninstalls its configured test App installation and requires explicit authorization. The Python work-order scenarios under `scripts/e2e/` are also live checks; they are not run by `make test-e2e`.
 
-For all Go test packages, run `make test`. For web app unit tests, run `make test-web`.
+## Completion Evidence
+
+Report exact commands, passed and failed checks, skips, and remaining limits. Save useful logs and reports in the task's fresh `kd-sandbox/` directory. A test that skipped due to missing credentials or a missing model has not verified that live scenario.

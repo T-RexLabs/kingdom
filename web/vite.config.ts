@@ -3,8 +3,9 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { developmentServer } from "./dev-backend";
 
-export default defineConfig({
+export default defineConfig((environment) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -35,23 +36,11 @@ export default defineConfig({
       },
     },
   },
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: false,
-      },
-      "/healthz": {
-        target: "http://localhost:8080",
-        changeOrigin: false,
-      },
-    },
-  },
+  server: developmentServer(environment, process.env),
   test: {
     globals: true,
     // jsdom plus the storage Node 26 would otherwise mask; see the module doc.
     environment: "./src/test/jsdom-storage-env.ts",
     setupFiles: "./src/test/setup.ts",
   },
-});
+}));
