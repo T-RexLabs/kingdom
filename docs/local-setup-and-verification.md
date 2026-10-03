@@ -34,6 +34,8 @@ Run commands from the repository root. Start with the affected package or test, 
 
 `make verify` runs Go and web tests, web lint, race checks for state, planning, API, orchestration, process supervision, OpenCode, and execution storage, vet, core coverage, generated contract checks, OpenAPI lint, script checks, and shipped asset checks. The [Test Suites guide](../tests/README.md) explains what each layer proves.
 
+Race instrumentation increases the cost of the SQLite and recovery tests. The race suite has a 30-minute timeout per package. This is an upper bound, not an expected duration. Override it with `make test-race RACE_TEST_TIMEOUT=45m` when needed. Functional recovery tests wait for completion signals within the test deadline; they do not set a short performance limit.
+
 Keep useful logs and reports under a fresh task directory in `kd-sandbox/`. Report commands, results, skips, and artifact paths. A passing deterministic test does not prove live provider behavior or browser rendering.
 
 ## Check an Installed Runtime
