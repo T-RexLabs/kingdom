@@ -1478,7 +1478,6 @@ type DashboardSnapshot struct {
 
 	// RecentRuns Runs created within the dashboard window, ordered by most recent activity.
 	RecentRuns    []RunSummary          `json:"recent_runs"`
-	RunTrend      []DashboardTrendPoint `json:"run_trend"`
 	Runtime       RuntimeMetrics        `json:"runtime"`
 	SnapshotAt    time.Time             `json:"snapshot_at"`
 	Tokens        DashboardTokenSummary `json:"tokens"`
@@ -1491,12 +1490,6 @@ type DashboardTokenSummary struct {
 	Input              int `json:"input"`
 	Output             int `json:"output"`
 	Reasoning          int `json:"reasoning"`
-}
-
-// DashboardTrendPoint defines model for DashboardTrendPoint.
-type DashboardTrendPoint struct {
-	BucketStartAt time.Time `json:"bucket_start_at"`
-	RunCount      int       `json:"run_count"`
 }
 
 // ErrorEnvelope defines model for ErrorEnvelope.

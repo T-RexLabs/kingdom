@@ -31,7 +31,6 @@ vi.mock("@tanstack/react-router", () => ({
     </a>
   ),
 }));
-vi.mock("@/components/ui/sparkline", () => ({ Sparkline: () => <div /> }));
 const run = (
   id: string,
   status = "running",
@@ -58,7 +57,6 @@ const snapshot = {
   },
   overview: { succeeded_runs: 24, failed_runs: 3 },
   tokens: { derived_total_tokens: 200000 },
-  run_trend: [],
   recent_runs: [run("recent-only")],
 };
 function setup() {
@@ -179,6 +177,18 @@ describe("operational Overview", () => {
   it("uses authoritative counts and links planning/current queues to their exact destinations", async () => {
     setup();
     expect(await screen.findByText(/42 Running/)).toBeInTheDocument();
+    expect(
+      screen.getByText("Runtime Online · 42 Running · 2 Stale Nodes"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("img", { name: "Run trend over the last 24h" }),
+    ).not.toBeInTheDocument();
+    const runtimeSummary = screen.getByText(
+      "Runtime Online · 42 Running · 2 Stale Nodes",
+    ).parentElement;
+    expect(
+      within(runtimeSummary as HTMLElement).getByText(/Updated/),
+    ).toBeInTheDocument();
     expect(screen.getByText("24")).toBeInTheDocument();
     expect(screen.getByText("200,000")).toBeInTheDocument();
     const sessions = within(

@@ -3384,22 +3384,10 @@ components:
           type: integer
           minimum: 0
 
-    DashboardTrendPoint:
-      type: object
-      additionalProperties: false
-      required: [bucket_start_at, run_count]
-      properties:
-        bucket_start_at:
-          type: string
-          format: date-time
-        run_count:
-          type: integer
-          minimum: 0
-
     DashboardSnapshot:
       type: object
       additionalProperties: false
-      required: [snapshot_at, window_minutes, all_time_run_count, runtime, overview, tokens, recent_runs, run_trend]
+      required: [snapshot_at, window_minutes, all_time_run_count, runtime, overview, tokens, recent_runs]
       properties:
         snapshot_at:
           type: string

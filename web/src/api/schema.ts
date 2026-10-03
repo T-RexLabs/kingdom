@@ -2015,11 +2015,6 @@ export interface components {
             output: number;
             reasoning: number;
         };
-        DashboardTrendPoint: {
-            /** Format: date-time */
-            bucket_start_at: string;
-            run_count: number;
-        };
         DashboardSnapshot: {
             /** Format: date-time */
             snapshot_at: string;
@@ -2030,7 +2025,6 @@ export interface components {
             tokens: components["schemas"]["DashboardTokenSummary"];
             /** @description Runs created within the dashboard window, ordered by most recent activity. */
             recent_runs: components["schemas"]["RunSummary"][];
-            run_trend: components["schemas"]["DashboardTrendPoint"][];
         };
         AnalyticsOutcomeBucket: {
             bucket: string;

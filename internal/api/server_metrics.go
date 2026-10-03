@@ -220,11 +220,6 @@ type dashboardTokenSummaryPayload struct {
 	Reasoning          int64 `json:"reasoning"`
 }
 
-type dashboardTrendPointPayload struct {
-	BucketStartAt string `json:"bucket_start_at"`
-	RunCount      int    `json:"run_count"`
-}
-
 type dashboardSnapshotPayload struct {
 	SnapshotAt      string                       `json:"snapshot_at"`
 	WindowMinutes   int                          `json:"window_minutes"`
@@ -233,7 +228,6 @@ type dashboardSnapshotPayload struct {
 	Overview        analyticsOverviewPayload     `json:"overview"`
 	Tokens          dashboardTokenSummaryPayload `json:"tokens"`
 	RecentRuns      []gen.RunSummary             `json:"recent_runs"`
-	RunTrend        []dashboardTrendPointPayload `json:"run_trend"`
 }
 
 type analyticsOverviewPayload struct {
@@ -400,8 +394,7 @@ func (s *Server) handleGetAnalyticsExecutionDetailSnapshot(w http.ResponseWriter
 
 func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotPayload, error) {
 	snapshotAt := s.now().UTC()
-	windowStartAt := snapshotAt.Add(-24 * time.Hour)
-	windowStart := windowStartAt.Format(time.RFC3339)
+	windowStart := snapshotAt.Add(-24 * time.Hour).Format(time.RFC3339)
 	plannerMetrics, err := s.loadPlannerRuntimeMetrics(ctx)
 	if err != nil {
 		return dashboardSnapshotPayload{}, err
@@ -435,10 +428,6 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotP
 	if err != nil {
 		return dashboardSnapshotPayload{}, err
 	}
-	runTrend, err := loadDashboardTrend(ctx, tx, windowStartAt, snapshotAt)
-	if err != nil {
-		return dashboardSnapshotPayload{}, err
-	}
 	if err := tx.Commit(); err != nil {
 		return dashboardSnapshotPayload{}, fmt.Errorf("commit dashboard snapshot tx: %w", err)
 	}
@@ -457,7 +446,6 @@ func (s *Server) buildDashboardSnapshot(ctx context.Context) (dashboardSnapshotP
 			Reasoning:          windowTokenSummary.Reasoning,
 		},
 		RecentRuns: recentRuns,
-		RunTrend:   runTrend,
 	}, nil
 }
 
@@ -697,60 +685,6 @@ func scanRunSummaryRows(rows *sql.Rows, limit int) ([]gen.RunSummary, error) {
 		return nil, err
 	}
 	return items, nil
-}
-
-func loadDashboardTrend(ctx context.Context, q sqlReadQuerier, windowStart time.Time, snapshotAt time.Time) ([]dashboardTrendPointPayload, error) {
-	windowStart = windowStart.UTC()
-	snapshotAt = snapshotAt.UTC()
-	const bucketWidth = 2 * time.Hour
-	const bucketCount = 12
-	const bucketWidthSeconds = int(bucketWidth / time.Second)
-	windowStartRFC3339 := windowStart.Format(time.RFC3339)
-	snapshotAtRFC3339 := snapshotAt.Format(time.RFC3339)
-
-	rows, err := q.QueryContext(ctx,
-		`SELECT CASE
-		          WHEN unixepoch(created_at) = unixepoch(?) THEN 11
-		          ELSE CAST((unixepoch(created_at) - unixepoch(?)) / ? AS INTEGER)
-		        END AS bucket_index,
-		        COUNT(1)
-		 FROM workflow_runs
-		 WHERE created_at >= ?
-		   AND created_at <= ?
-		 GROUP BY bucket_index
-		 ORDER BY bucket_index ASC`,
-		snapshotAtRFC3339,
-		windowStartRFC3339,
-		bucketWidthSeconds,
-		windowStartRFC3339,
-		snapshotAtRFC3339,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("query dashboard trend: %w", err)
-	}
-	defer rows.Close()
-
-	trend := make([]dashboardTrendPointPayload, bucketCount)
-	for idx := range trend {
-		bucketStart := windowStart.Add(time.Duration(idx) * bucketWidth)
-		trend[idx] = dashboardTrendPointPayload{BucketStartAt: bucketStart.Format(time.RFC3339)}
-	}
-
-	for rows.Next() {
-		var bucketIndex int
-		var runCount int
-		if err := rows.Scan(&bucketIndex, &runCount); err != nil {
-			return nil, fmt.Errorf("scan dashboard trend row: %w", err)
-		}
-		if bucketIndex < 0 || bucketIndex >= len(trend) {
-			continue
-		}
-		trend[bucketIndex].RunCount = runCount
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate dashboard trend rows: %w", err)
-	}
-	return trend, nil
 }
 
 func loadAnalyticsOverview(ctx context.Context, q sqlReadQuerier, since, until string) (analyticsOverviewPayload, error) {

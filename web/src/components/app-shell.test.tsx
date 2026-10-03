@@ -5,7 +5,6 @@ import { AppShell } from "./app-shell";
 
 let routerLocation = { pathname: "/runs" };
 let previewing = false;
-let healthError = false;
 let themeError: string | null = null;
 const cancelPreview = vi.fn();
 vi.mock("@tanstack/react-router", () => ({
@@ -24,7 +23,6 @@ vi.mock("@tanstack/react-router", () => ({
   useRouterState: () => ({ location: routerLocation }),
 }));
 vi.mock("@/api/hooks", () => ({
-  useHealth: () => ({ data: { status: "ok" }, isError: healthError }),
   useWorkspaceCapabilities: () => ({
     data: { project_root: "/projects/Atlas" },
   }),
@@ -59,7 +57,6 @@ describe("app shell", () => {
     localStorage.clear();
     routerLocation = { pathname: "/runs" };
     previewing = false;
-    healthError = false;
     themeError = null;
     cancelPreview.mockClear();
   });
@@ -122,13 +119,25 @@ describe("app shell", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
     expect(screen.getByText("Atlas")).toBeInTheDocument();
   });
-  it("does not claim the runtime is healthy after a failed refresh", () => {
-    const view = render(<AppShell>content</AppShell>);
-    expect(screen.getByText("Local Runtime")).toBeInTheDocument();
-    healthError = true;
-    view.rerender(<AppShell>content</AppShell>);
-    expect(screen.getByText("Runtime Unavailable")).toBeInTheDocument();
-    expect(screen.queryByText("Local Runtime")).not.toBeInTheDocument();
+  it("omits the runtime indicator while keeping workspace identity and tagline", async () => {
+    const user = userEvent.setup();
+    render(<AppShell>content</AppShell>);
+    const sidebar = screen.getByRole("complementary", {
+      name: "Workspace navigation",
+    });
+
+    expect(within(sidebar).getByText("Atlas")).toBeInTheDocument();
+    expect(within(sidebar).getByText("Clear intent.")).toBeInTheDocument();
+    expect(
+      within(sidebar).queryByText(/Local Runtime|Runtime Unavailable|Connecting/),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      within(sidebar).getByRole("button", { name: "Collapse navigation" }),
+    );
+    expect(
+      within(sidebar).queryByText(/Local Runtime|Runtime Unavailable|Connecting/),
+    ).not.toBeInTheDocument();
   });
   it("exposes theme fallback from work screens without repeating the appearance error", () => {
     themeError = "Your selected theme is unavailable. Your saved preference is preserved.";

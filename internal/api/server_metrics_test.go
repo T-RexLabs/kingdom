@@ -185,6 +185,13 @@ func TestServerDashboardSnapshotAggregatesCurrentStatusAndWindowMetrics(t *testi
 	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode dashboard snapshot payload: %v", err)
 	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(res.Body.Bytes(), &fields); err != nil {
+		t.Fatalf("decode dashboard snapshot fields: %v", err)
+	}
+	if _, exists := fields["run_trend"]; exists {
+		t.Fatal("dashboard snapshot should not include the unused run trend")
+	}
 	if payload.WindowMinutes != 1440 {
 		t.Fatalf("expected window_minutes=1440, got %d", payload.WindowMinutes)
 	}
@@ -222,47 +229,6 @@ func TestServerDashboardSnapshotAggregatesCurrentStatusAndWindowMetrics(t *testi
 	}
 	if strings.TrimSpace(payload.RecentRuns[0].WorkflowId) == "" {
 		t.Fatal("expected latest recent run workflow_id to be populated")
-	}
-	if len(payload.RunTrend) != 12 {
-		t.Fatalf("expected 12 dashboard trend buckets, got %d", len(payload.RunTrend))
-	}
-}
-
-func TestServerDashboardSnapshotTrendUsesExact24HourWindow(t *testing.T) {
-	t.Parallel()
-
-	snapshotAt := time.Date(2026, time.March, 22, 10, 30, 0, 0, time.UTC)
-	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{
-		Now: func() time.Time { return snapshotAt },
-	})
-	includedRun := seedMetricsRun(t, handler, "trend-included", "Trend included work order")
-	excludedRun := seedMetricsRun(t, handler, "trend-excluded", "Trend excluded work order")
-
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'succeeded', created_at = ?, updated_at = ? WHERE run_id = ?`, snapshotAt.Add(-23*time.Hour-45*time.Minute).Format(time.RFC3339), snapshotAt.Add(-23*time.Hour-30*time.Minute).Format(time.RFC3339), includedRun)
-	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'succeeded', created_at = ?, updated_at = ? WHERE run_id = ?`, snapshotAt.Add(-24*time.Hour-15*time.Minute).Format(time.RFC3339), snapshotAt.Add(-24*time.Hour).Format(time.RFC3339), excludedRun)
-	syncRunActivityAt(t, db, includedRun, snapshotAt.Add(-23*time.Hour-30*time.Minute))
-	syncRunActivityAt(t, db, excludedRun, snapshotAt.Add(-24*time.Hour))
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method: http.MethodGet,
-		path:   "/api/v1/dashboard/snapshot",
-	})
-	if res.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	var payload gen.DashboardSnapshot
-	if err := json.Unmarshal(res.Body.Bytes(), &payload); err != nil {
-		t.Fatalf("decode dashboard snapshot payload: %v", err)
-	}
-	if len(payload.RunTrend) != 12 {
-		t.Fatalf("expected 12 dashboard trend buckets, got %d", len(payload.RunTrend))
-	}
-	if got := payload.RunTrend[0].BucketStartAt.Format(time.RFC3339); got != snapshotAt.Add(-24*time.Hour).Format(time.RFC3339) {
-		t.Fatalf("expected first bucket to start at exact 24h window boundary, got %s", got)
-	}
-	if payload.RunTrend[0].RunCount != 1 {
-		t.Fatalf("expected first bucket to include only the run inside the exact window, got %d", payload.RunTrend[0].RunCount)
 	}
 }
 

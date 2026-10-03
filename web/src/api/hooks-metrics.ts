@@ -9,13 +9,11 @@ import { ApiError, apiFetch, shouldRetryApiQuery } from "./client";
 import { pollingRefetchQueryOptions } from "./query-freshness";
 import type {
   DashboardSnapshot,
-  HealthResponse,
   AnalyticsExecutionDetailSnapshot,
   AnalyticsSnapshot,
   RuntimeMetrics,
 } from "./hooks-types";
 
-const HEALTH_REFETCH_INTERVAL_MS = 10_000;
 const RUNTIME_METRICS_REFETCH_INTERVAL_MS = 5_000;
 const DASHBOARD_SNAPSHOT_REFETCH_INTERVAL_MS = 5_000;
 const REALM_ANALYTICS_SNAPSHOT_REFETCH_INTERVAL_MS = 5_000;
@@ -29,16 +27,6 @@ export const analyticsExecutionDetailQueryKey = (range: AnalyticsTimeRange, runI
   runId
     ? ["analytics", "execution-detail", "run", runId] as const
     : ["analytics", "execution-detail", "window", analyticsTimeRangeIdentity(range)] as const;
-
-export function useHealth() {
-  return useQuery({
-    queryKey: ["health"],
-    queryFn: () => apiFetch<HealthResponse>("/health"),
-    ...pollingRefetchQueryOptions,
-    refetchInterval: HEALTH_REFETCH_INTERVAL_MS,
-    staleTime: HEALTH_REFETCH_INTERVAL_MS,
-  });
-}
 
 export function useDashboardSnapshot() {
   return useQuery({
