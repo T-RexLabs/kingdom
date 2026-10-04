@@ -19,14 +19,16 @@ const (
 )
 
 type bufferedExecutionProgressWriter struct {
-	mu     sync.Mutex
-	ctx    context.Context
-	loop   *orchestrationLoop
-	result asyncExecutionResult
-	timer  *time.Timer
-	buffer strings.Builder
-	closed bool
-	err    error
+	mu         sync.Mutex
+	flushMu    sync.Mutex
+	reportOnce sync.Once
+	ctx        context.Context
+	loop       *orchestrationLoop
+	result     asyncExecutionResult
+	timer      *time.Timer
+	buffer     strings.Builder
+	closed     bool
+	err        error
 }
 
 func (o *orchestrationLoop) executeWithDurableProgress(ctx context.Context, result asyncExecutionResult, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
@@ -104,6 +106,10 @@ func (w *bufferedExecutionProgressWriter) Flush() error {
 	if w == nil {
 		return nil
 	}
+	// A timer may have consumed the buffer while its insert is still pending.
+	// Serialize the whole flush so Close joins that insert and sees its error.
+	w.flushMu.Lock()
+	defer w.flushMu.Unlock()
 
 	w.mu.Lock()
 	if w.timer != nil {
@@ -150,6 +156,10 @@ func (w *bufferedExecutionProgressWriter) reportError(err error) {
 	if w == nil || err == nil {
 		return
 	}
+	w.reportOnce.Do(func() { w.reportErrorOnce(err) })
+}
+
+func (w *bufferedExecutionProgressWriter) reportErrorOnce(err error) {
 	w.mu.Lock()
 	ctx := w.ctx
 	loop := w.loop

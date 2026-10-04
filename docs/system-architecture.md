@@ -37,6 +37,7 @@ The runtime applies these rules:
 * A process exit, a piece of text, or a saved file alone does not mean the work succeeded.
 * If Kingdom cannot prove that a managed provider process has stopped, it keeps that attempt blocked from replacement.
 * Planning messages and run activity are persisted so they can be inspected and recovered after a restart.
+* Buffered provider activity writes finish before completion processing proceeds. A failed activity write does not change the provider outcome. The runtime attempts to record a diagnostic for that failure.
 
 SQLite is the durable record for workflow state and audit history. Files under Kingdom's runtime and workspace directories support project work and recovery. On startup, Kingdom reconciles unfinished work before it resumes dispatch.
 
