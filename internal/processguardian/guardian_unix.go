@@ -11,6 +11,8 @@ import (
 	"os/exec"
 	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func platformSupported() bool { return true }
@@ -168,7 +170,7 @@ func runGate(specReader io.Reader, release, childStdin *os.File) error {
 	if command[0] != 'R' {
 		return fmt.Errorf("invalid provider launch gate command")
 	}
-	if err := syscall.Dup2(int(childStdin.Fd()), int(os.Stdin.Fd())); err != nil {
+	if err := unix.Dup2(int(childStdin.Fd()), int(os.Stdin.Fd())); err != nil {
 		return fmt.Errorf("connect provider stdin: %w", err)
 	}
 	if err := syscall.SetNonblock(int(os.Stdin.Fd()), false); err != nil {
@@ -202,8 +204,8 @@ func runGate(specReader io.Reader, release, childStdin *os.File) error {
 }
 
 func groupAbsent(pgid int) bool {
-	err := syscall.Kill(-pgid, syscall.Signal(0))
-	return errors.Is(err, syscall.ESRCH)
+	absent, err := platformProcessGroupQuiescent(pgid)
+	return err == nil && absent
 }
 
 func ManagedProcessAbsent(pid, treeID int, identityToken, treeIdentityToken string) bool {
@@ -264,17 +266,7 @@ func acknowledgedTreeAbsent(ownership Ownership) (bool, error) {
 	if ownership.TreeID <= 0 || ownership.ChildPID != ownership.TreeID || ownership.TreeIdentityToken == "" || ownership.ChildIdentityToken != ownership.TreeIdentityToken {
 		return false, fmt.Errorf("unix process-group identity is incomplete or inconsistent")
 	}
-	current, err := processIdentityToken(ownership.TreeID)
-	if err == nil {
-		return current != ownership.TreeIdentityToken, nil
-	}
-	if !processIdentityNotFound(err) {
-		if groupAbsent(ownership.TreeID) {
-			return true, nil
-		}
-		return false, fmt.Errorf("verify unix process-group generation: %w", err)
-	}
-	return groupAbsent(ownership.TreeID), nil
+	return platformAcknowledgedTreeAbsent(ownership)
 }
 
 func waitAcknowledgedTreeAbsent(ownership Ownership, timeout time.Duration) (bool, error) {
