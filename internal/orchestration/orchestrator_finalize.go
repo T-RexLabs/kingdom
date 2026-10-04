@@ -524,6 +524,9 @@ func nodeCanBecomeReachable(run runSnapshot, nodeID string, latest map[string]no
 		if conditionMatches(edge.On, attempt.NodeStatus, run.PlanState) {
 			hasMatchedCondition = true
 		}
+		if planDecisionConditionPending(edge.On, attempt.NodeStatus, run.PlanState) {
+			hasResolvableDependency = true
+		}
 		if _, replay := replayNeeded[edge.FromNodeID]; replay {
 			hasResolvableDependency = true
 		}
@@ -560,6 +563,9 @@ func isNodeTerminallyUnreachableWithReplay(run runSnapshot, nodeID string, lates
 		if conditionMatches(edge.On, attempt.NodeStatus, run.PlanState) {
 			hasMatchedCondition = true
 		}
+		if planDecisionConditionPending(edge.On, attempt.NodeStatus, run.PlanState) {
+			hasNonTerminalDependency = true
+		}
 		if _, replay := replayNeeded[edge.FromNodeID]; replay {
 			hasNonTerminalDependency = true
 		}
@@ -570,4 +576,19 @@ func isNodeTerminallyUnreachableWithReplay(run runSnapshot, nodeID string, lates
 	}
 
 	return !hasMatchedCondition && !hasNonTerminalDependency
+}
+
+// Completing the source does not resolve an edge that also needs a plan
+// decision. Finalization can observe source completion after the last plan
+// projection pass; keep that dependency open until either decision is recorded.
+func planDecisionConditionPending(condition, sourceStatus, planState string) bool {
+	if sourceStatus != "succeeded" || planState == "approved" || planState == "needs_rework" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(condition)) {
+	case "approved", "needs_rework":
+		return true
+	default:
+		return false
+	}
 }
