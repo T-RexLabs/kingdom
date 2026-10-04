@@ -273,6 +273,116 @@ type terminalHandoffHarness struct {
 	baselineSnapshotID string
 }
 
+func TestProviderTerminalHandoffReplayBackfillsCancelledLaunchObservation(t *testing.T) {
+	for _, fileOnly := range []bool{false, true} {
+		t.Run(fmt.Sprintf("file_only_%t", fileOnly), func(t *testing.T) {
+			h := newTerminalHandoffHarness(t)
+			invocation := h.addInvocation(t, 1)
+			job := h.runningHandoffJob(t, invocation, 1)
+			job.launchObserved = true
+			job.launchObservedAt = "2026-03-01T12:00:01Z"
+			job.workspacePath = t.TempDir()
+			job.baseSnapshotID = h.baselineSnapshotID
+			if err := h.fsStore.RestoreSnapshot(t.Context(), h.baselineSnapshotID, job.workspacePath); err != nil {
+				t.Fatal(err)
+			}
+			configureSuccessfulHandoff(&job, "Builder complete.")
+			mustExec(t, h.db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL`)
+			mustExec(t, h.db, `UPDATE attempt_executions SET state = 'starting', started_at = NULL`)
+			// The process callback has observed launch, but the worker's context
+			// ended before its asynchronous observer could record that launch.
+			observerCtx, cancelObserver := context.WithCancel(t.Context())
+			cancelObserver()
+			if err := h.loop.persistObservedExecutionLaunch(observerCtx, job); !errors.Is(err, context.Canceled) {
+				t.Fatalf("cancelled launch observer: %v", err)
+			}
+			if fileOnly {
+				persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:02Z")
+				if err := h.loop.recoverProviderTerminalHandoffFile(t.Context(), invocation); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := h.loop.persistProviderTerminalHandoff(t.Context(), &job); err != nil {
+				t.Fatal(err)
+			}
+			// A fresh loop must recover launch from durable data, without the
+			// original worker or its in-memory execution result.
+			restarted := &orchestrationLoop{
+				db: h.db, transition: h.loop.transition, validator: h.loop.validator,
+				executionStore: h.store, fsStore: h.fsStore, schemas: h.loop.schemas,
+				yoloRoot: h.projectRoot, publishMode: PublishModeDirect, now: h.loop.now,
+			}
+			handoff := mustProviderTerminalHandoff(t, h.store, executionstore.ProviderTerminalHandoffID(invocation.ProviderInvocationID))
+			if err := restarted.convergeProviderTerminalHandoff(t.Context(), handoff); err != nil {
+				t.Fatalf("replay terminal handoff: %v", err)
+			}
+			if err := restarted.convergeProviderTerminalHandoff(t.Context(), handoff); err != nil {
+				t.Fatalf("repeat terminal handoff replay: %v", err)
+			}
+			var nodeStatus, startedAt string
+			if err := h.db.QueryRow(`SELECT node_status, COALESCE(started_at, '') FROM node_runs WHERE node_run_id = ?`, invocation.NodeRunID).Scan(&nodeStatus, &startedAt); err != nil {
+				t.Fatal(err)
+			}
+			if nodeStatus != "running" || startedAt != job.launchObservedAt {
+				t.Fatalf("replay lost observed launch: node=%s started_at=%q want=%q", nodeStatus, startedAt, job.launchObservedAt)
+			}
+			if count := countTestRows(t, h.db, `SELECT COUNT(*) FROM events WHERE attempt_id = ? AND event_type = 'attempt.started'`, invocation.AttemptID); count != 1 {
+				t.Fatalf("launch event count=%d want=1", count)
+			}
+			pending, err := h.store.ListPendingOutbox(t.Context(), 1)
+			if err != nil || len(pending) != 1 {
+				t.Fatalf("load completion outbox: count=%d err=%v", len(pending), err)
+			}
+			published, err := restarted.projectExecutionOutboxRecord(t.Context(), pending[0])
+			if err != nil || !published {
+				var lastError string
+				readErr := h.db.QueryRow(`SELECT COALESCE(last_error, '') FROM attempt_outbox WHERE outbox_id = ?`, pending[0].OutboxID).Scan(&lastError)
+				t.Fatalf("project recovered completion: published=%t err=%v last_error=%q read_err=%v", published, err, lastError, readErr)
+			}
+			if err := h.db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = ?`, invocation.NodeRunID).Scan(&nodeStatus); err != nil || nodeStatus != "succeeded" {
+				t.Fatalf("recovered node completion: status=%s err=%v", nodeStatus, err)
+			}
+		})
+	}
+}
+
+func TestExecutionPayloadRoundTripPreservesLaunchObservation(t *testing.T) {
+	for _, observed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("observed_%t", observed), func(t *testing.T) {
+			job := asyncExecutionResult{attemptID: "run:implementation:1", launchObserved: observed}
+			if observed {
+				job.launchObservedAt = "2026-03-01T12:00:01Z"
+			}
+			raw, err := marshalExecutionOutboxPayload(job)
+			if err != nil {
+				t.Fatal(err)
+			}
+			decoded, err := decodeExecutionPayloadJSON(raw, "launch observation round trip")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decoded.launchObserved != observed || decoded.launchObservedAt != job.launchObservedAt {
+				t.Fatalf("launch observation changed: observed=%t at=%q", decoded.launchObserved, decoded.launchObservedAt)
+			}
+		})
+	}
+}
+
+func TestExecutionPayloadRejectsObservedLaunchWithoutValidTimestamp(t *testing.T) {
+	for _, timestamp := range []string{"", "invalid"} {
+		t.Run(fmt.Sprintf("timestamp_%q", timestamp), func(t *testing.T) {
+			raw, err := marshalExecutionOutboxPayload(asyncExecutionResult{
+				attemptID: "run:implementation:1", launchObserved: true, launchObservedAt: timestamp,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := decodeExecutionPayloadJSON(raw, "invalid launch observation"); err == nil || !strings.Contains(err.Error(), "invalid observed launch timestamp") {
+				t.Fatalf("invalid launch timestamp accepted: %v", err)
+			}
+		})
+	}
+}
+
 func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 	t.Helper()
 	db := openTestDB(t)

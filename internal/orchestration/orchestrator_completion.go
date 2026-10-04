@@ -33,6 +33,8 @@ type executionOutboxPayload struct {
 	ProviderSessionID         string                                `json:"provider_session_id,omitempty"`
 	ProviderInvocationID      string                                `json:"provider_invocation_id,omitempty"`
 	ProviderInvocationAt      string                                `json:"provider_invocation_at,omitempty"`
+	LaunchObserved            bool                                  `json:"launch_observed,omitempty"`
+	LaunchObservedAt          string                                `json:"launch_observed_at,omitempty"`
 	ExpectedLeaseOwner        string                                `json:"expected_lease_owner,omitempty"`
 	ExpectedLeaseVersion      int64                                 `json:"expected_lease_version,omitempty"`
 	ProviderDiagnosticsJSON   string                                `json:"provider_diagnostics_json,omitempty"`
@@ -151,6 +153,8 @@ func executionOutboxPayloadForResult(result asyncExecutionResult) executionOutbo
 		ProviderSessionID:         strings.TrimSpace(result.providerSessionID),
 		ProviderInvocationID:      strings.TrimSpace(result.providerInvocationID),
 		ProviderInvocationAt:      strings.TrimSpace(result.providerInvocationAt),
+		LaunchObserved:            result.launchObserved,
+		LaunchObservedAt:          strings.TrimSpace(result.launchObservedAt),
 		ExpectedLeaseOwner:        strings.TrimSpace(result.expectedLeaseOwner),
 		ExpectedLeaseVersion:      result.expectedLeaseVersion,
 		ProviderDiagnosticsJSON:   strings.TrimSpace(result.providerDiagnosticsJSON),
@@ -419,6 +423,11 @@ func decodeExecutionPayloadJSON(raw, source string) (asyncExecutionResult, error
 	if strings.TrimSpace(payload.AttemptID) == "" {
 		return asyncExecutionResult{}, fmt.Errorf("decode %s: missing attempt_id", source)
 	}
+	if payload.LaunchObserved {
+		if _, err := time.Parse(time.RFC3339Nano, payload.LaunchObservedAt); err != nil {
+			return asyncExecutionResult{}, fmt.Errorf("decode %s: invalid observed launch timestamp: %w", source, err)
+		}
+	}
 	result := asyncExecutionResult{
 		run:                       payload.Run,
 		node:                      payload.Node,
@@ -429,6 +438,8 @@ func decodeExecutionPayloadJSON(raw, source string) (asyncExecutionResult, error
 		providerSessionID:         payload.ProviderSessionID,
 		providerInvocationID:      payload.ProviderInvocationID,
 		providerInvocationAt:      payload.ProviderInvocationAt,
+		launchObserved:            payload.LaunchObserved,
+		launchObservedAt:          payload.LaunchObservedAt,
 		expectedLeaseOwner:        payload.ExpectedLeaseOwner,
 		expectedLeaseVersion:      payload.ExpectedLeaseVersion,
 		providerDiagnosticsJSON:   payload.ProviderDiagnosticsJSON,

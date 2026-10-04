@@ -10744,6 +10744,11 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 	}
 	ctx, cancel := context.WithDeadline(t.Context(), deadline)
 	defer cancel()
+	defer func() {
+		if t.Failed() {
+			t.Log(runtimeRunDiagnostic(rt, "run_dispatch_builder_publish"))
+		}
+	}()
 	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder publication node attempt: %v", err)
 	}
