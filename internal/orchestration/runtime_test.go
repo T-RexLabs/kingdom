@@ -42,10 +42,25 @@ func TestNewRuntimeLoadsPoliciesAndCoreServices(t *testing.T) {
 	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
-	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
+	// Core bootstrap wiring does not require a provider binary on the host.
+	// Leave ProviderEngine empty to retain coverage of its OpenCode default.
+	rt, err := NewRuntime(Config{
+		DB:            db,
+		Paths:         DefaultBootstrapPaths(repoRoot(t)),
+		WorkspaceRoot: t.TempDir(),
+		Adapter:       opencode.NewMemoryAdapter(),
+	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close runtime: %v", err)
+		}
+	})
 
 	if rt.RetryEngine() == nil {
 		t.Fatal("expected retry engine to be wired")
@@ -3164,7 +3179,18 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 			if err := os.WriteFile(filepath.Join(targetRoot, "dirty.txt"), []byte("untrusted provider content"), 0o600); err != nil {
 				t.Fatalf("write dirty target content: %v", err)
 			}
-			oldTarget, err := os.Stat(targetRoot)
+			// Keep the old inode referenced through recovery. Linux can otherwise
+			// reuse it for the replacement directory and make SameFile misleading.
+			oldDirectory, err := os.Open(targetRoot)
+			if err != nil {
+				t.Fatalf("open dirty target: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := oldDirectory.Close(); err != nil {
+					t.Errorf("close dirty target directory: %v", err)
+				}
+			})
+			oldTarget, err := oldDirectory.Stat()
 			if err != nil {
 				t.Fatalf("stat dirty target: %v", err)
 			}

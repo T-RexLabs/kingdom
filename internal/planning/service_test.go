@@ -2022,6 +2022,13 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 		},
 		final: "A lean plan keeps the next work order focused on outcome and verification.",
 	}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
 
 	session, err := service.CreateSession(context.Background(), "Stream question test", `{"model":"test-model"}`)
 	if err != nil {
@@ -2032,7 +2039,17 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected successful terminal operation, got %q", terminal.Status)
+	}
+	// Diagnostic activity reconciliation follows canonical settlement. Join
+	// the worker so replay covers both phases without depending on scheduling.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDrain()
+	if err := service.runner.Wait(drainCtx); err != nil {
+		t.Fatalf("drain completed operation: %v", err)
+	}
 
 	eventsAfterFirst, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, operation.Operation.OperationID+":1")
 	if err != nil {
@@ -2044,8 +2061,44 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if eventsAfterFirst[0].Seq != 2 {
 		t.Fatalf("expected first resumed seq 2, got %d", eventsAfterFirst[0].Seq)
 	}
-	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != acp.RunCompletedEventType {
-		t.Fatalf("expected terminal run.completed event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
+	completedIndex := -1
+	for i, event := range eventsAfterFirst {
+		if event.Seq != i+2 || event.OperationID != operation.Operation.OperationID {
+			t.Fatalf("expected ordered resumed events for this operation, got %+v", event)
+		}
+		if event.EventType == acp.RunCompletedEventType {
+			if completedIndex >= 0 {
+				t.Fatal("expected exactly one terminal run.completed event")
+			}
+			completedIndex = i
+		}
+	}
+	if completedIndex < 0 {
+		t.Fatalf("expected terminal run.completed event in replay, got %+v", eventsAfterFirst)
+	}
+	lastEvent := eventsAfterFirst[len(eventsAfterFirst)-1]
+	if lastEvent.EventType != acp.RunActivityReconciledEventType || completedIndex == len(eventsAfterFirst)-1 {
+		t.Fatalf("expected activity reconciliation after terminal completion, got %+v", eventsAfterFirst)
+	}
+	resumedAfterTerminal, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, eventsAfterFirst[completedIndex].EventID)
+	if err != nil {
+		t.Fatalf("resume after terminal event: %v", err)
+	}
+	wantSuffix := eventsAfterFirst[completedIndex+1:]
+	if len(resumedAfterTerminal) != len(wantSuffix) {
+		t.Fatalf("expected %d post-terminal replay events, got %+v", len(wantSuffix), resumedAfterTerminal)
+	}
+	for i, event := range resumedAfterTerminal {
+		if event != wantSuffix[i] {
+			t.Fatalf("post-terminal replay changed event: got %+v, want %+v", event, wantSuffix[i])
+		}
+	}
+	resumedAfterLast, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, lastEvent.EventID)
+	if err != nil {
+		t.Fatalf("resume after final reconciliation event: %v", err)
+	}
+	if len(resumedAfterLast) != 0 {
+		t.Fatalf("expected no replay events after final cursor, got %+v", resumedAfterLast)
 	}
 }
 
