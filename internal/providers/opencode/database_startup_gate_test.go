@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,6 +142,8 @@ if [ ! -f "$other" ]; then
   printf 'other database did not start concurrently\n' >&2
   exit 1
 fi
+# Consume the complete prompt before terminal output can let the child exit.
+cat >/dev/null || exit 1
 printf '{"type":"text","sessionID":"ses_%s","part":{"type":"text","text":"ok"}}\n' "$$"
 printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish","reason":"stop"}}\n' "$$"
 `
@@ -158,15 +161,18 @@ printf '{"type":"step_finish","sessionID":"ses_%s","part":{"type":"step_finish",
 		t.Fatal(err)
 	}
 	errs := make(chan error, 2)
+	// A prompt above pipe capacity proves each child consumes its complete input
+	// rather than succeeding only when a short prompt fits before it exits.
+	prompt := strings.Repeat("test", 64*1024)
 	for i, database := range []string{databaseOne, databaseTwo} {
 		go func(index int, databasePath string) {
-			_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: "test", OccurredAt: "2026-08-14T00:00:00Z"})
+			_, err := adapter.Execute(context.Background(), ExecuteRequest{CompletionMode: CompletionModeServerResponse, SessionID: fmt.Sprintf("session-%d", index), AttemptID: fmt.Sprintf("attempt-%d", index), RunID: "run-1", NodeRunID: fmt.Sprintf("node-%d", index), WorkspacePath: dir, DatabasePath: databasePath, Prompt: prompt, OccurredAt: "2026-08-14T00:00:00Z"})
 			errs <- err
 		}(i, database)
 	}
 	for range 2 {
 		if err := <-errs; err != nil {
-			t.Fatalf("different database run failed: %v", err)
+			t.Errorf("different database run failed: %v", err)
 		}
 	}
 }
