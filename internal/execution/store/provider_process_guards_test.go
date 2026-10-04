@@ -6,9 +6,43 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"kingdom/internal/testutil"
 )
+
+func TestStoreAcknowledgeProviderProcessGuardRequiresCurrentUnexpiredLease(t *testing.T) {
+	expiresAt := time.Date(2026, 3, 1, 12, 10, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name            string
+		now             time.Time
+		wantExpiryError bool
+	}{
+		{name: "one nanosecond before expiry", now: expiresAt.Add(-time.Nanosecond)},
+		{name: "at expiry", now: expiresAt, wantExpiryError: true},
+		{name: "after expiry", now: expiresAt.Add(time.Nanosecond), wantExpiryError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, db, req := providerProcessGuardFixture(t)
+			s := NewWithClock(db, func() time.Time { return tc.now })
+			ack := providerProcessGuardAcknowledgement(req, "guard_clock_boundary", 1)
+			// The reported acknowledgement predates expiry in every case. The
+			// trusted current time must independently fence a late callback.
+			result, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack)
+			if tc.wantExpiryError {
+				requireProviderSettlementError(t, err, "acknowledge_provider_process_guard", "lease_expired")
+				if count := countPhase2Table(t, db, "provider_process_guards"); count != 0 {
+					t.Fatalf("expired acknowledgement persisted %d guards", count)
+				}
+				return
+			}
+			if err != nil || result.Guard.Lifecycle != ProviderProcessGuardLifecycleAcknowledged {
+				t.Fatalf("acknowledge before expiry: result=%#v err=%v", result, err)
+			}
+		})
+	}
+}
 
 func TestStoreAcknowledgeProviderProcessGuardFencesActiveLeaseAndReplaysExactly(t *testing.T) {
 	t.Parallel()

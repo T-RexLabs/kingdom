@@ -1827,8 +1827,15 @@ func countTestRows(t *testing.T, db *sql.DB, query string, args ...any) int {
 // tests cannot accidentally settle file-only evidence ahead of lost recovery.
 func replayStartupHandoffsThroughMaintenance(t *testing.T, h terminalHandoffHarness) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	ctx, cancel := testDeadlineContext(t)
+	defer func() {
+		cancel()
+		cleanupCtx, cancelCleanup := testDeadlineContext(t)
+		defer cancelCleanup()
+		if err := h.loop.waitForMaintenance(cleanupCtx); err != nil {
+			t.Errorf("join startup handoff maintenance: %v", err)
+		}
+	}()
 	runtime := &Runtime{orchestrator: h.loop}
 	runtime.beginStartupRecovery()
 	if err := runtime.recoverDurableExecutionState(ctx); err != nil {
@@ -1855,8 +1862,15 @@ func replayStartupHandoffsThroughMaintenance(t *testing.T, h terminalHandoffHarn
 
 func finalizePendingHandoffsThroughMaintenance(t *testing.T, h terminalHandoffHarness) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
+	ctx, cancel := testDeadlineContext(t)
+	defer func() {
+		cancel()
+		cleanupCtx, cancelCleanup := testDeadlineContext(t)
+		defer cancelCleanup()
+		if err := h.loop.waitForMaintenance(cleanupCtx); err != nil {
+			t.Errorf("join handoff finalization maintenance: %v", err)
+		}
+	}()
 	for {
 		pending, err := h.store.ListPendingProviderTerminalHandoffs(ctx, "", 1)
 		if err != nil {

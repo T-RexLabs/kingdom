@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -4129,6 +4130,8 @@ func TestOrchestratorTickReturnsErrorWhenRunStartTransitionFails(t *testing.T) {
 }
 
 func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 	db := openMigratedTestDB(t)
 	seedParallelReadyDispatchRun(t, db)
 
@@ -4142,10 +4145,18 @@ func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-
 	tickDone := make(chan error, 1)
+	tickExited := make(chan struct{})
 	go func() {
-		tickDone <- rt.orchestrator.Tick(context.Background())
+		defer close(tickExited)
+		tickDone <- rt.orchestrator.Tick(ctx)
+	}()
+	defer func() {
+		adapter.releaseFirstExecution()
+		<-tickExited
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Errorf("join provider executions: %v", err)
+		}
 	}()
 
 	select {
@@ -4153,21 +4164,14 @@ func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick failed: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected tick to return without waiting for blocked execution")
+	case <-ctx.Done():
+		t.Fatalf("tick waited for blocked execution: %v", ctx.Err())
 	}
 
 	select {
 	case <-adapter.secondExecuteStarted:
-	case <-time.After(time.Second):
-		t.Fatal("expected second execution to start while first execution is blocked")
-	}
-
-	adapter.releaseFirstExecution()
-	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelDrain()
-	if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
-		t.Fatalf("wait for async drain: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("second execution did not start while the first was blocked: %v", ctx.Err())
 	}
 }
 
@@ -12551,8 +12555,9 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 		t.Fatalf("write timeout stream project seed file: %v", err)
 	}
 	adapter := &streamingTimeoutExecutionAdapter{
-		progressTexts: []string{"still working"},
-		started:       make(chan struct{}),
+		// Force the real progress writer to flush before started is signaled.
+		progressTexts: []string{strings.Repeat("still working ", 20)},
+		started:       make(chan error, 1),
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:               db,
@@ -12566,31 +12571,66 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 	}
 	rt.orchestrator.nodeTimeouts["implementation"] = 120 * time.Millisecond
 	rt.orchestrator.streamInactivity = 500 * time.Millisecond
-
-	ctx, cancel := context.WithCancel(context.Background())
+	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	rt.orchestrator.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	rt.orchestrator.executionStore = executionstore.NewWithClock(db, rt.orchestrator.now)
+	adapter.now = rt.orchestrator.now
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
+	defer func() {
+		// Release the controlled provider on assertion failures as well.
+		adapter.cancelOnce.Do(func() { close(adapter.cancelSignal()) })
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close runtime: %v", err)
+		}
+	}()
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("dispatch stream provider: %v", err)
 	}
 
 	select {
-	case <-adapter.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for provider execution to start")
+	case err := <-adapter.started:
+		if err != nil {
+			t.Fatalf("start provider fixture: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("provider execution did not start: %v", ctx.Err())
 	}
 
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		var count int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND reason_code = 'stream_event'`).Scan(&count); err != nil {
-			return err
+	var progressAt string
+	if err := db.QueryRowContext(ctx, `SELECT created_at FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND reason_code = 'stream_event'`).Scan(&progressAt); err != nil {
+		t.Fatalf("load durable stream progress: %v", err)
+	}
+	if progressAt != base.Format(time.RFC3339Nano) {
+		t.Fatalf("stream progress clock=%s, want %s", progressAt, base.Format(time.RFC3339Nano))
+	}
+	// OnProcessStarted persists launch state asynchronously. Join that durable
+	// observation before testing the timeout budget with the controlled clock.
+	for {
+		var startedAt sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT started_at FROM attempt_executions WHERE attempt_id = 'run_timeout_stream_live:implementation:1'`).Scan(&startedAt); err != nil {
+			t.Fatalf("load provider launch observation: %v", err)
 		}
-		if count == 0 {
-			return fmt.Errorf("waiting for durable stream progress")
+		if startedAt.Valid && startedAt.String != "" {
+			if startedAt.String != base.Format(time.RFC3339Nano) {
+				t.Fatalf("provider started at %s, want %s", startedAt.String, base.Format(time.RFC3339Nano))
+			}
+			break
 		}
-		return nil
-	})
-
-	time.Sleep(180 * time.Millisecond)
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("provider launch observation did not complete: %v", err)
+		}
+	}
+	clock.Store(base.Add(180 * time.Millisecond).UnixNano())
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("check recent stream progress after the wall-clock budget: %v", err)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND event_type = 'attempt.timeout_warning'`); count == 0 {
+		t.Fatal("wall-clock timeout was not reached")
+	}
 	if status := queryRunStatus(t, db, "run_timeout_stream_live"); status != "running" {
 		t.Fatalf("expected run to remain running while real stream progress is recent, got %q", status)
 	}
@@ -12598,15 +12638,55 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 		t.Fatalf("expected no timeout cancellation while stream progress is recent, got %d", adapter.cancelCalls())
 	}
 
-	awaitRunStatus(t, db, "run_timeout_stream_live", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
-			return fmt.Errorf("run_timeout_stream_live status=%s", status)
+	if count := queryEventCount(t, db, "run_timeout_stream_live", "attempt.failed"); count != 0 {
+		t.Fatalf("recent stream progress produced %d failures", count)
+	}
+	clock.Store(base.Add(600 * time.Millisecond).UnixNano())
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("cancel inactive stream provider: %v", err)
+	}
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join canceled provider: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		t.Fatalf("project stream timeout: %v", err)
+	}
+	if adapter.cancelCalls() == 0 || countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND event_type = 'attempt.failed' AND reason_code = 'timeout'`) != 1 {
+		t.Fatal("inactive stream did not produce timeout cancellation and failure")
+	}
+	// Preserve the default retry policy and drive its durable due time explicitly.
+	var retryDue string
+	if err := db.QueryRowContext(ctx, `SELECT due_at FROM retry_decisions WHERE source_attempt_id = 'run_timeout_stream_live:implementation:1' AND decision = 'retry'`).Scan(&retryDue); err != nil {
+		t.Fatalf("load timeout retry due time: %v", err)
+	}
+	due, err := time.Parse(time.RFC3339Nano, retryDue)
+	if err != nil {
+		t.Fatalf("parse timeout retry due time: %v", err)
+	}
+	clock.Store(due.Add(time.Nanosecond).UnixNano())
+	for {
+		if err := rt.orchestrator.Tick(ctx); err != nil {
+			t.Fatalf("dispatch and finalize timeout retry: %v", err)
 		}
-		if adapter.cancelCalls() == 0 {
-			return fmt.Errorf("expected timeout cancellation after stream progress went inactive")
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Fatalf("join timeout retry: %v", err)
 		}
-		return nil
-	})
+		if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+			t.Fatalf("project timeout retry: %v", err)
+		}
+		if queryRunStatus(t, db, "run_timeout_stream_live") == "failed" {
+			break
+		}
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("timeout retry did not finalize: %v; %s", err, runtimeRunDiagnostic(rt, "run_timeout_stream_live"))
+		}
+	}
+	if requests := adapter.requestsSnapshot(); len(requests) != 2 {
+		t.Fatalf("provider executions=%d, want initial execution and default retry", len(requests))
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM provider_process_guards WHERE run_id = 'run_timeout_stream_live' AND lifecycle = 'quiescent'`); count != 2 {
+		t.Fatalf("quiescent guards=%d, want one for each provider execution", count)
+	}
 }
 
 func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent(t *testing.T) {
@@ -13727,7 +13807,8 @@ type streamingTimeoutExecutionAdapter struct {
 	cancelCh         chan struct{}
 	cancelOnce       sync.Once
 	requests         []opencode.ExecuteRequest
-	started          chan struct{}
+	started          chan error
+	now              func() time.Time
 }
 
 type workspaceWritingExecutionAdapter struct {
@@ -13942,13 +14023,31 @@ func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest 
 }
 
 func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	progressTexts := append([]string(nil), a.progressTexts...)
 	progressInterval := a.progressInterval
 	started := a.started
+	now := a.now
 	a.mu.Unlock()
+	startResult := func(err error) {
+		if started != nil {
+			select {
+			case started <- err:
+			default:
+			}
+		}
+	}
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(context.Background(), ownership); err != nil {
+			startResult(err)
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
 	for idx, text := range progressTexts {
 		if req.OnProgress != nil {
 			req.OnProgress(text)
@@ -13957,14 +14056,17 @@ func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req openco
 			time.Sleep(progressInterval)
 		}
 	}
-	if started != nil {
-		select {
-		case <-started:
-		default:
-			close(started)
+	startResult(nil)
+	<-a.cancelSignal()
+	if now != nil {
+		quiescence.ExitedAt = now().UTC().Format(time.RFC3339Nano)
+		quiescence.QuiescentAt = quiescence.ExitedAt
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), quiescence); err != nil {
+			return opencode.ExecuteResponse{}, err
 		}
 	}
-	<-a.cancelSignal()
 	return opencode.ExecuteResponse{}, context.Canceled
 }
 
@@ -14323,6 +14425,16 @@ func queryRunState(t *testing.T, db *sql.DB, runID string) (string, string) {
 		t.Fatalf("query run state %s: %v", runID, err)
 	}
 	return status, planState
+}
+
+// Functional completion waits use the test deadline, rather than a short
+// performance limit that depends on race instrumentation and host scheduling.
+func testDeadlineContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return context.WithDeadline(t.Context(), deadline)
+	}
+	return context.WithCancel(t.Context())
 }
 
 func awaitRunStatus(t *testing.T, db *sql.DB, runID string, timeout, interval time.Duration, condition func(status string) error) {

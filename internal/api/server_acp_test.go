@@ -130,13 +130,13 @@ func TestServerPlannerAcpRunLifecycleAndReplayMetrics(t *testing.T) {
 
 func TestServerPlanningClockRetainsNanosecondPrecision(t *testing.T) {
 	t.Parallel()
-	now := time.Date(2026, 6, 3, 12, 0, 0, 123456789, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second).Add(123456789 * time.Nanosecond)
 	handler, db := newAPIServerForTestWithConfig(t, ServerConfig{Now: func() time.Time { return now }})
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
 		path:           "/api/v1/planning-sessions",
-		idempotencyKey: "idem-planning-clock-precision",
+		idempotencyKey: testIdempotencyKey(t, "idem-planning-clock-precision", now),
 		body:           map[string]any{"model_selection": map[string]any{"model": "gpt-5.4"}},
 	})
 	if res.Code != http.StatusCreated {

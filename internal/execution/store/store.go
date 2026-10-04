@@ -393,7 +393,17 @@ type QueueAttemptCancelRequest struct {
 }
 
 func New(db *sql.DB) *Store {
-	return &Store{db: db, now: time.Now}
+	return NewWithClock(db, time.Now)
+}
+
+// NewWithClock uses the supplied trusted clock for lease and evidence authority
+// checks. The caller must use the same clock for timestamps submitted to this
+// store. A nil clock uses the system clock.
+func NewWithClock(db *sql.DB, trustedNow func() time.Time) *Store {
+	if trustedNow == nil {
+		trustedNow = time.Now
+	}
+	return &Store{db: db, now: trustedNow}
 }
 
 func (s *Store) currentTime() time.Time {

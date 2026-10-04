@@ -22,6 +22,8 @@ A deterministic end-to-end pass does not prove browser rendering, accessibility,
 
 Database behavior fixtures can use `internal/testutil/sqlitefixture` to restore an empty canonical schema into a separate database for each test. Only the immutable schema image is shared. Keep migration-runner tests on the real migration path, and keep file-backed or fault-injection fixtures on their original connections. The fixture guards check schema equivalence, foreign keys, triggers, and isolation.
 
+Time-dependent fixtures must use the same clock in layers that write and validate timestamps. `executionstore.NewWithClock` supports controlled lease and evidence checks; the default constructor uses the system clock. Keep lease-expiry and future-evidence rejection checks intact. For asynchronous functional checks, wait for owned work to finish within the test deadline instead of setting a short machine-speed limit.
+
 `web/test-projects.ts` lists tests whose runtime imports do not need browser APIs. These tests run in an isolated Node environment without DOM setup. All other frontend tests use the existing jsdom storage environment and component setup. Keep a test in the DOM project if its imports need `document`, storage, or other browser APIs. Both projects use the shared worker budget and isolated worker threads. Each test file gets a fresh worker; module state is not shared between files.
 
 The OpenCode suite replays recorded 1.18.32 JSONL streams, including compaction and intermediate stop events. The fixtures prove handling of those streams. They do not certify every installed OpenCode version.

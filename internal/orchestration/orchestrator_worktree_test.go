@@ -695,7 +695,18 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err := os.Symlink(outsidePath, filepath.Join(worktreePath, "nested", "outside-link")); err != nil {
 		t.Fatalf("create provider symlink: %v", err)
 	}
-	oldWorktree, err := os.Stat(worktreePath)
+	// Keep the old inode referenced while recovery replaces the directory.
+	// Linux can otherwise reuse it immediately and make SameFile ambiguous.
+	oldDirectory, err := os.Open(worktreePath)
+	if err != nil {
+		t.Fatalf("open dirty managed worktree: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := oldDirectory.Close(); err != nil {
+			t.Errorf("close dirty managed worktree: %v", err)
+		}
+	})
+	oldWorktree, err := oldDirectory.Stat()
 	if err != nil {
 		t.Fatalf("stat dirty managed worktree: %v", err)
 	}
