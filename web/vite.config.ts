@@ -7,6 +7,12 @@ import { developmentServer } from "./dev-backend";
 import { testWorkerOptions } from "./test-workers";
 import { testProjects } from "./test-projects";
 
+// Set the test process timezone before worker threads start. Production and
+// development keep the host timezone; explicit test timezone overrides remain.
+if (process.env.VITEST === "true" && !process.env.TZ) {
+  process.env.TZ = "Europe/Stockholm";
+}
+
 export default defineConfig((environment) => ({
   plugins: [react(), tailwindcss()],
   resolve: {

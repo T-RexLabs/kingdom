@@ -41,6 +41,8 @@ The production web build is embedded in the `kd` binary and in locally built `ki
 
 Vitest checks frontend logic and components with jsdom. It does not prove browser rendering or live provider behavior. Use `make verify` for the broader deterministic gate and report browser or live checks separately.
 
+Frontend tests default to `Europe/Stockholm` when `TZ` is unset. This lets the daylight saving time gap tests run in local and CI checks. Set `TZ` explicitly to check another timezone, for example `TZ=UTC pnpm --dir web test`. Report any timezone-dependent skips. This default applies only to Vitest.
+
 ## Notes
 
 - The work order form defaults to five review cycles and five validation cycles, following the seeded workflow. These limits can be changed for each run.

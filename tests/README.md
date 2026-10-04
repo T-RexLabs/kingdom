@@ -26,6 +26,8 @@ Time-dependent fixtures must use the same clock in layers that write and validat
 
 `web/test-projects.ts` lists tests whose runtime imports do not need browser APIs. These tests run in an isolated Node environment without DOM setup. All other frontend tests use the existing jsdom storage environment and component setup. Keep a test in the DOM project if its imports need `document`, storage, or other browser APIs. Both projects use the shared worker budget and isolated worker threads. Each test file gets a fresh worker; module state is not shared between files.
 
+Vitest defaults to `TZ=Europe/Stockholm` before starting either project's workers, so the daylight saving time gap cases run on CI and locally. An explicit `TZ` overrides the default. Those cases skip when the chosen timezone has no gap at either fixture timestamp; report those skips separately from passed tests. Production and development keep their existing timezone.
+
 The OpenCode suite replays recorded 1.18.32 JSONL streams, including compaction and intermediate stop events. The fixtures prove handling of those streams. They do not certify every installed OpenCode version.
 
 Fake providers that test response handling must read the complete prompt from standard input before they emit terminal output. Use a prompt larger than the pipe buffer when checking that protocol.
