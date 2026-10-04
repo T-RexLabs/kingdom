@@ -64,6 +64,7 @@ const linuxIdentitySettlePollInterval = time.Millisecond
 var errLinuxGroupMembershipChanged = errors.New("Linux process group membership changed during inspection")
 var errLinuxLeaderHasLiveThreads = errors.New("terminated Linux leader still has executable threads")
 var errLinuxIdentityInspection = errors.New("Linux identity inspection failed")
+var errLinuxIdentityMarkersPermission = errors.New("Linux process identity marker permission denied")
 var errLinuxIdentityMarkersIncomplete = errors.New("live Linux process generation markers are incomplete")
 
 type linuxIdentitySnapshot struct {
@@ -121,10 +122,7 @@ func linuxProcessIdentitySnapshotFromRoot(boot string, process *os.Root, pid int
 	if after.state == 'Z' || after.state == 'X' || after.state == 'x' {
 		return linuxIdentitySnapshot{}, errLinuxLeaderHasLiveThreads
 	}
-	if err := errors.Join(environmentErr, fileErr); err != nil {
-		return linuxIdentitySnapshot{}, errors.Join(errLinuxIdentityInspection, fmt.Errorf("read live Linux process identity markers: %w", err))
-	}
-	instance, err := linuxProcessInstanceToken(environment)
+	instance, err := linuxLiveIdentityMarkers(environment, environmentErr, fileErr)
 	if err != nil {
 		return linuxIdentitySnapshot{}, err
 	}
@@ -135,6 +133,48 @@ func linuxProcessIdentitySnapshotFromRoot(boot string, process *os.Root, pid int
 		snapshot.identity += ":fd:" + fileToken
 	}
 	return snapshot, nil
+}
+
+// Validate readable data before deciding whether every failed marker operation
+// is a permission denial. A malformed token must never become a retry category.
+func linuxLiveIdentityMarkers(environment []byte, environmentErr, fileErr error) (string, error) {
+	var instance string
+	var parseErr error
+	if environmentErr == nil {
+		instance, parseErr = linuxProcessInstanceToken(environment)
+	}
+	if err := errors.Join(environmentErr, fileErr, parseErr); err != nil {
+		inspectionErr := errors.Join(errLinuxIdentityInspection, fmt.Errorf("read live Linux process identity markers: %w", err))
+		if parseErr == nil && (environmentErr == nil || linuxOnlyPermissionErrors(environmentErr)) && (fileErr == nil || linuxOnlyPermissionErrors(fileErr)) {
+			inspectionErr = errors.Join(errLinuxIdentityMarkersPermission, inspectionErr)
+		}
+		return "", inspectionErr
+	}
+	return instance, nil
+}
+
+// Check every error leaf, including errors joined within one marker operation.
+// Finding EACCES somewhere in a joined error cannot classify its other failures.
+func linuxOnlyPermissionErrors(err error) bool {
+	if err == nil {
+		return false
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		causes := joined.Unwrap()
+		if len(causes) == 0 {
+			return false
+		}
+		for _, cause := range causes {
+			if !linuxOnlyPermissionErrors(cause) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return linuxOnlyPermissionErrors(wrapped.Unwrap())
+	}
+	return errors.Is(err, syscall.EACCES) || errors.Is(err, syscall.EPERM)
 }
 
 func platformProcessGroupQuiescent(pgid int) (bool, error) {
@@ -239,13 +279,20 @@ func platformAcknowledgedTreeAbsent(ownership Ownership) (bool, error) {
 }
 
 func linuxAcknowledgedTreeAbsentAt(procRoot string, ownership Ownership) (bool, error) {
-	// During exit the kernel clears identity markers before stat reaches Z/X.
-	// Retry that transition and remaining exiting threads; elapsed time never
-	// proves absence. Inspection failures and persistent live threads remain errors.
+	return linuxSettleAcknowledgedTreeInspection(func() (bool, error) {
+		return linuxAcknowledgedTreeAbsentOnceAt(procRoot, ownership)
+	})
+}
+
+func linuxSettleAcknowledgedTreeInspection(probe func() (bool, error)) (bool, error) {
+	// During exit marker reads can lose access before stat reaches Z/X.
+	// Reinspection may resolve that transition or remaining exiting threads.
+	// Elapsed time never proves absence; persistent failures remain errors.
 	deadline := time.Now().Add(linuxIdentitySettleTimeout)
 	for {
-		absent, err := linuxAcknowledgedTreeAbsentOnceAt(procRoot, ownership)
-		if (!errors.Is(err, errLinuxIdentityMarkersIncomplete) && !errors.Is(err, errLinuxLeaderHasLiveThreads)) || !time.Now().Before(deadline) {
+		absent, err := probe()
+		retry := errors.Is(err, errLinuxIdentityMarkersIncomplete) || errors.Is(err, errLinuxLeaderHasLiveThreads) || errors.Is(err, errLinuxIdentityMarkersPermission)
+		if !retry || !time.Now().Before(deadline) {
 			return absent, err
 		}
 		time.Sleep(linuxIdentitySettlePollInterval)
