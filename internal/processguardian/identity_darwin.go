@@ -31,3 +31,25 @@ func processIdentityNotFound(err error) bool {
 
 func configureCommandIdentity(*Command) error   { return nil }
 func configureGuardianIdentity(*exec.Cmd) error { return nil }
+
+func platformProcessGroupQuiescent(pgid int) (bool, error) {
+	err := unix.Kill(-pgid, 0)
+	if errors.Is(err, unix.ESRCH) {
+		return true, nil
+	}
+	return false, err
+}
+
+func platformAcknowledgedTreeAbsent(ownership Ownership) (bool, error) {
+	current, err := processIdentityToken(ownership.TreeID)
+	if err == nil {
+		return current != ownership.TreeIdentityToken, nil
+	}
+	if !processIdentityNotFound(err) {
+		if groupAbsent(ownership.TreeID) {
+			return true, nil
+		}
+		return false, fmt.Errorf("verify unix process-group generation: %w", err)
+	}
+	return platformProcessGroupQuiescent(ownership.TreeID)
+}

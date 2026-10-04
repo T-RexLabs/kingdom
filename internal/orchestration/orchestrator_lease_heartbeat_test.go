@@ -14,8 +14,7 @@ import (
 )
 
 func TestProviderLeaseHeartbeatRenewsSilentExecution(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -80,8 +79,7 @@ func TestProviderLeaseHeartbeatRenewsSilentExecution(t *testing.T) {
 }
 
 func TestProviderLeaseOwnershipLossCancelsAdapterAndCannotSettle(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
@@ -157,8 +155,7 @@ func TestRuntimeOwnedAttemptDoesNotStartProviderLeaseHeartbeat(t *testing.T) {
 }
 
 func TestProviderLeaseHeartbeatReportsDatabaseErrorsThroughAsyncDrain(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
 	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)

@@ -567,8 +567,7 @@ func TestDeletePlanningSessionCascadesPlanningRetryDecisions(t *testing.T) {
 
 func newPlanningRetryStore(t *testing.T) (*PlanningStore, PlanningOperation, time.Time) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	if _, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{PlanningSessionID: "session_retry", Title: "Retry", TitleState: "custom", LifecycleState: PlanningSessionLifecycleStateActive, ConversationState: PlanningSessionConversationStateReady, ProjectRoot: "/workspace", ModelSelectionJSON: `{}`, CreatedAt: now.Format(time.RFC3339), UpdatedAt: now.Format(time.RFC3339)}); err != nil {

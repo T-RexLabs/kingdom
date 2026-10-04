@@ -10,8 +10,7 @@ import (
 func TestDelegationPolicyEngineAllowsLockedSpawnMatrixWithRoleMatch(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -44,8 +43,7 @@ func TestDelegationPolicyEngineAllowsLockedSpawnMatrixWithRoleMatch(t *testing.T
 func TestDelegationPolicyEngineAllowsAdvisorSpawnOnMatchingRequiredRole(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -70,8 +68,7 @@ func TestDelegationPolicyEngineAllowsAdvisorSpawnOnMatchingRequiredRole(t *testi
 func TestDelegationPolicyEngineRejectsNonSpawnerAndEscalatesToCoordinator(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -99,8 +96,7 @@ func TestDelegationPolicyEngineRejectsNonSpawnerAndEscalatesToCoordinator(t *tes
 func TestDelegationPolicyEngineRejectsSpawnableRoleViolations(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -125,8 +121,7 @@ func TestDelegationPolicyEngineRejectsSpawnableRoleViolations(t *testing.T) {
 func TestDelegationPolicyEngineRejectsNoSkipGovernanceUntilApproved(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'draft' WHERE run_id = 'run_1'`)
@@ -156,8 +151,7 @@ func TestDelegationPolicyEngineRejectsNoSkipGovernanceUntilApproved(t *testing.T
 func TestDelegationPolicyEngineAllowsMoreThanTwelveActiveAgents(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	for i := 0; i < 13; i++ {
@@ -190,8 +184,7 @@ func TestDelegationPolicyEngineAllowsMoreThanTwelveActiveAgents(t *testing.T) {
 func TestDelegationPolicyEngineAllowsMultipleActiveSecurityValidators(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_nightraven_1', 'security-validator', 'idle', 'agent_council', 3, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -223,8 +216,7 @@ func TestDelegationPolicyEngineAllowsMultipleActiveSecurityValidators(t *testing
 func TestDelegationPolicyEnginePreventsLineageCyclesDeterministically(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	mustExec(t, db, `UPDATE agents SET parent_agent_id = 'agent_council', spawn_depth = 2 WHERE agent_id = 'agent_coordinator'`)
@@ -260,8 +252,7 @@ func TestDelegationPolicyEnginePreventsLineageCyclesDeterministically(t *testing
 func TestDelegationPolicyEngineRejectsSpawnDepthCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -286,8 +277,7 @@ func TestDelegationPolicyEngineRejectsSpawnDepthCap(t *testing.T) {
 func TestDelegationPolicyEngineAppliesDefaultSpawnDepth(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))

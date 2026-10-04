@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,11 +16,11 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/dbmigrations"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 	"kingdom/internal/testutil/planningfixture"
+	"kingdom/internal/testutil/sqlitefixture"
 
 	_ "modernc.org/sqlite"
 )
@@ -2023,6 +2022,13 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 		},
 		final: "A lean plan keeps the next work order focused on outcome and verification.",
 	}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := service.Close(ctx); err != nil {
+			t.Errorf("close planning service: %v", err)
+		}
+	})
 
 	session, err := service.CreateSession(context.Background(), "Stream question test", `{"model":"test-model"}`)
 	if err != nil {
@@ -2033,7 +2039,17 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create reply operation: %v", err)
 	}
-	awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusSucceeded {
+		t.Fatalf("expected successful terminal operation, got %q", terminal.Status)
+	}
+	// Diagnostic activity reconciliation follows canonical settlement. Join
+	// the worker so replay covers both phases without depending on scheduling.
+	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelDrain()
+	if err := service.runner.Wait(drainCtx); err != nil {
+		t.Fatalf("drain completed operation: %v", err)
+	}
 
 	eventsAfterFirst, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, operation.Operation.OperationID+":1")
 	if err != nil {
@@ -2045,8 +2061,44 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	if eventsAfterFirst[0].Seq != 2 {
 		t.Fatalf("expected first resumed seq 2, got %d", eventsAfterFirst[0].Seq)
 	}
-	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != acp.RunCompletedEventType {
-		t.Fatalf("expected terminal run.completed event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
+	completedIndex := -1
+	for i, event := range eventsAfterFirst {
+		if event.Seq != i+2 || event.OperationID != operation.Operation.OperationID {
+			t.Fatalf("expected ordered resumed events for this operation, got %+v", event)
+		}
+		if event.EventType == acp.RunCompletedEventType {
+			if completedIndex >= 0 {
+				t.Fatal("expected exactly one terminal run.completed event")
+			}
+			completedIndex = i
+		}
+	}
+	if completedIndex < 0 {
+		t.Fatalf("expected terminal run.completed event in replay, got %+v", eventsAfterFirst)
+	}
+	lastEvent := eventsAfterFirst[len(eventsAfterFirst)-1]
+	if lastEvent.EventType != acp.RunActivityReconciledEventType || completedIndex == len(eventsAfterFirst)-1 {
+		t.Fatalf("expected activity reconciliation after terminal completion, got %+v", eventsAfterFirst)
+	}
+	resumedAfterTerminal, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, eventsAfterFirst[completedIndex].EventID)
+	if err != nil {
+		t.Fatalf("resume after terminal event: %v", err)
+	}
+	wantSuffix := eventsAfterFirst[completedIndex+1:]
+	if len(resumedAfterTerminal) != len(wantSuffix) {
+		t.Fatalf("expected %d post-terminal replay events, got %+v", len(wantSuffix), resumedAfterTerminal)
+	}
+	for i, event := range resumedAfterTerminal {
+		if event != wantSuffix[i] {
+			t.Fatalf("post-terminal replay changed event: got %+v, want %+v", event, wantSuffix[i])
+		}
+	}
+	resumedAfterLast, err := service.ListOperationEventsAfterEventIDPage(context.Background(), operation.Operation.OperationID, lastEvent.EventID)
+	if err != nil {
+		t.Fatalf("resume after final reconciliation event: %v", err)
+	}
+	if len(resumedAfterLast) != 0 {
+		t.Fatalf("expected no replay events after final cursor, got %+v", resumedAfterLast)
 	}
 }
 
@@ -3779,23 +3831,15 @@ func latestSessionOperation(t *testing.T, store *state.PlanningStore, sessionID 
 	return operations[0]
 }
 
+var planningTestDatabase = sqlitefixture.NewMigrated()
+
 func stateTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db := openPlanningTestDB(t)
-	entries, err := dbmigrations.List()
+	db, err := planningTestDatabase.Open(t.Context())
 	if err != nil {
-		t.Fatalf("list migrations: %v", err)
+		t.Fatalf("restore planning test database: %v", err)
 	}
-	names := make([]string, 0, len(entries))
-	for _, name := range entries {
-		if strings.HasSuffix(name, ".up.sql") {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		applyPlanningMigration(t, db, name)
-	}
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -3833,31 +3877,6 @@ func seedHeartbeatTitleOperation(t *testing.T, suffix string) (*sql.DB, *state.P
 		t.Fatalf("create planning operation: %v", err)
 	}
 	return db, store, operationID
-}
-
-func openPlanningTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite db: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
-	}
-	return db
-}
-
-func applyPlanningMigration(t *testing.T, db *sql.DB, fileName string) {
-	t.Helper()
-	raw, err := dbmigrations.Read(fileName)
-	if err != nil {
-		t.Fatalf("read migration %s: %v", fileName, err)
-	}
-	if _, err := db.Exec(string(raw)); err != nil {
-		t.Fatalf("apply migration %s: %v", fileName, err)
-	}
 }
 
 func writeTestFile(t *testing.T, root, relativePath, content string) {

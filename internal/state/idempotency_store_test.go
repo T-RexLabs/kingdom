@@ -13,8 +13,7 @@ import (
 func TestIdempotencyStoreReserveFinalizeAndLookup(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	// The retention clock is seeded from real time and only moves forward, so a
 	// fixed test clock must start from zero or the test expires with age.
 	resetIdempotencyRetentionClock(t, db)
@@ -71,8 +70,7 @@ func TestIdempotencyStoreReserveFinalizeAndLookup(t *testing.T) {
 func TestIdempotencyStoreDuplicateScopeDoesNotTakeOwnership(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	// The retention clock is seeded from real time and only moves forward, so a
 	// fixed test clock must start from zero or the test expires with age.
 	resetIdempotencyRetentionClock(t, db)
@@ -120,8 +118,7 @@ func TestIdempotencyStoreDuplicateScopeDoesNotTakeOwnership(t *testing.T) {
 func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunesOnlyCompleted(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +192,7 @@ func TestIdempotencyStoreRetentionClockDoesNotMoveBackwardAndPrunesOnlyCompleted
 func TestIdempotencyStoreExpiredPendingReservationPastFormerGraceReturnsPending(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	if _, err := db.Exec(`UPDATE idempotency_retention_clock SET high_water_unix = 0 WHERE singleton = 1`); err != nil {
 		t.Fatal(err)
 	}

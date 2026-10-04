@@ -163,7 +163,7 @@ def build_in_existing_repo_analysis(
                     "matched": expected in observed,
                 }
             )
-    model_routing_ok = all(item["matched"] for item in model_routing_checks) if model_routing_checks else True
+    model_routing_ok = all(item["matched"] for item in model_routing_checks) if model_routing_checks else not (global_model.strip() or expected_overrides)
 
     checks: dict[str, bool] = {
         "terminal_ok": terminal_ok,
@@ -223,15 +223,18 @@ def brief_from_analysis(analysis: dict[str, Any]) -> dict[str, Any]:
 
 def write_summary(output_dir: Path) -> tuple[dict[str, Any], str]:
     analysis_path = output_dir / "report" / "analysis.json"
-    analysis = json.loads(analysis_path.read_text(encoding="utf-8"))
+    analysis = json.loads(analysis_path.read_text(encoding="utf-8")) if analysis_path.exists() else {}
+    harness_path = output_dir / "report" / "harness-result.json"
+    harness = json.loads(harness_path.read_text(encoding="utf-8")) if harness_path.exists() else {}
     summary = {
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat().replace("+00:00", "Z"),
         "output_dir": str(output_dir),
         "scenario": "in-existing-repo",
         "run_id": analysis.get("run_id"),
         "publish_mode": analysis.get("publish_mode"),
-        "pass": analysis.get("pass"),
+        "pass": analysis.get("pass") is True and harness.get("status") == "passed" and harness.get("runtime_stopped") is True,
         "checks": analysis.get("checks"),
+        "harness_result": harness,
     }
     lines = [
         f"In-existing-repo E2E summary: {output_dir}",

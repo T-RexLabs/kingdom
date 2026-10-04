@@ -8,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 
@@ -27,11 +26,6 @@ const (
 	kingdomDirName   = ".kingdom"
 	opencodeDirName  = "opencode"
 )
-
-var canonicalAssetDirs = map[string]string{
-	"files/policies": "policies",
-	"files/schemas":  filepath.Join("contracts", "schemas"),
-}
 
 type WorkflowSeed struct {
 	Name       string
@@ -57,13 +51,13 @@ func WriteScaffold(root string, projectRoot string, force bool) error {
 		return fmt.Errorf("create project root: %w", err)
 	}
 
-	if err := writeDir("files/policies", canonicalAssetDirs["files/policies"], filepath.Join(targetRoot, policyDirName), force); err != nil {
+	if err := writeDir("files/policies", filepath.Join(targetRoot, policyDirName), force); err != nil {
 		return err
 	}
-	if err := writeDir("files/schemas", canonicalAssetDirs["files/schemas"], filepath.Join(targetRoot, schemaDirName), force); err != nil {
+	if err := writeDir("files/schemas", filepath.Join(targetRoot, schemaDirName), force); err != nil {
 		return err
 	}
-	if err := writeDir("files/workflows", "", filepath.Join(targetRoot, workflowDirName), force); err != nil {
+	if err := writeDir("files/workflows", filepath.Join(targetRoot, workflowDirName), force); err != nil {
 		return err
 	}
 	if err := writeMigrations(filepath.Join(targetRoot, migrationDirName), force); err != nil {
@@ -86,7 +80,7 @@ func ReadWorkflowSeed(name string) ([]byte, error) {
 		return nil, fmt.Errorf("workflow seed name is required")
 	}
 
-	raw, err := readAssetFile("files/workflows", "", cleanName)
+	raw, err := readAssetFile("files/workflows", cleanName)
 	if err != nil {
 		return nil, fmt.Errorf("read workflow seed %q: %w", cleanName, err)
 	}
@@ -94,14 +88,14 @@ func ReadWorkflowSeed(name string) ([]byte, error) {
 }
 
 func ListWorkflowSeeds() ([]WorkflowSeed, error) {
-	names, err := listAssetFiles("files/workflows", "")
+	names, err := listAssetFiles("files/workflows")
 	if err != nil {
 		return nil, fmt.Errorf("list workflow seeds: %w", err)
 	}
 
 	seeds := make([]WorkflowSeed, 0, len(names))
 	for _, name := range names {
-		raw, err := readAssetFile("files/workflows", "", name)
+		raw, err := readAssetFile("files/workflows", name)
 		if err != nil {
 			return nil, fmt.Errorf("read workflow seed %q: %w", name, err)
 		}
@@ -124,7 +118,7 @@ func ListWorkflowSeeds() ([]WorkflowSeed, error) {
 }
 
 func ListManagedOpenCodeAgentProfiles() ([]string, error) {
-	names, err := listAssetFiles("files/opencode/agents", "")
+	names, err := listAssetFiles("files/opencode/agents")
 	if err != nil {
 		return nil, fmt.Errorf("list managed opencode agent profiles: %w", err)
 	}
@@ -174,7 +168,7 @@ func WriteManagedOpenCodeAgentProfiles(overlayRoot string, force bool) error {
 	if err != nil {
 		return err
 	}
-	return writeDir("files/opencode/agents", "", filepath.Join(resolvedOverlayRoot, "agents"), force)
+	return writeDir("files/opencode/agents", filepath.Join(resolvedOverlayRoot, "agents"), force)
 }
 
 func ValidateManagedOpenCodeAgentProfiles(overlayRoot string) error {
@@ -185,8 +179,8 @@ func ValidateManagedOpenCodePlannerAssets(overlayRoot string) error {
 	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planning-assistant.md"}, "managed opencode planner profile")
 }
 
-func writeDir(sourceDir string, canonicalDir string, targetDir string, force bool) error {
-	entries, err := listAssetFiles(sourceDir, canonicalDir)
+func writeDir(sourceDir string, targetDir string, force bool) error {
+	entries, err := listAssetFiles(sourceDir)
 	if err != nil {
 		return fmt.Errorf("read asset dir %q: %w", sourceDir, err)
 	}
@@ -195,7 +189,7 @@ func writeDir(sourceDir string, canonicalDir string, targetDir string, force boo
 	}
 
 	for _, name := range entries {
-		content, readErr := readAssetFile(sourceDir, canonicalDir, name)
+		content, readErr := readAssetFile(sourceDir, name)
 		if readErr != nil {
 			return fmt.Errorf("read asset file %q: %w", filepath.Join(sourceDir, name), readErr)
 		}
@@ -235,7 +229,7 @@ func validateManagedOpenCodeNamedAssets(overlayRoot string, sourceDir string, re
 		if cleanName == "" {
 			continue
 		}
-		wanted, err := readAssetFile(sourceDir, "", cleanName)
+		wanted, err := readAssetFile(sourceDir, cleanName)
 		if err != nil {
 			return fmt.Errorf("read %s %q: %w", label, cleanName, err)
 		}
@@ -340,19 +334,10 @@ func writeMigrations(targetDir string, force bool) error {
 	return nil
 }
 
-func readAssetFile(embeddedDir string, canonicalDir string, name string) ([]byte, error) {
+func readAssetFile(embeddedDir string, name string) ([]byte, error) {
 	cleanName := strings.TrimSpace(name)
 	if cleanName == "" {
 		return nil, fmt.Errorf("asset name is required")
-	}
-	if canonicalDir != "" {
-		if path, ok := resolveRepoAssetPath(filepath.Join(canonicalDir, cleanName)); ok {
-			raw, err := os.ReadFile(path)
-			if err != nil {
-				return nil, fmt.Errorf("read canonical asset %q: %w", path, err)
-			}
-			return raw, nil
-		}
 	}
 
 	raw, err := fs.ReadFile(embeddedFiles, filepath.ToSlash(filepath.Join(embeddedDir, cleanName)))
@@ -362,16 +347,7 @@ func readAssetFile(embeddedDir string, canonicalDir string, name string) ([]byte
 	return raw, nil
 }
 
-func listAssetFiles(embeddedDir string, canonicalDir string) ([]string, error) {
-	if canonicalDir != "" {
-		if dir, ok := resolveRepoAssetDir(canonicalDir); ok {
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				return nil, fmt.Errorf("read canonical asset dir %q: %w", dir, err)
-			}
-			return fileNames(entries), nil
-		}
-	}
+func listAssetFiles(embeddedDir string) ([]string, error) {
 
 	entries, err := fs.ReadDir(embeddedFiles, embeddedDir)
 	if err != nil {
@@ -402,52 +378,4 @@ func bytesEqual(left, right []byte) bool {
 		}
 	}
 	return true
-}
-
-func resolveRepoAssetPath(relativePath string) (string, bool) {
-	for _, root := range repoRootCandidates() {
-		candidate := filepath.Join(root, relativePath)
-		if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-func resolveRepoAssetDir(relativePath string) (string, bool) {
-	for _, root := range repoRootCandidates() {
-		candidate := filepath.Join(root, relativePath)
-		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			return candidate, true
-		}
-	}
-	return "", false
-}
-
-func repoRootCandidates() []string {
-	starts := make([]string, 0, 2)
-	if wd, err := os.Getwd(); err == nil {
-		starts = append(starts, wd)
-	}
-	if _, currentFile, _, ok := runtime.Caller(0); ok {
-		starts = append(starts, filepath.Dir(currentFile))
-	}
-
-	seen := make(map[string]struct{})
-	candidates := make([]string, 0, len(starts))
-	for _, start := range starts {
-		for dir := filepath.Clean(start); ; dir = filepath.Dir(dir) {
-			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-				if _, ok := seen[dir]; !ok {
-					seen[dir] = struct{}{}
-					candidates = append(candidates, dir)
-				}
-			}
-			parent := filepath.Dir(dir)
-			if parent == dir {
-				break
-			}
-		}
-	}
-	return candidates
 }

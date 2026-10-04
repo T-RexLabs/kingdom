@@ -120,8 +120,7 @@ func TestCompleteCommentBaselinePreservesSnapshotProvenance(t *testing.T) {
 }
 
 func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableWorkOrderProvenance(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -166,8 +165,7 @@ func TestExternalSourceCaptureDeduplicatesAndPreservesImmutableWorkOrderProvenan
 }
 
 func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -188,8 +186,7 @@ func TestRefreshBasisRetainsRepositoryGrantingInstallation(t *testing.T) {
 }
 
 func TestCreateWorkOrderExternalLinkRollsBackOnUnknownSnapshot(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	err := store.CreateWorkOrder(context.Background(), CreateWorkOrderRequest{WorkOrderID: "work-order-x", Title: "D", Text: "T", CreatedAt: "2026-08-12T10:00:00Z", DirectSnapshotID: "missing", NewLinkID: func() string { return "link-x" }, ActorID: "local-operator"})
 	if !errors.Is(err, ErrExternalNotFound) {
@@ -311,8 +308,7 @@ type workOrderLineageFixture struct {
 
 func newWorkOrderLineageFixture(t *testing.T) workOrderLineageFixture {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -433,8 +429,7 @@ func TestExternalCommentSpoolPreservesFullUnicodeAndReplay(t *testing.T) {
 }
 
 func TestPlanningOperationExternalContextIsBoundAtEnqueue(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	external := NewExternalStore(db)
 	planning := NewPlanningStore(db)
 	ctx := context.Background()
@@ -488,8 +483,7 @@ func TestPlanningOperationExternalContextIsBoundAtEnqueue(t *testing.T) {
 }
 
 func TestAttachPlanningExternalSourceIsAtomicAndSessionScoped(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -917,8 +911,7 @@ type planningExternalBindingFixture struct {
 
 func newPlanningExternalBindingFixture(t *testing.T, suffix string) planningExternalBindingFixture {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	fixture := planningExternalBindingFixture{db: db, external: NewExternalStore(db), planning: NewPlanningStore(db), ctx: context.Background(), sessionID: "session-" + suffix, at: "2026-08-12T10:00:00Z"}
 	if _, err := fixture.external.CreateConnection(fixture.ctx, CreateExternalConnectionRequest{ConnectionID: "conn-" + suffix, CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-" + suffix, ActorID: "local-operator", CreatedAt: fixture.at, AuditEventID: "audit-" + suffix}); err != nil {
 		t.Fatal(err)
@@ -983,8 +976,7 @@ func assertExternalContextJSONValid(t *testing.T, contextText string) {
 }
 
 func TestExternalCommentOmissionMetadataIsPersistedAndAffectsDigest(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1032,8 +1024,7 @@ func onlyInstallation(t *testing.T, c ExternalConnection) ConnectionInstallation
 }
 
 func TestUpdateConnectionDisplayNamePreservesValidatedIdentity(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1062,8 +1053,7 @@ func TestUpdateConnectionDisplayNamePreservesValidatedIdentity(t *testing.T) {
 }
 
 func TestFinalizeConnectionCreatesHealthyValidatedGenerationAtomically(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	at := "2026-08-15T12:00:00Z"
 	connection, err := store.FinalizeConnection(context.Background(), FinalizeExternalConnectionRequest{
@@ -1101,8 +1091,7 @@ func TestCurrentValidationRequiresPositivePublishedGeneration(t *testing.T) {
 		t.Fatal("generation-zero connection was treated as currently validated")
 	}
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-15T12:00:00Z"
@@ -1120,8 +1109,7 @@ func TestCurrentValidationRequiresPositivePublishedGeneration(t *testing.T) {
 }
 
 func TestSharedReauthorizationAdvancesGenerationWithoutChangingPinnedIdentity(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-15T10:00:00Z"
@@ -1142,8 +1130,7 @@ func TestSharedReauthorizationAdvancesGenerationWithoutChangingPinnedIdentity(t 
 }
 
 func TestSharedReauthorizationReturnsCommittedProjectionWithoutContextRead(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx, cancel := context.WithCancel(context.Background())
 	at := "2026-08-24T12:00:00Z"
@@ -1166,8 +1153,7 @@ func TestSharedReauthorizationReturnsCommittedProjectionWithoutContextRead(t *te
 }
 
 func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	at := "2026-08-24T13:00:00Z"
 	connection, err := store.FinalizeConnection(context.Background(), FinalizeExternalConnectionRequest{CreateExternalConnectionRequest: CreateExternalConnectionRequest{ConnectionID: "conn-ambiguous", CredentialStrategy: "user_access_token", DisplayName: "Shared", AppID: "1", ClientID: "IvShared", AppSlug: "kingdom", Installations: []ConnectionInstallation{{InstallationID: "2", AccountID: "10", AccountLogin: "octocat"}}, CredentialHandle: "github-user:conn-ambiguous", ActorID: "local-operator", CreatedAt: at, AuditEventID: "audit-ambiguous-create"}})
@@ -1192,8 +1178,7 @@ func TestSharedReauthorizationCommitAmbiguityReturnsTargetProjection(t *testing.
 }
 
 func TestUpdateConnectionConfirmsDurableCommitError(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	const at = "2026-08-24T14:00:00Z"
@@ -1226,8 +1211,7 @@ func TestUpdateConnectionConfirmsDurableCommitError(t *testing.T) {
 }
 
 func TestUpdateConnectionRejectsMismatchedDurableCommitReadback(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	const at = "2026-08-24T15:00:00Z"
@@ -1260,8 +1244,7 @@ func TestUpdateConnectionRejectsMismatchedDurableCommitReadback(t *testing.T) {
 }
 
 func TestFinalizeConnectionCommitAmbiguityReturnsTargetProjection(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ambiguous := errors.New("commit outcome unknown")
 	store.commitTx = func(tx *sql.Tx) error {
@@ -1281,8 +1264,7 @@ func TestFinalizeConnectionCommitAmbiguityReturnsTargetProjection(t *testing.T) 
 }
 
 func TestCredentialGenerationFencesStaleCaptureAndHealth(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1304,8 +1286,7 @@ func TestCredentialGenerationFencesStaleCaptureAndHealth(t *testing.T) {
 }
 
 func TestConnectionHealthPinsInstallationAccountIdentity(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1359,8 +1340,7 @@ func TestConnectionHealthPinsInstallationAccountIdentity(t *testing.T) {
 }
 
 func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1408,8 +1388,7 @@ func TestExternalHistorySurvivesDetachedTargetRemoval(t *testing.T) {
 }
 
 func TestLinkHistoryOrdersRFC3339NanoInstantsExactlyAcrossPages(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	const at = "2026-08-12T10:00:00Z"
@@ -1498,8 +1477,7 @@ func TestLinkHistoryOrdersRFC3339NanoInstantsExactlyAcrossPages(t *testing.T) {
 // the same installation can be added again, but it is not part of the
 // operator's connection surface. Removal reconciliation still needs to see it.
 func TestListConnectionsExcludesRemovedButReconciliationSeesThem(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1557,8 +1535,7 @@ func TestListConnectionsExcludesRemovedButReconciliationSeesThem(t *testing.T) {
 }
 
 func TestCredentialMutationRejectsPendingAndRemovedConnections(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1589,8 +1566,7 @@ func TestCredentialMutationRejectsPendingAndRemovedConnections(t *testing.T) {
 }
 
 func TestApplyRefreshPersistsTransferEvidence(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1629,8 +1605,7 @@ func TestApplyRefreshPersistsTransferEvidence(t *testing.T) {
 }
 
 func TestTransferredSourceKeepsTargetProvenanceAndRefreshCoordinatesSeparate(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1753,8 +1728,7 @@ func assertExternalLinkCoordinates(t *testing.T, link ExternalLinkSummary, used,
 }
 
 func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -1791,8 +1765,7 @@ func TestApplyRefreshPersistsActionableFailureStatus(t *testing.T) {
 }
 
 func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	planning := NewPlanningStore(db)
 	ctx := context.Background()
@@ -1953,8 +1926,7 @@ func TestDetachPlanningExternalSourceStopsFutureOperationsAndAllowsReattach(t *t
 }
 
 func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-12T10:00:00Z"
@@ -2004,8 +1976,7 @@ func TestDetachPlanningExternalSourceRejectsUnsupportedTargets(t *testing.T) {
 
 func multiInstallationFixture(t *testing.T) (*ExternalStore, context.Context, ExternalConnection) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	at := "2026-08-19T10:00:00Z"

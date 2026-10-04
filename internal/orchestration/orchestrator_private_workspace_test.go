@@ -274,8 +274,7 @@ func TestBuilderSnapshotBaseRequiresCurrentUnexpiredPreparationLease(t *testing.
 
 func newInspectionWorkspaceFixture(t *testing.T) (*orchestrationLoop, runSnapshot, string) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const at = "2026-09-30T12:00:00Z"
 	for _, n := range []struct{ id, class, status string }{{"builder", "delegated_execution", "succeeded"}, {"review", "execution_review", "ready"}, {"qa", "validation_gates", "ready"}, {"security", "validation_gates", "ready"}} {
@@ -317,8 +316,7 @@ func assertWorkspaceFile(t *testing.T, root, expected string) {
 func TestInspectionCancellationDoesNotRestoreBuilderWorkspace(t *testing.T) {
 	for _, class := range []string{"execution_review", "validation_gates"} {
 		t.Run(class, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			ctx := context.Background()
 			store, err := runtimefs.NewStore(db, t.TempDir())

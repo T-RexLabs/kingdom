@@ -9,9 +9,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 const linuxProcessIdentityFilePrefix = ".kingdom-process-instance-"
@@ -26,60 +26,16 @@ var linuxCurrentProcessIdentity struct {
 }
 
 func processIdentityToken(pid int) (string, error) {
-	bootID, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
-	if err != nil {
-		return "", fmt.Errorf("read linux boot id: %w", err)
-	}
-	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return "", fmt.Errorf("read process stat: %w", err)
-	}
-	environment, err := os.ReadFile(fmt.Sprintf("/proc/%d/environ", pid))
-	if err != nil {
-		return "", fmt.Errorf("read process environment identity: %w", err)
-	}
-	identity, err := linuxProcessIdentityToken(strings.TrimSpace(string(bootID)), stat, environment)
-	if err != nil {
-		return "", err
-	}
-	fileToken, err := linuxProcessIdentityFileToken(pid)
-	if err != nil {
-		return "", err
-	}
-	if fileToken != "" {
-		identity += ":fd:" + fileToken
-	}
-	return identity, nil
+	snapshot, err := linuxProcessIdentitySnapshotAt("/proc", pid)
+	return snapshot.identity, err
 }
 
-func linuxProcessIdentityToken(bootID string, stat, environment []byte) (string, error) {
-	closing := strings.LastIndex(string(stat), ")")
-	if closing < 0 {
-		return "", fmt.Errorf("invalid process stat")
-	}
-	fields := strings.Fields(string(stat[closing+1:]))
-	if len(fields) <= 19 {
-		return "", fmt.Errorf("incomplete process stat")
-	}
-	startTicks, err := strconv.ParseUint(fields[19], 10, 64)
-	if err != nil || startTicks == 0 {
-		return "", fmt.Errorf("invalid process start ticks")
-	}
-	identity := bootID + ":" + strconv.FormatUint(startTicks, 10)
-	instanceToken, err := linuxProcessInstanceToken(environment)
-	if err != nil {
-		return "", err
-	}
-	if instanceToken != "" {
-		identity += ":instance:" + instanceToken
-	}
-	return identity, nil
+func processIdentityNotFound(err error) bool {
+	return !errors.Is(err, errLinuxIdentityInspection) && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ESRCH))
 }
 
-func processIdentityNotFound(err error) bool { return errors.Is(err, fs.ErrNotExist) }
-
-func linuxProcessIdentityFileToken(pid int) (string, error) {
-	if pid == os.Getpid() {
+func linuxProcessIdentityFileToken(process *os.Root, current bool) (string, error) {
+	if current {
 		linuxCurrentProcessIdentity.once.Do(func() {
 			token, err := newRandomHex(16)
 			if err != nil {
@@ -103,14 +59,18 @@ func linuxProcessIdentityFileToken(pid int) (string, error) {
 		return linuxCurrentProcessIdentity.token, linuxCurrentProcessIdentity.err
 	}
 
-	fdDirectory := fmt.Sprintf("/proc/%d/fd", pid)
-	entries, err := os.ReadDir(fdDirectory)
+	fdDirectory, err := process.Open("fd")
+	if err != nil {
+		return "", fmt.Errorf("read process identity descriptors: %w", err)
+	}
+	defer fdDirectory.Close()
+	entries, err := fdDirectory.ReadDir(-1)
 	if err != nil {
 		return "", fmt.Errorf("read process identity descriptors: %w", err)
 	}
 	token := ""
 	for _, entry := range entries {
-		link, err := os.Readlink(filepath.Join(fdDirectory, entry.Name()))
+		link, err := process.Readlink(filepath.Join("fd", entry.Name()))
 		if errors.Is(err, fs.ErrNotExist) {
 			continue
 		}

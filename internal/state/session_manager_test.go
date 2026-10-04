@@ -12,8 +12,7 @@ import (
 func TestSessionManagerLeaseLifecycle(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedSessionTestAgent(t, db)
 
 	metrics := NewSessionLifecycleMetrics()
@@ -75,8 +74,7 @@ func TestSessionManagerLeaseLifecycle(t *testing.T) {
 func TestSessionManagerRenewReportsStateConflictWhenLeaseNotActive(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedSessionTestAgent(t, db)
 
 	manager := NewSessionManager(db, NewSessionLifecycleMetrics())
@@ -124,8 +122,7 @@ func TestSessionManagerRenewReportsStateConflictWhenLeaseNotActive(t *testing.T)
 func TestSessionManagerReactivateLeaseReopensClosedLease(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedSessionTestAgent(t, db)
 
 	manager := NewSessionManager(db, NewSessionLifecycleMetrics())
@@ -172,8 +169,7 @@ func TestSessionManagerReactivateLeaseReopensClosedLease(t *testing.T) {
 func TestSessionManagerReconcileStaleLeasesExpiresAndRecordsRecoveryMetrics(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedSessionTestAgent(t, db)
 
 	metrics := NewSessionLifecycleMetrics()
@@ -260,8 +256,7 @@ func TestSessionManagerFindStaleLeasesUsesRFC3339NanoChronology(t *testing.T) {
 		{name: "expiry before now", leaseExpires: "2026-09-25T10:00:00.05Z", wantStale: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedSessionTestAgent(t, db)
 			manager := NewSessionManager(db, NewSessionLifecycleMetrics())
 			if _, err := manager.CreateLease(context.Background(), CreateSessionLeaseRequest{

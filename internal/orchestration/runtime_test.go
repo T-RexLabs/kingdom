@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -39,14 +40,28 @@ import (
 func TestNewRuntimeLoadsPoliciesAndCoreServices(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
-	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
+	// Core bootstrap wiring does not require a provider binary on the host.
+	// Leave ProviderEngine empty to retain coverage of its OpenCode default.
+	rt, err := NewRuntime(Config{
+		DB:            db,
+		Paths:         DefaultBootstrapPaths(repoRoot(t)),
+		WorkspaceRoot: t.TempDir(),
+		Adapter:       opencode.NewMemoryAdapter(),
+	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close runtime: %v", err)
+		}
+	})
 
 	if rt.RetryEngine() == nil {
 		t.Fatal("expected retry engine to be wired")
@@ -120,8 +135,7 @@ func TestNewRuntimeFailsWhenDurableExecutionTablesMissing(t *testing.T) {
 func TestNewRuntimeFailsWhenRunWorktreeSchemaMissing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `DROP TABLE run_worktrees`)
 
@@ -189,8 +203,7 @@ func TestNewRuntimeFailsWhenAttemptExecutionsProviderSessionIDColumnMissing(t *t
 func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfilesMissingForConfiguredWorkDir(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workDir := t.TempDir()
@@ -215,8 +228,7 @@ func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfilesMissingForConfiguredWork
 func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfileDriftsEvenWhenNonStrict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workDir := t.TempDir()
@@ -249,8 +261,7 @@ func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfileDriftsEvenWhenNonStrict(t
 func TestNewRuntimeOpencodeProviderStillRequiresSessionAdapterWhenNonStrict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := NewRuntime(Config{
@@ -276,8 +287,7 @@ func TestNewRuntimeOpencodeProviderStillRequiresSessionAdapterWhenNonStrict(t *t
 func TestNewRuntimeRejectsUnsupportedMockProviderEngine(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	_, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), ProviderEngine: "mock_engine"})
@@ -292,8 +302,7 @@ func TestNewRuntimeRejectsUnsupportedMockProviderEngine(t *testing.T) {
 func TestNewRuntimeOpencodeProviderFailsWhenStrict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	_, err := NewRuntime(Config{
@@ -313,8 +322,7 @@ func TestNewRuntimeOpencodeProviderFailsWhenStrict(t *testing.T) {
 func TestNewRuntimeStrictAgentValidationFailsWhenBinaryUnusable(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	binaryPath := filepath.Join(t.TempDir(), "opencode")
@@ -342,8 +350,7 @@ func TestNewRuntimeStrictAgentValidationFailsWhenBinaryUnusable(t *testing.T) {
 func TestNewRuntimeRespectsStartupContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	startupCtx, cancel := context.WithCancel(context.Background())
@@ -367,8 +374,7 @@ func TestNewRuntimeRespectsStartupContextCancellation(t *testing.T) {
 func TestNewRuntimeFailsWhenRoleAgentCannotBeResolved(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	binaryPath := filepath.Join(t.TempDir(), "opencode")
@@ -430,8 +436,7 @@ exit 2
 }
 
 func TestNewRuntimeStrictAgentResolutionRunsInConfiguredWorkDir(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()
@@ -520,8 +525,7 @@ exit 2
 }
 
 func TestNewRuntimeStrictAgentValidationUsesIsolatedDatabasesToAvoidSQLiteLockContention(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()
@@ -586,8 +590,7 @@ exit 2
 }
 
 func TestNewRuntimeStrictAgentResolutionRunsConcurrently(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	binaryPath := filepath.Join(t.TempDir(), "opencode")
@@ -666,8 +669,7 @@ exit 2
 }
 
 func TestNewRuntimeStrictAgentResolutionHonorsStartupTimeout(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	binaryPath := filepath.Join(t.TempDir(), "opencode")
@@ -796,8 +798,7 @@ func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 func TestNewRuntimeDefaultsAutonomousApprovalsToTrue(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -815,8 +816,7 @@ func TestNewRuntimeDefaultsAutonomousApprovalsToTrue(t *testing.T) {
 func TestNewRuntimeFailsOnInvalidRetryPolicy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	invalidRetryPolicy := filepath.Join(t.TempDir(), "retry_policy.yaml")
 	if err := os.WriteFile(invalidRetryPolicy, []byte("version: v2\npolicy_id: retry\n"), 0o600); err != nil {
@@ -835,8 +835,7 @@ func TestNewRuntimeFailsOnInvalidRetryPolicy(t *testing.T) {
 func TestNewRuntimeFailsOnInvalidProviderPolicy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	invalidProviderPolicy := filepath.Join(t.TempDir(), "provider_policy.yaml")
 	if err := os.WriteFile(invalidProviderPolicy, []byte(`
@@ -873,8 +872,7 @@ escalation:
 func TestRuntimeStartAndCloseRunsLifecycle(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -975,8 +973,7 @@ func TestRuntimeForceCloseReturnsPromptlyAndCancelsInflightAttempts(t *testing.T
 func TestRuntimeForceClosePrefersPersistedProviderSessionID(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -1045,8 +1042,7 @@ func TestRuntimeForceClosePrefersPersistedProviderSessionID(t *testing.T) {
 func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	adapter := newBlockingFirstExecutionAdapter()
@@ -1180,8 +1176,7 @@ func TestStartAsyncExecutionPreservesErrorResponseMetadataInDurableHandoff(t *te
 func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:00:00Z"
@@ -1248,10 +1243,19 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 
 func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	for index := 1; index <= providerlimits.StartupReplayMaxItems+1; index++ {
-		invocation := h.addInvocation(t, index)
-		h.persistHandoffFileOnly(t, invocation, index, "2026-03-01T12:00:02Z")
+	invocation := h.addInvocation(t, 1)
+	job := h.baseHandoffJob(invocation, 1)
+	// Overflow the actual guard budget for one invocation. This proves that
+	// Start defers recovery without repeating unrelated builder projections.
+	const guardCount = providerlimits.StartupReplayMaxItems + 1
+	seedStartupGuardOverflow(t, h, invocation, job, guardCount)
+	job.workspacePath = t.TempDir()
+	job.baseSnapshotID = h.baselineSnapshotID
+	if err := h.fsStore.RestoreSnapshot(t.Context(), h.baselineSnapshotID, job.workspacePath); err != nil {
+		t.Fatalf("restore recovered attempt workspace: %v", err)
 	}
+	configureSuccessfulHandoff(&job, "Builder complete.")
+	persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:02Z")
 
 	rt, err := newMemoryRuntime(t, Config{
 		DB:            h.db,
@@ -1262,7 +1266,6 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	rt.completionEvery = time.Millisecond
 	firstFinishAttempt := make(chan struct{})
 	allowFirstFinishFailure := make(chan struct{})
 	var finishMu sync.Mutex
@@ -1273,6 +1276,12 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		call := finishCalls
 		finishMu.Unlock()
 		if call == 1 {
+			rt.mu.Lock()
+			started := rt.started
+			rt.mu.Unlock()
+			if !started {
+				return errors.New("startup guard overflow did not defer recovery to the background loop")
+			}
 			close(firstFinishAttempt)
 			<-allowFirstFinishFailure
 			return errors.New("injected startup finish failure")
@@ -1280,7 +1289,11 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		return nil
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(t.Context())
+	if deadline, ok := t.Deadline(); ok {
+		cancel()
+		ctx, cancel = context.WithDeadline(t.Context(), deadline)
+	}
 	if err := rt.Start(ctx); err != nil {
 		cancel()
 		t.Fatalf("start runtime: %v", err)
@@ -1297,36 +1310,54 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 		}
 	}()
 
-	<-firstFinishAttempt
+	select {
+	case <-firstFinishAttempt:
+	case <-ctx.Done():
+		t.Fatalf("startup did not reach its injected finish failure: %v", ctx.Err())
+	}
 	if !rt.startupRecoveryPending() || rt.startupRecoveryIsOpen() {
 		t.Fatalf("failed startup finish released deferred recovery: pending=%t open=%t", rt.startupRecoveryPending(), rt.startupRecoveryIsOpen())
 	}
+	if replayed := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_process_guards
+		WHERE provider_invocation_id=? AND lifecycle='quiescent' AND evidence_cleaned_at IS NOT NULL`, invocation.ProviderInvocationID); replayed != guardCount {
+		t.Fatalf("startup finish preceded guard replay: replayed=%d want=%d", replayed, guardCount)
+	}
 	close(allowFirstFinishFailure)
-	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
-		finishMu.Lock()
-		calls := finishCalls
-		finishMu.Unlock()
-		if calls < 2 || !rt.startupRecoveryIsOpen() {
-			return fmt.Errorf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
-		}
-		return nil
-	})
+	if err := rt.awaitStartupRecovery(ctx); err != nil {
+		t.Fatalf("deferred startup did not reopen recovery: %v", err)
+	}
+	finishMu.Lock()
+	calls := finishCalls
+	finishMu.Unlock()
+	if calls < 2 || !rt.startupRecoveryIsOpen() {
+		t.Fatalf("deferred startup finish calls=%d open=%t", calls, rt.startupRecoveryIsOpen())
+	}
 
-	deferredAttemptID := fmt.Sprintf("run_terminal_handoff:implementation:%d", providerlimits.StartupReplayMaxItems+1)
-	deferredInvocationID := fmt.Sprintf("pinv_terminal_handoff_%03d", providerlimits.StartupReplayMaxItems+1)
-	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
-		attempt, found, err := h.store.GetAttempt(context.Background(), deferredAttemptID)
+	deferredAttemptID := invocation.AttemptID
+	deferredInvocationID := invocation.ProviderInvocationID
+	for {
+		// Capture the completion signal before inspecting state so a worker
+		// finishing during the queries cannot leave this wait asleep.
+		rt.orchestrator.execMu.Lock()
+		changed := rt.orchestrator.maintenance.changed
+		rt.orchestrator.execMu.Unlock()
+		attempt, found, err := h.store.GetAttempt(ctx, deferredAttemptID)
 		if err != nil {
-			return err
+			t.Fatalf("load deferred attempt: %v", err)
 		}
-		if !found || attempt.State != "committed_success" {
-			return fmt.Errorf("deferred attempt state=%q found=%t", attempt.State, found)
+		_, settled, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, deferredInvocationID)
+		if err != nil {
+			t.Fatalf("load deferred terminal settlement: %v", err)
 		}
-		if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), deferredInvocationID); err != nil || !found {
-			return fmt.Errorf("deferred terminal handoff not settled: found=%t err=%v", found, err)
+		if found && attempt.State == "committed_success" && settled {
+			break
 		}
-		return nil
-	})
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			t.Fatalf("deferred terminal handoff did not settle: attempt=%s state=%q found=%t settled=%t recovery_open=%t err=%v", deferredAttemptID, attempt.State, found, settled, rt.startupRecoveryIsOpen(), ctx.Err())
+		}
+	}
 
 	var staleCancelCount int
 	if err := h.db.QueryRow(`SELECT COUNT(1) FROM attempt_cancel_outbox WHERE attempt_id = ? AND reason_code = 'agent_unresponsive'`, deferredAttemptID).Scan(&staleCancelCount); err != nil {
@@ -1334,6 +1365,49 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	}
 	if staleCancelCount != 0 {
 		t.Fatalf("deferred handoff attempt was stale-fenced before settlement: cancel rows=%d", staleCancelCount)
+	}
+	// The final settlement can precede other recovered outbox projections.
+	// Join that work before the shared fixture cleanup closes its database.
+	if err := rt.GracefulClose(ctx); err != nil {
+		t.Fatalf("drain recovered runtime: %v", err)
+	}
+}
+
+func seedStartupGuardOverflow(t *testing.T, h terminalHandoffHarness, invocation executionstore.ProviderInvocation, job asyncExecutionResult, count int) {
+	t.Helper()
+	for ordinal := 1; ordinal <= count; ordinal++ {
+		ownership := processguardian.Ownership{
+			GuardID: fmt.Sprintf("guard_startup_%03d", ordinal), GuardianPID: ordinal + 1000,
+			GuardianIdentityToken: fmt.Sprintf("guardian-%03d", ordinal), ChildPID: ordinal + 2000,
+			ChildIdentityToken: fmt.Sprintf("child-%03d", ordinal), TreeID: ordinal + 2000,
+			TreeIdentityToken: fmt.Sprintf("tree-%03d", ordinal), Platform: "unix_process_group",
+			QuiescenceCapability: fmt.Sprintf("guardian-quiescence-%03d", ordinal),
+		}
+		if _, err := h.store.AcknowledgeProviderProcessGuard(t.Context(), executionstore.AcknowledgeProviderProcessGuardRequest{
+			GuardID: ownership.GuardID, ProviderInvocationID: invocation.ProviderInvocationID, AttemptID: invocation.AttemptID,
+			RunID: invocation.RunID, NodeRunID: invocation.NodeRunID, CommandOrdinal: int64(ordinal), Platform: ownership.Platform,
+			GuardianPID: int64(ownership.GuardianPID), GuardianIdentityToken: ownership.GuardianIdentityToken,
+			ChildPID: int64(ownership.ChildPID), ChildIdentityToken: ownership.ChildIdentityToken,
+			TreeID: strconv.Itoa(ownership.TreeID), TreeIdentityToken: ownership.TreeIdentityToken,
+			QuiescenceCapability: ownership.QuiescenceCapability, ExpectedLeaseOwner: job.expectedLeaseOwner, ExpectedLeaseVersion: job.expectedLeaseVersion,
+			StartedAt: "2026-03-01T11:59:59Z", AcknowledgedAt: "2026-03-01T11:59:59Z",
+		}); err != nil {
+			t.Fatalf("acknowledge startup process guard %d: %v", ordinal, err)
+		}
+		evidence, err := json.Marshal(struct {
+			Type   string                 `json:"type"`
+			Result processguardian.Result `json:"result"`
+		}{Type: "result", Result: processguardian.Result{Ownership: ownership, Quiescent: true}})
+		if err != nil {
+			t.Fatalf("marshal startup guard evidence: %v", err)
+		}
+		evidencePath := providerGuardEvidencePath(h.runtimeDir, ownership.GuardID)
+		if err := os.MkdirAll(filepath.Dir(evidencePath), 0o700); err != nil {
+			t.Fatalf("create startup guard evidence directory: %v", err)
+		}
+		if err := os.WriteFile(evidencePath, evidence, 0o600); err != nil {
+			t.Fatalf("write startup guard evidence: %v", err)
+		}
 	}
 }
 
@@ -1594,8 +1668,7 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
 	const (
@@ -1702,8 +1775,7 @@ func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(
 func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -1829,8 +1901,7 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	for _, role := range []struct{ id, name string }{{"builder", "Builder"}, {"reviewer", "Reviewer"}, {"qa-validator", "Validator"}, {"governance", "Governance"}, {"coordinator", "Coordinator"}} {
@@ -1906,8 +1977,7 @@ func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T)
 func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -1966,8 +2036,7 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(
 func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -2029,8 +2098,7 @@ func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T)
 func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -2084,8 +2152,7 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T)
 func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:00:05Z"
@@ -2162,8 +2229,7 @@ func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *t
 func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOperatorRecovery(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const now = "2026-03-01T12:00:05Z"
 	const attemptID = "run_1:work_intake:1"
@@ -2211,8 +2277,7 @@ func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOper
 func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '`+now+`')`)
@@ -2323,8 +2388,7 @@ func TestRestoreTrustedWorkspaceAfterCancellationSkipsResponseOnlyAttempt(t *tes
 func TestDrainAttemptCancelOutboxSkipsRuntimeOwnedAttempts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -2401,8 +2465,7 @@ func TestRuntimeStartFailsWithoutDeadlockWhenStartupReconcileErrors(t *testing.T
 func TestRuntimeIngestAttemptStreamAndValidateOutput(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	adapter := opencode.NewMemoryAdapter()
@@ -2488,8 +2551,7 @@ func TestRuntimeIngestAttemptStreamAndValidateOutput(t *testing.T) {
 }
 
 func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -2682,8 +2744,7 @@ func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
 func TestOrchestrationTickPublishesDurableAttemptOutbox(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'terminal_observed', 'runtime_owned', 'not_applicable', '', NULL, 1, 'session_run_1_work_intake_1', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', NULL, '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
@@ -2734,8 +2795,7 @@ func TestOrchestrationTickPublishesDurableAttemptOutbox(t *testing.T) {
 func TestDrainExecutionOutboxProjectsCompletionAndMarksPublished(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	execStore := executionstore.New(db)
@@ -2853,8 +2913,7 @@ func TestDrainExecutionOutboxProjectsCompletionAndMarksPublished(t *testing.T) {
 func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z', finished_at = NULL WHERE node_run_id = 'nr_1'`)
@@ -2923,8 +2982,7 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 }
 
 func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTarget(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	const now = "2026-03-01T12:00:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '`+now+`')`)
@@ -3089,8 +3147,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 		{name: "rerun", runEventType: "run.rerun_reopened", runReasonCode: "manual_rerun_requested", nodeEventType: "attempt.rerun_queued", eventPrefix: "rerun"},
 	} {
 		t.Run(replay.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			const runID = "run_manual_quarantine_recovery"
 			const nodeID = "implementation"
 			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
@@ -3123,7 +3180,18 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 			if err := os.WriteFile(filepath.Join(targetRoot, "dirty.txt"), []byte("untrusted provider content"), 0o600); err != nil {
 				t.Fatalf("write dirty target content: %v", err)
 			}
-			oldTarget, err := os.Stat(targetRoot)
+			// Keep the old inode referenced through recovery. Linux can otherwise
+			// reuse it for the replacement directory and make SameFile misleading.
+			oldDirectory, err := os.Open(targetRoot)
+			if err != nil {
+				t.Fatalf("open dirty target: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := oldDirectory.Close(); err != nil {
+					t.Errorf("close dirty target directory: %v", err)
+				}
+			})
+			oldTarget, err := oldDirectory.Stat()
 			if err != nil {
 				t.Fatalf("stat dirty target: %v", err)
 			}
@@ -3212,8 +3280,7 @@ func assertRuntimeTestFile(t *testing.T, root, relativePath, want string) {
 func TestDrainExecutionOutboxPrefersDurableFailureOverStaleSuccessPayload(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 
@@ -3294,8 +3361,7 @@ func TestDrainExecutionOutboxPrefersDurableFailureOverStaleSuccessPayload(t *tes
 func TestCompleteExecutionPersistsFailedBuilderArtifactsWithoutPublishing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -3373,8 +3439,7 @@ func TestCompleteExecutionPersistsFailedBuilderArtifactsWithoutPublishing(t *tes
 func TestDrainExecutionOutboxReplaysProviderIncompleteTurnForOwnerNode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -3451,42 +3516,52 @@ func TestDrainExecutionOutboxReplaysProviderIncompleteTurnForOwnerNode(t *testin
 	}
 }
 
-func TestRuntimeDispatchLoopCoversCanonicalRoleFamilies(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+func TestRuntimeDispatchCoversCanonicalRoleFamilies(t *testing.T) {
+	db := openMigratedTestDB(t)
 	seedCanonicalRoleCoverageRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
-		DB:               db,
-		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		GovernanceMode:   "autonomous",
-		DispatchInterval: 20 * time.Millisecond,
+		DB:             db,
+		Paths:          DefaultBootstrapPaths(repoRoot(t)),
+		GovernanceMode: "autonomous",
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
+	ctx := t.Context()
+	if deadline, ok := t.Deadline(); ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithDeadline(ctx, deadline)
+		defer cancel()
 	}
-	defer func() {
-		if err := rt.Close(); err != nil {
-			t.Fatalf("close runtime: %v", err)
+	var nodeCount int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM workflow_nodes WHERE workflow_definition_id = 'wfdef_role_coverage'`).Scan(&nodeCount); err != nil {
+		t.Fatalf("count workflow nodes: %v", err)
+	}
+	// This test checks role coverage, not scheduler throughput. Advance one DAG
+	// stage per pass and wait for its admitted work and durable projections.
+	// The extra pass finalizes the run after its last node settles.
+	for pass := 0; pass < nodeCount+1 && queryRunStatus(t, db, "run_role_coverage") != "succeeded"; pass++ {
+		if err := rt.orchestrator.Tick(ctx); err != nil {
+			t.Fatalf("dispatch pass %d: %v", pass, err)
 		}
-	}()
-
-	awaitRunStatus(t, db, "run_role_coverage", 4*time.Second, 30*time.Millisecond, func(status string) error {
-		if status != "succeeded" {
-			var nodeID, nodeStatus, lastError string
-			_ = db.QueryRow(`SELECT node_id, node_status FROM node_runs WHERE run_id = 'run_role_coverage' AND node_status NOT IN ('succeeded', 'cancelled') ORDER BY node_id LIMIT 1`).Scan(&nodeID, &nodeStatus)
-			_ = db.QueryRow(`SELECT last_error FROM attempt_outbox WHERE run_id = 'run_role_coverage' AND status = 'pending' ORDER BY created_at LIMIT 1`).Scan(&lastError)
-			return fmt.Errorf("expected run to succeed, got %s (node=%s status=%s outbox_error=%s)", status, nodeID, nodeStatus, lastError)
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Fatalf("drain provider work on pass %d: %v", pass, err)
 		}
-		return nil
-	})
+		if err := rt.drainMaintenance(ctx); err != nil {
+			t.Fatalf("drain maintenance on pass %d: %v", pass, err)
+		}
+		if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+			t.Fatalf("drain execution projection on pass %d: %v", pass, err)
+		}
+	}
+	if status := queryRunStatus(t, db, "run_role_coverage"); status != "succeeded" {
+		var nodeID, nodeStatus, lastError string
+		_ = db.QueryRow(`SELECT node_id, node_status FROM node_runs WHERE run_id = 'run_role_coverage' AND node_status NOT IN ('succeeded', 'cancelled') ORDER BY node_id LIMIT 1`).Scan(&nodeID, &nodeStatus)
+		_ = db.QueryRow(`SELECT last_error FROM attempt_outbox WHERE run_id = 'run_role_coverage' AND status = 'pending' ORDER BY created_at LIMIT 1`).Scan(&lastError)
+		t.Fatalf("expected run to succeed after dispatching its %d nodes, got %s (node=%s status=%s outbox_error=%s)", nodeCount, status, nodeID, nodeStatus, lastError)
+	}
 
 	for _, roleID := range []string{"governance", "coordinator", "plan-author", "builder", "qa-validator"} {
 		var count int
@@ -3534,8 +3609,7 @@ func TestPersistExecutionArtifactAllowsEmptyWorkspace(t *testing.T) {
 func TestPersistExecutionArtifactBuilderCleanSlatePersistsAllCreatedFiles(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 
@@ -3613,8 +3687,7 @@ func TestPersistExecutionArtifactBuilderCleanSlatePersistsAllCreatedFiles(t *tes
 func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesDirectMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 
@@ -3702,8 +3775,7 @@ func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesDirectMode(t
 func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntries(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
@@ -3750,8 +3822,7 @@ func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntrie
 func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime fs store: %v", err)
@@ -3791,8 +3862,7 @@ func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *t
 func TestActivateProviderInvocationForExecutionPersistsOpenServerResponseInvocation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_server_response_setup', 'builder', 'busy', NULL, 0, '%s', '%s')`, now, now))
@@ -3853,8 +3923,7 @@ func TestActivateProviderInvocationForExecutionPersistsOpenServerResponseInvocat
 func TestPersistExecutionArtifactNonBuilderUsesCanonicalResponseSnapshotOnly(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -3917,8 +3986,7 @@ func TestPersistExecutionArtifactNonBuilderUsesCanonicalResponseSnapshotOnly(t *
 func TestPersistExecutionArtifactRuntimeOwnedWorkIntakeDoesNotNeedWorkspacePath(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -3958,8 +4026,7 @@ func TestPersistExecutionArtifactRuntimeOwnedWorkIntakeDoesNotNeedWorkspacePath(
 func TestPersistExecutionArtifactUsesCanonicalSnapshotPaths(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -4041,8 +4108,7 @@ func TestPersistExecutionArtifactUsesCanonicalSnapshotPaths(t *testing.T) {
 func TestOrchestratorTickReturnsErrorWhenRunStartTransitionFails(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	now := "2026-03-01T12:00:00Z"
@@ -4064,8 +4130,9 @@ func TestOrchestratorTickReturnsErrorWhenRunStartTransitionFails(t *testing.T) {
 }
 
 func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
+	db := openMigratedTestDB(t)
 	seedParallelReadyDispatchRun(t, db)
 
 	adapter := newBlockingFirstExecutionAdapter()
@@ -4078,10 +4145,18 @@ func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-
 	tickDone := make(chan error, 1)
+	tickExited := make(chan struct{})
 	go func() {
-		tickDone <- rt.orchestrator.Tick(context.Background())
+		defer close(tickExited)
+		tickDone <- rt.orchestrator.Tick(ctx)
+	}()
+	defer func() {
+		adapter.releaseFirstExecution()
+		<-tickExited
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Errorf("join provider executions: %v", err)
+		}
 	}()
 
 	select {
@@ -4089,27 +4164,19 @@ func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
 		if err != nil {
 			t.Fatalf("tick failed: %v", err)
 		}
-	case <-time.After(500 * time.Millisecond):
-		t.Fatal("expected tick to return without waiting for blocked execution")
+	case <-ctx.Done():
+		t.Fatalf("tick waited for blocked execution: %v", ctx.Err())
 	}
 
 	select {
 	case <-adapter.secondExecuteStarted:
-	case <-time.After(time.Second):
-		t.Fatal("expected second execution to start while first execution is blocked")
-	}
-
-	adapter.releaseFirstExecution()
-	drainCtx, cancelDrain := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancelDrain()
-	if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
-		t.Fatalf("wait for async drain: %v", err)
+	case <-ctx.Done():
+		t.Fatalf("second execution did not start while the first was blocked: %v", ctx.Err())
 	}
 }
 
 func TestRuntimeDispatchLoopPublishesArtifactsToProjectRoot(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	projectRoot := t.TempDir()
@@ -4239,8 +4306,7 @@ func TestPublishArtifactsToProjectRootSkipsVerificationOverwrite(t *testing.T) {
 func TestPublishArtifactsDirectWithTrackingPreservesExternalChanges(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_conflict_builder', 'builder', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -4462,8 +4528,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeRejectsInvalidRepo(t *testing.T
 func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
@@ -4502,8 +4567,7 @@ func TestResolveExecutionWorkspaceContextDirectDetectsEmptyState(t *testing.T) {
 func TestResolveExecutionWorkspaceContextGitWorktreeRejectsNonRepo(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
@@ -4687,8 +4751,7 @@ func TestDetectExecutionReviewReworkRequiresStrictReviewVerdict(t *testing.T) {
 func TestCompleteExecutionPreservesRawResponseForCeremonialRoyalSummary(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -4745,8 +4808,7 @@ func TestCompleteExecutionPreservesRawResponseForCeremonialRoyalSummary(t *testi
 func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -4796,8 +4858,7 @@ func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *test
 func TestCompleteExecutionSkipsLateProjectionWhenRunAlreadyTerminalized(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -4852,8 +4913,7 @@ func TestCompleteExecutionSkipsLateProjectionWhenRunAlreadyTerminalized(t *testi
 func TestCompleteExecutionCommitsCanonicalStateBeforeProjectionFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -4919,8 +4979,7 @@ func TestCompleteExecutionCommitsCanonicalStateBeforeProjectionFailure(t *testin
 func TestCompleteExecutionRepublishesPersistedArtifactsOnProjectionRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	responseBody := "# Node Response Snapshot\n\nNoble guidance preserved after projection retry.\n"
@@ -4990,8 +5049,7 @@ func TestCompleteExecutionRepublishesPersistedArtifactsOnProjectionRetry(t *test
 func TestCompleteExecutionProjectionRetryUsesCanonicalSettlementOutput(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -5061,8 +5119,7 @@ func TestCompleteExecutionProjectionRetryUsesCanonicalSettlementOutput(t *testin
 func TestDrainExecutionOutboxRetainsReplayEnvelopeAcrossProjectionRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -5170,8 +5227,7 @@ func TestDrainExecutionOutboxRetainsReplayEnvelopeAcrossProjectionRetry(t *testi
 func TestRuntimeDrainExecutionOutboxUntilDrainedWaitsForRetryablePendingRow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -5361,8 +5417,7 @@ func TestRuntimeGracefulCloseReturnsContextErrorWhenPendingOutboxCannotDrain(t *
 func TestDrainExecutionOutboxDeadLettersMalformedPayloadAndContinues(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	execStore := executionstore.New(db)
@@ -5446,8 +5501,7 @@ func TestDrainExecutionOutboxDeadLettersMalformedPayloadAndContinues(t *testing.
 func TestDrainExecutionOutboxProjectsCanonicalCompletionAfterRunTerminalization(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Noble', 0, '%s')`, now))
@@ -5599,8 +5653,7 @@ func TestStartAsyncExecutionPersistsTerminalHandoffAfterDispatchContextCancellat
 func TestCommitRuntimeOwnedCompletionPersistsDurableHandoffAfterDispatchContextCancellation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	execStore := executionstore.New(db)
@@ -5683,8 +5736,7 @@ func TestCommitRuntimeOwnedCompletionPersistsDurableHandoffAfterDispatchContextC
 func TestCommitRuntimeOwnedCompletionFailsNodeWhenOutboxHandoffFails(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -5758,8 +5810,7 @@ func TestCommitRuntimeOwnedCompletionFailsNodeWhenOutboxHandoffFails(t *testing.
 func TestCommitExecutionCompletionDetachedSkipsDuringForceClose(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	execStore := executionstore.New(db)
 	closeMode := newRuntimeCloseMode()
 	closeMode.MarkForced()
@@ -5785,8 +5836,7 @@ func TestCommitExecutionCompletionDetachedSkipsDuringForceClose(t *testing.T) {
 func TestCommitExecutionCompletionDetachedNoOpsAfterCommittedCancellation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	execStore := executionstore.New(db)
@@ -5835,8 +5885,7 @@ func TestCommitExecutionCompletionDetachedNoOpsAfterCommittedCancellation(t *tes
 
 func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsContradiction(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := executionstore.New(db)
@@ -6122,8 +6171,7 @@ func TestDiscoverWorkspaceArtifactsUsesTrackedFilesystemPolicy(t *testing.T) {
 func TestBuildNodePromptExecutionReviewOmitsHydratedPathMetadata(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_prompt_no_hydrated', 'Prompt work order', 'text', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_prompt_no_hydrated', 'work-order-v1', '1', '{}', '2026-03-01T12:00:00Z')`)
@@ -6138,8 +6186,7 @@ func TestBuildNodePromptExecutionReviewOmitsHydratedPathMetadata(t *testing.T) {
 func TestBuildNodePromptExecutionRolesIgnoreRuntimeManagedPaths(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_prompt_runtime_paths', 'Prompt work order', 'text', '{}', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO workflow_definitions (workflow_definition_id, workflow_name, workflow_version, definition_json, created_at) VALUES ('wfdef_prompt_runtime_paths', 'work-order-v1', '1', '{}', '2026-03-01T12:00:00Z')`)
@@ -6177,8 +6224,7 @@ func TestBuildNodePromptExecutionRolesIgnoreRuntimeManagedPaths(t *testing.T) {
 func TestBuilderEvidenceManifestUsesCanonicalPathsWithoutHydratedPrefix(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Berserker', 0, '%s')`, now))
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Council Member', 1, '%s')`, now))
@@ -6266,8 +6312,7 @@ func TestIsNoisyManifestPathUsesCanonicalPreviewPolicy(t *testing.T) {
 func TestBuilderEvidenceManifestForRunIncludesLatestBuilderEvidence(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Berserker', 0, '%s')`, now))
@@ -6339,8 +6384,7 @@ func TestBuilderEvidenceManifestForRunIncludesLatestBuilderEvidence(t *testing.T
 func TestBuildNodePromptIncludesBuilderEvidenceManifestForExecutionReview(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Berserker', 0, '%s')`, now))
@@ -6373,8 +6417,7 @@ func TestBuildNodePromptIncludesBuilderEvidenceManifestForExecutionReview(t *tes
 func TestBuilderEvidenceManifestForRunCapsKeyFilesAtTenWithEllipsis(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -6420,8 +6463,7 @@ func TestBuilderEvidenceManifestForRunCapsKeyFilesAtTenWithEllipsis(t *testing.T
 func TestBuilderEvidenceManifestForRunUsesLatestSuccessfulBuilderAttemptOnly(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Berserker', 0, '%s')`, now))
@@ -6479,8 +6521,7 @@ func TestFormatExecutionFailureContextsUsesAgentStyleHeaders(t *testing.T) {
 func TestAdvisorSynthesisInstructionUsesAdviceHeadersWithoutNumbering(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('systems-advisor', 'Systems Advisor', 0, '%s')`, now))
@@ -6513,8 +6554,7 @@ func TestAdvisorSynthesisInstructionUsesAdviceHeadersWithoutNumbering(t *testing
 func TestDelegatorInstructionForAdvisorySynthesisIncludesBoundOperatorReworkFeedback(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '%s')`, now))
@@ -6548,8 +6588,7 @@ func TestDelegatorInstructionForAdvisorySynthesisIncludesBoundOperatorReworkFeed
 func TestDelegatorInstructionForAdvisorySynthesisIgnoresOperatorFeedbackForAutonomousRuns(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '%s')`, now))
@@ -6578,8 +6617,7 @@ func TestDelegatorInstructionForAdvisorySynthesisIgnoresOperatorFeedbackForAuton
 func TestDelegatorInstructionForPlanDraftingIncludesBoundOperatorPlanReworkFeedback(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '%s')`, now))
@@ -6612,8 +6650,7 @@ func TestDelegatorInstructionForPlanDraftingIncludesBoundOperatorPlanReworkFeedb
 func TestDelegatorInstructionForPlanDraftingIncludesBoundOperatorFinalReworkFeedback(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '%s')`, now))
@@ -6645,8 +6682,7 @@ func TestDelegatorInstructionForPlanDraftingIncludesBoundOperatorFinalReworkFeed
 func TestQueueExecutionReworkIfEligibleEnqueuesBuilderAndValidatorAttempts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -6695,8 +6731,7 @@ func TestQueueExecutionReworkIfEligibleEnqueuesBuilderAndValidatorAttempts(t *te
 func TestQueueExecutionReworkIfEligibleWaitsForValidationWaveSettlement(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -6733,8 +6768,7 @@ func TestQueueExecutionReworkIfEligibleWaitsForValidationWaveSettlement(t *testi
 func TestQueueExecutionReworkIfEligibleRollsBackPartialWaveOnQueueFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -6820,8 +6854,7 @@ func TestQueueExecutionReworkIfEligibleRollsBackPartialWaveOnQueueFailure(t *tes
 func TestClassWaveSettledForAttemptRequiresTerminalStatusForAllNodes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -6866,8 +6899,7 @@ func TestClassWaveSettledForAttemptRequiresTerminalStatusForAllNodes(t *testing.
 func TestClassWaveSettledForAttemptWithThreeValidators(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
@@ -6908,8 +6940,7 @@ func TestClassWaveSettledForAttemptWithThreeValidators(t *testing.T) {
 func TestClassWaveHasFailureForAttemptOnlyWhenNodeFailed(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7000,8 +7031,7 @@ func seedBranchedValidationWaveRunForFinalization(t *testing.T, db *sql.DB, runI
 func TestFinalizeRunStateWaitsForOlderUnsettledFailedLoopScope(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	run := seedBranchedValidationWaveRunForFinalization(t, db, "run_scope_finalization_wait", "running")
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil)}
 	nodes, edges, err := loop.loadWorkflowGraph(context.Background(), run)
@@ -7025,8 +7055,7 @@ func TestFinalizeRunStateWaitsForOlderUnsettledFailedLoopScope(t *testing.T) {
 func TestRepairRecoverableFailedRunWaitsForOlderUnsettledFailedLoopScope(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	run := seedBranchedValidationWaveRunForFinalization(t, db, "run_scope_repair_wait", "failed")
 	loop := orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil)}
 
@@ -7046,8 +7075,7 @@ func TestRepairRecoverableFailedRunWaitsForOlderUnsettledFailedLoopScope(t *test
 func TestIsNodeReadyAllowsReviewTriggeredRetryBeforeAnyValidatorFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7096,8 +7124,7 @@ func TestIsNodeReadyAllowsReviewTriggeredRetryBeforeAnyValidatorFailure(t *testi
 func TestIsNodeReadyBlocksDelegatedExecutionRetryUntilPriorValidationWaveSettles(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7157,8 +7184,7 @@ func TestIsNodeReadyBlocksDelegatedExecutionRetryUntilPriorValidationWaveSettles
 func TestIsNodeReadyIgnoresUnsettledValidationFailuresFromOtherReplayAnchors(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7219,8 +7245,7 @@ func TestIsNodeReadyIgnoresUnsettledValidationFailuresFromOtherReplayAnchors(t *
 func TestIsNodeReadyBlocksWhenLatestFailedValidationWaveUnsettledEvenWithNextWaveQueued(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7281,8 +7306,7 @@ func TestIsNodeReadyBlocksWhenLatestFailedValidationWaveUnsettledEvenWithNextWav
 func TestIsNodeReadyBlocksRetryUntilThreeValidatorFailedWaveSettles(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7349,8 +7373,7 @@ func TestIsNodeReadyBlocksRetryUntilThreeValidatorFailedWaveSettles(t *testing.T
 func TestQueueExecutionReworkIfEligibleDoesNotQueueWhenBuilderAttemptIsRunning(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7385,8 +7408,7 @@ func TestQueueExecutionReworkIfEligibleDoesNotQueueWhenBuilderAttemptIsRunning(t
 func TestQueueExecutionReviewReworkIfEligibleEnqueuesBuilderAndReviewerAttempts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7427,8 +7449,7 @@ func TestQueueExecutionReviewReworkIfEligibleEnqueuesBuilderAndReviewerAttempts(
 func TestQueueExecutionReviewReworkIfEligibleUsesLatestAttemptWithinSameWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7484,8 +7505,7 @@ func TestQueueExecutionReviewReworkIfEligibleUsesLatestAttemptWithinSameWave(t *
 func TestQueueExecutionReviewReworkIfEligibleDoesNotQueuePastCycleCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":2}}`
@@ -7519,8 +7539,7 @@ func TestQueueExecutionReviewReworkIfEligibleDoesNotQueuePastCycleCap(t *testing
 func TestQueueExecutionReviewReworkIfEligibleQueuesCurrentCycleBoundaryCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":1}}`
@@ -7562,8 +7581,7 @@ func TestQueueExecutionReviewReworkIfEligibleQueuesCurrentCycleBoundaryCap(t *te
 func TestQueueExecutionReworkIfEligibleDoesNotQueuePastCycleCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_validation_rework_cycles":2}}`
@@ -7601,8 +7619,7 @@ func TestQueueExecutionReworkIfEligibleDoesNotQueuePastCycleCap(t *testing.T) {
 func TestQueueExecutionReworkIfEligibleUsesLatestAttemptWithinSameWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7665,8 +7682,7 @@ func TestQueueExecutionReworkIfEligibleUsesLatestAttemptWithinSameWave(t *testin
 func TestQueueExecutionReworkIfEligibleIgnoresAttemptOrdinalAtValidationBoundary(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_validation_rework_cycles":1}}`
@@ -7719,8 +7735,7 @@ func TestQueueExecutionReworkIfEligibleIgnoresAttemptOrdinalAtValidationBoundary
 func TestQueueExecutionReviewReworkIfEligibleStopsAtCapAfterMixedReviewHistory(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":2}}`
@@ -7768,8 +7783,7 @@ func TestQueueExecutionReviewReworkIfEligibleStopsAtCapAfterMixedReviewHistory(t
 func TestCanStartExecutionReviewCycleCountsOnlyFailedReviewCycles(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":2}}`
@@ -7826,8 +7840,7 @@ func TestCanStartExecutionReviewCycleCountsOnlyFailedReviewCycles(t *testing.T) 
 func TestCanStartExecutionReviewCycleIgnoresCapWhenRunUntilAllApproveEnabled(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":1}}`
@@ -7856,8 +7869,7 @@ func TestCanStartExecutionReviewCycleIgnoresCapWhenRunUntilAllApproveEnabled(t *
 func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -7947,8 +7959,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) 
 func TestMaybeAutoSucceedLoopCappedReadyReviewNodeCountsOnlyCurrentWaveParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -7978,8 +7989,7 @@ func TestMaybeAutoSucceedLoopCappedReadyReviewNodeCountsOnlyCurrentWaveParticipa
 func TestDispatchNodeAttemptCompletesLoopCapAutoSuccessProjectionAfterConflict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -8103,8 +8113,7 @@ func TestDispatchNodeAttemptCompletesLoopCapAutoSuccessProjectionAfterConflict(t
 func TestDispatchNodeAttemptRecreatesMissingLoopCapAutoSuccessOutboxAfterConflict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -8215,8 +8224,7 @@ func TestDispatchNodeAttemptRecreatesMissingLoopCapAutoSuccessOutboxAfterConflic
 func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCapAfterMixedHistory(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -8276,8 +8284,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCapAfterMixedHisto
 func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA Validator', 0, '%s')`, now))
@@ -8351,8 +8358,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 func TestMaybeAutoSucceedLoopCappedReadyValidationNodeCountsOnlyCurrentWaveParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -8382,8 +8388,7 @@ func TestMaybeAutoSucceedLoopCappedReadyValidationNodeCountsOnlyCurrentWaveParti
 func TestDispatchNodeAttemptAutoSucceedsReadyValidationImmediatelyWhenCapIsZero(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA Validator', 0, '%s')`, now))
@@ -8437,8 +8442,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationImmediatelyWhenCapIsZero(
 func TestCanStartExecutionReworkCycleCountsOnlyFailedValidationWaves(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_validation_rework_cycles":2}}`
@@ -8521,8 +8525,7 @@ func TestValidationReworkWaveCountBeforeWaveIgnoresMixedWaveHardFailures(t *test
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 
 			now := "2026-03-01T12:00:00Z"
 			definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_validation_rework_cycles":1}}`
@@ -8563,8 +8566,7 @@ func TestValidationReworkWaveCountBeforeWaveIgnoresMixedWaveHardFailures(t *test
 func TestQueueExecutionReviewReworkIgnoresActiveUnrelatedReviewScope(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer Reviewer', 0, '%s')`, now))
@@ -8595,8 +8597,7 @@ func TestQueueExecutionReviewReworkIgnoresActiveUnrelatedReviewScope(t *testing.
 func TestQueueExecutionReviewReworkIfEligibleWaitsForAllReviewersToSettle(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -8641,8 +8642,7 @@ func TestQueueExecutionReviewReworkIfEligibleWaitsForAllReviewersToSettle(t *tes
 func TestQueueExecutionReviewReworkIfEligibleCountsOnlyWaveParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -8675,8 +8675,7 @@ func TestQueueExecutionReviewReworkIfEligibleCountsOnlyWaveParticipants(t *testi
 func TestQueueExecutionReworkIfEligibleCountsOnlyWaveParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -8713,8 +8712,7 @@ func TestQueueExecutionReworkIfEligibleCountsOnlyWaveParticipants(t *testing.T) 
 func TestQueueExecutionReworkIgnoresActiveUnrelatedExecutionScope(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '%s')`, now))
@@ -8746,8 +8744,7 @@ func TestQueueExecutionReworkIgnoresActiveUnrelatedExecutionScope(t *testing.T) 
 func TestDelegatorInstructionForDispatchPrefersLatestScopedInstruction(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '%s')`, now))
@@ -8792,8 +8789,7 @@ func TestDelegatorInstructionForDispatchPrefersLatestScopedInstruction(t *testin
 func TestDelegatorInstructionForDispatchAdvisorSkipsGlobalResponseFallback(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -8816,8 +8812,7 @@ func TestDelegatorInstructionForDispatchAdvisorSkipsGlobalResponseFallback(t *te
 func TestDelegatorInstructionForDispatchPlanDraftingUsesAdvisorySynthesisFallbackOnly(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '%s')`, now))
@@ -8844,8 +8839,7 @@ func TestDelegatorInstructionForDispatchPlanDraftingUsesAdvisorySynthesisFallbac
 func TestDelegatorInstructionForDispatchPlanDraftingFallsBackToAdvisorySynthesis(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '%s')`, now))
@@ -8871,8 +8865,7 @@ func TestDelegatorInstructionForDispatchPlanDraftingFallsBackToAdvisorySynthesis
 func TestDelegatorInstructionForDispatchPlanDraftingSkipsDriftedAdvisorySynthesisResponse(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '%s')`, now))
@@ -8899,8 +8892,7 @@ func TestDelegatorInstructionForDispatchPlanDraftingSkipsDriftedAdvisorySynthesi
 func TestDelegatorInstructionForDispatchPlanDraftingKeepsPlanningTextWithImplementedKeyword(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '%s')`, now))
@@ -8927,8 +8919,7 @@ func TestDelegatorInstructionForDispatchPlanDraftingKeepsPlanningTextWithImpleme
 func TestDelegatorInstructionForDispatchPlanDraftingFallsBackToUpstreamInstructionWhenSynthesisResponseDrifts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '%s')`, now))
@@ -8954,8 +8945,7 @@ func TestDelegatorInstructionForDispatchPlanDraftingFallsBackToUpstreamInstructi
 func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorResponses(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -9039,8 +9029,7 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisInjectsAllAdvisorRespon
 func TestDelegatorInstructionForDispatchAdvisorySynthesisPreservesScopedInstruction(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -9092,8 +9081,7 @@ func TestDefaultDelegatorInstructionForDispatchAdvisorProvidesAdviceOnlyFallback
 func TestDelegatorInstructionForDispatchDelegatedExecutionPrioritizesCouncilPlanAndFailureContext(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '%s')`, now))
@@ -9180,8 +9168,7 @@ func TestDelegatorInstructionForDispatchDelegatedExecutionPrioritizesCouncilPlan
 func TestDelegatorInstructionForDispatchDelegatedExecutionOmitsBaselineWhenEquivalentToPrimary(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '%s')`, now))
@@ -9212,8 +9199,7 @@ func TestDelegatorInstructionForDispatchDelegatedExecutionOmitsBaselineWhenEquiv
 func TestDelegatorInstructionForDispatchIgnoresLegacyInstructionFullForScopedInheritance(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '%s')`, now))
@@ -9245,8 +9231,7 @@ func TestDelegatorInstructionForDispatchIgnoresLegacyInstructionFullForScopedInh
 func TestDelegatorInstructionForDispatchDelegatedExecutionDropsComposedScopedInstruction(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '%s')`, now))
@@ -9282,8 +9267,7 @@ func TestDelegatorInstructionForDispatchDelegatedExecutionDropsComposedScopedIns
 func TestLatestExecutionFailureContextsForRunUsesLatestOwnerFailureResponses(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -9332,8 +9316,7 @@ func TestLatestExecutionFailureContextsForRunUsesLatestOwnerFailureResponses(t *
 func TestLatestExecutionFailureContextsForRunExcludesNodesWithLatestSuccessResponse(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -9368,8 +9351,7 @@ func TestLatestExecutionFailureContextsForRunExcludesNodesWithLatestSuccessRespo
 func TestLatestExecutionFailureContextsForRunIncludesMultipleValidatorFailures(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA Validator', 0, '%s')`, now))
@@ -9407,8 +9389,7 @@ func TestLatestExecutionFailureContextsForRunIncludesMultipleValidatorFailures(t
 func TestLatestExecutionFailureContextsForRunUsesCompactEmptyResponseMarker(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA Validator', 0, '%s')`, now))
@@ -9454,8 +9435,7 @@ func TestLatestExecutionFailureContextsForRunUsesCompactEmptyResponseMarker(t *t
 func TestLatestExecutionFailureContextsForRunPreservesNonEmptyInvalidVerdictBody(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA Validator', 0, '%s')`, now))
@@ -9553,8 +9533,7 @@ func TestDelegationPathForNodeExecutionKickoffUsesDefaultCouncilDelegator(t *tes
 func TestEnsureSessionLeaseReactivatesClosedLease(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -9601,8 +9580,7 @@ func TestRuntimeDispatchLoopContinuesAfterTickErrorsUntilContextCancel(t *testin
 func TestEmitRunningAttemptObservationIfNeededPersistsRuntimeSnapshot(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	nowTime := time.Date(2026, 3, 7, 12, 0, 0, 0, time.UTC)
@@ -9649,8 +9627,7 @@ func TestEmitRunningAttemptObservationIfNeededPersistsRuntimeSnapshot(t *testing
 func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeIgnoresWorkspaceSeedSetup(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	projectRoot := t.TempDir()
@@ -9731,8 +9708,7 @@ func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeIgnoresWorkspaceSeedSetup(t *t
 func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeSkipsProviderExecutionAndSessions(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"should not run"}}
@@ -9855,8 +9831,7 @@ func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeSkipsProviderExecutionAndSessi
 func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeSucceedsWithoutWorkspaceManager(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -9912,8 +9887,7 @@ func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeSucceedsWithoutWorkspaceManage
 func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeIgnoresGitWorktreePublishMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -9960,8 +9934,7 @@ func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeIgnoresGitWorktreePublishMode(
 func TestDispatchNodeAttemptResponseFirstPlanDraftingUsesIsolatedWorkspaceWithoutAttemptArtifacts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 	projectRoot := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("seed\n"), 0o644); err != nil {
@@ -10104,8 +10077,7 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingUsesIsolatedWorkspaceWithou
 func TestDispatchNodeAttemptLosingProviderClaimHasNoProviderSideEffects(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_claim_lost",
 		WorkOrderID:  "work_order_dispatch_claim_lost",
@@ -10155,8 +10127,7 @@ func TestDispatchNodeAttemptLosingProviderClaimHasNoProviderSideEffects(t *testi
 func TestDispatchNodeAttemptSetupFailureAfterProviderClaimClearsLeaseWithoutLaunch(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_setup_failure",
 		WorkOrderID:  "work_order_dispatch_setup_failure",
@@ -10228,8 +10199,7 @@ func TestDispatchNodeAttemptSetupFailureAfterProviderClaimClearsLeaseWithoutLaun
 func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_start_persist_failure",
 		WorkOrderID:  "work_order_dispatch_start_persist_failure",
@@ -10284,8 +10254,7 @@ func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocati
 func TestDispatchNodeAttemptAcceptsFileBeyondFormerWorkspaceLimit(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_initial_workspace_limit",
 		WorkOrderID:  "work_order_dispatch_initial_workspace_limit",
@@ -10362,8 +10331,7 @@ func TestDispatchNodeAttemptAcceptsFileBeyondFormerWorkspaceLimit(t *testing.T) 
 func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder",
 		WorkOrderID:  "work_order_dispatch_builder",
@@ -10447,8 +10415,9 @@ func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots
 }
 
 func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder_stream",
 		WorkOrderID:  "work_order_dispatch_builder_stream",
@@ -10484,22 +10453,22 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream", NodeStatus: "ready"}, now); err != nil {
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_stream", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder stream node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder stream completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder stream node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder stream provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder stream completion: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder stream node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("builder stream node_status=%s, want succeeded", nodeStatus)
+	}
 
 	requests := adapter.requestsSnapshot()
 	if len(requests) != 1 {
@@ -10531,8 +10500,9 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 }
 
 func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlushFails(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder_stream_flush_fail",
 		WorkOrderID:  "work_order_dispatch_builder_stream_flush_fail",
@@ -10569,22 +10539,22 @@ func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlu
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream_flush_fail", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_flush_fail_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream_flush_fail", NodeStatus: "ready"}, now); err != nil {
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_stream_flush_fail", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_flush_fail_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream_flush_fail", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder stream flush failure node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder stream flush failure completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_flush_fail_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder stream flush failure node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder stream flush failure provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder stream flush failure completion: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_flush_fail_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder stream flush failure node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("builder stream flush failure node_status=%s, want succeeded", nodeStatus)
+	}
 
 	var attemptState, failureCode, failureText string
 	if err := db.QueryRow(`SELECT state, failure_code, failure_text FROM attempt_executions WHERE attempt_id = 'run_dispatch_builder_stream_flush_fail:implementation:1'`).Scan(&attemptState, &failureCode, &failureText); err != nil {
@@ -10609,8 +10579,7 @@ func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlu
 func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWorkspaceTarget(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder_publish",
 		WorkOrderID:  "work_order_dispatch_builder_publish",
@@ -10648,22 +10617,35 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
+	deadline, bounded := t.Deadline()
+	if !bounded {
+		deadline = time.Now().Add(30 * time.Minute)
+	}
+	ctx, cancel := context.WithDeadline(t.Context(), deadline)
+	defer cancel()
+	defer func() {
+		if t.Failed() {
+			t.Log(runtimeRunDiagnostic(rt, "run_dispatch_builder_publish"))
+		}
+	}()
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_publish", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_publish_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_publish", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder publication node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_publish_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder publication node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	// Dispatch returns after admission. Join preparation and provider execution
+	// before finalizing the durable handoff and projecting its artifacts.
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder preparation and provider execution: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder completion maintenance: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_publish_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder publication node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("expected published builder node to succeed, got %s", nodeStatus)
+	}
 
 	requests := adapter.requestsSnapshot()
 	if len(requests) != 1 {
@@ -10716,9 +10698,10 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 
 func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObservedStart(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	adapter := newDelayedProcessStartExecutionAdapter()
@@ -10732,38 +10715,29 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		adapter.releaseProcessStart()
-		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
-			t.Errorf("wait for async drain: %v", err)
-			return
+		adapter.releaseExecution()
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close observed-launch runtime: %v", err)
 		}
-		if err := rt.drainExecutionOutboxUntilIdle(drainCtx); err != nil {
-			t.Errorf("drain execution outbox: %v", err)
-		}
-	})
+	}()
 
-	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+	if err := rt.orchestrator.Tick(ctx); err != nil {
 		t.Fatalf("tick work_intake: %v", err)
 	}
-	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+	if err := rt.drainMaintenance(ctx); err != nil {
 		t.Fatalf("drain work_intake completion outbox: %v", err)
 	}
-	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+	if err := rt.orchestrator.Tick(ctx); err != nil {
 		t.Fatalf("tick provider-backed launch: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		var status string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&status); err != nil {
-			return err
-		}
-		if status != "starting" {
-			return fmt.Errorf("provider preparation has not finished: node_status=%s", status)
-		}
-		return nil
-	})
+	select {
+	case <-adapter.entered:
+	case <-ctx.Done():
+		t.Fatalf("provider preparation did not finish: %v", ctx.Err())
+	}
 
 	var nodeStatus string
 	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
@@ -10790,17 +10764,41 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	}
 
 	adapter.releaseProcessStart()
-
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+	select {
+	case err := <-adapter.started:
+		if err != nil {
+			t.Fatalf("provider launch fixture: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("provider launch was not observed: %v", ctx.Err())
+	}
+	// Keep the provider alive until its asynchronous launch observer commits.
+	// Terminal handoff replay must not be what makes this assertion pass.
+	for {
 		var startedEvents int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedEvents); err != nil {
-			return err
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedEvents); err != nil {
+			t.Fatalf("count observed launch events: %v", err)
 		}
-		if startedEvents != 1 {
-			return fmt.Errorf("attempt.started count=%d", startedEvents)
+		if startedEvents == 1 {
+			break
 		}
-		return nil
-	})
+		if startedEvents > 1 {
+			t.Fatalf("attempt.started count=%d, want 1", startedEvents)
+		}
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("launch observer did not commit: %v; %s", err, runtimeRunDiagnostic(rt, "run_dispatch"))
+		}
+	}
+	adapter.releaseExecution()
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join observed-launch provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain observed-launch completion: %v", err)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`); count != 1 {
+		t.Fatalf("attempt.started count after completion=%d, want 1", count)
+	}
 }
 
 func TestRetryLaunchObservationRetriesUntilPersistenceSucceeds(t *testing.T) {
@@ -10858,8 +10856,7 @@ func TestRetryLaunchObservationStopsWhenContextIsCancelled(t *testing.T) {
 func TestEnsureProviderInvokedEventRecordedSkipsTerminalAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', '2026-03-01T12:00:01Z', '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
 
@@ -10892,8 +10889,7 @@ func TestEnsureProviderInvokedEventRecordedSkipsTerminalAttempt(t *testing.T) {
 func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	attemptID := "run_1:work_intake:1"
@@ -10997,8 +10993,7 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 func TestRecordExecutionLaunchAfterTerminalDoesNotAppendLifecycleEvent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_success', 'provider_backed', 'server_response', '', NULL, 0, 'session_terminal', 'provider_session_terminal', '2026-03-01T12:00:00Z', NULL, '2026-03-01T12:00:02Z', '2026-03-01T12:00:02Z', '', '', '2026-03-01T12:00:00Z', '2026-03-01T12:00:02Z')`)
 	mustExec(t, db, `INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_terminal', 'run_1', 1, 'nr_1', 'run_1:work_intake:1', 'v1', 'attempt.succeeded', 1, '{}', 'runtime', 'governance', 'runtime', 'execution_completed', 'terminal', 'corr_terminal', 'caus_terminal', 'prev', 'entry', '2026-03-01T12:00:02Z')`)
@@ -11027,8 +11022,7 @@ func TestRecordExecutionLaunchAfterTerminalDoesNotAppendLifecycleEvent(t *testin
 func TestCompleteExecutionAdoptsOlderAttemptWhenQueuedRetryNeverLaunched(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSupersededPlanCompletionRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -11099,8 +11093,7 @@ func TestCompleteExecutionAdoptsOlderAttemptWhenQueuedRetryNeverLaunched(t *test
 func TestCompleteExecutionAdoptsOlderAttemptWhenStartingRetryReachedLaunchHandoff(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSupersededPlanStartingRetryRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -11163,8 +11156,7 @@ func TestCompleteExecutionAdoptsOlderAttemptWhenStartingRetryReachedLaunchHandof
 func TestCompleteExecutionPublishesCanonicalEffectsWhenBlockedWinnerBeatsQueuedRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSupersededPlanBlockedRetryRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -11230,8 +11222,7 @@ func TestCompleteExecutionPublishesCanonicalEffectsWhenBlockedWinnerBeatsQueuedR
 func TestCompleteExecutionResyncsOlderAgentWhenLateSupersededAttemptFinishes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedLateSupersededDifferentAgentRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -11286,8 +11277,7 @@ func TestCompleteExecutionResyncsOlderAgentWhenLateSupersededAttemptFinishes(t *
 func TestEmitCompletionLifecycleObservationPersistsTelemetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-07T12:00:00Z"
@@ -11340,8 +11330,7 @@ func TestRuntimeOwnedExecutionKickoffResponseIsDeterministic(t *testing.T) {
 func TestApprovedPlanForRunSkipsUnsafeLatestPlanDraftingResponse(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11371,8 +11360,7 @@ func TestApprovedPlanForRunSkipsUnsafeLatestPlanDraftingResponse(t *testing.T) {
 func TestLatestCouncilPlansForRunSkipsUnsafePlanHistoryEntries(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11404,8 +11392,7 @@ func TestLatestCouncilPlansForRunSkipsUnsafePlanHistoryEntries(t *testing.T) {
 func TestApprovedPlanForRunSupportsCustomPlanDraftingNodeIDs(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11429,8 +11416,7 @@ func TestApprovedPlanForRunSupportsCustomPlanDraftingNodeIDs(t *testing.T) {
 func TestApprovedPlanForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMissing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11456,8 +11442,7 @@ func TestApprovedPlanForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMissing(t 
 func TestApprovedPlanForRunUsesLatestApprovedRevisionDuringRework(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11488,8 +11473,7 @@ func TestApprovedPlanForRunUsesLatestApprovedRevisionDuringRework(t *testing.T) 
 func TestLatestCouncilPlansForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMissing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11526,8 +11510,7 @@ func TestLatestCouncilPlansForRunUsesCanonicalCurrentPlanWhenProjectionRowIsMiss
 func TestApprovedPlanForRunAggregatesMultiplePlanDraftingNodes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '%s')`, now))
@@ -11976,8 +11959,7 @@ func assertLoadedRunAutonomousApprovals(t *testing.T, loop *orchestrationLoop, r
 func TestLoadActiveRunsDecodesModelSelection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET model_selection_json = '{"global":{"model":"github-copilot/gpt-5.4","thinking_effort":"medium"},"role_overrides":{"plan-author":{"model":"opencode/gpt-5-nano","thinking_effort":"minimal"}}}' WHERE run_id = 'run_dispatch'`)
@@ -12019,8 +12001,7 @@ func TestLoadActiveRunsDecodesModelSelection(t *testing.T) {
 }
 
 func TestRuntimeDispatchLoopAdvancesPlanProjectionToAwaitingGovernanceDecision(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -12054,8 +12035,7 @@ func TestRuntimeDispatchLoopAdvancesPlanProjectionToAwaitingGovernanceDecision(t
 }
 
 func TestRuntimeDispatchLoopDoesNotAutoApprovePlanWhenAutonomousApprovalsDisabled(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 	setRunAutonomousApprovalsForTest(t, db, "run_plan_projection", false)
 	assertRunAutonomousApprovalsForTest(t, db, "run_plan_projection", false)
@@ -12103,8 +12083,7 @@ func TestRuntimeDispatchLoopDoesNotAutoApprovePlanWhenAutonomousApprovalsDisable
 }
 
 func TestRuntimeDispatchLoopKeepsGovernancePlanDecisionPendingUntilManualDecisionRecorded(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRuntimeOwnedGovernanceDecisionRun(t, db, "run_manual_governance_decision", false)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"should not run"}}
@@ -12145,8 +12124,7 @@ func TestRuntimeDispatchLoopKeepsGovernancePlanDecisionPendingUntilManualDecisio
 }
 
 func TestRuntimeDispatchLoopAutoCompletesGovernancePlanDecisionWithoutProviderExecution(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRuntimeOwnedGovernanceDecisionRun(t, db, "run_auto_governance_decision", true)
 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"should not run"}}
@@ -12220,8 +12198,7 @@ func TestRuntimeDispatchLoopAutoCompletesGovernancePlanDecisionWithoutProviderEx
 }
 
 func TestRuntimeDispatchLoopCompletesCompletionWhenValidationNodeMissing(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedApprovalClosureRunWithoutValidation(t, db)
 	adapter := &sequenceExecutionAdapter{outputs: []string{"should not run"}}
 
@@ -12254,23 +12231,14 @@ func TestRuntimeDispatchLoopCompletesCompletionWhenValidationNodeMissing(t *test
 		}
 	}()
 
-	manualApprovalRequired := false
-	// The dispatch loop is asynchronous and the repository verification runs
-	// package tests concurrently; leave scheduler and SQLite contention headroom.
+	// Autonomous approval owns this transition. Observing its intermediate
+	// awaiting state does not authorize a competing manual test approval.
 	awaitRunState(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(_ string, planState string) error {
-		switch planState {
-		case "awaiting_plan_decision":
-			manualApprovalRequired = true
-			return nil
-		case "approved":
-			return nil
-		default:
+		if planState != "approved" {
 			return fmt.Errorf("plan_state=%s", planState)
 		}
+		return nil
 	})
-	if manualApprovalRequired {
-		approvePlanStateForRuntimeTest(t, db, "run_closure_no_validation")
-	}
 	awaitRunStatus(t, db, "run_closure_no_validation", 30*time.Second, 25*time.Millisecond, func(status string) error {
 		if status == "failed" {
 			var closureStatus string
@@ -12309,8 +12277,7 @@ func TestRuntimeDispatchLoopCompletesCompletionWhenValidationNodeMissing(t *test
 }
 
 func TestRuntimePausesAtAwaitingHumanConfirmationWhenAutonomousApprovalsDisabled(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedApprovalClosureRunWithoutValidation(t, db)
 	setRunAutonomousApprovalsForTest(t, db, "run_closure_no_validation", false)
 	assertRunAutonomousApprovalsForTest(t, db, "run_closure_no_validation", false)
@@ -12375,8 +12342,7 @@ func TestRuntimePausesAtAwaitingHumanConfirmationWhenAutonomousApprovalsDisabled
 }
 
 func TestRuntimeAutonomousApprovalsFalsePausesAtPlanAndFinalGatesOnFullWorkflow(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 	setRunAutonomousApprovalsForTest(t, db, "run_dispatch", false)
 	assertRunAutonomousApprovalsForTest(t, db, "run_dispatch", false)
@@ -12433,8 +12399,7 @@ func TestRuntimeAutonomousApprovalsFalsePausesAtPlanAndFinalGatesOnFullWorkflow(
 }
 
 func TestRuntimeSucceedsWhenContractArtifactsMissing(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunWithMissingContractArtifacts(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -12468,8 +12433,7 @@ func TestRuntimeSucceedsWhenContractArtifactsMissing(t *testing.T) {
 }
 
 func TestRuntimeFinalizesRunWithTerminallyUnreachablePendingBranch(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunWithTerminallyUnreachablePendingNode(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -12503,8 +12467,7 @@ func TestRuntimeFinalizesRunWithTerminallyUnreachablePendingBranch(t *testing.T)
 }
 
 func TestRuntimeAppliesNodeWallClockWarningAndTimeoutFailure(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -12548,8 +12511,7 @@ func TestRuntimeAppliesNodeWallClockWarningAndTimeoutFailure(t *testing.T) {
 }
 
 func TestRuntimeDoesNotFailTimedOutAttemptWhileProviderActivityRemainsRecent(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
@@ -12592,8 +12554,7 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileProviderActivityRemainsRecent(t *
 }
 
 func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_timeout_stream_live",
 		WorkOrderID:  "work_order_timeout_stream_live",
@@ -12615,8 +12576,9 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 		t.Fatalf("write timeout stream project seed file: %v", err)
 	}
 	adapter := &streamingTimeoutExecutionAdapter{
-		progressTexts: []string{"still working"},
-		started:       make(chan struct{}),
+		// Force the real progress writer to flush before started is signaled.
+		progressTexts: []string{strings.Repeat("still working ", 20)},
+		started:       make(chan error, 1),
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:               db,
@@ -12630,31 +12592,66 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 	}
 	rt.orchestrator.nodeTimeouts["implementation"] = 120 * time.Millisecond
 	rt.orchestrator.streamInactivity = 500 * time.Millisecond
-
-	ctx, cancel := context.WithCancel(context.Background())
+	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	var clock atomic.Int64
+	clock.Store(base.UnixNano())
+	rt.orchestrator.now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	rt.orchestrator.executionStore = executionstore.NewWithClock(db, rt.orchestrator.now)
+	adapter.now = rt.orchestrator.now
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
+	defer func() {
+		// Release the controlled provider on assertion failures as well.
+		adapter.cancelOnce.Do(func() { close(adapter.cancelSignal()) })
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close runtime: %v", err)
+		}
+	}()
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("dispatch stream provider: %v", err)
 	}
 
 	select {
-	case <-adapter.started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for provider execution to start")
+	case err := <-adapter.started:
+		if err != nil {
+			t.Fatalf("start provider fixture: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("provider execution did not start: %v", ctx.Err())
 	}
 
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		var count int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND reason_code = 'stream_event'`).Scan(&count); err != nil {
-			return err
+	var progressAt string
+	if err := db.QueryRowContext(ctx, `SELECT created_at FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND reason_code = 'stream_event'`).Scan(&progressAt); err != nil {
+		t.Fatalf("load durable stream progress: %v", err)
+	}
+	if progressAt != base.Format(time.RFC3339Nano) {
+		t.Fatalf("stream progress clock=%s, want %s", progressAt, base.Format(time.RFC3339Nano))
+	}
+	// OnProcessStarted persists launch state asynchronously. Join that durable
+	// observation before testing the timeout budget with the controlled clock.
+	for {
+		var startedAt sql.NullString
+		if err := db.QueryRowContext(ctx, `SELECT started_at FROM attempt_executions WHERE attempt_id = 'run_timeout_stream_live:implementation:1'`).Scan(&startedAt); err != nil {
+			t.Fatalf("load provider launch observation: %v", err)
 		}
-		if count == 0 {
-			return fmt.Errorf("waiting for durable stream progress")
+		if startedAt.Valid && startedAt.String != "" {
+			if startedAt.String != base.Format(time.RFC3339Nano) {
+				t.Fatalf("provider started at %s, want %s", startedAt.String, base.Format(time.RFC3339Nano))
+			}
+			break
 		}
-		return nil
-	})
-
-	time.Sleep(180 * time.Millisecond)
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("provider launch observation did not complete: %v", err)
+		}
+	}
+	clock.Store(base.Add(180 * time.Millisecond).UnixNano())
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("check recent stream progress after the wall-clock budget: %v", err)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND event_type = 'attempt.timeout_warning'`); count == 0 {
+		t.Fatal("wall-clock timeout was not reached")
+	}
 	if status := queryRunStatus(t, db, "run_timeout_stream_live"); status != "running" {
 		t.Fatalf("expected run to remain running while real stream progress is recent, got %q", status)
 	}
@@ -12662,20 +12659,59 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 		t.Fatalf("expected no timeout cancellation while stream progress is recent, got %d", adapter.cancelCalls())
 	}
 
-	awaitRunStatus(t, db, "run_timeout_stream_live", 3*time.Second, 25*time.Millisecond, func(status string) error {
-		if status != "failed" {
-			return fmt.Errorf("run_timeout_stream_live status=%s", status)
+	if count := queryEventCount(t, db, "run_timeout_stream_live", "attempt.failed"); count != 0 {
+		t.Fatalf("recent stream progress produced %d failures", count)
+	}
+	clock.Store(base.Add(600 * time.Millisecond).UnixNano())
+	if err := rt.orchestrator.Tick(ctx); err != nil {
+		t.Fatalf("cancel inactive stream provider: %v", err)
+	}
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join canceled provider: %v", err)
+	}
+	if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+		t.Fatalf("project stream timeout: %v", err)
+	}
+	if adapter.cancelCalls() == 0 || countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_timeout_stream_live:implementation:1' AND event_type = 'attempt.failed' AND reason_code = 'timeout'`) != 1 {
+		t.Fatal("inactive stream did not produce timeout cancellation and failure")
+	}
+	// Preserve the default retry policy and drive its durable due time explicitly.
+	var retryDue string
+	if err := db.QueryRowContext(ctx, `SELECT due_at FROM retry_decisions WHERE source_attempt_id = 'run_timeout_stream_live:implementation:1' AND decision = 'retry'`).Scan(&retryDue); err != nil {
+		t.Fatalf("load timeout retry due time: %v", err)
+	}
+	due, err := time.Parse(time.RFC3339Nano, retryDue)
+	if err != nil {
+		t.Fatalf("parse timeout retry due time: %v", err)
+	}
+	clock.Store(due.Add(time.Nanosecond).UnixNano())
+	for {
+		if err := rt.orchestrator.Tick(ctx); err != nil {
+			t.Fatalf("dispatch and finalize timeout retry: %v", err)
 		}
-		if adapter.cancelCalls() == 0 {
-			return fmt.Errorf("expected timeout cancellation after stream progress went inactive")
+		if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+			t.Fatalf("join timeout retry: %v", err)
 		}
-		return nil
-	})
+		if err := rt.drainExecutionOutboxUntilIdle(ctx); err != nil {
+			t.Fatalf("project timeout retry: %v", err)
+		}
+		if queryRunStatus(t, db, "run_timeout_stream_live") == "failed" {
+			break
+		}
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("timeout retry did not finalize: %v; %s", err, runtimeRunDiagnostic(rt, "run_timeout_stream_live"))
+		}
+	}
+	if requests := adapter.requestsSnapshot(); len(requests) != 2 {
+		t.Fatalf("provider executions=%d, want initial execution and default retry", len(requests))
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM provider_process_guards WHERE run_id = 'run_timeout_stream_live' AND lifecycle = 'quiescent'`); count != 2 {
+		t.Fatalf("quiescent guards=%d, want one for each provider execution", count)
+	}
 }
 
 func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "stream_event", `{"text":"still working"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
@@ -12718,8 +12754,7 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent
 }
 
 func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
@@ -12765,8 +12800,7 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 }
 
 func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "runtime_observation", `{"execution_diagnostics":{"event_count":3,"execution_path_diagnostics_snapshot":{"stdout_event_count":7,"step_finish_seen":true,"last_stdout_event_at":"2026-03-01T12:00:00Z"}}}`, time.Now().UTC().Format(time.RFC3339Nano))
 
@@ -12808,8 +12842,7 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 }
 
 func TestRuntimeSkipsTimeoutForTerminalObservedDurableAttempt(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'terminal_observed', terminal_observed_at = '2026-03-01T12:00:00Z', updated_at = '2026-03-01T12:00:00Z' WHERE attempt_id = 'run_timeout_diag:work_intake:1'`)
 
@@ -12848,8 +12881,7 @@ func TestRuntimeSkipsTimeoutForTerminalObservedDurableAttempt(t *testing.T) {
 }
 
 func TestProviderActivityTimeoutRecencyUsesRuntimeObservationTime(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	rt, err := NewRuntime(Config{
@@ -12902,8 +12934,7 @@ func TestProviderActivityTimeoutRecencyUsesRuntimeObservationTime(t *testing.T) 
 }
 
 func TestTimeoutWarningSequencesAfterDurableStreamProgress(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	rt, err := NewRuntime(Config{
@@ -12946,8 +12977,7 @@ func TestTimeoutWarningSequencesAfterDurableStreamProgress(t *testing.T) {
 }
 
 func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	mustExec(t, db, `UPDATE attempt_executions SET provider_timeout_ms = 120 WHERE attempt_id = 'run_timeout_diag:work_intake:1'`)
 
@@ -12989,8 +13019,7 @@ func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testi
 }
 
 func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	adapter := &timeoutCancelObserverAdapter{}
@@ -13132,8 +13161,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 }
 
 func TestTimeoutCancellationRaceCommitsExactlyOneOutcome(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	adapter := &cancellationCompletionRaceAdapter{
@@ -13211,8 +13239,7 @@ func TestTimeoutCancellationRaceCommitsExactlyOneOutcome(t *testing.T) {
 func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 	store := executionstore.New(db)
 	attemptID := "run_timeout_diag:work_intake:1"
@@ -13248,8 +13275,7 @@ func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
 }
 
 func TestRuntimeKeepsTimedOutAttemptPendingWhenAdapterCannotProveOwnership(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedRunForTimeoutDiagnostics(t, db)
 
 	adapter := &attemptNotFoundTimeoutAdapter{}
@@ -13294,8 +13320,7 @@ func TestRuntimeKeepsTimedOutAttemptPendingWhenAdapterCannotProveOwnership(t *te
 func TestLoadActiveRunsDecodesPublishMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET publish_mode = 'git_worktree' WHERE run_id = 'run_dispatch'`)
@@ -13331,8 +13356,7 @@ func TestSessionIDForAttemptIsDistinctPerRetryAttempt(t *testing.T) {
 }
 
 func TestRuntimeDispatchLoopRenewsSessionHeartbeatWhileRunActive(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedApprovalClosureRunWithoutValidation(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{
@@ -13357,15 +13381,7 @@ func TestRuntimeDispatchLoopRenewsSessionHeartbeatWhileRunActive(t *testing.T) {
 	}()
 
 	haveLease := false
-	approvalRecorded := false
 	testutil.Eventually(t, 4*time.Second, 25*time.Millisecond, func() error {
-		if !approvalRecorded {
-			_, planState := queryRunState(t, db, "run_closure_no_validation")
-			if planState == "awaiting_plan_decision" {
-				approvePlanStateForRuntimeTestIfAwaiting(t, db, "run_closure_no_validation")
-				approvalRecorded = true
-			}
-		}
 		var totalLeases int
 		if err := db.QueryRow(`SELECT COUNT(1) FROM session_leases WHERE session_id LIKE 'session_run_closure_no_validation_%'`).Scan(&totalLeases); err != nil {
 			return fmt.Errorf("query total leases: %w", err)
@@ -13417,42 +13433,6 @@ func approvePlanStateForRuntimeTest(t *testing.T, db *sql.DB, runID string) {
 	}
 }
 
-func approvePlanStateForRuntimeTestIfAwaiting(t *testing.T, db *sql.DB, runID string) {
-	t.Helper()
-
-	now := time.Now().UTC().Format(time.RFC3339)
-	svc := state.NewTransitionService(db, nil)
-	err := svc.Apply(context.Background(), state.TransitionRequest{
-		TransitionID:    "tr_test_approve_if_awaiting_" + runID + "_" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		EventID:         "evt_test_approve_if_awaiting_" + runID + "_" + strconv.FormatInt(time.Now().UnixNano(), 10),
-		RunID:           runID,
-		Entity:          state.EntityTypePlan,
-		FromState:       "awaiting_plan_decision",
-		ToState:         "approved",
-		ActorID:         "actor_test_governance",
-		RoleID:          "governance",
-		AuthoritySource: "runtime_test.manual_approval",
-		ReasonCode:      "governance_decision",
-		ReasonText:      "test approval",
-		CorrelationID:   "corr_test_approve_if_awaiting_" + runID,
-		CausationID:     "caus_test_approve_if_awaiting_" + runID,
-		OccurredAt:      now,
-		AttemptID:       "approval_test_if_awaiting_" + runID,
-		SchemaVersion:   "v1",
-		EventType:       "approval.recorded",
-		EventSeq:        1,
-		PayloadJSON:     `{"decision":"approve"}`,
-	})
-	if err == nil {
-		return
-	}
-	var conflict *state.StateConflictError
-	if errors.As(err, &conflict) && conflict.EntityType == state.EntityTypePlan && conflict.ExpectedState == "awaiting_plan_decision" && conflict.ActualState == "approved" {
-		return
-	}
-	t.Fatalf("approve plan state for run %q if awaiting: %v", runID, err)
-}
-
 func approvePlanStateAsOperatorForRuntimeTest(t *testing.T, db *sql.DB, runID string) {
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -13491,8 +13471,7 @@ func approvePlanStateAsOperatorForRuntimeTest(t *testing.T, db *sql.DB, runID st
 func TestNewRuntimeFailsOnInvalidRolePolicy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	badRolePolicy := filepath.Join(t.TempDir(), "role_policy.yaml")
 	if err := os.WriteFile(badRolePolicy, []byte("version: v1\npolicy_id"), 0o600); err != nil {
@@ -13511,8 +13490,7 @@ func TestNewRuntimeFailsOnInvalidRolePolicy(t *testing.T) {
 func TestNewRuntimeFailsOnInvalidNetworkPolicy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	badNetworkPolicy := filepath.Join(t.TempDir(), "network_policy.yaml")
 	if err := os.WriteFile(badNetworkPolicy, []byte("version: v1\npolicy_id"), 0o600); err != nil {
@@ -13531,8 +13509,7 @@ func TestNewRuntimeFailsOnInvalidNetworkPolicy(t *testing.T) {
 func TestNewRuntimeFailsOnInvalidRoleCommunicationPolicy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	badRoleCommPolicy := filepath.Join(t.TempDir(), "role_communication_policy.yaml")
 	if err := os.WriteFile(badRoleCommPolicy, []byte("version: v1\npolicy_id"), 0o600); err != nil {
@@ -13551,8 +13528,7 @@ func TestNewRuntimeFailsOnInvalidRoleCommunicationPolicy(t *testing.T) {
 func TestProviderPolicyAccessorReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
@@ -13814,7 +13790,12 @@ type blockingFirstExecutionAdapter struct {
 }
 
 type delayedProcessStartExecutionAdapter struct {
-	processStart chan struct{}
+	processStart     chan struct{}
+	processStartOnce sync.Once
+	entered          chan struct{}
+	started          chan error
+	completion       chan struct{}
+	completionOnce   sync.Once
 }
 
 type timeoutCancelObserverAdapter struct {
@@ -13852,7 +13833,8 @@ type streamingTimeoutExecutionAdapter struct {
 	cancelCh         chan struct{}
 	cancelOnce       sync.Once
 	requests         []opencode.ExecuteRequest
-	started          chan struct{}
+	started          chan error
+	now              func() time.Time
 }
 
 type workspaceWritingExecutionAdapter struct {
@@ -14067,13 +14049,31 @@ func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest 
 }
 
 func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	progressTexts := append([]string(nil), a.progressTexts...)
 	progressInterval := a.progressInterval
 	started := a.started
+	now := a.now
 	a.mu.Unlock()
+	startResult := func(err error) {
+		if started != nil {
+			select {
+			case started <- err:
+			default:
+			}
+		}
+	}
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(context.Background(), ownership); err != nil {
+			startResult(err)
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
 	for idx, text := range progressTexts {
 		if req.OnProgress != nil {
 			req.OnProgress(text)
@@ -14082,14 +14082,17 @@ func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req openco
 			time.Sleep(progressInterval)
 		}
 	}
-	if started != nil {
-		select {
-		case <-started:
-		default:
-			close(started)
+	startResult(nil)
+	<-a.cancelSignal()
+	if now != nil {
+		quiescence.ExitedAt = now().UTC().Format(time.RFC3339Nano)
+		quiescence.QuiescentAt = quiescence.ExitedAt
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), quiescence); err != nil {
+			return opencode.ExecuteResponse{}, err
 		}
 	}
-	<-a.cancelSignal()
 	return opencode.ExecuteResponse{}, context.Canceled
 }
 
@@ -14228,7 +14231,12 @@ func newBlockingFirstExecutionAdapter() *blockingFirstExecutionAdapter {
 }
 
 func newDelayedProcessStartExecutionAdapter() *delayedProcessStartExecutionAdapter {
-	return &delayedProcessStartExecutionAdapter{processStart: make(chan struct{})}
+	return &delayedProcessStartExecutionAdapter{
+		processStart: make(chan struct{}),
+		entered:      make(chan struct{}),
+		started:      make(chan error, 1),
+		completion:   make(chan struct{}),
+	}
 }
 
 func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
@@ -14278,12 +14286,33 @@ func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencod
 }
 
 func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	close(a.entered)
 	select {
 	case <-a.processStart:
 	case <-ctx.Done():
 		return opencode.ExecuteResponse{}, ctx.Err()
 	}
-	callOnProcessStarted(req)
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(ctx, ownership); err != nil {
+			a.started <- err
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+	a.started <- nil
+	select {
+	case <-a.completion:
+	case <-ctx.Done():
+		return opencode.ExecuteResponse{}, ctx.Err()
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), quiescence); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+	}
 	outputText := `{"summary":"ok"}`
 	return opencode.ExecuteResponse{
 		Accepted:             true,
@@ -14328,12 +14357,11 @@ func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {
 }
 
 func (a *delayedProcessStartExecutionAdapter) releaseProcessStart() {
-	select {
-	case <-a.processStart:
-		return
-	default:
-		close(a.processStart)
-	}
+	a.processStartOnce.Do(func() { close(a.processStart) })
+}
+
+func (a *delayedProcessStartExecutionAdapter) releaseExecution() {
+	a.completionOnce.Do(func() { close(a.completion) })
 }
 
 func seedPlanProjectionRun(t *testing.T, db *sql.DB) {
@@ -14450,6 +14478,16 @@ func queryRunState(t *testing.T, db *sql.DB, runID string) (string, string) {
 	return status, planState
 }
 
+// Functional completion waits use the test deadline, rather than a short
+// performance limit that depends on race instrumentation and host scheduling.
+func testDeadlineContext(t *testing.T) (context.Context, context.CancelFunc) {
+	t.Helper()
+	if deadline, ok := t.Deadline(); ok {
+		return context.WithDeadline(t.Context(), deadline)
+	}
+	return context.WithCancel(t.Context())
+}
+
 func awaitRunStatus(t *testing.T, db *sql.DB, runID string, timeout, interval time.Duration, condition func(status string) error) {
 	t.Helper()
 	testutil.Eventually(t, timeout, interval, func() error {
@@ -14517,8 +14555,7 @@ func seedRunWithMissingContractArtifacts(t *testing.T, db *sql.DB) {
 func TestDrainExecutionOutboxQueuesReviewReworkAtCurrentBoundaryCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":1}}`
@@ -14600,8 +14637,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAtCurrentBoundaryCap(t *testing.T
 func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_execution_review_cycles":1}}`
@@ -14714,8 +14750,7 @@ func TestDrainExecutionOutboxQueuesReviewReworkAfterSettledMixedPassReworkWave(t
 func TestDrainExecutionOutboxWaitsForValidationWaveAndQueuesBoundaryRework(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	definitionJSON := `{"version":"v1","workflow_id":"work-order-v1","nodes":[],"edges":[],"metadata":{"max_validation_rework_cycles":1}}`

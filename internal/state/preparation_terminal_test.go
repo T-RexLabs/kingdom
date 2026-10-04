@@ -12,8 +12,7 @@ import (
 func TestPreparationTerminalRequiresCurrentLeaseAndClosesSessionAtomically(t *testing.T) {
 	for _, scenario := range []string{"current", "replaced", "expired", "retry_replaced"} {
 		t.Run(scenario, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL WHERE node_run_id = 'nr_1'`)
 			store := executionstore.New(db)

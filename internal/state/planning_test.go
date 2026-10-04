@@ -11,8 +11,7 @@ import (
 )
 
 func TestPlanningContextBaselinePreservesExactSnapshotEntries(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 	at := "2026-04-21T16:14:00Z"
@@ -50,8 +49,7 @@ func TestPlanningContextBaselinePreservesExactSnapshotEntries(t *testing.T) {
 }
 
 func TestPlanningMessagePagesPreserveDeepPathAndRejectCycles(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 	at := "2026-04-21T16:14:00Z"
@@ -100,8 +98,7 @@ func TestPlanningMessagePagesPreserveDeepPathAndRejectCycles(t *testing.T) {
 func TestPlanningStoreCreateListAndGetSession(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	created, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -200,8 +197,7 @@ func TestValidatePlanningContextSnapshotCreatePreservesFullFileJSON(t *testing.T
 }
 
 func TestPlanningContentBundleRollsBackAndSealsCompleteEntries(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 	at := "2026-04-21T16:14:00Z"
@@ -315,8 +311,7 @@ func TestPlanningActivityContinuationBatchesPreserveLargePayloadAndLeaseFence(t 
 func TestListRecentCompletedOperationTelemetryUsesCurrentACPEvents(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -387,8 +382,7 @@ func assertPlanningTelemetryTimestamp(t *testing.T, name string, got *string, wa
 func TestSetActiveBranchRefreshesSessionRecency(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -488,8 +482,7 @@ func TestSetActiveBranchRefreshesSessionRecency(t *testing.T) {
 func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -639,8 +632,7 @@ func TestPlanningStoreAppendListMessagesAndLatestRecords(t *testing.T) {
 func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -753,8 +745,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 func TestPlanningStoreOperationAcpRunIDIsCanonicalAndCorruptionRemainsVisible(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	ctx := context.Background()
 	store := NewPlanningStore(db)
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
@@ -828,8 +819,7 @@ func TestPlanningStoreOperationAcpRunIDIsCanonicalAndCorruptionRemainsVisible(t 
 func TestPlanningStoreOperationPagingUsesLimitAndCursor(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	ctx := context.Background()
@@ -914,8 +904,7 @@ func TestPlanningStoreOperationPagingUsesLimitAndCursor(t *testing.T) {
 func TestPlanningStoreOperationEventPagingUsesLimitAndCursor(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	ctx := context.Background()
@@ -988,8 +977,7 @@ func TestPlanningStoreOperationEventPagingUsesLimitAndCursor(t *testing.T) {
 func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -1095,8 +1083,7 @@ func TestPlanningStoreUpdateSessionOptionalFields(t *testing.T) {
 func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -1227,8 +1214,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 func TestPlanningStoreClaimOperationPreventsDualExecution(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	store := NewPlanningStore(db)
 	_, err := store.CreateSession(context.Background(), CreatePlanningSessionRequest{
@@ -1300,8 +1286,7 @@ func refString(value string) *string {
 func TestClaimOperationRejectsExpiredRunningRow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1360,8 +1345,7 @@ func TestClaimOperationRejectsExpiredRunningRow(t *testing.T) {
 func TestFinalizeOperationRejectsStaleLeaseOwner(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1441,8 +1425,7 @@ func TestFinalizeOperationRejectsStaleLeaseOwner(t *testing.T) {
 func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageInsert(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1540,8 +1523,7 @@ func TestFinalizeOperationReplyStaleFinalizerReturnsLeaseConflictBeforeMessageIn
 func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTranscriptMutation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1654,8 +1636,7 @@ func TestFinalizeOperationRegenerateStaleFinalizerReturnsLeaseConflictBeforeTran
 func TestFinalizeOperationRegenerateCancelRestoresPreviousActiveLeaf(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1760,8 +1741,7 @@ func TestFinalizeOperationRegenerateCancelRestoresPreviousActiveLeaf(t *testing.
 func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1863,8 +1843,7 @@ func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T)
 func TestFinalizeOperationCancel(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1968,8 +1947,7 @@ func TestFinalizeOperationCancel(t *testing.T) {
 func TestFinalizeOperationCancelRequiresReason(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -1994,8 +1972,7 @@ func TestFinalizeOperationCancelRequiresReason(t *testing.T) {
 func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2100,8 +2077,7 @@ func TestFinalizeGenerateTitleWhileForegroundOpHoldsInteractiveSlot(t *testing.T
 func TestFinalizeGenerateTitleAbortClearsTitleSlot(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2176,8 +2152,7 @@ func TestFinalizeGenerateTitleAbortClearsTitleSlot(t *testing.T) {
 func TestCancelQueuedGenerateTitleOperationClearsTitleSlot(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2243,8 +2218,7 @@ func TestCancelQueuedGenerateTitleOperationClearsTitleSlot(t *testing.T) {
 func TestCancelQueuedRegenerateRestoresPreviousActiveLeaf(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2344,8 +2318,7 @@ func TestCancelQueuedRegenerateRestoresPreviousActiveLeaf(t *testing.T) {
 func TestSetActiveBranchRequiresMatchingSession(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2398,8 +2371,7 @@ func TestSetActiveBranchRequiresMatchingSession(t *testing.T) {
 func TestPublishContextSnapshotPreservesNewer(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2479,8 +2451,7 @@ func TestPublishContextSnapshotPreservesNewer(t *testing.T) {
 func TestPublishContextSnapshotFreshSessionAdoptsNewerOnSequentialPublish(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2558,8 +2529,7 @@ func TestPublishContextSnapshotFreshSessionAdoptsNewerOnSequentialPublish(t *tes
 func TestPublishContextSnapshotSameSecondTiebreaks(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 
@@ -2611,8 +2581,7 @@ func TestPublishContextSnapshotSameSecondTiebreaks(t *testing.T) {
 func TestPublishContextSnapshotRejectsCrossSession(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	ctx := context.Background()
 

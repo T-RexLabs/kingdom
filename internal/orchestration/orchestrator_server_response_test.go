@@ -68,8 +68,7 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 		terminalObservedAt = "2026-03-01T12:00:03Z"
 	)
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        runID,
 		WorkOrderID:  workOrderID,

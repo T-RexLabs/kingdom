@@ -10,8 +10,7 @@ import (
 func TestValidateRunPlanningOutputLineageTxRejectsAttemptFromDifferentNodeRun(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
@@ -49,8 +48,7 @@ func TestValidateRunPlanningOutputLineageTxRejectsAttemptFromDifferentNodeRun(t 
 func TestPersistRunPlanningOutputTxIsIdempotentAndRefreshesPlanRevision(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedRunPlanningOutputProjectionGraph(t, db)
 
 	tx, err := db.BeginTx(context.Background(), nil)
@@ -101,8 +99,7 @@ func TestPersistRunPlanningOutputTxIsIdempotentAndRefreshesPlanRevision(t *testi
 func TestProjectNodeTerminalFromDurableAttemptPersistsPlanningOutputWhenNodeAlreadyProjected(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedRunPlanningOutputProjectionGraph(t, db)
 
 	svc := NewTransitionService(db, nil)

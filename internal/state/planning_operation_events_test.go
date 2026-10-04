@@ -9,8 +9,7 @@ func TestPlanningStoreHasMeaningfulPlanningOperationProgress(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewPlanningStore(db)
 	if _, err := store.CreateSession(ctx, CreatePlanningSessionRequest{
 		PlanningSessionID:  "ps_progress_events",

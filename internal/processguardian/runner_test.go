@@ -156,7 +156,7 @@ func TestRunnerStartCancelsAcknowledgedTreeWhileStartedAcknowledgementIsBlocked(
 	}
 	var launchErr *LaunchError
 	if !errors.As(err, &launchErr) || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 == "" || launchErr.Result.EvidenceJSON == "" {
-		t.Fatalf("expected durable acknowledged launch quiescence, got %#v", err)
+		t.Fatalf("expected durable acknowledged launch quiescence, got %#v; error: %v", err, err)
 	}
 	evidence, digest, raw, readErr := ReadQuiescenceEvidence(runtimeRoot, ownership.GuardID)
 	if readErr != nil || digest != launchErr.Result.EvidenceSHA256 || raw != launchErr.Result.EvidenceJSON || evidence.QuiescenceCapability != ownership.QuiescenceCapability {
@@ -270,8 +270,8 @@ func TestRunnerGuardianDeathTerminatesAcknowledgedTree(t *testing.T) {
 	if _, err := handle.Wait(context.Background()); err == nil {
 		t.Fatal("expected guardian death to fail the handle")
 	}
-	if err := syscall.Kill(-ownership.TreeID, 0); !errors.Is(err, syscall.ESRCH) {
-		t.Fatalf("guardian death left process group alive: %v", err)
+	if absent, err := acknowledgedTreeAbsent(ownership); err != nil || !absent {
+		t.Fatalf("guardian death left an active or unproven process tree: absent=%t err=%v", absent, err)
 	}
 }
 

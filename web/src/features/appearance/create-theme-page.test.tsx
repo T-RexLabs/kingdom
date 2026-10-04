@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { beforeEach, expect, it, vi } from "vitest";
 import userEvent from "@testing-library/user-event";
@@ -20,7 +20,30 @@ function appearanceContext(): ThemeContextValue {
 function setup(context = appearanceContext()) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   const tree = <QueryClientProvider client={client}><ThemeContext.Provider value={context}><CreateThemePage /></ThemeContext.Provider></QueryClientProvider>;
-  return { context, tree, ...render(tree) };
+  return { context, tree, client, ...render(tree) };
+}
+async function withValidationClock(run: (view: ReturnType<typeof setup>) => Promise<void>, context = appearanceContext()) {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let view: ReturnType<typeof setup> | undefined;
+  try {
+    view = setup(context);
+    await run(view);
+  } finally {
+    try {
+      cleanup();
+      view?.client.clear();
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+}
+async function advanceEditorTime(milliseconds: number) {
+  await act(async () => { await vi.advanceTimersByTimeAsync(milliseconds); });
+  // Query notifications use a zero-delay timer after React commits the debounced draft.
+  await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+}
+function publicationControls() {
+  return within(screen.getByRole("complementary", { name: "Theme preview and publication" }));
 }
 function resolved(source: string) {
   const draft = parseDraft(source)!;
@@ -35,24 +58,47 @@ it("keeps private preview separate from saving, publishing and explicitly select
     const body = request.body as { source: string; assets: Record<string, string> };
     return request.method === "PUT" ? { source: body.source, assets: body.assets, sourceDigest: "c".repeat(64), diagnostics: [] } : resolved(JSON.stringify({ id: "my-theme", version: "1.0.0", name: "Evening Workshop" }));
   });
-  const view = setup();
-  fireEvent.change(screen.getByLabelText("Theme Name"), { target: { value: "Evening Workshop" } });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Preview in App" })).toBeEnabled());
-  fireEvent.click(screen.getByRole("button", { name: "Preview in App" }));
-  expect(view.context.previewTheme).toHaveBeenCalledTimes(1);
-  expect(mutate).not.toHaveBeenCalled();
-  expect(view.context.selectTheme).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: "Publish Revision" })).toBeDisabled();
-  fireEvent.click(screen.getByRole("button", { name: "Save Source" }));
-  await waitFor(() => expect(screen.getByRole("button", { name: "Publish Revision" })).toBeEnabled(), { timeout: 2500 });
-  expect(mutate.mock.calls[0][0]).toMatchObject({ method: "PUT", path: "/themes/my-theme/source", body: { expected_source_digest: "" } });
-  expect(JSON.parse((mutate.mock.calls[0][0].body as { source: string }).source).name).toBe("Evening Workshop");
-  fireEvent.click(screen.getByRole("button", { name: "Publish Revision" }));
-  await screen.findByRole("button", { name: "Use This Revision" });
-  expect(mutate.mock.calls[1][0]).toEqual({ method: "POST", path: "/themes/my-theme/publish", body: { expected_source_digest: "c".repeat(64) }, verify: { id: "my-theme", resolvedDigest: "b".repeat(64) } });
-  expect(view.context.selectTheme).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole("button", { name: "Use This Revision" }));
-  expect(view.context.selectTheme).toHaveBeenCalledWith({ id: "my-theme", resolvedDigest: "b".repeat(64) });
+  let completeValidation!: (pkg: ReturnType<typeof resolved>) => void;
+  const pendingValidation = new Promise<ReturnType<typeof resolved>>((resolve) => { completeValidation = resolve; });
+  const validate = vi.mocked(themeAPI.validate);
+  validate.mockImplementation(async ({ source }) => parseDraft(source)?.name === "Evening Workshop" ? pendingValidation : resolved(source));
+  await withValidationClock(async (view) => {
+    const controls = publicationControls();
+    const preview = controls.getByRole("button", { name: "Preview in App" });
+    const save = controls.getByRole("button", { name: "Save Source" });
+    const publish = controls.getByRole("button", { name: "Publish Revision" });
+    const editedValidations = () => validate.mock.calls.filter(([request]) => parseDraft(request.source)?.name === "Evening Workshop");
+    fireEvent.change(screen.getByLabelText("Theme Name"), { target: { value: "Evening Workshop" } });
+    expect(preview).toBeDisabled();
+    await advanceEditorTime(499);
+    expect(editedValidations()).toHaveLength(0);
+    expect(preview).toBeDisabled();
+    await advanceEditorTime(1);
+    expect(editedValidations()).toHaveLength(1);
+    expect(preview).toBeDisabled();
+    await act(async () => { completeValidation(resolved(getDraftStore(view.context.catalog!.workspaceID).getSnapshot().source)); });
+    await advanceEditorTime(0);
+    expect(preview).toBeEnabled();
+    fireEvent.click(preview);
+    expect(view.context.previewTheme).toHaveBeenCalledTimes(1);
+    expect(view.context.previewTheme).toHaveBeenCalledWith(expect.objectContaining({ manifest: expect.objectContaining({ name: "Evening Workshop" }) }), expect.any(Object));
+    expect(mutate).not.toHaveBeenCalled();
+    expect(view.context.selectTheme).not.toHaveBeenCalled();
+    expect(publish).toBeDisabled();
+    await act(async () => { fireEvent.click(save); });
+    expect(publish).toBeDisabled();
+    await advanceEditorTime(500);
+    expect(publish).toBeEnabled();
+    expect(mutate.mock.calls[0][0]).toMatchObject({ method: "PUT", path: "/themes/my-theme/source", body: { expected_source_digest: "" } });
+    expect(JSON.parse((mutate.mock.calls[0][0].body as { source: string }).source).name).toBe("Evening Workshop");
+    await act(async () => { fireEvent.click(publish); });
+    await advanceEditorTime(0);
+    const useRevision = controls.getByRole("button", { name: "Use This Revision" });
+    expect(mutate.mock.calls[1][0]).toEqual({ method: "POST", path: "/themes/my-theme/publish", body: { expected_source_digest: "c".repeat(64) }, verify: { id: "my-theme", resolvedDigest: "b".repeat(64) } });
+    expect(view.context.selectTheme).not.toHaveBeenCalled();
+    fireEvent.click(useRevision);
+    expect(view.context.selectTheme).toHaveBeenCalledWith({ id: "my-theme", resolvedDigest: "b".repeat(64) });
+  });
 });
 it("preserves an invalid draft across editor remount and supports keyboard section navigation", async () => {
   const view = setup();
@@ -72,14 +118,21 @@ it("keeps source conflicts reviewable without replacing private edits", async ()
   const initial = store.getSnapshot();
   store.replace({ source: initial.source, assets: {} }, "source:my-theme:editable", "my-theme", "d".repeat(64));
   vi.spyOn(themeAPI, "mutate").mockRejectedValue(new ApiError(409, { message: "Source changed", code: "dependency_blocked", category: "core", retryable: false, details: {}, correlationId: "api" }));
-  setup(context);
-  fireEvent.change(screen.getByLabelText("Theme Name"), { target: { value: "My Unsaved Name" } });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Save Source" })).toBeEnabled());
-  fireEvent.click(screen.getByRole("button", { name: "Save Source" }));
-  await screen.findByRole("button", { name: "Reload Shared Source" });
-  expect(screen.getByLabelText("Theme Name")).toHaveValue("My Unsaved Name");
-  expect(store.getSnapshot()).toMatchObject({ expectedDigest: "d".repeat(64), dirty: true });
-  expect(screen.getByRole("button", { name: "Publish Revision" })).toBeDisabled();
+  await withValidationClock(async () => {
+    const controls = publicationControls();
+    const save = controls.getByRole("button", { name: "Save Source" });
+    const publish = controls.getByRole("button", { name: "Publish Revision" });
+    fireEvent.change(screen.getByLabelText("Theme Name"), { target: { value: "My Unsaved Name" } });
+    expect(save).toBeDisabled();
+    await advanceEditorTime(500);
+    expect(save).toBeEnabled();
+    await act(async () => { fireEvent.click(save); });
+    await advanceEditorTime(0);
+    expect(screen.getByRole("button", { name: "Reload Shared Source" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Theme Name")).toHaveValue("My Unsaved Name");
+    expect(store.getSnapshot()).toMatchObject({ expectedDigest: "d".repeat(64), dirty: true });
+    expect(publish).toBeDisabled();
+  }, context);
 });
 it("loads revision authoring intent into an unsaved copy instead of editing the published identity", async () => {
   const source: ThemeSource = { source: JSON.stringify({ schemaVersion: 1, resolverVersion: 1, id: "shared-theme", version: "2.0.0", name: "Shared Theme", base: { id: defaultTheme.id, version: defaultTheme.version }, palette: { accent: "#ffffff" } }), sourceDigest: "c".repeat(64), assets: {}, diagnostics: [] };
@@ -114,12 +167,18 @@ it("updates the preview and permits saving and app preview when contrast advice 
     const authored = parseDraft(source)!;
     return themePackage({ ...pkg, manifest: { ...pkg.manifest, typography: { ...pkg.manifest.typography, ...authored.typography } }, warnings: [{ path: "/tokens/text.primary", code: "contrast", message: "Low contrast is advisory." }] });
   });
-  const view = setup();
-  fireEvent.change(screen.getByRole("spinbutton", { name: /Heading Weight/ }), { target: { value: "925.5" } });
-  await waitFor(() => expect(screen.getByRole("button", { name: "Preview in App" })).toBeEnabled());
-  expect(screen.getByRole("button", { name: "Save Source" })).toBeEnabled();
-  expect(screen.getByText("Preview is up to date.")).toBeInTheDocument();
-  expect(screen.getByText(/still preview, save and publish/)).toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: "Preview in App" }));
-  expect(view.context.previewTheme).toHaveBeenCalledWith(expect.objectContaining({ manifest: expect.objectContaining({ typography: expect.objectContaining({ headingWeight: 925.5 }) }) }), expect.any(Object));
+  await withValidationClock(async (view) => {
+    const controls = publicationControls();
+    const preview = controls.getByRole("button", { name: "Preview in App" });
+    const save = controls.getByRole("button", { name: "Save Source" });
+    fireEvent.change(screen.getByRole("spinbutton", { name: /Heading Weight/ }), { target: { value: "925.5" } });
+    expect(preview).toBeDisabled();
+    await advanceEditorTime(500);
+    expect(preview).toBeEnabled();
+    expect(save).toBeEnabled();
+    expect(screen.getByText("Preview is up to date.")).toBeInTheDocument();
+    expect(screen.getByText(/still preview, save and publish/)).toBeInTheDocument();
+    fireEvent.click(preview);
+    expect(view.context.previewTheme).toHaveBeenCalledWith(expect.objectContaining({ manifest: expect.objectContaining({ typography: expect.objectContaining({ headingWeight: 925.5 }) }) }), expect.any(Object));
+  });
 });

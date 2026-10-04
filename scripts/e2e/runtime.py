@@ -11,9 +11,10 @@ import subprocess
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Iterator, Sequence
 
 from scripts.e2e.models import DEFAULT_BASE_PATH, PollResult, RunRequest, WorktreeRecord, WorkspacePaths
 
@@ -22,6 +23,15 @@ def new_idempotency_key(scope: str) -> str:
     if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,38}[a-z0-9])?", scope) is None:
         raise ValueError("idempotency scope must be 1-40 lowercase alphanumeric or hyphen characters")
     return f"kd1.{int(time.time())}.86400.{scope}.{secrets.token_urlsafe(16)}"
+
+
+@contextmanager
+def preserve_failure(primary: BaseException) -> Iterator[None]:
+    """Attach evidence collection failures to the error being reported."""
+    try:
+        yield
+    except Exception as exc:
+        primary.add_note(f"failure evidence unavailable: {exc}")
 
 
 class CommandError(RuntimeError):
@@ -115,13 +125,7 @@ class RuntimeService:
             raise RuntimeError(f"summon bootstrap failed for {config_path}")
 
     def stop_summon(self, config_path: Path) -> None:
-        subprocess.run(
-            ["kd", "summon", "stop", "--config", str(config_path)],
-            text=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
+        self.run_command(["kd", "summon", "stop", "--config", str(config_path)])
 
     def create_work_order_run(
         self,
@@ -439,3 +443,95 @@ class RuntimeService:
             return None
         text = str(value).strip()
         return text or None
+
+
+class Scenario:
+    """Keep evidence and report the primary failure before attempting cleanup."""
+
+    def __init__(self, runtime: RuntimeService, workspace_dir: Path, keep_workspace: bool) -> None:
+        self.runtime = runtime
+        self.keep_workspace = keep_workspace
+        self.paths = WorkspacePaths(
+            workspace_dir.parent, workspace_dir, workspace_dir.parent / "report",
+            workspace_dir / ".kingdom/config.yaml", workspace_dir / ".kingdom/kingdom.db",
+            workspace_dir / ".kingdom/secrets/operator-token",
+        )
+        self.start_attempted = False
+        self.acceptance: dict[str, bool] = {}
+
+    def __enter__(self) -> Scenario:
+        self.paths.report_dir.mkdir(parents=True, exist_ok=True)
+        return self
+
+    def start(self, bootstrap_log_path: Path) -> None:
+        # A failed detached bootstrap can still have created a process.
+        self.start_attempted = True
+        self.runtime.start_summon(self.paths.config_path, bootstrap_log_path)
+
+    def require_acceptance(self, checks: dict[str, bool]) -> None:
+        self.acceptance = checks
+        failed = [name for name, passed in checks.items() if not passed]
+        if not checks or failed:
+            raise RuntimeError("acceptance failed: " + ", ".join(failed or ["missing checks"]))
+
+    def __exit__(self, _kind: Any, primary: BaseException | None, _traceback: Any) -> bool:
+        incoming_primary = primary
+        if primary is None and (not self.acceptance or not all(self.acceptance.values())):
+            primary = RuntimeError("acceptance failed: no complete passing checks were recorded")
+        cleanup: Exception | None = None
+        cleanup_errors: list[str] = []
+        stopped: bool | None = None
+
+        def record(path: Path, payload: dict[str, Any]) -> None:
+            nonlocal cleanup
+            try:
+                self.runtime.write_json(path, payload)
+            except Exception as exc:
+                cleanup = cleanup or exc
+                cleanup_errors.append(f"evidence write failed for {path}: {exc}")
+                if primary is not None:
+                    primary.add_note(cleanup_errors[-1])
+
+        if self.start_attempted:
+            try:
+                self.runtime.stop_summon(self.paths.config_path)
+                stopped = True
+            except Exception as exc:
+                cleanup = exc
+                cleanup_errors.append(str(exc))
+                stopped = False
+                if primary is not None:
+                    primary.add_note(f"shutdown failed: {exc}")
+            stop_result: dict[str, Any] = {"runtime_stopped": stopped, "error": str(cleanup) if cleanup else None}
+            if isinstance(cleanup, CommandError):
+                stop_result.update({"command": cleanup.args_list, "exit_code": cleanup.return_code, "stdout": cleanup.stdout, "stderr": cleanup.stderr})
+            record(self.paths.report_dir / "summon-stop.json", stop_result)
+
+        remove_workspace = primary is None and cleanup is None and stopped is True and not self.keep_workspace
+
+        def record_result(*, cleanup_pending: bool = False) -> None:
+            record(self.paths.report_dir / "harness-result.json", {
+                "status": "failed" if primary or cleanup else "cleanup_pending" if cleanup_pending else "passed",
+                "primary_error": str(primary) if primary else None,
+                "cleanup_error": "; ".join(cleanup_errors) or None,
+                "runtime_stopped": stopped,
+                "workspace_retained": self.paths.workspace_dir.exists(),
+                "acceptance": self.acceptance,
+            })
+
+        # Save evidence before deletion. Keep failed workspaces and workspaces
+        # whose process has not been proved stopped.
+        record_result(cleanup_pending=remove_workspace)
+        if remove_workspace and cleanup is None:
+            try:
+                shutil.rmtree(self.paths.workspace_dir)
+            except Exception as exc:
+                cleanup = exc
+                cleanup_errors.append(str(exc))
+            record_result()
+        if incoming_primary is None:
+            if primary is not None:
+                raise primary
+            if cleanup is not None:
+                raise RuntimeError(f"scenario cleanup failed: {cleanup}") from cleanup
+        return False

@@ -20,8 +20,7 @@ import (
 
 func trackedProjectionFixture(t *testing.T) (*orchestrationLoop, *sql.DB, string, []artifactOutputRecord) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	root := t.TempDir()
 	ctx := context.Background()
@@ -97,8 +96,7 @@ func TestArtifactPublicationReplayRepairsFilesystemBeforeAuditCommitFailure(t *t
 }
 
 func TestBuilderArtifactSourceStagesReplayableMetadataAndCanonicalContent(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 	ctx := context.Background()
@@ -176,8 +174,7 @@ func TestBuilderArtifactSourceStagesReplayableMetadataAndCanonicalContent(t *tes
 }
 
 func TestArtifactPublicationIdentitySurvivesSameClockReplay(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
 	root := t.TempDir()
@@ -240,8 +237,7 @@ func TestArtifactPublicationIdentitySurvivesSameClockReplay(t *testing.T) {
 }
 
 func TestArtifactProjectionStreamsCanonicalContentAndRejectsCorruptionAtomically(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'large', 'run_1', 'nr_1', 'att_1', 'deliverable', 'large.bin', 'application/octet-stream', 'large.bin', '', 0, 'governance', '2026-03-01T12:00:00Z')`)
 	chunk := bytes.Repeat([]byte("x"), 1<<20)

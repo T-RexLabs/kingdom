@@ -170,8 +170,7 @@ func TestNestedManagedWorktreeProjectBoundaryKeepsParentGitMetadata(t *testing.T
 func TestResponseOnlyDirectWorkspaceIsIsolatedWithoutPersistentTarget(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -304,8 +303,7 @@ func TestResolveExecutionWorkspaceContextGitWorktreeFailsFastWhenGitUnavailable(
 func TestResolveExecutionWorkspaceContextForModeHonorsRunPublishMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	projectRoot := t.TempDir()
@@ -388,8 +386,7 @@ func TestResolveExecutionWorkspaceContextForModeHonorsRunPublishMode(t *testing.
 func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubdirectory(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	repoRoot := t.TempDir()
@@ -493,8 +490,7 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 func TestResolveExecutionWorkspaceContextForModeUsesMainWorktreeRootAcrossLinkedCheckouts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mainWorktreeRoot := t.TempDir()
@@ -572,8 +568,7 @@ func TestResolveExecutionWorkspaceContextForModeUsesMainWorktreeRootAcrossLinked
 func TestEnsureRunWorktreePrunesStaleRegistrationBeforePinnedRecreate(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mainWorktreeRoot := t.TempDir()
@@ -675,8 +670,7 @@ func TestEnsureRunWorktreePrunesStaleRegistrationBeforePinnedRecreate(t *testing
 func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAfterExternalPrune(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const runID = "run_1"
 	quarantinedAt := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
@@ -701,7 +695,18 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 	if err := os.Symlink(outsidePath, filepath.Join(worktreePath, "nested", "outside-link")); err != nil {
 		t.Fatalf("create provider symlink: %v", err)
 	}
-	oldWorktree, err := os.Stat(worktreePath)
+	// Keep the old inode referenced while recovery replaces the directory.
+	// Linux can otherwise reuse it immediately and make SameFile ambiguous.
+	oldDirectory, err := os.Open(worktreePath)
+	if err != nil {
+		t.Fatalf("open dirty managed worktree: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := oldDirectory.Close(); err != nil {
+			t.Errorf("close dirty managed worktree: %v", err)
+		}
+	})
+	oldWorktree, err := oldDirectory.Stat()
 	if err != nil {
 		t.Fatalf("stat dirty managed worktree: %v", err)
 	}
@@ -899,8 +904,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 
@@ -1094,8 +1098,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 		}
 		return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
 	}
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()
@@ -1126,8 +1129,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 
@@ -1221,8 +1223,7 @@ func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 	const attemptID = "run_1:work_intake:1"
@@ -1251,7 +1252,17 @@ func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 		case "worktree list --porcelain -z":
 			main := worktreePorcelainZ("worktree "+mainWorktreeRoot, "HEAD 1111111111111111111111111111111111111111", "branch refs/heads/main")
 			if registered {
-				return main + worktreePorcelainZ("worktree "+worktreePath, "HEAD 1111111111111111111111111111111111111111", "detached"), nil
+				var cleanupStarted int
+				if err := db.QueryRow(`SELECT cleanup_started FROM run_worktrees WHERE run_id = 'run_1'`).Scan(&cleanupStarted); err != nil {
+					return "", err
+				}
+				lines := []string{"worktree " + worktreePath, "HEAD 1111111111111111111111111111111111111111", "detached"}
+				if cleanupStarted != 0 {
+					// Git reports this once bounded deletion has removed .git,
+					// even if provider files and the checkout directory remain.
+					lines = append(lines, "prunable gitdir file points to non-existent location")
+				}
+				return main + worktreePorcelainZ(lines...), nil
 			}
 			return main, nil
 		case "worktree prune --expire now":
@@ -1367,8 +1378,7 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 		{name: "rerun", runReasonCode: "manual_rerun_requested", runEventType: "run.rerun_reopened", nodeEventType: "attempt.rerun_queued", authoritySource: "api.rerun_from_node", eventPrefix: "rerun"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1581,8 +1591,7 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1661,8 +1670,7 @@ func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing
 func TestRunWorktreeCleanupReclaimsAbandonedOwnerWithoutLosingCursor(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1720,8 +1728,7 @@ func TestRunWorktreeCleanupReclaimsAbandonedOwnerWithoutLosingCursor(t *testing.
 func TestRunWorktreeCleanupDoesNotReclaimLiveOwnerForSecondRuntime(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1760,8 +1767,7 @@ func TestRunWorktreeCleanupDoesNotReclaimLiveOwnerForSecondRuntime(t *testing.T)
 func TestRunWorktreeCleanupReclaimsOwnerThatExitedAfterStartup(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1806,8 +1812,7 @@ func TestManualWorktreeCleanupProgressSurvivesRunTerminalization(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -1853,8 +1858,7 @@ func TestAbandonedManualCleanupTerminalizationBecomesDue(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -1892,8 +1896,7 @@ func TestReclaimedManualCleanupBecomesDueAfterLaterTerminalization(t *testing.T)
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -1968,6 +1971,63 @@ func TestRunWorktreeCleanupClaimCommitErrorIsReconciled(t *testing.T) {
 	}
 }
 
+func TestRunWorktreeCleanupRefusesPresentPrunablePathBeforeDeletionStarts(t *testing.T) {
+	t.Parallel()
+	db := openMigratedTestDB(t)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
+	mainRoot := t.TempDir()
+	name := workspace.RunPathName("D1", "run_1")
+	path := workspace.ManagedRunWorktreePath(mainRoot, name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guard := filepath.Join(path, "guard.txt")
+	if err := os.WriteFile(guard, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const seed = "1111111111111111111111111111111111111111"
+	const now = "2026-05-03T10:00:00Z"
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(t.Context(), "run_1", filepath.Join(mainRoot, ".git"), mainRoot, ".", name, seed, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ScheduleTerminalCleanup(t.Context(), now, now); err != nil {
+		t.Fatal(err)
+	}
+	pruneCalls := 0
+	runner := &fakeGitCommandRunner{runFn: func(_ string, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "worktree list --porcelain -z":
+			return worktreePorcelainZ("worktree "+mainRoot, "HEAD "+seed, "branch refs/heads/main") +
+				worktreePorcelainZ("worktree "+path, "HEAD "+seed, "detached", "prunable gitdir file points to non-existent location"), nil
+		case "worktree prune --expire now":
+			pruneCalls++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected Git command: %s", strings.Join(args, " "))
+		}
+	}}
+	loop := orchestrationLoop{db: db, runWorktrees: store, gitRunner: runner, now: func() time.Time {
+		return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	}}
+	record, err := store.GetByRun(t.Context(), "run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := loop.cleanupRunWorktree(t.Context(), record, now)
+	if err != nil || complete {
+		t.Fatalf("unstarted prunable cleanup: complete=%t err=%v", complete, err)
+	}
+	record, err = store.GetByRun(t.Context(), "run_1")
+	if err != nil || record.CleanupStarted || record.State != workspace.RunWorktreeStateCleanupFailed || !strings.Contains(record.FailureReason, "prunable while its path is present") {
+		t.Fatalf("unstarted prunable cleanup authority: record=%#v err=%v", record, err)
+	}
+	if body, err := os.ReadFile(guard); err != nil || string(body) != "untouched" || pruneCalls != 0 {
+		t.Fatalf("unstarted prunable path changed: body=%q err=%v prune_calls=%d", body, err, pruneCalls)
+	}
+}
+
 func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
 	ctx := context.Background()
 	runner := workspace.ExecGitRunner{}
@@ -2025,8 +2085,7 @@ func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
 		}
 	}
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 	store := workspace.NewRunWorktreeStore(db)
@@ -2069,8 +2128,7 @@ func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
 func TestCleanupRunWorktreeRefusesUnregisteredSymlinkPath(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 	const runID = "run_1"

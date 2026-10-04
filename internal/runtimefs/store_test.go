@@ -291,7 +291,18 @@ func TestRecoverQuarantinedExecutionTargetDiscardsDirtyGeneration(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("create quarantined execution target: %v", err)
 	}
-	oldTarget, err := os.Stat(targetRoot)
+	// Keep the old inode live while recovery replaces its directory. Linux can
+	// otherwise reuse an unlinked inode immediately and make SameFile ambiguous.
+	oldDirectory, err := os.Open(targetRoot)
+	if err != nil {
+		t.Fatalf("open dirty target: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := oldDirectory.Close(); err != nil {
+			t.Errorf("close dirty target: %v", err)
+		}
+	})
+	oldTarget, err := oldDirectory.Stat()
 	if err != nil {
 		t.Fatalf("stat dirty target: %v", err)
 	}

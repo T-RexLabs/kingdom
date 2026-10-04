@@ -1124,8 +1124,10 @@ describe("AnalyticsPage", () => {
     });
 
     await screen.findByText("Windowed work order (30m)");
-    expect(chartRenderSpies.horizontal).toHaveBeenCalledTimes(1);
-    expect(chartRenderSpies.stacked).toHaveBeenCalledTimes(1);
+    await waitFor(() => {
+      expect(chartRenderSpies.horizontal).toHaveBeenCalledTimes(1);
+      expect(chartRenderSpies.stacked).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("does not rerender the execution detail role chart while retained chart data is unchanged", async () => {

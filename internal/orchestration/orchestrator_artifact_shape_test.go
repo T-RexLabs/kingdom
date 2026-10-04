@@ -203,8 +203,7 @@ func (f artifactShapeFixture) publish(project bool) error {
 
 func newArtifactShapeFixture(t *testing.T) artifactShapeFixture {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 	ctx := context.Background()

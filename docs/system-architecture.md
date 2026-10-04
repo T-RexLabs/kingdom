@@ -16,6 +16,8 @@ This guide is a map of the current system and the rules that shape it. Use the s
 
 The web app, command line, and API all work with the same local runtime. They do not each maintain a separate view of a run.
 
+`kd init` uses the policies, schemas, workflows, and role profiles shipped in the binary. It does not load scaffold assets from a nearby source checkout. The build checks that generated policy and schema copies match their canonical repository files.
+
 ## How Work Moves
 
 Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly.
@@ -35,6 +37,8 @@ The runtime applies these rules:
 * A process exit, a piece of text, or a saved file alone does not mean the work succeeded.
 * If Kingdom cannot prove that a managed provider process has stopped, it keeps that attempt blocked from replacement.
 * Planning messages and run activity are persisted so they can be inspected and recovered after a restart.
+* Buffered provider activity writes finish before completion processing proceeds. A failed activity write does not change the provider outcome. The runtime attempts to record a diagnostic for that failure.
+* Pending plan decision branches remain unfinished until an approval or rework decision is recorded. A completed predecessor alone does not close those branches or prevent their recovery.
 
 SQLite is the durable record for workflow state and audit history. Files under Kingdom's runtime and workspace directories support project work and recovery. On startup, Kingdom reconciles unfinished work before it resumes dispatch.
 

@@ -763,6 +763,29 @@ func TestStoreSettleProviderCompletionAndTerminalRequiresQuiescenceAttestationWi
 	}
 }
 
+func TestStoreDefaultClockRejectsFutureProviderTerminalHandoff(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		newStore func(*sql.DB) *Store
+	}{
+		{name: "default constructor", newStore: New},
+		{name: "nil trusted clock", newStore: func(db *sql.DB) *Store { return NewWithClock(db, nil) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, db, settlementReq := phase2ProviderSettlementFixture(t)
+			s := tc.newStore(db)
+			req := terminalHandoffRequest(settlementReq)
+			req.CreatedAt = time.Now().UTC().Add(24 * time.Hour).Format(time.RFC3339Nano)
+			_, err := s.PersistProviderTerminalHandoff(context.Background(), req)
+			requireProviderSettlementError(t, err, "persist_provider_terminal_handoff", "handoff_created_at_future")
+			if count := countPhase2Table(t, db, "provider_terminal_handoffs"); count != 0 {
+				t.Fatalf("future handoff persisted %d rows", count)
+			}
+		})
+	}
+}
+
 func TestStorePersistProviderTerminalHandoffRequiresObservedLeaseAndExactLineage(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -791,7 +814,7 @@ func TestStorePersistProviderTerminalHandoffRequiresObservedLeaseAndExactLineage
 		{
 			name: "future observation",
 			mutate: func(_ *testing.T, _ *sql.DB, req *PersistProviderTerminalHandoffRequest) {
-				req.CreatedAt = "2026-03-01T12:00:05Z"
+				req.CreatedAt = "2026-03-01T12:00:04.000000001Z"
 			},
 			reason: "handoff_created_at_future",
 		},
@@ -1608,8 +1631,7 @@ func atomicProviderSettlementFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *s
 	t.Helper()
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	s := New(db)
-	s.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC) }
+	s := NewWithClock(db, func() time.Time { return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC) })
 	ctx := context.Background()
 	const attemptID = "run_1:atomic_lease_rejection:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", ExecutionMode: ExecutionModeProviderBacked, CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
@@ -1657,8 +1679,7 @@ func phase2ProviderSettlementFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *s
 	t.Helper()
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
-	s := New(db)
-	s.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC) }
+	s := NewWithClock(db, func() time.Time { return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC) })
 	ctx := context.Background()
 	const attemptID = "run_1:phase2_settlement:1"
 	const invocationID = "invocation_phase2_settlement"

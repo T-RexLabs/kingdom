@@ -13,26 +13,19 @@ Run Details provides workflow and execution views. Mailbox messages remain avail
 
 ## Local Development
 
-From the repository root, start the frontend development server:
+Install `kd` with `make install`, then start a fresh sandbox runtime on a free port other than 8080. Follow the [local verification guide](../docs/local-setup-and-verification.md#check-an-installed-runtime) for setup and cleanup.
+
+From the repository root in a second terminal, start the frontend server with the sandbox's reported UI URL:
 
 ```bash
-make dev-web
+KINGDOM_DEV_BACKEND_URL=http://127.0.0.1:18080 make dev-web
 ```
 
-Open `http://127.0.0.1:5173` for isolated frontend iteration. The Vite proxy sends `/api` and `/healthz` requests to `localhost:8080`, as configured in `web/vite.config.ts`. Do not use this proxy for runtime evaluation.
+Replace the backend URL with the sandbox's reported URL. The setting requires HTTP loopback (`localhost`, `127.0.0.1`, or `[::1]`) and an explicit port other than 8080. Remote hosts, credentials, non-root paths, query strings, and fragments are rejected. There is no backend default.
 
-First install `kd` with `make install` from the repository root. Add the Go bin folder to your `PATH` if the command is not found. Then evaluate the embedded app in a fresh workspace and on a port other than 8080:
+Open the frontend URL reported by Vite, normally `http://127.0.0.1:5173`. API and health requests stay on the frontend origin and proxy to the selected sandbox without changing the request origin. The existing authentication flow still applies. Production builds, previews, and unit tests do not require this setting.
 
-```bash
-mkdir -p kd-sandbox/evaluation
-cd kd-sandbox/evaluation
-kd init
-kd summon --port 18081
-```
-
-If port 18081 is occupied, choose another available port. Open the URL reported by Kingdom.
-
-Changes under `web/` use Vite hot reload. Changes to backend code, configuration, policies, or schemas require rebuilding and restarting the runtime.
+Changes under `web/` use Vite hot reload. Backend and scaffold changes require rebuilding and restarting the runtime. For final runtime and UX verification, run `make install` and inspect the embedded app at Kingdom's reported URL in a fresh sandbox. Use **OpenAI - GPT-5.6 Luna** with **None** thinking effort when model selection appears. Stop both test processes after the check.
 
 ## Build and Checks
 
@@ -45,6 +38,10 @@ make lint-web
 ```
 
 The production web build is embedded in the `kd` binary and in locally built `kingdomd` binaries.
+
+Vitest checks frontend logic and components with jsdom. It does not prove browser rendering or live provider behavior. Use `make verify` for the broader deterministic gate and report browser or live checks separately.
+
+Frontend tests default to `Europe/Stockholm` when `TZ` is unset. This lets the daylight saving time gap tests run in local and CI checks. Set `TZ` explicitly to check another timezone, for example `TZ=UTC pnpm --dir web test`. Report any timezone-dependent skips. This default applies only to Vitest.
 
 ## Notes
 

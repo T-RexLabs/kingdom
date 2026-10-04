@@ -164,7 +164,9 @@ func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID
 	if entry.Locked {
 		return failCleanup("managed git worktree is locked and cannot be cleaned automatically")
 	}
-	if entry.Prunable && pathExists {
+	// Bounded deletion can remove .git before the checkout directory. Resume
+	// that deletion only after its durable, fenced boundary has been crossed.
+	if entry.Prunable && pathExists && !record.CleanupStarted {
 		return failCleanup("managed git worktree is prunable while its path is present; refusing cleanup")
 	}
 	started, err := o.runWorktrees.BeginCleanupDeletion(ctx, claim)
@@ -174,7 +176,7 @@ func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID
 	if !started {
 		return false, nil
 	}
-	if entry.Prunable {
+	if entry.Prunable && !pathExists {
 		return o.pruneAndMarkRunWorktreeCleaned(ctx, claim, trimmedMainWorktreeRoot, trimmedPath, now, failCleanup)
 	}
 

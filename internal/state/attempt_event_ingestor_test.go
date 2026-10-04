@@ -13,8 +13,7 @@ import (
 func TestAttemptEventIngestorDeduplicatesByAttemptAndSequence(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -52,8 +51,7 @@ func TestAttemptEventIngestorDeduplicatesByAttemptAndSequence(t *testing.T) {
 func TestAttemptEventIngestorMirrorsCanonicalAttemptLog(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -84,8 +82,7 @@ func TestAttemptEventIngestorMirrorsCanonicalAttemptLog(t *testing.T) {
 func TestAttemptEventIngestorSkipsCanonicalProjectionForSupersededAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -118,8 +115,7 @@ func TestAttemptEventIngestorSkipsCanonicalProjectionForSupersededAttempt(t *tes
 func TestAttemptEventDedupeConflictRollbackPreservesRunEventSequence(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -174,8 +170,7 @@ func TestAttemptEventDedupeConflictRollbackPreservesRunEventSequence(t *testing.
 func TestAttemptEventIngestorEmitsSequenceGapEvent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -227,8 +222,7 @@ func TestAttemptEventIngestorEmitsSequenceGapEvent(t *testing.T) {
 func TestAttemptEventIngestorEnforcesTerminalAttemptEvent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, nil)
@@ -294,8 +288,7 @@ func TestAttemptEventIngestorEnforcesTerminalAttemptEvent(t *testing.T) {
 func TestAttemptEventIngestorProjectsRunActivityButNotCollectionsForRetryEvents(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, nil)
@@ -332,8 +325,7 @@ func TestAttemptEventIngestorProjectsRunActivityButNotCollectionsForRetryEvents(
 func TestAttemptEventIngestorProjectsMeaningfulProgressIntoRunActivityOnly(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))
@@ -378,8 +370,7 @@ func TestAttemptEventIngestorProjectsMeaningfulProgressIntoRunActivityOnly(t *te
 func TestAttemptEventIngestorSuppressesSyntheticProgressFromRunActivityAndCollections(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))

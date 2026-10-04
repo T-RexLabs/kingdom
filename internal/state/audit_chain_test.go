@@ -10,8 +10,7 @@ import (
 func TestAuditChainPopulationAndVerification(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	transition := NewTransitionService(db, nil)
@@ -51,8 +50,7 @@ func TestAuditChainPopulationAndVerification(t *testing.T) {
 func TestAuditChainOrdersMixedRFC3339TimestampPrecisionByInstant(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	transition := NewTransitionService(db, nil)
@@ -84,8 +82,7 @@ func TestAuditChainOrdersMixedRFC3339TimestampPrecisionByInstant(t *testing.T) {
 func TestAuditChainCorruptionDetection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, nil)
@@ -135,8 +132,7 @@ func TestAuditChainCorruptionDetection(t *testing.T) {
 func TestAuditChainDetectsTransitionNodeRunLineageTampering(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	transition := NewTransitionService(db, nil)
@@ -167,8 +163,7 @@ func TestAuditChainDetectsTransitionNodeRunLineageTampering(t *testing.T) {
 func TestAuditChainDetectsEventLineageTampering(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ingestor := NewAttemptEventIngestor(db, nil)
@@ -211,8 +206,7 @@ func TestAuditChainDetectsEventLineageTampering(t *testing.T) {
 func TestAuditChainDetectsRunEventSequenceGaps(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	verifier := NewAuditIntegrityVerifier(db)
@@ -264,8 +258,7 @@ func TestAuditChainDetectsRunEventSequenceGaps(t *testing.T) {
 }
 
 func TestAuditChainVerifiesAndDetectsExternalIntegrationTampering(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	store := NewExternalStore(db)
 	ctx := context.Background()
 	_, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-1"})
@@ -355,8 +348,7 @@ func TestAuditChainDetectsExternalSequenceVersionAndHeadTampering(t *testing.T) 
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			store := NewExternalStore(db)
 			ctx := context.Background()
 			if _, err := store.CreateConnection(ctx, CreateExternalConnectionRequest{ConnectionID: "conn-audit-tamper", CredentialStrategy: "app_private_key", DisplayName: "App", AppID: "1", ClientID: "Iv1", AppSlug: "app", Installations: []ConnectionInstallation{{InstallationID: "2"}}, CredentialHandle: "github-app:conn-audit-tamper", ActorID: "local-operator", CreatedAt: "2026-08-12T10:00:00Z", AuditEventID: "external-audit-tamper"}); err != nil {

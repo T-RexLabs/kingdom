@@ -12,8 +12,7 @@ import (
 func TestFinalizeRunStateAllowsRepeatedRunFailureTransitionsAfterReopen(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '`+now+`')`)
@@ -80,8 +79,7 @@ func TestFinalizeRunStateAllowsRepeatedRunFailureTransitionsAfterReopen(t *testi
 func TestFinalizeRunStateCancelsLatestLiveSiblingsWhenRunFails(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '`+now+`')`)
@@ -155,8 +153,7 @@ func TestFinalizeRunStateCancelsLatestLiveSiblingsWhenRunFails(t *testing.T) {
 func TestFinalizeRunStateWaitsForDurableSettlementBeforeFailingProviderBackedNode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '`+now+`')`)
@@ -200,8 +197,7 @@ func TestFinalizeRunStateWaitsForDurableSettlementBeforeFailingProviderBackedNod
 func TestFinalizeRunStateWaitsForExecutionReviewWaveSettlementBeforeFailingRun(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '`+now+`')`)
@@ -267,8 +263,7 @@ func TestFinalizeRunStateWaitsForExecutionReviewWaveSettlementBeforeFailingRun(t
 func TestFinalizeRunStateQueuesSettledReviewReworkWaveBeforeFailingRun(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	for _, role := range []struct{ id, name string }{{"coordinator", "Coordinator"}, {"builder", "Builder"}, {"reviewer", "Reviewer"}} {
@@ -337,8 +332,7 @@ func TestFinalizeRunStateQueuesSettledReviewReworkWaveBeforeFailingRun(t *testin
 func TestRepairFailedRunAfterRecoveredExecutionRequeuesReachableCancelledNodes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	for _, role := range []struct{ id, name string }{{"builder", "Builder"}, {"reviewer", "Reviewer"}, {"qa-validator", "Validator"}, {"governance", "Governance"}, {"coordinator", "Coordinator"}} {
@@ -401,8 +395,7 @@ func TestRepairFailedRunAfterRecoveredExecutionRequeuesReachableCancelledNodes(t
 func TestRepairFailedRunAfterRecoveredExecutionQueuesSettledValidationReworkWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-19T18:30:00Z"
 	for _, role := range []struct{ id, name string }{{"builder", "Builder"}, {"reviewer", "Reviewer"}, {"qa-validator", "QA Validator"}, {"security-validator", "Security Validator"}, {"coordinator", "Coordinator"}} {

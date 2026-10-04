@@ -11,8 +11,7 @@ import (
 func TestOptimisticConcurrencyWorkflowRunOneSuccessOneConflict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	store := NewOptimisticConcurrencyStore(db)
@@ -73,8 +72,7 @@ func TestOptimisticConcurrencyNodeRunUpdatePaths(t *testing.T) {
 	t.Parallel()
 
 	t.Run("success", func(t *testing.T) {
-		db := openTestDB(t)
-		applyMigration(t, db, "0001_initial_schema.up.sql")
+		db := openMigratedTestDB(t)
 		seedMinimumGraph(t, db)
 
 		store := NewOptimisticConcurrencyStore(db)
@@ -97,8 +95,7 @@ func TestOptimisticConcurrencyNodeRunUpdatePaths(t *testing.T) {
 	})
 
 	t.Run("conflict", func(t *testing.T) {
-		db := openTestDB(t)
-		applyMigration(t, db, "0001_initial_schema.up.sql")
+		db := openMigratedTestDB(t)
 		seedMinimumGraph(t, db)
 
 		store := NewOptimisticConcurrencyStore(db)
@@ -122,8 +119,7 @@ func TestOptimisticConcurrencyNodeRunUpdatePaths(t *testing.T) {
 	})
 
 	t.Run("not_found", func(t *testing.T) {
-		db := openTestDB(t)
-		applyMigration(t, db, "0001_initial_schema.up.sql")
+		db := openMigratedTestDB(t)
 		seedMinimumGraph(t, db)
 
 		store := NewOptimisticConcurrencyStore(db)

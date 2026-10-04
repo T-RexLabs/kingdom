@@ -3,8 +3,17 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
+import { developmentServer } from "./dev-backend";
+import { testWorkerOptions } from "./test-workers";
+import { testProjects } from "./test-projects";
 
-export default defineConfig({
+// Set the test process timezone before worker threads start. Production and
+// development keep the host timezone; explicit test timezone overrides remain.
+if (process.env.VITEST === "true" && !process.env.TZ) {
+  process.env.TZ = "Europe/Stockholm";
+}
+
+export default defineConfig((environment) => ({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -35,23 +44,11 @@ export default defineConfig({
       },
     },
   },
-  server: {
-    port: 5173,
-    proxy: {
-      "/api": {
-        target: "http://localhost:8080",
-        changeOrigin: false,
-      },
-      "/healthz": {
-        target: "http://localhost:8080",
-        changeOrigin: false,
-      },
-    },
-  },
+  server: developmentServer(environment, process.env),
   test: {
+    ...testWorkerOptions(process.env.KINGDOM_TEST_CPUS),
+    pool: "threads",
     globals: true,
-    // jsdom plus the storage Node 26 would otherwise mask; see the module doc.
-    environment: "./src/test/jsdom-storage-env.ts",
-    setupFiles: "./src/test/setup.ts",
+    projects: testProjects,
   },
-});
+}));
