@@ -19,8 +19,7 @@ import (
 func TestWorkerOutputValidatorMapsInvalidSchemaToCanonicalError(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	schemaSet := loadSchemaSet(t)
@@ -68,8 +67,7 @@ func (artifactCloseFailure) Close() error { return errors.New("injected artifact
 func TestWorkerOutputValidatorRollsBackCompleteBatchOnStreamFailure(t *testing.T) {
 	for _, failure := range []string{"read", "close", "checksum", "size"} {
 		t.Run(failure, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
 			constraint := ""
@@ -130,8 +128,7 @@ func TestWorkerOutputValidatorRejectsUnsafeDeletionArtifactPaths(t *testing.T) {
 func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	schemaSet := loadSchemaSet(t)
@@ -230,8 +227,7 @@ func TestWorkerOutputValidatorPersistsComputedChecksumAndProvenance(t *testing.T
 func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	schemaSet := loadSchemaSet(t)
@@ -291,8 +287,7 @@ func TestWorkerOutputValidatorRejectsChecksumMismatch(t *testing.T) {
 }
 
 func TestWorkerOutputValidatorStreamsArtifactBeyondFormerFileAndAggregateLimits(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
 	workspace := t.TempDir()
@@ -325,8 +320,7 @@ func TestWorkerOutputValidatorStreamsArtifactBeyondFormerFileAndAggregateLimits(
 }
 
 func TestWorkerOutputValidatorDoesNotFollowArtifactSymlinks(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	validator := NewWorkerOutputValidator(db, loadSchemaSet(t))
 	workspace := t.TempDir()

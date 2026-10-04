@@ -11,8 +11,7 @@ func TestRunTerminalizationQueuesCancellationForAdmittedPreparation(t *testing.T
 	for _, terminal := range []string{"cancelled", "failed"} {
 		for _, preparation := range []string{"unadmitted", "active", "released"} {
 			t.Run(terminal+"/"+preparation, func(t *testing.T) {
-				db := openTestDB(t)
-				applyMigration(t, db, "0001_initial_schema.up.sql")
+				db := openMigratedTestDB(t)
 				seedMinimumGraph(t, db)
 				mustExec(t, db, `UPDATE node_runs SET node_status='ready',started_at=NULL WHERE node_run_id='nr_1'`)
 				ctx := context.Background()
@@ -59,8 +58,7 @@ func TestRunTerminalizationQueuesCancellationForAdmittedPreparation(t *testing.T
 }
 
 func TestSupersededPreparationRetainsCancellationHandoffWithoutLaunch(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id,run_id,node_id,attempt,wave,node_status,required_role,agent_id,row_version) VALUES ('nr_preparing_retry','run_1','work_intake',2,2,'ready','governance','agent_governance',1)`)
 	ctx := context.Background()

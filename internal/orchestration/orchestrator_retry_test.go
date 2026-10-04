@@ -54,8 +54,7 @@ func TestClassifyExecutionReasonCodeUsesCanonicalTerminalCodes(t *testing.T) {
 
 func TestAutomaticWorkOrderRetryIsBlockedAfterMeaningfulProviderProgress(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
 		t.Fatalf("load retry policy: %v", err)
@@ -83,8 +82,7 @@ func TestAutomaticWorkOrderRetryIsBlockedAfterMeaningfulProviderProgress(t *test
 
 func TestAutomaticWorkOrderRetryMeaningfulProgressDoesNotEscalateAtExhaustion(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at) VALUES ('nr_prior_retry', 'run_1', 'work_intake', 2, 2, 'ready', 'governance', 'agent_governance', 1, NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('prior_attempt', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -116,8 +114,7 @@ func TestAutomaticWorkOrderRetryMeaningfulProgressDoesNotEscalateAtExhaustion(t 
 
 func TestProcessRunDispatchesDueRetryInSameTick(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '2026-03-01T12:00:00Z')`)
@@ -160,8 +157,7 @@ func TestProcessRunDispatchesDueRetryInSameTick(t *testing.T) {
 
 func TestAutomaticWorkOrderRetryUsesExactFailureTimeForProviderHint(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
 		t.Fatalf("load retry policy: %v", err)
@@ -191,8 +187,7 @@ func TestAutomaticWorkOrderRetryUsesExactFailureTimeForProviderHint(t *testing.T
 
 func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := time.Date(2026, 3, 1, 12, 0, 0, 123456789, time.UTC)
 	const retryAfterMS = 10000
@@ -242,8 +237,7 @@ func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 
 func TestAutomaticRetryKeepsRunRunningUntilSuccessfulRetryFinalizes(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const sourceAttemptID = "run_1:work_intake:1"
 	now := time.Date(2026, 3, 19, 18, 30, 0, 0, time.UTC)
@@ -297,8 +291,7 @@ func TestAutomaticRetryKeepsRunRunningUntilSuccessfulRetryFinalizes(t *testing.T
 func TestAutomaticRetryFinalizationRequiresCoverageForEachFailedNode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const now = "2026-03-19T18:30:00Z"
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'failed', finished_at = '`+now+`' WHERE node_run_id = 'nr_1'`)
@@ -330,8 +323,7 @@ func TestAutomaticRetryFinalizationRequiresCoverageForEachFailedNode(t *testing.
 
 func TestStaleDispatchedRetryFailureChainTerminalizesRun(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
 	now := time.Date(2026, 3, 19, 18, 30, 0, 0, time.UTC)
@@ -428,8 +420,7 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 
 	for _, legacyCode := range []string{"provider_process_failed", "provider_malformed_protocol", "provider_terminal_failure"} {
 		t.Run(legacyCode, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			const attemptID = "run_1:work_intake:1"
 			const invocationID = "pinv_terminal_failure"
@@ -506,8 +497,7 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const attemptID = "run_1:work_intake:1"
 	const invocationID = "pinv_resource_limit"

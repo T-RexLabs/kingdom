@@ -16,8 +16,7 @@ import (
 func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const attemptID = "run_1:work_intake:1"
 	const invocationID = "pinv_starting_failure"

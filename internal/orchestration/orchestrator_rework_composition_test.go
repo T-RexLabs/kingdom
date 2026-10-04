@@ -76,8 +76,7 @@ func (a *scriptedExecutionAdapter) Stream(context.Context, opencode.StreamReques
 }
 
 func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedValidationReworkFlowRun(t, db)
 
 	releaseNightValidator := make(chan struct{})

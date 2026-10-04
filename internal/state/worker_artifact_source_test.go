@@ -76,8 +76,7 @@ func streamedWorkerRequest(source WorkerArtifactSource) WorkerOutputValidationRe
 func TestWorkerArtifactSourceRollsBackLateMetadataCloseSchemaAndHashFailures(t *testing.T) {
 	for _, failure := range []string{"metadata", "eof_error", "close", "schema", "hash"} {
 		t.Run(failure, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			cursor := &generatedWorkerArtifacts{count: 2049, failure: failure}
 			req := streamedWorkerRequest(func(ctx context.Context) (WorkerArtifactIterator, error) {
@@ -146,8 +145,7 @@ func TestWorkerArtifactSourceMetadataBeyondSixteenMiBHasBoundedLiveMemory(t *tes
 }
 
 func TestWorkerArtifactSourceRejectsCompetingMetadataInputs(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	opened := false
 	req := streamedWorkerRequest(func(context.Context) (WorkerArtifactIterator, error) {

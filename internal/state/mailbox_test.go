@@ -16,8 +16,7 @@ import (
 func TestMailboxStoreSendListAndMarkReadFlow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -85,8 +84,7 @@ func TestMailboxStoreSendListAndMarkReadFlow(t *testing.T) {
 func TestMailboxStoreRejectsUnsupportedMessageTypeAndPriority(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -114,8 +112,7 @@ func TestMailboxStoreRejectsUnsupportedMessageTypeAndPriority(t *testing.T) {
 func TestMailboxStoreRecordsThinMailboxEventProjection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -165,8 +162,7 @@ func TestMailboxStoreRecordsThinMailboxEventProjection(t *testing.T) {
 func TestMailboxStoreSendMessageUpsertsExistingMessagePayload(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -247,8 +243,7 @@ func TestMailboxStoreSendMessageUpsertsExistingMessagePayload(t *testing.T) {
 func TestMailboxStoreUpdatedLogicalMessageBecomesLatestInMailboxList(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -311,8 +306,7 @@ func TestMailboxStoreUpdatedLogicalMessageBecomesLatestInMailboxList(t *testing.
 func TestMailboxStoreHidesSuppressedPlanningMessagesFromOperatorProjection(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadStateTestSchemas(t))
@@ -347,8 +341,7 @@ func TestMailboxStoreHidesSuppressedPlanningMessagesFromOperatorProjection(t *te
 func TestMailboxStoreRejectsMailboxEventEnvelopeThatViolatesSchema(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	store := NewMailboxStore(db, loadMailboxSchemaSetWithoutMailboxEvents(t))
@@ -388,8 +381,7 @@ func TestMailboxStoreRejectsMailboxEventEnvelopeThatViolatesSchema(t *testing.T)
 func TestDelegationHardFailWritesEscalationMailboxMessage(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 
 	mailbox := NewMailboxStore(db, loadStateTestSchemas(t))

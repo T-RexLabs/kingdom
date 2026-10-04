@@ -14,8 +14,7 @@ import (
 )
 
 func TestDispatchPreparationDoesNotWaitForBusyWorkspace(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID: "run_prepare_busy", WorkOrderID: "work_order_prepare_busy", WorkflowID: "wf_prepare_busy",
 		NodeRunID: "nr_prepare_busy", NodeID: "implementation", NodeClass: workflow.NodeClassDelegatedExecution,
@@ -213,8 +212,7 @@ func TestDispatchPreparationPrivateAdvisorsCopyConcurrentlyWithinRun(t *testing.
 }
 
 func TestDispatchPreparationFreedCapacityRotatesAcrossRuns(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_a_large_wave", WorkOrderID: "work_order_a", WorkflowID: "wf_a", NodeRunID: "nr_a_0", NodeID: "advisor_0", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "coordinator", AgentID: "agent_a", RoleIDs: []string{"coordinator"}})
 	for i := 1; i < 8; i++ {
 		if _, err := db.Exec(`INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES (?, 'wf_a', ?, 'coordinator', 'advisory_synthesis', '2026-03-01T12:00:00Z')`, fmt.Sprintf("wn_a_%d", i), fmt.Sprintf("advisor_%d", i)); err != nil {
@@ -355,8 +353,7 @@ func TestDispatchPreparationAdmissionIsBounded(t *testing.T) {
 
 func newBlockedPreparation(t *testing.T) (*Runtime, *sequenceExecutionAdapter, runSnapshot, nodeDefinition, nodeAttempt, <-chan struct{}, func()) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_prepare", WorkOrderID: "work_order_prepare", WorkflowID: "wf_prepare", NodeRunID: "nr_prepare", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "plan-author", AgentID: "agent_prepare", RoleIDs: []string{"plan-author", "coordinator"}, ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_prepare_coordinator", RoleID: "coordinator"}}})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"prepared response", "second response"}}
 	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})

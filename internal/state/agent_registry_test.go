@@ -206,8 +206,7 @@ func TestAgentRegistryReassignRetriesSQLiteWriterContention(t *testing.T) {
 func TestAgentRegistryStatusTransitions(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	registry := NewAgentRegistry(db)
@@ -243,8 +242,7 @@ func TestAgentRegistryStatusTransitions(t *testing.T) {
 func TestAgentRegistryCreateNodeAttemptRequiresResponsibleAgent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	registry := NewAgentRegistry(db)
@@ -290,8 +288,7 @@ func TestAgentRegistryCreateNodeAttemptRequiresResponsibleAgent(t *testing.T) {
 func TestAgentRegistryListRunAgentsReturnsOnlyRunParticipantsOrdered(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents', 'Agents', 'list participants', '{}', '2026-03-01T12:00:00Z')`)
@@ -365,8 +362,7 @@ func TestAgentRegistryCountRunAgentsCountsProjectedParticipants(t *testing.T) {
 func TestAgentRegistryListRunAgentsUsesRunScopedFirstSeenAt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents_first_seen', 'Agents First Seen', 'run chronology', '{}', '2026-03-01T12:00:00Z')`)
@@ -392,8 +388,7 @@ func TestAgentRegistryListRunAgentsUsesRunScopedFirstSeenAt(t *testing.T) {
 func TestAgentRegistryListRunAgentsExcludesOperator(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '2026-03-01T12:00:00Z')`)
@@ -505,8 +500,7 @@ func TestAgentRegistryListRunAgentsPreservesHistoricalMembershipWhenEnteringOper
 func TestAgentRegistryListRunAgentsDerivesBusyStatusFromRunningNodes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents_status', 'Agents Status', 'status derivation', '{}', '2026-03-01T12:00:00Z')`)
@@ -540,8 +534,7 @@ func TestAgentRegistryListRunAgentsDerivesBusyStatusFromRunningNodes(t *testing.
 func TestAgentRegistryListRunAgentsPreservesCanonicalOfflineAndFailedStatuses(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents_unavailable', 'Agents Unavailable', 'status derivation', '{}', '2026-03-01T12:00:00Z')`)
@@ -578,8 +571,7 @@ func TestAgentRegistryListRunAgentsPreservesCanonicalOfflineAndFailedStatuses(t 
 func TestAgentRegistryListRunAgentsDoesNotLeakGlobalBusyAcrossRuns(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents_busy_scope', 'Agents Busy Scope', 'status derivation', '{}', '2026-03-01T12:00:00Z')`)
@@ -606,8 +598,7 @@ func TestAgentRegistryListRunAgentsDoesNotLeakGlobalBusyAcrossRuns(t *testing.T)
 func TestAgentRegistryListRunAgentsDerivesFailedStatusFromFailedNodes(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_agents_failed_node', 'Agents Failed Node', 'status derivation', '{}', '2026-03-01T12:00:00Z')`)
@@ -635,8 +626,7 @@ func TestAgentRegistryListRunAgentsDerivesFailedStatusFromFailedNodes(t *testing
 func TestAgentRegistryListAllAgentsReturnsEveryAgent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	// seedMinimumGraph already creates role 'governance' and agent 'agent_governance'.
@@ -684,8 +674,7 @@ func TestAgentRegistryListAllAgentsReturnsEveryAgent(t *testing.T) {
 func TestAgentRegistryListAllAgentsExcludesOperator(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('operator', 'Operator', 0, '2026-03-01T12:00:00Z')`)
@@ -708,8 +697,7 @@ func TestAgentRegistryListAllAgentsExcludesOperator(t *testing.T) {
 func TestAgentRegistryListAllAgentsReturnsEmptySliceWhenNone(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	// Insert a role but no agents.
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('governance', 'Governance', 1, '2026-03-01T12:00:00Z')`)
@@ -781,8 +769,7 @@ func queryNodeAgentID(t *testing.T, db *sql.DB, nodeRunID string) string {
 func TestAgentRegistrySyncOperationalStatusReconcilesStaleBusyToIdle(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_sync', 'Sync', 'sync', '{}', '2026-03-01T12:00:00Z')`)

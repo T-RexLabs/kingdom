@@ -49,8 +49,7 @@ func TestMessageActivityPersistsCompleteScopedContentAndHistory(t *testing.T) {
 }
 
 func TestObservedRunMessageCannotSettleAttempt(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	req := baseAttemptEventIngestionRequest()
 	req.AttemptID = "message-pending"

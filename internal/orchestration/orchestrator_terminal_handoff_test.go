@@ -385,8 +385,7 @@ func TestExecutionPayloadRejectsObservedLaunchWithoutValidTimestamp(t *testing.T
 
 func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 0, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_terminal_handoff', 'builder', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO work_orders (work_order_id, work_order_title, work_order_text, metadata_json, created_at) VALUES ('work_order_terminal_handoff', 'Terminal handoff', 'text', '{}', '2026-03-01T12:00:00Z')`)

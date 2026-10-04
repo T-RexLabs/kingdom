@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -17,11 +16,11 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/dbmigrations"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 	"kingdom/internal/testutil/planningfixture"
+	"kingdom/internal/testutil/sqlitefixture"
 
 	_ "modernc.org/sqlite"
 )
@@ -3779,23 +3778,15 @@ func latestSessionOperation(t *testing.T, store *state.PlanningStore, sessionID 
 	return operations[0]
 }
 
+var planningTestDatabase = sqlitefixture.NewMigrated()
+
 func stateTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-	db := openPlanningTestDB(t)
-	entries, err := dbmigrations.List()
+	db, err := planningTestDatabase.Open(t.Context())
 	if err != nil {
-		t.Fatalf("list migrations: %v", err)
+		t.Fatalf("restore planning test database: %v", err)
 	}
-	names := make([]string, 0, len(entries))
-	for _, name := range entries {
-		if strings.HasSuffix(name, ".up.sql") {
-			names = append(names, name)
-		}
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		applyPlanningMigration(t, db, name)
-	}
+	t.Cleanup(func() { _ = db.Close() })
 	return db
 }
 
@@ -3833,31 +3824,6 @@ func seedHeartbeatTitleOperation(t *testing.T, suffix string) (*sql.DB, *state.P
 		t.Fatalf("create planning operation: %v", err)
 	}
 	return db, store, operationID
-}
-
-func openPlanningTestDB(t *testing.T) *sql.DB {
-	t.Helper()
-	db, err := sql.Open("sqlite", ":memory:")
-	if err != nil {
-		t.Fatalf("open sqlite db: %v", err)
-	}
-	db.SetMaxOpenConns(1)
-	t.Cleanup(func() { _ = db.Close() })
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatalf("enable foreign keys: %v", err)
-	}
-	return db
-}
-
-func applyPlanningMigration(t *testing.T, db *sql.DB, fileName string) {
-	t.Helper()
-	raw, err := dbmigrations.Read(fileName)
-	if err != nil {
-		t.Fatalf("read migration %s: %v", fileName, err)
-	}
-	if _, err := db.Exec(string(raw)); err != nil {
-		t.Fatalf("apply migration %s: %v", fileName, err)
-	}
 }
 
 func writeTestFile(t *testing.T, root, relativePath, content string) {

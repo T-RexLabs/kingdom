@@ -30,8 +30,7 @@ func TestPrivateGitWorkspaceHasIndependentUsableIndex(t *testing.T) {
 			privateGitCommand(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "add", ".")
 			privateGitCommand(t, source, "-c", "user.name=Test", "-c", "user.email=test@example.com", "commit", "--quiet", "-m", "Seed")
 
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			const attemptID = "run_1:inspection:1"
 			mustExec(t, db, `INSERT INTO attempt_executions (attempt_id,run_id,node_run_id,state,execution_mode,completion_mode,created_at,updated_at) VALUES ('run_1:inspection:1','run_1','nr_1','queued','provider_backed','server_response','2026-09-30T12:00:00Z','2026-09-30T12:00:00Z')`)
@@ -164,8 +163,7 @@ func TestPrivateDirectUmbrellaCopiesEligibleContentWithoutRepositoryMetadata(t *
 		privateGitWrite(t, filepath.Join(root, ".venv", "generated"), "excluded environment\n")
 		before[root] = privateGitState(t, root)
 	}
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const attemptID = "run_1:advisor:1"
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id,run_id,node_run_id,state,execution_mode,completion_mode,created_at,updated_at) VALUES ('run_1:advisor:1','run_1','nr_1','queued','provider_backed','server_response','2026-09-30T12:00:00Z','2026-09-30T12:00:00Z')`)

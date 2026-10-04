@@ -13,8 +13,7 @@ import (
 func TestHasRecentTimeoutActivityTracksProviderActivity(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -37,8 +36,7 @@ func TestHasRecentTimeoutActivityTracksProviderActivity(t *testing.T) {
 func TestHasRecentTimeoutActivityIgnoresFutureDatedActivity(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -61,8 +59,7 @@ func TestHasRecentTimeoutActivityIgnoresFutureDatedActivity(t *testing.T) {
 func TestHasRecentTimeoutActivityTracksStreamProgress(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -87,8 +84,7 @@ func TestHasRecentTimeoutActivityTracksStreamProgress(t *testing.T) {
 func TestHasRecentTimeoutActivityIgnoresRuntimeObservation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -111,8 +107,7 @@ func TestHasRecentTimeoutActivityIgnoresRuntimeObservation(t *testing.T) {
 func TestHasRecentTimeoutActivityTracksCompletionObservation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -135,8 +130,7 @@ func TestHasRecentTimeoutActivityTracksCompletionObservation(t *testing.T) {
 func TestHasRecentTimeoutActivityHandlesFractionalSecondCutoff(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -159,8 +153,7 @@ func TestHasRecentTimeoutActivityHandlesFractionalSecondCutoff(t *testing.T) {
 func TestRecentExecutionActivityQueryUsesNodeRunIndex(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	const indexName = "idx_events_node_run_type_created_activity"
 	if !indexExists(t, db, indexName) {
@@ -185,8 +178,7 @@ func TestRecentExecutionActivityQueryUsesNodeRunIndex(t *testing.T) {
 func TestHasRecentTimeoutActivityScansPastSyntheticObservationOverflow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -220,8 +212,7 @@ func TestHasRecentTimeoutActivityScansPastSyntheticObservationOverflow(t *testin
 func TestHasRecentExecutionLivenessTreatsRuntimeObservationWithLiveDiagnosticsAsRecent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{
@@ -244,8 +235,7 @@ func TestHasRecentExecutionLivenessTreatsRuntimeObservationWithLiveDiagnosticsAs
 func TestHasRecentExecutionLivenessIgnoresRuntimeObservationWithoutLiveDiagnostics(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	insertExecutionActivityEvent(t, db, executionActivitySeed{

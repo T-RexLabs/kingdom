@@ -8,8 +8,7 @@ import (
 func TestIsUniqueViolationOnMatchesConstraintTargets(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	_, err := db.Exec(`INSERT INTO idempotency_keys (idempotency_key_id, route, actor_id, client_key, request_hash, response_status, response_headers_json, response_body_json, created_at, expires_at) VALUES ('idem_a', '/runs', 'actor_1', 'key_1', 'hash_1', 201, '{}', '{}', '2026-03-01T12:00:00Z', NULL)`)
 	if err != nil {
@@ -34,8 +33,7 @@ func TestIsUniqueViolationOnMatchesConstraintTargets(t *testing.T) {
 func TestIsUniqueViolationOnDistinguishesPrimaryKeyCollisions(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	_, err := db.Exec(`INSERT INTO idempotency_keys (idempotency_key_id, route, actor_id, client_key, request_hash, response_status, response_headers_json, response_body_json, created_at, expires_at) VALUES ('idem_a', '/runs', 'actor_1', 'key_1', 'hash_1', 201, '{}', '{}', '2026-03-01T12:00:00Z', NULL)`)
 	if err != nil {

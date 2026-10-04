@@ -6,8 +6,7 @@ import (
 )
 
 func TestPagedArtifactProvenancePreservesModes(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	want := map[string]*int64{
 		"private-executable": artifactTestMode(0700),

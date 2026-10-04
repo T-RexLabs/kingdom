@@ -170,8 +170,7 @@ func TestNestedManagedWorktreeProjectBoundaryKeepsParentGitMetadata(t *testing.T
 func TestResponseOnlyDirectWorkspaceIsIsolatedWithoutPersistentTarget(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_council', 'plan-author', 'idle', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -304,8 +303,7 @@ func TestResolveExecutionWorkspaceContextGitWorktreeFailsFastWhenGitUnavailable(
 func TestResolveExecutionWorkspaceContextForModeHonorsRunPublishMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	projectRoot := t.TempDir()
@@ -388,8 +386,7 @@ func TestResolveExecutionWorkspaceContextForModeHonorsRunPublishMode(t *testing.
 func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubdirectory(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	repoRoot := t.TempDir()
@@ -493,8 +490,7 @@ func TestResolveExecutionWorkspaceContextForModeNestedProjectScopesToProjectSubd
 func TestResolveExecutionWorkspaceContextForModeUsesMainWorktreeRootAcrossLinkedCheckouts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mainWorktreeRoot := t.TempDir()
@@ -572,8 +568,7 @@ func TestResolveExecutionWorkspaceContextForModeUsesMainWorktreeRootAcrossLinked
 func TestEnsureRunWorktreePrunesStaleRegistrationBeforePinnedRecreate(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mainWorktreeRoot := t.TempDir()
@@ -675,8 +670,7 @@ func TestEnsureRunWorktreePrunesStaleRegistrationBeforePinnedRecreate(t *testing
 func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAfterExternalPrune(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const runID = "run_1"
 	quarantinedAt := time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
@@ -899,8 +893,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 func TestPersistExecutionArtifactBuilderExcludesUnchangedSeededFilesGitWorktreeMode(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedBuilderAttemptForRunOne(t, db)
 
@@ -1094,8 +1087,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 		}
 		return "", fmt.Errorf("unexpected git command: %s", strings.Join(args, " "))
 	}
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()
@@ -1126,8 +1118,7 @@ func TestPublishArtifactsToProjectRootGitWorktreeWritesIntoWorktree(t *testing.T
 func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 
@@ -1221,8 +1212,7 @@ func TestRunWorktreeLifecycleSchedulesAndCleansTerminalRuns(t *testing.T) {
 func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 	const attemptID = "run_1:work_intake:1"
@@ -1367,8 +1357,7 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 		{name: "rerun", runReasonCode: "manual_rerun_requested", runEventType: "run.rerun_reopened", nodeEventType: "attempt.rerun_queued", authoritySource: "api.rerun_from_node", eventPrefix: "rerun"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1581,8 +1570,7 @@ func TestRunWorktreeCleanupFencesRetryAndRerunBetweenBatches(t *testing.T) {
 func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1661,8 +1649,7 @@ func TestManualRetryCancelsClaimedWorktreeCleanupBeforeDeletionStarts(t *testing
 func TestRunWorktreeCleanupReclaimsAbandonedOwnerWithoutLosingCursor(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1720,8 +1707,7 @@ func TestRunWorktreeCleanupReclaimsAbandonedOwnerWithoutLosingCursor(t *testing.
 func TestRunWorktreeCleanupDoesNotReclaimLiveOwnerForSecondRuntime(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1760,8 +1746,7 @@ func TestRunWorktreeCleanupDoesNotReclaimLiveOwnerForSecondRuntime(t *testing.T)
 func TestRunWorktreeCleanupReclaimsOwnerThatExitedAfterStartup(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 
@@ -1806,8 +1791,7 @@ func TestManualWorktreeCleanupProgressSurvivesRunTerminalization(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -1853,8 +1837,7 @@ func TestAbandonedManualCleanupTerminalizationBecomesDue(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -1892,8 +1875,7 @@ func TestReclaimedManualCleanupBecomesDueAfterLaterTerminalization(t *testing.T)
 	t.Parallel()
 
 	ctx := context.Background()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = 'run_1'`)
 
@@ -2025,8 +2007,7 @@ func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
 		}
 	}
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
 	store := workspace.NewRunWorktreeStore(db)
@@ -2069,8 +2050,7 @@ func TestGitPruneDeregistersWorktreeAfterBoundedTreeRemoval(t *testing.T) {
 func TestCleanupRunWorktreeRefusesUnregisteredSymlinkPath(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
 	const runID = "run_1"

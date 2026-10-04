@@ -65,8 +65,7 @@ func TestArtifactInventoryUsesOnePublicationSnapshot(t *testing.T) {
 }
 
 func TestArtifactContentBaselinePreservesChunkedBytes(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	body := bytes.Repeat([]byte("m"), (2<<20)+7)
 	checksum := checksumHex(body)
@@ -97,8 +96,7 @@ func TestArtifactServiceRejectsCorruptAndPartialCanonicalChunks(t *testing.T) {
 		`DELETE FROM artifact_contents`,
 	} {
 		t.Run(mutation, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'a', 'run_1', 'nr_1', 'att_1', 'a', 'text/plain', 'a', '`+checksumHex([]byte("abcdef"))+`', 6, 'governance', '2026-03-01T12:00:00Z')`)
 			mustExec(t, db, `INSERT INTO artifact_contents (artifact_id, sha256, size_bytes, created_at) SELECT artifact_id, sha256, size_bytes, created_at FROM artifacts`)
@@ -120,8 +118,7 @@ func TestArtifactServiceRejectsCorruptAndPartialCanonicalChunks(t *testing.T) {
 func TestArtifactServiceGetArtifact(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_1', 'run_1', 'nr_1', 'att_1', 'report.md', 'text/markdown', 'artifacts/report.md', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 42, 'governance', '2026-03-01T12:00:00Z')`)
@@ -143,8 +140,7 @@ func TestArtifactServiceGetArtifact(t *testing.T) {
 func TestArtifactServiceNotFound(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	service := NewArtifactService(db)
@@ -162,8 +158,7 @@ func TestArtifactServiceNotFound(t *testing.T) {
 func TestArtifactServiceListRunArtifacts(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_deliverable', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'web/index.html', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 100, 'governance', '2026-03-01T12:00:01Z')`)
@@ -185,8 +180,7 @@ func TestArtifactServiceListRunArtifacts(t *testing.T) {
 func TestArtifactServiceNeverFallsBackToWorkspaceContent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()
@@ -213,8 +207,7 @@ func TestArtifactServiceNeverFallsBackToWorkspaceContent(t *testing.T) {
 func TestArtifactServiceGetArtifactContentPrefersArtifactIDBinding(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO artifacts (mode_bits, artifact_id, run_id, node_run_id, attempt_id, artifact_kind, name, mime, path, sha256, size_bytes, producer_role, created_at) VALUES (420, 'artifact_a', 'run_1', 'nr_1', 'att_1', 'deliverable', 'index.html', 'text/html', 'index.html', '2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824', 5, 'governance', '2026-03-01T12:00:01Z')`)
@@ -244,8 +237,7 @@ func TestArtifactServiceGetArtifactContentPrefersArtifactIDBinding(t *testing.T)
 func TestArtifactServiceGetArtifactContentFallbackChecksumMismatch(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	workspaceRoot := t.TempDir()

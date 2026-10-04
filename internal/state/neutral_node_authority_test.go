@@ -19,8 +19,7 @@ func TestDelegationUsesPersistedNodeAuthority(t *testing.T) {
 		{"architecture_consultation", "delegated_execution", "builder"},
 	} {
 		t.Run(tc.nodeID, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedDelegationPolicyFixture(t, db)
 			mustExecArgs(t, db, `UPDATE workflow_nodes SET node_id = ?, node_class = ?, required_role = ? WHERE workflow_node_id = 'wn_7'`, tc.nodeID, tc.nodeClass, tc.role)
 			engine := NewDelegationPolicyEngine(db, NewAgentRegistry(db))
@@ -72,8 +71,7 @@ func TestDelegationRejectsMissingOrInvalidNodeContract(t *testing.T) {
 		{"class role mismatch", "advisor_consultation", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedDelegationPolicyFixture(t, db)
 			nodeID := "delegated_execution"
 			if tc.missing {
@@ -145,8 +143,7 @@ func TestReconcilerAdvisorSelfRetryLimit(t *testing.T) {
 
 func seedNeutralAdvisorAttempt(t *testing.T, nodeID string, attempt int) *sql.DB {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 0, '2026-03-01T12:00:00Z')`)

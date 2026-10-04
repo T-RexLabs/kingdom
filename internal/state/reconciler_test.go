@@ -38,8 +38,7 @@ func (p fixedDelayRetryPlanner) Plan(errorcatalog.Code, int) (retryengine.PlanRe
 func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
@@ -136,8 +135,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttempt(t *testing.T) {
 func TestReconcilerStartupRecoversAndReassignsStaleAttemptWithDriftedReplacementStatus(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
@@ -167,8 +165,7 @@ func TestReconcilerStartupRecoversAndReassignsStaleAttemptWithDriftedReplacement
 func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
@@ -193,8 +190,7 @@ func TestReconcilerSkipsAttemptsWithDurableTerminalExecutionState(t *testing.T) 
 func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:09:30Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
@@ -227,8 +223,7 @@ func TestReconcilerDoesNotRetryStartingAttemptWithActiveLaunchFence(t *testing.T
 func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := time.Date(2026, 3, 1, 12, 13, 0, 0, time.UTC)
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
@@ -247,8 +242,7 @@ func TestFindStaleAttemptsKeepsRunningProviderAttemptWithLiveExecutionLease(t *t
 func TestFindStaleAttemptsKeepsStartingProviderAttemptWithLiveExecutionLease(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const nowText = "2026-09-28T12:13:00Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
@@ -271,8 +265,7 @@ func TestFindStaleAttemptsKeepsStartingProviderAttemptWithLiveExecutionLease(t *
 func TestFindStaleAttemptsKeepsLeaseThatExpiresAfterVariablePrecisionNow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const nowText = "2026-09-25T10:00:00.1Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
@@ -295,8 +288,7 @@ func TestFindStaleAttemptsKeepsLeaseThatExpiresAfterVariablePrecisionNow(t *test
 func TestFindStaleAttemptsRespectsFractionalSecondCutoff(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T12:00:00.100000001Z' WHERE node_run_id = 'nr_1'`)
@@ -314,8 +306,7 @@ func TestFindStaleAttemptsRespectsFractionalSecondCutoff(t *testing.T) {
 func TestReconcilerSchedulesRetryForStartingProviderFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const attemptID = "run_1:work_intake:1"
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
@@ -340,8 +331,7 @@ func TestReconcilerSchedulesRetryForStartingProviderFailure(t *testing.T) {
 func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:09:50.1Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
@@ -384,8 +374,7 @@ func TestReconcilerKeepsStartingLeaseOpenWhileLaunchFenceIsStillValid(t *testing
 func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:13:30Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
@@ -425,8 +414,7 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceHeartbeatGoesStale(t *t
 func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:13:30Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('architecture-advisor', 'Architecture Advisor', 1, '2026-03-01T12:00:00Z')`)
@@ -463,8 +451,7 @@ func TestReconcilerRetriesStartingAttemptAfterLaunchFenceLeaseExpires(t *testing
 func TestReconcilerDoesNotUseNodeAttemptOrdinalAsRetryBudget(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -501,8 +488,7 @@ func TestReconcilerDoesNotUseNodeAttemptOrdinalAsRetryBudget(t *testing.T) {
 func TestReconcilerStaleRetryCreatesSixtyFirstRunAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := "2026-03-01T12:05:30Z"
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_governance'`)
@@ -543,8 +529,7 @@ func TestReconcilerStaleRetryCreatesSixtyFirstRunAttempt(t *testing.T) {
 func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('coordinator', 'Coordinator', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T11:58:00Z' WHERE agent_id = 'agent_governance'`)
@@ -613,8 +598,7 @@ func TestReconcilerStaleRetryExhaustionPersistsDecisionAndDeliversEscalationOnce
 func TestReconcilerFencesStaleProviderInvocationBeforeSchedulingRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -839,8 +823,7 @@ func TestReconcilerTransactionFencePreservesInvocationWhenRecoveryMarkerAppearsA
 func TestReconcilerFailsStaleAttemptWithMeaningfulDurableEvidenceWithoutSuccessor(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
 	const attemptID = "run_1:work_intake:1"
@@ -950,8 +933,7 @@ func TestReconcilerRecognizesEachMeaningfulStaleEvidenceSource(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('stale_evidence_attempt', 'run_1', 'nr_1', 'running', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 			tc.seed(t, db)
@@ -967,8 +949,7 @@ func TestReconcilerRecognizesEachMeaningfulStaleEvidenceSource(t *testing.T) {
 func TestReconcilerSchedulesSameAgentExecutionRetryOnlyAfterHandoff(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	const now = "2026-03-01T12:13:00Z"
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('builder', 'Builder', 1, '2026-03-01T12:00:00Z')`)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_builder', 'builder', 'busy', NULL, 0, '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
@@ -1026,8 +1007,7 @@ func TestReconcilerSchedulesSameAgentExecutionRetryOnlyAfterHandoff(t *testing.T
 func TestReconcilerLeavesProviderReplacementPendingUntilCancellationHandoff(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET started_at = '2026-03-01T11:58:00Z' WHERE node_run_id = 'nr_1'`)
@@ -1089,8 +1069,7 @@ func TestReconcilerLeavesProviderReplacementPendingUntilCancellationHandoff(t *t
 func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1204,8 +1183,7 @@ func TestReconcilerKeepsExistingProviderSettlementImmutable(t *testing.T) {
 func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1328,8 +1306,7 @@ func TestReconcilerImmediatelyConvergesRecentSettledProviderAttemptFailure(t *te
 func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ctx := context.Background()
@@ -1425,8 +1402,7 @@ func TestReconcilerRecoveryHonorsPersistedProviderRetryHint(t *testing.T) {
 func TestReconcilerMeaningfulProgressDoesNotEscalateExhaustedRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	ctx := context.Background()
 	store := executionstore.New(db)
@@ -1468,8 +1444,7 @@ func TestReconcilerMeaningfulProgressDoesNotEscalateExhaustedRetry(t *testing.T)
 func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptState(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1568,8 +1543,7 @@ func TestReconcilerDoesNotClassifyWorkflowReworkAsAutomaticRetry(t *testing.T) {
 		{name: "validation gate", nodeID: "quality_validation", nodeRun: "nr_rework_validation", roleID: "qa-validator", agentID: "agent_rework_validation", nodeType: "validation_gates", code: "validation_gate_rework"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES (%q, %q, 0, '2026-03-01T12:00:00Z')`, tc.roleID, tc.roleID))
@@ -1600,8 +1574,7 @@ func TestReconcilerDoesNotClassifyWorkflowReworkAsAutomaticRetry(t *testing.T) {
 func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptEvidence(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1707,8 +1680,7 @@ func TestReconcilerDoesNotCreateSettlementFromTerminalAttemptEvidence(t *testing
 func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1828,8 +1800,7 @@ func TestReconcilerDoesNotRewriteSettlementFromTerminalAttemptTruth(t *testing.T
 func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -1936,8 +1907,7 @@ func TestReconcilerDoesNotRewritePinnedCanonicalSettlementFromTerminalAttempt(t 
 func TestReconcilerRetryHandoffDoesNotCommitBlockedStateOnQueueFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
@@ -1975,8 +1945,7 @@ func TestReconcilerRetryHandoffDoesNotCommitBlockedStateOnQueueFailure(t *testin
 func TestReconcilerIncludesDiagnosticsInStaleFailurePayload(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2055,8 +2024,7 @@ type staleProviderHandoffFenceFixture struct {
 func newStaleProviderHandoffFenceFixture(t *testing.T) staleProviderHandoffFenceFixture {
 	t.Helper()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const (
 		attemptID    = "run_1:work_intake:2"
@@ -2191,8 +2159,7 @@ func mustParseRFC3339(t *testing.T, raw string) time.Time {
 func TestReconcilerAllowsOneSelfRetryForPlanningNodeWhenNoReplacementAgent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"
@@ -2229,8 +2196,7 @@ func TestReconcilerAllowsOneSelfRetryForPlanningNodeWhenNoReplacementAgent(t *te
 func TestReconcilerDoesNotMarkRecentPlanningAttemptAsStale(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
@@ -2256,8 +2222,7 @@ func TestReconcilerDoesNotMarkRecentPlanningAttemptAsStale(t *testing.T) {
 func TestReconcilerPlanningNodesUseExtendedStaleGraceWindow(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:00:00Z' WHERE node_run_id = 'nr_1'`)
@@ -2291,8 +2256,7 @@ func TestExecutionKickoffIsNotClassifiedAsPlanningNode(t *testing.T) {
 func TestReconcilerSkipsStaleFailureWhenRecentProgressHeartbeatExists(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2320,8 +2284,7 @@ func TestReconcilerSkipsStaleFailureWhenRecentProgressHeartbeatExists(t *testing
 func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2349,8 +2312,7 @@ func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2378,8 +2340,7 @@ func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
 func TestReconcilerTreatsRecentProviderActivityAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2407,8 +2368,7 @@ func TestReconcilerTreatsRecentProviderActivityAsHeartbeat(t *testing.T) {
 func TestReconcilerTreatsRecentStreamProgressAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2436,8 +2396,7 @@ func TestReconcilerTreatsRecentStreamProgressAsHeartbeat(t *testing.T) {
 func TestReconcilerTreatsRecentCompletionObservationAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2466,8 +2425,7 @@ func TestReconcilerTreatsRecentCompletionObservationAsHeartbeat(t *testing.T) {
 func TestReconcilerRecoverAttemptSkipsTerminalObservedExecutionState(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:13:00Z"
@@ -2505,8 +2463,7 @@ func TestReconcilerRecoverAttemptSkipsTerminalObservedExecutionState(t *testing.
 func TestReconcilerRunStartupUsesNowClock(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), nil, nil)
@@ -2526,8 +2483,7 @@ func TestReconcilerRunStartupUsesNowClock(t *testing.T) {
 func TestReconcilerErrorsWhenRetryPlannerMissing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:05:30Z"

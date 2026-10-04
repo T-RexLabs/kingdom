@@ -87,8 +87,7 @@ func TestTransitionServiceRecordExecutionStartConfirmsDurableCommitError(t *test
 func TestTransitionServiceRejectsIllegalTransition(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, nil)
@@ -114,8 +113,7 @@ func TestTransitionServiceRejectsIllegalTransition(t *testing.T) {
 func TestTransitionServiceAppliesRunTransitionAtomically(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, loadStateTestSchemas(t))
@@ -151,8 +149,7 @@ func TestTransitionServiceAppliesRunTransitionAtomically(t *testing.T) {
 func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyReviewAttemptIsBeyondCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -206,8 +203,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyReviewAttempt
 func TestTransitionServiceRecoverLoopCapAutoSuccessConflictQueuesMissingOutboxAfterCommittedSuccess(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -282,8 +278,7 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictQueuesMissingOutboxAf
 func TestTransitionServiceRecoverLoopCapAutoSuccessConflictNoOpsWhenAnotherTransitionWon(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -348,8 +343,7 @@ func TestTransitionServiceRecoverLoopCapAutoSuccessConflictNoOpsWhenAnotherTrans
 func TestTransitionServiceRecordLoopCapAutoSuccessRejectsWhenCapNotReached(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -398,8 +392,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsWhenCapNotReached(t *te
 func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentReviewBoundaryAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -451,8 +444,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentReviewBoundar
 func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyValidationAttemptIsBeyondCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
@@ -503,8 +495,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsWhenReadyValidationAtt
 func TestTransitionServiceRecordLoopCapAutoSuccessSucceedsAtCurrentValidationBoundaryAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
@@ -577,8 +568,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsValidationAfterMixedWav
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 
 			now := "2026-03-01T12:00:00Z"
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
@@ -634,8 +624,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessRejectsValidationAfterMixedWav
 func TestTransitionServiceRecordLoopCapAutoSuccessUsesReviewScopeParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('reviewer', 'Reviewer', 0, '%s')`, now))
@@ -682,8 +671,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesReviewScopeParticipants(t 
 func TestTransitionServiceRecordLoopCapAutoSuccessUsesValidationScopeParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'QA', 0, '%s')`, now))
@@ -732,8 +720,7 @@ func TestTransitionServiceRecordLoopCapAutoSuccessUsesValidationScopeParticipant
 func TestTransitionServiceProjectsCanonicalRunStateChangedPayloadForPlanTransition(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = 'run_1'`)
 
@@ -774,8 +761,7 @@ func TestTransitionServiceProjectsCanonicalRunStateChangedPayloadForPlanTransiti
 func TestTransitionServiceProjectsCanonicalRunStateChangedPayloadForRunTransition(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, loadStateTestSchemas(t))
@@ -815,8 +801,7 @@ func TestTransitionServiceProjectsCanonicalRunStateChangedPayloadForRunTransitio
 func TestTransitionServiceKeepsAuditIntegrityForProjectedRunStateChangedPayload(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = 'run_1'`)
 
@@ -841,8 +826,7 @@ func TestTransitionServiceKeepsAuditIntegrityForProjectedRunStateChangedPayload(
 func TestTransitionServiceAllowsAwaitingHumanConfirmationRunTransitions(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, nil)
@@ -882,8 +866,7 @@ func TestTransitionServiceAllowsAwaitingHumanConfirmationRunTransitions(t *testi
 func TestTransitionServiceSetsAndClearsPlanPendingApprovalKey(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'in_plan_review' WHERE run_id = 'run_1'`)
@@ -936,8 +919,7 @@ func TestTransitionServiceClearsPlanPendingApprovalKeyWhenRunTerminalizes(t *tes
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', autonomous_approvals = 0, pending_approval_key = 'plan:gate_open' WHERE run_id = 'run_1'`)
 
@@ -965,8 +947,7 @@ func TestTransitionServiceAllowsTerminalToRunningReplayTransition(t *testing.T) 
 
 	for _, terminalStatus := range []string{"failed", "cancelled"} {
 		t.Run(terminalStatus, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE workflow_runs SET run_status = '`+terminalStatus+`' WHERE run_id = 'run_1'`)
 
@@ -992,8 +973,7 @@ func TestTransitionServiceAllowsTerminalToRunningReplayTransition(t *testing.T) 
 func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementParticipant(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'Governance Backup', 'idle', NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`)
 
@@ -1082,8 +1062,7 @@ func TestTransitionServiceSchedulesFencedStaleRetryAndProjectsReplacementPartici
 func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPayload(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	const now = "2026-03-01T12:10:00Z"
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed' WHERE run_id = 'run_1'`)
@@ -1122,8 +1101,7 @@ func TestTransitionServiceReplayTerminalRunWritesStandardizedManualRecoveryPaylo
 func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := "2026-03-01T12:10:00Z"
 	mustExec(t, db, fmt.Sprintf(`UPDATE node_runs SET node_status = 'blocked', finished_at = %q WHERE node_run_id = 'nr_1'`, now))
@@ -1190,8 +1168,7 @@ func TestTransitionServiceRequestsPausedAttemptStopRetryOnce(t *testing.T) {
 func TestTransitionServiceDoesNotFenceProviderAttemptAfterLeaseRenewal(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE agents SET status = 'busy' WHERE agent_id = 'agent_governance'`)
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
@@ -1237,8 +1214,7 @@ func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterSt
 		t.Run(replacementStatus, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'Governance Backup', %q, NULL, 0, '2026-03-01T12:05:00Z', '2026-03-01T12:05:00Z')`, replacementStatus))
 
@@ -1282,8 +1258,7 @@ func TestTransitionServiceSchedulesFencedStaleRetryClaimsReplacementAgentAfterSt
 func TestTransitionServiceRollsBackOnEventWriteFailure(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, nil)
@@ -1318,8 +1293,7 @@ func TestTransitionServiceRollsBackOnEventWriteFailure(t *testing.T) {
 func TestTransitionServiceReturnsStateConflictWhenFromStateMismatches(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, nil)
@@ -1346,8 +1320,7 @@ func TestTransitionServiceReturnsStateConflictWhenFromStateMismatches(t *testing
 func TestTransitionServiceIncrementsReworkCyclesForPlanRework(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', rework_cycle_count = 1 WHERE run_id = 'run_1'`)
@@ -1380,8 +1353,7 @@ func TestTransitionServiceIncrementsReworkCyclesForPlanRework(t *testing.T) {
 func TestTransitionServiceAllowsNeedsReworkToCouncilReviewLoop(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'needs_rework', rework_cycle_count = 1 WHERE run_id = 'run_1'`)
@@ -1405,8 +1377,7 @@ func TestTransitionServiceAllowsNeedsReworkToCouncilReviewLoop(t *testing.T) {
 func TestTransitionServiceKeepsRunActiveWhenPlanReworkCyclesGrowPastLegacyCap(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision', rework_cycle_count = 2 WHERE run_id = 'run_1'`)
@@ -1438,8 +1409,7 @@ func TestTransitionServiceKeepsRunActiveWhenPlanReworkCyclesGrowPastLegacyCap(t 
 func TestTransitionServiceBlocksExecutionNodeStartBeforePlanApproval(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)
@@ -1468,8 +1438,7 @@ func TestTransitionServiceBlocksExecutionNodeStartBeforePlanApproval(t *testing.
 func TestTransitionServiceRejectsClosureStartEvenWhenWaiverEventExists(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
@@ -1510,8 +1479,7 @@ func TestTransitionServiceRejectsClosureStartEvenWhenWaiverEventExists(t *testin
 func TestTransitionServiceAllowsClosureStartWhenValidationNodeAbsent(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
@@ -1535,8 +1503,7 @@ func TestTransitionServiceAllowsClosureStartWhenValidationNodeAbsent(t *testing.
 func TestTransitionServiceAllowsClosureStartWhenValidationLatestAttemptsSucceeded(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
@@ -1573,8 +1540,7 @@ func TestTransitionServiceAllowsClosureStartWhenValidationLatestAttemptsSucceede
 func TestTransitionServiceNodeTransitionTracksStartedAndFinishedAt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
@@ -1623,8 +1589,7 @@ func TestTransitionServiceNodeTransitionTracksStartedAndFinishedAt(t *testing.T)
 func TestTransitionServiceAllowsReadyToFailedWithoutStartedAt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL, finished_at = NULL WHERE node_run_id = 'nr_1'`)
@@ -1659,8 +1624,7 @@ func TestTransitionServiceAllowsReadyToFailedWithoutStartedAt(t *testing.T) {
 func TestTransitionServiceRecordDirectExecutionTerminalRejectsActiveUnsettledProviderInvocation(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
 	const attemptID = "att_1"
@@ -1737,8 +1701,7 @@ func TestTransitionServiceRecordDirectExecutionTerminalPreservesNonProviderAutho
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			mustExec(t, db, `UPDATE node_runs SET node_status = 'ready', started_at = NULL WHERE node_run_id = 'nr_1'`)
 			store := executionstore.New(db)
@@ -1780,8 +1743,7 @@ func TestTransitionServiceRecordDirectExecutionTerminalPreservesNonProviderAutho
 func TestTransitionServiceNodeTransitionUpdatesRunUpdatedAt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET updated_at = '2026-03-01T12:00:00Z' WHERE run_id = 'run_1'`)
@@ -1811,8 +1773,7 @@ func TestTransitionServiceNodeTransitionUpdatesRunUpdatedAt(t *testing.T) {
 func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -1926,8 +1887,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsLatestChildren(
 
 func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomically(t *testing.T) {
 	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	ctx := context.Background()
@@ -2021,8 +1981,7 @@ func TestTransitionServiceRunCancellationSettlesActiveProviderInvocationAtomical
 func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProviderCancel(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2091,8 +2050,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesSkipsRuntimeOwnedProvi
 func TestTransitionServiceTerminalizeRunAndCancelLiveNodesPreservesObservedCompletion(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2169,8 +2127,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 
 			now := "2026-03-01T12:40:00Z"
@@ -2242,8 +2199,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesProjectsDurableTermina
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchKeepsSharedAgentBusy(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2293,8 +2249,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchKeepsSharedAgentBus
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCancelForStartingRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2375,8 +2330,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchQueuesProviderCance
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsProviderCancelForQueuedRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2421,8 +2375,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsProviderCancel
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchTreatsQueuedRetryWithActiveInvocationAsLaunched(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2467,8 +2420,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchTreatsQueuedRetryWi
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsTerminalNoopRetryAndAdoptsLaterQueuedRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2511,8 +2463,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchSkipsTerminalNoopRe
 func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchBlocksOlderAdoptionWhenNewerTerminalRetryRemainsCanonical(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2551,8 +2502,7 @@ func TestTransitionServiceSupersedeQueuedAttemptsBeforeLaunchBlocksOlderAdoption
 func TestLoadLiveNodeAttemptsTxPrefersNonSupersededAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2589,8 +2539,7 @@ func TestLoadLiveNodeAttemptsTxPrefersNonSupersededAttempt(t *testing.T) {
 func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2616,8 +2565,7 @@ func TestLiveNodeAttemptExistsTxIgnoresSupersededCancelledRetry(t *testing.T) {
 func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemptWhenNewerRetryIsAlreadyTerminal(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2673,8 +2621,7 @@ func TestTransitionServiceTerminalizeRunAndCancelLiveNodesCancelsOlderLiveAttemp
 func TestTransitionServiceQueuePendingNodeWaveNoopsWhenOlderLiveLineageExistsBesideTerminalRetry(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	now := "2026-03-01T12:40:00Z"
@@ -2709,8 +2656,7 @@ func TestTransitionServiceQueuePendingNodeWaveNoopsWhenOlderLiveLineageExistsBes
 func TestTransitionServiceRejectsObservedCompletionWhenParentRunIsNotRunning(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed', plan_state = 'approved' WHERE run_id = 'run_1'`)
@@ -2751,8 +2697,7 @@ func TestTransitionServiceRejectsNodeTransitionsWhenParentRunIsNotRunning(t *tes
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 
 			mustExec(t, db, fmt.Sprintf(`UPDATE workflow_runs SET run_status = '%s', plan_state = 'approved' WHERE run_id = 'run_1'`, tc.runStatus))
@@ -2784,8 +2729,7 @@ func TestTransitionServiceRejectsNodeTransitionsWhenParentRunIsNotRunning(t *tes
 func TestTransitionServiceQueuePendingNodeWaveNoopsWhenParentRunIsNotRunning(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'failed', plan_state = 'approved' WHERE run_id = 'run_1'`)

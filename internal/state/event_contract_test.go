@@ -12,8 +12,7 @@ import (
 func TestTransitionServiceRejectsEventEnvelopeThatViolatesSchema(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	svc := NewTransitionService(db, loadStateTestSchemas(t))
@@ -60,8 +59,7 @@ func TestAttemptEventIngestorRejectsEventEnvelopeThatViolatesSchema(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 
 			ingestor := NewAttemptEventIngestor(db, loadStateTestSchemas(t))

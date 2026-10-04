@@ -91,8 +91,7 @@ func terminalizePreparationRun(t *testing.T, loop *orchestrationLoop, runID, ter
 func TestCancellationBeforeCanonicalPreparationNeedsNoWorkspaceRestore(t *testing.T) {
 	for _, scenario := range []string{"no_target", "trusted_target", "dirty_target", "launched", "invocation", "missing_attempt"} {
 		t.Run(scenario, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db)
+			db := openMigratedTestDB(t)
 			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_cancel_prep", WorkOrderID: "work_order_cancel_prep", WorkflowID: "wf_cancel_prep", NodeRunID: "nr_cancel_prep", NodeID: "builder", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder", AgentID: "agent_cancel_prep", RoleIDs: []string{"builder"}})
 			root := t.TempDir()
 			rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: &sequenceExecutionAdapter{}, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: root})

@@ -15,8 +15,7 @@ import (
 func TestTransitionServiceMirrorsEventIntoMailbox(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	policy := loadRoleCommunicationPolicyForStateTest(t)
 
@@ -47,8 +46,7 @@ func TestTransitionServiceMirrorsEventIntoMailbox(t *testing.T) {
 func TestAttemptEventIngestorMirrorsEventIntoMailbox(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	policy := loadRoleCommunicationPolicyForStateTest(t)
 
@@ -74,8 +72,7 @@ func TestAttemptEventIngestorMirrorsEventIntoMailbox(t *testing.T) {
 func TestMirrorEventToMailboxUsesRoleSignoffForCoordinator(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 	policy := loadRoleCommunicationPolicyForStateTest(t)
 

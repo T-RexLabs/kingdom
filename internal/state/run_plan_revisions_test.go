@@ -10,8 +10,7 @@ import (
 func TestCurrentRunPlanRevisionUsesCanonicalOutputsWhenProjectionMissing(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedStatePlanRevisionOutput(t, db, "planout_current_missing", "Current canonical plan", "2026-03-01T12:05:00Z")
 
@@ -41,8 +40,7 @@ func TestCurrentRunPlanRevisionUsesCanonicalOutputsWhenProjectionMissing(t *test
 func TestRefreshCurrentRunPlanRevisionRejectsProjectionDrift(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	seedStatePlanRevisionOutput(t, db, "planout_drift", "Canonical plan body", "2026-03-01T12:05:00Z")
 
@@ -65,8 +63,7 @@ func TestRefreshCurrentRunPlanRevisionRejectsProjectionDrift(t *testing.T) {
 func TestCurrentRunPlanRevisionUsesCanonicalNonSupersededPlanAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 
 	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 1, '2026-03-01T12:00:00Z')`)

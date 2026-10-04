@@ -6,8 +6,7 @@ import (
 )
 
 func TestHistoryStoreKeysetsCrossTimestampTiesAndOldLimits(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedDelegationPolicyFixture(t, db)
 	ctx := t.Context()
 	sessions := NewPlanningStore(db)

@@ -9,8 +9,7 @@ import (
 func TestValidationWaveOutcomeForWaveWaitsForAllValidators(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Validator A', 0, '%s')`, now))
@@ -61,8 +60,7 @@ func TestCountValidationReworkWavesBeforeWaveIgnoresMixedValidationWave(t *testi
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 
 			now := "2026-03-01T12:00:00Z"
 			mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Validator A', 0, '%s')`, now))
@@ -93,8 +91,7 @@ func TestCountValidationReworkWavesBeforeWaveIgnoresMixedValidationWave(t *testi
 func TestCountValidationReworkWavesBeforeWaveUsesLatestAttemptWithinSameWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Validator A', 0, '%s')`, now))
@@ -124,8 +121,7 @@ func TestCountValidationReworkWavesBeforeWaveUsesLatestAttemptWithinSameWave(t *
 func TestValidationWaveAccountingUsesActualWaveParticipants(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 
 	now := "2026-03-01T12:00:00Z"
 	mustExec(t, db, fmt.Sprintf(`INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('qa-validator', 'Validator', 0, '%s')`, now))

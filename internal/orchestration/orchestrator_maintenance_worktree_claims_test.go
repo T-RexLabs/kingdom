@@ -13,8 +13,7 @@ import (
 )
 
 func TestMaintenanceWorktreeClaimRecoveryIsBoundedAndCyclesPastLiveOwners(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
 	identity, err := processguardian.ProcessIdentityToken(os.Getpid())

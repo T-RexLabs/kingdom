@@ -18,8 +18,7 @@ import (
 // causal order without sleeps or assumptions about host performance.
 func completionTimestampFixture(t *testing.T) (*orchestrationLoop, asyncExecutionResult) {
 	t.Helper()
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_1'`)
 	clock := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
@@ -237,8 +236,7 @@ func TestCompletionLoopCapsPreserveZeroAndUnlimitedModes(t *testing.T) {
 	} {
 		for _, unlimited := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/unlimited_%t", gate.class, unlimited), func(t *testing.T) {
-				db := openTestDB(t)
-				applyMigration(t, db)
+				db := openMigratedTestDB(t)
 				seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 					RunID: "run_cap", WorkOrderID: "work_order_cap", WorkflowID: "workflow_cap",
 					NodeRunID: "node_run_cap", NodeID: "custom_gate", NodeClass: gate.class,

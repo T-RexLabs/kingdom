@@ -22,8 +22,7 @@ func TestArtifactModeContractAndPersistence(t *testing.T) {
 		{"delete-present", "delete", artifactTestMode(0644), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			db := openTestDB(t)
-			applyMigration(t, db, "0001_initial_schema.up.sql")
+			db := openMigratedTestDB(t)
 			seedMinimumGraph(t, db)
 			artifact := WorkerArtifact{Action: tc.action, Name: "file", MIME: "text/plain", Path: "file", ModeBits: tc.mode}
 			raw, err := json.Marshal(artifact)
@@ -57,8 +56,7 @@ func TestArtifactModeContractAndPersistence(t *testing.T) {
 }
 
 func TestArtifactModeDatabaseConstraints(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
+	db := openMigratedTestDB(t)
 	seedMinimumGraph(t, db)
 	for _, tc := range []struct {
 		action string

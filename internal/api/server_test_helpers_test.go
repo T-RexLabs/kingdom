@@ -26,11 +26,11 @@ import (
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
-	"kingdom/internal/dbmigrations"
 	"kingdom/internal/idempotency"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil/planningfixture"
+	"kingdom/internal/testutil/sqlitefixture"
 )
 
 type testPlannerAgent struct{}
@@ -321,34 +321,15 @@ func defaultTestRunModelSelectionBody() map[string]any {
 	}
 }
 
+var apiTestDatabase = sqlitefixture.NewMigrated()
+
 func openAPIServerTestDB(t *testing.T) *sql.DB {
 	t.Helper()
-
-	db, err := sql.Open("sqlite", ":memory:")
+	db, err := apiTestDatabase.Open(t.Context())
 	if err != nil {
-		t.Fatalf("open sqlite db: %v", err)
+		t.Fatalf("restore API test database: %v", err)
 	}
-	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
-
-	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
-		t.Fatalf("enable foreign keys pragma: %v", err)
-	}
-
-	names, err := dbmigrations.List()
-	if err != nil {
-		t.Fatalf("list migrations: %v", err)
-	}
-	for _, name := range names {
-		raw, err := dbmigrations.Read(name)
-		if err != nil {
-			t.Fatalf("read migration %s: %v", name, err)
-		}
-		if _, err := db.Exec(string(raw)); err != nil {
-			t.Fatalf("apply migration %s: %v", name, err)
-		}
-	}
-
 	seedRoles(t, db)
 	return db
 }

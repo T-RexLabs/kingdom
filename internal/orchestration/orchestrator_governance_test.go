@@ -12,8 +12,7 @@ import (
 func TestAdvancePlanProjectionTransitionsDraftToCouncilReview(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_author', 'plan-author', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_projection_2', 'wfdef_plan_projection', 'plan_drafting', 'plan-author', 'plan_drafting', '`+governanceTestNowRFC3339+`')`)
@@ -42,8 +41,7 @@ func TestAdvancePlanProjectionTransitionsDraftToCouncilReview(t *testing.T) {
 func TestCanAdvanceToGovernanceDecisionRequiresAllPlanDraftingNodesSucceeded(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_author', 'plan-author', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
@@ -75,8 +73,7 @@ func TestCanAdvanceToGovernanceDecisionRequiresAllPlanDraftingNodesSucceeded(t *
 func TestAdvancePlanProjectionReachesAwaitingGovernanceDecisionAfterPlanDraftingSuccess(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_author', 'plan-author', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
@@ -115,8 +112,7 @@ func TestAdvancePlanProjectionReachesAwaitingGovernanceDecisionAfterPlanDrafting
 func TestCanAdvanceToGovernanceDecisionUsesCanonicalNonSupersededPlanAttempt(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_author', 'plan-author', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
@@ -136,8 +132,7 @@ func TestCanAdvanceToGovernanceDecisionUsesCanonicalNonSupersededPlanAttempt(t *
 func TestAutoAdvanceGovernanceDecisionSkipsWhenAutonomousApprovalsDisabled(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'awaiting_plan_decision' WHERE run_id = 'run_plan_projection'`)
 
@@ -171,8 +166,7 @@ func TestAutoAdvanceGovernanceDecisionSkipsWhenAutonomousApprovalsDisabled(t *te
 func TestAutoAdvanceGovernanceDecisionUpdatesRunSnapshotOnStateConflict(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 	mustExec(t, db, `UPDATE workflow_runs SET plan_state = 'approved' WHERE run_id = 'run_plan_projection'`)
 
@@ -190,8 +184,7 @@ func TestAutoAdvanceGovernanceDecisionUpdatesRunSnapshotOnStateConflict(t *testi
 func TestEnsureDecisionNodeAttemptsQueuesFreshGovernanceAttemptForNewApprovalWave(t *testing.T) {
 	t.Parallel()
 
-	db := openTestDB(t)
-	applyMigration(t, db)
+	db := openMigratedTestDB(t)
 	seedPlanProjectionRun(t, db)
 	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_plan_author', 'plan-author', 'idle', NULL, 0, '`+governanceTestNowRFC3339+`', '`+governanceTestNowRFC3339+`')`)
 	mustExec(t, db, `INSERT INTO workflow_nodes (workflow_node_id, workflow_definition_id, node_id, required_role, node_class, created_at) VALUES ('wn_plan_projection_2', 'wfdef_plan_projection', 'plan_drafting', 'plan-author', 'plan_drafting', '`+governanceTestNowRFC3339+`')`)
