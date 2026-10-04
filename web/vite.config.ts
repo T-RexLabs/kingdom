@@ -5,6 +5,7 @@ import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { developmentServer } from "./dev-backend";
 import { testWorkerOptions } from "./test-workers";
+import { testProjects } from "./test-projects";
 
 export default defineConfig((environment) => ({
   plugins: [react(), tailwindcss()],
@@ -40,9 +41,8 @@ export default defineConfig((environment) => ({
   server: developmentServer(environment, process.env),
   test: {
     ...testWorkerOptions(process.env.KINGDOM_TEST_CPUS),
+    pool: "threads",
     globals: true,
-    // jsdom plus the storage Node 26 would otherwise mask; see the module doc.
-    environment: "./src/test/jsdom-storage-env.ts",
-    setupFiles: "./src/test/setup.ts",
+    projects: testProjects,
   },
 }));
