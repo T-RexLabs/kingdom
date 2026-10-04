@@ -120,7 +120,8 @@ func TestMaintenanceOutboxScanAdvancesPastBusyBatch(t *testing.T) {
 func TestProviderWorkerEndsAtDurableHandoffBeforeSnapshotFinalization(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
-	job := h.runningHandoffJob(t, invocation, 1)
+	// The adapter must own this command's complete guard lifecycle.
+	job := h.baseHandoffJob(invocation, 1)
 	target, err := h.fsStore.GetExecutionTarget(context.Background(), invocation.RunID)
 	if err != nil {
 		t.Fatal(err)
@@ -132,15 +133,24 @@ func TestProviderWorkerEndsAtDurableHandoffBeforeSnapshotFinalization(t *testing
 	h.loop.adapter = newScriptedExecutionAdapter(nil)
 	h.loop.asyncDrain = newExecutionDrainTracker()
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 	unlock := h.loop.lockRunWorkspace(invocation.RunID)
 	locked := true
 	defer func() {
 		if locked {
 			unlock()
+			locked = false
+		}
+		cleanupCtx, cancelCleanup := testDeadlineContext(t)
+		defer cancelCleanup()
+		if err := h.loop.waitForAsyncDrain(cleanupCtx); err != nil {
+			t.Errorf("cleanup provider worker: %v", err)
+		}
+		if err := h.loop.waitForMaintenance(cleanupCtx); err != nil {
+			t.Errorf("cleanup shared finalizer: %v", err)
 		}
 	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
 	if !h.loop.startAsyncExecution(ctx, job) {
 		t.Fatal("provider worker was not admitted")
 	}

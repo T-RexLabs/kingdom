@@ -3,6 +3,7 @@ package orchestration
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -10,13 +11,13 @@ import (
 	"time"
 
 	"kingdom/internal/providers/opencode"
-	"kingdom/internal/testutil"
 )
 
 type scriptedExecutionStep struct {
-	output string
-	err    error
-	block  <-chan struct{}
+	output  string
+	err     error
+	block   <-chan struct{}
+	started chan<- struct{}
 }
 
 type scriptedExecutionAdapter struct {
@@ -33,8 +34,23 @@ func newScriptedExecutionAdapter(steps map[string]scriptedExecutionStep) *script
 	return &scriptedExecutionAdapter{steps: cloned}
 }
 
-func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
+func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (response opencode.ExecuteResponse, executeErr error) {
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(ctx, ownership); err != nil {
+			return opencode.ExecuteResponse{}, fmt.Errorf("acknowledge scripted process guard: %w", err)
+		}
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+	defer func() {
+		if req.OnProcessGuardQuiescence != nil {
+			if err := req.OnProcessGuardQuiescence(context.WithoutCancel(ctx), quiescence); err != nil {
+				executeErr = errors.Join(executeErr, fmt.Errorf("record scripted process guard quiescence: %w", err))
+			}
+		}
+	}()
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	step, ok := a.steps[req.AttemptID]
@@ -42,6 +58,9 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if !ok {
 		output := `{"summary":"ok"}`
 		return opencode.ExecuteResponse{Accepted: true, OutputText: output, ProviderInvocationID: req.InvocationID, ProviderInvocationAt: req.InvocationIssuedAt, StreamObservation: testSuccessfulExecuteObservation(req, output)}, nil
+	}
+	if step.started != nil {
+		close(step.started)
 	}
 	if step.block != nil {
 		select {
@@ -53,7 +72,7 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if step.err != nil {
 		return opencode.ExecuteResponse{}, step.err
 	}
-	response := opencode.ExecuteResponse{
+	response = opencode.ExecuteResponse{
 		Accepted:             true,
 		OutputText:           step.output,
 		ProviderInvocationID: req.InvocationID,
@@ -80,6 +99,7 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 	seedValidationReworkFlowRun(t, db)
 
 	releaseNightValidator := make(chan struct{})
+	nightValidatorStarted := make(chan struct{})
 	var releaseNightValidatorOnce sync.Once
 	releaseNight := func() {
 		releaseNightValidatorOnce.Do(func() {
@@ -91,7 +111,7 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 		"run_rework_flow:implementation:1":      {output: "Initial implementation complete."},
 		"run_rework_flow:execution_review:1":    {output: "VERDICT: PASS\nInitial review looks good."},
 		"run_rework_flow:quality_validation:1":  {output: "VERDICT: REWORK\nFix the validator blocker."},
-		"run_rework_flow:security_validation:1": {output: "VERDICT: PASS\nNight watch checks are green.", block: releaseNightValidator},
+		"run_rework_flow:security_validation:1": {output: "VERDICT: PASS\nNight watch checks are green.", block: releaseNightValidator, started: nightValidatorStarted},
 		"run_rework_flow:implementation:2":      {output: "Implemented follow-up fixes."},
 		"run_rework_flow:execution_review:2":    {output: "VERDICT: PASS\nFollow-up review is clean."},
 		"run_rework_flow:quality_validation:2":  {output: "VERDICT: PASS\nQA checks are green."},
@@ -110,25 +130,42 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 		t.Fatalf("new runtime: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := testDeadlineContext(t)
 	defer cancel()
-	if err := rt.Start(ctx); err != nil {
-		t.Fatalf("start runtime: %v", err)
-	}
 	defer func() {
 		releaseNight()
-		closeCtx, cancelClose := context.WithTimeout(context.Background(), 5*time.Second)
+		closeCtx, cancelClose := testDeadlineContext(t)
 		defer cancelClose()
 		if err := rt.GracefulClose(closeCtx); err != nil {
 			_ = rt.ForceClose()
-			t.Fatalf("close runtime: %v", err)
+			t.Errorf("close runtime: %v", err)
 		}
 	}()
+	if err := rt.Start(ctx); err != nil {
+		t.Fatalf("start runtime: %v", err)
+	}
+	waitForReworkCondition(t, ctx, func() error {
+		if status := queryRunStatus(t, db, "run_rework_flow"); status == "failed" || status == "cancelled" {
+			t.Fatalf("run terminated before security validator start: %s; %s", status, runtimeRunDiagnostic(rt, "run_rework_flow"))
+		}
+		select {
+		case <-nightValidatorStarted:
+			return nil
+		default:
+			return fmt.Errorf("security validator has not started")
+		}
+	})
 
-	testutil.Eventually(t, 8*time.Second, 20*time.Millisecond, func() error {
+	waitForReworkCondition(t, ctx, func() error {
+		if status := queryRunStatus(t, db, "run_rework_flow"); status == "failed" || status == "cancelled" {
+			t.Fatalf("run terminated before validation wave settled: %s; %s", status, runtimeRunDiagnostic(rt, "run_rework_flow"))
+		}
 		attempt, status, err := lookupLatestNodeAttemptStatus(db, "run_rework_flow", "implementation")
 		if err != nil {
 			return err
+		}
+		if attempt > 1 {
+			t.Fatalf("implementation advanced to attempt %d before validation wave settled", attempt)
 		}
 		if attempt != 1 || status != "succeeded" {
 			return fmt.Errorf("expected delegated execution to remain on attempt=1 status=succeeded until validation wave settles, got attempt=%d status=%s", attempt, status)
@@ -145,10 +182,18 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 		}
 		return nil
 	})
+	var guardLifecycle string
+	if err := db.QueryRowContext(ctx, `SELECT lifecycle FROM provider_process_guards WHERE attempt_id = 'run_rework_flow:security_validation:1'`).Scan(&guardLifecycle); err != nil {
+		t.Fatalf("load blocked security guard: %v", err)
+	}
+	if guardLifecycle != "acknowledged" {
+		t.Fatalf("blocked security guard lifecycle=%q, want acknowledged before release", guardLifecycle)
+	}
 
 	releaseNight()
 
-	awaitRunStatus(t, db, "run_rework_flow", 12*time.Second, 25*time.Millisecond, func(status string) error {
+	waitForReworkCondition(t, ctx, func() error {
+		status := queryRunStatus(t, db, "run_rework_flow")
 		if status != "succeeded" {
 			if status == "failed" {
 				var failedNodeID string
@@ -164,7 +209,10 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 						latestStates = append(latestStates, fmt.Sprintf("%s:%d:%s", nodeID, attempt, nodeStatus))
 					}
 				}
-				return fmt.Errorf("run_rework_flow status=%s failed_node=%s attempt=%d reason=%s latest=%s", status, failedNodeID, failedAttempt, failedReason, strings.Join(latestStates, ","))
+				t.Fatalf("run_rework_flow status=%s failed_node=%s attempt=%d reason=%s latest=%s; %s", status, failedNodeID, failedAttempt, failedReason, strings.Join(latestStates, ","), runtimeRunDiagnostic(rt, "run_rework_flow"))
+			}
+			if status == "cancelled" {
+				t.Fatalf("run_rework_flow was cancelled before successful rework: %s", runtimeRunDiagnostic(rt, "run_rework_flow"))
 			}
 			return fmt.Errorf("run_rework_flow status=%s", status)
 		}
@@ -188,6 +236,29 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 		}
 		if got != tc.status {
 			t.Fatalf("expected %s attempt %d status %q, got %q", tc.nodeID, tc.attempt, tc.status, got)
+		}
+	}
+	if err := db.QueryRowContext(ctx, `SELECT lifecycle FROM provider_process_guards WHERE attempt_id = 'run_rework_flow:security_validation:1'`).Scan(&guardLifecycle); err != nil {
+		t.Fatalf("load settled security guard: %v", err)
+	}
+	if guardLifecycle != "quiescent" {
+		t.Fatalf("settled security guard lifecycle=%q, want quiescent", guardLifecycle)
+	}
+}
+
+func waitForReworkCondition(t *testing.T, ctx context.Context, condition func() error) {
+	t.Helper()
+	ticker := time.NewTicker(20 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		err := condition()
+		if err == nil {
+			return
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("rework condition did not settle before test cancellation: %v; %v", ctx.Err(), err)
+		case <-ticker.C:
 		}
 	}
 }
