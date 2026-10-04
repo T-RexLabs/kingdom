@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -194,14 +195,22 @@ func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
 	binaryPath := filepath.Join(t.TempDir(), "retry-hint-opencode.sh")
-	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"error\",\"error\":{\"data\":{\"message\":\"rate limited\",\"statusCode\":429,\"retry_after_ms\":10000}}}'\nexit 17\n"), 0o700); err != nil {
+	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\ncat >/dev/null || exit 1\nprintf '%s\\n' '{\"type\":\"error\",\"error\":{\"data\":{\"message\":\"rate limited\",\"statusCode\":429,\"retry_after_ms\":10000}}}'\nexit 17\n"), 0o700); err != nil {
 		t.Fatalf("write fake opencode binary: %v", err)
 	}
 	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: binaryPath})
 	if err != nil {
 		t.Fatalf("new session adapter: %v", err)
 	}
-	response, executeErr := adapter.Execute(context.Background(), opencode.ExecuteRequest{CompletionMode: opencode.CompletionModeServerResponse, SessionID: "session_retry_hint", AttemptID: "run_1:work_intake:1", RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: "retry hint", OccurredAt: now.Format(time.RFC3339Nano)})
+	t.Cleanup(func() {
+		if err := adapter.Close(); err != nil {
+			t.Errorf("close retry-hint session adapter: %v", err)
+		}
+	})
+	// Exceed pipe capacity so the fixture must consume the complete prompt before
+	// it emits its provider error and exits.
+	prompt := strings.Repeat("test", 64*1024)
+	response, executeErr := adapter.Execute(context.Background(), opencode.ExecuteRequest{CompletionMode: opencode.CompletionModeServerResponse, SessionID: "session_retry_hint", AttemptID: "run_1:work_intake:1", RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: prompt, OccurredAt: now.Format(time.RFC3339Nano)})
 	if executeErr == nil {
 		t.Fatal("expected fake OpenCode provider failure")
 	}
@@ -216,7 +225,7 @@ func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 	}
 	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), retryEngine: engine}
 	if response.Outcome.ReasonCode != "llm_rate_limited" {
-		t.Fatalf("adapter outcome code=%q, want llm_rate_limited", response.Outcome.ReasonCode)
+		t.Fatalf("adapter outcome code=%q, want llm_rate_limited; execute error=%v; failure=%q; diagnostics=%s", response.Outcome.ReasonCode, executeErr, response.Outcome.FailureText, response.ProviderDiagnosticsJSON)
 	}
 	retry, planned, err := loop.planAutomaticWorkOrderRetry(context.Background(), asyncExecutionResult{run: runSnapshot{RunID: "run_1"}, node: nodeDefinition{NodeID: "work_intake"}, attempt: nodeAttempt{NodeRunID: "nr_1"}, attemptID: "run_1:work_intake:1", providerDiagnosticsJSON: response.ProviderDiagnosticsJSON, providerStreamObservation: response.StreamObservation}, response.Outcome.ReasonCode, now.Format(time.RFC3339Nano))
 	if err != nil || !planned || retry.Decision != state.RetryDecisionRetry {

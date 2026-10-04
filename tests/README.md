@@ -28,6 +28,8 @@ Time-dependent fixtures must use the same clock in layers that write and validat
 
 The OpenCode suite replays recorded 1.18.32 JSONL streams, including compaction and intermediate stop events. The fixtures prove handling of those streams. They do not certify every installed OpenCode version.
 
+Fake providers that test response handling must read the complete prompt from standard input before they emit terminal output. Use a prompt larger than the pipe buffer when checking that protocol.
+
 ## Browser and Live Checks
 
 For runtime and UX changes, follow the fresh installation, sandbox, browser, model selection, and cleanup steps in the [local verification guide](../docs/local-setup-and-verification.md#check-an-installed-runtime). Use an available port other than 8080.
