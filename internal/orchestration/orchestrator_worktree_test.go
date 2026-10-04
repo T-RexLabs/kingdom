@@ -1241,7 +1241,17 @@ func TestRunWorktreeCleanupResumesBoundedBatchesBeforeGitPrune(t *testing.T) {
 		case "worktree list --porcelain -z":
 			main := worktreePorcelainZ("worktree "+mainWorktreeRoot, "HEAD 1111111111111111111111111111111111111111", "branch refs/heads/main")
 			if registered {
-				return main + worktreePorcelainZ("worktree "+worktreePath, "HEAD 1111111111111111111111111111111111111111", "detached"), nil
+				var cleanupStarted int
+				if err := db.QueryRow(`SELECT cleanup_started FROM run_worktrees WHERE run_id = 'run_1'`).Scan(&cleanupStarted); err != nil {
+					return "", err
+				}
+				lines := []string{"worktree " + worktreePath, "HEAD 1111111111111111111111111111111111111111", "detached"}
+				if cleanupStarted != 0 {
+					// Git reports this once bounded deletion has removed .git,
+					// even if provider files and the checkout directory remain.
+					lines = append(lines, "prunable gitdir file points to non-existent location")
+				}
+				return main + worktreePorcelainZ(lines...), nil
 			}
 			return main, nil
 		case "worktree prune --expire now":
@@ -1947,6 +1957,63 @@ func TestRunWorktreeCleanupClaimCommitErrorIsReconciled(t *testing.T) {
 	}
 	if due, err := store.ListDueForCleanup(context.Background(), now.Format(time.RFC3339), 1); err != nil || len(due) != 1 {
 		t.Fatalf("cleanup row after releasing reconciled claim: due=%#v err=%v, want one retryable row", due, err)
+	}
+}
+
+func TestRunWorktreeCleanupRefusesPresentPrunablePathBeforeDeletionStarts(t *testing.T) {
+	t.Parallel()
+	db := openMigratedTestDB(t)
+	seedMinimumGraph(t, db)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'succeeded' WHERE run_id = 'run_1'`)
+	mainRoot := t.TempDir()
+	name := workspace.RunPathName("D1", "run_1")
+	path := workspace.ManagedRunWorktreePath(mainRoot, name)
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	guard := filepath.Join(path, "guard.txt")
+	if err := os.WriteFile(guard, []byte("untouched"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const seed = "1111111111111111111111111111111111111111"
+	const now = "2026-05-03T10:00:00Z"
+	store := workspace.NewRunWorktreeStore(db)
+	if err := store.UpsertActive(t.Context(), "run_1", filepath.Join(mainRoot, ".git"), mainRoot, ".", name, seed, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ScheduleTerminalCleanup(t.Context(), now, now); err != nil {
+		t.Fatal(err)
+	}
+	pruneCalls := 0
+	runner := &fakeGitCommandRunner{runFn: func(_ string, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "worktree list --porcelain -z":
+			return worktreePorcelainZ("worktree "+mainRoot, "HEAD "+seed, "branch refs/heads/main") +
+				worktreePorcelainZ("worktree "+path, "HEAD "+seed, "detached", "prunable gitdir file points to non-existent location"), nil
+		case "worktree prune --expire now":
+			pruneCalls++
+			return "", nil
+		default:
+			return "", fmt.Errorf("unexpected Git command: %s", strings.Join(args, " "))
+		}
+	}}
+	loop := orchestrationLoop{db: db, runWorktrees: store, gitRunner: runner, now: func() time.Time {
+		return time.Date(2026, 5, 3, 10, 0, 0, 0, time.UTC)
+	}}
+	record, err := store.GetByRun(t.Context(), "run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete, err := loop.cleanupRunWorktree(t.Context(), record, now)
+	if err != nil || complete {
+		t.Fatalf("unstarted prunable cleanup: complete=%t err=%v", complete, err)
+	}
+	record, err = store.GetByRun(t.Context(), "run_1")
+	if err != nil || record.CleanupStarted || record.State != workspace.RunWorktreeStateCleanupFailed || !strings.Contains(record.FailureReason, "prunable while its path is present") {
+		t.Fatalf("unstarted prunable cleanup authority: record=%#v err=%v", record, err)
+	}
+	if body, err := os.ReadFile(guard); err != nil || string(body) != "untouched" || pruneCalls != 0 {
+		t.Fatalf("unstarted prunable path changed: body=%q err=%v prune_calls=%d", body, err, pruneCalls)
 	}
 }
 
