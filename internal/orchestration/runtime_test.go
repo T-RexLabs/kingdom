@@ -10415,6 +10415,8 @@ func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots
 }
 
 func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder_stream",
@@ -10451,22 +10453,22 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream", NodeStatus: "ready"}, now); err != nil {
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_stream", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder stream node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder stream completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder stream node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder stream provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder stream completion: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder stream node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("builder stream node_status=%s, want succeeded", nodeStatus)
+	}
 
 	requests := adapter.requestsSnapshot()
 	if len(requests) != 1 {
@@ -10498,6 +10500,8 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 }
 
 func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlushFails(t *testing.T) {
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 	db := openMigratedTestDB(t)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
 		RunID:        "run_dispatch_builder_stream_flush_fail",
@@ -10535,22 +10539,22 @@ func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlu
 	}
 
 	now := "2026-03-01T12:00:00Z"
-	if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: "run_dispatch_builder_stream_flush_fail", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_flush_fail_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream_flush_fail", NodeStatus: "ready"}, now); err != nil {
+	if err := rt.orchestrator.dispatchNodeAttempt(ctx, runSnapshot{RunID: "run_dispatch_builder_stream_flush_fail", RunStatus: "running", PlanState: "approved"}, nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, nodeAttempt{NodeRunID: "nr_dispatch_builder_stream_flush_fail_1", NodeID: "implementation", Attempt: 1, Wave: 1, RequiredRole: "builder", AgentID: "agent_dispatch_builder_stream_flush_fail", NodeStatus: "ready"}, now); err != nil {
 		t.Fatalf("dispatch builder stream flush failure node attempt: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-			return fmt.Errorf("drain builder stream flush failure completion outbox: %w", err)
-		}
-		var nodeStatus string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_flush_fail_1'`).Scan(&nodeStatus); err != nil {
-			return fmt.Errorf("query builder stream flush failure node status: %w", err)
-		}
-		if nodeStatus != "succeeded" {
-			return fmt.Errorf("node_status=%s", nodeStatus)
-		}
-		return nil
-	})
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join builder stream flush failure provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain builder stream flush failure completion: %v", err)
+	}
+	var nodeStatus string
+	if err := db.QueryRowContext(ctx, `SELECT node_status FROM node_runs WHERE node_run_id = 'nr_dispatch_builder_stream_flush_fail_1'`).Scan(&nodeStatus); err != nil {
+		t.Fatalf("query builder stream flush failure node status: %v", err)
+	}
+	if nodeStatus != "succeeded" {
+		t.Fatalf("builder stream flush failure node_status=%s, want succeeded", nodeStatus)
+	}
 
 	var attemptState, failureCode, failureText string
 	if err := db.QueryRow(`SELECT state, failure_code, failure_text FROM attempt_executions WHERE attempt_id = 'run_dispatch_builder_stream_flush_fail:implementation:1'`).Scan(&attemptState, &failureCode, &failureText); err != nil {
@@ -10694,6 +10698,8 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 
 func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObservedStart(t *testing.T) {
 	t.Parallel()
+	ctx, cancel := testDeadlineContext(t)
+	defer cancel()
 
 	db := openMigratedTestDB(t)
 	seedSimpleDispatchRun(t, db)
@@ -10709,38 +10715,29 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	t.Cleanup(func() {
+	defer func() {
 		adapter.releaseProcessStart()
-		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
-			t.Errorf("wait for async drain: %v", err)
-			return
+		adapter.releaseExecution()
+		if err := rt.GracefulClose(ctx); err != nil {
+			_ = rt.ForceClose()
+			t.Errorf("close observed-launch runtime: %v", err)
 		}
-		if err := rt.drainExecutionOutboxUntilIdle(drainCtx); err != nil {
-			t.Errorf("drain execution outbox: %v", err)
-		}
-	})
+	}()
 
-	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+	if err := rt.orchestrator.Tick(ctx); err != nil {
 		t.Fatalf("tick work_intake: %v", err)
 	}
-	if err := rt.drainExecutionOutboxUntilIdle(context.Background()); err != nil {
+	if err := rt.drainMaintenance(ctx); err != nil {
 		t.Fatalf("drain work_intake completion outbox: %v", err)
 	}
-	if err := rt.orchestrator.Tick(context.Background()); err != nil {
+	if err := rt.orchestrator.Tick(ctx); err != nil {
 		t.Fatalf("tick provider-backed launch: %v", err)
 	}
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
-		var status string
-		if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&status); err != nil {
-			return err
-		}
-		if status != "starting" {
-			return fmt.Errorf("provider preparation has not finished: node_status=%s", status)
-		}
-		return nil
-	})
+	select {
+	case <-adapter.entered:
+	case <-ctx.Done():
+		t.Fatalf("provider preparation did not finish: %v", ctx.Err())
+	}
 
 	var nodeStatus string
 	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE run_id = 'run_dispatch' AND node_id = 'plan_drafting' ORDER BY attempt DESC LIMIT 1`).Scan(&nodeStatus); err != nil {
@@ -10767,17 +10764,41 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	}
 
 	adapter.releaseProcessStart()
-
-	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
+	select {
+	case err := <-adapter.started:
+		if err != nil {
+			t.Fatalf("provider launch fixture: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatalf("provider launch was not observed: %v", ctx.Err())
+	}
+	// Keep the provider alive until its asynchronous launch observer commits.
+	// Terminal handoff replay must not be what makes this assertion pass.
+	for {
 		var startedEvents int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedEvents); err != nil {
-			return err
+		if err := db.QueryRowContext(ctx, `SELECT COUNT(1) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`).Scan(&startedEvents); err != nil {
+			t.Fatalf("count observed launch events: %v", err)
 		}
-		if startedEvents != 1 {
-			return fmt.Errorf("attempt.started count=%d", startedEvents)
+		if startedEvents == 1 {
+			break
 		}
-		return nil
-	})
+		if startedEvents > 1 {
+			t.Fatalf("attempt.started count=%d, want 1", startedEvents)
+		}
+		if err := sleepWithContext(ctx, nil, testutil.DefaultPollInterval); err != nil {
+			t.Fatalf("launch observer did not commit: %v; %s", err, runtimeRunDiagnostic(rt, "run_dispatch"))
+		}
+	}
+	adapter.releaseExecution()
+	if err := rt.orchestrator.waitForAsyncDrain(ctx); err != nil {
+		t.Fatalf("join observed-launch provider: %v", err)
+	}
+	if err := rt.drainMaintenance(ctx); err != nil {
+		t.Fatalf("drain observed-launch completion: %v", err)
+	}
+	if count := countTestRows(t, db, `SELECT COUNT(*) FROM events WHERE attempt_id = 'run_dispatch:plan_drafting:1' AND event_type = 'attempt.started'`); count != 1 {
+		t.Fatalf("attempt.started count after completion=%d, want 1", count)
+	}
 }
 
 func TestRetryLaunchObservationRetriesUntilPersistenceSucceeds(t *testing.T) {
@@ -13769,7 +13790,12 @@ type blockingFirstExecutionAdapter struct {
 }
 
 type delayedProcessStartExecutionAdapter struct {
-	processStart chan struct{}
+	processStart     chan struct{}
+	processStartOnce sync.Once
+	entered          chan struct{}
+	started          chan error
+	completion       chan struct{}
+	completionOnce   sync.Once
 }
 
 type timeoutCancelObserverAdapter struct {
@@ -14205,7 +14231,12 @@ func newBlockingFirstExecutionAdapter() *blockingFirstExecutionAdapter {
 }
 
 func newDelayedProcessStartExecutionAdapter() *delayedProcessStartExecutionAdapter {
-	return &delayedProcessStartExecutionAdapter{processStart: make(chan struct{})}
+	return &delayedProcessStartExecutionAdapter{
+		processStart: make(chan struct{}),
+		entered:      make(chan struct{}),
+		started:      make(chan error, 1),
+		completion:   make(chan struct{}),
+	}
 }
 
 func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
@@ -14255,12 +14286,33 @@ func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencod
 }
 
 func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	close(a.entered)
 	select {
 	case <-a.processStart:
 	case <-ctx.Done():
 		return opencode.ExecuteResponse{}, ctx.Err()
 	}
-	callOnProcessStarted(req)
+	ownership, quiescence := testProcessGuardCallbacks(req)
+	if req.OnProcessGuardOwnership != nil {
+		if err := req.OnProcessGuardOwnership(ctx, ownership); err != nil {
+			a.started <- err
+			return opencode.ExecuteResponse{}, err
+		}
+	}
+	if req.OnProcessStarted != nil {
+		req.OnProcessStarted()
+	}
+	a.started <- nil
+	select {
+	case <-a.completion:
+	case <-ctx.Done():
+		return opencode.ExecuteResponse{}, ctx.Err()
+	}
+	if req.OnProcessGuardQuiescence != nil {
+		if err := req.OnProcessGuardQuiescence(context.Background(), quiescence); err != nil {
+			return opencode.ExecuteResponse{}, err
+		}
+	}
 	outputText := `{"summary":"ok"}`
 	return opencode.ExecuteResponse{
 		Accepted:             true,
@@ -14305,12 +14357,11 @@ func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {
 }
 
 func (a *delayedProcessStartExecutionAdapter) releaseProcessStart() {
-	select {
-	case <-a.processStart:
-		return
-	default:
-		close(a.processStart)
-	}
+	a.processStartOnce.Do(func() { close(a.processStart) })
+}
+
+func (a *delayedProcessStartExecutionAdapter) releaseExecution() {
+	a.completionOnce.Do(func() { close(a.completion) })
 }
 
 func seedPlanProjectionRun(t *testing.T, db *sql.DB) {
