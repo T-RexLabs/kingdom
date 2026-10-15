@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"kingdom/internal/processguardian"
+	"kingdom/internal/sqlitex"
 )
 
 const planningProcessGuardCommitReadbackTimeout = 2 * time.Second
@@ -54,6 +55,15 @@ func (s *PlanningStore) AcknowledgePlanningProcessGuard(ctx context.Context, req
 	if _, err := time.Parse(time.RFC3339Nano, req.AcknowledgedAt); err != nil {
 		return fmt.Errorf("parse planning process guard acknowledgement: %w", err)
 	}
+	// A concurrent chat or title operation can invalidate the read snapshot.
+	// Retry the full transaction so every attempt rechecks current authority.
+	_, err := sqlitex.Retry(ctx, func() error {
+		return s.acknowledgePlanningProcessGuardOnce(ctx, req)
+	}, sqlitex.Options{})
+	return err
+}
+
+func (s *PlanningStore) acknowledgePlanningProcessGuardOnce(ctx context.Context, req PlanningProcessGuardOwnership) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err

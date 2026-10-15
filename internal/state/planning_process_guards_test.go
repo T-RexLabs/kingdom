@@ -194,7 +194,7 @@ func TestAcknowledgePlanningProcessGuardConfirmsDurableCommitErrorAndUnblocksFin
 }
 
 func TestAcknowledgePlanningProcessGuardRejectsMismatchedDurableCommitReadback(t *testing.T) {
-	store, db, connector, _, ownership, _ := newPlanningProcessGuardCommitFixture(t)
+	store, db, connector, operation, ownership, now := newPlanningProcessGuardCommitFixture(t)
 	if _, err := db.Exec(`CREATE TRIGGER alter_planning_guard_lease AFTER INSERT ON provider_process_guards WHEN NEW.guard_id = 'guard_planning_commit_then_error' BEGIN UPDATE provider_process_guards SET lease_version = lease_version + 1 WHERE guard_id = NEW.guard_id; END`); err != nil {
 		t.Fatalf("create acknowledgement lineage trigger: %v", err)
 	}
@@ -203,6 +203,22 @@ func TestAcknowledgePlanningProcessGuardRejectsMismatchedDurableCommitReadback(t
 	err := store.AcknowledgePlanningProcessGuard(context.Background(), ownership)
 	if err == nil || !errors.Is(err, testutil.ErrDurableCommit) {
 		t.Fatalf("expected the mismatched durable row to fail closed with the commit error, got %v", err)
+	}
+	var lifecycle string
+	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = ?`, ownership.GuardID).Scan(&lifecycle); err != nil {
+		t.Fatal(err)
+	}
+	if lifecycle != "acknowledged" {
+		t.Fatalf("unconfirmed durable acknowledgement lost its guard fence: lifecycle=%q", lifecycle)
+	}
+	err = store.FinalizeOperation(context.Background(), planningGuardFailureFinalization(operation, now.Add(2*time.Second)))
+	var settlementErr *planningProviderSettlementError
+	if !errors.As(err, &settlementErr) || settlementErr.Reason != "provider_process_guard_not_quiescent" {
+		t.Fatalf("unconfirmed durable guard must block finalization without quiescence: %v", err)
+	}
+	persisted, found, err := store.GetOperation(context.Background(), operation.OperationID)
+	if err != nil || !found || persisted.Status != PlanningOperationStatusRunning || persisted.CanonicalSettlementID != nil {
+		t.Fatalf("unconfirmed durable guard allowed terminal settlement: found=%t operation=%#v err=%v", found, persisted, err)
 	}
 }
 
