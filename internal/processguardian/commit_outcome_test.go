@@ -57,7 +57,7 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 	if !errors.As(err, &launchErr) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected canceled launch with durable abort result, got %v", err)
 	}
-	if !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 == "" || launchErr.Result.EvidenceJSON == "" {
+	if !launchErr.OwnershipPersisted || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 == "" || launchErr.Result.EvidenceJSON == "" {
 		t.Fatalf("confirmed persisted acknowledgement did not produce durable abort evidence: %#v", launchErr.Result)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {

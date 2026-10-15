@@ -177,7 +177,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 			_ = childStdinWriter.Close()
 			result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, false)
 			closeFiles(stdoutReader, stderrReader)
-			return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("persist guardian ownership: %w", err), resultErr), Result: result}
+			return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("persist guardian ownership: %w", err), resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 		}
 		ownershipPersisted = true
 	}
@@ -185,7 +185,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
-		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
+		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 	}
 	releaseCommand := byte('R')
 	if ownershipPersisted {
@@ -196,15 +196,15 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return nil, &LaunchError{Cause: errors.Join(ctxErr, resultErr), Result: result}
+			return nil, &LaunchError{Cause: errors.Join(ctxErr, resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 		}
-		return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("release provider launch gate: %w", err), resultErr), Result: result}
+		return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("release provider launch gate: %w", err), resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 	}
 	if err := ctx.Err(); err != nil {
 		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
-		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
+		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 	}
 	started, err := nextStatus(ctx, statuses.updates)
 	if err != nil || started.Type != "started" {
@@ -218,13 +218,13 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
-		return nil, &LaunchError{Cause: errors.Join(cause, resultErr), Result: result}
+		return nil, &LaunchError{Cause: errors.Join(cause, resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 	}
 	if err := ctx.Err(); err != nil {
 		_ = childStdinWriter.Close()
 		result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, ownershipPersisted)
 		closeFiles(stdoutReader, stderrReader)
-		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result}
+		return nil, &LaunchError{Cause: errors.Join(err, resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
 	}
 	startedHandle := &handle{guardID: guardID, ownership: status.Ownership, control: controlWriter, statuses: statuses, stdout: stdoutReader, stderr: stderrReader, guardian: cmd, runtimeRoot: r.runtimeRoot, cancelGrace: r.cancelGrace, cancelForce: r.cancelForce, done: make(chan struct{})}
 	startedHandle.stdin = &guardedStdin{owner: startedHandle, file: childStdinWriter}
