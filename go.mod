@@ -7,6 +7,7 @@ require (
 	github.com/oapi-codegen/nethttp-middleware v1.1.2
 	github.com/oapi-codegen/runtime v1.2.0
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2
+	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	golang.org/x/sync v0.17.0
 	golang.org/x/sys v0.37.0
 	gopkg.in/yaml.v3 v3.0.1
