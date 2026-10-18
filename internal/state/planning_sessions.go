@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/sqlitex"
 )
 
 func (s *PlanningStore) CreateSession(ctx context.Context, req CreatePlanningSessionRequest) (PlanningSession, error) {
@@ -442,15 +445,51 @@ func (s *PlanningStore) DeleteSession(ctx context.Context, planningSessionID str
 	if trimmedID == "" {
 		return false, fmt.Errorf("planning session id is required")
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM planning_sessions WHERE planning_session_id = ?`, trimmedID)
+	var deleted bool
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		// Take the writer lock before inspecting request debts, serializing the
+		// checks and cascade against new admission, receipts, and settlement.
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET binding_id=binding_id WHERE 0`); err != nil {
+			return err
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT pr.planning_invocation_id FROM provider_requests pr JOIN planning_provider_invocations pi ON pi.planning_provider_invocation_id=pr.planning_invocation_id WHERE pi.planning_session_id=?`, trimmedID)
+		if err != nil {
+			return err
+		}
+		var invocations []string
+		for rows.Next() {
+			var invocationID string
+			if err := rows.Scan(&invocationID); err != nil {
+				rows.Close()
+				return err
+			}
+			invocations = append(invocations, invocationID)
+		}
+		readErr := rows.Err()
+		rows.Close()
+		if readErr != nil {
+			return readErr
+		}
+		for _, invocationID := range invocations {
+			if err := providerrequest.RequireDisposedTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocationID}); err != nil {
+				return err
+			}
+		}
+		result, err := tx.ExecContext(ctx, `DELETE FROM planning_sessions WHERE planning_session_id = ?`, trimmedID)
+		if err != nil {
+			return err
+		}
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		deleted = rowsAffected > 0
+		return nil
+	}, sqlitex.Options{})
 	if err != nil {
 		return false, fmt.Errorf("delete planning session: %w", err)
 	}
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("delete planning session rows affected: %w", err)
-	}
-	return rowsAffected > 0, nil
+	return deleted, nil
 }
 
 // CountSessionsByLifecycleAndConversation returns lifecycle and conversation

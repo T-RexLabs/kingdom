@@ -125,12 +125,10 @@ func TestDeletePlanningSessionRemovesOwnedSnapshotAndActivityData(t *testing.T) 
 	if err != nil {
 		t.Fatalf("create operation: %v", err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: "delete-owned-invocation", PlanningOperationID: operation.OperationID,
-		PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-delete-owned-session",
-		CreatedAt: at, LeaseOwner: "worker", LeaseVersion: 1,
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
+	// Seed the historical schema directly: current invocation APIs require
+	// the current ownership schema, while this fixture predates migration 0006.
+	if _, err := db.ExecContext(ctx, `INSERT INTO planning_provider_invocations(planning_provider_invocation_id,planning_operation_id,planning_session_id,logical_session_id,provider_session_id,invocation_state,completion_mode,created_at,updated_at) VALUES('delete-owned-invocation',?,?,'planner-delete-owned-session','','issued','server_response',?,?)`, operation.OperationID, operation.PlanningSessionID, at, at); err != nil {
+		t.Fatalf("seed historical provider invocation: %v", err)
 	}
 
 	providerBytes := []byte("provider output")

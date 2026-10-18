@@ -353,23 +353,6 @@ type CreatePlanningOperationRequest struct {
 	FinishedAt                 string
 }
 
-type UpdatePlanningOperationRequest struct {
-	OperationID                string
-	Status                     *PlanningOperationStatus
-	LeaseOwner                 *string
-	LeaseExpiresAt             *string
-	LeaseVersion               *int
-	LastHeartbeatAt            *string
-	ProviderSessionID          *string
-	ActiveProviderInvocationID *string
-	ObservedOutputText         *string
-	Error                      *string
-	ResultRef                  *string
-	CanonicalSettlementID      *string
-	StartedAt                  *string
-	FinishedAt                 *string
-}
-
 type AppendPlanningOperationEventRequest struct {
 	ActivityContents map[string]providerexecution.ActivityContent
 	TextRefs         map[string]string
@@ -676,14 +659,6 @@ func lifecycleStatePtrValue(value *PlanningSessionLifecycleState) *string {
 }
 
 func conversationStatePtrValue(value *PlanningSessionConversationState) *string {
-	if value == nil {
-		return nil
-	}
-	trimmed := strings.TrimSpace(string(*value))
-	return &trimmed
-}
-
-func operationStatusPtrValue(value *PlanningOperationStatus) *string {
 	if value == nil {
 		return nil
 	}

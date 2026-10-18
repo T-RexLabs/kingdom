@@ -23,16 +23,17 @@ type TokenUsage struct {
 }
 
 type InvocationStreamObservation struct {
-	ProviderSessionID        string            `json:"provider_session_id,omitempty"`
-	FinalTurnID              string            `json:"final_turn_id,omitempty"`
-	FinalStepID              string            `json:"final_step_id,omitempty"`
-	FinalSequence            int               `json:"final_sequence"`
-	RawFinishReason          string            `json:"raw_finish_reason,omitempty"`
-	NormalizedFinishReason   string            `json:"normalized_finish_reason,omitempty"`
-	CanonicalTerminalText    string            `json:"canonical_terminal_text,omitempty"`
-	CanonicalTerminalTextRef *ContentReference `json:"canonical_terminal_text_ref,omitempty"`
-	StagedTerminalContent    *StagedContent    `json:"-"`
-	TerminalTextOpener       ContentOpener     `json:"-"`
+	Request                  *RequestObservation `json:"request,omitempty"`
+	ProviderSessionID        string              `json:"provider_session_id,omitempty"`
+	FinalTurnID              string              `json:"final_turn_id,omitempty"`
+	FinalStepID              string              `json:"final_step_id,omitempty"`
+	FinalSequence            int                 `json:"final_sequence"`
+	RawFinishReason          string              `json:"raw_finish_reason,omitempty"`
+	NormalizedFinishReason   string              `json:"normalized_finish_reason,omitempty"`
+	CanonicalTerminalText    string              `json:"canonical_terminal_text,omitempty"`
+	CanonicalTerminalTextRef *ContentReference   `json:"canonical_terminal_text_ref,omitempty"`
+	StagedTerminalContent    *StagedContent      `json:"-"`
+	TerminalTextOpener       ContentOpener       `json:"-"`
 	// ReleaseContent acknowledges durable ingestion of the complete terminal
 	// and diagnostic content. It retires adapter staging/replay storage.
 	ReleaseContent func() error `json:"-"`
@@ -216,10 +217,10 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if strings.TrimSpace(observation.FinalTurnID) == "" {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final turn identity")
 	}
-	if strings.TrimSpace(observation.FinalStepID) == "" {
+	if observation.Request == nil && strings.TrimSpace(observation.FinalStepID) == "" {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final step identity")
 	}
-	if observation.FinalSequence <= 0 {
+	if observation.Request == nil && observation.FinalSequence <= 0 {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal step is missing a valid stream sequence")
 	}
 	reader, err := OpenTerminalText(context.Background(), observation)
@@ -250,11 +251,17 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if observation.LaterEventAfterTerminal {
 		return fail("provider_incomplete_turn", "provider stream remained active after the terminal response")
 	}
-	if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider process did not exit successfully")
-	}
-	if !observation.StdoutDrained || !observation.StderrDrained {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider output streams were not fully drained")
+	if observation.Request != nil {
+		if err := validateRequestSuccess(observation); err != nil {
+			return fail("provider_incomplete_turn", err.Error())
+		}
+	} else {
+		if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
+			return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider process did not exit successfully")
+		}
+		if !observation.StdoutDrained || !observation.StderrDrained {
+			return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider output streams were not fully drained")
+		}
 	}
 	if observation.TimedOut {
 		return fail("timeout", "provider execution timed out")

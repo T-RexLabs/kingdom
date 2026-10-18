@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/timestamporder"
 )
 
@@ -105,6 +107,7 @@ type MarkPlanningProviderInvocationOpenRequest struct {
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
+	RequestIdentity              *providerexecution.RequestIdentity
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
 	PlanningSessionID            string
@@ -191,6 +194,11 @@ func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, re
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
+	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}); err != nil {
+		return PlanningProviderInvocation{}, err
+	} else if bound {
+		return PlanningProviderInvocation{}, fmt.Errorf("bound planning invocation requires atomic request activation")
+	}
 	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = CASE
 			WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
@@ -252,8 +260,42 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
+	owner := providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}
+	binding, bound, err := providerrequest.ForOwner(ctx, tx, owner)
+	if err != nil {
+		return PlanningProviderInvocation{}, err
+	}
+	if req.RequestIdentity == nil {
+		if bound {
+			return PlanningProviderInvocation{}, fmt.Errorf("bound planning invocation requires its exact provider request identity")
+		}
+		if err := requireUnboundPlanningProviderSessionTx(ctx, tx, openReq.ProviderSessionID); err != nil {
+			return PlanningProviderInvocation{}, err
+		}
+	} else {
+		if err := req.RequestIdentity.Validate(); err != nil {
+			return PlanningProviderInvocation{}, err
+		}
+		if req.RequestIdentity.SessionID != openReq.ProviderSessionID {
+			return PlanningProviderInvocation{}, fmt.Errorf("planning provider request session differs from activation")
+		}
+		if !bound && invocation.InvocationState == PlanningProviderInvocationStateOpen {
+			return PlanningProviderInvocation{}, fmt.Errorf("cannot attach provider request ownership to an open planning invocation")
+		}
+		if bound && (binding.Identity != *req.RequestIdentity || binding.Lease != (providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)})) {
+			return PlanningProviderInvocation{}, fmt.Errorf("planning provider request identity or lease conflicts with activation")
+		}
+	}
 	if err := activatePlanningProviderInvocationTx(ctx, tx, invocation, openReq); err != nil {
 		return PlanningProviderInvocation{}, err
+	}
+	if req.RequestIdentity != nil {
+		if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
+			ID: invocation.PlanningProviderInvocationID, Identity: *req.RequestIdentity, Owner: owner,
+			Lease: providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)},
+		}, time.Now().UTC()); err != nil {
+			return PlanningProviderInvocation{}, err
+		}
 	}
 	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
 	if err != nil {
@@ -302,6 +344,14 @@ func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, 
 		return PlanningProviderInvocation{}, err
 	}
 	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, normalized.ProviderSessionID, string(invocation.InvocationState), "mark_planning_provider_invocation_open"); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
+	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}); err != nil {
+		return PlanningProviderInvocation{}, err
+	} else if bound {
+		return PlanningProviderInvocation{}, fmt.Errorf("bound planning provider request requires atomic activation")
+	}
+	if err := requireUnboundPlanningProviderSessionTx(ctx, tx, normalized.ProviderSessionID); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
 	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, normalized); err != nil {
@@ -416,6 +466,21 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		return "", planningProviderError("finalize_planning_provider_settlement", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, operationID, string(invocation.InvocationState))
 	}
 	observation, observationErr := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
+	owner := providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}
+	binding, requestBound, err := providerrequest.ForOwner(ctx, tx, owner)
+	if err != nil {
+		return "", err
+	}
+	if requestBound {
+		if observationErr != nil {
+			return "", fmt.Errorf("bound planning provider request requires terminal observation")
+		}
+		if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome)); err != nil {
+			return "", err
+		}
+	} else if observation.Request != nil {
+		return "", fmt.Errorf("unbound planning invocation cannot claim provider request completion")
+	}
 	if observationErr != nil && (normalized.Outcome == PlanningProviderCompletionOutcomeSuccess || len(normalized.StagedContent) > 0) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
@@ -473,7 +538,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0) FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND provider_invocation_id = ? AND planning_operation_id = ?`, invocation.PlanningProviderInvocationID, invocation.PlanningOperationID).Scan(&guardTotal, &guardUnresolved); err != nil {
 		return "", err
 	}
-	if guardUnresolved != 0 || ((invocationGuardRequired || normalized.RequiresProcessGuard) && guardTotal == 0 && normalized.Outcome == PlanningProviderCompletionOutcomeSuccess) {
+	if guardUnresolved != 0 || (!requestBound && (invocationGuardRequired || normalized.RequiresProcessGuard) && guardTotal == 0 && normalized.Outcome == PlanningProviderCompletionOutcomeSuccess) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "provider_process_guard_not_quiescent", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	primaryEvidenceID := normalized.PrimaryEvidenceID
@@ -742,6 +807,22 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_identity_conflict", req.PlanningProviderInvocationID, req.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return invocation, nil
+}
+
+// Low-level V1 session callbacks cannot open an invocation on a session that
+// has canonical request ownership. That path must bind identity atomically.
+func requireUnboundPlanningProviderSessionTx(ctx context.Context, tx *sql.Tx, sessionID string) error {
+	if sessionID == "" {
+		return nil
+	}
+	var count int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_requests WHERE provider_session_id=?`, sessionID).Scan(&count); err != nil {
+		return err
+	}
+	if count != 0 {
+		return fmt.Errorf("planning provider session requires atomic request ownership")
+	}
+	return nil
 }
 
 func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, openReq MarkPlanningProviderInvocationOpenRequest) error {

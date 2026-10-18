@@ -14,6 +14,7 @@ import (
 
 	"kingdom/internal/core/executionoutput"
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/sqlitex"
 )
 
@@ -269,6 +270,7 @@ type MarkProviderInvocationOpenRequest struct {
 }
 
 type ActivateProviderInvocationRequest struct {
+	RequestIdentity              *providerexecution.RequestIdentity
 	ProviderInvocationID         string
 	AttemptID                    string
 	RunID                        string
@@ -683,6 +685,16 @@ func (s *Store) markProviderTerminalHandoffPendingOnce(ctx context.Context, req 
 		return providerSettlementError("mark_provider_terminal_handoff_pending", "lease_expired", req.ProviderInvocationID, req.AttemptID, authority.State)
 	}
 
+	if binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: req.ProviderInvocationID}); err != nil {
+		return err
+	} else if bound {
+		if req.ProcessQuiescent {
+			return fmt.Errorf("provider request cannot assert server process quiescence")
+		}
+		if err := providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID); err != nil {
+			return err
+		}
+	}
 	var unresolvedGuardCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
@@ -949,6 +961,14 @@ func (s *Store) confirmProviderTerminalRecoveryRequiredAfterCommitError(ctx cont
 }
 
 func ensureProviderTerminalAttemptQuiescentTx(ctx context.Context, tx *sql.Tx, operation, providerInvocationID, attemptID string, authority providerSettlementAttemptAuthority, processQuiescent bool) error {
+	if binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: providerInvocationID}); err != nil {
+		return err
+	} else if bound {
+		if processQuiescent {
+			return fmt.Errorf("provider request cannot assert server process quiescence")
+		}
+		return providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID)
+	}
 	var totalGuardCount, unresolvedGuardCount int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
@@ -1014,6 +1034,20 @@ func (s *Store) persistProviderTerminalHandoffOnce(ctx context.Context, req Pers
 	}
 
 	observation := normalized.StreamObservation
+	binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+	if err != nil {
+		return result, err
+	}
+	if bound {
+		if observation.Request == nil || observation.Request.Identity != binding.Identity || binding.Lease != (providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}) || observation.ProviderSessionID != binding.Identity.SessionID {
+			return result, fmt.Errorf("provider request handoff requires its exact bound observation and lease")
+		}
+		if observation.ProcessExited || observation.ProcessExitCode != nil || observation.ProcessExitSignal != nil || observation.ProcessQuiescent || observation.StdoutDrained || observation.StderrDrained {
+			return result, fmt.Errorf("provider request handoff cannot assert server process completion")
+		}
+	} else if observation.Request != nil {
+		return result, fmt.Errorf("provider request handoff requires canonical ownership")
+	}
 	if observation.ProviderSessionID != strings.TrimSpace(observation.ProviderSessionID) {
 		return result, providerSettlementError("persist_provider_terminal_handoff", "provider_session_not_canonical", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
@@ -1355,8 +1389,39 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		if bodyErr != nil {
 			return bodyErr
 		}
+		binding, bound, bodyErr := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+		if bodyErr != nil {
+			return bodyErr
+		}
+		if bound && (req.RequestIdentity == nil || binding.Identity != *req.RequestIdentity) {
+			return fmt.Errorf("provider request activation must preserve its bound identity")
+		}
+		if req.RequestIdentity == nil && openReq.ProviderSessionID != "" {
+			var managed bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM provider_requests WHERE provider_session_id=?)`, openReq.ProviderSessionID).Scan(&managed); err != nil {
+				return err
+			}
+			if managed {
+				return fmt.Errorf("provider request session requires its exact bound identity")
+			}
+		}
+		if req.RequestIdentity != nil && !bound && invocation.InvocationState != ProviderInvocationStateIssued {
+			return fmt.Errorf("provider request cannot adopt an already open invocation")
+		}
 		if bodyErr = activateProviderInvocationTx(ctx, tx, invocation, openReq, replacementID, expectedLeaseOwner, expectedLeaseVersion); bodyErr != nil {
 			return bodyErr
+		}
+		if req.RequestIdentity != nil {
+			if req.RequestIdentity.SessionID != openReq.ProviderSessionID || replacementID != "" {
+				return fmt.Errorf("provider request activation requires its prepared session and a new canonical attempt")
+			}
+			if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
+				ID: createReq.ProviderInvocationID, Identity: *req.RequestIdentity,
+				Owner: providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: createReq.ProviderInvocationID},
+				Lease: providerrequest.Lease{Owner: expectedLeaseOwner, Version: expectedLeaseVersion},
+			}, s.currentTime()); err != nil {
+				return err
+			}
 		}
 		var found bool
 		invocation, found, bodyErr = loadProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID)
@@ -1369,12 +1434,13 @@ func (s *Store) ActivateProviderInvocation(ctx context.Context, req ActivateProv
 		return nil
 	}, sqlitex.Options{})
 	if err != nil {
-		return s.reconcileProviderInvocationActivationFailure(ctx, createReq, invocation, expectedLeaseOwner, expectedLeaseVersion, replacementID, err)
+
+		return s.reconcileProviderInvocationActivationFailure(ctx, createReq, invocation, expectedLeaseOwner, expectedLeaseVersion, replacementID, req.RequestIdentity, err)
 	}
 	return invocation, nil
 }
 
-func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string, activationErr error) (ProviderInvocation, error) {
+func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string, identity *providerexecution.RequestIdentity, activationErr error) (ProviderInvocation, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1384,7 +1450,7 @@ func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context
 	invocationID := strings.TrimSpace(req.ProviderInvocationID)
 	var readbackErrs []error
 	for attempt := 0; attempt < 2; attempt++ {
-		actual, committed, err := s.confirmProviderInvocationActivation(readbackCtx, req, expected, expectedLeaseOwner, expectedLeaseVersion, replacementID)
+		actual, committed, err := s.confirmProviderInvocationActivation(readbackCtx, req, expected, expectedLeaseOwner, expectedLeaseVersion, replacementID, identity)
 		if err != nil {
 			readbackErrs = append(readbackErrs, err)
 			continue
@@ -1397,7 +1463,7 @@ func (s *Store) reconcileProviderInvocationActivationFailure(ctx context.Context
 	return expected, providerInvocationActivationOutcomeUnknown(invocationID, activationErr, errors.Join(readbackErrs...))
 }
 
-func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string) (ProviderInvocation, bool, error) {
+func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req CreateProviderInvocationRequest, expected ProviderInvocation, expectedLeaseOwner string, expectedLeaseVersion int64, replacementID string, identity *providerexecution.RequestIdentity) (ProviderInvocation, bool, error) {
 	invocationID := strings.TrimSpace(req.ProviderInvocationID)
 	actual, found, err := s.GetProviderInvocation(ctx, invocationID)
 	if err != nil {
@@ -1421,6 +1487,17 @@ func (s *Store) confirmProviderInvocationActivation(ctx context.Context, req Cre
 		attempt.ActiveProviderInvocationID != invocationID ||
 		attempt.LeaseOwner != strings.TrimSpace(expectedLeaseOwner) || attempt.LeaseVersion != expectedLeaseVersion {
 		return actual, false, fmt.Errorf("durable attempt does not match the attempted activation lease and invocation")
+	}
+
+	binding, bound, err := providerrequest.ForOwner(ctx, s.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocationID})
+	if err != nil {
+		return actual, false, err
+	}
+	if identity == nil && bound {
+		return actual, false, fmt.Errorf("provider request readback requires its exact bound identity")
+	}
+	if identity != nil && (!bound || binding.Identity != *identity || binding.Lease != (providerrequest.Lease{Owner: expectedLeaseOwner, Version: expectedLeaseVersion})) {
+		return actual, false, fmt.Errorf("durable provider request does not match the attempted activation")
 	}
 
 	if replacementID != "" {
@@ -1479,8 +1556,22 @@ func (s *Store) markProviderInvocationOpenOnce(ctx context.Context, req MarkProv
 	if !found {
 		return ProviderInvocation{}, providerSettlementError("mark_provider_invocation_open", "invocation_not_found", normalized.ProviderInvocationID, normalized.AttemptID, "")
 	}
+	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}); err != nil {
+		return ProviderInvocation{}, err
+	} else if bound {
+		return ProviderInvocation{}, fmt.Errorf("provider request requires atomic activation with its exact identity and lease")
+	}
 	if normalized.AttemptID != "" && invocation.AttemptID != normalized.AttemptID {
 		return ProviderInvocation{}, providerSettlementError("mark_provider_invocation_open", "attempt_lineage_mismatch", invocation.ProviderInvocationID, normalized.AttemptID, string(invocation.InvocationState))
+	}
+	if normalized.ProviderSessionID != "" {
+		var managed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM provider_requests WHERE provider_session_id=?)`, normalized.ProviderSessionID).Scan(&managed); err != nil {
+			return ProviderInvocation{}, err
+		}
+		if managed {
+			return ProviderInvocation{}, fmt.Errorf("provider request session requires atomic activation with its exact identity and lease")
+		}
 	}
 	activeInvocationID, _, foundAttempt, err := loadAttemptInvocationRefsTx(ctx, tx, invocation.AttemptID)
 	if err != nil {
@@ -1702,6 +1793,18 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 	}
 	if invocation.SupersededByInvocationID != "" || invocation.InvocationState == ProviderInvocationStateSuperseded {
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_superseded", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
+	}
+	requestOwner := providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}
+	_, requestBound, err := providerrequest.ForOwner(ctx, tx, requestOwner)
+	if err != nil {
+		return ProviderCompletionSettlement{}, err
+	}
+	if requestBound {
+		if err := providerrequest.RequireCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, *req.StreamObservation, string(settlementReq.Outcome)); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+	} else if req.StreamObservation.Request != nil {
+		return ProviderCompletionSettlement{}, fmt.Errorf("provider request observation requires canonical ownership")
 	}
 	// Every row in this atomic boundary uses the canonical settlement time.
 	// Replay wall-clock values are metadata, not a new settlement claim.
@@ -2288,6 +2391,11 @@ func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation Pr
 		if !found {
 			return providerSettlementError("activate_provider_invocation", "replacement_invocation_not_found", replacementID, invocation.AttemptID, "")
 		}
+		if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: replacementID}); err != nil {
+			return err
+		} else if bound {
+			return fmt.Errorf("provider request cannot be replaced outside canonical settlement")
+		}
 		if replacedInvocation.AttemptID != invocation.AttemptID || replacedInvocation.RunID != invocation.RunID || replacedInvocation.NodeRunID != invocation.NodeRunID {
 			return providerSettlementError("activate_provider_invocation", "replacement_lineage_mismatch", replacementID, invocation.AttemptID, string(replacedInvocation.InvocationState))
 		}
@@ -2432,6 +2540,11 @@ func (s *Store) supersedeProviderInvocationOnce(ctx context.Context, req Superse
 	if !found {
 		return providerSettlementError("supersede_provider_invocation", "invocation_not_found", normalized.ProviderInvocationID, "", "")
 	}
+	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: current.ProviderInvocationID}); err != nil {
+		return err
+	} else if bound {
+		return fmt.Errorf("provider request cannot be superseded outside canonical settlement")
+	}
 	replacement, found, err := loadProviderInvocationTx(ctx, tx, normalized.SupersededByInvocationID)
 	if err != nil {
 		return err
@@ -2546,6 +2659,23 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 	if invocation.InvocationState != ProviderInvocationStateOpen {
 		return providerSettlementError("invalidate_unlaunched_provider_invocation", "invocation_not_open", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
+	binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+	if err != nil {
+		return err
+	}
+	if bound {
+		if binding.DispatchIssuedAt != "" || binding.Lease != (providerrequest.Lease{Owner: owner, Version: version}) {
+			return fmt.Errorf("provider request has issued dispatch or a different rollback lease")
+		}
+		// No provider dispatch was admitted. Fence it permanently in this
+		// transaction before releasing the queued invocation.
+		if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET admission_closed_at=COALESCE(admission_closed_at,?) WHERE binding_id=?`, req.UpdatedAt, binding.ID); err != nil {
+			return err
+		}
+		if err := providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID); err != nil {
+			return err
+		}
+	}
 	result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET active_provider_invocation_id = NULL,
 		    updated_at = ?
@@ -2572,9 +2702,10 @@ func (s *Store) invalidateUnlaunchedProviderInvocationOnce(ctx context.Context, 
 	if rows != 1 {
 		return providerSettlementError("invalidate_unlaunched_provider_invocation", "attempt_not_unlaunched", invocation.ProviderInvocationID, invocation.AttemptID, "")
 	}
-	if err := invalidateProviderInvocationTx(ctx, tx, invocation.ProviderInvocationID, req.UpdatedAt, req.InvalidReason); err != nil {
+	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations SET invocation_state='invalidated',invalid_reason=?,updated_at=? WHERE provider_invocation_id=?`, req.InvalidReason, req.UpdatedAt, invocation.ProviderInvocationID); err != nil {
 		return err
 	}
+
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit unlaunched provider invocation rollback: %w", err)
 	}
@@ -3019,6 +3150,11 @@ func linkAttemptCanonicalSettlementTx(ctx context.Context, tx *sql.Tx, attemptID
 }
 
 func invalidateProviderInvocationTx(ctx context.Context, tx *sql.Tx, providerInvocationID, updatedAt, invalidReason string) error {
+	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: providerInvocationID}); err != nil {
+		return err
+	} else if bound {
+		return fmt.Errorf("provider request cannot be invalidated outside its fenced undispatched rollback")
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_invocations
 		SET invocation_state = 'invalidated',
 		    invalid_reason = ?,

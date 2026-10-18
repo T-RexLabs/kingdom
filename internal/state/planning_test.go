@@ -676,7 +676,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 
 	startedAt := "2026-04-21T16:31:10Z"
 	statusRunning := PlanningOperationStatusRunning
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID: operation.OperationID,
 		Status:      &statusRunning,
 		StartedAt:   &startedAt,
@@ -710,7 +710,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 	resultRef := "pm_2"
 	finishedAt := "2026-04-21T16:31:13Z"
 	statusSucceeded := PlanningOperationStatusSucceeded
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID: operation.OperationID,
 		Status:      &statusSucceeded,
 		ResultRef:   &resultRef,
@@ -1135,7 +1135,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 		t.Fatalf("create operation: %v", err)
 	}
 
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{OperationID: "po_optional"}); err != nil {
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{OperationID: "po_optional"}); err != nil {
 		t.Fatalf("update operation without optional changes: %v", err)
 	}
 
@@ -1150,7 +1150,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 		t.Fatalf("expected unchanged optional fields to remain set, got %+v", operation)
 	}
 
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID:     "po_optional",
 		LeaseOwner:      refString(""),
 		LeaseExpiresAt:  refString(""),
@@ -1179,7 +1179,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 
 	leaseVersion := 2
 	statusSucceeded := PlanningOperationStatusSucceeded
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID:     "po_optional",
 		Status:          &statusSucceeded,
 		LeaseOwner:      refString("worker-b"),

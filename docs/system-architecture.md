@@ -42,6 +42,9 @@ The runtime applies these rules:
 * A run provider result belongs to its active attempt and invocation. Kingdom validates the result before it can become canonical.
 * A process exit, a piece of text, or a saved file alone does not mean the work succeeded.
 * If Kingdom cannot prove that a managed provider process has stopped, it keeps that attempt blocked from replacement.
+* Shared-provider requests have immutable invocation, lease, server-generation, location, session, profile, and request bindings. Dispatch and tool admission require that exact active owner. Cancellation closes admission; late receipts can resolve existing obligations without authorizing more work.
+* A shared server's lifetime is separate from request completion. Settlement requires the request's immutable terminal evidence and closed native-tool and command obligations. Workspace release, replacement, and planning-session deletion cannot use process-guardian closure alone.
+* A request's terminal evidence is a verified record of its outcome, response, tool calls, and captured provider events. Kingdom stores that record's digest once admission is closed and only if every projected tool matches a durable admission. Settlement must present the same record.
 * Planning messages, planning-session role-configuration snapshots, run configuration snapshots, and run activity are persisted so they can be inspected and recovered after a restart.
 
 SQLite is the durable record for workflow state and audit history. Files under Kingdom's runtime and workspace directories support project work and recovery. On startup, Kingdom reconciles unfinished work before it resumes dispatch.

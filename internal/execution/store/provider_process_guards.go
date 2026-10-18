@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/sqlitex"
 )
 
@@ -165,8 +166,15 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 	if !found {
 		return result, providerSettlementError("acknowledge_provider_process_guard", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
-	if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
+	binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+	if err != nil {
 		return result, err
+	}
+	// An exact existing V2 acknowledgement is a receipt, not new execution.
+	if !bound {
+		if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
+			return result, err
+		}
 	}
 
 	existing, found, err := loadProviderProcessGuardTx(ctx, tx, normalized.GuardID)
@@ -175,7 +183,11 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 	}
 	if found {
 		candidate := providerProcessGuardFromAcknowledgement(normalized)
-		if !sameProviderProcessGuardAcknowledgement(existing, candidate) {
+		immutable := existing
+		if bound && immutable.Lifecycle == ProviderProcessGuardLifecycleQuiescent {
+			immutable.Lifecycle = ProviderProcessGuardLifecycleAcknowledged
+		}
+		if !sameProviderProcessGuardAcknowledgement(immutable, candidate) {
 			return result, providerSettlementError("acknowledge_provider_process_guard", "guard_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
 		if err := tx.Commit(); err != nil {
@@ -190,6 +202,14 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		return AcknowledgeProviderProcessGuardResult{Guard: existing, Idempotent: true}, nil
 	}
 
+	if bound {
+		if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
+			return result, err
+		}
+		if err := providerrequest.RequireGuardianAdmissionTx(ctx, tx, binding.ID, providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}, normalized.CommandOrdinal, s.currentTime()); err != nil {
+			return result, err
+		}
+	}
 	guard := providerProcessGuardFromAcknowledgement(normalized)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_process_guards (
 		guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id,
@@ -276,12 +296,18 @@ func (s *Store) MarkProviderProcessGuardEvidenceCleaned(ctx context.Context, gua
 	return err
 }
 
-// AttemptProcessGuardsQuiescent accepts a pre-launch attempt, a lease-fenced
-// terminal observation for a no-guardian attempt, or requires every durable
-// guard for a launched attempt's active invocation to be quiescent.
+// AttemptProcessGuardsQuiescent requires bound request disposal, including
+// native and command receipts. Unbound execution retains its process-guardian
+// and lease-fenced terminal requirements.
 func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
+	}
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, s.db, strings.TrimSpace(attemptID)); err != nil {
+		if errors.Is(err, providerrequest.ErrResourcesOpen) {
+			return false, nil
+		}
+		return false, err
 	}
 	var state, launchStartedAt, startedAt, providerSessionID, activeProviderInvocationID string
 	var leaseOwner, leaseExpiresAt, pendingMarkedAt, pendingLeaseOwner, invocationState string
@@ -300,6 +326,15 @@ func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID str
 		&pendingProcessQuiescent, &recoveryMarkedAt, &recoveryLeaseOwner, &recoveryLeaseVersion, &recoveryProcessQuiescent, &invocationState,
 	); err != nil {
 		return false, fmt.Errorf("load attempt launch state: %w", err)
+	}
+	if activeProviderInvocationID != "" {
+		_, bound, err := providerrequest.ForOwner(ctx, s.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: activeProviderInvocationID})
+		if err != nil {
+			return false, err
+		}
+		if bound {
+			return true, nil
+		}
 	}
 	var total, pending int
 	err := s.db.QueryRowContext(ctx, `SELECT COUNT(guard_id), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
@@ -349,12 +384,17 @@ func providerTerminalMarkerProvesQuiescence(attemptState, activeInvocationID, le
 	}
 }
 
-// RunProviderProcessGuardsQuiescent requires every durable provider process
-// guard belonging to the run to have reached quiescence before its shared
-// workspace can be discarded or replaced.
+// RunProviderProcessGuardsQuiescent requires all bound requests to be disposed
+// and every durable process guard quiescent before workspace replacement.
 func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
+	}
+	if err := providerrequest.RequireRunDisposedTx(ctx, s.db, strings.TrimSpace(runID)); err != nil {
+		if errors.Is(err, providerrequest.ErrResourcesOpen) {
+			return false, nil
+		}
+		return false, err
 	}
 	var pending int
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
@@ -836,6 +876,17 @@ func validateProviderProcessGuardsForSettlementTx(ctx context.Context, tx *sql.T
 		invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID,
 	).Scan(&total, &nonQuiescent, &forced); err != nil {
 		return fmt.Errorf("load provider process guard settlement state: %w", err)
+	}
+	if total == 0 {
+		binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+		if err != nil {
+			return err
+		}
+		if bound {
+			// Shared server requests need no fabricated process guardian when
+			// all effects were native. Their actual receipts prove closure.
+			return providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID)
+		}
 	}
 	if outcome == ProviderCompletionOutcomeSuccess && total == 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_missing", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)

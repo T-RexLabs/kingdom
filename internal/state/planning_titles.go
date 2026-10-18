@@ -147,6 +147,10 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 	}); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title abort", err)
 	}
+	// Validate request closure while its canonical operation still owns the lease.
+	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return rollbackPlanningTx(tx, "finalize generate title abort", err)
+	}
 
 	opUpdate := newUpdateBuilder("planning_operations").
 		Set("status", string(req.Status)).
@@ -198,10 +202,6 @@ func (s *PlanningStore) FinalizeGenerateTitleAbort(ctx context.Context, req Fina
 	}
 
 	if _, err := insertPlanningOperationEvent(ctx, tx, *req.TerminalEvent); err != nil {
-		return rollbackPlanningTx(tx, "finalize generate title abort", err)
-	}
-
-	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title abort", err)
 	}
 	if req.Status == PlanningOperationStatusCancelled {

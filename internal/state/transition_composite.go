@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/nodeattempt"
 	"kingdom/internal/sqlitex"
@@ -2815,6 +2816,9 @@ func cancelAttemptExecutionForSupersessionTx(ctx context.Context, tx *sql.Tx, at
 	if isDurablyTerminalAttemptExecutionState(trimmedState) {
 		return nil
 	}
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attempt.AttemptID); err != nil {
+		return err
+	}
 	seq, err := nextAttemptExecutionSeqTx(ctx, tx, attempt.AttemptID)
 	if err != nil {
 		return err
@@ -3039,7 +3043,7 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 	if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		return nil
 	}
-	if strings.TrimSpace(attempt.SessionID) == "" && !attemptPreparationWasAdmitted(attempt) {
+	if strings.TrimSpace(attempt.SessionID) == "" && strings.TrimSpace(attempt.ProviderSessionID) == "" && strings.TrimSpace(attempt.ActiveProviderInvocationID) == "" && !attemptPreparationWasAdmitted(attempt) {
 		return nil
 	}
 	if !attemptCancelDispatchRequired(attempt) {
@@ -3051,6 +3055,9 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 		reasonText = reasonCode
 	}
 	occurredAt = firstNonEmptyTrimmed(occurredAt, time.Now().UTC().Format(time.RFC3339))
+	if err := providerrequest.CloseAttemptAdmissionTx(ctx, tx, attempt.AttemptID, occurredAt); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
@@ -4119,6 +4126,9 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 	if err != nil {
 		return false, fmt.Errorf("load stale cancellation handoff: %w", err)
 	}
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, sourceAttemptID); err != nil {
+		return false, err
+	}
 	if strings.TrimSpace(status) == "pending" {
 		if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
 			SET status = 'published', handoff_state = 'released', publish_attempts = publish_attempts + 1, last_error = '', updated_at = ?, published_at = ?
@@ -4137,6 +4147,9 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 }
 
 func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *sql.Tx, sourceAttemptID, occurredAt string) error {
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, sourceAttemptID); err != nil {
+		return err
+	}
 	var successor struct {
 		QueuedNodeAttempt
 		HandoffSourceAttemptID string
@@ -4391,6 +4404,11 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
+		if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}); err != nil {
+			return err
+		} else if bound {
+			return fmt.Errorf("provider request requires canonical settlement before stale replacement")
+		}
 		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
 			return err
 		}

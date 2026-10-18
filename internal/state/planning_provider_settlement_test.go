@@ -146,7 +146,7 @@ func TestPlanningStoreFinalizeOperationRequiresProviderSettlementForActiveInvoca
 	leaseExpiresAt := "2026-04-21T16:05:00Z"
 	leaseVersion := 1
 	startedAt := "2026-04-21T16:00:04Z"
-	if err := store.UpdateOperation(ctx, UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(ctx, store, UpdatePlanningOperationRequest{
 		OperationID:    operation.OperationID,
 		Status:         &status,
 		LeaseOwner:     &leaseOwner,

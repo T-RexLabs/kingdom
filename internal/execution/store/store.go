@@ -17,6 +17,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/verdict"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
 )
@@ -1128,6 +1129,12 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 				return nil
 			}
 		}
+		if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+			if errors.Is(err, providerrequest.ErrResourcesOpen) {
+				return nil
+			}
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_owner = ?,
 		    lease_expires_at = ?,
@@ -1399,6 +1406,10 @@ func (s *Store) observeTerminalOnce(ctx context.Context, req ObserveTerminalRequ
 			_ = tx.Rollback()
 		}
 	}()
+
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return err
+	}
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE attempt_executions
@@ -1676,6 +1687,10 @@ func (s *Store) commitRecoveredTerminalOnce(ctx context.Context, req CommitRecov
 		return result, err
 	}
 
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return result, err
+	}
+
 	var terminalSeq int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`,
@@ -1861,6 +1876,10 @@ func (s *Store) finalizeTerminalOnce(ctx context.Context, req FinalizeTerminalRe
 			_ = tx.Rollback()
 		}
 	}()
+
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return result, err
+	}
 
 	var terminalSeq int
 	err = tx.QueryRowContext(ctx,
@@ -2397,30 +2416,40 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 		publishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE attempt_cancel_outbox
-		 SET status = 'published',
-		     handoff_state = 'released',
-		     publish_attempts = publish_attempts + 1,
-		     last_error = '',
-		     updated_at = ?,
-		     published_at = ?
-		 WHERE cancel_outbox_id = ? AND status = 'pending'`,
-		publishedAt,
-		publishedAt,
-		cancelOutboxID,
-	)
-	if err != nil {
-		return fmt.Errorf("mark attempt cancel outbox %q published: %w", cancelOutboxID, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read attempt cancel publish rows affected: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
-	}
-	return nil
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var attemptID string
+		if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM attempt_cancel_outbox WHERE cancel_outbox_id=?`, cancelOutboxID).Scan(&attemptID); err != nil {
+			return err
+		}
+		if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE attempt_cancel_outbox
+			 SET status = 'published',
+			     handoff_state = 'released',
+			     publish_attempts = publish_attempts + 1,
+			     last_error = '',
+			     updated_at = ?,
+			     published_at = ?
+			 WHERE cancel_outbox_id = ? AND status = 'pending'`,
+			publishedAt,
+			publishedAt,
+			cancelOutboxID,
+		)
+		if err != nil {
+			return fmt.Errorf("mark attempt cancel outbox %q published: %w", cancelOutboxID, err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read attempt cancel publish rows affected: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
 }
 
 // RecordAttemptCancelFailure only updates the phase observed by the caller.
@@ -2542,22 +2571,35 @@ func (s *Store) QueueAttemptCancel(ctx context.Context, req QueueAttemptCancelRe
 		createdAt = requestedAt
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
-		cancelOutboxID,
-		attemptID,
-		runID,
-		nodeRunID,
-		sessionID,
-		reasonCode,
-		reasonText,
-		requestedAt,
-		createdAt,
-		createdAt,
-	)
-	if err != nil {
-		return fmt.Errorf("queue attempt cancel outbox %q: %w", cancelOutboxID, err)
-	}
-	return nil
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var canonicalRun, canonicalNode string
+		if err := tx.QueryRowContext(ctx, `SELECT run_id,node_run_id FROM attempt_executions WHERE attempt_id=?`, attemptID).Scan(&canonicalRun, &canonicalNode); err != nil {
+			return err
+		}
+		if canonicalRun != runID || canonicalNode != nodeRunID {
+			return fmt.Errorf("attempt cancellation lineage mismatch")
+		}
+		if err := providerrequest.CloseAttemptAdmissionTx(ctx, tx, attemptID, requestedAt); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
+			cancelOutboxID,
+			attemptID,
+			runID,
+			nodeRunID,
+			sessionID,
+			reasonCode,
+			reasonText,
+			requestedAt,
+			createdAt,
+			createdAt,
+		)
+		if err != nil {
+			return fmt.Errorf("queue attempt cancel outbox %q: %w", cancelOutboxID, err)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
 }

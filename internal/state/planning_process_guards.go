@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/processguardian"
 	"kingdom/internal/sqlitex"
 )
@@ -74,6 +76,35 @@ func (s *PlanningStore) acknowledgePlanningProcessGuardOnce(ctx context.Context,
 			_ = tx.Rollback()
 		}
 	}()
+	binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: req.PlanningProviderInvocationID})
+	if err != nil {
+		return err
+	}
+	capabilityHash := sha256HexPlanningGuard(req.Capability)
+	if bound {
+		var guardID string
+		existingErr := tx.QueryRowContext(ctx, `SELECT guard_id FROM provider_process_guards WHERE guard_id=?`, req.GuardID).Scan(&guardID)
+		if existingErr == nil {
+			// Exact durable acknowledgement replay confirms a receipt; it never
+			// grants new command execution or reopens admission.
+			if err := confirmPlanningProcessGuardAcknowledgement(ctx, tx, req, capabilityHash); err != nil {
+				return err
+			}
+			if err := tx.Commit(); err != nil {
+				if readbackErr := s.confirmPlanningProcessGuardAcknowledgementAfterCommitError(req, capabilityHash); readbackErr != nil {
+					return errors.Join(err, readbackErr)
+				}
+			}
+			committed = true
+			return nil
+		}
+		if !errors.Is(existingErr, sql.ErrNoRows) {
+			return existingErr
+		}
+		if err := providerrequest.RequireGuardianAdmissionTx(ctx, tx, binding.ID, providerrequest.Lease{Owner: req.LeaseOwner, Version: int64(req.LeaseVersion)}, int64(req.CommandOrdinal), time.Now().UTC()); err != nil {
+			return err
+		}
+	}
 	var activeID, status, owner, leaseExpiresAt string
 	var version int
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(active_provider_invocation_id, ''), status, lease_owner, lease_version, COALESCE(lease_expires_at, '') FROM planning_operations WHERE operation_id = ? AND planning_session_id = ?`, req.PlanningOperationID, req.PlanningSessionID).Scan(&activeID, &status, &owner, &version, &leaseExpiresAt)
@@ -98,7 +129,6 @@ func (s *PlanningStore) acknowledgePlanningProcessGuardOnce(ctx context.Context,
 	if invocationState == string(PlanningProviderInvocationStateSettledSuccess) || invocationState == string(PlanningProviderInvocationStateSettledFailed) || invocationState == string(PlanningProviderInvocationStateSettledCancelled) || invocationState == string(PlanningProviderInvocationStateSuperseded) {
 		return fmt.Errorf("planning process guard invocation is terminal")
 	}
-	capabilityHash := sha256HexPlanningGuard(req.Capability)
 	insert, err := tx.ExecContext(ctx, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, planning_operation_id, planning_session_id, command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid, child_identity_token, tree_id, tree_identity_token, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, created_at, updated_at) VALUES (?, 'planning_operation', ?, ?, ?, ?, ?, 'acknowledged', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(guard_id) DO NOTHING`, req.GuardID, req.PlanningOperationID, req.PlanningProviderInvocationID, req.PlanningOperationID, req.PlanningSessionID, req.CommandOrdinal, req.Platform, req.GuardianPID, req.GuardianIdentityToken, req.ChildPID, req.ChildIdentityToken, req.TreeID, req.TreeIdentityToken, capabilityHash, req.LeaseOwner, req.LeaseVersion, req.StartedAt, req.AcknowledgedAt, req.AcknowledgedAt, req.AcknowledgedAt)
 	if err != nil {
@@ -132,9 +162,13 @@ func (s *PlanningStore) confirmPlanningProcessGuardAcknowledgementAfterCommitErr
 	readCtx, cancel := context.WithTimeout(context.Background(), planningProcessGuardCommitReadbackTimeout)
 	defer cancel()
 
+	return confirmPlanningProcessGuardAcknowledgement(readCtx, s.db, req, capabilityHash)
+}
+
+func confirmPlanningProcessGuardAcknowledgement(ctx context.Context, reader providerrequest.Reader, req PlanningProcessGuardOwnership, capabilityHash string) error {
 	var persisted PlanningProcessGuardOwnership
 	var ownerKind, ownerID, lifecycle, persistedCapabilityHash, createdAt string
-	err := s.db.QueryRowContext(readCtx, `SELECT guard_id, owner_kind, owner_id, provider_invocation_id,
+	err := reader.QueryRowContext(ctx, `SELECT guard_id, owner_kind, owner_id, provider_invocation_id,
 		planning_operation_id, planning_session_id, command_ordinal, lifecycle, platform,
 		guardian_pid, guardian_identity_token, child_pid, child_identity_token, tree_id,
 		tree_identity_token, quiescence_capability_hash, lease_owner, lease_version,
@@ -152,7 +186,7 @@ func (s *PlanningStore) confirmPlanningProcessGuardAcknowledgementAfterCommitErr
 	}
 	expected := req
 	expected.Capability = ""
-	if persisted != expected || ownerKind != "planning_operation" || ownerID != req.PlanningOperationID || lifecycle != "acknowledged" || persistedCapabilityHash != capabilityHash || createdAt != req.AcknowledgedAt {
+	if persisted != expected || ownerKind != "planning_operation" || ownerID != req.PlanningOperationID || (lifecycle != "acknowledged" && lifecycle != "quiescent") || persistedCapabilityHash != capabilityHash || createdAt != req.AcknowledgedAt {
 		return fmt.Errorf("read back planning process guard %q did not match the exact acknowledged ownership lineage", req.GuardID)
 	}
 	return nil

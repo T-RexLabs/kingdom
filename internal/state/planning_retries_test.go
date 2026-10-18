@@ -46,7 +46,7 @@ func TestPlanningRetryDueClaimAndRecoveryAreDurable(t *testing.T) {
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_source", now)
 	partialOutput := "Partial failed plan"
-	if err := store.UpdateOperation(ctx, UpdatePlanningOperationRequest{OperationID: operation.OperationID, ObservedOutputText: &partialOutput}); err != nil {
+	if err := updatePlanningOperationFixture(ctx, store, UpdatePlanningOperationRequest{OperationID: operation.OperationID, ObservedOutputText: &partialOutput}); err != nil {
 		t.Fatalf("persist failed partial output: %v", err)
 	}
 	due := now.Add(time.Minute)
