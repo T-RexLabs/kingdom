@@ -443,3 +443,42 @@ func TestStockPrepareRefusesWhatCannotBeProven(t *testing.T) {
 		t.Fatal("executed an unprepared invocation")
 	}
 }
+
+func TestStockUnavailableToolCallIsHarmlessAndStillProven(t *testing.T) {
+	h := newStockHarness(t)
+	h.runOwner("attempt-tool", "inv-tool")
+	req := h.builderRequest("inv-tool", "attempt-tool", "TOOL:worktree_remove")
+	prepared, err := h.service.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bindRun(prepared, "attempt-tool", "inv-tool")
+	response, err := h.service.Execute(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tools := response.StreamObservation.Request.Terminal.Tools
+	if len(tools) != 1 || tools[0].Name != "worktree_remove" || tools[0].Status != "error" {
+		t.Fatalf("a call to a tool outside the profile must fail: %#v", tools)
+	}
+	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "edit,read,shell,write" {
+		t.Fatalf("a builder profile must be offered only its own tools: %v", offered)
+	}
+	var grants int
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_native_grants`).Scan(&grants); err != nil || grants != 0 {
+		t.Fatalf("a refused tool received a grant: %d %v", grants, err)
+	}
+	if err := providerexecution.ValidateServerResponseSuccess(response.StreamObservation); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestStockPlanningProfileIsOfferedOnlyReadTools(t *testing.T) {
+	h := newStockHarness(t)
+	if _, _, err := h.run("session-tools", "op-tools", "inv-tools", h.planningRequest("inv-tools", "op-tools", "TEXT:x")); err != nil {
+		t.Fatal(err)
+	}
+	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "read" {
+		t.Fatalf("a planning profile must be offered only read tools: %v", offered)
+	}
+}

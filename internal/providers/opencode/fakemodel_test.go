@@ -22,6 +22,7 @@ type fakeModel struct {
 }
 
 type fakeModelCall struct {
+	Tools    []string
 	System   []string
 	LastUser string
 	Messages int
@@ -33,6 +34,7 @@ var (
 	fakeSleep  = regexp.MustCompile(`SLEEP:(\d+)`)
 	fakeFinish = regexp.MustCompile(`FINISH:(\S+)`)
 	fakeShell  = regexp.MustCompile(`SHELL64:(\S+)`)
+	fakeTool   = regexp.MustCompile(`TOOL:(\w+)`)
 )
 
 func newFakeModel(t *testing.T) *fakeModel {
@@ -72,12 +74,20 @@ func fakeMessageText(message map[string]any) string {
 func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Messages []map[string]any `json:"messages"`
+		Tools    []struct {
+			Function struct {
+				Name string `json:"name"`
+			} `json:"function"`
+		} `json:"tools"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	call := fakeModelCall{Messages: len(body.Messages)}
+	for _, tool := range body.Tools {
+		call.Tools = append(call.Tools, tool.Function.Name)
+	}
 	toolResults := map[string]bool{}
 	for _, message := range body.Messages {
 		switch message["role"] {
@@ -109,6 +119,11 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		arguments, _ := json.Marshal(map[string]string{"path": write[1], "content": "hello\n"})
 		chunks = []map[string]any{
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_write", "type": "function", "function": map[string]any{"name": "write", "arguments": string(arguments)}}}}}}},
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},
+		}
+	} else if tool := fakeTool.FindStringSubmatch(call.LastUser); tool != nil && !toolResults["call_other"] {
+		chunks = []map[string]any{
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_other", "type": "function", "function": map[string]any{"name": tool[1], "arguments": `{"directory":"/nonexistent-worktree"}`}}}}}}},
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},
 		}
 	} else if shell := fakeShell.FindStringSubmatch(call.LastUser); shell != nil && !toolResults["call_shell"] {

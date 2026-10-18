@@ -137,7 +137,7 @@ func TestRecordTerminalMatchesProjectedToolsToDurableAdmissions(t *testing.T) {
 		},
 		"other message": func(_ NativeCall, tools *[]providerexecution.RequestTool) { (*tools)[0].MessageID = "other" },
 		"other tool":    func(_ NativeCall, tools *[]providerexecution.RequestTool) { (*tools)[0].Name = "edit" },
-		"unowned tool": func(call NativeCall, tools *[]providerexecution.RequestTool) {
+		"completed unowned tool": func(call NativeCall, tools *[]providerexecution.RequestTool) {
 			extra := (*tools)[0]
 			extra.ID, extra.Name = "call-2", "webfetch"
 			*tools = append(*tools, extra)
@@ -164,6 +164,15 @@ func TestRecordTerminalMatchesProjectedToolsToDurableAdmissions(t *testing.T) {
 		projected := nativeTool(t, call, "completed")
 		projected.Input = inputDigests(`{"value":9007199254740993,"description":"ignored by the tool schema"}`)
 		if err := recordTerminal(db, b, terminalFor(t, b, "response", projected), now); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("refused unowned tool is harmless", func(t *testing.T) {
+		db, b, now, call := admitted(t, OwnerRun)
+		closeAdmission(t, db, b, now)
+		refused := nativeTool(t, call, "error")
+		refused.ID, refused.Name = "call-refused", "worktree_remove"
+		if err := recordTerminal(db, b, terminalFor(t, b, "response", nativeTool(t, call, "completed"), refused), now); err != nil {
 			t.Fatal(err)
 		}
 	})

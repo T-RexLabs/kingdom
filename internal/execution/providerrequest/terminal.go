@@ -59,10 +59,14 @@ func matchAdmissions(ctx context.Context, q Reader, bindingID string, tools []pr
 	for _, tool := range tools {
 		switch tool.Name {
 		case "write", "edit", "patch", "read", "glob", "grep", "shell":
-			projected[tool.ID] = tool
 		default:
-			return fmt.Errorf("provider terminal contains an unowned tool")
+			// Managed requests are refused every other tool, so only a refused
+			// call can appear. A tool that completed was not admitted.
+			if tool.Status != "error" {
+				return fmt.Errorf("provider terminal contains an unowned tool")
+			}
 		}
+		projected[tool.ID] = tool
 	}
 	admitted := make(map[string]bool, len(tools))
 	for _, table := range []string{"provider_native_grants", "provider_command_calls"} {
