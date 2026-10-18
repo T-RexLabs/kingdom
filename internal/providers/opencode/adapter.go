@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/processguardian"
@@ -52,15 +53,25 @@ type ExecuteRequest struct {
 	ConfigDir           string         `json:"config_dir,omitempty"`
 	DatabasePath        string         `json:"database_path,omitempty"`
 	InlineConfigContent string         `json:"-"`
-	Prompt              string         `json:"prompt"`
+	// System is the exact instruction pinned into the request's managed
+	// profile. It is the only instruction channel Kingdom authors.
+	System string `json:"-"`
+	// FirstEventTimeout and StreamInactivityTimeout bound how long a request
+	// may stay silent before it is interrupted.
+	FirstEventTimeout       time.Duration `json:"-"`
+	StreamInactivityTimeout time.Duration `json:"-"`
+	Prompt                  string        `json:"prompt"`
 	// OpenPrompt and WritePrompt are replayable sources: each Execute opens or
 	// invokes its source once, closes opened readers, and streams to stdin. Set
 	// exactly one of Prompt, OpenPrompt, or WritePrompt. Writers must honor ctx.
-	OpenPrompt         func(context.Context) (io.ReadCloser, error) `json:"-"`
-	WritePrompt        func(context.Context, io.Writer) error       `json:"-"`
-	OccurredAt         string                                       `json:"occurred_at"`
-	InvocationID       string                                       `json:"invocation_id,omitempty"`
-	InvocationIssuedAt string                                       `json:"invocation_issued_at,omitempty"`
+	OpenPrompt  func(context.Context) (io.ReadCloser, error) `json:"-"`
+	WritePrompt func(context.Context, io.Writer) error       `json:"-"`
+	// OpenContinuationPrompt supplies only the new input for a request that
+	// continues a reused provider session, whose history already holds the rest.
+	OpenContinuationPrompt func(context.Context) (io.ReadCloser, error) `json:"-"`
+	OccurredAt             string                                       `json:"occurred_at"`
+	InvocationID           string                                       `json:"invocation_id,omitempty"`
+	InvocationIssuedAt     string                                       `json:"invocation_issued_at,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
@@ -73,6 +84,10 @@ type ExecuteRequest struct {
 	// OnProcessStarted is called after the provider command successfully starts
 	// but before stream decoding begins.
 	OnProcessStarted func() `json:"-"`
+
+	// OnInvocationStarted is called once the provider has durably accepted the
+	// request, which is when the shared server begins working on it.
+	OnInvocationStarted func() `json:"-"`
 
 	// OnProcessGuardOwnership durably records guardian ownership before the
 	// provider launch gate is released. The raw quiescence capability is limited

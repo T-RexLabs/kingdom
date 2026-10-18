@@ -1,0 +1,332 @@
+{
+ "identity": {
+  "instanceID": "service-instance-6a0f342c70ea43e7971857b5",
+  "generation": "8f040baf-1202-4212-9640-a318b3cb3c43",
+  "location": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target",
+  "sessionID": "ses_19eb3af78eee892983ec8492",
+  "profileID": "run-profile-cccab6f73b53edf01ef4d324",
+  "requestID": "msg_37ae0ec0a85d876041f65b3f"
+ },
+ "watermark": 15,
+ "events": [
+  {
+   "id": "evt_14a27a3cd0023C5W7kb344f8TG",
+   "created": 1792245474253,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "inboxID": "msg_37ae0ec0a85d876041f65b3f"
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 5,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a3d9001obFCye5m7JIbmW",
+   "created": 1792245474265,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "agent": "run-profile-cccab6f73b53edf01ef4d324",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "started": 1792245474261
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 6,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a3da001fTcugyLxShPWeA",
+   "created": 1792245474266,
+   "type": "session.tool.input.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "id": "call_afe7e57563f1ef0708cc3b3b",
+    "name": "shell"
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 7,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a3db001ZRcSDtZWQaBWLm",
+   "created": 1792245474267,
+   "type": "session.tool.input.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "id": "call_afe7e57563f1ef0708cc3b3b",
+    "text": "{\"command\": \"(trap '' TERM; while :; do printf x >> guarded-heartbeat; sleep .02; done) & echo $! > guarded-child.pid; wait\", \"timeout\": 0}"
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 8,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a3dc001MVZCXOuw6v3X3E",
+   "created": 1792245474268,
+   "type": "session.tool.called",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "id": "call_afe7e57563f1ef0708cc3b3b",
+    "input": {
+     "command": "(trap '' TERM; while :; do printf x >> guarded-heartbeat; sleep .02; done) & echo $! > guarded-child.pid; wait",
+     "timeout": 0
+    },
+    "executed": false
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 9,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a3dc002JgABi73IK0vnY2",
+   "created": 1792245474268,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn"
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 10,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a52a0016eI5yDI3mfM7Iy",
+   "created": 1792245474602,
+   "type": "session.tool.failed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "id": "call_afe7e57563f1ef0708cc3b3b",
+    "error": {
+     "type": "tool.execution",
+     "message": "Tool did not return its declared output"
+    },
+    "executed": false
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 11,
+    "version": 2
+   }
+  },
+  {
+   "id": "evt_14a27a52e00185e8QvbBrgl6Ri",
+   "created": 1792245474606,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a3d1001blZCJwB8m4wTmn",
+    "finish": "tool-calls",
+    "rawFinish": "tool_calls",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 12,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a53a001qr1ulzMJCjPQxr",
+   "created": 1792245474618,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "agent": "run-profile-cccab6f73b53edf01ef4d324",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14a27a533001rFxc5mp8RYVIYh",
+    "started": 1792245474616
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 13,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a53b001RQni4pEFXkS1De",
+   "created": 1792245474619,
+   "type": "session.step.failed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2StockRuntimeManagedCommandCancellationRecoversAutomatic2680081905/003/run-targets/run_command_cancel_stock/target"
+   },
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "assistantMessageID": "msg_14a27a533001rFxc5mp8RYVIYh",
+    "error": {
+     "type": "aborted",
+     "message": "Step interrupted"
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 14,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14a27a53c001UBJ79lP5TGhb4q",
+   "created": 1792245474620,
+   "type": "session.execution.interrupted",
+   "data": {
+    "sessionID": "ses_19eb3af78eee892983ec8492",
+    "reason": "user"
+   },
+   "durable": {
+    "aggregateID": "ses_19eb3af78eee892983ec8492",
+    "seq": 15,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_37ae0ec0a85d876041f65b3f",
+   "time": {
+    "created": 1792245474253
+   },
+   "text": "Run Context:\nCurrent Assignment:\n- Assignment: Delegated Execution\n- Upstream Role: Plan Author\n\nCurrent Work Order:\ndispatch run\n\nUpstream Guidance:\nExecution directive: prioritize the latest rework plan for implementation updates.\n\n----\n\nPrimary Rework Plan:\nnone\n\n----\n\nFinal Checks:\n- Return the complete final response directly in your final assistant message.\n- Kingdom settles this node from the validated terminal provider response.\n",
+   "type": "user"
+  },
+  {
+   "id": "msg_14a27a3d1001blZCJwB8m4wTmn",
+   "time": {
+    "created": 1792245474261,
+    "streamed": 1792245474268,
+    "completed": 1792245474606
+   },
+   "type": "assistant",
+   "agent": "run-profile-cccab6f73b53edf01ef4d324",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_afe7e57563f1ef0708cc3b3b",
+     "name": "shell",
+     "executed": false,
+     "state": {
+      "status": "error",
+      "input": {
+       "command": "(trap '' TERM; while :; do printf x >> guarded-heartbeat; sleep .02; done) & echo $! > guarded-child.pid; wait",
+       "timeout": 0
+      },
+      "error": {
+       "type": "tool.execution",
+       "message": "Tool did not return its declared output"
+      }
+     },
+     "time": {
+      "created": 1792245474266,
+      "ran": 1792245474268,
+      "completed": 1792245474602
+     }
+    }
+   ],
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14a27a533001rFxc5mp8RYVIYh",
+   "time": {
+    "created": 1792245474616,
+    "completed": 1792245474619
+   },
+   "type": "assistant",
+   "agent": "run-profile-cccab6f73b53edf01ef4d324",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [],
+   "finish": "error",
+   "error": {
+    "type": "aborted",
+    "message": "Step interrupted"
+   }
+  },
+  {
+   "id": "msg_14a27a53c001UBJ79lP5TGhb4q",
+   "time": {
+    "created": 1792245474620
+   },
+   "type": "idle",
+   "outcome": "interrupted"
+  }
+ ]
+}

@@ -3,6 +3,7 @@ package providerrequest
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -71,8 +72,15 @@ func matchAdmissions(ctx context.Context, q Reader, bindingID string, tools []pr
 		}
 		for _, call := range calls {
 			tool, ok := projected[call.id]
-			if !ok || tool.MessageID != call.messageID || tool.Name != call.tool || tool.InputSHA256 != providerexecution.ToolInputDigest(call.input) {
+			if !ok || tool.MessageID != call.messageID || tool.Name != call.tool {
 				return fmt.Errorf("durable provider admission does not match the projected tool")
+			}
+			admittedInput, err := providerexecution.ToolInputDigests(json.RawMessage(call.input))
+			if err != nil {
+				return err
+			}
+			if !providerexecution.ToolInputsAgree(admittedInput, tool.Input) {
+				return fmt.Errorf("durable provider admission input differs from the projected tool")
 			}
 			admitted[call.id] = true
 		}

@@ -62,6 +62,8 @@ BEGIN SELECT RAISE(ABORT, 'native receipt is immutable'); END;
 
 -- A claim precedes guardian acknowledgement. A crash between them leaves an
 -- unresolved claim rather than granting permission to run the command again.
+-- aborted_at closes a claim whose launch provably ended before the guardian
+-- released the command, so the command never ran.
 CREATE TABLE provider_command_calls (
   claim_id TEXT PRIMARY KEY CHECK (TRIM(claim_id) <> ''),
   binding_id TEXT NOT NULL REFERENCES provider_requests(binding_id) ON DELETE CASCADE,
@@ -74,12 +76,14 @@ CREATE TABLE provider_command_calls (
   guard_id TEXT UNIQUE REFERENCES provider_process_guards(guard_id),
   created_at TEXT NOT NULL,
   completed_at TEXT,
+  aborted_at TEXT,
   CHECK ((guard_id IS NULL AND completed_at IS NULL) OR (guard_id IS NOT NULL AND completed_at IS NOT NULL)),
+  CHECK (aborted_at IS NULL OR guard_id IS NULL),
   UNIQUE (binding_id,message_id,call_id),
   UNIQUE (binding_id,command_ordinal)
 );
 CREATE TRIGGER provider_command_identity_immutable BEFORE UPDATE OF claim_id,binding_id,message_id,call_id,tool,input_json,identity_digest,command_ordinal,created_at ON provider_command_calls
 BEGIN SELECT RAISE(ABORT, 'command claim identity is immutable'); END;
-CREATE TRIGGER provider_command_completion_immutable BEFORE UPDATE OF guard_id,completed_at ON provider_command_calls
-WHEN OLD.completed_at IS NOT NULL AND (NEW.guard_id IS NOT OLD.guard_id OR NEW.completed_at IS NOT OLD.completed_at)
+CREATE TRIGGER provider_command_completion_immutable BEFORE UPDATE OF guard_id,completed_at,aborted_at ON provider_command_calls
+WHEN (OLD.completed_at IS NOT NULL OR OLD.aborted_at IS NOT NULL) AND (NEW.guard_id IS NOT OLD.guard_id OR NEW.completed_at IS NOT OLD.completed_at OR NEW.aborted_at IS NOT OLD.aborted_at)
 BEGIN SELECT RAISE(ABORT, 'command completion is immutable'); END;

@@ -16,13 +16,13 @@ const (
 )
 
 // RequestTool is a projected tool call reduced to the facts that must agree with
-// Kingdom's durable admissions. InputSHA256 digests the canonical tool input.
+// Kingdom's durable admissions. Input digests each argument the model sent.
 type RequestTool struct {
-	ID          string `json:"id"`
-	MessageID   string `json:"message_id"`
-	Name        string `json:"name"`
-	Status      string `json:"status"`
-	InputSHA256 string `json:"input_sha256"`
+	ID        string            `json:"id"`
+	MessageID string            `json:"message_id"`
+	Name      string            `json:"name"`
+	Status    string            `json:"status"`
+	Input     map[string]string `json:"input"`
 }
 
 // RequestTerminal is the verified summary of one request's terminal evidence.
@@ -66,8 +66,10 @@ func (t RequestTerminal) Validate() error {
 				return fmt.Errorf("provider request terminal tool identity is incomplete")
 			}
 		}
-		if raw, err := hex.DecodeString(tool.InputSHA256); err != nil || len(raw) != sha256.Size {
-			return fmt.Errorf("provider request terminal tool input digest is invalid")
+		for name, digest := range tool.Input {
+			if raw, err := hex.DecodeString(digest); name == "" || err != nil || len(raw) != sha256.Size {
+				return fmt.Errorf("provider request terminal tool input digest is invalid")
+			}
 		}
 		if seen[tool.ID] {
 			return fmt.Errorf("provider request terminal repeats tool call %q", tool.ID)

@@ -101,3 +101,16 @@ func (a *Authority) RecordTerminal(ctx context.Context, identity providerexecuti
 		return RecordTerminalTx(ctx, tx, b.ID, b.Lease, terminal, now)
 	})
 }
+
+func (a *Authority) AbortCommand(ctx context.Context, identity providerexecution.RequestIdentity, claimID, digest string) error {
+	return a.transact(ctx, identity, func(b Binding, now time.Time, tx *sql.Tx) error {
+		var owner string
+		if err := tx.QueryRowContext(ctx, `SELECT binding_id FROM provider_command_calls WHERE claim_id=?`, claimID).Scan(&owner); err != nil {
+			return err
+		}
+		if owner != b.ID {
+			return fmt.Errorf("command claim belongs to a different provider request")
+		}
+		return AbortCommandTx(ctx, tx, claimID, digest, now)
+	})
+}

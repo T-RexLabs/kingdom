@@ -22,7 +22,7 @@ func RequireGuardianAdmissionTx(ctx context.Context, tx *sql.Tx, bindingID strin
 		return err
 	}
 	var pending int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_command_calls WHERE binding_id=? AND command_ordinal=? AND guard_id IS NULL AND completed_at IS NULL`, binding.ID, ordinal).Scan(&pending); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_command_calls WHERE binding_id=? AND command_ordinal=? AND guard_id IS NULL AND completed_at IS NULL AND aborted_at IS NULL`, binding.ID, ordinal).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 1 {

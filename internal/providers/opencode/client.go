@@ -1,6 +1,7 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -20,6 +21,9 @@ type Client struct {
 	baseURL  string
 	password string
 	http     *http.Client
+	// long carries calls whose duration the server, not a client timeout,
+	// controls: waiting for a session and following event streams.
+	long *http.Client
 }
 
 type Model struct {
@@ -74,22 +78,25 @@ func NewClient(baseURL, password string) (*Client, error) {
 	if password == "" {
 		return nil, fmt.Errorf("OpenCode service password is required")
 	}
-	transport := &http.Transport{
-		DialContext:           (&net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
-		MaxIdleConns:          8,
-		MaxIdleConnsPerHost:   8,
-		IdleConnTimeout:       30 * time.Second,
-		ResponseHeaderTimeout: 15 * time.Second,
-	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
+	noRedirect := func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Client{
 		baseURL:  strings.TrimRight(baseURL, "/"),
 		password: password,
 		http: &http.Client{
-			Transport: transport,
-			Timeout:   30 * time.Second,
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
+			Transport: &http.Transport{
+				DialContext:           dialer.DialContext,
+				MaxIdleConns:          8,
+				MaxIdleConnsPerHost:   8,
+				IdleConnTimeout:       30 * time.Second,
+				ResponseHeaderTimeout: 15 * time.Second,
 			},
+			Timeout:       30 * time.Second,
+			CheckRedirect: noRedirect,
+		},
+		long: &http.Client{
+			Transport:     &http.Transport{DialContext: dialer.DialContext, MaxIdleConns: 8, MaxIdleConnsPerHost: 8, IdleConnTimeout: 30 * time.Second},
+			CheckRedirect: noRedirect,
 		},
 	}, nil
 }
@@ -227,28 +234,34 @@ func (c *Client) Models(ctx context.Context, directory string) ([]Model, error) 
 	return result, nil
 }
 
-func (c *Client) CloseIdleConnections() { c.http.CloseIdleConnections() }
+func (c *Client) CloseIdleConnections() {
+	c.http.CloseIdleConnections()
+	c.long.CloseIdleConnections()
+}
 
 func (c *Client) get(ctx context.Context, path, directory string, destination any) error {
-	address := c.baseURL + path
-	if directory != "" {
-		address += "?" + url.Values{"location[directory]": []string{directory}}.Encode()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+	return c.send(ctx, c.http, http.MethodGet, path, atLocation(directory), nil, destination)
+}
+
+// send performs one request and decodes at most one JSON value. A nil
+// destination requires an empty success body.
+func (c *Client) send(ctx context.Context, client *http.Client, method, path string, query url.Values, body, destination any) error {
+	response, err := c.open(ctx, client, method, path, query, body)
 	if err != nil {
 		return err
 	}
-	req.SetBasicAuth("opencode", c.password)
-	req.Header.Set("Accept", "application/json")
-	response, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("OpenCode %s request: %w", path, err)
-	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusNoContent {
 		return &ServiceError{Operation: path, StatusCode: response.StatusCode}
 	}
 	decoder := json.NewDecoder(response.Body)
+	if destination == nil {
+		var extra any
+		if err := decoder.Decode(&extra); err != io.EOF {
+			return &ProtocolError{Operation: path, Cause: errors.New("response must be empty")}
+		}
+		return nil
+	}
 	if err := decoder.Decode(destination); err != nil {
 		return &ProtocolError{Operation: path, Cause: err}
 	}
@@ -257,4 +270,44 @@ func (c *Client) get(ctx context.Context, path, directory string, destination an
 		return &ProtocolError{Operation: path, Cause: errors.New("response must contain one JSON value")}
 	}
 	return nil
+}
+
+// open sends the request and returns the response for streaming consumers.
+// The caller owns the body; status is validated by send and stream helpers.
+func (c *Client) open(ctx context.Context, client *http.Client, method, path string, query url.Values, body any) (*http.Response, error) {
+	address := c.baseURL + path
+	if len(query) > 0 {
+		address += "?" + query.Encode()
+	}
+	var payload io.Reader
+	if body != nil {
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		payload = bytes.NewReader(raw)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, address, payload)
+	if err != nil {
+		return nil, err
+	}
+	req.SetBasicAuth("opencode", c.password)
+	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	response, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("OpenCode %s request: %w", path, err)
+	}
+	return response, nil
+}
+
+// atLocation scopes a request to one workspace directory. An empty directory
+// addresses the service itself.
+func atLocation(directory string) url.Values {
+	if directory == "" {
+		return nil
+	}
+	return url.Values{"location[directory]": []string{directory}}
 }

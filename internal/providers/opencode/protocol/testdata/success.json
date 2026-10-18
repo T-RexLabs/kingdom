@@ -1,0 +1,201 @@
+{
+ "identity": {
+  "instanceID": "service-instance-df6dd038c814648a728b697f",
+  "generation": "17d1c233-10c2-4b0b-8447-7c257e5ba0e0",
+  "location": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002",
+  "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+  "profileID": "service-profile-f9369e3d8a4bfa63e2189ed2",
+  "requestID": "msg_a115540945445e3b2f921b75"
+ },
+ "watermark": 11,
+ "events": [
+  {
+   "id": "evt_14fe19edb00157iic57Yy8TC6E",
+   "created": 1792341548763,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "inboxID": "msg_a115540945445e3b2f921b75"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 5,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19eea0017EgFkgoc33ywbu",
+   "created": 1792341548778,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "agent": "service-profile-f9369e3d8a4bfa63e2189ed2",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14fe19edf001UjDH0LgqTNEoSc",
+    "started": 1792341548772
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 6,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19eeb001asLwvACRYW5OT0",
+   "created": 1792341548779,
+   "type": "session.text.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe19edf001UjDH0LgqTNEoSc",
+    "ordinal": 0
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 7,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19eed001J4b92RcI3zFIfM",
+   "created": 1792341548781,
+   "type": "session.text.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe19edf001UjDH0LgqTNEoSc",
+    "ordinal": 0,
+    "text": "COMPACTION_SEED_RESPONSE\nHistorical planning detail preserves scope, decisions, and evidence requirements.\nHistorical planning detail preserves scope, decisions, and evidence requirements.\nHistorical ..."
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 8,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19eee001AfIlZ67jyvddb6",
+   "created": 1792341548782,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe19edf001UjDH0LgqTNEoSc"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 9,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19eef001Jm2Bh427XMxkus",
+   "created": 1792341548783,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe19edf001UjDH0LgqTNEoSc",
+    "finish": "stop",
+    "rawFinish": "stop",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 10,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe19ef10026Iq7xrI16B93IF",
+   "created": 1792341548785,
+   "type": "session.execution.succeeded",
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 11,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_a115540945445e3b2f921b75",
+   "time": {
+    "created": 1792341548763
+   },
+   "text": "## Session title (user-supplied context): \"Compaction Continuity\"\n\n## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n## Conversation so far\n### Planner\nQu...",
+   "type": "user"
+  },
+  {
+   "id": "msg_14fe19edf001UjDH0LgqTNEoSc",
+   "time": {
+    "created": 1792341548772,
+    "streamed": 1792341548782,
+    "completed": 1792341548783
+   },
+   "type": "assistant",
+   "agent": "service-profile-f9369e3d8a4bfa63e2189ed2",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "COMPACTION_SEED_RESPONSE\nHistorical planning detail preserves scope, decisions, and evidence requirements.\nHistorical planning detail preserves scope, decisions, and evidence requirements.\nHistorical ..."
+    }
+   ],
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14fe19ef10026Iq7xrI16B93IF",
+   "time": {
+    "created": 1792341548785
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  }
+ ]
+}

@@ -1,0 +1,114 @@
+{
+ "identity": {
+  "instanceID": "service-instance-a63c41fde4508e1203f09e70",
+  "generation": "56a7c718-7794-4efb-b6e4-574acb955f29",
+  "location": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2CancelledAutomaticCompaction1232255293/002",
+  "sessionID": "ses_d7f01c45811b767088421e73",
+  "profileID": "service-profile-d464d1ba5243c6849d53dadb",
+  "requestID": "msg_fb35c989dda016a6d7efe9eb"
+ },
+ "watermark": 18,
+ "events": [
+  {
+   "id": "evt_14fe1b530001S21sUoWtrOObB8",
+   "created": 1792341554480,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2CancelledAutomaticCompaction1232255293/002"
+   },
+   "data": {
+    "sessionID": "ses_d7f01c45811b767088421e73",
+    "inboxID": "msg_fb35c989dda016a6d7efe9eb"
+   },
+   "durable": {
+    "aggregateID": "ses_d7f01c45811b767088421e73",
+    "seq": 15,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1b53a001iL7CLB0cw60KCb",
+   "created": 1792341554490,
+   "type": "session.compaction.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2CancelledAutomaticCompaction1232255293/002"
+   },
+   "data": {
+    "sessionID": "ses_d7f01c45811b767088421e73",
+    "reason": "auto",
+    "recent": "[User]: ## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose."
+   },
+   "durable": {
+    "aggregateID": "ses_d7f01c45811b767088421e73",
+    "seq": 16,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1b550001dOD8wcE4eLQsRp",
+   "created": 1792341554512,
+   "type": "session.compaction.failed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2CancelledAutomaticCompaction1232255293/002"
+   },
+   "data": {
+    "sessionID": "ses_d7f01c45811b767088421e73",
+    "reason": "auto",
+    "error": {
+     "type": "compaction.interrupted",
+     "message": "Compaction was interrupted"
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_d7f01c45811b767088421e73",
+    "seq": 17,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1b551001nZFGcRYVliEsL2",
+   "created": 1792341554513,
+   "type": "session.execution.interrupted",
+   "data": {
+    "sessionID": "ses_d7f01c45811b767088421e73",
+    "reason": "user"
+   },
+   "durable": {
+    "aggregateID": "ses_d7f01c45811b767088421e73",
+    "seq": 18,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_fb35c989dda016a6d7efe9eb",
+   "time": {
+    "created": 1792341554480
+   },
+   "text": "## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose.",
+   "type": "user"
+  },
+  {
+   "type": "compaction",
+   "id": "msg_14fe1b53a001iL7CLB0cw60KCb",
+   "time": {
+    "created": 1792341554490
+   },
+   "status": "failed",
+   "reason": "auto",
+   "error": {
+    "type": "compaction.interrupted",
+    "message": "Compaction was interrupted"
+   }
+  },
+  {
+   "id": "msg_14fe1b551001nZFGcRYVliEsL2",
+   "time": {
+    "created": 1792341554513
+   },
+   "type": "idle",
+   "outcome": "interrupted"
+  }
+ ]
+}

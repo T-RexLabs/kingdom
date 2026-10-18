@@ -22,7 +22,7 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	if pending != 0 {
 		return fmt.Errorf("%w: native receipts are pending", ErrResourcesOpen)
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_command_calls WHERE binding_id=? AND completed_at IS NULL`, id).Scan(&pending); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_command_calls WHERE binding_id=? AND completed_at IS NULL AND aborted_at IS NULL`, id).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 0 {
@@ -45,7 +45,7 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 		return fmt.Errorf("%w: command guardians are unresolved or mismatched", ErrResourcesOpen)
 	}
 	queryArgs = append([]any{id}, args...)
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_command_calls c LEFT JOIN provider_process_guards g ON g.guard_id=c.guard_id WHERE c.binding_id=? AND (g.guard_id IS NULL OR NOT (`+lineage+` AND g.command_ordinal=c.command_ordinal AND g.lifecycle='quiescent' AND g.quiescent_at IS NOT NULL AND g.quiescence_evidence_sha256<>''))`, queryArgs...).Scan(&pending); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_command_calls c LEFT JOIN provider_process_guards g ON g.guard_id=c.guard_id WHERE c.binding_id=? AND c.aborted_at IS NULL AND (g.guard_id IS NULL OR NOT (`+lineage+` AND g.command_ordinal=c.command_ordinal AND g.lifecycle='quiescent' AND g.quiescent_at IS NOT NULL AND g.quiescence_evidence_sha256<>''))`, queryArgs...).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 0 {

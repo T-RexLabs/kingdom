@@ -13,6 +13,7 @@ type CommandClaim struct {
 	Ordinal     int64
 	GuardID     string
 	CompletedAt string
+	AbortedAt   string
 }
 
 func ClaimCommandTx(ctx context.Context, tx *sql.Tx, call NativeCall, now time.Time) (CommandClaim, error) {
@@ -28,7 +29,7 @@ func ClaimCommandTx(ctx context.Context, tx *sql.Tx, call NativeCall, now time.T
 	if err != nil {
 		return claim, err
 	}
-	err = tx.QueryRowContext(ctx, `SELECT claim_id,identity_digest,command_ordinal,COALESCE(guard_id,''),COALESCE(completed_at,'') FROM provider_command_calls WHERE binding_id=? AND message_id=? AND call_id=?`, b.ID, call.MessageID, call.CallID).Scan(&claim.ID, &claim.Digest, &claim.Ordinal, &claim.GuardID, &claim.CompletedAt)
+	err = tx.QueryRowContext(ctx, `SELECT claim_id,identity_digest,command_ordinal,COALESCE(guard_id,''),COALESCE(completed_at,''),COALESCE(aborted_at,'') FROM provider_command_calls WHERE binding_id=? AND message_id=? AND call_id=?`, b.ID, call.MessageID, call.CallID).Scan(&claim.ID, &claim.Digest, &claim.Ordinal, &claim.GuardID, &claim.CompletedAt, &claim.AbortedAt)
 	if err == nil {
 		if claim.Digest != digest {
 			return CommandClaim{}, fmt.Errorf("conflicting command replay")
@@ -95,5 +96,30 @@ func CompleteCommandTx(ctx context.Context, tx *sql.Tx, id, digest, guardID stri
 		return fmt.Errorf("command requires exact canonical guardian quiescence")
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_command_calls SET guard_id=?,completed_at=? WHERE claim_id=? AND guard_id IS NULL`, guardID, now.UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+
+// AbortCommandTx closes a claim whose launch ended before the guardian released
+// the command. The caller establishes that fact from the guardian's own launch
+// protocol; a started command can only be completed by its quiescent guardian.
+func AbortCommandTx(ctx context.Context, tx *sql.Tx, id, digest string, now time.Time) error {
+	if id == "" || digest == "" || now.IsZero() {
+		return fmt.Errorf("complete command abort identity is required")
+	}
+	var actual string
+	var guard, aborted sql.NullString
+	if err := tx.QueryRowContext(ctx, `SELECT identity_digest,guard_id,aborted_at FROM provider_command_calls WHERE claim_id=?`, id).Scan(&actual, &guard, &aborted); err != nil {
+		return err
+	}
+	if digest != actual {
+		return fmt.Errorf("command abort identity mismatch")
+	}
+	if guard.Valid {
+		return fmt.Errorf("a command with a guardian cannot be aborted")
+	}
+	if aborted.Valid {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE provider_command_calls SET aborted_at=? WHERE claim_id=? AND guard_id IS NULL AND aborted_at IS NULL`, now.UTC().Format(time.RFC3339Nano), id)
 	return err
 }

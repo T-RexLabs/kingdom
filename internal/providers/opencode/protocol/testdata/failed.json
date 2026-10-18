@@ -1,0 +1,274 @@
+{
+ "identity": {
+  "instanceID": "instance-086317d6ea054c448d41fb8684179fd7",
+  "generation": "fdc8b649-d17a-42b8-9a1c-4ac8a38c81cf",
+  "location": "/private/tmp/kingdom-v2-tools-c7upgn83/project",
+  "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+  "profileID": "proof-settlement-086317d6ea054c448d41fb8684179fd7-p0",
+  "requestID": "msg_48a1aa55d4964a71b8e10c289f9f8ba2"
+ },
+ "watermark": 12,
+ "events": [
+  {
+   "id": "evt_146fc1083002l8Ibg4ICZmzg9E",
+   "created": 1792192286851,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "inboxID": "msg_48a1aa55d4964a71b8e10c289f9f8ba2"
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 4,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc1092001mlV7WBMi54VywC",
+   "created": 1792192286866,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "agent": "proof-settlement-086317d6ea054c448d41fb8684179fd7-p0",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "started": 1792192286863
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 5,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc1093001D0R5c017qbL556",
+   "created": 1792192286867,
+   "type": "session.tool.input.started",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "id": "call_af52b651d9934d858c58a4e83e2cb2cc",
+    "name": "write"
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 6,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc1095001psdjCBnItrw8Gd",
+   "created": 1792192286869,
+   "type": "session.tool.input.ended",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "id": "call_af52b651d9934d858c58a4e83e2cb2cc",
+    "text": "{\"path\": \"/private/tmp/kingdom-v2-tools-c7upgn83/project/p0.txt\", \"content\": \"native run restart 0 086317d6ea054c448d41fb8684179fd7\\n\"}"
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 7,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc1095002KJj4JDDjw9SkWh",
+   "created": 1792192286869,
+   "type": "session.tool.called",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "id": "call_af52b651d9934d858c58a4e83e2cb2cc",
+    "input": {
+     "path": "/private/tmp/kingdom-v2-tools-c7upgn83/project/p0.txt",
+     "content": "native run restart 0 086317d6ea054c448d41fb8684179fd7\n"
+    },
+    "executed": false
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 8,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc10960011MND7f1W90gL1S",
+   "created": 1792192286870,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M"
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 9,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc118b001ZdpVKKXVmBXmD2",
+   "created": 1792192287115,
+   "type": "session.tool.failed",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "id": "call_af52b651d9934d858c58a4e83e2cb2cc",
+    "error": {
+     "type": "unknown",
+     "message": "Disposable lost receipt transport"
+    },
+    "executed": false
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 10,
+    "version": 2
+   }
+  },
+  {
+   "id": "evt_146fc118e0010rMgBMTjsQP4Qt",
+   "created": 1792192287118,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/tmp/kingdom-v2-tools-c7upgn83/project"
+   },
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "assistantMessageID": "msg_146fc1087001H5pRf47LvN2S4M",
+    "finish": "tool-calls",
+    "rawFinish": "tool_calls",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 11,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_146fc11d4001RtzbO3YOpGEa3S",
+   "created": 1792192287188,
+   "type": "session.execution.failed",
+   "data": {
+    "sessionID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "error": {
+     "type": "unknown",
+     "message": "shared request admission closed"
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_d8073f5ae3de4ceeb0af85725d4503ac",
+    "seq": 12,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_48a1aa55d4964a71b8e10c289f9f8ba2",
+   "time": {
+    "created": 1792192286851
+   },
+   "text": "KINGDOM_CANONICAL_bfc0157c4ec343d88bd369d4a68d6994_",
+   "type": "user"
+  },
+  {
+   "id": "msg_146fc1087001H5pRf47LvN2S4M",
+   "time": {
+    "created": 1792192286863,
+    "streamed": 1792192286870,
+    "completed": 1792192287118
+   },
+   "type": "assistant",
+   "agent": "proof-settlement-086317d6ea054c448d41fb8684179fd7-p0",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "tool",
+     "id": "call_af52b651d9934d858c58a4e83e2cb2cc",
+     "name": "write",
+     "executed": false,
+     "state": {
+      "status": "error",
+      "input": {
+       "path": "/private/tmp/kingdom-v2-tools-c7upgn83/project/p0.txt",
+       "content": "native run restart 0 086317d6ea054c448d41fb8684179fd7\n"
+      },
+      "error": {
+       "type": "unknown",
+       "message": "Disposable lost receipt transport"
+      }
+     },
+     "time": {
+      "created": 1792192286867,
+      "ran": 1792192286869,
+      "completed": 1792192287115
+     }
+    }
+   ],
+   "finish": "tool-calls",
+   "rawFinish": "tool_calls",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_146fc11d4001RtzbO3YOpGEa3S",
+   "time": {
+    "created": 1792192287188
+   },
+   "type": "idle",
+   "outcome": "failed",
+   "error": {
+    "type": "unknown",
+    "message": "shared request admission closed"
+   }
+  }
+ ]
+}

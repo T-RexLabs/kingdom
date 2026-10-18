@@ -8,11 +8,11 @@ import (
 
 func requestTerminalFixture(invocationID string) RequestTerminal {
 	text := ReferenceText(invocationID, "Complete response.")
-	input := sha256.Sum256([]byte(`{"filePath":"a.txt"}`))
+	input := sha256.Sum256([]byte(`"a.txt"`))
 	return RequestTerminal{
 		Outcome: RequestOutcomeSucceeded, AssistantMessageID: "assistant-message",
 		RawFinishReason: "stop", FinishReason: "stop", Text: &text,
-		Tools:    []RequestTool{{ID: "call-1", MessageID: "assistant-message", Name: "write", Status: "completed", InputSHA256: hex.EncodeToString(input[:])}},
+		Tools:    []RequestTool{{ID: "call-1", MessageID: "assistant-message", Name: "write", Status: "completed", Input: map[string]string{"filePath": hex.EncodeToString(input[:])}}},
 		Events:   ReferenceText(invocationID, "events"),
 		Messages: ReferenceText(invocationID, "messages"),
 	}
@@ -74,7 +74,7 @@ func TestRequestTerminalRejectsInvalidRecords(t *testing.T) {
 		"cross lineage":       func(t *RequestTerminal) { t.Messages = ReferenceText("other", "messages") },
 		"invalid digest":      func(t *RequestTerminal) { t.Events.SHA256 = "invalid" },
 		"repeated tool":       func(t *RequestTerminal) { t.Tools = append(t.Tools, t.Tools[0]) },
-		"tool digest":         func(t *RequestTerminal) { t.Tools[0].InputSHA256 = "short" },
+		"tool digest":         func(t *RequestTerminal) { t.Tools[0].Input["filePath"] = "short" },
 		"blank tool identity": func(t *RequestTerminal) { t.Tools[0].MessageID = "" },
 		"success unfinished":  func(t *RequestTerminal) { t.FinishReason = "tool-calls" },
 		"success no text":     func(t *RequestTerminal) { t.Text = nil },

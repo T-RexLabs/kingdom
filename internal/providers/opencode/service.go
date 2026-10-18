@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/processguardian"
 
 	"github.com/tailscale/hujson"
@@ -32,6 +33,9 @@ type ServiceConfig struct {
 	// Env replaces the inherited environment when non-nil. It allows isolated
 	// installations and fixtures without changing the host's account stores.
 	Env []string
+	// Requests enables managed execution. Without it the service only serves
+	// configuration and model discovery.
+	Requests *providerrequest.Authority
 }
 
 // Service owns one lazily started server. Consumers borrow its client; only
@@ -47,16 +51,20 @@ type Service struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 
+	requests *requestRuntime
+
 	mu      sync.Mutex
 	closed  bool
 	attempt *serviceStart
 }
 
 type serviceStart struct {
-	done    chan struct{}
-	client  *Client
-	process *serviceProcess
-	err     error
+	done       chan struct{}
+	client     *Client
+	process    *serviceProcess
+	instanceID string
+	capture    *capture
+	err        error
 }
 
 type serviceProcess struct {
@@ -90,7 +98,17 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if env == nil {
 		env = os.Environ()
 	}
-	env, err = serviceEnvironment(env)
+	pluginDir := ""
+	if cfg.Requests != nil {
+		if strings.TrimSpace(cfg.RuntimeRoot) == "" {
+			return nil, fmt.Errorf("OpenCode service runtime root is required for managed execution")
+		}
+		pluginDir = filepath.Join(cfg.RuntimeRoot, "plugin")
+		if err := installPlugin(pluginDir); err != nil {
+			return nil, err
+		}
+	}
+	env, err = serviceEnvironment(env, pluginDir)
 	if err != nil {
 		return nil, err
 	}
@@ -99,13 +117,29 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		return nil, fmt.Errorf("initialize OpenCode service guardian: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}, nil
+	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
+	if cfg.Requests != nil {
+		if s.requests, err = newRequestRuntime(cfg.Requests, runner, env, cfg.RuntimeRoot); err != nil {
+			cancel()
+			return nil, err
+		}
+	}
+	return s, nil
 }
 
 // Client collapses concurrent starts. A caller's cancellation stops its wait,
 // not another caller's shared startup. Failed starts can be retried only after
 // the previous guarded process has demonstrably stopped.
 func (s *Service) Client(ctx context.Context) (*Client, error) {
+	started, err := s.ready(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return started.client, nil
+}
+
+// ready returns the running server, starting it when needed.
+func (s *Service) ready(ctx context.Context) (*serviceStart, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -149,7 +183,7 @@ func (s *Service) Client(ctx context.Context) (*Client, error) {
 		if s.closed {
 			return nil, fmt.Errorf("OpenCode service is closed")
 		}
-		return attempt.client, attempt.err
+		return attempt, attempt.err
 	}
 }
 
@@ -177,7 +211,7 @@ func serviceProcessStopped(process *serviceProcess) bool {
 func (s *Service) start(attempt *serviceStart) {
 	ctx, cancel := context.WithTimeout(s.ctx, s.startLimit)
 	defer cancel()
-	client, process, err := s.launch(ctx)
+	client, process, err := s.launch(ctx, attempt)
 	if err != nil && process != nil {
 		cleanupCtx, stop := context.WithTimeout(context.Background(), s.stopLimit)
 		err = errors.Join(err, stopServiceProcess(cleanupCtx, process))
@@ -189,7 +223,7 @@ func (s *Service) start(attempt *serviceStart) {
 	s.mu.Unlock()
 }
 
-func (s *Service) launch(ctx context.Context) (*Client, *serviceProcess, error) {
+func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *serviceProcess, error) {
 	var secret [32]byte
 	if _, err := rand.Read(secret[:]); err != nil {
 		return nil, nil, fmt.Errorf("generate OpenCode service credential: %w", err)
@@ -199,6 +233,10 @@ func (s *Service) launch(ctx context.Context) (*Client, *serviceProcess, error) 
 	// Both public aliases may be inherited; give this server exactly one
 	// explicit credential so OpenCode never prints a generated password.
 	env = replaceServiceEnv(env, "OPENCODE_PASSWORD", password)
+	if s.requests != nil {
+		attempt.instanceID = "svc_" + hex.EncodeToString(secret[:8])
+		env = s.requests.environment(env, attempt.instanceID)
+	}
 	handle, err := s.runner.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, nil)
 	if err != nil {
 		var launchErr *processguardian.LaunchError
@@ -257,6 +295,10 @@ func (s *Service) launch(ctx context.Context) (*Client, *serviceProcess, error) 
 	defer func() {
 		if !ready {
 			client.CloseIdleConnections()
+			if attempt.capture != nil {
+				attempt.capture.stop()
+				attempt.capture = nil
+			}
 		}
 	}()
 	if err := client.Health(ctx); err != nil {
@@ -264,6 +306,15 @@ func (s *Service) launch(ctx context.Context) (*Client, *serviceProcess, error) 
 	}
 	if err := client.ValidateConfiguration(ctx, s.workDir); err != nil {
 		return nil, process, fmt.Errorf("validate OpenCode service configuration: %w", err)
+	}
+	if s.requests != nil {
+		if attempt.capture, err = startCapture(ctx, client, s.requests.spoolDir); err != nil {
+			return nil, process, fmt.Errorf("capture OpenCode service events: %w", err)
+		}
+		if err := s.requests.recover(ctx); err != nil {
+			attempt.capture.stop()
+			return nil, process, fmt.Errorf("recover OpenCode native receipts: %w", err)
+		}
 	}
 	select {
 	case <-process.done:
@@ -287,17 +338,21 @@ func (s *Service) CloseContext(ctx context.Context) error {
 	s.cancel()
 	attempt := s.attempt
 	s.mu.Unlock()
+	gatewayErr := s.requests.close(ctx)
 	if attempt == nil {
-		return nil
+		return gatewayErr
 	}
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(gatewayErr, ctx.Err())
 	case <-attempt.done:
 		if attempt.client != nil {
 			defer attempt.client.CloseIdleConnections()
 		}
-		return stopServiceProcess(ctx, attempt.process)
+		if attempt.capture != nil {
+			attempt.capture.stop()
+		}
+		return errors.Join(gatewayErr, stopServiceProcess(ctx, attempt.process))
 	}
 }
 
@@ -354,7 +409,9 @@ func serviceEndpoint(line string) (string, bool) {
 	return address, true
 }
 
-func serviceEnvironment(inherited []string) ([]string, error) {
+// serviceEnvironment fixes the effective inline configuration. A non-empty
+// pluginDir adds Kingdom's plugin next to the user's own plugins.
+func serviceEnvironment(inherited []string, pluginDir string) ([]string, error) {
 	var inline string
 	for _, variable := range inherited {
 		if value, ok := strings.CutPrefix(variable, "OPENCODE_CONFIG_CONTENT="); ok {
@@ -372,6 +429,11 @@ func serviceEnvironment(inherited []string) ([]string, error) {
 		}
 	}
 	config["formatter"] = json.RawMessage("false")
+	if pluginDir != "" {
+		if err := withPlugin(config, pluginDir); err != nil {
+			return nil, err
+		}
+	}
 	encoded, err := json.Marshal(config)
 	if err != nil {
 		return nil, fmt.Errorf("encode OpenCode service configuration: %w", err)

@@ -3,6 +3,7 @@ package providerrequest
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -21,11 +22,19 @@ func terminalFor(t *testing.T, b Binding, text string, tools ...providerexecutio
 
 func nativeTool(t *testing.T, call NativeCall, status string) providerexecution.RequestTool {
 	t.Helper()
-	input, err := providerexecution.CanonicalToolInput(call.Input)
+	input, err := providerexecution.ToolInputDigests(call.Input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return providerexecution.RequestTool{ID: call.CallID, MessageID: call.MessageID, Name: call.Tool, Status: status, InputSHA256: providerexecution.ToolInputDigest(input)}
+	return providerexecution.RequestTool{ID: call.CallID, MessageID: call.MessageID, Name: call.Tool, Status: status, Input: input}
+}
+
+func inputDigests(input string) map[string]string {
+	digests, err := providerexecution.ToolInputDigests(json.RawMessage(input))
+	if err != nil {
+		panic(err)
+	}
+	return digests
 }
 
 func recordTerminal(db *sql.DB, b Binding, terminal providerexecution.RequestTerminal, now time.Time) error {
@@ -121,7 +130,10 @@ func TestRecordTerminalMatchesProjectedToolsToDurableAdmissions(t *testing.T) {
 	for name, mutate := range map[string]func(NativeCall, *[]providerexecution.RequestTool){
 		"missing projected tool": func(_ NativeCall, tools *[]providerexecution.RequestTool) { *tools = nil },
 		"other input": func(_ NativeCall, tools *[]providerexecution.RequestTool) {
-			(*tools)[0].InputSHA256 = providerexecution.ToolInputDigest(`{}`)
+			(*tools)[0].Input = inputDigests(`{"value":1}`)
+		},
+		"disjoint input": func(_ NativeCall, tools *[]providerexecution.RequestTool) {
+			(*tools)[0].Input = inputDigests(`{"other":1}`)
 		},
 		"other message": func(_ NativeCall, tools *[]providerexecution.RequestTool) { (*tools)[0].MessageID = "other" },
 		"other tool":    func(_ NativeCall, tools *[]providerexecution.RequestTool) { (*tools)[0].Name = "edit" },
@@ -146,6 +158,15 @@ func TestRecordTerminalMatchesProjectedToolsToDurableAdmissions(t *testing.T) {
 			}
 		})
 	}
+	t.Run("schema-stripped arguments do not conflict", func(t *testing.T) {
+		db, b, now, call := admitted(t, OwnerRun)
+		closeAdmission(t, db, b, now)
+		projected := nativeTool(t, call, "completed")
+		projected.Input = inputDigests(`{"value":9007199254740993,"description":"ignored by the tool schema"}`)
+		if err := recordTerminal(db, b, terminalFor(t, b, "response", projected), now); err != nil {
+			t.Fatal(err)
+		}
+	})
 	t.Run("refused call needs no admission", func(t *testing.T) {
 		db, b, now, call := admitted(t, OwnerRun)
 		closeAdmission(t, db, b, now)

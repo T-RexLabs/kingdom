@@ -296,7 +296,7 @@ func TestServiceStartupTimeoutStopsGuardedProcess(t *testing.T) {
 
 func TestServiceEnvironmentPreservesProviderSetupAndDisablesFormatter(t *testing.T) {
 	inherited := []string{"PATH=/fixture/bin", "OPENCODE_DATABASE_PATH=/existing/opencode.db", "OPENCODE_CONFIG=/existing/user.json", "OPENAI_API_KEY=fixture-key", `OPENCODE_CONFIG_CONTENT={"provider":{"custom":{"options":{"baseURL":"http://127.0.0.1:1234/v1"}}},"formatter":{"prettier":{}}}`}
-	env, err := serviceEnvironment(inherited)
+	env, err := serviceEnvironment(inherited, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +317,7 @@ func TestServiceEnvironmentPreservesProviderSetupAndDisablesFormatter(t *testing
 		t.Fatalf("wrong configuration %v", config)
 	}
 	for _, invalid := range []string{"null", "[]", "{bad", "{} trailing"} {
-		if _, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + invalid}); err == nil {
+		if _, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + invalid}, ""); err == nil {
 			t.Fatalf("accepted malformed inline configuration %q", invalid)
 		}
 	}
@@ -479,7 +479,7 @@ func TestServiceEnvironmentAcceptsOpenCodeJSONC(t *testing.T) {
 		/* Managed formatting overrides this value only. */
 		"formatter": {"custom": {"command": ["formatter", "--write",],},},
 	}`
-	env, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + inline})
+	env, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + inline}, "")
 	if err != nil {
 		t.Fatalf("valid OpenCode JSONC rejected: %v", err)
 	}

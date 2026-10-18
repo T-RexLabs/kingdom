@@ -1,0 +1,366 @@
+{
+ "identity": {
+  "instanceID": "service-instance-cf113431c67f00c4f6aa7353",
+  "generation": "b23569da-d249-4a1a-b6f2-002e89567023",
+  "location": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target",
+  "sessionID": "ses_659e627a0041059f4f12edc5",
+  "profileID": "run-profile-3060f45d081b8d09c274fffb",
+  "requestID": "msg_47655dab0bcaccd98434574d"
+ },
+ "watermark": 17,
+ "events": [
+  {
+   "id": "evt_14fbe0a6e002Txz8RCIHVK3ewh",
+   "created": 1792339217006,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "inboxID": "msg_47655dab0bcaccd98434574d"
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 5,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7a001DZCqNBljTq01At",
+   "created": 1792339217018,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "agent": "run-profile-3060f45d081b8d09c274fffb",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14fbe0a71001yzLVTjThD5WwC1",
+    "started": 1792339217014
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 6,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7b001tqn941iTG8HgOx",
+   "created": 1792339217019,
+   "type": "session.text.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a71001yzLVTjThD5WwC1",
+    "ordinal": 0
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 7,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7c002vGAaawdanK4ciQ",
+   "created": 1792339217020,
+   "type": "session.text.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a71001yzLVTjThD5WwC1",
+    "ordinal": 0,
+    "text": "PARTIAL_CAUSAL_LENGTH_RESPONSE"
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 8,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7d001nyIgyHmR09iKvU",
+   "created": 1792339217021,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a71001yzLVTjThD5WwC1"
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 9,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7d002Oy77IFXT1EOWll",
+   "created": 1792339217021,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a71001yzLVTjThD5WwC1",
+    "finish": "length",
+    "rawFinish": "length",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 10,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a7e002Guin0mcRF7s0pQ",
+   "created": 1792339217022,
+   "type": "session.synthetic",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "text": "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces."
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 11,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a87001xABqzt5G0Pd5O7",
+   "created": 1792339217031,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "agent": "run-profile-3060f45d081b8d09c274fffb",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14fbe0a7e003BB342LNZxr5cie",
+    "started": 1792339217029
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 12,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a88001fuQjTvH6V255Zk",
+   "created": 1792339217032,
+   "type": "session.text.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a7e003BB342LNZxr5cie",
+    "ordinal": 0
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 13,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a89001Ya6s3yzedcV1X1",
+   "created": 1792339217033,
+   "type": "session.text.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a7e003BB342LNZxr5cie",
+    "ordinal": 0,
+    "text": "FINAL_CAUSAL_LENGTH_RESPONSE: implementation complete."
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 14,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a890027ohZ05AB8xoc9L",
+   "created": 1792339217033,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a7e003BB342LNZxr5cie"
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 15,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a8a001OXgWB5xUKvfc8L",
+   "created": 1792339217034,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestRunV2LengthContinuationCausalBoundary492082574/003/run-targets/run_length_boundary/target"
+   },
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5",
+    "assistantMessageID": "msg_14fbe0a7e003BB342LNZxr5cie",
+    "finish": "stop",
+    "rawFinish": "stop",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 16,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fbe0a8a003via6kQhuOvU9Zc",
+   "created": 1792339217034,
+   "type": "session.execution.succeeded",
+   "data": {
+    "sessionID": "ses_659e627a0041059f4f12edc5"
+   },
+   "durable": {
+    "aggregateID": "ses_659e627a0041059f4f12edc5",
+    "seq": 17,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_47655dab0bcaccd98434574d",
+   "time": {
+    "created": 1792339217006
+   },
+   "text": "Run Context:\nCurrent Assignment:\n- Assignment: Delegated Execution\n- Upstream Role: Plan Author\n\nCurrent Work Order:\ndispatch run\n\nUpstream Guidance:\nExecution directive: prioritize the latest rework plan for implementation updates.\n\n----\n\nPrimary Rework Plan:\nnone\n\n----\n\nFinal Checks:\n- Return the complete final response directly in your final assistant message.\n- Kingdom settles this node from the validated terminal provider response.\n",
+   "type": "user"
+  },
+  {
+   "id": "msg_14fbe0a71001yzLVTjThD5WwC1",
+   "time": {
+    "created": 1792339217014,
+    "streamed": 1792339217021,
+    "completed": 1792339217021
+   },
+   "type": "assistant",
+   "agent": "run-profile-3060f45d081b8d09c274fffb",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "PARTIAL_CAUSAL_LENGTH_RESPONSE"
+    }
+   ],
+   "finish": "length",
+   "rawFinish": "length",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14fbe0a7e002Guin0mcRF7s0pQ",
+   "time": {
+    "created": 1792339217022
+   },
+   "text": "Your last response hit the output token limit (stop reason: length). Do not apologize, recap, or repeat yourself. Break the remaining work into smaller pieces.",
+   "type": "synthetic"
+  },
+  {
+   "id": "msg_14fbe0a7e003BB342LNZxr5cie",
+   "time": {
+    "created": 1792339217029,
+    "streamed": 1792339217033,
+    "completed": 1792339217034
+   },
+   "type": "assistant",
+   "agent": "run-profile-3060f45d081b8d09c274fffb",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "FINAL_CAUSAL_LENGTH_RESPONSE: implementation complete."
+    }
+   ],
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14fbe0a8a003via6kQhuOvU9Zc",
+   "time": {
+    "created": 1792339217034
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  }
+ ]
+}

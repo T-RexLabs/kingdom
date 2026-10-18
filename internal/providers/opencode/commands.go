@@ -1,0 +1,301 @@
+package opencode
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/processguardian"
+)
+
+const (
+	defaultCommandTimeoutMillis = 120_000
+	commandOutputLimit          = 64 << 10
+	commandCancelLimit          = 10 * time.Second
+)
+
+// commandInput is the plugin's report of one managed shell tool call.
+type commandInput struct {
+	Identity  providerexecution.RequestIdentity `json:"identity"`
+	MessageID string                            `json:"messageID"`
+	CallID    string                            `json:"callID"`
+	Command   string                            `json:"command"`
+	Cwd       string                            `json:"cwd"`
+	Timeout   int64                             `json:"timeout"`
+	ToolInput json.RawMessage                   `json:"toolInput"`
+}
+
+type commandResult struct {
+	Output    string `json:"output"`
+	Exit      int    `json:"exit"`
+	GuardID   string `json:"guardID"`
+	Quiescent bool   `json:"quiescent"`
+	Truncated bool   `json:"truncated"`
+}
+
+// commandRegistration binds a request to the canonical callbacks that persist
+// its command guardians.
+type commandRegistration struct {
+	workspace  string
+	ownership  func(context.Context, ProcessGuardOwnership) error
+	quiescence func(context.Context, ProcessGuardQuiescence) error
+	calls      map[string]*commandCall
+}
+
+type commandCall struct {
+	done   chan struct{}
+	cancel context.CancelFunc
+	result commandResult
+	err    error
+	// resolved means the claim is durably closed against the command's
+	// quiescent guardian, whatever the command's own outcome was.
+	resolved bool
+}
+
+// commandBridge runs managed shell calls under Kingdom's process guardian. A
+// command is claimed durably before anything starts, and a claim whose outcome
+// is unknown after a restart is never run again.
+type commandBridge struct {
+	authority *providerrequest.Authority
+	runner    GuardianRunner
+	env       []string
+
+	mu            sync.Mutex
+	registrations map[providerexecution.RequestIdentity]*commandRegistration
+}
+
+func newCommandBridge(authority *providerrequest.Authority, runner GuardianRunner, env []string) *commandBridge {
+	return &commandBridge{authority: authority, runner: runner, env: commandEnvironment(env), registrations: map[providerexecution.RequestIdentity]*commandRegistration{}}
+}
+
+// commandEnvironment keeps provider and build configuration but drops the
+// variables that configure or authenticate Kingdom's own OpenCode server.
+func commandEnvironment(inherited []string) []string {
+	env := make([]string, 0, len(inherited))
+	for _, entry := range inherited {
+		if !strings.HasPrefix(entry, "OPENCODE_") && !strings.HasPrefix(entry, "KINGDOM_") {
+			env = append(env, entry)
+		}
+	}
+	return env
+}
+
+func (b *commandBridge) register(identity providerexecution.RequestIdentity, registration *commandRegistration) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, exists := b.registrations[identity]; exists {
+		return fmt.Errorf("command request is already registered")
+	}
+	registration.calls = map[string]*commandCall{}
+	b.registrations[identity] = registration
+	return nil
+}
+
+func (b *commandBridge) unregister(identity providerexecution.RequestIdentity) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	delete(b.registrations, identity)
+}
+
+// invoke claims the exact tool call, then runs it once. Replays join the
+// running call or return its recorded result.
+func (b *commandBridge) invoke(ctx context.Context, in commandInput) (commandResult, error) {
+	if in.MessageID == "" || in.CallID == "" || strings.TrimSpace(in.Command) == "" || in.Timeout < 0 || in.Timeout > int64(time.Duration(1<<63-1)/time.Millisecond) {
+		return commandResult{}, fmt.Errorf("invalid managed command")
+	}
+	b.mu.Lock()
+	registration, ok := b.registrations[in.Identity]
+	if !ok {
+		b.mu.Unlock()
+		return commandResult{}, fmt.Errorf("command request is not registered")
+	}
+	if filepath.Clean(in.Cwd) != registration.workspace {
+		b.mu.Unlock()
+		return commandResult{}, fmt.Errorf("a managed command must run in its workspace root")
+	}
+	if err := requireShellInput(in); err != nil {
+		b.mu.Unlock()
+		return commandResult{}, err
+	}
+	// Claiming under the lock keeps a concurrent replay from observing a claim
+	// that has no running call yet.
+	claim, err := b.authority.ClaimCommand(ctx, providerrequest.NativeCall{Identity: in.Identity, MessageID: in.MessageID, CallID: in.CallID, Tool: "shell", Input: in.ToolInput})
+	if err != nil {
+		b.mu.Unlock()
+		return commandResult{}, err
+	}
+	key := in.MessageID + "\x00" + in.CallID
+	call := registration.calls[key]
+	if !claim.Execute {
+		b.mu.Unlock()
+		if call == nil {
+			return commandResult{}, fmt.Errorf("command outcome is unknown after a restart and will not run again")
+		}
+		return awaitCommand(ctx, call)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	call = &commandCall{done: make(chan struct{}), cancel: cancel}
+	registration.calls[key] = call
+	b.mu.Unlock()
+	go b.execute(runCtx, in, claim, registration, call)
+	return awaitCommand(ctx, call)
+}
+
+// requireShellInput ensures the guarded command is exactly what the stock tool
+// call asked for, so the projected tool and the durable claim stay comparable.
+func requireShellInput(in commandInput) error {
+	var input struct {
+		Command    string `json:"command"`
+		Workdir    string `json:"workdir"`
+		Timeout    *int64 `json:"timeout"`
+		Background bool   `json:"background"`
+	}
+	if err := json.Unmarshal(in.ToolInput, &input); err != nil {
+		return fmt.Errorf("managed command input is invalid")
+	}
+	timeout := int64(defaultCommandTimeoutMillis)
+	if input.Timeout != nil {
+		timeout = *input.Timeout
+	}
+	workdir := in.Cwd
+	if input.Workdir != "" {
+		workdir = input.Workdir
+		if !filepath.IsAbs(workdir) {
+			workdir = filepath.Join(in.Identity.Location, workdir)
+		}
+	}
+	if input.Background || input.Command != in.Command || timeout != in.Timeout || filepath.Clean(workdir) != filepath.Clean(in.Cwd) {
+		return fmt.Errorf("managed command differs from its tool input")
+	}
+	return nil
+}
+
+func awaitCommand(ctx context.Context, call *commandCall) (commandResult, error) {
+	select {
+	case <-call.done:
+		return call.result, call.err
+	case <-ctx.Done():
+		return commandResult{}, ctx.Err()
+	}
+}
+
+func (b *commandBridge) execute(ctx context.Context, in commandInput, claim providerrequest.CommandClaim, registration *commandRegistration, call *commandCall) {
+	defer close(call.done)
+	defer call.cancel()
+	if in.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(in.Timeout)*time.Millisecond)
+		defer cancel()
+	}
+	ordinal := int(claim.Ordinal)
+	started := time.Now().UTC().Format(time.RFC3339Nano)
+	handle, err := b.runner.Start(ctx, processguardian.Command{Path: "/bin/sh", Args: []string{"-c", in.Command}, Dir: registration.workspace, Env: b.env}, func(ctx context.Context, ownership processguardian.Ownership) error {
+		return registration.ownership(ctx, ProcessGuardOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
+	})
+	var result processguardian.Result
+	if err == nil {
+		call.result.Output, call.result.Truncated, result, err = superviseCommand(ctx, handle)
+	} else {
+		var launch *processguardian.LaunchError
+		switch {
+		case !errors.As(err, &launch):
+			// The guardian is stopped before it acknowledges ownership, so the
+			// command was never released and the claim can close as unlaunched.
+			if abortErr := b.authority.AbortCommand(context.Background(), in.Identity, claim.ID, claim.Digest); abortErr != nil {
+				err = errors.Join(err, fmt.Errorf("abort command claim: %w", abortErr))
+			} else {
+				call.resolved = true
+			}
+			call.err = err
+			return
+		case launch.OwnershipPersisted:
+			result = launch.Result
+		}
+	}
+	call.result.Exit, call.result.GuardID, call.result.Quiescent = result.ExitCode, result.GuardID, result.Quiescent
+	if result.GuardID == "" || !result.Quiescent {
+		call.err = errors.Join(err, fmt.Errorf("command quiescence is unproved"))
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if ingestErr := registration.quiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: ordinal, ExitedAt: now, QuiescentAt: now, Result: result}); ingestErr != nil {
+		err = errors.Join(err, fmt.Errorf("record command quiescence: %w", ingestErr))
+	} else if completeErr := b.authority.CompleteCommand(context.Background(), in.Identity, claim.ID, claim.Digest, result.GuardID); completeErr != nil {
+		err = errors.Join(err, fmt.Errorf("complete command claim: %w", completeErr))
+	} else {
+		call.resolved = true
+	}
+	call.err = err
+}
+
+// superviseCommand drains bounded output and cancels the command tree when its
+// context ends, returning only after the guardian reports a result.
+func superviseCommand(ctx context.Context, handle processguardian.Handle) (string, bool, processguardian.Result, error) {
+	_ = handle.Stdin().Close()
+	finished := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			cancelCtx, cancel := context.WithTimeout(context.Background(), commandCancelLimit)
+			defer cancel()
+			_ = handle.Cancel(cancelCtx)
+		case <-finished:
+		}
+	}()
+	var stdout, stderr []byte
+	var stdoutTruncated, stderrTruncated bool
+	var drains sync.WaitGroup
+	drains.Add(2)
+	drain := func(reader io.ReadCloser, target *[]byte, truncated *bool) {
+		defer drains.Done()
+		defer reader.Close()
+		*target, _ = io.ReadAll(io.LimitReader(reader, commandOutputLimit))
+		discarded, _ := io.Copy(io.Discard, reader)
+		*truncated = discarded > 0
+	}
+	go drain(handle.Stdout(), &stdout, &stdoutTruncated)
+	go drain(handle.Stderr(), &stderr, &stderrTruncated)
+	result, err := handle.Wait(context.Background())
+	close(finished)
+	drains.Wait()
+	return string(stdout) + string(stderr), stdoutTruncated || stderrTruncated, result, err
+}
+
+// cancel closes the request's admission, then stops and joins every command it
+// has already claimed. A command that ends because of the cancellation is
+// resolved; one whose guardian closure is unproved is reported and stays as
+// resource debt for settlement.
+func (b *commandBridge) cancel(ctx context.Context, identity providerexecution.RequestIdentity) error {
+	if err := b.authority.CloseAdmission(ctx, identity); err != nil {
+		return err
+	}
+	b.mu.Lock()
+	var calls []*commandCall
+	if registration, ok := b.registrations[identity]; ok {
+		for _, call := range registration.calls {
+			call.cancel()
+			calls = append(calls, call)
+		}
+	}
+	b.mu.Unlock()
+	var unresolved []error
+	for _, call := range calls {
+		select {
+		case <-call.done:
+			if !call.resolved {
+				unresolved = append(unresolved, call.err)
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return errors.Join(unresolved...)
+}
