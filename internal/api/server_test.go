@@ -78,10 +78,11 @@ func TestNewHandlerRejectsUnsupportedMockProviderEngine(t *testing.T) {
 	t.Parallel()
 
 	_, err := NewHandler(ServerConfig{
-		DB:             openAPIServerTestDB(t),
-		ProjectRoot:    t.TempDir(),
-		PlannerAgent:   &testPlannerAgent{},
-		ProviderEngine: "mock_engine",
+		ProviderModelCatalog: staticProviderModelCatalog{},
+		DB:                   openAPIServerTestDB(t),
+		ProjectRoot:          t.TempDir(),
+		PlannerAgent:         &testPlannerAgent{},
+		ProviderEngine:       "mock_engine",
 	})
 	if err == nil {
 		t.Fatal("expected handler bootstrap to reject unsupported mock_engine provider")
@@ -98,12 +99,13 @@ func TestNewHandlerRespectsStartupContextCancellation(t *testing.T) {
 	cancel()
 
 	_, err := NewHandler(ServerConfig{
-		DB:                 openAPIServerTestDB(t),
-		ProjectRoot:        t.TempDir(),
-		PlannerAgent:       &testPlannerAgent{},
-		ProviderEngine:     "opencode",
-		StartupContext:     startupCtx,
-		OperatorCredential: []byte(apiTestOperatorCredential),
+		ProviderModelCatalog: staticProviderModelCatalog{},
+		DB:                   openAPIServerTestDB(t),
+		ProjectRoot:          t.TempDir(),
+		PlannerAgent:         &testPlannerAgent{},
+		ProviderEngine:       "opencode",
+		StartupContext:       startupCtx,
+		OperatorCredential:   []byte(apiTestOperatorCredential),
 	})
 	if err == nil {
 		t.Fatal("expected handler bootstrap to fail when startup context is cancelled")
@@ -118,11 +120,12 @@ func TestNewHandlerWithCustomPlannerAgentDoesNotWriteManagedOpenCodeAssets(t *te
 
 	projectRoot := t.TempDir()
 	_, err := NewHandler(ServerConfig{
-		DB:                 openAPIServerTestDB(t),
-		ProjectRoot:        projectRoot,
-		PlannerAgent:       &testPlannerAgent{},
-		ProviderEngine:     "opencode",
-		OperatorCredential: []byte(apiTestOperatorCredential),
+		ProviderModelCatalog: staticProviderModelCatalog{},
+		DB:                   openAPIServerTestDB(t),
+		ProjectRoot:          projectRoot,
+		PlannerAgent:         &testPlannerAgent{},
+		ProviderEngine:       "opencode",
+		OperatorCredential:   []byte(apiTestOperatorCredential),
 	})
 	if err != nil {
 		t.Fatalf("new handler with custom planner agent: %v", err)
@@ -137,11 +140,12 @@ func TestNewHandlerFailsWhenManagedPlannerAssetsAreMissing(t *testing.T) {
 
 	projectRoot := t.TempDir()
 	_, err := NewHandler(ServerConfig{
-		DB:                 openAPIServerTestDB(t),
-		ProjectRoot:        projectRoot,
-		ProviderEngine:     "opencode",
-		OpenCodeBinaryPath: filepath.Join(projectRoot, "missing-opencode"),
-		OperatorCredential: []byte(apiTestOperatorCredential),
+		ProviderModelCatalog: staticProviderModelCatalog{},
+		DB:                   openAPIServerTestDB(t),
+		ProjectRoot:          projectRoot,
+		ProviderEngine:       "opencode",
+		OpenCodeBinaryPath:   filepath.Join(projectRoot, "missing-opencode"),
+		OperatorCredential:   []byte(apiTestOperatorCredential),
 	})
 	if err == nil {
 		t.Fatal("expected handler bootstrap to fail when managed planner assets are missing")
@@ -229,7 +233,7 @@ func TestServerListProviderModelsReturnsStaleCachedModelsWhenCatalogRefreshFails
 			ThinkingEffortOptions: []gen.ThinkingEffortOption{{Value: "medium", Label: "Medium"}},
 		}},
 		status:         ProviderModelCatalogStatusStale,
-		failureReason:  ProviderModelCatalogFailureReasonCommandFailed,
+		failureReason:  ProviderModelCatalogFailureReasonServiceUnavailable,
 		failureMessage: "provider model catalog command failed: exit status 1",
 	}
 	handler, _ := newAPIServerForTestWithConfig(t, ServerConfig{ProviderModelCatalog: mockCatalog, Now: func() time.Time { return now }})

@@ -1,21 +1,15 @@
 package api
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
-	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 
 	gen "kingdom/internal/apigen"
@@ -39,11 +33,12 @@ const (
 type ProviderModelCatalogFailureReason string
 
 const (
-	ProviderModelCatalogFailureReasonNone          ProviderModelCatalogFailureReason = ""
-	ProviderModelCatalogFailureReasonTimeout       ProviderModelCatalogFailureReason = "timeout"
-	ProviderModelCatalogFailureReasonBinaryMissing ProviderModelCatalogFailureReason = "binary_missing"
-	ProviderModelCatalogFailureReasonCommandFailed ProviderModelCatalogFailureReason = "command_failed"
-	ProviderModelCatalogFailureReasonParseFailed   ProviderModelCatalogFailureReason = "parse_failed"
+	ProviderModelCatalogFailureReasonNone                 ProviderModelCatalogFailureReason = ""
+	ProviderModelCatalogFailureReasonTimeout              ProviderModelCatalogFailureReason = "timeout"
+	ProviderModelCatalogFailureReasonBinaryMissing        ProviderModelCatalogFailureReason = "binary_missing"
+	ProviderModelCatalogFailureReasonServiceUnavailable   ProviderModelCatalogFailureReason = "service_unavailable"
+	ProviderModelCatalogFailureReasonParseFailed          ProviderModelCatalogFailureReason = "parse_failed"
+	ProviderModelCatalogFailureReasonConfigurationInvalid ProviderModelCatalogFailureReason = "configuration_invalid"
 )
 
 type ProviderModelCatalogSnapshot struct {
@@ -55,12 +50,15 @@ type ProviderModelCatalogSnapshot struct {
 	UnavailableErr error
 }
 
+type openCodeModelSource interface {
+	Models(context.Context) ([]opencode.Model, error)
+}
+
 type openCodeProviderModelCatalog struct {
-	binaryPath   string
+	source       openCodeModelSource
 	now          func() time.Time
 	ttl          time.Duration
 	fetchTimeout time.Duration
-	execVerbose  func(ctx context.Context, binaryPath string, refresh bool) (*opencode.HelperCommandOutput, error)
 
 	mu         sync.Mutex
 	cachedAt   time.Time
@@ -109,23 +107,18 @@ func isProviderModelCatalogUnavailable(err error) bool {
 	return errors.As(err, &unavailableErr)
 }
 
-func NewOpenCodeProviderModelCatalog(binaryPath string, now func() time.Time, ttl time.Duration) ProviderModelCatalog {
-	resolvedBinary := strings.TrimSpace(binaryPath)
-	if resolvedBinary == "" {
-		resolvedBinary = "opencode"
-	}
+func NewOpenCodeProviderModelCatalog(source openCodeModelSource, now func() time.Time, ttl time.Duration) ProviderModelCatalog {
 	if now == nil {
 		now = time.Now
 	}
 	if ttl <= 0 {
-		ttl = 60 * time.Second
+		ttl = time.Minute
 	}
 	return &openCodeProviderModelCatalog{
-		binaryPath:   resolvedBinary,
+		source:       source,
 		now:          now,
 		ttl:          ttl,
-		fetchTimeout: 5 * time.Second,
-		execVerbose:  executeOpenCodeVerboseModels,
+		fetchTimeout: 10 * time.Second,
 	}
 }
 
@@ -143,27 +136,16 @@ func (c *openCodeProviderModelCatalog) List(ctx context.Context, refresh bool) (
 	return cloneProviderModels(snapshot.Items), nil
 }
 
-// Snapshot serves the model catalog without ever making an operator wait on
-// OpenCode more than once per process.
-//
-// Listing models means spawning `opencode models --verbose`, which costs
-// seconds. Blocking every read whose cache had just aged past the TTL put that
-// cost on the request path forever: the planner page polled on the same period
-// as the TTL, so a browser tab guaranteed a subprocess spawn a minute, and each
-// one disabled the model selectors while it ran. Reads are now
-// stale-while-revalidate — a populated cache answers immediately and an aged
-// one refreshes in the background — so only the very first read of a process
-// can block, and `kd summon` pays that one through Warm.
-//
-// An explicit refresh stays synchronous: it exists so the operator can press
-// Retry and be told what happened.
+// Snapshot serves cached models immediately and revalidates expired snapshots
+// in the background. The first read and an explicit refresh wait for OpenCode's
+// shared service. A successful empty list is cached like any other snapshot.
 func (c *openCodeProviderModelCatalog) Snapshot(ctx context.Context, refresh bool) (ProviderModelCatalogSnapshot, error) {
 	if !refresh {
 		if snapshot, ok := c.cachedSnapshot(); ok {
 			return snapshot, nil
 		}
 	}
-	return c.fetchSnapshot(ctx, refresh)
+	return c.fetchSnapshot(ctx)
 }
 
 // cachedSnapshot answers from cache when there is one, scheduling a background
@@ -216,27 +198,22 @@ func (c *openCodeProviderModelCatalog) refreshInBackground() {
 			}
 		}
 	}()
-	_, _ = c.fetchSnapshot(context.Background(), false)
+	_, _ = c.fetchSnapshot(context.Background())
 }
 
-// fetchSnapshot runs the provider fetch, collapsing concurrent callers onto one
-// subprocess, and records the outcome for later reads.
-func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refresh bool) (ProviderModelCatalogSnapshot, error) {
-	fetchKey := "cached"
-	if refresh {
-		fetchKey = "refresh"
-	}
-	resolvedRows, err, _ := c.flight.Do(fetchKey, func() (any, error) {
+// fetchSnapshot coalesces concurrent reads from the same provider service and
+// records the outcome for later reads.
+func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context) (ProviderModelCatalogSnapshot, error) {
+	resolvedRows, err, _ := c.flight.Do("models", func() (any, error) {
 		c.mu.Lock()
 		cachedRows := cloneProviderModels(c.cachedRows)
 		cachedAt := c.cachedAt
 		c.mu.Unlock()
 
-		rows, fetchErr := c.fetch(ctx, refresh)
+		rows, fetchErr := c.fetch(ctx)
 		if fetchErr != nil {
 			unavailableErr := classifyProviderModelCatalogError(fetchErr)
 			c.mu.Lock()
-			retireCatalogFailure(c.lastFailure)
 			c.lastFailure = unavailableErr
 			c.mu.Unlock()
 			servingCachedModels := !cachedAt.IsZero()
@@ -261,7 +238,6 @@ func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refres
 		c.mu.Lock()
 		c.cachedRows = cloneProviderModels(rows)
 		c.cachedAt = c.now()
-		retireCatalogFailure(c.lastFailure)
 		c.lastFailure = nil
 		resolvedCachedAt := c.cachedAt
 		c.mu.Unlock()
@@ -275,54 +251,28 @@ func (c *openCodeProviderModelCatalog) fetchSnapshot(ctx context.Context, refres
 	if !ok {
 		return ProviderModelCatalogSnapshot{}, fmt.Errorf("provider model catalog snapshot: unexpected result type %T", resolvedRows)
 	}
+	snapshot.Items = cloneProviderModels(snapshot.Items)
+	if snapshot.LastSuccessAt != nil {
+		value := *snapshot.LastSuccessAt
+		snapshot.LastSuccessAt = &value
+	}
 	return snapshot, nil
 }
 
-func (c *openCodeProviderModelCatalog) fetch(ctx context.Context, refresh bool) ([]gen.ProviderModel, error) {
-	fetchCtx := ctx
-	cancel := func() {}
+func (c *openCodeProviderModelCatalog) fetch(ctx context.Context) ([]gen.ProviderModel, error) {
+	if c.source == nil {
+		return nil, errors.New("OpenCode model service is unavailable")
+	}
 	if c.fetchTimeout > 0 {
-		fetchCtx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, c.fetchTimeout)
+		defer cancel()
 	}
-	defer cancel()
-
-	output, err := c.execVerbose(fetchCtx, c.binaryPath, refresh)
+	models, err := c.source.Models(ctx)
 	if err != nil {
-		err = output.DiagnosticError(err)
-		if errors.Is(fetchCtx.Err(), context.DeadlineExceeded) {
-			return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonTimeout, cause: errors.Join(context.DeadlineExceeded, err)}
-		}
-		if errors.Is(fetchCtx.Err(), context.Canceled) {
-			return nil, fmt.Errorf("list provider models canceled: %w", err)
-		}
-		if errors.Is(err, exec.ErrNotFound) {
-			return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonBinaryMissing, cause: err}
-		}
-		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonCommandFailed, cause: err}
-	}
-	reader, err := output.OpenStdout()
-	if err != nil {
-		return nil, output.DiagnosticError(err)
-	}
-	defer reader.Close()
-	rows, parseErr := parseOpenCodeVerboseModels(reader)
-	if parseErr != nil {
-		return nil, &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: output.DiagnosticError(parseErr)}
-	}
-	if err := reader.Close(); err != nil {
-		return nil, output.DiagnosticError(err)
-	}
-	if err := output.Close(); err != nil {
 		return nil, err
 	}
-	return rows, nil
-}
-
-func retireCatalogFailure(err error) {
-	var diagnostic *opencode.HelperCommandError
-	if errors.As(err, &diagnostic) {
-		_ = diagnostic.Close()
-	}
+	return providerModels(models), nil
 }
 
 // operatorCatalogFailureMessage turns a catalog failure into something an
@@ -342,6 +292,8 @@ func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, ser
 			return "Showing the models Kingdom already had. The refresh from OpenCode timed out."
 		case ProviderModelCatalogFailureReasonBinaryMissing:
 			return "Showing the models Kingdom already had. The opencode binary is no longer on PATH."
+		case ProviderModelCatalogFailureReasonConfigurationInvalid:
+			return "Showing the models Kingdom already had. OpenCode configuration needs attention; automatic formatting must be disabled."
 		case ProviderModelCatalogFailureReasonParseFailed:
 			return "Showing the models Kingdom already had. Kingdom could not read the model list OpenCode returned."
 		default:
@@ -353,10 +305,12 @@ func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, ser
 		return "OpenCode did not return a model list in time. Retry once it responds."
 	case ProviderModelCatalogFailureReasonBinaryMissing:
 		return "Kingdom could not find the opencode binary on PATH. Install or configure OpenCode, then retry."
+	case ProviderModelCatalogFailureReasonConfigurationInvalid:
+		return "OpenCode configuration needs attention. Disable automatic formatting for Kingdom-managed execution, then retry."
 	case ProviderModelCatalogFailureReasonParseFailed:
 		return "Kingdom could not read the model list OpenCode returned. Check the installed OpenCode version, then retry."
 	default:
-		return "Kingdom could not list OpenCode models. Check the OpenCode installation, then retry."
+		return "Kingdom could not list OpenCode models. Check that the OpenCode service is running and its providers are configured, then retry."
 	}
 }
 
@@ -371,224 +325,87 @@ func classifyProviderModelCatalogError(err error) *providerModelCatalogUnavailab
 	if errors.Is(err, context.DeadlineExceeded) {
 		return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonTimeout, cause: err}
 	}
-	return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonCommandFailed, cause: err}
+	var configurationErr *opencode.ConfigurationError
+	if errors.As(err, &configurationErr) {
+		return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonConfigurationInvalid, cause: err}
+	}
+	var protocolErr *opencode.ProtocolError
+	if errors.As(err, &protocolErr) {
+		return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonParseFailed, cause: err}
+	}
+	if errors.Is(err, exec.ErrNotFound) {
+		return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonBinaryMissing, cause: err}
+	}
+	return &providerModelCatalogUnavailableError{reason: ProviderModelCatalogFailureReasonServiceUnavailable, cause: err}
 }
 
-func executeOpenCodeVerboseModels(ctx context.Context, binaryPath string, refresh bool) (*opencode.HelperCommandOutput, error) {
-	args := []string{"models", "--verbose"}
-	if refresh {
-		args = append(args, "--refresh")
-	}
-	runner, err := processguardian.NewRunner(processguardian.Config{})
-	if err != nil {
-		return nil, err
-	}
-	handle, err := runner.Start(ctx, processguardian.Command{Path: binaryPath, Args: args, Env: os.Environ()}, nil)
-	if err != nil {
-		return nil, err
-	}
-	return collectOpenCodeVerboseModelOutput(ctx, handle)
-}
-
-func collectOpenCodeVerboseModelOutput(ctx context.Context, handle processguardian.Handle) (*opencode.HelperCommandOutput, error) {
-	return opencode.CollectHelperCommandOutput(ctx, handle)
-}
-
-func parseOpenCodeVerboseModels(output io.Reader) ([]gen.ProviderModel, error) {
-	models := make([]gen.ProviderModel, 0)
-	seen := make(map[string]struct{})
-	reader := bufio.NewReader(output)
-	nonEmpty := false
-	for {
-		first, _, err := reader.ReadRune()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read provider model catalog: %w", err)
-		}
-		if unicode.IsSpace(first) {
-			continue
-		}
-		nonEmpty = true
-		if first != '{' {
-			if err := finishModelCatalogLine(reader, false); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if err := reader.UnreadRune(); err != nil {
-			return nil, err
-		}
-		var row struct {
-			ID         string `json:"id"`
-			ProviderID string `json:"providerID"`
-			Name       string `json:"name"`
-			Variants   map[string]struct {
-				ReasoningEffort string `json:"reasoningEffort"`
-			} `json:"variants"`
-		}
-		decoder := json.NewDecoder(&modelCatalogObjectReader{reader: reader})
-		if err := decoder.Decode(&row); err != nil {
-			return nil, fmt.Errorf("decode provider model row: %w", err)
-		}
-		if err := finishModelCatalogLine(reader, true); err != nil {
-			return nil, err
-		}
-		providerID := strings.TrimSpace(row.ProviderID)
-		modelID := strings.TrimSpace(row.ID)
-		if providerID == "" || modelID == "" {
-			continue
-		}
-		id := providerID + "/" + modelID
-		if _, ok := seen[id]; ok {
+// providerModels projects the provider's configured catalog without interpreting
+// account entitlement or maintaining a second model allowlist.
+func providerModels(models []opencode.Model) []gen.ProviderModel {
+	rows := make([]gen.ProviderModel, 0, len(models))
+	seen := make(map[string]struct{}, len(models))
+	for _, model := range models {
+		id := model.ProviderID + "/" + model.ID
+		if _, exists := seen[id]; exists {
 			continue
 		}
 		seen[id] = struct{}{}
-		modelName := strings.TrimSpace(row.Name)
-		if modelName == "" {
-			modelName = modelID
+		providerName := model.ProviderName
+		if providerName == "" {
+			providerName = formatProviderName(model.ProviderID)
 		}
-		thinkingEffortOptions, thinkingEffortDefault := parseThinkingEffortOptions(row.Variants)
-		models = append(models, gen.ProviderModel{
+		name := model.Name
+		if name == "" {
+			name = model.ID
+		}
+		options := modelVariantOptions(model.Variants)
+		rows = append(rows, gen.ProviderModel{
 			Id:                    id,
-			ProviderId:            providerID,
-			ProviderName:          formatProviderName(providerID),
-			ModelName:             modelName,
-			ThinkingEffortDefault: thinkingEffortDefault,
-			ThinkingEffortOptions: thinkingEffortOptions,
+			ProviderId:            model.ProviderID,
+			ProviderName:          providerName,
+			ModelName:             name,
+			ThinkingEffortOptions: options,
+			ThinkingEffortDefault: thinkingEffortDefaultForOptions(options),
 		})
 	}
-
-	sort.Slice(models, func(i, j int) bool {
-		left := strings.ToLower(models[i].ProviderName + "\x00" + models[i].ModelName)
-		right := strings.ToLower(models[j].ProviderName + "\x00" + models[j].ModelName)
+	sort.Slice(rows, func(i, j int) bool {
+		left := strings.ToLower(rows[i].ProviderName + "\x00" + rows[i].ModelName)
+		right := strings.ToLower(rows[j].ProviderName + "\x00" + rows[j].ModelName)
+		if left == right {
+			return rows[i].Id < rows[j].Id
+		}
 		return left < right
 	})
-
-	if nonEmpty && len(models) == 0 {
-		return nil, fmt.Errorf("decode provider model rows: non-empty output did not yield any valid rows")
-	}
-
-	return models, nil
+	return rows
 }
 
-func finishModelCatalogLine(reader *bufio.Reader, whitespaceOnly bool) error {
-	for {
-		r, _, err := reader.ReadRune()
-		if err == io.EOF || (err == nil && r == '\n') {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("read provider model catalog line: %w", err)
-		}
-		if whitespaceOnly && !unicode.IsSpace(r) {
-			return fmt.Errorf("decode provider model row: invalid content after json object")
-		}
-	}
-}
-
-// Frame one JSON object without buffering it or letting json.Decoder read the
-// next catalog heading. The decoder remains responsible for JSON validation.
-type modelCatalogObjectReader struct {
-	reader                *bufio.Reader
-	depth                 int
-	quoted, escaped, done bool
-}
-
-func (r *modelCatalogObjectReader) Read(p []byte) (int, error) {
-	if r.done {
-		return 0, io.EOF
-	}
-	for i := range p {
-		b, err := r.reader.ReadByte()
-		if err != nil {
-			return i, err
-		}
-		p[i] = b
-		if r.quoted {
-			if r.escaped {
-				r.escaped = false
-			} else if b == '\\' {
-				r.escaped = true
-			} else if b == '"' {
-				r.quoted = false
-			}
+func modelVariantOptions(variants []opencode.ModelVariant) []gen.ThinkingEffortOption {
+	ids := make([]string, 0, len(variants))
+	seen := make(map[string]bool, len(variants))
+	for _, variant := range variants {
+		if variant.ID == "" || seen[variant.ID] {
 			continue
 		}
-		switch b {
-		case '"':
-			r.quoted = true
-		case '{':
-			r.depth++
-		case '}':
-			r.depth--
-			if r.depth == 0 {
-				r.done = true
-				return i + 1, io.EOF
-			}
-		}
+		seen[variant.ID] = true
+		ids = append(ids, variant.ID)
 	}
-	return len(p), nil
-}
-
-func parseThinkingEffortOptions(variants map[string]struct {
-	ReasoningEffort string `json:"reasoningEffort"`
-}) ([]gen.ThinkingEffortOption, *string) {
-	if len(variants) == 0 {
-		return []gen.ThinkingEffortOption{}, nil
+	preferred := map[string]int{"minimal": 0, "none": 1, "low": 2, "medium": 3, "high": 4, "xhigh": 5, "max": 6}
+	sort.Slice(ids, func(i, j int) bool {
+		left, leftKnown := preferred[ids[i]]
+		right, rightKnown := preferred[ids[j]]
+		if leftKnown != rightKnown {
+			return leftKnown
+		}
+		if leftKnown {
+			return left < right
+		}
+		return ids[i] < ids[j]
+	})
+	options := make([]gen.ThinkingEffortOption, 0, len(ids))
+	for _, id := range ids {
+		options = append(options, gen.ThinkingEffortOption{Value: id, Label: formatThinkingEffortLabel(id)})
 	}
-	type effortOption struct {
-		value string
-		label string
-	}
-	preferredOrder := []string{"minimal", "none", "low", "medium", "high", "xhigh", "max"}
-	seen := make(map[string]struct{})
-	options := make([]effortOption, 0, len(variants))
-	for _, key := range preferredOrder {
-		variant, ok := variants[key]
-		if !ok {
-			continue
-		}
-		value := strings.TrimSpace(variant.ReasoningEffort)
-		if value == "" {
-			value = strings.TrimSpace(key)
-		}
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		options = append(options, effortOption{value: value, label: formatThinkingEffortLabel(value)})
-	}
-	additionalKeys := make([]string, 0, len(variants))
-	for key := range variants {
-		additionalKeys = append(additionalKeys, key)
-	}
-	sort.Strings(additionalKeys)
-	for _, key := range additionalKeys {
-		variant := variants[key]
-		value := strings.TrimSpace(variant.ReasoningEffort)
-		if value == "" {
-			value = strings.TrimSpace(key)
-		}
-		if value == "" {
-			continue
-		}
-		if _, exists := seen[value]; exists {
-			continue
-		}
-		seen[value] = struct{}{}
-		options = append(options, effortOption{value: value, label: formatThinkingEffortLabel(value)})
-	}
-	result := make([]gen.ThinkingEffortOption, 0, len(options))
-	for _, option := range options {
-		result = append(result, gen.ThinkingEffortOption{Value: option.value, Label: option.label})
-	}
-	defaultValue := thinkingEffortDefaultForOptions(result)
-	return result, defaultValue
+	return options
 }
 
 func thinkingEffortDefaultForOptions(options []gen.ThinkingEffortOption) *string {
@@ -627,7 +444,14 @@ func formatThinkingEffortLabel(value string) string {
 
 func cloneProviderModels(rows []gen.ProviderModel) []gen.ProviderModel {
 	cloned := make([]gen.ProviderModel, len(rows))
-	copy(cloned, rows)
+	for i, row := range rows {
+		cloned[i] = row
+		cloned[i].ThinkingEffortOptions = append([]gen.ThinkingEffortOption{}, row.ThinkingEffortOptions...)
+		if row.ThinkingEffortDefault != nil {
+			value := *row.ThinkingEffortDefault
+			cloned[i].ThinkingEffortDefault = &value
+		}
+	}
 	return cloned
 }
 

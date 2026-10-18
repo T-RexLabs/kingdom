@@ -252,7 +252,7 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 	mustExec(t, db, `UPDATE workflow_edges SET to_node_id='advisory_synthesis' WHERE workflow_edge_id='edge_dispatch_1'`)
 	mustExec(t, db, `INSERT INTO workflow_edges(workflow_edge_id,workflow_definition_id,from_node_id,to_node_id,on_condition,created_at) VALUES('edge_advice','wfdef_dispatch','advisory_synthesis','plan_drafting','always','2026-03-01T12:00:00Z')`)
 	const credential = "streaming-integration-operator"
-	handler, err := api.NewHandler(api.ServerConfig{DB: db, OperatorCredential: []byte(credential), ProjectRoot: t.TempDir(), PlannerAgent: planning.NewOpenCodeAgent(opencode.NewMemoryAdapter(), func(prefix string) string { return prefix + "-fixture" })})
+	handler, err := api.NewHandler(api.ServerConfig{DB: db, ProviderModelCatalog: api.NewOpenCodeProviderModelCatalog(nil, nil, time.Minute), OperatorCredential: []byte(credential), ProjectRoot: t.TempDir(), PlannerAgent: planning.NewOpenCodeAgent(opencode.NewMemoryAdapter(), func(prefix string) string { return prefix + "-fixture" })})
 	if err != nil {
 		t.Fatal(err)
 	}

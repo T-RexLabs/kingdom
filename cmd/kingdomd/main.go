@@ -148,6 +148,25 @@ func run() (exitCode int) {
 	}
 
 	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
+	providerService, err := opencode.NewService(opencode.ServiceConfig{
+		BinaryPath:  providerBinary,
+		WorkDir:     repoRoot,
+		RuntimeRoot: filepath.Join(filepath.Dir(dbPath), "runtime", "opencode-service"),
+	})
+	if err != nil {
+		log.Printf("configure OpenCode service: %v", err)
+		return exitFatalStartup
+	}
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := providerService.CloseContext(closeCtx); err != nil {
+			log.Printf("OpenCode service close error: %v", err)
+			if exitCode == exitOK {
+				exitCode = exitDrainFailure
+			}
+		}
+	}()
 	runtime, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
 		Paths:               bootstrapPaths,
@@ -178,6 +197,7 @@ func run() (exitCode int) {
 		BasePath:                   basePath,
 		AutonomousApprovalsDefault: &autonomousApprovals,
 		OpenCodeBinaryPath:         providerBinary,
+		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, 10*time.Minute),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                repoRoot,

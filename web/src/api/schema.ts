@@ -3223,7 +3223,7 @@ export interface components {
             /** Format: date-time */
             last_success_at?: string;
             /** @enum {string} */
-            failure_reason?: "timeout" | "binary_missing" | "command_failed" | "parse_failed";
+            failure_reason?: "timeout" | "binary_missing" | "service_unavailable" | "parse_failed" | "configuration_invalid";
             failure_message?: string;
         };
         Role: {

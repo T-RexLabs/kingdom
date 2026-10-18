@@ -191,21 +191,12 @@ func (s *Server) closePlannerAdapter(ctx context.Context) error {
 	return nil
 }
 
-// providerModelCatalogTTL is how long a listed model catalog stays fresh
-// before a read schedules a background revalidation. It is deliberately far
-// longer than a page's poll interval: the catalog only changes when the
-// operator changes their OpenCode installation, and every expiry costs a
-// subprocess.
-const providerModelCatalogTTL = 10 * time.Minute
-
 // Warm pays this process's one-time provider costs up front, so the first
 // operator to arrive does not.
 //
-// Two costs used to land on whoever opened the planner first: listing models
-// spawns `opencode models --verbose`, and the first planner turn is when
-// OpenCode's managed database is created and migrated and the planner agent
-// profile is first resolved. Both are done once here instead, during summon,
-// where a few seconds cost nobody anything.
+// Listing models starts the dedicated provider service lazily. The current
+// planner execution adapter also has its own warmup until V2 execution replaces
+// it. Neither cost should fall on the first operator opening a page.
 //
 // Warming is best-effort by construction. A failure here means the operator
 // pays the cost lazily exactly as they used to, and the real diagnosis reaches
@@ -300,6 +291,9 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 	if providerEngine != "opencode" {
 		return nil, fmt.Errorf("unsupported provider engine %q (expected opencode)", cfg.ProviderEngine)
+	}
+	if cfg.ProviderModelCatalog == nil {
+		return nil, fmt.Errorf("provider model catalog is required")
 	}
 
 	schemaDir, err := resolveSchemaDir(cfg.SchemaDir)
@@ -562,9 +556,6 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		defer cancel()
 		_ = s.planningService.Close(closeCtx)
 	}()
-	if s.providerModelCatalog == nil {
-		s.providerModelCatalog = NewOpenCodeProviderModelCatalog(cfg.OpenCodeBinaryPath, now, providerModelCatalogTTL)
-	}
 
 	if err := state.EnsureCanonicalRoles(startupCtx, cfg.DB, now()); err != nil {
 		return nil, fmt.Errorf("seed canonical roles: %w", err)

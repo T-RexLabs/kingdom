@@ -711,6 +711,23 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	bootstrapPaths := bootstrapPathsFromConfig(cfg)
+	providerService, err := opencode.NewService(opencode.ServiceConfig{
+		BinaryPath:  cfg.Provider.BinaryPath,
+		WorkDir:     filepath.Dir(cfg.KingdomHome),
+		RuntimeRoot: filepath.Join(cfg.KingdomHome, "runtime", "opencode-service"),
+	})
+	if err != nil {
+		return fmt.Errorf("configure OpenCode service: %w", err)
+	}
+	// Registered before the consumers' cleanup: the shared provider must stay
+	// available until both planning and run consumers have finished draining.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := providerService.CloseContext(closeCtx); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close OpenCode service: %w", closeErr))
+		}
+	}()
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
@@ -771,6 +788,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
 		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
+		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, 10*time.Minute),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
@@ -849,16 +867,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		errCh <- server.ListenAndServe()
 	}()
 
-	// Warm the provider surfaces the first operator would otherwise wait on:
-	// listing OpenCode models, and OpenCode's own one-time database and agent
-	// resolution. It runs beside the listener rather than before it, because
-	// readiness must not wait on OpenCode — a slow or broken provider has to
-	// leave the operator with a running Kingdom that can explain itself, not
-	// with a summon that hangs. For the same reason it reports through the log
-	// and never through the startup tracker, whose phases are a gate on
-	// readiness and are already past.
-	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
-
 	if err := waitForSummonReadyWithContext(startupCtx, cfg, opts.readyTimeout, nil, errCh, "", "", nil); err != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -869,6 +877,16 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		// server.Shutdown(...) here that would muddy ownership.
 		return err
 	}
+	// Warm the provider surfaces the first operator would otherwise wait on:
+	// listing OpenCode models, and OpenCode's own one-time database and agent
+	// resolution. It runs beside the listener rather than before it, because
+	// readiness must not wait on OpenCode — a slow or broken provider has to
+	// leave the operator with a running Kingdom that can explain itself, not
+	// with a summon that hangs. For the same reason it reports through the log
+	// and never through the startup tracker, whose phases are a gate on
+	// readiness and are already past.
+	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
+
 	if err := ensureWorkflowSeeds(startupCtx, cfg); err != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -924,7 +942,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			// turn a hard stop back into a bounded drain.
 			skipGracefulSafetyNet = true
 			skipDBClose = true
-			return forceCloseSummon(runtimeInstance, apiHandler, server, stderr)
+			forceErr := forceCloseSummon(runtimeInstance, apiHandler, server, stderr)
+			return errors.Join(forceErr, providerService.ForceClose())
 		},
 	)
 	return err

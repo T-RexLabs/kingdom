@@ -75,6 +75,10 @@ github:
 
 `provider.model` and `provider.agent` are optional defaults for OpenCode. A run still needs an explicit global model choice.
 
+Model discovery requires OpenCode V2 and reads the configured providers through a dedicated local service. Configure provider sign-ins, API keys, and custom model endpoints in OpenCode. Kingdom does not copy or refresh those credentials. The model selector supports custom provider and model IDs; a listed model can still fail if its provider is unavailable or access has changed. Refreshing the model list reads the catalog without restarting active OpenCode locations.
+
+Kingdom disables automatic formatting in that service. If administrator configuration overrides this setting, model discovery reports a configuration error. Explicit formatter commands remain separate from automatic formatting.
+
 `provider.skip_permissions` defaults to `true` and keeps OpenCode runs from stopping for interactive permission prompts.
 
 ### GitHub App identifiers

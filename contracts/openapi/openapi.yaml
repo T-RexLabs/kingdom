@@ -5519,7 +5519,7 @@ components:
           format: date-time
         failure_reason:
           type: string
-          enum: [timeout, binary_missing, command_failed, parse_failed]
+          enum: [timeout, binary_missing, service_unavailable, parse_failed, configuration_invalid]
         failure_message:
           type: string
 
