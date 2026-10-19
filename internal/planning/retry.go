@@ -9,7 +9,6 @@ import (
 
 	"kingdom/internal/acp"
 	"kingdom/internal/core/errorcatalog"
-	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/state"
 )
 
@@ -105,11 +104,7 @@ func (r *operationRunner) planAutomaticRetry(ctx context.Context, operation stat
 	if retryIndex > plan.MaxRetries {
 		retryIndex = plan.MaxRetries
 	}
-	providerRetryAt := providerexecution.RetryAtFromDiagnostics(metadata.ProviderDiagnosticsJSON, createdAt)
 	dueAt := createdAt.Add(plan.NextDelay)
-	if providerRetryAt != nil && providerRetryAt.After(dueAt) {
-		dueAt = *providerRetryAt
-	}
 	return state.RetryDecisionCreateRequest{
 		DecisionID:                 fmt.Sprintf("retry_decision_%s", sanitizePlannerToken(settlement.PlanningProviderInvocationID)),
 		SubjectKind:                state.RetrySubjectKindPlanningInvocation,
@@ -124,7 +119,6 @@ func (r *operationRunner) planAutomaticRetry(ctx context.Context, operation stat
 		RetryIndex:                 retryIndex,
 		MaxRetries:                 plan.MaxRetries,
 		PolicyDelay:                plan.NextDelay,
-		ProviderRetryAt:            providerRetryAt,
 		DueAt:                      dueAt,
 		CreatedAt:                  createdAt,
 		EscalationTarget:           plan.EscalationTarget,

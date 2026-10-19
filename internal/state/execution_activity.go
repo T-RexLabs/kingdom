@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -159,23 +158,4 @@ func stringValue(value any) string {
 		return typed
 	}
 	return ""
-}
-
-func intValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
-	default:
-		return 0, false
-	}
 }

@@ -46,8 +46,8 @@ type commandResult struct {
 // its command guardians.
 type commandRegistration struct {
 	workspace  string
-	ownership  func(context.Context, ProcessGuardOwnership) error
-	quiescence func(context.Context, ProcessGuardQuiescence) error
+	ownership  func(context.Context, CommandGuardianOwnership) error
+	quiescence func(context.Context, CommandGuardianQuiescence) error
 	calls      map[string]*commandCall
 }
 
@@ -199,7 +199,7 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 	ordinal := int(claim.Ordinal)
 	started := time.Now().UTC().Format(time.RFC3339Nano)
 	handle, err := b.runner.Start(ctx, shellCommand(in.Command, registration.workspace, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
-		return registration.ownership(ctx, ProcessGuardOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
+		return registration.ownership(ctx, CommandGuardianOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
 	})
 	var result processguardian.Result
 	if err == nil {
@@ -228,7 +228,7 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	if ingestErr := registration.quiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: ordinal, ExitedAt: now, QuiescentAt: now, Result: result}); ingestErr != nil {
+	if ingestErr := registration.quiescence(context.Background(), CommandGuardianQuiescence{CommandOrdinal: ordinal, ExitedAt: now, QuiescentAt: now, Result: result}); ingestErr != nil {
 		err = errors.Join(err, fmt.Errorf("record command quiescence: %w", ingestErr))
 	} else if completeErr := b.authority.CompleteCommand(context.Background(), in.Identity, claim.ID, claim.Digest, result.GuardID); completeErr != nil {
 		err = errors.Join(err, fmt.Errorf("complete command claim: %w", completeErr))

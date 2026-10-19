@@ -194,7 +194,7 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 	if strings.Contains(req.AttemptID, ":plan_drafting:") {
 		prefix, suffix = "PLAN-BEGIN\n", "\nPLAN-END"
 	}
-	return opencode.ExecuteResponse{Accepted: true, OutputText: prefix + strings.Repeat("y", int(a.size)) + suffix}, nil
+	return opencode.ExecuteResponse{OutputText: prefix + strings.Repeat("y", int(a.size)) + suffix}, nil
 }
 
 func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testing.T) {

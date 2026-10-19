@@ -37,7 +37,6 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	requests := newRequestFixture(db, nil)
 	seedOpenProviderInvocationForAttempt(t, store, requests, attemptID, "run_1", "nr_1", sessionID, invocationID, now)
 	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
-		Accepted:          true,
 		Outcome:           opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "provider rate limit", EvidenceSource: "stream"},
 		StreamObservation: opencode.InvocationStreamObservation{ProviderErrorPresent: true, ProviderErrorStatus: 429},
 	}, nil)

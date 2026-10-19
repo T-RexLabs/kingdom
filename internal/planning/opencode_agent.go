@@ -178,7 +178,6 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 	}
 	defer bootstrap.Close()
 	request := opencode.ExecuteRequest{
-		CompletionMode:          opencode.CompletionModeServerResponse,
 		AttemptID:               attemptID,
 		InvocationID:            invocationID,
 		Model:                   input.ModelSelection.Model,
@@ -219,13 +218,12 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 	}
 	resp, err := a.executor.Execute(ctx, request)
 	metadata := ProviderExecutionMetadata{
-		FinalText:               strings.TrimSpace(resp.OutputText),
-		ProviderSessionID:       strings.TrimSpace(resp.ProviderSessionID),
-		ProviderDiagnosticsJSON: strings.TrimSpace(resp.ProviderDiagnosticsJSON),
-		OutcomeState:            strings.TrimSpace(resp.Outcome.State),
-		FailureReasonCode:       strings.TrimSpace(resp.Outcome.ReasonCode),
-		FailureReasonText:       strings.TrimSpace(resp.Outcome.FailureText),
-		StreamObservation:       resp.StreamObservation,
+		FinalText:         strings.TrimSpace(resp.OutputText),
+		ProviderSessionID: strings.TrimSpace(resp.ProviderSessionID),
+		OutcomeState:      strings.TrimSpace(resp.Outcome.State),
+		FailureReasonCode: strings.TrimSpace(resp.Outcome.ReasonCode),
+		FailureReasonText: strings.TrimSpace(resp.Outcome.FailureText),
+		StreamObservation: resp.StreamObservation,
 	}
 	if resp.StreamObservation.CanonicalTerminalTextRef != nil {
 		metadata.FinalText = ""

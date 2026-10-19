@@ -128,7 +128,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		return Prepared{}, fmt.Errorf("model must name a provider and a model")
 	}
 	model := ModelRef{ProviderID: providerID, ID: modelID, Variant: req.Variant}
-	p, err := newProfile(req.System, ProfileActions(req.Agent))
+	p, err := newProfile(req.System, profileActions(req.Agent))
 	if err != nil {
 		return Prepared{}, err
 	}

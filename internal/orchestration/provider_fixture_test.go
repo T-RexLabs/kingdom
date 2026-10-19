@@ -127,7 +127,7 @@ func (f *requestFixture) run(t testing.TB, attemptID, invocationID string, respo
 // records it on the job exactly as the orchestrator does.
 func (f *requestFixture) complete(t testing.TB, job *asyncExecutionResult, output string) {
 	t.Helper()
-	response := f.run(t, job.attemptID, job.providerInvocationID, opencode.ExecuteResponse{Accepted: true, OutputText: output}, nil)
+	response := f.run(t, job.attemptID, job.providerInvocationID, opencode.ExecuteResponse{OutputText: output}, nil)
 	applyExecuteResponseToAsyncResult(job, response, nil)
 	job.outcome = normalizeExecutionOutcome(job.outcome, nil)
 }

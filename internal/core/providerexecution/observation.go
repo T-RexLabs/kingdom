@@ -2,13 +2,9 @@ package providerexecution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"math/big"
 	"strings"
-	"time"
 
 	"kingdom/internal/core/errorcatalog"
 )
@@ -118,53 +114,6 @@ type InvocationToolObservation struct {
 	ID     string `json:"id"`
 	Name   string `json:"name,omitempty"`
 	Status string `json:"status,omitempty"`
-}
-
-// RetryAtFromDiagnostics resolves the durable provider retry contract. An
-// absolute retry_at is authoritative when both forms are present.
-func RetryAtFromDiagnostics(raw string, occurredAt time.Time) *time.Time {
-	var diagnostics map[string]any
-	if json.Unmarshal([]byte(raw), &diagnostics) != nil {
-		return nil
-	}
-	if value, ok := diagnostics["retry_at"].(string); ok {
-		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil {
-			parsed = parsed.UTC()
-			return &parsed
-		}
-	}
-	if value, ok := diagnostics["retry_after_ms"].(float64); ok {
-		delay, valid := RetryAfterDurationFromMilliseconds(value)
-		if !valid {
-			return nil
-		}
-		parsed := occurredAt.UTC().Add(delay)
-		return &parsed
-	}
-	return nil
-}
-
-// RetryAfterDurationFromMilliseconds converts an untrusted provider delay
-// without rounding it down or overflowing time.Duration.
-func RetryAfterDurationFromMilliseconds(value float64) (time.Duration, bool) {
-	if value < 0 || math.IsInf(value, 0) || math.IsNaN(value) {
-		return 0, false
-	}
-
-	// Float multiplication loses precision near MaxInt64. Convert the exact
-	// float representation to nanoseconds and round up, preserving a provider
-	// minimum delay even at the duration boundary.
-	milliseconds := new(big.Rat).SetFloat64(value)
-	nanoseconds := new(big.Rat).Mul(milliseconds, big.NewRat(int64(time.Millisecond), 1))
-	durationNS, remainder := new(big.Int), new(big.Int)
-	durationNS.QuoRem(nanoseconds.Num(), nanoseconds.Denom(), remainder)
-	if remainder.Sign() != 0 {
-		durationNS.Add(durationNS, big.NewInt(1))
-	}
-	if durationNS.Sign() < 0 || !durationNS.IsInt64() {
-		return 0, false
-	}
-	return time.Duration(durationNS.Int64()), true
 }
 
 type InvalidServerResponseObservationError struct {

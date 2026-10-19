@@ -644,7 +644,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
 		ProviderService:            providerService,
-		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, 10*time.Minute),
+		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, api.ProviderModelCatalogTTL),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
@@ -734,8 +734,9 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	// Warm the provider surfaces the first operator would otherwise wait on:
-	// listing OpenCode models, and OpenCode's own one-time database and agent
-	// resolution. It runs beside the listener rather than before it, because
+	// listing OpenCode models, which also starts the shared OpenCode server
+	// that every request then reuses. It runs beside the listener rather than
+	// before it, because
 	// readiness must not wait on OpenCode — a slow or broken provider has to
 	// leave the operator with a running Kingdom that can explain itself, not
 	// with a summon that hangs. For the same reason it reports through the log

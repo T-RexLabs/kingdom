@@ -23,7 +23,7 @@ func newTestBridge(t *testing.T, bound *boundRun) (*commandBridge, *[]int) {
 	bridge := newCommandBridge(bound.authority, runner, os.Environ())
 	req := ExecuteRequest{}
 	ordinals := bound.guardianRecorder(&req, bound.attempt, bound.invoke)
-	if err := bridge.register(bound.identity, &commandRegistration{workspace: bound.workspace, ownership: req.OnProcessGuardOwnership, quiescence: req.OnProcessGuardQuiescence}); err != nil {
+	if err := bridge.register(bound.identity, &commandRegistration{workspace: bound.workspace, ownership: req.OnCommandGuardianOwnership, quiescence: req.OnCommandGuardianQuiescence}); err != nil {
 		t.Fatal(err)
 	}
 	return bridge, ordinals
@@ -174,7 +174,7 @@ func TestCommandRefusedAtGuardianAdmissionNeverRanAndClosesItsClaim(t *testing.T
 	bridge, _ := newTestBridge(t, bound)
 	// Cancellation closes admission in the database before the guardian's
 	// ownership is acknowledged, so the acknowledgement is refused.
-	bridge.registrations[bound.identity].ownership = func(ctx context.Context, _ ProcessGuardOwnership) error {
+	bridge.registrations[bound.identity].ownership = func(ctx context.Context, _ CommandGuardianOwnership) error {
 		if err := bound.authority.CloseAdmission(ctx, bound.identity); err != nil {
 			return err
 		}

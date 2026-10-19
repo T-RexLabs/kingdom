@@ -826,7 +826,7 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 
 func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	// A request that is still running a command cannot also have a terminal, so
 	// the completed handoff belongs to another request. The guarded attempt is
@@ -901,7 +901,7 @@ func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.
 
 func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	h.addPendingGuardEvidence(t, 2)
 	const blockedGuardID = "guard_terminal_handoff_002"
@@ -912,7 +912,7 @@ func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T
 	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 3, "2026-03-01T12:00:04Z")
 
 	rt := &Runtime{orchestrator: h.loop}
-	rt.orchestrator.processGuardAbsent = func(guard executionstore.ProviderProcessGuard) bool {
+	rt.orchestrator.commandGuardianAbsent = func(guard executionstore.ProviderCommandGuardian) bool {
 		return guard.GuardID != blockedGuardID
 	}
 	rt.beginStartupRecovery()
@@ -962,15 +962,15 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 		name                string
 		seed                func(*testing.T, terminalHandoffHarness, int)
 		count               func(*testing.T, terminalHandoffHarness) int
-		processGuardRoot    bool
+		commandGuardianRoot bool
 		wantAfterInitial    int
 		wantAfterFirstCycle int
 	}{
 		{
-			name:             "provider process guards",
-			processGuardRoot: true,
+			name:                "provider command guardians",
+			commandGuardianRoot: true,
 			seed: func(t *testing.T, h terminalHandoffHarness, items int) {
-				h.loop.processGuardRuntimeRoot = h.runtimeDir
+				h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 				for index := 1; index <= items; index++ {
 					h.addPendingGuardEvidence(t, index)
 				}
@@ -978,7 +978,7 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 			count: func(t *testing.T, h terminalHandoffHarness) int {
 				var count int
 				if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&count); err != nil {
-					t.Fatalf("count quiescent process guards: %v", err)
+					t.Fatalf("count quiescent command guardians: %v", err)
 				}
 				return count
 			},
@@ -1003,10 +1003,10 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new runtime: %v", err)
 			}
-			if tc.processGuardRoot {
-				rt.orchestrator.processGuardRuntimeRoot = h.runtimeDir
+			if tc.commandGuardianRoot {
+				rt.orchestrator.commandGuardianRuntimeRoot = h.runtimeDir
 			} else {
-				rt.orchestrator.processGuardRuntimeRoot = ""
+				rt.orchestrator.commandGuardianRuntimeRoot = ""
 			}
 			rt.beginStartupRecovery()
 			if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
@@ -4808,7 +4808,7 @@ func TestStartAsyncExecutionPersistsTerminalHandoffAfterDispatchContextCancellat
 	h.requests.respondWith(responderFunc(func(ctx context.Context, _ opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 		close(running)
 		<-ctx.Done()
-		return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
+		return opencode.ExecuteResponse{OutputText: `{"summary":"ok"}`}, nil
 	}))
 	ctx, cancel := context.WithCancel(context.Background())
 	h.loop.startAsyncExecution(ctx, job)
@@ -5089,7 +5089,7 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{RequestIdentity: prepared.Identity, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_provider_replay", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: prepared.ProviderSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"first canonical response"}`}, nil)
+	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{OutputText: `{"summary":"first canonical response"}`}, nil)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime fs store: %v", err)
@@ -10126,7 +10126,7 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 	seedOpenProviderInvocationForAttempt(t, execStore, requests, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerInvocationID, "2026-03-01T12:00:00Z")
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', launch_started_at = '2026-03-01T12:00:03Z', started_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:work_intake:1'`)
 	const outputText = "WorkOrder intake completed despite telemetry failure."
-	response := requests.run(t, attemptID, providerInvocationID, opencode.ExecuteResponse{Accepted: true, OutputText: outputText}, nil)
+	response := requests.run(t, attemptID, providerInvocationID, opencode.ExecuteResponse{OutputText: outputText}, nil)
 
 	closedEventsDB := openTestDB(t)
 	if err := closedEventsDB.Close(); err != nil {
@@ -10869,7 +10869,7 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		t.Fatalf("load canonical execution role %q: %v", attemptID, err)
 	}
 	settlementOutcome := executionstore.ProviderCompletionOutcomeSuccess
-	answer, answerErr := opencode.ExecuteResponse{Accepted: true, OutputText: outputText}, error(nil)
+	answer, answerErr := opencode.ExecuteResponse{OutputText: outputText}, error(nil)
 	switch strings.TrimSpace(stateValue) {
 	case "committed_failure":
 		settlementOutcome = executionstore.ProviderCompletionOutcomeFailed
@@ -12965,7 +12965,7 @@ type errorMetadataExecutionAdapter struct {
 }
 
 func (a *timeoutCancelObserverAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"noop"}`}, nil
+	return opencode.ExecuteResponse{OutputText: `{"summary":"noop"}`}, nil
 }
 
 func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.CancelRequest) error {
@@ -12995,7 +12995,6 @@ func (a *cancellationCompletionRaceAdapter) Execute(context.Context, opencode.Ex
 	<-a.cancelled
 	usage := opencode.TokenUsage{InputTokens: 13, OutputTokens: 8, TotalTokens: 21, ReasoningTokens: 5}
 	return opencode.ExecuteResponse{
-		Accepted:          true,
 		OutputText:        `{"summary":"provider completed while timeout cancellation returned"}`,
 		Tokens:            usage,
 		StreamObservation: opencode.InvocationStreamObservation{Tokens: usage},
@@ -13048,7 +13047,7 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	return opencode.ExecuteResponse{Accepted: true, OutputText: outputText}, nil
+	return opencode.ExecuteResponse{OutputText: outputText}, nil
 }
 
 func (a *sequenceExecutionAdapter) callsCount() int {
@@ -13136,7 +13135,7 @@ func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req openco
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	return opencode.ExecuteResponse{Accepted: true, OutputText: outputText}, nil
+	return opencode.ExecuteResponse{OutputText: outputText}, nil
 }
 
 func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
@@ -13153,7 +13152,7 @@ func (a *errorMetadataExecutionAdapter) Execute(context.Context, opencode.Execut
 
 // interruptedResponse is what a request reports after it was interrupted.
 func interruptedResponse() opencode.ExecuteResponse {
-	return opencode.ExecuteResponse{Accepted: true, StreamObservation: opencode.InvocationStreamObservation{Cancelled: true}}
+	return opencode.ExecuteResponse{StreamObservation: opencode.InvocationStreamObservation{Cancelled: true}}
 }
 
 func newBlockingFirstExecutionAdapter() *blockingFirstExecutionAdapter {
@@ -13183,7 +13182,7 @@ func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, _ opencode.
 		default:
 		}
 	}
-	return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
+	return opencode.ExecuteResponse{OutputText: `{"summary":"ok"}`}, nil
 }
 
 func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {

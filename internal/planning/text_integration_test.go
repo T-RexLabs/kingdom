@@ -48,7 +48,7 @@ func (a *stagedPlannerAdapter) Execute(ctx context.Context, req opencode.Execute
 		DiagnosticContent:       []providerexecution.ContentReference{diagnostic.Reference},
 		StagedDiagnosticContent: []providerexecution.StagedContent{diagnostic},
 	}
-	response := opencode.ExecuteResponse{Accepted: true, ProviderSessionID: prepared.ProviderSessionID}
+	response := opencode.ExecuteResponse{ProviderSessionID: prepared.ProviderSessionID}
 	if a.interrupted {
 		interrupted, err := providerledger.TerminalObservation(ctx, prepared, req.InvocationID, providerexecution.RequestOutcomeInterrupted)
 		observation.Request, observation.Cancelled = interrupted.Request, interrupted.Cancelled

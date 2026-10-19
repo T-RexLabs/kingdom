@@ -788,7 +788,7 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 		t.Fatalf("activate pending provider invocation: %v", err)
 	}
 	newRequestFixture(db, nil).claimCommand(t, "pinv_worktree_quiescence")
-	if _, err := execStore.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{GuardID: "guard_worktree_quiescence", ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "guardian", ChildPID: 2, ChildIdentityToken: "child", TreeID: "2", TreeIdentityToken: "child", QuiescenceCapability: "capability", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, StartedAt: quarantinedAt.Format(time.RFC3339Nano), AcknowledgedAt: quarantinedAt.Format(time.RFC3339Nano)}); err != nil {
+	if _, err := execStore.AcknowledgeProviderCommandGuardian(context.Background(), executionstore.AcknowledgeProviderCommandGuardianRequest{GuardID: "guard_worktree_quiescence", ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "guardian", ChildPID: 2, ChildIdentityToken: "child", TreeID: "2", TreeIdentityToken: "child", QuiescenceCapability: "capability", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, StartedAt: quarantinedAt.Format(time.RFC3339Nano), AcknowledgedAt: quarantinedAt.Format(time.RFC3339Nano)}); err != nil {
 		t.Fatalf("acknowledge pending provider guard: %v", err)
 	}
 

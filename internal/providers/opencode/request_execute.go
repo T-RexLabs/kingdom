@@ -41,7 +41,7 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (ExecuteRespo
 	if prepared == nil {
 		return ExecuteResponse{}, fmt.Errorf("provider invocation %s was not prepared", req.InvocationID)
 	}
-	if (req.OnProcessGuardOwnership == nil) != (req.OnProcessGuardQuiescence == nil) {
+	if (req.OnCommandGuardianOwnership == nil) != (req.OnCommandGuardianQuiescence == nil) {
 		return ExecuteResponse{}, fmt.Errorf("command guardian callbacks must be set together")
 	}
 	prepared.mu.Lock()
@@ -99,8 +99,8 @@ func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err 
 	if err != nil {
 		return e.abandon(ctx, err)
 	}
-	if e.req.OnProcessGuardOwnership != nil {
-		registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnProcessGuardOwnership, quiescence: e.req.OnProcessGuardQuiescence}
+	if e.req.OnCommandGuardianOwnership != nil {
+		registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnCommandGuardianOwnership, quiescence: e.req.OnCommandGuardianQuiescence}
 		if err := runtime.commands.register(e.identity(), registration); err != nil {
 			return ExecuteResponse{}, err
 		}
@@ -135,9 +135,6 @@ func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err 
 		return e.abandon(ctx, cause)
 	}
 	invokedAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if e.req.OnProviderSession != nil {
-		e.req.OnProviderSession(e.identity().SessionID)
-	}
 	if e.req.OnInvocationStarted != nil {
 		e.req.OnInvocationStarted()
 	}
@@ -466,7 +463,7 @@ func (e *execution) response(ctx context.Context, verified protocol.Verified, ev
 		observation.ProviderErrorCode, observation.ProviderErrorStatus = failure.Code, failure.Status
 	}
 	response := ExecuteResponse{
-		Accepted: true, Tokens: verified.Tokens, ProviderSessionID: e.identity().SessionID,
+		Tokens: verified.Tokens, ProviderSessionID: e.identity().SessionID,
 		ProviderInvocationID: e.req.InvocationID, ProviderInvocationAt: invokedAt,
 	}
 	if terminal.Text != nil {

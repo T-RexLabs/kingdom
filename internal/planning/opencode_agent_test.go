@@ -192,30 +192,6 @@ func testPromptText(input AgentContext, write func(context.Context, io.Writer, A
 	return out.String()
 }
 
-func TestOpenCodeAgentCarriesProviderDiagnosticsMetadata(t *testing.T) {
-	adapter := &recordingPlannerAdapter{output: "Planner response", adjust: func(response *opencode.ExecuteResponse) {
-		response.ProviderDiagnosticsJSON = ` {"stream":{"events":4}} `
-	}}
-	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
-
-	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{PromptCatalog: testPromptCatalog(t),
-		SessionID:          "session-1",
-		ProjectRoot:        t.TempDir(),
-		ModelSelection:     PlannerModelSelection{Model: "openai/gpt-5.6-luna", ThinkingEffort: "none"},
-		ProviderInvocation: adapter.invocation(""),
-	}, nil)
-	defer turn.Close()
-	if err != nil {
-		t.Fatalf("planner invocation: %v", err)
-	}
-	if turn.Metadata.ProviderDiagnosticsJSON != `{"stream":{"events":4}}` {
-		t.Fatalf("expected provider diagnostics metadata to be carried, got %q", turn.Metadata.ProviderDiagnosticsJSON)
-	}
-	if adapter.request.Variant != "none" {
-		t.Fatalf("expected planner thinking effort to reach OpenCode as variant, got %q", adapter.request.Variant)
-	}
-}
-
 func TestOpenCodeAgentRequestsTheProjectWorkspace(t *testing.T) {
 	projectRoot := t.TempDir()
 	adapter := &recordingPlannerAdapter{}
@@ -232,30 +208,6 @@ func TestOpenCodeAgentRequestsTheProjectWorkspace(t *testing.T) {
 	}
 	if adapter.request.WorkspacePath != projectRoot {
 		t.Fatalf("expected workspace path %q, got %q", projectRoot, adapter.request.WorkspacePath)
-	}
-}
-
-func TestOpenCodeAgentCarriesProviderDiagnosticsMetadataOnFailure(t *testing.T) {
-	adapter := &recordingPlannerAdapter{
-		response: opencode.ExecuteResponse{
-			OutputText:              "partial response",
-			ProviderDiagnosticsJSON: `{"stream":{"events":2}}`,
-		},
-		err: contextError("provider failed"),
-	}
-	agent := NewOpenCodeAgent(adapter, func(string) string { return "attempt-1" })
-
-	_, err := agent.ContinueTurnStream(context.Background(), AgentContext{PromptCatalog: testPromptCatalog(t),
-		SessionID:          "session-1",
-		ProjectRoot:        t.TempDir(),
-		ProviderInvocation: adapter.invocation(""),
-	}, nil)
-	if err == nil {
-		t.Fatal("expected planner invocation failure")
-	}
-	metadata := providerMetadataFromError(err)
-	if metadata.ProviderDiagnosticsJSON != `{"stream":{"events":2}}` {
-		t.Fatalf("expected failure diagnostics metadata to be carried, got %q", metadata.ProviderDiagnosticsJSON)
 	}
 }
 

@@ -82,18 +82,18 @@ func TestProviderContentHandoffImportIsAtomicVerifiedAndLeaseFenced(t *testing.T
 }
 
 func TestSettlementChecksEveryDurableContinuationGuardBeyondThree(t *testing.T) {
-	s, db, req := providerProcessGuardFixture(t)
-	var first AcknowledgeProviderProcessGuardRequest
+	s, db, req := providerCommandGuardianFixture(t)
+	var first AcknowledgeProviderCommandGuardianRequest
 	for ordinal := int64(1); ordinal <= 7; ordinal++ {
-		ack := providerProcessGuardAcknowledgement(t, s, req, fmt.Sprintf("continuation-guard-%d", ordinal), ordinal)
-		if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+		ack := providerCommandGuardianAcknowledgement(t, s, req, fmt.Sprintf("continuation-guard-%d", ordinal), ordinal)
+		if _, err := s.AcknowledgeProviderCommandGuardian(context.Background(), ack); err != nil {
 			t.Fatal(err)
 		}
 		if ordinal == 1 {
 			first = ack
 			continue
 		}
-		if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(ack)); err != nil {
+		if _, err := s.IngestProviderCommandGuardianQuiescence(context.Background(), providerCommandGuardianQuiescenceProof(ack)); err != nil {
 			t.Fatal(err)
 		}
 		completeBoundCommand(t, s, ack.ProviderInvocationID, ack.GuardID, ordinal)
@@ -110,7 +110,7 @@ func TestSettlementChecksEveryDurableContinuationGuardBeyondThree(t *testing.T) 
 	if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
 		t.Fatal("unquiescent lineage partially settled")
 	}
-	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(first)); err != nil {
+	if _, err := s.IngestProviderCommandGuardianQuiescence(context.Background(), providerCommandGuardianQuiescenceProof(first)); err != nil {
 		t.Fatal(err)
 	}
 	completeBoundCommand(t, s, first.ProviderInvocationID, first.GuardID, 1)
@@ -122,13 +122,13 @@ func TestSettlementChecksEveryDurableContinuationGuardBeyondThree(t *testing.T) 
 func TestSettlementRejectsEarlierGuardLeaseExitAndOrdinalConflicts(t *testing.T) {
 	for _, mutation := range []string{"lease_version=lease_version+1", "exit_code=2", "command_ordinal=8"} {
 		t.Run(mutation, func(t *testing.T) {
-			s, db, req := providerProcessGuardFixture(t)
+			s, db, req := providerCommandGuardianFixture(t)
 			for ordinal := int64(1); ordinal <= 7; ordinal++ {
-				ack := providerProcessGuardAcknowledgement(t, s, req, fmt.Sprintf("guard-%d", ordinal), ordinal)
-				if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
+				ack := providerCommandGuardianAcknowledgement(t, s, req, fmt.Sprintf("guard-%d", ordinal), ordinal)
+				if _, err := s.AcknowledgeProviderCommandGuardian(context.Background(), ack); err != nil {
 					t.Fatal(err)
 				}
-				if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), providerProcessGuardQuiescenceProof(ack)); err != nil {
+				if _, err := s.IngestProviderCommandGuardianQuiescence(context.Background(), providerCommandGuardianQuiescenceProof(ack)); err != nil {
 					t.Fatal(err)
 				}
 				completeBoundCommand(t, s, ack.ProviderInvocationID, ack.GuardID, ordinal)
@@ -588,10 +588,10 @@ func TestStoreSettleProviderCompletionAndTerminalRejectsInvalidLeaseWithoutParti
 
 func TestStoreSettleProviderCompletionAndTerminalRequiresQuiescentCleanGuards(t *testing.T) {
 	acknowledge := func(t *testing.T, s *Store, req *SettleProviderCompletionAndTerminalRequest) {
-		acknowledgeProviderProcessGuard(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
+		acknowledgeProviderCommandGuardian(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
 	}
 	acknowledgeQuiescent := func(t *testing.T, s *Store, req *SettleProviderCompletionAndTerminalRequest) {
-		acknowledgeQuiescentProviderProcessGuard(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
+		acknowledgeQuiescentProviderCommandGuardian(t, s, req.Settlement.ProviderInvocationID, req.Settlement.AttemptID, req.Settlement.RunID, req.Settlement.NodeRunID, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion)
 	}
 	tests := []struct {
 		name    string
@@ -1546,10 +1546,10 @@ func attachTerminalHandoffToSettlement(t *testing.T, store *Store, req *SettlePr
 	req.TerminalHandoffID = result.Handoff.HandoffID
 }
 
-func acknowledgeProviderProcessGuard(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
+func acknowledgeProviderCommandGuardian(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
 	t.Helper()
 	claimBoundCommands(t, s, invocationID, 1)
-	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), AcknowledgeProviderProcessGuardRequest{
+	if _, err := s.AcknowledgeProviderCommandGuardian(context.Background(), AcknowledgeProviderCommandGuardianRequest{
 		GuardID:               "guard_" + sanitizeProviderSettlementToken(invocationID),
 		ProviderInvocationID:  invocationID,
 		AttemptID:             attemptID,
@@ -1569,16 +1569,16 @@ func acknowledgeProviderProcessGuard(t *testing.T, s *Store, invocationID, attem
 		StartedAt:             "2026-03-01T12:00:02Z",
 		AcknowledgedAt:        "2026-03-01T12:00:03Z",
 	}); err != nil {
-		t.Fatalf("acknowledge provider process guard: %v", err)
+		t.Fatalf("acknowledge provider command guardian: %v", err)
 	}
 }
 
-func acknowledgeQuiescentProviderProcessGuard(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
+func acknowledgeQuiescentProviderCommandGuardian(t *testing.T, s *Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64) {
 	t.Helper()
-	acknowledgeProviderProcessGuard(t, s, invocationID, attemptID, runID, nodeRunID, leaseOwner, leaseVersion)
+	acknowledgeProviderCommandGuardian(t, s, invocationID, attemptID, runID, nodeRunID, leaseOwner, leaseVersion)
 	guardID := "guard_" + sanitizeProviderSettlementToken(invocationID)
 	evidence := `{"type":"result","result":{"GuardID":"` + guardID + `","ChildPID":1002,"TreeID":1002,"Platform":"unix_process_group","Quiescent":true,"ExitCode":0,"ExitSignal":0,"Forced":false,"FailureCode":"","FailureText":""}}`
-	if _, err := s.IngestProviderProcessGuardQuiescence(context.Background(), IngestProviderProcessGuardQuiescenceRequest{
+	if _, err := s.IngestProviderCommandGuardianQuiescence(context.Background(), IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID:               guardID,
 		ProviderInvocationID:  invocationID,
 		AttemptID:             attemptID,
@@ -1597,7 +1597,7 @@ func acknowledgeQuiescentProviderProcessGuard(t *testing.T, s *Store, invocation
 		EvidenceSHA256:        sha256Hex(evidence),
 		EvidenceJSON:          evidence,
 	}); err != nil {
-		t.Fatalf("ingest provider process guard quiescence: %v", err)
+		t.Fatalf("ingest provider command guardian quiescence: %v", err)
 	}
 	completeBoundCommand(t, s, invocationID, guardID, 1)
 }

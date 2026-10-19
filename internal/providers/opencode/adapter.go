@@ -1,9 +1,12 @@
-// Package opencode provides the OpenCode execution adapter surface.
+// Package opencode runs Kingdom's provider work on one shared stock OpenCode V2
+// server.
 //
-// It defines the request and stream contract the runtime uses to dispatch work,
-// includes the session-backed adapter that speaks to the OpenCode binary, and
-// keeps a small in-memory implementation for tests that need provider behavior
-// without an external process.
+// Provider is the contract the runtime dispatches through: a request is
+// prepared, bound to its canonical invocation, executed, and settled from the
+// evidence the server returns. Service is the Provider that owns the shared V2
+// server and serves every workspace through it. FixtureProvider is the
+// deterministic in-memory Provider for tests that need provider behavior
+// without a server.
 package opencode
 
 import (
@@ -19,13 +22,7 @@ import (
 	"kingdom/internal/processguardian"
 )
 
-const (
-	AttemptEventTypeStarted   = "attempt.started"
-	AttemptEventTypeProgress  = "attempt.progress"
-	AttemptEventTypeSucceeded = "attempt.succeeded"
-	AttemptEventTypeFailed    = "attempt.failed"
-	AttemptEventTypeCancelled = "attempt.cancelled"
-)
+const AttemptEventTypeProgress = "attempt.progress"
 
 // Provider runs requests on a shared model server. Prepare fixes a request's
 // provider identity without sending work; the caller binds that identity to its
@@ -40,21 +37,17 @@ type Provider interface {
 }
 
 type ExecuteRequest struct {
-	CompletionMode      CompletionMode `json:"completion_mode"`
-	SessionID           string         `json:"session_id"`
-	ProviderSessionID   string         `json:"provider_session_id,omitempty"`
-	AttemptID           string         `json:"attempt_id"`
-	RunID               string         `json:"run_id"`
-	NodeRunID           string         `json:"node_run_id"`
-	Model               string         `json:"model,omitempty"`
-	Variant             string         `json:"variant,omitempty"`
-	Agent               string         `json:"agent,omitempty"`
-	ForceNewSession     bool           `json:"force_new_session,omitempty"`
-	WorkspacePath       string         `json:"workspace_path"`
-	ProjectRootBoundary string         `json:"-"`
-	ConfigDir           string         `json:"config_dir,omitempty"`
-	DatabasePath        string         `json:"database_path,omitempty"`
-	InlineConfigContent string         `json:"-"`
+	SessionID           string `json:"session_id"`
+	ProviderSessionID   string `json:"provider_session_id,omitempty"`
+	AttemptID           string `json:"attempt_id"`
+	RunID               string `json:"run_id"`
+	NodeRunID           string `json:"node_run_id"`
+	Model               string `json:"model,omitempty"`
+	Variant             string `json:"variant,omitempty"`
+	Agent               string `json:"agent,omitempty"`
+	ForceNewSession     bool   `json:"force_new_session,omitempty"`
+	WorkspacePath       string `json:"workspace_path"`
+	ProjectRootBoundary string `json:"-"`
 	// System is the exact instruction pinned into the request's managed
 	// profile. It is the only instruction channel Kingdom authors.
 	System string `json:"-"`
@@ -67,7 +60,7 @@ type ExecuteRequest struct {
 	StreamInactivityTimeout time.Duration `json:"-"`
 	Prompt                  string        `json:"prompt"`
 	// OpenPrompt and WritePrompt are replayable sources: each Execute opens or
-	// invokes its source once, closes opened readers, and streams to stdin. Set
+	// invokes its source once, closes opened readers, and sends the text. Set
 	// exactly one of Prompt, OpenPrompt, or WritePrompt. Writers must honor ctx.
 	OpenPrompt  func(context.Context) (io.ReadCloser, error) `json:"-"`
 	WritePrompt func(context.Context, io.Writer) error       `json:"-"`
@@ -76,34 +69,25 @@ type ExecuteRequest struct {
 	OpenContinuationPrompt func(context.Context) (io.ReadCloser, error) `json:"-"`
 	OccurredAt             string                                       `json:"occurred_at"`
 	InvocationID           string                                       `json:"invocation_id,omitempty"`
-	InvocationIssuedAt     string                                       `json:"invocation_issued_at,omitempty"`
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
 	OnProgress func(text string) `json:"-"`
 
-	// OnProviderSession is called when OpenCode emits a provider-native session id.
-	// It may be called more than once if the provider session rotates during retries.
-	OnProviderSession func(sessionID string) `json:"-"`
-
-	// OnProcessStarted is called after the provider command successfully starts
-	// but before stream decoding begins.
-	OnProcessStarted func() `json:"-"`
-
 	// OnInvocationStarted is called once the provider has durably accepted the
 	// request, which is when the shared server begins working on it.
 	OnInvocationStarted func() `json:"-"`
 
-	// OnProcessGuardOwnership durably records guardian ownership before the
+	// OnCommandGuardianOwnership durably records guardian ownership before the
 	// provider launch gate is released. The raw quiescence capability is limited
 	// to this orchestration callback and is never included in diagnostics.
 	// Both guardian callbacks are set together, and only for requests whose
 	// profile may run commands; a request without them refuses every command.
-	OnProcessGuardOwnership func(context.Context, ProcessGuardOwnership) error `json:"-"`
+	OnCommandGuardianOwnership func(context.Context, CommandGuardianOwnership) error `json:"-"`
 
-	// OnProcessGuardQuiescence records the guardian's terminal proof after the
+	// OnCommandGuardianQuiescence records the guardian's terminal proof after the
 	// command tree is quiescent and its streams have been drained.
-	OnProcessGuardQuiescence func(context.Context, ProcessGuardQuiescence) error `json:"-"`
+	OnCommandGuardianQuiescence func(context.Context, CommandGuardianQuiescence) error `json:"-"`
 
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
@@ -118,29 +102,19 @@ type GuardianRunner interface {
 	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
 }
 
-type ProcessGuardOwnership struct {
+type CommandGuardianOwnership struct {
 	CommandOrdinal int
 	StartedAt      string
 	AcknowledgedAt string
 	Ownership      processguardian.Ownership
 }
 
-type ProcessGuardQuiescence struct {
+type CommandGuardianQuiescence struct {
 	CommandOrdinal int
 	ExitedAt       string
 	QuiescentAt    string
 	Result         processguardian.Result
 }
-
-// CompletionMode defines the single, server-owned authority a provider
-// invocation uses to settle an attempt.
-type CompletionMode string
-
-const (
-	CompletionModeServerResponse CompletionMode = "server_response"
-)
-
-type ExecuteActivityKind = string
 
 const (
 	ExecuteActivityKindMessage   = "message"
@@ -177,18 +151,16 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted   bool   `json:"accepted"`
 	OutputText string `json:"output_text,omitempty"`
 	// Referenced answers are opened with providerexecution.OpenTerminalText.
 	// OutputPreview is bounded display data, never terminal authority.
-	OutputPreview           string                      `json:"output_preview,omitempty"`
-	Tokens                  TokenUsage                  `json:"tokens"`
-	ProviderSessionID       string                      `json:"provider_session_id,omitempty"`
-	ProviderInvocationID    string                      `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt    string                      `json:"provider_invocation_at,omitempty"`
-	Outcome                 ExecutionOutcome            `json:"outcome,omitempty"`
-	ProviderDiagnosticsJSON string                      `json:"provider_diagnostics_json,omitempty"`
-	StreamObservation       InvocationStreamObservation `json:"stream_observation"`
+	OutputPreview        string                      `json:"output_preview,omitempty"`
+	Tokens               TokenUsage                  `json:"tokens"`
+	ProviderSessionID    string                      `json:"provider_session_id,omitempty"`
+	ProviderInvocationID string                      `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt string                      `json:"provider_invocation_at,omitempty"`
+	Outcome              ExecutionOutcome            `json:"outcome,omitempty"`
+	StreamObservation    InvocationStreamObservation `json:"stream_observation"`
 }
 
 type CancelRequest struct {
@@ -196,19 +168,6 @@ type CancelRequest struct {
 	AttemptID  string `json:"attempt_id"`
 	Reason     string `json:"reason"`
 	OccurredAt string `json:"occurred_at"`
-}
-
-type StreamRequest struct {
-	SessionID string
-	AttemptID string
-}
-
-type AttemptStreamEvent struct {
-	AttemptID   string `json:"attempt_id"`
-	Seq         int    `json:"seq"`
-	EventType   string `json:"event_type"`
-	PayloadJSON string `json:"payload_json"`
-	OccurredAt  string `json:"occurred_at"`
 }
 
 type AttemptNotFoundError struct {

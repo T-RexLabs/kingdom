@@ -48,7 +48,7 @@ func TestPlanningRetryWaitsForDueTimeAndUsesFreshProviderSession(t *testing.T) {
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	clock := newRetryTestClock(time.Date(2026, 6, 2, 12, 0, 0, 123456789, time.UTC))
-	agent := &retrySequenceAgent{observed: make(chan struct{}, 2), diagnostics: `{"retry_after_ms":10000}`}
+	agent := &retrySequenceAgent{observed: make(chan struct{}, 2)}
 	service := NewServiceWithRetryEngine(store, agent, projectRoot, clock.String, deterministicID(), loadPlanningRetryEngine(t))
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 
@@ -81,8 +81,8 @@ func TestPlanningRetryWaitsForDueTimeAndUsesFreshProviderSession(t *testing.T) {
 	if err := db.QueryRow(`SELECT due_at FROM retry_decisions WHERE planning_operation_id = ?`, stored.OperationID).Scan(&dueAt); err != nil {
 		t.Fatal(err)
 	}
-	if dueAt != clock.Now().Add(10*time.Second).Format(time.RFC3339Nano) {
-		t.Fatalf("retry due_at=%s, want provider hint max at %s", dueAt, clock.Now().Add(10*time.Second).Format(time.RFC3339Nano))
+	if want := clock.Now().Add(planningRetryDelay).Format(time.RFC3339Nano); dueAt != want {
+		t.Fatalf("retry due_at=%s, want the policy backoff at %s", dueAt, want)
 	}
 	if err := service.RecoverOperations(context.Background()); err != nil {
 		t.Fatal(err)
@@ -215,7 +215,7 @@ func TestPlanningRetryWakeStartsAtPersistedDueTimeAfterRecovery(t *testing.T) {
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	clock := newRetryTestClock(time.Date(2026, 6, 2, 14, 0, 0, 0, time.UTC))
-	first := &retrySequenceAgent{observed: make(chan struct{}, 1), diagnostics: `{"retry_after_ms":10000}`}
+	first := &retrySequenceAgent{observed: make(chan struct{}, 1)}
 	service := NewServiceWithRetryEngine(store, first, projectRoot, clock.String, deterministicID(), loadPlanningRetryEngine(t))
 	session, err := service.CreateSession(context.Background(), "Retry", `{"model":"test-model"}`)
 	if err != nil {
@@ -241,13 +241,13 @@ func TestPlanningRetryWakeStartsAtPersistedDueTimeAfterRecovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	timer := timers.Next(t)
-	if timer.delay != 10*time.Second {
-		t.Fatalf("retry wake delay=%s, want 10s", timer.delay)
+	if timer.delay != planningRetryDelay {
+		t.Fatalf("retry wake delay=%s, want %s", timer.delay, planningRetryDelay)
 	}
 	if calls := second.callCount(); calls != 0 {
 		t.Fatalf("planner started before due time: calls=%d", calls)
 	}
-	clock.Set(clock.Now().Add(10 * time.Second))
+	clock.Set(clock.Now().Add(planningRetryDelay))
 	timer.Fire(clock.Now())
 	<-second.observed
 	if err := restarted.runner.Wait(context.Background()); err != nil {
@@ -353,7 +353,6 @@ type retrySequenceAgent struct {
 	sessions          []string
 	meaningfulFailure bool
 	observed          chan struct{}
-	diagnostics       string
 }
 
 type formalizeRetrySequenceAgent struct {
@@ -415,13 +414,12 @@ func (a *retrySequenceAgent) ContinueTurnStream(ctx context.Context, input Agent
 	}
 	meaningful := a.meaningfulFailure
 	observed := a.observed
-	diagnostics := a.diagnostics
 	a.mu.Unlock()
 	if observed != nil {
 		observed <- struct{}{}
 	}
 	if call == 1 {
-		metadata := ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timed out", ProviderDiagnosticsJSON: diagnostics, StreamObservation: opencode.InvocationStreamObservation{MeaningfulProgress: meaningful}}
+		metadata := ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timed out", StreamObservation: opencode.InvocationStreamObservation{MeaningfulProgress: meaningful}}
 		return AgentTurn{}, failProviderRequest(ctx, input.ProviderInvocation, metadata, errors.New("timed out"))
 	}
 	metadata, err := testSuccessMetadata(input, "Recovered response")
@@ -524,12 +522,17 @@ func (t *retryWakeTestTimer) Fire(now time.Time) {
 	}
 }
 
+// planningRetryDelay is the first backoff of the timeout retry class. The
+// engine is loaded without jitter so retry schedules are deterministic.
+const planningRetryDelay = time.Second
+
 func loadPlanningRetryEngine(t *testing.T) *retryengine.Engine {
 	t.Helper()
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join("..", "..", "policies", "retry_policy.yaml"), filepath.Join("..", "..", "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
+	policy.Defaults.JitterMode = retryengine.JitterModeNone
 	engine, err := retryengine.NewEngine(policy)
 	if err != nil {
 		t.Fatal(err)

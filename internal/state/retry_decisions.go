@@ -3,7 +3,6 @@ package state
 import (
 	"context"
 	"database/sql"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -62,7 +61,6 @@ type RetryDecision struct {
 	RetryIndex                 int
 	MaxRetries                 int
 	PolicyDelay                time.Duration
-	ProviderRetryAt            *time.Time
 	DueAt                      time.Time
 	DispatchState              RetryDispatchState
 	DispatchedAt               *time.Time
@@ -91,7 +89,6 @@ type RetryDecisionCreateRequest struct {
 	RetryIndex                 int
 	MaxRetries                 int
 	PolicyDelay                time.Duration
-	ProviderRetryAt            *time.Time
 	DueAt                      time.Time
 	CreatedAt                  time.Time
 	EscalationTarget           string
@@ -119,7 +116,6 @@ func normalizeRetryDecisionCreateRequest(req RetryDecisionCreateRequest) (RetryD
 		RetryIndex:                 req.RetryIndex,
 		MaxRetries:                 req.MaxRetries,
 		PolicyDelay:                req.PolicyDelay,
-		ProviderRetryAt:            normalizeRetryTime(req.ProviderRetryAt),
 		DueAt:                      req.DueAt.UTC(),
 		EscalationTarget:           strings.TrimSpace(req.EscalationTarget),
 		Resolution:                 RetryDecisionResolution(strings.TrimSpace(string(req.Resolution))),
@@ -143,9 +139,6 @@ func normalizeRetryDecisionCreateRequest(req RetryDecisionCreateRequest) (RetryD
 	}
 	if decision.DueAt.Before(decision.CreatedAt.Add(decision.PolicyDelay)) {
 		return RetryDecision{}, fmt.Errorf("due_at must not precede created_at plus policy_delay")
-	}
-	if decision.ProviderRetryAt != nil && decision.DueAt.Before(*decision.ProviderRetryAt) {
-		return RetryDecision{}, fmt.Errorf("due_at must not precede provider_retry_at")
 	}
 	switch decision.SubjectKind {
 	case RetrySubjectKindWorkOrderAttempt:
@@ -192,55 +185,17 @@ func insertRetryDecisionTx(ctx context.Context, tx *sql.Tx, req RetryDecisionCre
 	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO retry_decisions (
 		retry_decision_id, subject_kind, run_id, node_id, node_run_id, planning_operation_id, source_attempt_id, source_planning_invocation_id, target_node_run_id,
-		policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns, provider_retry_at,
+		policy_id, retry_class, error_code, operator_text, meaningful_progress, decision, retry_index, max_retries, policy_delay_ns,
 		due_at, dispatch_state, dispatched_at, escalation_target, resolution, resolved_at, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		decision.DecisionID, decision.SubjectKind, nullableRetryString(decision.RunID), nullableRetryString(decision.NodeID), nullableRetryString(decision.NodeRunID), nullableRetryString(decision.PlanningOperationID), nullableRetryString(decision.SourceAttemptID), nullableRetryString(decision.SourcePlanningInvocationID), nullableRetryString(decision.TargetNodeRunID),
-		decision.PolicyID, decision.RetryClass, decision.ErrorCode, decision.OperatorText, boolToSQLite(decision.MeaningfulProgress), decision.Decision, decision.RetryIndex, decision.MaxRetries, decision.PolicyDelay.Nanoseconds(), nullableRetryTime(decision.ProviderRetryAt),
+		decision.PolicyID, decision.RetryClass, decision.ErrorCode, decision.OperatorText, boolToSQLite(decision.MeaningfulProgress), decision.Decision, decision.RetryIndex, decision.MaxRetries, decision.PolicyDelay.Nanoseconds(),
 		retryTimeString(decision.DueAt), decision.DispatchState, nullableRetryTime(decision.DispatchedAt), decision.EscalationTarget, decision.Resolution, nullableRetryTime(decision.ResolvedAt), retryTimeString(decision.CreatedAt),
 	)
 	if err != nil {
 		return RetryDecision{}, fmt.Errorf("insert retry decision: %w", err)
 	}
 	return decision, nil
-}
-
-func scanRetryDecision(row *sql.Row) (RetryDecision, bool, error) {
-	var decision RetryDecision
-	var meaningfulProgress int
-	var policyDelayNS int64
-	var providerRetryAt, dispatchedAt, resolvedAt sql.NullString
-	var dueAt, createdAt string
-	err := row.Scan(
-		&decision.DecisionID, &decision.SubjectKind, &decision.RunID, &decision.NodeID, &decision.NodeRunID, &decision.PlanningOperationID, &decision.SourceAttemptID, &decision.SourcePlanningInvocationID, &decision.TargetNodeRunID,
-		&decision.PolicyID, &decision.RetryClass, &decision.ErrorCode, &decision.OperatorText, &meaningfulProgress, &decision.Decision, &decision.RetryIndex, &decision.MaxRetries, &policyDelayNS, &providerRetryAt,
-		&dueAt, &decision.DispatchState, &dispatchedAt, &decision.EscalationTarget, &decision.Resolution, &resolvedAt, &createdAt,
-	)
-	if errors.Is(err, sql.ErrNoRows) {
-		return RetryDecision{}, false, nil
-	}
-	if err != nil {
-		return RetryDecision{}, false, fmt.Errorf("scan retry decision: %w", err)
-	}
-	decision.MeaningfulProgress = meaningfulProgress == 1
-	decision.PolicyDelay = time.Duration(policyDelayNS)
-	var parseErr error
-	if decision.ProviderRetryAt, parseErr = parseNullableRetryTime(providerRetryAt); parseErr != nil {
-		return RetryDecision{}, false, parseErr
-	}
-	if decision.DueAt, parseErr = parseRetryTime(dueAt); parseErr != nil {
-		return RetryDecision{}, false, parseErr
-	}
-	if decision.DispatchedAt, parseErr = parseNullableRetryTime(dispatchedAt); parseErr != nil {
-		return RetryDecision{}, false, parseErr
-	}
-	if decision.ResolvedAt, parseErr = parseNullableRetryTime(resolvedAt); parseErr != nil {
-		return RetryDecision{}, false, parseErr
-	}
-	if decision.CreatedAt, parseErr = parseRetryTime(createdAt); parseErr != nil {
-		return RetryDecision{}, false, parseErr
-	}
-	return decision, true, nil
 }
 
 func normalizeRetryTime(value *time.Time) *time.Time {
@@ -268,17 +223,6 @@ func parseRetryTime(value string) (time.Time, error) {
 		return time.Time{}, fmt.Errorf("parse retry decision timestamp %q: %w", value, err)
 	}
 	return parsed.UTC(), nil
-}
-
-func parseNullableRetryTime(value sql.NullString) (*time.Time, error) {
-	if !value.Valid {
-		return nil, nil
-	}
-	parsed, err := parseRetryTime(value.String)
-	if err != nil {
-		return nil, err
-	}
-	return &parsed, nil
 }
 
 func boolToSQLite(value bool) int {

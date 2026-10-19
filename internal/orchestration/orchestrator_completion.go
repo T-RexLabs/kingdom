@@ -439,7 +439,6 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
 	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
 	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
-	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
 	result.providerStreamObservation = response.StreamObservation
 	result.outcome = response.Outcome
 	result.tokens = response.Tokens
@@ -560,11 +559,7 @@ func (o *orchestrationLoop) planAutomaticWorkOrderRetry(ctx context.Context, res
 	if err != nil {
 		return state.RetryDecisionCreateRequest{}, false, fmt.Errorf("parse automatic retry timestamp: %w", err)
 	}
-	providerRetryAt := providerexecution.RetryAtFromDiagnostics(result.providerDiagnosticsJSON, createdAt)
 	dueAt := createdAt.Add(plan.NextDelay)
-	if providerRetryAt != nil && providerRetryAt.After(dueAt) {
-		dueAt = *providerRetryAt
-	}
 	decision := state.RetryDecisionFailFast
 	if plan.ShouldRetry && !result.providerStreamObservation.MeaningfulProgress {
 		decision = state.RetryDecisionRetry
@@ -594,7 +589,6 @@ func (o *orchestrationLoop) planAutomaticWorkOrderRetry(ctx context.Context, res
 		RetryIndex:         retryIndex,
 		MaxRetries:         plan.MaxRetries,
 		PolicyDelay:        plan.NextDelay,
-		ProviderRetryAt:    providerRetryAt,
 		DueAt:              dueAt,
 		CreatedAt:          createdAt,
 		EscalationTarget:   plan.EscalationTarget,

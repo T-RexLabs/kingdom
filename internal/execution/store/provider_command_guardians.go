@@ -15,25 +15,25 @@ import (
 	"kingdom/internal/sqlitex"
 )
 
-const maxProviderProcessGuardEvidenceBytes = 64 << 10
+const maxProviderCommandGuardianEvidenceBytes = 64 << 10
 
-const providerProcessGuardCommitReadbackTimeout = 2 * time.Second
+const providerCommandGuardianCommitReadbackTimeout = 2 * time.Second
 
-type ProviderProcessGuardLifecycle string
+type ProviderCommandGuardianLifecycle string
 
 const (
-	ProviderProcessGuardLifecycleAcknowledged ProviderProcessGuardLifecycle = "acknowledged"
-	ProviderProcessGuardLifecycleQuiescent    ProviderProcessGuardLifecycle = "quiescent"
+	ProviderCommandGuardianLifecycleAcknowledged ProviderCommandGuardianLifecycle = "acknowledged"
+	ProviderCommandGuardianLifecycleQuiescent    ProviderCommandGuardianLifecycle = "quiescent"
 )
 
-type ProviderProcessGuard struct {
+type ProviderCommandGuardian struct {
 	GuardID                  string
 	ProviderInvocationID     string
 	AttemptID                string
 	RunID                    string
 	NodeRunID                string
 	CommandOrdinal           int64
-	Lifecycle                ProviderProcessGuardLifecycle
+	Lifecycle                ProviderCommandGuardianLifecycle
 	Platform                 string
 	GuardianPID              int64
 	GuardianIdentityToken    string
@@ -60,7 +60,7 @@ type ProviderProcessGuard struct {
 	UpdatedAt                string
 }
 
-type AcknowledgeProviderProcessGuardRequest struct {
+type AcknowledgeProviderCommandGuardianRequest struct {
 	GuardID               string
 	ProviderInvocationID  string
 	AttemptID             string
@@ -81,12 +81,12 @@ type AcknowledgeProviderProcessGuardRequest struct {
 	AcknowledgedAt        string
 }
 
-type AcknowledgeProviderProcessGuardResult struct {
-	Guard      ProviderProcessGuard
+type AcknowledgeProviderCommandGuardianResult struct {
+	Guard      ProviderCommandGuardian
 	Idempotent bool
 }
 
-type IngestProviderProcessGuardQuiescenceRequest struct {
+type IngestProviderCommandGuardianQuiescenceRequest struct {
 	GuardID                string
 	ProviderInvocationID   string
 	AttemptID              string
@@ -112,33 +112,33 @@ type IngestProviderProcessGuardQuiescenceRequest struct {
 	EvidenceJSON           string
 }
 
-type IngestProviderProcessGuardQuiescenceResult struct {
-	Guard      ProviderProcessGuard
+type IngestProviderCommandGuardianQuiescenceResult struct {
+	Guard      ProviderCommandGuardian
 	Idempotent bool
 }
 
-func (s *Store) AcknowledgeProviderProcessGuard(ctx context.Context, req AcknowledgeProviderProcessGuardRequest) (AcknowledgeProviderProcessGuardResult, error) {
-	var result AcknowledgeProviderProcessGuardResult
+func (s *Store) AcknowledgeProviderCommandGuardian(ctx context.Context, req AcknowledgeProviderCommandGuardianRequest) (AcknowledgeProviderCommandGuardianResult, error) {
+	var result AcknowledgeProviderCommandGuardianResult
 	_, err := sqlitex.Retry(ctx, func() error {
 		var retryErr error
-		result, retryErr = s.acknowledgeProviderProcessGuardOnce(ctx, req)
+		result, retryErr = s.acknowledgeProviderCommandGuardianOnce(ctx, req)
 		return retryErr
 	}, sqlitex.Options{})
 	return result, err
 }
 
-func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req AcknowledgeProviderProcessGuardRequest) (AcknowledgeProviderProcessGuardResult, error) {
-	result := AcknowledgeProviderProcessGuardResult{}
+func (s *Store) acknowledgeProviderCommandGuardianOnce(ctx context.Context, req AcknowledgeProviderCommandGuardianRequest) (AcknowledgeProviderCommandGuardianResult, error) {
+	result := AcknowledgeProviderCommandGuardianResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
 	}
-	normalized, err := normalizeAcknowledgeProviderProcessGuardRequest(req)
+	normalized, err := normalizeAcknowledgeProviderCommandGuardianRequest(req)
 	if err != nil {
 		return result, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return result, fmt.Errorf("begin provider process guard acknowledgement transaction: %w", err)
+		return result, fmt.Errorf("begin provider command guardian acknowledgement transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -169,22 +169,22 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		return result, err
 	}
 
-	existing, found, err := loadProviderProcessGuardTx(ctx, tx, normalized.GuardID)
+	existing, found, err := loadProviderCommandGuardianTx(ctx, tx, normalized.GuardID)
 	if err != nil {
 		return result, err
 	}
 	if found {
-		candidate := providerProcessGuardFromAcknowledgement(normalized)
+		candidate := providerCommandGuardianFromAcknowledgement(normalized)
 		immutable := existing
 		// An exact existing acknowledgement is a receipt, not new execution.
-		if immutable.Lifecycle == ProviderProcessGuardLifecycleQuiescent {
-			immutable.Lifecycle = ProviderProcessGuardLifecycleAcknowledged
+		if immutable.Lifecycle == ProviderCommandGuardianLifecycleQuiescent {
+			immutable.Lifecycle = ProviderCommandGuardianLifecycleAcknowledged
 		}
-		if !sameProviderProcessGuardAcknowledgement(immutable, candidate) {
+		if !sameProviderCommandGuardianAcknowledgement(immutable, candidate) {
 			return result, providerSettlementError("acknowledge_provider_process_guard", "guard_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
 		if err := tx.Commit(); err != nil {
-			confirmed, confirmErr := s.confirmProviderProcessGuardAcknowledgementAfterCommitError(normalized, candidate, true, err)
+			confirmed, confirmErr := s.confirmProviderCommandGuardianAcknowledgementAfterCommitError(normalized, candidate, true, err)
 			if confirmErr != nil {
 				return result, confirmErr
 			}
@@ -192,16 +192,16 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 			return confirmed, nil
 		}
 		committed = true
-		return AcknowledgeProviderProcessGuardResult{Guard: existing, Idempotent: true}, nil
+		return AcknowledgeProviderCommandGuardianResult{Guard: existing, Idempotent: true}, nil
 	}
 
-	if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
+	if err := validateProviderCommandGuardianAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
 		return result, err
 	}
 	if err := providerrequest.RequireGuardianAdmissionTx(ctx, tx, binding.ID, providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}, normalized.CommandOrdinal, s.currentTime()); err != nil {
 		return result, err
 	}
-	guard := providerProcessGuardFromAcknowledgement(normalized)
+	guard := providerCommandGuardianFromAcknowledgement(normalized)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_process_guards (
 		guard_id, provider_invocation_id, attempt_id, run_id, node_run_id,
 		command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid,
@@ -213,10 +213,10 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		guard.ChildIdentityToken, guard.TreeID, guard.TreeIdentityToken, guard.QuiescenceCapabilityHash, guard.LeaseOwner,
 		guard.LeaseVersion, guard.StartedAt, guard.AcknowledgedAt, guard.CreatedAt, guard.UpdatedAt,
 	); err != nil {
-		return result, fmt.Errorf("insert provider process guard %q: %w", guard.GuardID, err)
+		return result, fmt.Errorf("insert provider command guardian %q: %w", guard.GuardID, err)
 	}
 	if err := tx.Commit(); err != nil {
-		confirmed, confirmErr := s.confirmProviderProcessGuardAcknowledgementAfterCommitError(normalized, guard, false, err)
+		confirmed, confirmErr := s.confirmProviderCommandGuardianAcknowledgementAfterCommitError(normalized, guard, false, err)
 		if confirmErr != nil {
 			return result, confirmErr
 		}
@@ -224,72 +224,72 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		return confirmed, nil
 	}
 	committed = true
-	return AcknowledgeProviderProcessGuardResult{Guard: guard}, nil
+	return AcknowledgeProviderCommandGuardianResult{Guard: guard}, nil
 }
 
-func (s *Store) confirmProviderProcessGuardAcknowledgementAfterCommitError(
-	req normalizedAcknowledgeProviderProcessGuardRequest,
-	candidate ProviderProcessGuard,
+func (s *Store) confirmProviderCommandGuardianAcknowledgementAfterCommitError(
+	req normalizedAcknowledgeProviderCommandGuardianRequest,
+	candidate ProviderCommandGuardian,
 	idempotent bool,
 	commitErr error,
-) (AcknowledgeProviderProcessGuardResult, error) {
+) (AcknowledgeProviderCommandGuardianResult, error) {
 	// Commit may have made the guard durable just before returning an error or
 	// the request context was canceled; confirm it on an independent deadline.
-	readCtx, cancel := context.WithTimeout(context.Background(), providerProcessGuardCommitReadbackTimeout)
+	readCtx, cancel := context.WithTimeout(context.Background(), providerCommandGuardianCommitReadbackTimeout)
 	defer cancel()
 
-	persisted, readErr := scanProviderProcessGuard(s.db.QueryRowContext(readCtx, providerProcessGuardSelect+` WHERE guard_id = ?`, req.GuardID))
-	if readErr == nil && sameProviderProcessGuardAcknowledgement(persisted, candidate) {
-		return AcknowledgeProviderProcessGuardResult{Guard: persisted, Idempotent: idempotent}, nil
+	persisted, readErr := scanProviderCommandGuardian(s.db.QueryRowContext(readCtx, providerCommandGuardianSelect+` WHERE guard_id = ?`, req.GuardID))
+	if readErr == nil && sameProviderCommandGuardianAcknowledgement(persisted, candidate) {
+		return AcknowledgeProviderCommandGuardianResult{Guard: persisted, Idempotent: idempotent}, nil
 	}
 	if readErr == nil {
 		readErr = fmt.Errorf("persisted row does not match the exact acknowledged ownership lineage")
 	} else {
-		readErr = fmt.Errorf("read back acknowledged provider process guard %q: %w", req.GuardID, readErr)
+		readErr = fmt.Errorf("read back acknowledged provider command guardian %q: %w", req.GuardID, readErr)
 	}
-	return AcknowledgeProviderProcessGuardResult{}, errors.Join(
-		fmt.Errorf("commit provider process guard acknowledgement transaction: %w", commitErr),
+	return AcknowledgeProviderCommandGuardianResult{}, errors.Join(
+		fmt.Errorf("commit provider command guardian acknowledgement transaction: %w", commitErr),
 		readErr,
 	)
 }
 
-func (s *Store) ListPendingProviderProcessGuards(ctx context.Context, afterGuardID string, limit int) ([]ProviderProcessGuard, error) {
+func (s *Store) ListPendingProviderCommandGuardians(ctx context.Context, afterGuardID string, limit int) ([]ProviderCommandGuardian, error) {
 	if s == nil || s.db == nil {
 		return nil, fmt.Errorf("store database is required")
 	}
 	if limit <= 0 {
 		return nil, fmt.Errorf("limit must be positive")
 	}
-	rows, err := s.db.QueryContext(ctx, providerProcessGuardSelect+`
+	rows, err := s.db.QueryContext(ctx, providerCommandGuardianSelect+`
 		WHERE guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)
 		ORDER BY guard_id ASC
 		LIMIT ?`, strings.TrimSpace(afterGuardID), limit)
 	if err != nil {
-		return nil, fmt.Errorf("list pending provider process guards: %w", err)
+		return nil, fmt.Errorf("list pending provider command guardians: %w", err)
 	}
 	defer rows.Close()
-	guards := make([]ProviderProcessGuard, 0, limit)
+	guards := make([]ProviderCommandGuardian, 0, limit)
 	for rows.Next() {
-		guard, scanErr := scanProviderProcessGuard(rows)
+		guard, scanErr := scanProviderCommandGuardian(rows)
 		if scanErr != nil {
-			return nil, fmt.Errorf("scan pending provider process guard: %w", scanErr)
+			return nil, fmt.Errorf("scan pending provider command guardian: %w", scanErr)
 		}
 		guards = append(guards, guard)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate pending provider process guards: %w", err)
+		return nil, fmt.Errorf("iterate pending provider command guardians: %w", err)
 	}
 	return guards, nil
 }
 
-func (s *Store) MarkProviderProcessGuardEvidenceCleaned(ctx context.Context, guardID, cleanedAt string) error {
+func (s *Store) MarkProviderCommandGuardianEvidenceCleaned(ctx context.Context, guardID, cleanedAt string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE provider_process_guards SET evidence_cleaned_at = COALESCE(evidence_cleaned_at, ?), updated_at = ? WHERE guard_id = ? AND lifecycle = 'quiescent'`, cleanedAt, cleanedAt, strings.TrimSpace(guardID))
 	return err
 }
 
-// AttemptProcessGuardsQuiescent requires every request bound to the attempt to
+// AttemptCommandGuardiansQuiescent requires every request bound to the attempt to
 // be disposed, including its native and command receipts.
-func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID string) (bool, error) {
+func (s *Store) AttemptCommandGuardiansQuiescent(ctx context.Context, attemptID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
 	}
@@ -302,9 +302,9 @@ func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID str
 	return true, nil
 }
 
-// RunProviderProcessGuardsQuiescent requires all bound requests to be disposed
-// and every durable process guard quiescent before workspace replacement.
-func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
+// RunProviderCommandGuardiansQuiescent requires all bound requests to be disposed
+// and every durable command guardian quiescent before workspace replacement.
+func (s *Store) RunProviderCommandGuardiansQuiescent(ctx context.Context, runID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
 	}
@@ -321,15 +321,15 @@ func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID str
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
 		WHERE ae.run_id = ? AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
-		return false, fmt.Errorf("load run provider process guard quiescence: %w", err)
+		return false, fmt.Errorf("load run provider command guardian quiescence: %w", err)
 	}
 	return pending == 0, nil
 }
 
-// QuarantineProviderProcessGuardEvidence records that process absence was
+// QuarantineProviderCommandGuardianEvidence records that process absence was
 // proven without the capability-bound guardian evidence required for
 // quiescence. The guard deliberately remains acknowledged and non-quiescent.
-func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guardID, observedAt string) (bool, error) {
+func (s *Store) QuarantineProviderCommandGuardianEvidence(ctx context.Context, guardID, observedAt string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
 	}
@@ -358,11 +358,11 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id, lifecycle, quiescence_evidence_lost_at
 		FROM provider_process_guards WHERE guard_id = ?`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return false, fmt.Errorf("provider process guard %q not found", guardID)
+			return false, fmt.Errorf("provider command guardian %q not found", guardID)
 		}
-		return false, fmt.Errorf("load provider process guard %q for evidence quarantine: %w", guardID, err)
+		return false, fmt.Errorf("load provider command guardian %q for evidence quarantine: %w", guardID, err)
 	}
-	if lifecycle != string(ProviderProcessGuardLifecycleAcknowledged) {
+	if lifecycle != string(ProviderCommandGuardianLifecycleAcknowledged) {
 		if err := tx.Commit(); err != nil {
 			return false, fmt.Errorf("commit unchanged guardian evidence quarantine transaction: %w", err)
 		}
@@ -373,7 +373,7 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 		if _, err := tx.ExecContext(ctx, `UPDATE provider_process_guards
 			SET quiescence_evidence_lost_at = ?, updated_at = ?
 			WHERE guard_id = ? AND lifecycle = 'acknowledged' AND quiescence_evidence_lost_at IS NULL`, observedAt, observedAt, guardID); err != nil {
-			return false, fmt.Errorf("quarantine provider process guard %q evidence: %w", guardID, err)
+			return false, fmt.Errorf("quarantine provider command guardian %q evidence: %w", guardID, err)
 		}
 	}
 	var unresolved, unquarantined int
@@ -402,10 +402,10 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 	return true, nil
 }
 
-// AttemptProcessGuardEvidenceQuarantined reports whether every unresolved
-// process guard has a durable process-absence proof but lacks guardian
+// AttemptCommandGuardianEvidenceQuarantined reports whether every unresolved
+// command guardian has a durable process-absence proof but lacks guardian
 // quiescence evidence. It is intentionally distinct from quiescence.
-func (s *Store) AttemptProcessGuardEvidenceQuarantined(ctx context.Context, attemptID string) (bool, error) {
+func (s *Store) AttemptCommandGuardianEvidenceQuarantined(ctx context.Context, attemptID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
 	}
@@ -415,33 +415,33 @@ func (s *Store) AttemptProcessGuardEvidenceQuarantined(ctx context.Context, atte
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
 		WHERE attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
-		return false, fmt.Errorf("load attempt process guard evidence quarantine: %w", err)
+		return false, fmt.Errorf("load attempt command guardian evidence quarantine: %w", err)
 	}
 	return unresolved > 0 && unquarantined == 0, nil
 }
 
-func (s *Store) IngestProviderProcessGuardQuiescence(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
-	var result IngestProviderProcessGuardQuiescenceResult
+func (s *Store) IngestProviderCommandGuardianQuiescence(ctx context.Context, req IngestProviderCommandGuardianQuiescenceRequest) (IngestProviderCommandGuardianQuiescenceResult, error) {
+	var result IngestProviderCommandGuardianQuiescenceResult
 	_, err := sqlitex.Retry(ctx, func() error {
 		var retryErr error
-		result, retryErr = s.ingestProviderProcessGuardQuiescenceOnce(ctx, req)
+		result, retryErr = s.ingestProviderCommandGuardianQuiescenceOnce(ctx, req)
 		return retryErr
 	}, sqlitex.Options{})
 	return result, err
 }
 
-func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, req IngestProviderProcessGuardQuiescenceRequest) (IngestProviderProcessGuardQuiescenceResult, error) {
-	result := IngestProviderProcessGuardQuiescenceResult{}
+func (s *Store) ingestProviderCommandGuardianQuiescenceOnce(ctx context.Context, req IngestProviderCommandGuardianQuiescenceRequest) (IngestProviderCommandGuardianQuiescenceResult, error) {
+	result := IngestProviderCommandGuardianQuiescenceResult{}
 	if s == nil || s.db == nil {
 		return result, fmt.Errorf("store database is required")
 	}
-	normalized, err := normalizeIngestProviderProcessGuardQuiescenceRequest(req)
+	normalized, err := normalizeIngestProviderCommandGuardianQuiescenceRequest(req)
 	if err != nil {
 		return result, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return result, fmt.Errorf("begin provider process guard quiescence transaction: %w", err)
+		return result, fmt.Errorf("begin provider command guardian quiescence transaction: %w", err)
 	}
 	committed := false
 	defer func() {
@@ -449,37 +449,37 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 			_ = tx.Rollback()
 		}
 	}()
-	guard, found, err := loadProviderProcessGuardTx(ctx, tx, normalized.GuardID)
+	guard, found, err := loadProviderCommandGuardianTx(ctx, tx, normalized.GuardID)
 	if err != nil {
 		return result, err
 	}
 	if !found {
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "guard_not_found", normalized.ProviderInvocationID, normalized.AttemptID, "")
 	}
-	if !providerProcessGuardProofMatchesAcknowledgement(guard, normalized) {
+	if !providerCommandGuardianProofMatchesAcknowledgement(guard, normalized) {
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "guard_identity_mismatch", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 	}
 	if guard.QuiescenceCapabilityHash != normalized.QuiescenceCapabilityHash {
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "quiescence_capability_mismatch", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 	}
-	if !providerProcessGuardQuiescenceTimesValid(guard, normalized) {
+	if !providerCommandGuardianQuiescenceTimesValid(guard, normalized) {
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "quiescence_evidence_invalid", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 	}
-	if err := validateProviderProcessGuardEvidence(normalized); err != nil {
+	if err := validateProviderCommandGuardianEvidence(normalized); err != nil {
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "quiescence_evidence_invalid", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 	}
-	if guard.Lifecycle == ProviderProcessGuardLifecycleQuiescent {
-		if !sameProviderProcessGuardQuiescence(guard, normalized) {
+	if guard.Lifecycle == ProviderCommandGuardianLifecycleQuiescent {
+		if !sameProviderCommandGuardianQuiescence(guard, normalized) {
 			return result, providerSettlementError("ingest_provider_process_guard_quiescence", "quiescence_conflict", guard.ProviderInvocationID, guard.AttemptID, string(guard.Lifecycle))
 		}
 		if err := resumeQuiescentAttemptCancellation(ctx, tx, guard.AttemptID, normalized.QuiescentAt); err != nil {
 			return result, err
 		}
 		if err := tx.Commit(); err != nil {
-			return result, fmt.Errorf("commit provider process guard quiescence replay transaction: %w", err)
+			return result, fmt.Errorf("commit provider command guardian quiescence replay transaction: %w", err)
 		}
 		committed = true
-		return IngestProviderProcessGuardQuiescenceResult{Guard: guard, Idempotent: true}, nil
+		return IngestProviderCommandGuardianQuiescenceResult{Guard: guard, Idempotent: true}, nil
 	}
 
 	if _, err := tx.ExecContext(ctx, `UPDATE provider_process_guards
@@ -487,16 +487,16 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 		    exit_code = ?, exit_signal = ?, termination_forced = ?, failure_code = ?, failure_text = ?,
 		    quiescence_evidence_sha256 = ?, quiescence_evidence_json = ?, updated_at = ?
 		WHERE guard_id = ? AND lifecycle = 'acknowledged'`,
-		nullableProviderProcessGuardTime(normalized.TerminationRequestedAt), nullableProviderProcessGuardTime(normalized.ExitedAt), normalized.QuiescentAt,
+		nullableProviderCommandGuardianTime(normalized.TerminationRequestedAt), nullableProviderCommandGuardianTime(normalized.ExitedAt), normalized.QuiescentAt,
 		normalized.ExitCode, normalized.ExitSignal, boolToSQLiteInt(normalized.TerminationForced), normalized.FailureCode, normalized.FailureText,
 		normalized.EvidenceSHA256, normalized.EvidenceJSON, normalized.QuiescentAt, guard.GuardID,
 	); err != nil {
-		return result, fmt.Errorf("mark provider process guard %q quiescent: %w", guard.GuardID, err)
+		return result, fmt.Errorf("mark provider command guardian %q quiescent: %w", guard.GuardID, err)
 	}
 	if err := resumeQuiescentAttemptCancellation(ctx, tx, guard.AttemptID, normalized.QuiescentAt); err != nil {
 		return result, err
 	}
-	guard, found, err = loadProviderProcessGuardTx(ctx, tx, guard.GuardID)
+	guard, found, err = loadProviderCommandGuardianTx(ctx, tx, guard.GuardID)
 	if err != nil {
 		return result, err
 	}
@@ -504,10 +504,10 @@ func (s *Store) ingestProviderProcessGuardQuiescenceOnce(ctx context.Context, re
 		return result, providerSettlementError("ingest_provider_process_guard_quiescence", "guard_not_found", normalized.ProviderInvocationID, normalized.AttemptID, "")
 	}
 	if err := tx.Commit(); err != nil {
-		return result, fmt.Errorf("commit provider process guard quiescence transaction: %w", err)
+		return result, fmt.Errorf("commit provider command guardian quiescence transaction: %w", err)
 	}
 	committed = true
-	return IngestProviderProcessGuardQuiescenceResult{Guard: guard}, nil
+	return IngestProviderCommandGuardianQuiescenceResult{Guard: guard}, nil
 }
 
 // Persist the handoff wakeup alongside proof, including when a proof is replayed
@@ -531,19 +531,19 @@ func resumeQuiescentAttemptCancellation(ctx context.Context, tx *sql.Tx, attempt
 	return nil
 }
 
-const providerProcessGuardSelect = `SELECT guard_id, provider_invocation_id, attempt_id, run_id, node_run_id,
+const providerCommandGuardianSelect = `SELECT guard_id, provider_invocation_id, attempt_id, run_id, node_run_id,
 	command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid, child_identity_token,
 	tree_id, tree_identity_token, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at,
 	COALESCE(termination_requested_at, ''), COALESCE(exited_at, ''), COALESCE(quiescent_at, ''), exit_code, exit_signal,
 	termination_forced, failure_code, failure_text, quiescence_evidence_sha256, quiescence_evidence_json, created_at, updated_at
 FROM provider_process_guards`
 
-type providerProcessGuardScanner interface {
+type providerCommandGuardianScanner interface {
 	Scan(dest ...any) error
 }
 
-func scanProviderProcessGuard(scanner providerProcessGuardScanner) (ProviderProcessGuard, error) {
-	var guard ProviderProcessGuard
+func scanProviderCommandGuardian(scanner providerCommandGuardianScanner) (ProviderCommandGuardian, error) {
+	var guard ProviderCommandGuardian
 	var lifecycle string
 	var forced int
 	if err := scanner.Scan(
@@ -553,30 +553,30 @@ func scanProviderProcessGuard(scanner providerProcessGuardScanner) (ProviderProc
 		&guard.TerminationRequestedAt, &guard.ExitedAt, &guard.QuiescentAt, &guard.ExitCode, &guard.ExitSignal, &forced, &guard.FailureCode, &guard.FailureText,
 		&guard.QuiescenceEvidenceSHA256, &guard.QuiescenceEvidenceJSON, &guard.CreatedAt, &guard.UpdatedAt,
 	); err != nil {
-		return ProviderProcessGuard{}, err
+		return ProviderCommandGuardian{}, err
 	}
-	guard.Lifecycle = ProviderProcessGuardLifecycle(lifecycle)
+	guard.Lifecycle = ProviderCommandGuardianLifecycle(lifecycle)
 	guard.TerminationForced = forced == 1
 	return guard, nil
 }
 
-func loadProviderProcessGuardTx(ctx context.Context, tx *sql.Tx, guardID string) (ProviderProcessGuard, bool, error) {
-	guard, err := scanProviderProcessGuard(tx.QueryRowContext(ctx, providerProcessGuardSelect+` WHERE guard_id = ?`, strings.TrimSpace(guardID)))
+func loadProviderCommandGuardianTx(ctx context.Context, tx *sql.Tx, guardID string) (ProviderCommandGuardian, bool, error) {
+	guard, err := scanProviderCommandGuardian(tx.QueryRowContext(ctx, providerCommandGuardianSelect+` WHERE guard_id = ?`, strings.TrimSpace(guardID)))
 	if err == sql.ErrNoRows {
-		return ProviderProcessGuard{}, false, nil
+		return ProviderCommandGuardian{}, false, nil
 	}
 	if err != nil {
-		return ProviderProcessGuard{}, false, fmt.Errorf("load provider process guard %q: %w", guardID, err)
+		return ProviderCommandGuardian{}, false, fmt.Errorf("load provider command guardian %q: %w", guardID, err)
 	}
 	return guard, true, nil
 }
 
-type normalizedAcknowledgeProviderProcessGuardRequest struct {
-	AcknowledgeProviderProcessGuardRequest
+type normalizedAcknowledgeProviderCommandGuardianRequest struct {
+	AcknowledgeProviderCommandGuardianRequest
 	QuiescenceCapabilityHash string
 }
 
-func normalizeAcknowledgeProviderProcessGuardRequest(req AcknowledgeProviderProcessGuardRequest) (normalizedAcknowledgeProviderProcessGuardRequest, error) {
+func normalizeAcknowledgeProviderCommandGuardianRequest(req AcknowledgeProviderCommandGuardianRequest) (normalizedAcknowledgeProviderCommandGuardianRequest, error) {
 	req.GuardID = strings.TrimSpace(req.GuardID)
 	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
 	req.AttemptID = strings.TrimSpace(req.AttemptID)
@@ -592,30 +592,30 @@ func normalizeAcknowledgeProviderProcessGuardRequest(req AcknowledgeProviderProc
 	req.StartedAt = strings.TrimSpace(req.StartedAt)
 	req.AcknowledgedAt = strings.TrimSpace(req.AcknowledgedAt)
 	if req.GuardID == "" || req.ProviderInvocationID == "" || req.AttemptID == "" || req.RunID == "" || req.NodeRunID == "" || req.CommandOrdinal <= 0 || req.Platform == "" || req.GuardianPID <= 0 || req.GuardianIdentityToken == "" || req.ChildPID <= 0 || req.ChildIdentityToken == "" || req.TreeID == "" || req.TreeIdentityToken == "" || req.QuiescenceCapability == "" || req.ExpectedLeaseOwner == "" || req.ExpectedLeaseVersion <= 0 || req.StartedAt == "" || req.AcknowledgedAt == "" {
-		return normalizedAcknowledgeProviderProcessGuardRequest{}, fmt.Errorf("guard identity, invocation lineage, command ordinal, process identities, quiescence capability, lease lineage, started_at, and acknowledged_at are required")
+		return normalizedAcknowledgeProviderCommandGuardianRequest{}, fmt.Errorf("guard identity, invocation lineage, command ordinal, process identities, quiescence capability, lease lineage, started_at, and acknowledged_at are required")
 	}
 	if req.Platform != "unix_process_group" && req.Platform != "windows_job_object" {
-		return normalizedAcknowledgeProviderProcessGuardRequest{}, fmt.Errorf("unsupported provider process guard platform %q", req.Platform)
+		return normalizedAcknowledgeProviderCommandGuardianRequest{}, fmt.Errorf("unsupported provider command guardian platform %q", req.Platform)
 	}
 	startedAt, err := time.Parse(time.RFC3339Nano, req.StartedAt)
 	if err != nil {
-		return normalizedAcknowledgeProviderProcessGuardRequest{}, fmt.Errorf("parse guard started_at: %w", err)
+		return normalizedAcknowledgeProviderCommandGuardianRequest{}, fmt.Errorf("parse guard started_at: %w", err)
 	}
 	acknowledgedAt, err := time.Parse(time.RFC3339Nano, req.AcknowledgedAt)
 	if err != nil {
-		return normalizedAcknowledgeProviderProcessGuardRequest{}, fmt.Errorf("parse guard acknowledged_at: %w", err)
+		return normalizedAcknowledgeProviderCommandGuardianRequest{}, fmt.Errorf("parse guard acknowledged_at: %w", err)
 	}
 	if acknowledgedAt.Before(startedAt) {
-		return normalizedAcknowledgeProviderProcessGuardRequest{}, fmt.Errorf("guard acknowledged_at must not precede started_at")
+		return normalizedAcknowledgeProviderCommandGuardianRequest{}, fmt.Errorf("guard acknowledged_at must not precede started_at")
 	}
-	return normalizedAcknowledgeProviderProcessGuardRequest{AcknowledgeProviderProcessGuardRequest: req, QuiescenceCapabilityHash: sha256Hex(req.QuiescenceCapability)}, nil
+	return normalizedAcknowledgeProviderCommandGuardianRequest{AcknowledgeProviderCommandGuardianRequest: req, QuiescenceCapabilityHash: sha256Hex(req.QuiescenceCapability)}, nil
 }
 
-func providerProcessGuardFromAcknowledgement(req normalizedAcknowledgeProviderProcessGuardRequest) ProviderProcessGuard {
-	return ProviderProcessGuard{
+func providerCommandGuardianFromAcknowledgement(req normalizedAcknowledgeProviderCommandGuardianRequest) ProviderCommandGuardian {
+	return ProviderCommandGuardian{
 		GuardID: req.GuardID, ProviderInvocationID: req.ProviderInvocationID,
 		AttemptID: req.AttemptID, RunID: req.RunID, NodeRunID: req.NodeRunID, CommandOrdinal: req.CommandOrdinal,
-		Lifecycle: ProviderProcessGuardLifecycleAcknowledged, Platform: req.Platform, GuardianPID: req.GuardianPID,
+		Lifecycle: ProviderCommandGuardianLifecycleAcknowledged, Platform: req.Platform, GuardianPID: req.GuardianPID,
 		GuardianIdentityToken: req.GuardianIdentityToken, ChildPID: req.ChildPID, ChildIdentityToken: req.ChildIdentityToken,
 		TreeID: req.TreeID, TreeIdentityToken: req.TreeIdentityToken, QuiescenceCapabilityHash: req.QuiescenceCapabilityHash,
 		LeaseOwner: req.ExpectedLeaseOwner, LeaseVersion: req.ExpectedLeaseVersion, StartedAt: req.StartedAt,
@@ -623,7 +623,7 @@ func providerProcessGuardFromAcknowledgement(req normalizedAcknowledgeProviderPr
 	}
 }
 
-func validateProviderProcessGuardAcknowledgementAuthority(invocation ProviderInvocation, authority providerSettlementAttemptAuthority, req normalizedAcknowledgeProviderProcessGuardRequest, currentTime time.Time) error {
+func validateProviderCommandGuardianAcknowledgementAuthority(invocation ProviderInvocation, authority providerSettlementAttemptAuthority, req normalizedAcknowledgeProviderCommandGuardianRequest, currentTime time.Time) error {
 	if authority.ExecutionMode != ExecutionModeProviderBacked {
 		return providerSettlementError("acknowledge_provider_process_guard", "attempt_not_provider_backed", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 	}
@@ -650,12 +650,12 @@ func validateProviderProcessGuardAcknowledgementAuthority(invocation ProviderInv
 	return nil
 }
 
-type normalizedIngestProviderProcessGuardQuiescenceRequest struct {
-	IngestProviderProcessGuardQuiescenceRequest
+type normalizedIngestProviderCommandGuardianQuiescenceRequest struct {
+	IngestProviderCommandGuardianQuiescenceRequest
 	QuiescenceCapabilityHash string
 }
 
-func normalizeIngestProviderProcessGuardQuiescenceRequest(req IngestProviderProcessGuardQuiescenceRequest) (normalizedIngestProviderProcessGuardQuiescenceRequest, error) {
+func normalizeIngestProviderCommandGuardianQuiescenceRequest(req IngestProviderCommandGuardianQuiescenceRequest) (normalizedIngestProviderCommandGuardianQuiescenceRequest, error) {
 	req.GuardID = strings.TrimSpace(req.GuardID)
 	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
 	req.AttemptID = strings.TrimSpace(req.AttemptID)
@@ -675,26 +675,26 @@ func normalizeIngestProviderProcessGuardQuiescenceRequest(req IngestProviderProc
 	req.EvidenceSHA256 = strings.TrimSpace(req.EvidenceSHA256)
 	req.EvidenceJSON = strings.TrimSpace(req.EvidenceJSON)
 	if req.GuardID == "" || req.ProviderInvocationID == "" || req.AttemptID == "" || req.RunID == "" || req.NodeRunID == "" || req.Platform == "" || req.GuardianPID <= 0 || req.ChildPID <= 0 || req.TreeID == "" || req.QuiescenceCapability == "" || req.QuiescentAt == "" || req.EvidenceSHA256 == "" || req.EvidenceJSON == "" {
-		return normalizedIngestProviderProcessGuardQuiescenceRequest{}, fmt.Errorf("guard identity, invocation lineage, process identities, capability, quiescent_at, and evidence are required")
+		return normalizedIngestProviderCommandGuardianQuiescenceRequest{}, fmt.Errorf("guard identity, invocation lineage, process identities, capability, quiescent_at, and evidence are required")
 	}
-	if len(req.EvidenceJSON) > maxProviderProcessGuardEvidenceBytes || !json.Valid([]byte(req.EvidenceJSON)) || !isLowercaseSHA256(req.EvidenceSHA256) {
-		return normalizedIngestProviderProcessGuardQuiescenceRequest{}, fmt.Errorf("provider process guard evidence is invalid")
+	if len(req.EvidenceJSON) > maxProviderCommandGuardianEvidenceBytes || !json.Valid([]byte(req.EvidenceJSON)) || !isLowercaseSHA256(req.EvidenceSHA256) {
+		return normalizedIngestProviderCommandGuardianQuiescenceRequest{}, fmt.Errorf("provider command guardian evidence is invalid")
 	}
 	if sha256Hex(req.EvidenceJSON) != req.EvidenceSHA256 {
-		return normalizedIngestProviderProcessGuardQuiescenceRequest{}, fmt.Errorf("provider process guard evidence hash does not match payload")
+		return normalizedIngestProviderCommandGuardianQuiescenceRequest{}, fmt.Errorf("provider command guardian evidence hash does not match payload")
 	}
 	for label, value := range map[string]string{"termination_requested_at": req.TerminationRequestedAt, "exited_at": req.ExitedAt, "quiescent_at": req.QuiescentAt} {
 		if value == "" {
 			continue
 		}
 		if _, err := time.Parse(time.RFC3339Nano, value); err != nil {
-			return normalizedIngestProviderProcessGuardQuiescenceRequest{}, fmt.Errorf("parse guard %s: %w", label, err)
+			return normalizedIngestProviderCommandGuardianQuiescenceRequest{}, fmt.Errorf("parse guard %s: %w", label, err)
 		}
 	}
-	return normalizedIngestProviderProcessGuardQuiescenceRequest{IngestProviderProcessGuardQuiescenceRequest: req, QuiescenceCapabilityHash: sha256Hex(req.QuiescenceCapability)}, nil
+	return normalizedIngestProviderCommandGuardianQuiescenceRequest{IngestProviderCommandGuardianQuiescenceRequest: req, QuiescenceCapabilityHash: sha256Hex(req.QuiescenceCapability)}, nil
 }
 
-func validateProviderProcessGuardEvidence(req normalizedIngestProviderProcessGuardQuiescenceRequest) error {
+func validateProviderCommandGuardianEvidence(req normalizedIngestProviderCommandGuardianQuiescenceRequest) error {
 	var evidence struct {
 		Type   string `json:"type"`
 		Result struct {
@@ -713,23 +713,23 @@ func validateProviderProcessGuardEvidence(req normalizedIngestProviderProcessGua
 	if err := json.Unmarshal([]byte(req.EvidenceJSON), &evidence); err != nil {
 		return err
 	}
-	if evidence.Type != "result" || evidence.Result.GuardID != req.GuardID || evidence.Result.ChildPID != req.ChildPID || evidence.Result.TreeID != parseProviderProcessGuardTreeID(req.TreeID) || evidence.Result.Platform != req.Platform || !evidence.Result.Quiescent || evidence.Result.ExitCode != req.ExitCode || evidence.Result.ExitSignal != req.ExitSignal || evidence.Result.Forced != req.TerminationForced || strings.TrimSpace(evidence.Result.FailureCode) != req.FailureCode || strings.TrimSpace(evidence.Result.FailureText) != req.FailureText {
+	if evidence.Type != "result" || evidence.Result.GuardID != req.GuardID || evidence.Result.ChildPID != req.ChildPID || evidence.Result.TreeID != parseProviderCommandGuardianTreeID(req.TreeID) || evidence.Result.Platform != req.Platform || !evidence.Result.Quiescent || evidence.Result.ExitCode != req.ExitCode || evidence.Result.ExitSignal != req.ExitSignal || evidence.Result.Forced != req.TerminationForced || strings.TrimSpace(evidence.Result.FailureCode) != req.FailureCode || strings.TrimSpace(evidence.Result.FailureText) != req.FailureText {
 		return fmt.Errorf("guardian evidence does not match quiescence proof")
 	}
 	return nil
 }
 
-func parseProviderProcessGuardTreeID(treeID string) int64 {
+func parseProviderCommandGuardianTreeID(treeID string) int64 {
 	var value int64
 	_, _ = fmt.Sscan(treeID, &value)
 	return value
 }
 
-func providerProcessGuardProofMatchesAcknowledgement(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {
+func providerCommandGuardianProofMatchesAcknowledgement(guard ProviderCommandGuardian, req normalizedIngestProviderCommandGuardianQuiescenceRequest) bool {
 	return guard.ProviderInvocationID == req.ProviderInvocationID && guard.AttemptID == req.AttemptID && guard.RunID == req.RunID && guard.NodeRunID == req.NodeRunID && guard.Platform == req.Platform && guard.GuardianPID == req.GuardianPID && guard.GuardianIdentityToken == req.GuardianIdentityToken && guard.ChildPID == req.ChildPID && guard.ChildIdentityToken == req.ChildIdentityToken && guard.TreeID == req.TreeID && guard.TreeIdentityToken == req.TreeIdentityToken
 }
 
-func providerProcessGuardQuiescenceTimesValid(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {
+func providerCommandGuardianQuiescenceTimesValid(guard ProviderCommandGuardian, req normalizedIngestProviderCommandGuardianQuiescenceRequest) bool {
 	startedAt, startedErr := time.Parse(time.RFC3339Nano, guard.StartedAt)
 	acknowledgedAt, acknowledgedErr := time.Parse(time.RFC3339Nano, guard.AcknowledgedAt)
 	quiescentAt, quiescentErr := time.Parse(time.RFC3339Nano, req.QuiescentAt)
@@ -751,18 +751,18 @@ func providerProcessGuardQuiescenceTimesValid(guard ProviderProcessGuard, req no
 	return true
 }
 
-func sameProviderProcessGuardAcknowledgement(existing, candidate ProviderProcessGuard) bool {
-	return existing.Lifecycle == ProviderProcessGuardLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt && existing.CreatedAt == candidate.CreatedAt
+func sameProviderCommandGuardianAcknowledgement(existing, candidate ProviderCommandGuardian) bool {
+	return existing.Lifecycle == ProviderCommandGuardianLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt && existing.CreatedAt == candidate.CreatedAt
 }
 
-func sameProviderProcessGuardQuiescence(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {
+func sameProviderCommandGuardianQuiescence(guard ProviderCommandGuardian, req normalizedIngestProviderCommandGuardianQuiescenceRequest) bool {
 	// The guardian's immutable result is the proof. The caller-supplied
 	// termination/exit/quiescence timestamps describe when a copy of that proof
 	// was observed and can differ when the live callback races startup replay.
-	return guard.Lifecycle == ProviderProcessGuardLifecycleQuiescent && guard.ExitCode.Valid && guard.ExitCode.Int64 == req.ExitCode && guard.ExitSignal.Valid && guard.ExitSignal.Int64 == req.ExitSignal && guard.TerminationForced == req.TerminationForced && guard.FailureCode == req.FailureCode && guard.FailureText == req.FailureText && guard.QuiescenceEvidenceSHA256 == req.EvidenceSHA256 && guard.QuiescenceEvidenceJSON == req.EvidenceJSON
+	return guard.Lifecycle == ProviderCommandGuardianLifecycleQuiescent && guard.ExitCode.Valid && guard.ExitCode.Int64 == req.ExitCode && guard.ExitSignal.Valid && guard.ExitSignal.Int64 == req.ExitSignal && guard.TerminationForced == req.TerminationForced && guard.FailureCode == req.FailureCode && guard.FailureText == req.FailureText && guard.QuiescenceEvidenceSHA256 == req.EvidenceSHA256 && guard.QuiescenceEvidenceJSON == req.EvidenceJSON
 }
 
-func nullableProviderProcessGuardTime(value string) any {
+func nullableProviderCommandGuardianTime(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
 	}
@@ -799,7 +799,7 @@ func requireCleanProviderCommandGuardsTx(ctx context.Context, tx *sql.Tx, invoca
 		FROM provider_process_guards
 		WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID,
 	).Scan(&count, &maxOrdinal, &forced, &unclean); err != nil {
-		return fmt.Errorf("load provider process guard settlement state: %w", err)
+		return fmt.Errorf("load provider command guardian settlement state: %w", err)
 	}
 	if forced != 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_forced", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)

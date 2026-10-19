@@ -411,7 +411,6 @@ func TestTimeoutOwnedSettlementMarksHandoffPendingBeforeFallbackPublication(t *t
 	job := h.runningHandoffJob(t, invocation, 1)
 	timeoutErr := errors.New("Provider execution exceeded its inactivity budget.")
 	response := h.requests.run(t, job.attemptID, job.providerInvocationID, opencode.ExecuteResponse{
-		Accepted:          true,
 		Outcome:           opencode.ExecutionOutcome{State: "failed", ReasonCode: "timeout", FailureText: timeoutErr.Error(), EvidenceSource: "stream"},
 		StreamObservation: opencode.InvocationStreamObservation{TimedOut: true},
 	}, timeoutErr)
@@ -540,14 +539,14 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	ctx := context.Background()
 	invocation, found, err := h.store.GetProviderInvocation(ctx, "pinv_terminal_handoff_001")
 	if err != nil || !found {
 		t.Fatalf("load invocation: found=%t err=%v", found, err)
 	}
-	guards, err := h.store.ListPendingProviderProcessGuards(ctx, "", 1)
+	guards, err := h.store.ListPendingProviderCommandGuardians(ctx, "", 1)
 	if err != nil || len(guards) != 1 {
 		t.Fatalf("load original command guard: guards=%v err=%v", guards, err)
 	}
@@ -567,7 +566,7 @@ func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	_, err = h.store.AcknowledgeProviderProcessGuard(ctx, executionstore.AcknowledgeProviderProcessGuardRequest{
+	_, err = h.store.AcknowledgeProviderCommandGuardian(ctx, executionstore.AcknowledgeProviderCommandGuardianRequest{
 		GuardID: "guard_after_cancellation", ProviderInvocationID: invocation.ProviderInvocationID,
 		AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
 		CommandOrdinal: 2, Platform: guard.Platform, GuardianPID: 1002, GuardianIdentityToken: "guardian-after-cancel",
@@ -583,7 +582,7 @@ func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.
 func TestGuardianRecoveryCancellationWaitsForInflightProviderWorkerAndNeverFabricatesClosure(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
 	if err != nil || !found {
@@ -609,8 +608,8 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorkerAndNeverFabri
 	if err := os.Remove(providerGuardEvidencePath(h.runtimeDir, guardID)); err != nil {
 		t.Fatalf("remove guardian evidence: %v", err)
 	}
-	h.loop.processGuardAbsent = func(executionstore.ProviderProcessGuard) bool { return true }
-	if result, err := h.loop.ingestPendingProviderProcessGuardsPass(context.Background(), "", 1, true); err != nil || result.Visited != 1 || result.Blocked {
+	h.loop.commandGuardianAbsent = func(executionstore.ProviderCommandGuardian) bool { return true }
+	if result, err := h.loop.ingestPendingProviderCommandGuardiansPass(context.Background(), "", 1, true); err != nil || result.Visited != 1 || result.Blocked {
 		t.Fatalf("quarantine absent guardian evidence: result=%#v err=%v", result, err)
 	}
 	if err := h.loop.transitionService().RequestAttemptStopRetry(context.Background(), state.AttemptStopRetryRequest{
@@ -648,7 +647,7 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorkerAndNeverFabri
 		t.Fatalf("authorized recovery released a request with an unproven command: processed=%d err=%v", processed, err)
 	}
 	assertCancellationHandoff(t, h, attemptID, "pending", "guardian_evidence_recovery_requested")
-	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), attemptID); err != nil || quiescent {
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), attemptID); err != nil || quiescent {
 		t.Fatalf("operator recovery fabricated process proof: quiescent=%t err=%v", quiescent, err)
 	}
 	if got := adapter.cancelCalls(); got != 0 {
@@ -1061,7 +1060,7 @@ func TestProviderTerminalHandoffPassVisitsAtMostOneHundredTwentyEight(t *testing
 	}
 }
 
-func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
+func TestStartupReplayBoundsPendingProviderCommandGuardianIngestion(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		items    int
@@ -1072,14 +1071,14 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 			for index := 1; index <= tc.items; index++ {
 				h.addPendingGuardEvidence(t, index)
 			}
 
-			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderProcessGuards(context.Background())
+			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderCommandGuardians(context.Background())
 			if err != nil {
-				t.Fatalf("replay pending process guards: %v", err)
+				t.Fatalf("replay pending command guardians: %v", err)
 			}
 			if deferred != tc.deferred {
 				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
@@ -1090,12 +1089,12 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 				t.Fatalf("startup ingested %d guards, want %d", quiescent, want)
 			}
 			if deferred {
-				if err := h.loop.ingestPendingProviderProcessGuards(context.Background()); err != nil {
-					t.Fatalf("normal process guard loop did not continue deferred work: %v", err)
+				if err := h.loop.ingestPendingProviderCommandGuardians(context.Background()); err != nil {
+					t.Fatalf("normal command guardian loop did not continue deferred work: %v", err)
 				}
 				quiescent = countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`)
 				if quiescent != tc.items {
-					t.Fatalf("normal process guard loop ingested %d guards, want %d", quiescent, tc.items)
+					t.Fatalf("normal command guardian loop ingested %d guards, want %d", quiescent, tc.items)
 				}
 			}
 		})
@@ -1105,7 +1104,7 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
@@ -1113,14 +1112,14 @@ func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
 
-	pass, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false)
+	pass, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false)
 	if err != nil || pass.Visited != 1 || pass.NextCursor != guardID {
 		t.Fatalf("replay missing quiescent evidence: pass=%#v err=%v", pass, err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
 }
 
-func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *testing.T) {
+func TestProviderCommandGuardianReplayRequiresDurableProofAndMatchingEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		quiescent   bool
@@ -1133,7 +1132,7 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const guardID = "guard_terminal_handoff_001"
 			if tc.quiescent {
@@ -1156,7 +1155,7 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 				t.Fatalf("remove acknowledged guardian evidence: %v", err)
 			}
 
-			if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+			if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 				t.Fatalf("replay untrusted provider guard evidence: %v", err)
 			}
 			wantLifecycle := "acknowledged"
@@ -1168,36 +1167,36 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 	}
 }
 
-func TestProviderProcessGuardCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
+func TestProviderCommandGuardianCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, evidence, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
 		t.Fatalf("remove evidence after replay read: %v", err)
 	}
 
-	h.loop.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guardID, evidence)
+	h.loop.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, guardID, evidence)
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
 }
 
-func TestProviderProcessGuardCleanupMarkerFailureIsRetryable(t *testing.T) {
+func TestProviderCommandGuardianCleanupMarkerFailureIsRetryable(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
 		t.Fatalf("remove already-ingested guardian evidence: %v", err)
 	}
 	mustExec(t, h.db, `CREATE TRIGGER fail_provider_guard_cleanup_marker BEFORE UPDATE OF evidence_cleaned_at ON provider_process_guards WHEN NEW.guard_id = 'guard_terminal_handoff_001' BEGIN SELECT RAISE(ABORT, 'cleanup marker unavailable'); END`)
-	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+	if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 		t.Fatalf("cleanup marker failure turned durable quiescence into replay failure: %v", err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
 	mustExec(t, h.db, `DROP TRIGGER fail_provider_guard_cleanup_marker`)
-	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+	if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 		t.Fatalf("retry provider guard cleanup marker: %v", err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
@@ -1223,7 +1222,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const attemptID = "run_terminal_handoff:implementation:1"
 			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`)
@@ -1234,9 +1233,9 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 			}); err != nil {
 				t.Fatalf("queue cancelled attempt handoff: %v", err)
 			}
-			h.loop.processGuardAbsent = func(executionstore.ProviderProcessGuard) bool { return true }
+			h.loop.commandGuardianAbsent = func(executionstore.ProviderCommandGuardian) bool { return true }
 
-			result, err := h.loop.ingestPendingProviderProcessGuardsPass(context.Background(), "", 1, true)
+			result, err := h.loop.ingestPendingProviderCommandGuardiansPass(context.Background(), "", 1, true)
 			if err != nil || result.Blocked || result.Visited != 1 {
 				t.Fatalf("ingest absent guardian evidence: result=%#v err=%v", result, err)
 			}
@@ -1248,7 +1247,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 			if lifecycle != "acknowledged" || !quarantinedAt.Valid {
 				t.Fatalf("missing guardian evidence authorized quiescence: lifecycle=%q quarantined_at=%#v", lifecycle, quarantinedAt)
 			}
-			quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), attemptID)
+			quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), attemptID)
 			if err != nil || quiescent {
 				t.Fatalf("quarantined guardian evidence authorized attempt quiescence: quiescent=%t err=%v", quiescent, err)
 			}
@@ -1287,14 +1286,14 @@ func TestGuardRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(
 		{
 			name: "provider guard",
 			seed: func(t *testing.T, h terminalHandoffHarness) {
-				h.loop.processGuardRuntimeRoot = h.runtimeDir
+				h.loop.commandGuardianRuntimeRoot = h.runtimeDir
 				h.addPendingGuardEvidence(t, 1)
 				h.addPendingGuardEvidence(t, 2)
 			},
 			arm:  guardArm,
 			drop: guardDrop,
 			normal: func(ctx context.Context, h terminalHandoffHarness) (string, error) {
-				pass, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", providerProcessGuardPassLimit, false)
+				pass, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", providerCommandGuardianPassLimit, false)
 				return pass.NextCursor, err
 			},
 			deferred: func(rt *Runtime) startupRecoveryStage {
@@ -1360,7 +1359,7 @@ func (h terminalHandoffHarness) persistPendingProviderGuardQuiescence(t *testing
 		t.Fatalf("read provider guard evidence before ingest: %v", err)
 	}
 	quiescentAt := "2026-03-01T12:00:04Z"
-	_, err = h.store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+	_, err = h.store.IngestProviderCommandGuardianQuiescence(context.Background(), executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID: guardID, ProviderInvocationID: fmt.Sprintf("pinv_terminal_handoff_%03d", index),
 		AttemptID: fmt.Sprintf("run_terminal_handoff:implementation:%d", index), RunID: "run_terminal_handoff",
 		NodeRunID: fmt.Sprintf("nr_terminal_handoff_%03d", index), Platform: result.Platform,
@@ -1396,7 +1395,7 @@ func assertProviderGuardCleanupState(t *testing.T, h terminalHandoffHarness, gua
 	if markerPending != wantPending {
 		t.Fatalf("unexpected provider guard cleanup state: lifecycle=%q want=%q marker_valid=%t pending=%t", lifecycle, wantLifecycle, cleanedAt.Valid, markerPending)
 	}
-	pending, err := h.store.ListPendingProviderProcessGuards(context.Background(), "", 2)
+	pending, err := h.store.ListPendingProviderCommandGuardians(context.Background(), "", 2)
 	if err != nil {
 		t.Fatalf("list provider guards after cleanup replay: %v", err)
 	}
@@ -1423,35 +1422,35 @@ func (h terminalHandoffHarness) addPendingGuardEvidence(t *testing.T, index int)
 		ChildPID: index + 2000, ChildIdentityToken: fmt.Sprintf("child-%03d", index), TreeID: index + 2000,
 		TreeIdentityToken: fmt.Sprintf("tree-%03d", index), Platform: "unix_process_group", QuiescenceCapability: fmt.Sprintf("guardian-quiescence-%03d", index),
 	}
-	if _, err := h.store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
+	if _, err := h.store.AcknowledgeProviderCommandGuardian(context.Background(), executionstore.AcknowledgeProviderCommandGuardianRequest{
 		GuardID: ownership.GuardID, ProviderInvocationID: invocation.ProviderInvocationID, AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
 		CommandOrdinal: 1, Platform: ownership.Platform, GuardianPID: int64(ownership.GuardianPID), GuardianIdentityToken: ownership.GuardianIdentityToken,
 		ChildPID: int64(ownership.ChildPID), ChildIdentityToken: ownership.ChildIdentityToken, TreeID: strconv.Itoa(ownership.TreeID), TreeIdentityToken: ownership.TreeIdentityToken,
 		QuiescenceCapability: ownership.QuiescenceCapability, ExpectedLeaseOwner: job.expectedLeaseOwner, ExpectedLeaseVersion: job.expectedLeaseVersion,
 		StartedAt: "2026-03-01T11:59:59Z", AcknowledgedAt: "2026-03-01T11:59:59Z",
 	}); err != nil {
-		t.Fatalf("acknowledge pending process guard: %v", err)
+		t.Fatalf("acknowledge pending command guardian: %v", err)
 	}
 	evidence, err := json.Marshal(struct {
 		Type   string                 `json:"type"`
 		Result processguardian.Result `json:"result"`
 	}{Type: "result", Result: processguardian.Result{Ownership: ownership, Quiescent: true}})
 	if err != nil {
-		t.Fatalf("marshal process guard evidence: %v", err)
+		t.Fatalf("marshal command guardian evidence: %v", err)
 	}
 	evidenceDir := filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence")
 	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-		t.Fatalf("create process guard evidence directory: %v", err)
+		t.Fatalf("create command guardian evidence directory: %v", err)
 	}
 	if err := os.WriteFile(providerGuardEvidencePath(h.runtimeDir, guardID), evidence, 0o600); err != nil {
-		t.Fatalf("write process guard evidence: %v", err)
+		t.Fatalf("write command guardian evidence: %v", err)
 	}
 	observed, _, _, err := processguardian.ReadQuiescenceEvidence(h.runtimeDir, guardID)
 	if err != nil {
-		t.Fatalf("read process guard evidence: %v", err)
+		t.Fatalf("read command guardian evidence: %v", err)
 	}
 	if observed.GuardID != guardID || observed.ChildPID != ownership.ChildPID || observed.TreeID != ownership.TreeID || observed.Platform != ownership.Platform || !observed.Quiescent {
-		t.Fatalf("process guard evidence decoded incorrectly: %#v", observed)
+		t.Fatalf("command guardian evidence decoded incorrectly: %#v", observed)
 	}
 }
 
@@ -1626,7 +1625,7 @@ func TestCancelledAttemptWhoseWorkerIsGoneIsSettledCancelledAfterRestart(t *test
 	}); err != nil {
 		t.Fatalf("queue cancellation: %v", err)
 	}
-	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), invocation.AttemptID); err != nil || quiescent {
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), invocation.AttemptID); err != nil || quiescent {
 		t.Fatalf("a request nobody settled must not be quiescent: %t %v", quiescent, err)
 	}
 
@@ -1637,7 +1636,7 @@ func TestCancelledAttemptWhoseWorkerIsGoneIsSettledCancelledAfterRestart(t *test
 	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
 		t.Fatalf("orphaned cancellation was not settled as cancelled: found=%t settlement=%#v err=%v", found, settlement, err)
 	}
-	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), invocation.AttemptID); err != nil || !quiescent {
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), invocation.AttemptID); err != nil || !quiescent {
 		t.Fatalf("a settled cancellation must release the attempt: %t %v", quiescent, err)
 	}
 }

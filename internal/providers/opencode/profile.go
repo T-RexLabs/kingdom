@@ -11,9 +11,9 @@ import (
 
 const pluginRPCName = "kingdom"
 
-// ProfileActions are the stock permissions a managed role may use. Every other
+// profileActions are the stock permissions a managed role may use. Every other
 // action, including background work and subagents, stays denied.
-func ProfileActions(agent string) []string {
+func profileActions(agent string) []string {
 	switch agent {
 	case "builder":
 		return []string{"read", "edit", "shell"}

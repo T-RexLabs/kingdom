@@ -262,7 +262,9 @@ type CreateProviderInvocationRequest struct {
 	CreatedAt            string
 }
 
-type MarkProviderInvocationOpenRequest struct {
+// providerInvocationOpening is the open half of an activation: the invocation
+// becomes open on its provider session.
+type providerInvocationOpening struct {
 	ProviderInvocationID string
 	AttemptID            string
 	ProviderSessionID    string
@@ -2093,7 +2095,7 @@ func createProviderInvocationTx(ctx context.Context, tx *sql.Tx, req CreateProvi
 	return invocation, nil
 }
 
-func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, openReq MarkProviderInvocationOpenRequest, expectedLeaseOwner string, expectedLeaseVersion int64) error {
+func activateProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, openReq providerInvocationOpening, expectedLeaseOwner string, expectedLeaseVersion int64) error {
 	authority, foundAttempt, err := loadProviderSettlementAttemptAuthorityTx(ctx, tx, invocation.AttemptID)
 	if err != nil {
 		return err
@@ -2734,13 +2736,13 @@ func normalizeCreateProviderInvocationRequest(req CreateProviderInvocationReques
 	return req, nil
 }
 
-func normalizeMarkProviderInvocationOpenRequest(req MarkProviderInvocationOpenRequest) (MarkProviderInvocationOpenRequest, error) {
+func normalizeProviderInvocationOpening(req providerInvocationOpening) (providerInvocationOpening, error) {
 	req.ProviderInvocationID = strings.TrimSpace(req.ProviderInvocationID)
 	req.AttemptID = strings.TrimSpace(req.AttemptID)
 	req.ProviderSessionID = strings.TrimSpace(req.ProviderSessionID)
 	req.OpenedAt = strings.TrimSpace(req.OpenedAt)
 	if req.ProviderInvocationID == "" {
-		return MarkProviderInvocationOpenRequest{}, fmt.Errorf("provider_invocation_id is required")
+		return providerInvocationOpening{}, fmt.Errorf("provider_invocation_id is required")
 	}
 	if req.OpenedAt == "" {
 		req.OpenedAt = time.Now().UTC().Format(time.RFC3339)
@@ -2748,13 +2750,13 @@ func normalizeMarkProviderInvocationOpenRequest(req MarkProviderInvocationOpenRe
 	return req, nil
 }
 
-func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRequest) (CreateProviderInvocationRequest, MarkProviderInvocationOpenRequest, string, int64, error) {
+func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRequest) (CreateProviderInvocationRequest, providerInvocationOpening, string, int64, error) {
 	req.ExpectedLeaseOwner = strings.TrimSpace(req.ExpectedLeaseOwner)
 	if req.ExpectedLeaseOwner == "" {
-		return CreateProviderInvocationRequest{}, MarkProviderInvocationOpenRequest{}, "", 0, fmt.Errorf("expected_lease_owner is required")
+		return CreateProviderInvocationRequest{}, providerInvocationOpening{}, "", 0, fmt.Errorf("expected_lease_owner is required")
 	}
 	if req.ExpectedLeaseVersion <= 0 {
-		return CreateProviderInvocationRequest{}, MarkProviderInvocationOpenRequest{}, "", 0, fmt.Errorf("expected_lease_version must be positive")
+		return CreateProviderInvocationRequest{}, providerInvocationOpening{}, "", 0, fmt.Errorf("expected_lease_version must be positive")
 	}
 	createReq, err := normalizeCreateProviderInvocationRequest(CreateProviderInvocationRequest{
 		ProviderInvocationID: req.ProviderInvocationID,
@@ -2768,9 +2770,9 @@ func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRe
 		CreatedAt:            req.CreatedAt,
 	})
 	if err != nil {
-		return CreateProviderInvocationRequest{}, MarkProviderInvocationOpenRequest{}, "", 0, err
+		return CreateProviderInvocationRequest{}, providerInvocationOpening{}, "", 0, err
 	}
-	openReq, err := normalizeMarkProviderInvocationOpenRequest(MarkProviderInvocationOpenRequest{
+	openReq, err := normalizeProviderInvocationOpening(providerInvocationOpening{
 		ProviderInvocationID: createReq.ProviderInvocationID,
 		AttemptID:            createReq.AttemptID,
 		ProviderSessionID:    req.ProviderSessionID,
@@ -2782,7 +2784,7 @@ func normalizeActivateProviderInvocationRequest(req ActivateProviderInvocationRe
 		}(),
 	})
 	if err != nil {
-		return CreateProviderInvocationRequest{}, MarkProviderInvocationOpenRequest{}, "", 0, err
+		return CreateProviderInvocationRequest{}, providerInvocationOpening{}, "", 0, err
 	}
 	return createReq, openReq, req.ExpectedLeaseOwner, req.ExpectedLeaseVersion, nil
 }

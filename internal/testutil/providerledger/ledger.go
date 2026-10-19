@@ -76,7 +76,6 @@ func Success(prepared opencode.Prepared, invocationID, text string) opencode.Exe
 	text = strings.TrimSpace(text)
 	ref := providerexecution.ReferenceText(invocationID, text)
 	return opencode.ExecuteResponse{
-		Accepted:          true,
 		OutputText:        text,
 		ProviderSessionID: prepared.ProviderSessionID,
 		Outcome:           opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed"},

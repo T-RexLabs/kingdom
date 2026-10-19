@@ -757,11 +757,11 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 			startPayloadRaw = "{}"
 		}
 		request := o.providerRequest(job)
-		request.OnProcessGuardOwnership = func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
-			return o.acknowledgeProviderProcessGuard(callbackCtx, job, guard)
+		request.OnCommandGuardianOwnership = func(callbackCtx context.Context, guard opencode.CommandGuardianOwnership) error {
+			return o.acknowledgeProviderCommandGuardian(callbackCtx, job, guard)
 		}
-		request.OnProcessGuardQuiescence = func(callbackCtx context.Context, guard opencode.ProcessGuardQuiescence) error {
-			return o.ingestProviderProcessGuardQuiescence(callbackCtx, job, guard)
+		request.OnCommandGuardianQuiescence = func(callbackCtx context.Context, guard opencode.CommandGuardianQuiescence) error {
+			return o.ingestProviderCommandGuardianQuiescence(callbackCtx, job, guard)
 		}
 		request.OnInvocationStarted = func() {
 			launchObserved = true

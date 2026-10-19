@@ -50,12 +50,18 @@ type ProviderModelCatalogSnapshot struct {
 	UnavailableErr error
 }
 
-type openCodeModelSource interface {
+// OpenCodeModelSource lists the models the shared OpenCode server can use.
+type OpenCodeModelSource interface {
 	Models(context.Context) ([]opencode.Model, error)
 }
 
+// ProviderModelCatalogTTL is how long a listed catalog stays fresh. Models
+// change only when the operator changes their OpenCode installation, so a long
+// window keeps listing off the request path; the explicit refresh bypasses it.
+const ProviderModelCatalogTTL = 10 * time.Minute
+
 type openCodeProviderModelCatalog struct {
-	source       openCodeModelSource
+	source       OpenCodeModelSource
 	now          func() time.Time
 	ttl          time.Duration
 	fetchTimeout time.Duration
@@ -107,12 +113,12 @@ func isProviderModelCatalogUnavailable(err error) bool {
 	return errors.As(err, &unavailableErr)
 }
 
-func NewOpenCodeProviderModelCatalog(source openCodeModelSource, now func() time.Time, ttl time.Duration) ProviderModelCatalog {
+func NewOpenCodeProviderModelCatalog(source OpenCodeModelSource, now func() time.Time, ttl time.Duration) ProviderModelCatalog {
 	if now == nil {
 		now = time.Now
 	}
 	if ttl <= 0 {
-		ttl = time.Minute
+		ttl = ProviderModelCatalogTTL
 	}
 	return &openCodeProviderModelCatalog{
 		source:       source,

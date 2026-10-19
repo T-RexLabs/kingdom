@@ -198,7 +198,7 @@ func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx
 	if !o.manualTargetRecoveryAuthorized(ctx, runID, nodeRunID, record.UpdatedAt) {
 		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit retry or rerun")
 	}
-	quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, runID)
+	quiescent, err := o.executionStore.RunProviderCommandGuardiansQuiescent(ctx, runID)
 	if err != nil {
 		return runtimefs.RunExecutionTarget{}, err
 	}

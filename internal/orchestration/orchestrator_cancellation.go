@@ -24,7 +24,7 @@ func (workspaceHandoffBlockedError) Error() string {
 
 func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *executionstore.AttemptCancelRecord, publishedAt string) (bool, error) {
 	o.cancelExecutionPreparation(rec.AttemptID)
-	quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	quiescent, err := o.executionStore.AttemptCommandGuardiansQuiescent(ctx, rec.AttemptID)
 	if err != nil {
 		return false, err
 	}
@@ -32,7 +32,7 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 		return true, nil
 	}
 	if rec.HandoffState == "guardian_evidence_recovery_requested" {
-		quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
+		quarantined, err := o.executionStore.AttemptCommandGuardianEvidenceQuarantined(ctx, rec.AttemptID)
 		if err != nil {
 			return false, err
 		}
@@ -52,7 +52,7 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 		return false, err
 	}
 	rec.HandoffState = dispatchedState
-	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	quiescent, err = o.executionStore.AttemptCommandGuardiansQuiescent(ctx, rec.AttemptID)
 	if err != nil {
 		return false, err
 	}
@@ -62,7 +62,7 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 	cancelCtx, cancel := context.WithTimeout(ctx, defaultDuration(o.cancelGrace, 5*time.Second))
 	cancelErr := o.provider.Cancel(cancelCtx, attemptCancelRequest(*rec, publishedAt))
 	cancel()
-	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+	quiescent, err = o.executionStore.AttemptCommandGuardiansQuiescent(ctx, rec.AttemptID)
 	if err != nil {
 		return false, err
 	}
@@ -161,7 +161,7 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 		if !active.CancellationPending {
 			return workspaceHandoffBlockedError{}
 		}
-		quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, active.AttemptID)
+		quiescent, err := o.executionStore.AttemptCommandGuardiansQuiescent(ctx, active.AttemptID)
 		if err != nil {
 			return err
 		}

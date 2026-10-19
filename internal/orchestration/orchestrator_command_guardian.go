@@ -18,11 +18,11 @@ import (
 	"kingdom/internal/providers/opencode"
 )
 
-func (o *orchestrationLoop) acknowledgeProviderProcessGuard(ctx context.Context, job asyncExecutionResult, guard opencode.ProcessGuardOwnership) error {
+func (o *orchestrationLoop) acknowledgeProviderCommandGuardian(ctx context.Context, job asyncExecutionResult, guard opencode.CommandGuardianOwnership) error {
 	if o == nil || o.executionStore == nil {
-		return fmt.Errorf("execution store is required for provider process guard")
+		return fmt.Errorf("execution store is required for provider command guardian")
 	}
-	_, err := o.executionStore.AcknowledgeProviderProcessGuard(ctx, executionstore.AcknowledgeProviderProcessGuardRequest{
+	_, err := o.executionStore.AcknowledgeProviderCommandGuardian(ctx, executionstore.AcknowledgeProviderCommandGuardianRequest{
 		GuardID:               guard.Ownership.GuardID,
 		ProviderInvocationID:  job.providerInvocationID,
 		AttemptID:             job.attemptID,
@@ -45,58 +45,58 @@ func (o *orchestrationLoop) acknowledgeProviderProcessGuard(ctx context.Context,
 	return err
 }
 
-const providerProcessGuardPassLimit = 128
+const providerCommandGuardianPassLimit = 128
 
-// providerProcessGuardPassResult distinguishes a live guard blocking startup
+// providerCommandGuardianPassResult distinguishes a live guard blocking startup
 // recovery from a page that was simply exhausted.
-type providerProcessGuardPassResult struct {
+type providerCommandGuardianPassResult struct {
 	NextCursor string
 	Visited    int
 	Blocked    bool
 }
 
-func (o *orchestrationLoop) ingestPendingProviderProcessGuards(ctx context.Context) error {
-	if o == nil || o.executionStore == nil || strings.TrimSpace(o.processGuardRuntimeRoot) == "" {
+func (o *orchestrationLoop) ingestPendingProviderCommandGuardians(ctx context.Context) error {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(o.commandGuardianRuntimeRoot) == "" {
 		return nil
 	}
 	for cursor := ""; ; {
-		result, err := o.ingestPendingProviderProcessGuardsPass(ctx, cursor, providerProcessGuardPassLimit, false)
+		result, err := o.ingestPendingProviderCommandGuardiansPass(ctx, cursor, providerCommandGuardianPassLimit, false)
 		if err != nil {
 			return err
 		}
-		if result.Visited < providerProcessGuardPassLimit {
+		if result.Visited < providerCommandGuardianPassLimit {
 			return nil
 		}
 		cursor = result.NextCursor
 	}
 }
 
-func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.Context, cursor string, limit int, blockOnLiveGuard bool) (providerProcessGuardPassResult, error) {
-	if o == nil || o.executionStore == nil || strings.TrimSpace(o.processGuardRuntimeRoot) == "" {
-		return providerProcessGuardPassResult{NextCursor: cursor}, nil
+func (o *orchestrationLoop) ingestPendingProviderCommandGuardiansPass(ctx context.Context, cursor string, limit int, blockOnLiveGuard bool) (providerCommandGuardianPassResult, error) {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(o.commandGuardianRuntimeRoot) == "" {
+		return providerCommandGuardianPassResult{NextCursor: cursor}, nil
 	}
-	guards, err := o.executionStore.ListPendingProviderProcessGuards(ctx, cursor, limit)
+	guards, err := o.executionStore.ListPendingProviderCommandGuardians(ctx, cursor, limit)
 	if err != nil {
-		return providerProcessGuardPassResult{NextCursor: cursor}, err
+		return providerCommandGuardianPassResult{NextCursor: cursor}, err
 	}
-	pass := providerProcessGuardPassResult{NextCursor: cursor}
+	pass := providerCommandGuardianPassResult{NextCursor: cursor}
 	for _, guard := range guards {
-		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.processGuardRuntimeRoot, guard.GuardID)
+		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.commandGuardianRuntimeRoot, guard.GuardID)
 		if err != nil {
-			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent && errors.Is(err, fs.ErrNotExist) {
+			if guard.Lifecycle == executionstore.ProviderCommandGuardianLifecycleQuiescent && errors.Is(err, fs.ErrNotExist) {
 				// The durable quiescence row already contains the accepted proof;
 				// an absent file is completed cleanup, not missing authority.
-				o.markProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID)
-			} else if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
-				slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guard.GuardID, "error", err)
+				o.markProviderCommandGuardianEvidenceCleaned(ctx, guard.GuardID)
+			} else if guard.Lifecycle == executionstore.ProviderCommandGuardianLifecycleQuiescent {
+				slog.Warn("provider command guardian evidence cleanup deferred", "guard_id", guard.GuardID, "error", err)
 			}
-			if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleAcknowledged {
-				if o.pendingProviderProcessGuardAbsent(guard) {
-					if _, quarantineErr := o.executionStore.QuarantineProviderProcessGuardEvidence(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); quarantineErr != nil {
+			if guard.Lifecycle == executionstore.ProviderCommandGuardianLifecycleAcknowledged {
+				if o.pendingProviderCommandGuardianAbsent(guard) {
+					if _, quarantineErr := o.executionStore.QuarantineProviderCommandGuardianEvidence(ctx, guard.GuardID, o.now().UTC().Format(time.RFC3339Nano)); quarantineErr != nil {
 						return pass, quarantineErr
 					}
 				} else if blockOnLiveGuard {
-					return providerProcessGuardPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
+					return providerCommandGuardianPassResult{NextCursor: pass.NextCursor, Visited: pass.Visited, Blocked: true}, nil
 				}
 			}
 			// Missing or invalid evidence never advances an acknowledged guard.
@@ -106,17 +106,17 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 			pass.Visited++
 			continue
 		}
-		if guard.Lifecycle == executionstore.ProviderProcessGuardLifecycleQuiescent {
+		if guard.Lifecycle == executionstore.ProviderCommandGuardianLifecycleQuiescent {
 			if digest == guard.QuiescenceEvidenceSHA256 {
-				o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, evidence)
+				o.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, guard.GuardID, evidence)
 			} else {
-				slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guard.GuardID, "reason", "evidence_digest_mismatch")
+				slog.Warn("provider command guardian evidence cleanup deferred", "guard_id", guard.GuardID, "reason", "evidence_digest_mismatch")
 			}
 			pass.NextCursor = guard.GuardID
 			pass.Visited++
 			continue
 		}
-		if _, err := o.executionStore.IngestProviderProcessGuardQuiescence(ctx, executionstore.IngestProviderProcessGuardQuiescenceRequest{
+		if _, err := o.executionStore.IngestProviderCommandGuardianQuiescence(ctx, executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 			GuardID: evidenceResult.GuardID, ProviderInvocationID: guard.ProviderInvocationID, AttemptID: guard.AttemptID, RunID: guard.RunID, NodeRunID: guard.NodeRunID,
 			Platform: evidenceResult.Platform, GuardianPID: int64(evidenceResult.GuardianPID), GuardianIdentityToken: evidenceResult.GuardianIdentityToken, ChildPID: int64(evidenceResult.ChildPID), ChildIdentityToken: evidenceResult.ChildIdentityToken,
 			TreeID: strconv.Itoa(evidenceResult.TreeID), TreeIdentityToken: evidenceResult.TreeIdentityToken, QuiescenceCapability: evidenceResult.QuiescenceCapability,
@@ -127,36 +127,36 @@ func (o *orchestrationLoop) ingestPendingProviderProcessGuardsPass(ctx context.C
 		}
 		// Cleanup is deliberately after the authoritative SQLite commit. A
 		// cleanup failure is replayable evidence debt, not lost quiescence.
-		o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guard.GuardID, evidence)
+		o.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, guard.GuardID, evidence)
 		pass.NextCursor = guard.GuardID
 		pass.Visited++
 	}
 	return pass, nil
 }
 
-func (o *orchestrationLoop) removeAndMarkProviderProcessGuardEvidenceCleaned(ctx context.Context, guardID, evidence string) {
-	removeErr := processguardian.RemoveQuiescenceEvidence(o.processGuardRuntimeRoot, guardID, evidence)
+func (o *orchestrationLoop) removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx context.Context, guardID, evidence string) {
+	removeErr := processguardian.RemoveQuiescenceEvidence(o.commandGuardianRuntimeRoot, guardID, evidence)
 	if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
-		slog.Warn("provider process guard evidence cleanup deferred", "guard_id", guardID, "error", removeErr)
+		slog.Warn("provider command guardian evidence cleanup deferred", "guard_id", guardID, "error", removeErr)
 		return
 	}
 	// Not-exist is also the expected result when another cleanup pass removes
 	// the file after this pass successfully read the durable proof.
-	o.markProviderProcessGuardEvidenceCleaned(ctx, guardID)
+	o.markProviderCommandGuardianEvidenceCleaned(ctx, guardID)
 }
 
-func (o *orchestrationLoop) markProviderProcessGuardEvidenceCleaned(ctx context.Context, guardID string) {
+func (o *orchestrationLoop) markProviderCommandGuardianEvidenceCleaned(ctx context.Context, guardID string) {
 	if o == nil || o.executionStore == nil {
 		return
 	}
-	if err := o.executionStore.MarkProviderProcessGuardEvidenceCleaned(ctx, guardID, o.now().UTC().Format(time.RFC3339Nano)); err != nil {
-		slog.Warn("provider process guard evidence cleanup marker deferred", "guard_id", guardID, "error", err)
+	if err := o.executionStore.MarkProviderCommandGuardianEvidenceCleaned(ctx, guardID, o.now().UTC().Format(time.RFC3339Nano)); err != nil {
+		slog.Warn("provider command guardian evidence cleanup marker deferred", "guard_id", guardID, "error", err)
 	}
 }
 
-func (o *orchestrationLoop) pendingProviderProcessGuardAbsent(guard executionstore.ProviderProcessGuard) bool {
-	if o != nil && o.processGuardAbsent != nil {
-		return o.processGuardAbsent(guard)
+func (o *orchestrationLoop) pendingProviderCommandGuardianAbsent(guard executionstore.ProviderCommandGuardian) bool {
+	if o != nil && o.commandGuardianAbsent != nil {
+		return o.commandGuardianAbsent(guard)
 	}
 	return processguardian.ManagedProcessAbsent(int(guard.ChildPID), parseTreeID(guard.TreeID), guard.ChildIdentityToken, guard.TreeIdentityToken)
 }
@@ -344,15 +344,15 @@ func boolToQueryInt(value bool) int {
 	return 0
 }
 
-func (o *orchestrationLoop) ingestProviderProcessGuardQuiescence(ctx context.Context, job asyncExecutionResult, guard opencode.ProcessGuardQuiescence) error {
+func (o *orchestrationLoop) ingestProviderCommandGuardianQuiescence(ctx context.Context, job asyncExecutionResult, guard opencode.CommandGuardianQuiescence) error {
 	if o == nil || o.executionStore == nil {
-		return fmt.Errorf("execution store is required for provider process guard")
+		return fmt.Errorf("execution store is required for provider command guardian")
 	}
 	result := guard.Result
 	if !result.Quiescent || strings.TrimSpace(result.EvidenceSHA256) == "" || strings.TrimSpace(result.EvidenceJSON) == "" {
 		return fmt.Errorf("guardian did not provide durable quiescence evidence")
 	}
-	_, err := o.executionStore.IngestProviderProcessGuardQuiescence(ctx, executionstore.IngestProviderProcessGuardQuiescenceRequest{
+	_, err := o.executionStore.IngestProviderCommandGuardianQuiescence(ctx, executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID:               result.GuardID,
 		ProviderInvocationID:  job.providerInvocationID,
 		AttemptID:             job.attemptID,
@@ -376,8 +376,8 @@ func (o *orchestrationLoop) ingestProviderProcessGuardQuiescence(ctx context.Con
 		EvidenceSHA256:        result.EvidenceSHA256,
 		EvidenceJSON:          result.EvidenceJSON,
 	})
-	if err == nil && strings.TrimSpace(o.processGuardRuntimeRoot) != "" {
-		o.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, result.GuardID, result.EvidenceJSON)
+	if err == nil && strings.TrimSpace(o.commandGuardianRuntimeRoot) != "" {
+		o.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, result.GuardID, result.EvidenceJSON)
 	}
 	return err
 }

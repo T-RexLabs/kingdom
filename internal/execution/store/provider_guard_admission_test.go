@@ -9,7 +9,7 @@ import (
 	"kingdom/internal/execution/providerrequest"
 )
 
-func boundRunGuardianFixture(t *testing.T) (*Store, *sql.DB, providerrequest.Binding, AcknowledgeProviderProcessGuardRequest) {
+func boundRunGuardianFixture(t *testing.T) (*Store, *sql.DB, providerrequest.Binding, AcknowledgeProviderCommandGuardianRequest) {
 	t.Helper()
 	db := openTestDB(t)
 	s, activation := requestActivationFixture(t, db)
@@ -21,7 +21,7 @@ func boundRunGuardianFixture(t *testing.T) (*Store, *sql.DB, providerrequest.Bin
 	if err != nil || !found {
 		t.Fatalf("binding: found=%t %v", found, err)
 	}
-	ack := AcknowledgeProviderProcessGuardRequest{
+	ack := AcknowledgeProviderCommandGuardianRequest{
 		GuardID: "request-command-guard", ProviderInvocationID: activation.ProviderInvocationID,
 		AttemptID: activation.AttemptID, RunID: activation.RunID, NodeRunID: activation.NodeRunID, CommandOrdinal: 1,
 		Platform: "unix_process_group", GuardianPID: 201, GuardianIdentityToken: "guardian", ChildPID: 202, ChildIdentityToken: "child",
@@ -76,7 +76,7 @@ func TestBoundRunGuardianRequiresIssuedPendingCommandAdmission(t *testing.T) {
 			case "stale lease":
 				runGuardianExec(t, db, `UPDATE attempt_executions SET lease_version=lease_version+1 WHERE attempt_id=?`, ack.AttemptID)
 			}
-			_, err := s.AcknowledgeProviderProcessGuard(ctx, ack)
+			_, err := s.AcknowledgeProviderCommandGuardian(ctx, ack)
 			if mode == "allowed" {
 				if err != nil {
 					t.Fatal(err)
@@ -103,34 +103,34 @@ func TestBoundRunGuardianExactReplayAfterAdmissionCloses(t *testing.T) {
 		_, err := providerrequest.ClaimCommandTx(ctx, tx, providerrequest.NativeCall{BindingID: b.ID, Identity: b.Identity, MessageID: "message", CallID: "shell", Tool: "shell", Input: []byte(`{"command":"pwd"}`)}, now)
 		return err
 	})
-	if _, err := s.AcknowledgeProviderProcessGuard(ctx, ack); err != nil {
+	if _, err := s.AcknowledgeProviderCommandGuardian(ctx, ack); err != nil {
 		t.Fatal(err)
 	}
 	runGuardianTransaction(t, db, func(tx *sql.Tx) error {
 		return providerrequest.CloseAdmissionTx(ctx, tx, b.ID, b.Identity, b.Lease, now)
 	})
 	s.now = func() time.Time { return now.Add(time.Hour) }
-	if result, err := s.AcknowledgeProviderProcessGuard(ctx, ack); err != nil || !result.Idempotent {
+	if result, err := s.AcknowledgeProviderCommandGuardian(ctx, ack); err != nil || !result.Idempotent {
 		t.Fatalf("exact acknowledgement replay: %+v %v", result, err)
 	}
 	changed := ack
 	changed.ChildIdentityToken = "different-child"
-	if _, err := s.AcknowledgeProviderProcessGuard(ctx, changed); err == nil {
+	if _, err := s.AcknowledgeProviderCommandGuardian(ctx, changed); err == nil {
 		t.Fatal("changed acknowledgement replay accepted")
 	}
 	changed = ack
 	changed.GuardID = "replacement-guard"
 	changed.CommandOrdinal++
-	if _, err := s.AcknowledgeProviderProcessGuard(ctx, changed); err == nil {
+	if _, err := s.AcknowledgeProviderCommandGuardian(ctx, changed); err == nil {
 		t.Fatal("late new guard admitted")
 	}
 	if countPhase2Table(t, db, "provider_process_guards") != 1 {
 		t.Fatal("replay created an extra guard")
 	}
-	if _, err := s.IngestProviderProcessGuardQuiescence(ctx, providerProcessGuardQuiescenceProof(ack)); err != nil {
+	if _, err := s.IngestProviderCommandGuardianQuiescence(ctx, providerCommandGuardianQuiescenceProof(ack)); err != nil {
 		t.Fatal(err)
 	}
-	if result, err := s.AcknowledgeProviderProcessGuard(ctx, ack); err != nil || !result.Idempotent || result.Guard.Lifecycle != ProviderProcessGuardLifecycleQuiescent {
+	if result, err := s.AcknowledgeProviderCommandGuardian(ctx, ack); err != nil || !result.Idempotent || result.Guard.Lifecycle != ProviderCommandGuardianLifecycleQuiescent {
 		t.Fatalf("quiescent receipt replay: %+v %v", result, err)
 	}
 }
@@ -220,8 +220,8 @@ func TestBoundRunQuiescenceCannotDiscardUnsettledRequestResources(t *testing.T) 
 				runGuardianExec(t, db, `UPDATE provider_invocations SET invocation_state='invalidated' WHERE provider_invocation_id=?`, ack.ProviderInvocationID)
 			}
 			for name, check := range map[string]func() (bool, error){
-				"attempt": func() (bool, error) { return s.AttemptProcessGuardsQuiescent(ctx, ack.AttemptID) },
-				"run":     func() (bool, error) { return s.RunProviderProcessGuardsQuiescent(ctx, ack.RunID) },
+				"attempt": func() (bool, error) { return s.AttemptCommandGuardiansQuiescent(ctx, ack.AttemptID) },
+				"run":     func() (bool, error) { return s.RunProviderCommandGuardiansQuiescent(ctx, ack.RunID) },
 			} {
 				quiescent, err := check()
 				if err != nil || quiescent != (mode == "abandoned") {

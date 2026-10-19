@@ -1316,7 +1316,6 @@ CREATE TABLE retry_decisions (
   retry_index INTEGER NOT NULL CHECK (retry_index >= 0),
   max_retries INTEGER NOT NULL CHECK (max_retries >= 0),
   policy_delay_ns INTEGER NOT NULL CHECK (policy_delay_ns >= 0),
-  provider_retry_at TEXT,
   due_at TEXT NOT NULL,
   dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('pending', 'dispatched', 'not_applicable')),
   dispatched_at TEXT,

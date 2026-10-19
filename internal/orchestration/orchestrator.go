@@ -99,8 +99,8 @@ type orchestrationLoop struct {
 	asyncDrain                         *executionDrainTracker
 	notifyCompletionReady              func()
 	closeMode                          *runtimeCloseMode
-	processGuardRuntimeRoot            string
-	processGuardAbsent                 func(executionstore.ProviderProcessGuard) bool
+	commandGuardianRuntimeRoot         string
+	commandGuardianAbsent              func(executionstore.ProviderCommandGuardian) bool
 }
 
 type keyedLockEntry struct {

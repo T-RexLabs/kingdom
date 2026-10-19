@@ -52,7 +52,7 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		acknowledgement.QuiescenceCapability = ownership.QuiescenceCapability
 		acknowledgement.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		acknowledgement.AcknowledgedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		_, callbackErr := store.AcknowledgeProviderProcessGuard(callbackCtx, acknowledgement)
+		_, callbackErr := store.AcknowledgeProviderCommandGuardian(callbackCtx, acknowledgement)
 		return callbackErr
 	})
 	var launchErr *LaunchError
@@ -73,7 +73,7 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		t.Fatalf("read durable abort evidence: digest=%q result=%+v err=%v", digest, launchErr.Result, err)
 	}
 	quiescentAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+	if _, err := store.IngestProviderCommandGuardianQuiescence(context.Background(), executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID: persistedOwnership.GuardID, ProviderInvocationID: acknowledgement.ProviderInvocationID,
 		AttemptID: acknowledgement.AttemptID, RunID: acknowledgement.RunID, NodeRunID: acknowledgement.NodeRunID,
 		Platform: persistedOwnership.Platform, GuardianPID: int64(persistedOwnership.GuardianPID), GuardianIdentityToken: persistedOwnership.GuardianIdentityToken,
@@ -87,12 +87,12 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		t.Fatalf("ingest durable aborted launch evidence: %v", err)
 	}
 	var lifecycle string
-	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = ?`, persistedOwnership.GuardID).Scan(&lifecycle); err != nil || lifecycle != string(executionstore.ProviderProcessGuardLifecycleQuiescent) {
+	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = ?`, persistedOwnership.GuardID).Scan(&lifecycle); err != nil || lifecycle != string(executionstore.ProviderCommandGuardianLifecycleQuiescent) {
 		t.Fatalf("durable abort evidence did not quiesce the persisted guard: lifecycle=%q err=%v", lifecycle, err)
 	}
 }
 
-func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionstore.Store, executionstore.AcknowledgeProviderProcessGuardRequest) {
+func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionstore.Store, executionstore.AcknowledgeProviderCommandGuardianRequest) {
 	t.Helper()
 	names, err := dbmigrations.List()
 	if err != nil {
@@ -176,7 +176,7 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 	if err := tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	return store, executionstore.AcknowledgeProviderProcessGuardRequest{
+	return store, executionstore.AcknowledgeProviderCommandGuardianRequest{
 		ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
 		CommandOrdinal: 1, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion,
 	}

@@ -66,7 +66,7 @@ func (memoryResponder) Execute(_ context.Context, req ExecuteRequest) (ExecuteRe
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
-	return ExecuteResponse{Accepted: true, OutputText: summary, Outcome: ExecutionOutcome{State: "success", ReasonCode: "execution_completed"}}, nil
+	return ExecuteResponse{OutputText: summary, Outcome: ExecutionOutcome{State: "success", ReasonCode: "execution_completed"}}, nil
 }
 
 func (p *FixtureProvider) Prepare(_ context.Context, req ExecuteRequest) (Prepared, error) {
@@ -126,9 +126,6 @@ func (p *FixtureProvider) Execute(ctx context.Context, req ExecuteRequest) (Exec
 	if err := p.authority.IssueDispatch(ctx, prepared.Identity); err != nil {
 		return ExecuteResponse{}, err
 	}
-	if req.OnProviderSession != nil {
-		req.OnProviderSession(prepared.ProviderSessionID)
-	}
 	if req.OnInvocationStarted != nil {
 		req.OnInvocationStarted()
 	}
@@ -162,7 +159,6 @@ func (p *FixtureProvider) Execute(ctx context.Context, req ExecuteRequest) (Exec
 	response.StreamObservation = observation
 	response.ProviderSessionID = prepared.ProviderSessionID
 	response.ProviderInvocationID = token
-	response.Accepted = true
 	return response, responseErr
 }
 

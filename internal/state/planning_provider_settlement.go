@@ -97,7 +97,9 @@ type CreatePlanningProviderInvocationRequest struct {
 	LeaseVersion                 int
 }
 
-type MarkPlanningProviderInvocationOpenRequest struct {
+// planningProviderInvocationOpening is the open half of an activation: the
+// invocation becomes open on its provider session under the operation lease.
+type planningProviderInvocationOpening struct {
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
 	ProviderSessionID            string
@@ -526,8 +528,8 @@ func normalizeCreatePlanningProviderInvocationRequest(req CreatePlanningProvider
 	return normalized, nil
 }
 
-func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProviderInvocationOpenRequest) (MarkPlanningProviderInvocationOpenRequest, error) {
-	normalized := MarkPlanningProviderInvocationOpenRequest{
+func normalizePlanningProviderInvocationOpening(req planningProviderInvocationOpening) (planningProviderInvocationOpening, error) {
+	normalized := planningProviderInvocationOpening{
 		PlanningProviderInvocationID: strings.TrimSpace(req.PlanningProviderInvocationID),
 		PlanningOperationID:          strings.TrimSpace(req.PlanningOperationID),
 		ProviderSessionID:            strings.TrimSpace(req.ProviderSessionID),
@@ -536,18 +538,18 @@ func normalizeMarkPlanningProviderInvocationOpenRequest(req MarkPlanningProvider
 		LeaseVersion:                 req.LeaseVersion,
 	}
 	if normalized.PlanningProviderInvocationID == "" || normalized.PlanningOperationID == "" {
-		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation id and planning operation id are required")
+		return planningProviderInvocationOpening{}, fmt.Errorf("planning provider invocation id and planning operation id are required")
 	}
 	if normalized.OpenedAt == "" {
-		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation opened_at is required")
+		return planningProviderInvocationOpening{}, fmt.Errorf("planning provider invocation opened_at is required")
 	}
 	if normalized.LeaseOwner == "" || normalized.LeaseVersion < 1 {
-		return MarkPlanningProviderInvocationOpenRequest{}, fmt.Errorf("planning provider invocation open requires an active operation lease")
+		return planningProviderInvocationOpening{}, fmt.Errorf("planning provider invocation open requires an active operation lease")
 	}
 	return normalized, nil
 }
 
-func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, MarkPlanningProviderInvocationOpenRequest, error) {
+func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProviderInvocationRequest) (CreatePlanningProviderInvocationRequest, planningProviderInvocationOpening, error) {
 	createReq, err := normalizeCreatePlanningProviderInvocationRequest(CreatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: req.PlanningProviderInvocationID,
 		PlanningOperationID:          req.PlanningOperationID,
@@ -558,9 +560,9 @@ func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProv
 		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, planningProviderInvocationOpening{}, err
 	}
-	openReq, err := normalizeMarkPlanningProviderInvocationOpenRequest(MarkPlanningProviderInvocationOpenRequest{
+	openReq, err := normalizePlanningProviderInvocationOpening(planningProviderInvocationOpening{
 		PlanningProviderInvocationID: createReq.PlanningProviderInvocationID,
 		PlanningOperationID:          createReq.PlanningOperationID,
 		ProviderSessionID:            req.ProviderSessionID,
@@ -569,7 +571,7 @@ func normalizeActivatePlanningProviderInvocationRequest(req ActivatePlanningProv
 		LeaseVersion:                 req.LeaseVersion,
 	})
 	if err != nil {
-		return CreatePlanningProviderInvocationRequest{}, MarkPlanningProviderInvocationOpenRequest{}, err
+		return CreatePlanningProviderInvocationRequest{}, planningProviderInvocationOpening{}, err
 	}
 	return createReq, openReq, nil
 }
@@ -615,7 +617,7 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 	return invocation, nil
 }
 
-func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, openReq MarkPlanningProviderInvocationOpenRequest) error {
+func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, openReq planningProviderInvocationOpening) error {
 	if err := ensurePlanningProviderInvocationStateForOpen(invocation); err != nil {
 		return err
 	}
@@ -653,7 +655,7 @@ func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invoc
 	return nil
 }
 
-func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req planningProviderInvocationOpening) error {
 	query := fmt.Sprintf(`UPDATE planning_operations
 		SET active_provider_invocation_id = ?
 		WHERE operation_id = ?
@@ -682,7 +684,7 @@ func linkPlanningOperationActiveInvocationTx(ctx context.Context, tx *sql.Tx, in
 	return nil
 }
 
-func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req MarkPlanningProviderInvocationOpenRequest) error {
+func fencePlanningOperationProviderSessionTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, req planningProviderInvocationOpening) error {
 	query := fmt.Sprintf(`UPDATE planning_operations
 		SET provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END
 		WHERE operation_id = ?

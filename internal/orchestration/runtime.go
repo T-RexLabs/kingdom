@@ -247,7 +247,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	closeMode := newRuntimeCloseMode()
 
 	orchestrator := newOrchestrationLoop(cfg.DB, cfg.Provider, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
-	orchestrator.processGuardRuntimeRoot = workspaceRoot
+	orchestrator.commandGuardianRuntimeRoot = workspaceRoot
 	orchestrator.firstEventTimeout = firstEventTimeout
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
@@ -466,11 +466,11 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				}
 			}
 		} else {
-			if guardErr := r.orchestrator.ingestPendingProviderProcessGuards(ctx); guardErr != nil {
+			if guardErr := r.orchestrator.ingestPendingProviderCommandGuardians(ctx); guardErr != nil {
 				if errors.Is(guardErr, context.Canceled) {
 					return nil
 				}
-				slog.Warn("provider process guard ingestion loop failed", "error", guardErr)
+				slog.Warn("provider command guardian ingestion loop failed", "error", guardErr)
 			} else {
 				_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerTerminalHandoffPassLimit)
 				if err != nil {
@@ -511,14 +511,14 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 }
 
 // replayPendingStartupRecovery advances exactly one bounded prerequisite stage.
-// Stages stay ordered across completion-loop iterations so process guard
+// Stages stay ordered across completion-loop iterations so command guardian
 // evidence is authoritative before terminal recovery proceeds.
 func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error) {
 	switch r.pendingStartupRecoveryStage() {
 	case startupRecoveryStageGuards:
-		result, err := r.replayPendingProviderProcessGuards(ctx)
+		result, err := r.replayPendingProviderCommandGuardians(ctx)
 		if err != nil {
-			return false, fmt.Errorf("replay provider process guards: %w", err)
+			return false, fmt.Errorf("replay provider command guardians: %w", err)
 		}
 		if result.Blocked {
 			return false, nil
@@ -566,14 +566,14 @@ func replayStartupWork(ctx context.Context, replay func(context.Context, int) (i
 	return pending(ctx)
 }
 
-func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool, error) {
-	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.processGuardRuntimeRoot) == "" {
+func (r *Runtime) replayStartupProviderCommandGuardians(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.commandGuardianRuntimeRoot) == "" {
 		return false, nil
 	}
 	visitedItems := 0
 	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
 		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
-		result, err := r.replayPendingProviderProcessGuardsWithLimit(ctx, limit)
+		result, err := r.replayPendingProviderCommandGuardiansWithLimit(ctx, limit)
 		if err != nil {
 			return false, err
 		}
@@ -585,7 +585,7 @@ func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool,
 			return false, nil
 		}
 	}
-	guards, err := r.orchestrator.executionStore.ListPendingProviderProcessGuards(ctx, "", 1)
+	guards, err := r.orchestrator.executionStore.ListPendingProviderCommandGuardians(ctx, "", 1)
 	if err != nil {
 		return false, err
 	}
@@ -609,15 +609,15 @@ func (r *Runtime) replayStartupLostProviderTerminalHandoffs(ctx context.Context)
 	}, r.orchestrator.hasLostProviderTerminalHandoffs)
 }
 
-func (r *Runtime) replayPendingProviderProcessGuards(ctx context.Context) (providerProcessGuardPassResult, error) {
-	return r.replayPendingProviderProcessGuardsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+func (r *Runtime) replayPendingProviderCommandGuardians(ctx context.Context) (providerCommandGuardianPassResult, error) {
+	return r.replayPendingProviderCommandGuardiansWithLimit(ctx, providerlimits.StartupReplayBatchItems)
 }
 
-func (r *Runtime) replayPendingProviderProcessGuardsWithLimit(ctx context.Context, limit int) (providerProcessGuardPassResult, error) {
+func (r *Runtime) replayPendingProviderCommandGuardiansWithLimit(ctx context.Context, limit int) (providerCommandGuardianPassResult, error) {
 	r.mu.Lock()
 	cursor := r.startupGuardCursor
 	r.mu.Unlock()
-	result, err := r.orchestrator.ingestPendingProviderProcessGuardsPass(ctx, cursor, limit, true)
+	result, err := r.orchestrator.ingestPendingProviderCommandGuardiansPass(ctx, cursor, limit, true)
 	r.mu.Lock()
 	r.startupGuardCursor = result.NextCursor
 	r.mu.Unlock()
@@ -828,9 +828,9 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	guardsDeferred, err := r.replayStartupProviderProcessGuards(ctx)
+	guardsDeferred, err := r.replayStartupProviderCommandGuardians(ctx)
 	if err != nil {
-		return fmt.Errorf("replay provider process guards: %w", err)
+		return fmt.Errorf("replay provider command guardians: %w", err)
 	}
 	if guardsDeferred {
 		logDeferredStartupReplay("provider_process_guards")

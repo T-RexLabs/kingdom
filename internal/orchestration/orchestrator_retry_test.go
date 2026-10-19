@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -154,81 +153,6 @@ func TestProcessRunDispatchesDueRetryInSameTick(t *testing.T) {
 	}
 	if dispatchedAt != now.Format(time.RFC3339Nano) {
 		t.Fatalf("retry dispatched_at=%s, want %s", dispatchedAt, now.Format(time.RFC3339Nano))
-	}
-}
-
-func TestAutomaticWorkOrderRetryUsesExactFailureTimeForProviderHint(t *testing.T) {
-	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
-	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
-	if err != nil {
-		t.Fatalf("load retry policy: %v", err)
-	}
-	engine, err := retryengine.NewEngine(policy)
-	if err != nil {
-		t.Fatalf("create retry engine: %v", err)
-	}
-	now := time.Date(2026, 3, 1, 12, 0, 0, 123456789, time.UTC)
-	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), retryEngine: engine}
-	decision, planned, err := loop.planAutomaticWorkOrderRetry(context.Background(), asyncExecutionResult{
-		run:                       runSnapshot{RunID: "run_1"},
-		node:                      nodeDefinition{NodeID: "work_intake"},
-		attempt:                   nodeAttempt{NodeRunID: "node_1"},
-		attemptID:                 "run_1:work_intake:1",
-		providerDiagnosticsJSON:   `{"retry_after_ms":10000}`,
-		providerStreamObservation: opencode.InvocationStreamObservation{},
-	}, "timeout", now.Format(time.RFC3339Nano))
-	if err != nil || !planned {
-		t.Fatalf("plan automatic retry: planned=%t err=%v", planned, err)
-	}
-	want := now.Add(10 * time.Second)
-	if !decision.DueAt.Equal(want) || decision.DueAt.Format(time.RFC3339Nano) != want.Format(time.RFC3339Nano) {
-		t.Fatalf("retry due_at=%s, want %s", decision.DueAt.Format(time.RFC3339Nano), want.Format(time.RFC3339Nano))
-	}
-}
-
-func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
-	t.Parallel()
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-	now := time.Date(2026, 3, 1, 12, 0, 0, 123456789, time.UTC)
-	const retryAfterMS = 10000
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
-
-	// The provider reports a rate limit as a structured failure, with the
-	// server's retry hint carried in its diagnostics.
-	response := opencode.ExecuteResponse{
-		Accepted:                true,
-		Outcome:                 opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "rate limited", EvidenceSource: "stream"},
-		ProviderDiagnosticsJSON: fmt.Sprintf(`{"retry_after_ms":%d}`, retryAfterMS),
-		StreamObservation:       opencode.InvocationStreamObservation{ProviderErrorPresent: true, ProviderErrorStatus: 429},
-	}
-
-	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
-	if err != nil {
-		t.Fatalf("load retry policy: %v", err)
-	}
-	engine, err := retryengine.NewEngine(policy)
-	if err != nil {
-		t.Fatalf("create retry engine: %v", err)
-	}
-	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), retryEngine: engine}
-	retry, planned, err := loop.planAutomaticWorkOrderRetry(context.Background(), asyncExecutionResult{run: runSnapshot{RunID: "run_1"}, node: nodeDefinition{NodeID: "work_intake"}, attempt: nodeAttempt{NodeRunID: "nr_1"}, attemptID: "run_1:work_intake:1", providerDiagnosticsJSON: response.ProviderDiagnosticsJSON, providerStreamObservation: response.StreamObservation}, response.Outcome.ReasonCode, now.Format(time.RFC3339Nano))
-	if err != nil || !planned || retry.Decision != state.RetryDecisionRetry {
-		t.Fatalf("plan retry from OpenCode result: retry=%#v planned=%t err=%v", retry, planned, err)
-	}
-	if _, scheduled, err := loop.transition.RecordAutomaticWorkOrderRetry(context.Background(), state.AutomaticWorkOrderRetryRecordRequest{Transition: state.TransitionRequest{TransitionID: "tr_opencode_retry_hint", EventID: "evt_opencode_retry_hint", RunID: "run_1", NodeRunID: sql.NullString{String: "nr_1", Valid: true}, Entity: state.EntityTypeNode, FromState: "running", ToState: "failed", ActorID: "runtime_orchestrator", RoleID: "governance", AuthoritySource: "runtime.orchestrator", ReasonCode: "llm_rate_limited", ReasonText: "rate limited", CorrelationID: "corr_opencode_retry_hint", CausationID: "caus_opencode_retry_hint", OccurredAt: now.Format(time.RFC3339Nano), AttemptID: "run_1:work_intake:1", SchemaVersion: "v1", EventType: "attempt.failed", EventSeq: 1, PayloadJSON: `{}`}, Decision: retry}); err != nil || !scheduled {
-		t.Fatalf("persist retry from OpenCode result: scheduled=%t err=%v", scheduled, err)
-	}
-	var providerRetryAt, dueAt string
-	if err := db.QueryRow(`SELECT provider_retry_at, due_at FROM retry_decisions WHERE retry_decision_id = ?`, retry.DecisionID).Scan(&providerRetryAt, &dueAt); err != nil {
-		t.Fatalf("load persisted retry schedule: %v", err)
-	}
-	want := now.Add(retryAfterMS * time.Millisecond).Format(time.RFC3339Nano)
-	if providerRetryAt != want || dueAt != want {
-		t.Fatalf("persisted OpenCode retry hint provider_retry_at=%q due_at=%q, want %q", providerRetryAt, dueAt, want)
 	}
 }
 
@@ -440,8 +364,7 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 			requests := newRequestFixture(db, nil)
 			seedOpenProviderInvocationForAttempt(t, store, requests, attemptID, "run_1", "nr_1", sessionID, invocationID, now)
 			response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
-				Accepted: true,
-				Outcome:  opencode.ExecutionOutcome{State: "failed", ReasonCode: legacyCode, FailureText: "provider terminal failure", EvidenceSource: "stream"},
+				Outcome: opencode.ExecutionOutcome{State: "failed", ReasonCode: legacyCode, FailureText: "provider terminal failure", EvidenceSource: "stream"},
 			}, nil)
 
 			policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))

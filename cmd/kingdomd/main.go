@@ -83,7 +83,7 @@ func run() (exitCode int) {
 	flag.StringVar(&dbPath, "db-path", "./.kingdom/kingdom.db", "sqlite database path")
 	flag.StringVar(&listen, "listen", "127.0.0.1:8080", "HTTP listen address")
 	flag.StringVar(&basePath, "base-path", "/api/v1", "API base path")
-	flag.StringVar(&providerEngine, "provider-engine", envOrDefault("KINGDOM_PROVIDER_ENGINE", "opencode"), "provider engine: opencode or mock_engine")
+	flag.StringVar(&providerEngine, "provider-engine", envOrDefault("KINGDOM_PROVIDER_ENGINE", "opencode"), "provider engine: opencode")
 	flag.StringVar(&governanceMode, "governance-mode", envOrDefault("KINGDOM_GOVERNANCE_MODE", "autonomous"), "governance mode (MVP): autonomous")
 	flag.BoolVar(&autonomousApprovals, "autonomous-approvals", envBoolOrDefault("KINGDOM_AUTONOMOUS_APPROVALS", true), "autonomous governance approvals for plan and final closure")
 	flag.StringVar(&providerBinary, "provider-binary", envOrDefault("KINGDOM_PROVIDER_BINARY", "opencode"), "opencode binary path")
@@ -187,7 +187,7 @@ func run() (exitCode int) {
 		BasePath:                   basePath,
 		AutonomousApprovalsDefault: &autonomousApprovals,
 		ProviderService:            providerService,
-		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, 10*time.Minute),
+		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, api.ProviderModelCatalogTTL),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                repoRoot,

@@ -126,7 +126,6 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 		t.Fatalf("activate response-first invocation: %v", err)
 	}
 	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
-		Accepted:          true,
 		OutputText:        "Partial streamed response",
 		StreamObservation: opencode.InvocationStreamObservation{PendingToolCount: 1},
 	}, nil)

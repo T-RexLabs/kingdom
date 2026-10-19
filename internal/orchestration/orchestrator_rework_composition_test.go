@@ -39,7 +39,7 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	step, ok := a.steps[req.AttemptID]
 	a.mu.Unlock()
 	if !ok {
-		return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
+		return opencode.ExecuteResponse{OutputText: `{"summary":"ok"}`}, nil
 	}
 	if step.block != nil {
 		select {
@@ -51,7 +51,7 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if step.err != nil {
 		return opencode.ExecuteResponse{}, step.err
 	}
-	return opencode.ExecuteResponse{Accepted: true, OutputText: step.output}, nil
+	return opencode.ExecuteResponse{OutputText: step.output}, nil
 }
 
 func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t *testing.T) {
