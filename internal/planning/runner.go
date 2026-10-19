@@ -1000,6 +1000,16 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 	if cause == nil {
 		cause = fmt.Errorf("planner operation failed")
 	}
+	// A provider request that ended without terminal evidence settles as
+	// abandoned now, rather than when recovery finds the operation idle.
+	if operation.ActiveProviderInvocationID != nil && providerMetadataFromError(cause).StreamObservation.Request == nil {
+		abandoned, release, err := r.deps.abandonUnprovenRequest(ctx, operation, cause)
+		if err != nil {
+			return errors.Join(cause, err)
+		}
+		defer release()
+		cause = abandoned
+	}
 	now := r.deps.nowString()
 	providerMetadata := providerMetadataFromError(cause)
 	observedOutputText = firstNonEmpty(strings.TrimSpace(observedOutputText), strings.TrimSpace(providerMetadata.FinalText))

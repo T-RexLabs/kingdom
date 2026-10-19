@@ -4406,3 +4406,53 @@ func TestRecoveryLeavesAStuckOperationBlockedWhenItsRequestAdmittedATool(t *test
 		t.Fatalf("an operation whose tool may have changed the workspace must stay running: %#v %v", op, err)
 	}
 }
+
+// unprovenAgent plays a provider whose request ran but could not be proven:
+// the request is activated and closed, and Execute reports an error with no
+// terminal evidence.
+type unprovenAgent struct{ err error }
+
+func (m *unprovenAgent) unproven(ctx context.Context, invocation *ProviderInvocationContext) error {
+	prepared := providerledger.Prepared(invocation.InvocationID, providerledger.SessionFor(invocation.InvocationID, invocation.ReusableProviderSessionID))
+	if err := invocation.Activate(ctx, prepared); err != nil {
+		return err
+	}
+	if err := providerledger.CloseRequest(ctx, invocation.InvocationID); err != nil {
+		return err
+	}
+	return executionError(ProviderExecutionMetadata{}, m.err)
+}
+
+func (m *unprovenAgent) ContinueTurnStream(ctx context.Context, input AgentContext, _ func(text string)) (AgentTurn, error) {
+	return AgentTurn{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func (m *unprovenAgent) FormalizePlanStream(ctx context.Context, input AgentContext, _ func(text string)) (FormalizedPlan, error) {
+	return FormalizedPlan{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func (m *unprovenAgent) GenerateTitle(ctx context.Context, input AgentContext, _ func(text string)) (GeneratedTitle, error) {
+	return GeneratedTitle{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func TestReplyWhoseProviderRequestCannotBeProvenFailsAtOnceWithItsCause(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	store := state.NewPlanningStore(stateTestDB(t))
+	cause := errors.New("verify OpenCode request: the final step is missing")
+	service := NewServiceWithRetryEngine(store, &unprovenAgent{err: cause}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Hello", AnswerPayloadJSON: `{"text":"Hello"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusFailed || terminal.Error == nil || !strings.Contains(*terminal.Error, cause.Error()) {
+		t.Fatalf("an unproven request must fail its turn with the provider's cause: %s %v", terminal.Status, terminal.Error)
+	}
+}
