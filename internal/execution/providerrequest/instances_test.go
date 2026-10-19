@@ -80,7 +80,7 @@ func TestServerInstanceClosureIsIdempotentAndKeepsTheFirstProof(t *testing.T) {
 	}
 }
 
-func TestStartupAbortsOnlyUnstartedCommandClaimsOfStoppedServers(t *testing.T) {
+func TestAbortsOnlyUnstartedCommandClaimsOfStoppedServers(t *testing.T) {
 	db, b, now := fixture(t, OwnerRun)
 	bind(t, db, b, now)
 	dispatch(t, db, b, now)
@@ -114,9 +114,13 @@ func TestStartupAbortsOnlyUnstartedCommandClaimsOfStoppedServers(t *testing.T) {
 	if aborted := abort(); aborted != 0 {
 		t.Fatalf("aborting must be idempotent, aborted=%d", aborted)
 	}
+	// A bridge still launching the command can no longer get it a guardian.
+	if err := transaction(t, db, func(tx *sql.Tx) error { return RequireGuardianAdmissionTx(ctx, tx, b.ID, b.Lease, 1, now) }); err == nil {
+		t.Fatal("an aborted claim admitted a guardian")
+	}
 }
 
-func TestStartupLeavesACommandWhoseGuardianWasAcknowledgedToTheGuardianRecovery(t *testing.T) {
+func TestLeavesACommandWhoseGuardianWasAcknowledgedToTheGuardianRecovery(t *testing.T) {
 	db, b, now := fixture(t, OwnerRun)
 	bind(t, db, b, now)
 	dispatch(t, db, b, now)

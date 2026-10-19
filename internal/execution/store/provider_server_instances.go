@@ -29,8 +29,7 @@ func (s *Store) CloseProviderServerInstance(ctx context.Context, id string, clos
 }
 
 // AbortOrphanedCommandClaims closes the command claims of stopped servers that
-// never reached a guardian. It is only safe while nothing is launching commands,
-// as during startup.
+// never reached a guardian.
 func (s *Store) AbortOrphanedCommandClaims(ctx context.Context) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, fmt.Errorf("store database is required")

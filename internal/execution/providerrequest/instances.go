@@ -81,8 +81,9 @@ func OpenServerInstances(ctx context.Context, q Reader) ([]ServerInstance, error
 
 // AbortOrphanedCommandClaimsTx closes the command claims of stopped servers that
 // never reached a guardian. A guardian acknowledges and persists its ownership
-// before it releases a command, so a claim without one never ran. The caller
-// guarantees no command bridge is launching anything, as at startup.
+// before it releases a command, so a claim without one never ran, and
+// RequireGuardianAdmissionTx refuses a guardian for an aborted claim, so a
+// bridge still launching one can no longer run it.
 func AbortOrphanedCommandClaimsTx(ctx context.Context, tx *sql.Tx, now time.Time) (int64, error) {
 	if now.IsZero() {
 		return 0, fmt.Errorf("command abort time is required")
