@@ -128,7 +128,6 @@ export function PlannerMessageCard({
                     }
                     activity={messageActivity}
                     isLive={isAssistantStreaming && !hasFinalResponse}
-                    hasFinalResponse={hasFinalResponse}
                   />
                 )}
                 {displayText.trim() ? (

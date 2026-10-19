@@ -135,7 +135,7 @@ describe("PlannerMessageCard", () => {
     ).toBeTruthy();
   });
 
-  it("shows the current provider lifecycle status while streaming without an empty history panel", () => {
+  it("shows one status line while streaming without an empty history panel", () => {
     render(
       <PlannerMessageCard
         message={{
@@ -157,9 +157,8 @@ describe("PlannerMessageCard", () => {
         ]}
       />,
     );
-    expect(
-      screen.getByRole("status"),
-    ).toHaveTextContent("Provider Session Started");
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+    expect(screen.queryByText("Provider Session Started")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Hide Activity" })).not.toBeInTheDocument();
   });
@@ -328,10 +327,10 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(
-      await screen.findByText("Recovered durable reasoning"),
-    ).toBeInTheDocument();
-    expect(screen.queryByText("Planner is thinking...")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("Thinking…");
+    expect(screen.queryByText("Recovered durable reasoning")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
+    expect(await screen.findByText("Recovered durable reasoning")).toBeInTheDocument();
   });
 
   it("shows a reasoning preview once and renders a few sources inline as host links", async () => {
@@ -433,12 +432,9 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
+    await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     expect(await screen.findByText(/First reasoning step/)).toBeInTheDocument();
-    expect(
-      await screen.findByText(
-        /The provider did not expose this reasoning\./,
-      ),
-    ).toBeInTheDocument();
+    expect(document.querySelectorAll("[data-activity-event]")).toHaveLength(2);
   });
 
   it("places the sources below the question and its selectables", () => {
@@ -479,7 +475,7 @@ describe("PlannerMessageCard", () => {
     expect(question.compareDocumentPosition(sources) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("shows real live tools without routine progress inside the activity disclosure", async () => {
+  it("keeps live tools inside the activity disclosure behind one status line", async () => {
     render(
       <PlannerMessageCard
         message={{
@@ -499,12 +495,10 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    await waitFor(() => expect(screen.getByText("Fetching https://example.com")).toBeVisible());
+    expect(screen.getByRole("status")).toHaveTextContent("Reading a web page…");
     expect(screen.getByRole("link", { name: /example\.com/ })).toHaveAttribute("href", "https://example.com");
-    expect(screen.getByRole("status")).toHaveTextContent("Fetching https://example.com");
+    expect(screen.queryByText("Searching ACP activity handlers")).not.toBeInTheDocument();
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
-    const recentTools = screen.getByRole("list", { name: "Recent tool calls" });
-    expect(within(recentTools).getByText("Searching ACP activity handlers")).toBeVisible();
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     const history = screen.getByRole("region", { name: "Provider activity history" });
     expect(await within(history).findByText("Searching ACP activity handlers")).toBeInTheDocument();
@@ -531,8 +525,8 @@ describe("PlannerMessageCard", () => {
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Fetched https://bigshotsgolf.com/");
-    expect(within(screen.getByRole("list", { name: "Recent tool calls" })).getAllByText(/^Fetched https:/)).toHaveLength(3);
+    expect(screen.getByRole("status")).toHaveTextContent("Reading 3 web pages…");
+    expect(screen.queryByText(/^Fetched https:/)).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: "Show Activity" }));
     const history = screen.getByRole("region", { name: "Provider activity history" });
     await waitFor(() => expect(within(history).getAllByText(/^Fetched https:/)).toHaveLength(3));

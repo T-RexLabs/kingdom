@@ -160,7 +160,6 @@ describe("focused provider activity", () => {
     state.items = observedThoughtAndTool();
     const view = render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
     const history = screen.getByRole("region", { name: "Provider activity history" });
-    expect(screen.queryByRole("region", { name: "Provider activity preview" })).not.toBeInTheDocument();
     view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="succeeded" detail={{
       attempt_id: "a", output_status: "settled", settlement_status: "succeeded", output_text: "## Complete result",
     } as import("@/api/hooks").RunExecutionDetail} />);
