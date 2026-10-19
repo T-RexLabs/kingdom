@@ -177,7 +177,7 @@ func (r *Runner) Start(ctx context.Context, command Command, persist PersistOwne
 			_ = childStdinWriter.Close()
 			result, resultErr := r.abortAcknowledgedLaunch(controlWriter, statuses, cmd, status.Ownership, false)
 			closeFiles(stdoutReader, stderrReader)
-			return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("persist guardian ownership: %w", err), resultErr), Result: result, OwnershipPersisted: ownershipPersisted}
+			return nil, &LaunchError{Cause: errors.Join(fmt.Errorf("persist guardian ownership: %w", err), resultErr), Result: result, OwnershipPersisted: false}
 		}
 		ownershipPersisted = true
 	}

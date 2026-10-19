@@ -93,7 +93,7 @@ func TestMaterializeRegularCopyRejectsChangedSourceBeforePublishing(t *testing.T
 	}
 }
 
-func TestMaterializeRegularCopyDoesNotFollowSourceLinks(t *testing.T) {
+func TestRegularCopyDoesNotFollowSourceLinks(t *testing.T) {
 	sourcePath, outsidePath, destinationPath := t.TempDir(), t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(outsidePath, "file"), []byte("outside"), 0o644); err != nil {
 		t.Fatal(err)
@@ -114,9 +114,25 @@ func TestMaterializeRegularCopyDoesNotFollowSourceLinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer destination.Close()
+	outside, err := OpenRoot(outsidePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer outside.Close()
+	target, err := outside.ReadEntry("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The target's own identity matches, so only refusing the link can fail.
 	for _, path := range []string{"parent/file", "link"} {
-		if err := destination.MaterializeRegularCopy(context.Background(), "copy", source, path, FileIdentity{}, 0o755); err == nil {
-			t.Fatalf("followed source link %q", path)
+		for name, copyFile := range map[string]func(context.Context, string, *Root, string, FileIdentity, os.FileMode) error{
+			"materialize": destination.MaterializeRegularCopy,
+			"replace":     destination.ReplaceRegularCopy,
+		} {
+			err := copyFile(context.Background(), "copy", source, path, target.Identity, 0o755)
+			if err == nil || errors.Is(err, ErrIdentityMismatch) {
+				t.Fatalf("%s followed source link %q: %v", name, path, err)
+			}
 		}
 	}
 	if entries, err := os.ReadDir(destinationPath); err != nil || len(entries) != 0 {
@@ -249,5 +265,33 @@ func TestMaterializeRegularCopyRejectsInterruptedSourceBeforeMutation(t *testing
 				}
 			})
 		}
+	}
+}
+
+func TestRegularCopyRefusesADigestItCannotVerify(t *testing.T) {
+	sourcePath, destinationPath := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(sourcePath, "file"), []byte("source content"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	source, err := OpenRoot(sourcePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer source.Close()
+	destination, err := OpenRoot(destinationPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
+	entry, err := source.ReadEntry("file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry.Identity.ContentSHA256 = strings.Repeat("0", 64)
+	if err := destination.ReplaceRegularCopy(context.Background(), "copy", source, "file", entry.Identity, 0o755); err == nil {
+		t.Fatal("a copy accepted a content digest it does not check")
+	}
+	if entries, err := os.ReadDir(destinationPath); err != nil || len(entries) != 0 {
+		t.Fatalf("refused copy left destination changes: %v %v", entries, err)
 	}
 }

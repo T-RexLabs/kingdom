@@ -71,20 +71,30 @@ func copyRegularFile(ctx context.Context, file *os.File, dst io.Writer) (FileIde
 		return FileIdentity{}, nil, err
 	}
 	hash := sha256.New()
-	n, err := Copy(ctx, io.MultiWriter(dst, hash), file)
+	after, err := copyPinned(ctx, file, io.MultiWriter(dst, hash), before)
 	if err != nil {
 		return FileIdentity{}, nil, err
-	}
-	after, err := openedFileIdentity(file)
-	if err != nil {
-		return FileIdentity{}, nil, err
-	}
-	if before != after || n != after.SizeBytes {
-		return FileIdentity{}, nil, ErrIdentityMismatch
 	}
 	// The bytes returned here always belong to this stable pinned object.
 	after.ContentSHA256 = hex.EncodeToString(hash.Sum(nil))
 	return after, info, ctx.Err()
+}
+
+// copyPinned streams the pinned file to dst and fails if it is no longer the
+// object identified by before once every byte has been read.
+func copyPinned(ctx context.Context, file *os.File, dst io.Writer, before FileIdentity) (FileIdentity, error) {
+	n, err := Copy(ctx, dst, file)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	after, err := openedFileIdentity(file)
+	if err != nil {
+		return FileIdentity{}, err
+	}
+	if before != after || n != after.SizeBytes {
+		return FileIdentity{}, ErrIdentityMismatch
+	}
+	return after, nil
 }
 
 // ReplaceRegularFrom stages streamed output and publishes it atomically only

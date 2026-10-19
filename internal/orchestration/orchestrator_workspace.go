@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -359,28 +358,16 @@ func (o *orchestrationLoop) prepareExecutionWorkspaceContext(ctx context.Context
 			return fmt.Errorf("open execution destination: %w", err)
 		}
 		defer destination.Close()
-		var copyErr error
-		if workspaceCtx.WorkspaceKind == workspacePrivateSource {
-			copyErr = trackedfs.VisitTrackedEntriesRoot(ctx, seedRoot, func(entry trackedfs.TrackedEntry) error {
-				if entry.Type != securefs.EntryTypeRegular {
-					return nil
-				}
+		private := workspaceCtx.WorkspaceKind == workspacePrivateSource
+		copyErr := trackedfs.VisitTrackedEntriesRoot(ctx, seedRoot, func(entry trackedfs.TrackedEntry) error {
+			if entry.Type != securefs.EntryTypeRegular {
+				return nil
+			}
+			if private {
 				return destination.MaterializeRegularCopy(ctx, entry.RelativePath, seedRoot, entry.RelativePath, entry.Identity, 0o755)
-			})
-		} else {
-			copyErr = trackedfs.VisitTrackedFilesRoot(ctx, seedRoot, func(file trackedfs.TrackedFile) error {
-				return destination.ReplaceRegularFrom(ctx, file.RelativePath, func(w io.Writer) error {
-					_, info, err := seedRoot.CopyRegular(ctx, file.RelativePath, w)
-					if err != nil {
-						return err
-					}
-					if trackedfs.MetadataFromInfo(info) != file.Metadata {
-						return securefs.ErrIdentityMismatch
-					}
-					return nil
-				}, os.FileMode(file.Metadata.ModeBits), 0o755, time.Unix(0, file.Metadata.ModifiedNS))
-			})
-		}
+			}
+			return destination.ReplaceRegularCopy(ctx, entry.RelativePath, seedRoot, entry.RelativePath, entry.Identity, 0o755)
+		})
 		if copyErr != nil {
 			return fmt.Errorf("copy execution seed: %w", copyErr)
 		}
