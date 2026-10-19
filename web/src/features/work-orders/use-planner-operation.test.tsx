@@ -153,7 +153,7 @@ describe("usePlannerOperation", () => {
     expect(hook.result.current.operation?.formalizeText).toBe("Retry output");
   });
 
-  it("keeps successful terminal streams open until activity reconciliation", async () => {
+  it("ends the stream on the completed event and streams activity until then", async () => {
     const subscriptions: StreamSubscription[] = [];
     subscribeSSEMock.mockImplementation((args: StreamSubscription) => {
       subscriptions.push(args);
@@ -170,33 +170,11 @@ describe("usePlannerOperation", () => {
     await flush();
 
     expect(subscriptions).toHaveLength(1);
-    expect(subscriptions[0].signal.aborted).toBe(false);
-    expect(subscriptions[0].isTerminalEventType("run.completed")).toBe(false);
-    expect(subscriptions[0].isTerminalEventType("run.activity.reconciled")).toBe(true);
+    expect(subscriptions[0].isTerminalEventType("run.completed")).toBe(true);
+    expect(subscriptions[0].isTerminalEventType("run.failed")).toBe(true);
+    expect(subscriptions[0].isTerminalEventType("run.cancelled")).toBe(true);
+    expect(subscriptions[0].isTerminalEventType("generic")).toBe(false);
     expect(hook.result.current.operation?.replyText).toBe("terminal answer");
-
-    await act(async () => {
-      await subscriptions[0].onEvent({
-        id: "acp-run-1:1",
-        type: "generic",
-        data: JSON.stringify({
-          kind: "kingdom.tool",sequence:1,input:{availability:"not_provided"},output:{availability:"not_provided"},message:{availability:"not_provided"},reasoning:{availability:"not_provided"},
-          activity_id: "recovered-tool",
-          tool_name: "webfetch",
-          label: "Fetched https://example.com",
-        }),
-      });
-    });
-    expect(hook.result.current.operation?.activityItems).toHaveLength(1);
-
-    await act(async () => {
-      await subscriptions[0].onEvent({
-        id: "acp-run-1:2",
-        type: "run.activity.reconciled",
-        data: JSON.stringify({ recovered_activity_count: 1 }),
-      });
-    });
-    expect(hook.result.current.operation?.activityReconciled).toBe(true);
   });
 
   it("rejects stale events after ownership moves to another run", async () => {

@@ -13,8 +13,6 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
-	"kingdom/internal/bootstrapassets"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/state"
 )
@@ -123,9 +121,9 @@ func (c *sequenceCursor) Reserve() int {
 }
 
 func newOperationRunner(deps runtimeDeps, ctx context.Context) *operationRunner {
-	if deps.inspectPlannerProviderSessionActivity == nil {
-		deps.inspectPlannerProviderSessionActivity = inspectPlannerProviderSessionActivity
-	}
+	// The runner issues operation leases, so the same clock must judge them when
+	// a provider request binds to one.
+	deps.store.SetLeaseClock(func() time.Time { return nowTime(deps.nowString()) })
 	idle := make(chan struct{})
 	close(idle)
 	handoffCtx, cancelHandoffs := context.WithCancel(context.Background())
@@ -528,11 +526,11 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
+	agentContext.CurrentMessageID = request.UserMessageID
 	providerInvocation, err := r.createPlanningProviderInvocation(ctx, session, operation, providerSessionID)
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
@@ -540,6 +538,7 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	adoptActivation(&operation, providerInvocation)
 	metadata := resultProviderMetadata(turn.Metadata, err)
 	failAfterProvider := func(cause error) error {
 		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
@@ -563,7 +562,6 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if err != nil {
 		return failAfterProvider(err)
 	}
-	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
@@ -648,9 +646,6 @@ func (r *operationRunner) executeReplyOperation(ctx context.Context, session sta
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
-	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -674,7 +669,6 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 
 	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
@@ -682,6 +676,7 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	turn, err := r.deps.planner.ContinueTurnStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	adoptActivation(&operation, providerInvocation)
 	metadata := resultProviderMetadata(turn.Metadata, err)
 	failAfterProvider := func(cause error) error {
 		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
@@ -698,7 +693,6 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if err != nil {
 		return failAfterProvider(err)
 	}
-	persistObservedPlanningProviderSession(providerInvocation, turn.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(turn.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(turn.Metadata, err), turn.Metadata.FinalText)
 	}
@@ -768,9 +762,6 @@ func (r *operationRunner) executeRegenerateOperation(ctx context.Context, sessio
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
-	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -799,13 +790,13 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, request), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	plan, err := r.deps.planner.FormalizePlanStream(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	adoptActivation(&operation, providerInvocation)
 	metadata := resultProviderMetadata(plan.Metadata, err)
 	failAfterProvider := func(cause error) error {
 		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
@@ -822,7 +813,6 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if err != nil {
 		return failAfterProvider(err)
 	}
-	persistObservedPlanningProviderSession(providerInvocation, plan.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(plan.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(plan.Metadata, err), plan.Metadata.FinalText)
 	}
@@ -882,9 +872,6 @@ func (r *operationRunner) executeFormalizeOperation(ctx context.Context, session
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
-	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
-		return err
-	}
 	return nil
 }
 
@@ -904,13 +891,13 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err != nil {
 		return r.failOperation(ctx, operation, cursor, err)
 	}
-	operation.ActiveProviderInvocationID = stringPtr(providerInvocation.InvocationID)
 	r.decorateProviderInvocationContext(ctx, operation, cursor, providerInvocation)
 	textWriter := newBufferedOperationTextWriter(ctx, operation.OperationID, cursor, streamingMessagePartPayload(operation, operationRequest{}), r.appendOperationEvent)
 	agentContext.ProviderInvocation = providerInvocation
 	generatedTitle, err := r.deps.planner.GenerateTitle(ctx, agentContext, func(text string) {
 		textWriter.Write(text)
 	})
+	adoptActivation(&operation, providerInvocation)
 	metadata := resultProviderMetadata(generatedTitle.Metadata, err)
 	failAfterProvider := func(cause error) error {
 		return r.failOperation(ctx, operation, cursor, executionError(metadata, cause))
@@ -925,7 +912,6 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if err != nil {
 		return failAfterProvider(err)
 	}
-	persistObservedPlanningProviderSession(providerInvocation, generatedTitle.Metadata.ProviderSessionID)
 	if err := requirePlannerTurnSettled(generatedTitle.Metadata); err != nil {
 		return r.failOperationWithObservedOutput(ctx, operation, cursor, executionError(generatedTitle.Metadata, err), generatedTitle.Metadata.FinalText)
 	}
@@ -973,34 +959,6 @@ func (r *operationRunner) executeGenerateTitleOperation(ctx context.Context, ses
 	if r.deps.broker != nil {
 		r.deps.broker.Publish(operation.OperationID)
 	}
-	if err := r.reconcileCompletedActivity(ctx, operation.OperationID); err != nil {
-		return err
-	}
-	return nil
-}
-
-// reconcileCompletedActivity is intentionally part of the runner lifecycle.
-// A durable canonical settlement is already independent of this diagnostic
-// work, but shutdown must still observe a bounded reconciliation failure rather
-// than report that the worker drained while it can continue writing SQLite.
-func (r *operationRunner) reconcileCompletedActivity(ctx context.Context, operationID string) error {
-	if r == nil || r.deps.reconcileActivity == nil {
-		return nil
-	}
-	if err := r.deps.reconcileActivity(ctx, operationID); err != nil {
-		// Canonical settlement is complete already. Outside shutdown, a
-		// diagnostic replay failure stays pending for lifecycle recovery instead
-		// of reclassifying the settled operation as a runner failure.
-		if r.ctx == nil || r.ctx.Err() == nil {
-			return nil
-		}
-		// Canonical settlement has completed. Cancelling this optional,
-		// lifecycle-owned diagnostic continuation is an intentional drain.
-		if ctx.Err() == context.Canceled && onlyContextCancellation(err) {
-			return context.Canceled
-		}
-		return fmt.Errorf("reconcile completed planning activity: %w", err)
-	}
 	return nil
 }
 
@@ -1023,7 +981,7 @@ func (r *operationRunner) failSuccessfulFinalization(ctx context.Context, operat
 			if r.deps.broker != nil {
 				r.deps.broker.Publish(operation.OperationID)
 			}
-			return r.reconcileCompletedActivity(ctx, operation.OperationID)
+			return nil
 		}
 	}
 	return r.failOperationWithObservedOutput(
@@ -1306,40 +1264,6 @@ func (r *operationRunner) decorateProviderInvocationContext(ctx context.Context,
 func plannerActivityPayload(operation state.PlanningOperation, activityID string, activity ProviderActivity) map[string]any {
 	base := plannerRunPayload(operation.OperationID, operation.PlanningSessionID, operation.Type)
 	return acp.ActivityPayload(base, activityID, activity)
-}
-
-func inspectPlannerProviderSessionActivity(ctx context.Context, projectRoot, operationID, providerSessionID, invocationID string, startedAt *string, createdAt string, visit func(ProviderActivity) error) error {
-	invocationStartedAt := time.Time{}
-	if startedAt != nil && strings.TrimSpace(*startedAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(*startedAt)); err == nil {
-			invocationStartedAt = parsed.UTC()
-		}
-	}
-	if invocationStartedAt.IsZero() && strings.TrimSpace(createdAt) != "" {
-		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(createdAt)); err == nil {
-			invocationStartedAt = parsed.UTC()
-		}
-	}
-	return opencode.InspectSessionActivity(ctx, opencode.SessionActivityRequest{
-		ProviderSessionID:   strings.TrimSpace(providerSessionID),
-		WorkDir:             strings.TrimSpace(projectRoot),
-		ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(projectRoot),
-		DatabasePath:        bootstrapassets.ManagedOpenCodeDatabasePath(projectRoot),
-		AttemptID:           strings.TrimSpace(operationID),
-		InvocationID:        strings.TrimSpace(invocationID),
-		InvocationStartedAt: invocationStartedAt,
-	}, visit)
-}
-
-func persistObservedPlanningProviderSession(invocation *ProviderInvocationContext, providerSessionID string) {
-	if invocation == nil {
-		return
-	}
-	trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
-	if trimmedProviderSessionID == "" || strings.TrimSpace(invocation.ProviderSessionID) == trimmedProviderSessionID {
-		return
-	}
-	invocation.ProviderSessionID = trimmedProviderSessionID
 }
 
 func providerSessionIDForPlanningInvocation(ctx context.Context, store *state.PlanningStore, session state.PlanningSession, operation state.PlanningOperation, reuseExistingProviderSession bool) (string, error) {

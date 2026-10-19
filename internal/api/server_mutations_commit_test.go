@@ -18,6 +18,7 @@ import (
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 
 	"modernc.org/sqlite"
 )
@@ -214,6 +215,7 @@ func newAPIServerForCommitOutcomeTestWithConfig(t *testing.T, cfg ServerConfig) 
 	db := sql.OpenDB(connector)
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(providerledger.Register(db))
 
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		t.Fatalf("enable foreign keys pragma: %v", err)

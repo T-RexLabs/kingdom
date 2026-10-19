@@ -19,7 +19,6 @@ const terminalFormalize: PlannerOperationState = {
   replyText: "",
   formalizeText: "Plan",
   error: null,
-  activityReconciled: true,
   activityItems: [],
 };
 
@@ -73,7 +72,7 @@ describe("formalize notifier", () => {
 });
 
 
-it("notifies and clears two formalizations independently, preserving late reconciliation", () => {
+it("notifies and clears two formalizations independently", () => {
   vi.useFakeTimers();
   const addNotification = vi.fn();
   const clearFormalize = vi.fn();
@@ -82,18 +81,14 @@ it("notifies and clears two formalizations independently, preserving late reconc
   const b = { ...a, sessionId: "b", operationId: "op-b", sessionTitle: "B" };
   const context = { entries: [a, b], trackFormalize: vi.fn(), clearFormalize, markNotified };
   const notifications = { notifications: new Map(), addNotification, updateNotification: vi.fn(), removeNotification: vi.fn() };
-  const renderBoth = (reconciled: boolean) => <NotificationContext.Provider value={notifications}><GlobalFormalizeContext.Provider value={context}>
-    <FormalizeNotifier entry={a} streamed={{ ...terminalFormalize, operationId: "op-a", activityReconciled: reconciled }} />
-    <FormalizeNotifier entry={b} streamed={{ ...terminalFormalize, operationId: "op-b" }} />
-  </GlobalFormalizeContext.Provider></NotificationContext.Provider>;
   try {
-    const view = render(renderBoth(false));
+    render(<NotificationContext.Provider value={notifications}><GlobalFormalizeContext.Provider value={context}>
+      <FormalizeNotifier entry={a} streamed={{ ...terminalFormalize, operationId: "op-a" }} />
+      <FormalizeNotifier entry={b} streamed={{ ...terminalFormalize, operationId: "op-b" }} />
+    </GlobalFormalizeContext.Provider></NotificationContext.Provider>);
     expect(addNotification.mock.calls.map(([notice]) => notice.message)).toEqual(["A", "B"]);
     act(() => vi.advanceTimersByTime(5_000));
-    expect(clearFormalize.mock.calls).toEqual([["op-b"]]);
-    view.rerender(renderBoth(true));
-    act(() => vi.advanceTimersByTime(5_000));
-    expect(clearFormalize.mock.calls).toEqual([["op-b"], ["op-a"]]);
+    expect(clearFormalize.mock.calls).toEqual([["op-a"], ["op-b"]]);
     expect(addNotification).toHaveBeenCalledTimes(2);
   } finally { vi.useRealTimers(); }
 });

@@ -20,12 +20,10 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"time"
 
 	gen "kingdom/internal/apigen"
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
@@ -36,7 +34,6 @@ import (
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/planning"
-	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 	"kingdom/internal/theme"
@@ -63,25 +60,27 @@ type ServerConfig struct {
 	ArtifactDownloadURL        string
 	AutonomousApprovalsDefault *bool
 	ProviderEngine             string
-	OpenCodeBinaryPath         string
-	ProviderModelCatalog       ProviderModelCatalog
-	ProviderPolicyPath         string
-	ProviderPolicySchemaPath   string
-	SchemaDir                  string
-	ProjectRoot                string
-	RuntimeRoot                string
-	DefaultPublishMode         string
-	Now                        func() time.Time
-	IDGenerator                func(prefix string) string
-	PlannerAgent               planning.Agent
-	RetryEngine                *retryengine.Engine
-	ExternalAdapter            external.Adapter
-	GitHubKeyStore             *githubexternal.KeyStore
-	GitHubUserTokenStore       *githubexternal.UserTokenStore
-	GitHubSetupClient          *githubexternal.SetupClient
-	GitHubDeviceOAuthClient    *githubexternal.DeviceOAuthClient
-	GitHubSharedAppSlug        string
-	GitHubSharedAppClientID    string
+	// ProviderService runs planner requests. It is shared with run execution and
+	// model discovery, and is closed by the process that created it.
+	ProviderService          *opencode.Service
+	ProviderModelCatalog     ProviderModelCatalog
+	ProviderPolicyPath       string
+	ProviderPolicySchemaPath string
+	SchemaDir                string
+	ProjectRoot              string
+	RuntimeRoot              string
+	DefaultPublishMode       string
+	Now                      func() time.Time
+	IDGenerator              func(prefix string) string
+	PlannerAgent             planning.Agent
+	RetryEngine              *retryengine.Engine
+	ExternalAdapter          external.Adapter
+	GitHubKeyStore           *githubexternal.KeyStore
+	GitHubUserTokenStore     *githubexternal.UserTokenStore
+	GitHubSetupClient        *githubexternal.SetupClient
+	GitHubDeviceOAuthClient  *githubexternal.DeviceOAuthClient
+	GitHubSharedAppSlug      string
+	GitHubSharedAppClientID  string
 	// OperatorCredential is the local bearer credential read from a protected
 	// file by the process entrypoint. It is never persisted by the API.
 	OperatorCredential []byte
@@ -97,7 +96,6 @@ type Server struct {
 	autonomousApprovalsDefault bool
 	providerEngine             string
 	providerModelCatalog       ProviderModelCatalog
-	plannerRuntimeWarmer       providerRuntimeWarmer
 	projectRoot                string
 	defaultPublishMode         string
 	lifecycleCtx               context.Context
@@ -128,10 +126,7 @@ type Server struct {
 	// We keep it on Server so *Server itself can satisfy http.Handler and
 	// callers can hold a single object that owns both serving and
 	// shutdown.
-	handler               http.Handler
-	plannerAdapterCloser  interface{ Close() error }
-	plannerAdapterCloseMu sync.Mutex
-	plannerAdapterClosed  bool
+	handler http.Handler
 }
 
 // ServeHTTP delegates to the composed mux/middleware tree. Having Server
@@ -165,38 +160,14 @@ func (s *Server) Close(ctx context.Context) error {
 	if s.planningService != nil {
 		closeErr = errors.Join(closeErr, s.planningService.Close(ctx))
 	}
-	// The planning service owns its agent/adapter lifecycle, including force
-	// escalation and consumer drain. Do not close that adapter a second time
-	// after a forced service wait has intentionally left consumers running.
-	if s.planningService == nil && closeErr == nil && s.plannerAdapterCloser != nil {
-		closeErr = errors.Join(closeErr, s.closePlannerAdapter(ctx))
-	}
 	return closeErr
 }
 
-func (s *Server) closePlannerAdapter(ctx context.Context) error {
-	s.plannerAdapterCloseMu.Lock()
-	defer s.plannerAdapterCloseMu.Unlock()
-	if s.plannerAdapterClosed || s.plannerAdapterCloser == nil {
-		return nil
-	}
-	if closer, ok := s.plannerAdapterCloser.(interface{ CloseContext(context.Context) error }); ok {
-		if err := closer.CloseContext(ctx); err != nil {
-			return err
-		}
-	} else if err := s.plannerAdapterCloser.Close(); err != nil {
-		return err
-	}
-	s.plannerAdapterClosed = true
-	return nil
-}
-
-// Warm pays this process's one-time provider costs up front, so the first
+// Warm pays this process's one-time provider cost up front, so the first
 // operator to arrive does not.
 //
-// Listing models starts the dedicated provider service lazily. The current
-// planner execution adapter also has its own warmup until V2 execution replaces
-// it. Neither cost should fall on the first operator opening a page.
+// Listing models starts the dedicated provider service lazily, and request
+// execution shares that server.
 //
 // Warming is best-effort by construction. A failure here means the operator
 // pays the cost lazily exactly as they used to, and the real diagnosis reaches
@@ -211,18 +182,6 @@ func (s *Server) Warm(ctx context.Context) {
 			log.Printf("kingdom: warm provider model catalog: %v", err)
 		}
 	}
-	if s.plannerRuntimeWarmer != nil {
-		if err := s.plannerRuntimeWarmer.WarmRuntime(ctx); err != nil {
-			log.Printf("kingdom: warm planner provider runtime: %v", err)
-		}
-	}
-}
-
-// providerRuntimeWarmer is the provider-side half of Warm. It stays an
-// interface so an injected planner agent (tests, alternate engines) simply has
-// nothing to warm rather than needing a stub.
-type providerRuntimeWarmer interface {
-	WarmRuntime(ctx context.Context) error
 }
 
 // ForceClose is the hard-stop shutdown path used when summon is escalated
@@ -488,14 +447,8 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	if cfg.PlannerAgent != nil {
 		plannerAgent = cfg.PlannerAgent
 	} else if providerEngine == "opencode" {
-		plannerInlineConfig, inlineConfigErr := opencode.PlannerSessionInlineConfig()
-		if inlineConfigErr != nil {
-			return nil, fmt.Errorf("build planner opencode inline config: %w", inlineConfigErr)
-		}
-		if projectRoot != "" {
-			if err := bootstrapassets.ValidateManagedOpenCodePlannerAssets(bootstrapassets.ManagedOpenCodeRoot(projectRoot)); err != nil {
-				return nil, fmt.Errorf("validate managed opencode planner assets: %w", err)
-			}
+		if cfg.ProviderService == nil {
+			return nil, fmt.Errorf("provider service is required for the OpenCode planner")
 		}
 		if strings.TrimSpace(cfg.ProviderPolicyPath) == "" || strings.TrimSpace(cfg.ProviderPolicySchemaPath) == "" {
 			return nil, fmt.Errorf("provider policy and schema paths must both be set for the OpenCode planner")
@@ -504,36 +457,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		if loadErr != nil {
 			return nil, loadErr
 		}
-		firstEventTimeout, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, timeoutErr := providerPolicy.ExecutionTimeouts()
+		firstEventTimeout, streamInactivityTimeout, _, _, timeoutErr := providerPolicy.ExecutionTimeouts()
 		if timeoutErr != nil {
 			return nil, fmt.Errorf("parse provider execution timeouts: %w", timeoutErr)
 		}
-		plannerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
-			RuntimeRoot: plannerRuntimeRoot,
-			CancelGrace: cancelGraceTimeout,
-			CancelForce: cancelForceTimeout,
-		})
-		if runnerErr != nil {
-			return nil, fmt.Errorf("init planner process guardian: %w", runnerErr)
-		}
-		plannerAdapter, adapterErr := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
-			BinaryPath:              cfg.OpenCodeBinaryPath,
-			WorkDir:                 strings.TrimSpace(cfg.ProjectRoot),
-			ConfigDir:               bootstrapassets.ManagedOpenCodeRoot(cfg.ProjectRoot),
-			DatabasePath:            bootstrapassets.ManagedOpenCodeDatabasePath(cfg.ProjectRoot),
-			InlineConfigContent:     plannerInlineConfig,
-			Agent:                   "planning-assistant",
-			SkipPermissions:         true,
-			FirstEventTimeout:       firstEventTimeout,
-			StreamInactivityTimeout: streamInactivityTimeout,
-			Runner:                  plannerRunner,
-		})
-		if adapterErr != nil {
-			return nil, fmt.Errorf("init planner adapter: %w", adapterErr)
-		}
-		s.plannerRuntimeWarmer = plannerAdapter
-		s.plannerAdapterCloser = plannerAdapter
-		plannerAgent = planning.NewOpenCodeAgent(plannerAdapter, idGenerator)
+		plannerAgent = planning.NewOpenCodeAgent(cfg.ProviderService, idGenerator, planning.WithRequestLimits(firstEventTimeout, streamInactivityTimeout))
 	}
 	s.planningService = planning.NewServiceWithRetryEngine(planningStore, plannerAgent, strings.TrimSpace(cfg.ProjectRoot), func() string {
 		return now().UTC().Format(time.RFC3339Nano)

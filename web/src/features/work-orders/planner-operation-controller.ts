@@ -55,9 +55,6 @@ export type PlannerOperationState = {
   formalizeText: string;
   draftId?: string;
   error: string | null;
-  // Canonical completion is terminal for composing, but successful streams
-  // remain live until the durable diagnostic activity barrier arrives.
-  activityReconciled: boolean;
   events?: AcpRunEvent[];
   activityItems: PlannerActivityItem[];
 };
@@ -81,7 +78,6 @@ export function buildPlannerOperationState(operation: AcpRun): PlannerOperationS
     replyText: kind === "formalize" || kind === "generate_title" ? "" : outputText,
     formalizeText: kind === "formalize" ? outputText : "",
     error: operation.error ?? null,
-    activityReconciled: false,
     events: [],
     activityItems: [],
   };
@@ -158,8 +154,6 @@ export function reducePlannerOperationEvent(
         pendingReply: null,
       };
     }
-    case "run.activity.reconciled":
-      return { ...next, activityReconciled: true };
     case "run.failed":
     case "error": {
       return {

@@ -56,7 +56,6 @@ export function FormalizeNotifier({ entry, streamed }: { entry: FormalizeEntry; 
         });
       }
     }
-    if (streamed.status === "done" && !streamed.activityReconciled) return;
     if (timerRef.current || dismissedRef.current) return;
     timerRef.current = setTimeout(() => { timerRef.current = null; dismissedRef.current = true; clearFormalize(entry.operationId); }, streamed.status === "error" ? 9000 : 5000);
   }, [entry, streamed, addNotification, clearFormalize, markNotified]);
@@ -74,12 +73,12 @@ function PlannerOperationTracker({ entry }: { entry: TrackedPlannerOperation }) 
   useEffect(() => {
     if (!operation || operation.operationId !== entry.operationId) return;
     store.observeOperation(entry, operation);
-    if (entry.kind !== "formalize" && (operation.status === "error" || operation.status === "cancelled" || (operation.status === "done" && operation.activityReconciled))) store.finishOperation(entry.operationId);
+    if (entry.kind !== "formalize" && isPlannerOperationTerminal(operation.status)) store.finishOperation(entry.operationId);
   }, [entry, operation, store]);
   return entry.kind === "formalize" ? <FormalizeNotifier entry={entry} streamed={operation} /> : null;
 }
 
-/** One tracker per active/reconciling operation; no historical sessions mount. */
+/** One tracker per active operation; no historical sessions mount. */
 export function FormalizeNotifierMount() {
   const { operations } = useTrackedPlannerOperations();
   return <>{operations.map((entry) => <PlannerOperationTracker key={entry.operationId} entry={entry} />)}</>;

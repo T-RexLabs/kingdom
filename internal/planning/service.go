@@ -25,7 +25,6 @@ type Service struct {
 	operations     *operationService
 	runner         *operationRunner
 	recovery       *operationRecovery
-	activity       *planningActivityReconciler
 	events         *operationEventService
 	reconcileEvery time.Duration
 
@@ -46,9 +45,6 @@ type Service struct {
 	retryWakeDue          time.Time
 	retryWakeFailures     int
 	retryWakeWG           sync.WaitGroup
-
-	activityDrainMu  sync.Mutex
-	activityDrainErr error
 
 	// Admission gate. closing flips true once Close has been called;
 	// new writes after that get ErrServiceShuttingDown. activeWrites
@@ -91,8 +87,6 @@ func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projec
 		metrics:     metrics,
 		retryEngine: retryEngine,
 	}
-	activity := newPlanningActivityReconciler(shared)
-	shared.reconcileActivity = activity.ReconcileOperation
 	// One service-owned context drives both the recovery loop and every
 	// runner-spawned goroutine. Close cancels this context, which fans
 	// out: recovery loop exits, in-flight operations see Done at their
@@ -105,7 +99,6 @@ func NewServiceWithRetryEngine(store *state.PlanningStore, planner Agent, projec
 		operations:            newOperationService(shared, runner),
 		runner:                runner,
 		recovery:              newOperationRecovery(shared, runner),
-		activity:              activity,
 		events:                newOperationEventService(shared),
 		reconcileEvery:        30 * time.Second,
 		recoveryCtx:           ctx,
@@ -140,7 +133,6 @@ func (s *Service) startRecoveryLoop() {
 	}
 	go func() {
 		defer close(s.recoveryDone)
-		s.continueStartupActivityRecovery(s.recoveryCtx)
 		ticker := time.NewTicker(s.reconcileEvery)
 		defer ticker.Stop()
 		for {
@@ -149,40 +141,9 @@ func (s *Service) startRecoveryLoop() {
 				return
 			case <-ticker.C:
 				_ = s.recoverOperationsAndSchedule(s.recoveryCtx, false)
-				s.continueStartupActivityRecovery(s.recoveryCtx)
 			}
 		}
 	}()
-}
-
-func (s *Service) continueStartupActivityRecovery(ctx context.Context) {
-	if s == nil || s.activity == nil || ctx.Err() != nil || s.startupPlanningProcessGuardReplayPending() {
-		return
-	}
-	if err := s.activity.Continue(ctx); err != nil && !errors.Is(err, context.Canceled) {
-		log.Printf("planning activity reconciliation continuation: %v", err)
-		if s.recoveryCtx != nil && s.recoveryCtx.Err() != nil {
-			s.recordActivityDrainFailure(err)
-		}
-	}
-}
-
-func (s *Service) recordActivityDrainFailure(err error) {
-	if s == nil || err == nil {
-		return
-	}
-	s.activityDrainMu.Lock()
-	defer s.activityDrainMu.Unlock()
-	s.activityDrainErr = errors.Join(s.activityDrainErr, fmt.Errorf("activity reconciliation drain: %w", err))
-}
-
-func (s *Service) activityDrainFailure() error {
-	if s == nil {
-		return nil
-	}
-	s.activityDrainMu.Lock()
-	defer s.activityDrainMu.Unlock()
-	return s.activityDrainErr
 }
 
 // admitWrite registers an in-flight write at the Service facade. It
@@ -253,8 +214,7 @@ func (s *Service) beginClose() <-chan struct{} {
 // Close shuts down the service in three phases: stop new admissions, stop
 // recovery, then drain in-flight runner operations. The supplied ctx bounds
 // total shutdown time, but Close still attempts later phases and returns any
-// joined timeout or drain errors. After successful drain it releases the
-// planner adapter's replay resources.
+// joined timeout or drain errors.
 //
 // Tests and shutdown paths must call Close so runner goroutines and recovery
 // do not outlive the service and keep mutating the DB after the process is
@@ -334,14 +294,10 @@ func (s *Service) Close(ctx context.Context) error {
 			}
 		}
 	}
-	recoveryDrainErr = errors.Join(recoveryDrainErr, s.activityDrainFailure())
-	retryDrained := false
 	if err := s.waitPlanningRetryWake(closeCtx); err != nil {
 		if ctx.Err() != nil || !planningChannelClosed(forced) {
 			recoveryDrainErr = errors.Join(recoveryDrainErr, fmt.Errorf("retry wake drain: %w", err))
 		}
-	} else {
-		retryDrained = true
 	}
 
 	var runnerDrainErr error
@@ -352,34 +308,7 @@ func (s *Service) Close(ctx context.Context) error {
 		}
 	}
 
-	if err := errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr); err != nil {
-		return err
-	}
-	// A forced wait returning nil is not evidence of quiescence. In particular
-	// Execute may already have returned while its parser or finalizer still
-	// holds staged terminal content.
-	if !planningChannelClosed(drained) || !planningChannelClosed(s.recoveryDone) || !retryDrained {
-		return nil
-	}
-	if s.runner != nil {
-		s.runner.mu.Lock()
-		idle := s.runner.idle
-		s.runner.mu.Unlock()
-		if !planningChannelClosed(idle) {
-			return nil
-		}
-		if closer, ok := s.runner.deps.planner.(ContextCloser); ok {
-			err := closer.CloseContext(closeCtx)
-			if ctx.Err() == nil && planningChannelClosed(forced) && errors.Is(err, context.Canceled) {
-				return nil
-			}
-			return err
-		}
-		if _, ok := s.runner.deps.planner.(interface{ Close() error }); ok {
-			return fmt.Errorf("planner cleanup requires CloseContext")
-		}
-	}
-	return nil
+	return errors.Join(writeDrainErr, recoveryDrainErr, runnerDrainErr)
 }
 
 func planningChannelClosed(ch <-chan struct{}) bool {
@@ -518,19 +447,7 @@ func (s *Service) recoverOperationsAndSchedule(ctx context.Context, backoffOverd
 	if err := s.recovery.RecoverOperations(ctx, s.FinaliseIfStuck); err != nil {
 		return err
 	}
-	if s.activity != nil {
-		if err := s.activity.RecoverStartupPass(ctx); err != nil {
-			return err
-		}
-	}
 	return s.scheduleNextPlanningRetryWake(ctx, backoffOverdueWake)
-}
-
-func (s *Service) PlanningActivityReconciliationPending(ctx context.Context, operationID string) (bool, error) {
-	if s == nil || s.activity == nil || s.activity.deps.store == nil {
-		return false, fmt.Errorf("planning activity reconciliation runtime is required")
-	}
-	return s.activity.deps.store.PlanningActivityReconciliationPending(ctx, operationID)
 }
 
 // replayStartupPlanningProcessGuards protects startup latency from a large
@@ -640,6 +557,10 @@ func (s *Service) FinaliseIfStuck(ctx context.Context, operationID string) (bool
 		return true, nil
 	}
 	if err := s.recovery.failStuck(ctx, op, idleFor(op, now)); err != nil {
+		if errors.Is(err, errBlockedByProviderRequest) {
+			log.Printf("planner operation %s stays running: %v", op.OperationID, err)
+			return false, nil
+		}
 		return false, err
 	}
 	return true, nil

@@ -12,92 +12,15 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
-
-type plannerWarmRunner struct{ handle *plannerWarmHandle }
-
-func (r plannerWarmRunner) Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error) {
-	return r.handle, nil
-}
-
-type plannerWarmHandle struct {
-	started, cancelled, release chan struct{}
-	startOnce, cancelOnce       sync.Once
-}
-
-func (*plannerWarmHandle) GuardID() string       { return "planner-warm-guard" }
-func (*plannerWarmHandle) Stdin() io.WriteCloser { return plannerDiscardWriter{} }
-func (*plannerWarmHandle) Stdout() io.ReadCloser {
-	return io.NopCloser(strings.NewReader("planning-assistant"))
-}
-func (*plannerWarmHandle) Stderr() io.ReadCloser { return io.NopCloser(strings.NewReader("")) }
-func (h *plannerWarmHandle) Cancel(context.Context) error {
-	h.cancelOnce.Do(func() { close(h.cancelled) })
-	return nil
-}
-func (h *plannerWarmHandle) Wait(context.Context) (processguardian.Result, error) {
-	h.startOnce.Do(func() { close(h.started) })
-	<-h.release
-	return processguardian.Result{Quiescent: true}, nil
-}
-
-type plannerDiscardWriter struct{}
-
-func (plannerDiscardWriter) Write(p []byte) (int, error) { return len(p), nil }
-func (plannerDiscardWriter) Close() error                { return nil }
-
-func TestPlanningClosePropagatesDeadlineToRealAdapterWarmGuardian(t *testing.T) {
-	handle := &plannerWarmHandle{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planning-assistant", Runner: plannerWarmRunner{handle}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(state.NewPlanningStore(stateTestDB(t)), NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	warmDone := make(chan error, 1)
-	go func() { warmDone <- adapter.WarmRuntime(context.Background()) }()
-	select {
-	case <-handle.started:
-	case <-time.After(time.Second):
-		t.Fatal("warm guardian did not start")
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	closed := make(chan error, 1)
-	go func() { closed <- service.Close(ctx) }()
-	var closeErr error
-	overran := false
-	select {
-	case closeErr = <-closed:
-	case <-time.After(250 * time.Millisecond):
-		overran = true
-	}
-	select {
-	case <-handle.cancelled:
-	case <-time.After(time.Second):
-		t.Error("adapter-owned warm guardian was not cancelled")
-	}
-	close(handle.release)
-	<-warmDone
-	if overran {
-		closeErr = <-closed
-	}
-	if err := service.Close(context.Background()); err != nil {
-		t.Errorf("close after guardian drain: %v", err)
-	}
-	if overran || !errors.Is(closeErr, context.DeadlineExceeded) {
-		t.Fatalf("30ms planner close overran=%v error=%v", overran, closeErr)
-	}
-}
 
 type acknowledgingPlannerAdapter struct {
 	stagedPlannerAdapter
 	store        *state.PlanningStore
 	released     []providerexecution.ContentReference
 	afterExecute func(opencode.ExecuteRequest)
-	closeCalls   int
 }
 
 type timedOutPlannerAdapter struct {
@@ -132,8 +55,8 @@ func TestPlanningCloseDistinguishesSettledTimeoutFromCleanupFailure(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			store := state.NewPlanningStore(stateTestDB(t))
 			adapter := &timedOutPlannerAdapter{acknowledgingPlannerAdapter: &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Terminal timeout diagnostics."}, store: store}, cleanupErr: tc.cleanupErr}
-			service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-			defer adapter.CloseContext(context.Background())
+			service := NewService(store, NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+			defer adapter.Close()
 			settled, release := make(chan struct{}), make(chan struct{})
 			service.runner.afterExecuteClaimed = func() { close(settled); <-release }
 			session, err := service.CreateSession(context.Background(), "Timeout lifecycle", "{}")
@@ -175,12 +98,15 @@ func TestPlanningCloseDistinguishesSettledTimeoutFromCleanupFailure(t *testing.T
 
 func (a *acknowledgingPlannerAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	response, err := a.stagedPlannerAdapter.Execute(ctx, req)
-	if err != nil {
+	if response.StreamObservation.Request == nil {
 		return response, err
 	}
+	refs := append([]providerexecution.ContentReference(nil), response.StreamObservation.DiagnosticContent...)
+	paths := []string{response.StreamObservation.StagedDiagnosticContent[0].Path}
 	ref := a.terminal
-	paths := []string{response.StreamObservation.StagedTerminalContent.Path}
-	refs := append([]providerexecution.ContentReference{ref}, response.StreamObservation.DiagnosticContent...)
+	if response.StreamObservation.CanonicalTerminalTextRef != nil {
+		refs = append([]providerexecution.ContentReference{ref}, refs...)
+	}
 	response.StreamObservation.ReleaseContent = func() error {
 		op, found, err := a.store.GetOperation(context.Background(), req.AttemptID)
 		if err != nil || !found || op.CanonicalSettlementID == nil {
@@ -207,99 +133,7 @@ func (a *acknowledgingPlannerAdapter) Execute(ctx context.Context, req opencode.
 	if a.afterExecute != nil {
 		a.afterExecute(req)
 	}
-	return response, nil
-}
-func (a *acknowledgingPlannerAdapter) Close() error { return a.CloseContext(context.Background()) }
-func (a *acknowledgingPlannerAdapter) CloseContext(ctx context.Context) error {
-	a.closeCalls++
-	for _, path := range a.paths {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return err
-		}
-	}
-	a.paths = nil
-	return nil
-}
-
-func TestPlanningForceCloseCancelsAdapterDrainContext(t *testing.T) {
-	handle := &plannerWarmHandle{started: make(chan struct{}), cancelled: make(chan struct{}), release: make(chan struct{})}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: os.Args[0], Agent: "planning-assistant", Runner: plannerWarmRunner{handle}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(state.NewPlanningStore(stateTestDB(t)), NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	warmDone := make(chan error, 1)
-	go func() { warmDone <- adapter.WarmRuntime(context.Background()) }()
-	<-handle.started
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	closed := make(chan error, 1)
-	go func() { closed <- service.Close(ctx) }()
-	<-handle.cancelled // Close has reached the adapter-owned helper drain.
-	service.ForceClose()
-	var closeErr error
-	overran := false
-	select {
-	case closeErr = <-closed:
-	case <-time.After(250 * time.Millisecond):
-		overran = true
-	}
-	close(handle.release)
-	<-warmDone
-	if overran {
-		closeErr = <-closed
-	}
-	if err := service.Close(context.Background()); err != nil {
-		t.Errorf("cleanup after force and drain: %v", err)
-	}
-	if overran || closeErr != nil {
-		t.Fatalf("force did not interrupt adapter close: overran=%v err=%v", overran, closeErr)
-	}
-}
-
-func TestPlanningForceDoesNotCloseAdapterWhileDiagnosticConsumerIsLive(t *testing.T) {
-	store := state.NewPlanningStore(stateTestDB(t))
-	adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Complete reply."}, store: store}
-	service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	started, release := make(chan struct{}), make(chan struct{})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(context.Context, string, string, string, string, *string, string, func(ProviderActivity) error) error {
-		close(started)
-		<-release
-		return nil
-	}
-	session, err := service.CreateSession(context.Background(), "Diagnostic lifecycle", "{}")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Input"}); err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	service.ForceClose()
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	defer cancel()
-	if err := service.Close(ctx); err != nil {
-		t.Errorf("forced close: %v", err)
-	}
-	if adapter.closeCalls != 0 || len(adapter.released) != 0 {
-		t.Error("live diagnostic consumer lost its staging")
-	}
-	for _, path := range adapter.paths {
-		if _, err := os.Stat(path); err != nil {
-			t.Errorf("staging disappeared before consumer drained: %v", err)
-		}
-	}
-	close(release)
-	if err := service.runner.Wait(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	<-service.recoveryDone
-	if err := service.Close(context.Background()); err != nil {
-		t.Fatal(err)
-	}
+	return response, err
 }
 
 func TestPlanningRetiresFailedAndCancelledProviderContent(t *testing.T) {
@@ -307,9 +141,10 @@ func TestPlanningRetiresFailedAndCancelledProviderContent(t *testing.T) {
 		t.Run(fmt.Sprintf("cancelled-%v", cancelled), func(t *testing.T) {
 			store := state.NewPlanningStore(stateTestDB(t))
 			adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Not a formalized plan."}, store: store}
-			service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+			service := NewService(store, NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 			defer service.Close(context.Background())
 			if cancelled {
+				adapter.interrupted = true
 				adapter.afterExecute = func(req opencode.ExecuteRequest) { service.runner.RequestCancel(req.AttemptID, "operator cancelled") }
 			}
 			session, err := service.CreateSession(context.Background(), "Failure lifecycle", "{}")
@@ -339,7 +174,7 @@ func TestPlanningRetiresFailedAndCancelledProviderContent(t *testing.T) {
 }
 
 type commitFaultContentAgent struct {
-	unguardedContentAgent
+	Agent
 	beforePublish func()
 }
 
@@ -358,7 +193,7 @@ func TestPlanningRetiresContentAfterAmbiguousCanonicalCommit(t *testing.T) {
 	connector, db := planningCommitOutcomeTestDB(t)
 	store := state.NewPlanningStore(db)
 	adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Durable reply after uncertain commit."}, store: store}
-	agent := &commitFaultContentAgent{unguardedContentAgent: unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, beforePublish: func() { connector.FailNextDurableCommit(nil) }}
+	agent := &commitFaultContentAgent{Agent: NewOpenCodeAgent(adapter, deterministicID()), beforePublish: func() { connector.FailNextDurableCommit(nil) }}
 	service := NewService(store, agent, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 	defer service.Close(context.Background())
 	session, err := service.CreateSession(context.Background(), "Ambiguous finalization", "{}")
@@ -401,7 +236,7 @@ func TestPlanningRetainsStagingWhenCanonicalIngestionRollsBack(t *testing.T) {
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir(), text: "Uncommitted reply."}, store: store}
-	service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	service := NewService(store, NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 	defer service.Close(context.Background())
 	if _, err := db.Exec(`CREATE TRIGGER reject_content_settlement BEFORE INSERT ON planning_provider_completion_settlements BEGIN SELECT RAISE(ABORT,'settlement unavailable'); END`); err != nil {
 		t.Fatal(err)
@@ -438,7 +273,7 @@ func TestPlanningRetainsStagingWhenCanonicalIngestionRollsBack(t *testing.T) {
 func TestPlanningRetiresEachOperationWhileServiceRemainsOpen(t *testing.T) {
 	store := state.NewPlanningStore(stateTestDB(t))
 	adapter := &acknowledgingPlannerAdapter{stagedPlannerAdapter: stagedPlannerAdapter{root: t.TempDir()}, store: store}
-	service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+	service := NewService(store, NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 	defer service.Close(context.Background())
 	for round := 0; round < 2; round++ {
 		for _, kind := range []state.PlanningOperationType{state.PlanningOperationTypeReply, state.PlanningOperationTypeFormalize, state.PlanningOperationTypeGenerateTitle} {

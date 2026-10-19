@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -115,43 +113,18 @@ func TestNewHandlerRespectsStartupContextCancellation(t *testing.T) {
 	}
 }
 
-func TestNewHandlerWithCustomPlannerAgentDoesNotWriteManagedOpenCodeAssets(t *testing.T) {
+func TestNewHandlerRequiresTheSharedProviderServiceForTheOpenCodePlanner(t *testing.T) {
 	t.Parallel()
 
-	projectRoot := t.TempDir()
 	_, err := NewHandler(ServerConfig{
 		ProviderModelCatalog: staticProviderModelCatalog{},
 		DB:                   openAPIServerTestDB(t),
-		ProjectRoot:          projectRoot,
-		PlannerAgent:         &testPlannerAgent{},
+		ProjectRoot:          t.TempDir(),
 		ProviderEngine:       "opencode",
 		OperatorCredential:   []byte(apiTestOperatorCredential),
 	})
-	if err != nil {
-		t.Fatalf("new handler with custom planner agent: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(projectRoot, ".kingdom", "opencode")); !os.IsNotExist(err) {
-		t.Fatalf("expected handler startup to avoid writing managed Kingdom OpenCode assets, stat err=%v", err)
-	}
-}
-
-func TestNewHandlerFailsWhenManagedPlannerAssetsAreMissing(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	_, err := NewHandler(ServerConfig{
-		ProviderModelCatalog: staticProviderModelCatalog{},
-		DB:                   openAPIServerTestDB(t),
-		ProjectRoot:          projectRoot,
-		ProviderEngine:       "opencode",
-		OpenCodeBinaryPath:   filepath.Join(projectRoot, "missing-opencode"),
-		OperatorCredential:   []byte(apiTestOperatorCredential),
-	})
-	if err == nil {
-		t.Fatal("expected handler bootstrap to fail when managed planner assets are missing")
-	}
-	if !strings.Contains(err.Error(), "validate managed opencode planner assets") || !strings.Contains(err.Error(), "kd init --force") {
-		t.Fatalf("expected actionable planner asset validation error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "provider service is required") {
+		t.Fatalf("expected the missing provider service error, got %v", err)
 	}
 }
 

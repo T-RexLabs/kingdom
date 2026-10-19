@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestProviderSettlementsEmbedProviderDiagnostics(t *testing.T) {
@@ -138,7 +138,7 @@ func TestPlanningLogicalSessionIDIsolatesGeneratedTitleRuns(t *testing.T) {
 	}
 }
 
-func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.T) {
+func TestStaleActivationCannotOverwriteRetriedOperation(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -181,6 +181,27 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 	oldInvocation, err := runner.createPlanningProviderInvocation(ctx, state.PlanningSession{PlanningSessionID: operation.PlanningSessionID}, operation, "")
 	if err != nil {
 		t.Fatalf("create old provider invocation: %v", err)
+	}
+	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: oldInvocation.InvocationID,
+		PlanningOperationID:          operation.OperationID,
+		PlanningSessionID:            operation.PlanningSessionID,
+		LogicalSessionID:             oldInvocation.LogicalSessionID,
+		CreatedAt:                    "2026-05-22T08:40:02Z",
+		LeaseOwner:                   operation.LeaseOwner,
+		LeaseVersion:                 operation.LeaseVersion,
+	}); err != nil {
+		t.Fatalf("persist old provider invocation: %v", err)
+	}
+	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
+		PlanningProviderInvocationID: oldInvocation.InvocationID,
+		PlanningOperationID:          operation.OperationID,
+		ProviderSessionID:            "ses_retry_old",
+		OpenedAt:                     "2026-05-22T08:40:03Z",
+		LeaseOwner:                   operation.LeaseOwner,
+		LeaseVersion:                 operation.LeaseVersion,
+	}); err != nil {
+		t.Fatalf("open old provider invocation: %v", err)
 	}
 
 	retryScheduled, err := store.FinalizePlanningFailureWithRetry(ctx, state.FinalizePlanningFailureWithRetryRequest{
@@ -257,8 +278,11 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 		t.Fatalf("open retry provider invocation: %v", err)
 	}
 
-	if err := oldInvocation.OnProviderSession("ses_stale_old"); err == nil {
-		t.Fatal("expected stale invocation session callback to be rejected")
+	if err := oldInvocation.Activate(ctx, providerledger.Prepared(oldInvocation.InvocationID, "ses_stale_old")); err == nil {
+		t.Fatal("expected stale invocation activation to be rejected")
+	}
+	if oldInvocation.activated {
+		t.Fatal("a rejected activation marked the invocation activated")
 	}
 
 	persisted, found, err := store.GetOperation(ctx, operation.OperationID)
@@ -266,17 +290,17 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 		t.Fatalf("get retried operation: found=%v err=%v", found, err)
 	}
 	if persisted.ActiveProviderInvocationID == nil || *persisted.ActiveProviderInvocationID != "ppinv_stale_callback_new" {
-		t.Fatalf("stale callback replaced active invocation: %#v", persisted)
+		t.Fatalf("stale activation replaced active invocation: %#v", persisted)
 	}
 	if persisted.ProviderSessionID == nil || *persisted.ProviderSessionID != "ses_retry_current" {
-		t.Fatalf("stale callback replaced provider session: %#v", persisted)
+		t.Fatalf("stale activation replaced provider session: %#v", persisted)
 	}
 	oldPersisted, found, err := store.GetPlanningProviderInvocation(ctx, oldInvocation.InvocationID)
 	if err != nil || !found {
 		t.Fatalf("get old provider invocation: found=%v err=%v", found, err)
 	}
-	if oldPersisted.InvocationState != state.PlanningProviderInvocationStateSettledFailed || oldPersisted.ProviderSessionID != "" {
-		t.Fatalf("stale callback changed old provider invocation: %#v", oldPersisted)
+	if oldPersisted.InvocationState != state.PlanningProviderInvocationStateSettledFailed || oldPersisted.ProviderSessionID != "ses_retry_old" {
+		t.Fatalf("stale activation changed old provider invocation: %#v", oldPersisted)
 	}
 }
 
@@ -356,11 +380,6 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 			wantReason: "provider_empty_output",
 		},
 		{
-			name:       "incomplete terminal state maps to incomplete turn",
-			cause:      &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
-			wantReason: "provider_incomplete_turn",
-		},
-		{
 			name:       "generic failures map to internal error",
 			cause:      contextError("planner adapter exploded"),
 			wantReason: "internal_error",
@@ -386,4 +405,25 @@ type contextError string
 
 func (e contextError) Error() string {
 	return string(e)
+}
+
+func TestAdoptActivationOnlyAdoptsAnActivatedInvocation(t *testing.T) {
+	t.Parallel()
+
+	failedBeforeActivation := &ProviderInvocationContext{InvocationID: "ppinv_never_activated"}
+	operation := state.PlanningOperation{OperationID: "po_adopt"}
+	adoptActivation(&operation, failedBeforeActivation)
+	adoptActivation(&operation, nil)
+	if operation.ActiveProviderInvocationID != nil {
+		t.Fatalf("a request that failed before activation became the active invocation: %q", *operation.ActiveProviderInvocationID)
+	}
+	if settlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, "2026-05-22T08:41:20Z", "prepare failed", contextError("prepare failed"), false); settlement != nil {
+		t.Fatalf("a request that failed before activation produced a provider settlement: %+v", settlement)
+	}
+
+	activated := &ProviderInvocationContext{InvocationID: "ppinv_activated", activated: true}
+	adoptActivation(&operation, activated)
+	if operation.ActiveProviderInvocationID == nil || *operation.ActiveProviderInvocationID != "ppinv_activated" {
+		t.Fatalf("an activated invocation was not adopted: %v", operation.ActiveProviderInvocationID)
+	}
 }

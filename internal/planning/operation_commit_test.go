@@ -16,6 +16,7 @@ import (
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestServiceReconcilesDurableCommitOutcomeForEveryOperationBundle(t *testing.T) {
@@ -212,6 +213,7 @@ func planningCommitOutcomeTestDB(t *testing.T) (*testutil.SQLiteCommitFaultConne
 	db := connector.OpenDB()
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(providerledger.Register(db))
 	if _, err := db.Exec(`PRAGMA foreign_keys = ON`); err != nil {
 		t.Fatalf("enable foreign keys: %v", err)
 	}

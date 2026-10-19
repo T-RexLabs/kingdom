@@ -368,12 +368,12 @@ func (a *formalizeRetrySequenceAgent) ContinueTurnStream(context.Context, AgentC
 	return AgentTurn{}, errors.New("unexpected reply")
 }
 
-func (a *formalizeRetrySequenceAgent) FormalizePlanStream(_ context.Context, input AgentContext, _ func(string)) (FormalizedPlan, error) {
+func (a *formalizeRetrySequenceAgent) FormalizePlanStream(ctx context.Context, input AgentContext, _ func(string)) (FormalizedPlan, error) {
 	a.mu.Lock()
 	a.calls++
 	call := a.calls
 	a.forceNew = append(a.forceNew, input.ForceNewSession)
-	a.sessions = append(a.sessions, providerSessionIDForInvocation(input.ProviderInvocation))
+	a.sessions = append(a.sessions, input.ProviderInvocation.ReusableProviderSessionID)
 	observed := a.observed
 	a.mu.Unlock()
 	if observed != nil {
@@ -381,7 +381,7 @@ func (a *formalizeRetrySequenceAgent) FormalizePlanStream(_ context.Context, inp
 	}
 	if call == 1 {
 		metadata := ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timed out"}
-		return FormalizedPlan{}, executionError(metadata, errors.New("timed out"))
+		return FormalizedPlan{}, failProviderRequest(ctx, input.ProviderInvocation, metadata, errors.New("timed out"))
 	}
 	metadata, err := testSuccessMetadata(input, "# Retried Plan\n\n## Objective\n\nUse a fresh provider session.")
 	if err != nil {
@@ -406,12 +406,12 @@ func (a *formalizeRetrySequenceAgent) providerSessionInputs() []string {
 	return append([]string(nil), a.sessions...)
 }
 
-func (a *retrySequenceAgent) ContinueTurnStream(_ context.Context, input AgentContext, _ func(string)) (AgentTurn, error) {
+func (a *retrySequenceAgent) ContinueTurnStream(ctx context.Context, input AgentContext, _ func(string)) (AgentTurn, error) {
 	a.mu.Lock()
 	a.calls++
 	call := a.calls
 	if input.ProviderInvocation != nil {
-		a.sessions = append(a.sessions, strings.TrimSpace(input.ProviderInvocation.ProviderSessionID))
+		a.sessions = append(a.sessions, strings.TrimSpace(input.ProviderInvocation.ReusableProviderSessionID))
 	}
 	meaningful := a.meaningfulFailure
 	observed := a.observed
@@ -422,7 +422,7 @@ func (a *retrySequenceAgent) ContinueTurnStream(_ context.Context, input AgentCo
 	}
 	if call == 1 {
 		metadata := ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout", FailureReasonText: "timed out", ProviderDiagnosticsJSON: diagnostics, StreamObservation: opencode.InvocationStreamObservation{MeaningfulProgress: meaningful}}
-		return AgentTurn{}, executionError(metadata, errors.New("timed out"))
+		return AgentTurn{}, failProviderRequest(ctx, input.ProviderInvocation, metadata, errors.New("timed out"))
 	}
 	metadata, err := testSuccessMetadata(input, "Recovered response")
 	if err != nil {

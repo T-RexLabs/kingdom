@@ -22,24 +22,26 @@ import (
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 	"kingdom/internal/testutil/planningfixture"
+	"kingdom/internal/testutil/providerledger"
 
 	_ "modernc.org/sqlite"
 )
 
 type mockAgent struct{}
 
-type unopenedFormalizeAgent struct{ mockAgent }
+// unactivatedFormalizeAgent reports a settled turn without ever binding its
+// provider request, which canonical settlement must refuse.
+type unactivatedFormalizeAgent struct{ mockAgent }
 
-func (a *unopenedFormalizeAgent) FormalizePlanStream(_ context.Context, input AgentContext, onChunk func(string)) (FormalizedPlan, error) {
+func (a *unactivatedFormalizeAgent) FormalizePlanStream(_ context.Context, input AgentContext, onChunk func(string)) (FormalizedPlan, error) {
 	text := "# Durable Planner Settlement\n\n## Objective\nPreserve the settled provider response.\n\n## Proposed Approach\nCommit the draft only with its provider settlement."
 	if onChunk != nil {
 		onChunk(text)
 	}
 	metadata := ProviderExecutionMetadata{
 		FinalText:         text,
-		ProviderSessionID: "session-open-was-not-persisted",
 		OutcomeState:      "success",
-		StreamObservation: terminalPlannerStreamObservation(text, "session-open-was-not-persisted"),
+		StreamObservation: terminalPlannerStreamObservation(text, ""),
 	}
 	return FormalizedPlan{WorkOrderTitle: "Durable Planner Settlement", WorkOrderText: text, Metadata: metadata}, nil
 }
@@ -353,35 +355,7 @@ func bindPlanningContextForTest(t *testing.T, store *state.PlanningStore, sessio
 // provider reports a terminal success outcome and the runtime assembles the
 // final text.
 func testSuccessMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
-	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
-			return ProviderExecutionMetadata{}, err
-		}
-	}
-	return ProviderExecutionMetadata{
-		FinalText:                       finalText,
-		ProviderSessionID:               "provider-session-1",
-		OutcomeState:                    "success",
-		CompletionStructuredPayloadJSON: "{}",
-		StreamObservation:               terminalPlannerStreamObservation(finalText, "provider-session-1"),
-	}, nil
-}
-
-func terminalPlannerStreamObservation(finalText, providerSessionID string) providerexecution.InvocationStreamObservation {
-	exitCode := 0
-	return providerexecution.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_test",
-		FinalStepID:            "step_test",
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  finalText,
-		ProcessExited:          true,
-		ProcessExitCode:        &exitCode,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-	}
+	return completeProviderRequest(context.Background(), input.ProviderInvocation, finalText)
 }
 
 func (m *mockAgent) OpeningTurn(_ context.Context, input AgentContext) (AgentTurn, error) {
@@ -457,12 +431,13 @@ type streamingMockAgent struct {
 	err      error
 }
 
-type rotatingSessionPlanner struct {
+// sessionRecordingPlanner records the provider session that each reply was
+// offered for reuse and the one it settled in.
+type sessionRecordingPlanner struct {
 	mockAgent
-	mu                     sync.Mutex
-	sessions               []string
-	continueCalls          int
-	continueProviderInputs []string
+	mu      sync.Mutex
+	offered []string
+	settled []string
 }
 
 type parallelAutoTitlePlanner struct {
@@ -481,27 +456,25 @@ type parallelAutoTitlePlanner struct {
 // this as empty provider output rather than persisting an empty canonical message.
 type emptyOutputAgent struct{ mockAgent }
 
-func (m *emptyOutputAgent) ContinueTurnStream(_ context.Context, _ AgentContext, onChunk func(text string)) (AgentTurn, error) {
-	return AgentTurn{
-		ContentMarkdown: "",
-		Metadata:        ProviderExecutionMetadata{FinalText: "", OutcomeState: "success"},
-	}, nil
+func (m *emptyOutputAgent) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+	metadata, err := failedProviderMetadata(ctx, input.ProviderInvocation, ProviderExecutionMetadata{OutcomeState: "success"})
+	return AgentTurn{Metadata: metadata}, err
 }
 
 type erroringAgent struct {
 	err error
 }
 
-func (m *erroringAgent) ContinueTurnStream(_ context.Context, _ AgentContext, _ func(text string)) (AgentTurn, error) {
-	return AgentTurn{}, m.err
+func (m *erroringAgent) ContinueTurnStream(ctx context.Context, input AgentContext, _ func(text string)) (AgentTurn, error) {
+	return AgentTurn{}, failProviderRequest(ctx, input.ProviderInvocation, ProviderExecutionMetadata{}, m.err)
 }
 
-func (m *erroringAgent) FormalizePlanStream(_ context.Context, _ AgentContext, _ func(text string)) (FormalizedPlan, error) {
-	return FormalizedPlan{}, m.err
+func (m *erroringAgent) FormalizePlanStream(ctx context.Context, input AgentContext, _ func(text string)) (FormalizedPlan, error) {
+	return FormalizedPlan{}, failProviderRequest(ctx, input.ProviderInvocation, ProviderExecutionMetadata{}, m.err)
 }
 
-func (m *erroringAgent) GenerateTitle(_ context.Context, _ AgentContext, _ func(text string)) (GeneratedTitle, error) {
-	return GeneratedTitle{}, m.err
+func (m *erroringAgent) GenerateTitle(ctx context.Context, input AgentContext, _ func(text string)) (GeneratedTitle, error) {
+	return GeneratedTitle{}, failProviderRequest(ctx, input.ProviderInvocation, ProviderExecutionMetadata{}, m.err)
 }
 
 func (m *streamingMockAgent) OpeningTurn(_ context.Context, input AgentContext) (AgentTurn, error) {
@@ -540,21 +513,15 @@ func (m *streamingMockAgent) GenerateTitle(_ context.Context, input AgentContext
 	return (&mockAgent{}).GenerateTitle(context.Background(), input, onChunk)
 }
 
-func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+func (p *sessionRecordingPlanner) ContinueTurnStream(_ context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
+	metadata, err := testSuccessMetadata(input, defaultPlanningServiceTestScript.ContinueContent)
+	if err != nil {
+		return AgentTurn{}, err
+	}
 	p.mu.Lock()
-	call := p.continueCalls
-	p.continueCalls++
-	p.continueProviderInputs = append(p.continueProviderInputs, strings.TrimSpace(providerSessionIDForInvocation(input.ProviderInvocation)))
-	providerSessionID := ""
-	if call < len(p.sessions) {
-		providerSessionID = strings.TrimSpace(p.sessions[call])
-	}
+	p.offered = append(p.offered, input.ProviderInvocation.ReusableProviderSessionID)
+	p.settled = append(p.settled, metadata.ProviderSessionID)
 	p.mu.Unlock()
-	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		if err := input.ProviderInvocation.OnProviderSession(providerSessionID); err != nil {
-			return AgentTurn{}, err
-		}
-	}
 	if onChunk != nil {
 		onChunk(defaultPlanningServiceTestScript.ContinueContent)
 	}
@@ -564,20 +531,14 @@ func (p *rotatingSessionPlanner) ContinueTurnStream(_ context.Context, input Age
 			Prompt: defaultPlanningServiceTestScript.ContinueQuestion.Prompt,
 			Type:   defaultPlanningServiceTestScript.ContinueQuestion.Type,
 		},
-		Metadata: ProviderExecutionMetadata{
-			FinalText:                       defaultPlanningServiceTestScript.ContinueContent,
-			ProviderSessionID:               providerSessionID,
-			OutcomeState:                    "success",
-			CompletionStructuredPayloadJSON: "{}",
-			StreamObservation:               terminalPlannerStreamObservation(defaultPlanningServiceTestScript.ContinueContent, providerSessionID),
-		},
+		Metadata: metadata,
 	}, nil
 }
 
-func (p *rotatingSessionPlanner) continueProviderSessionIDs() []string {
+func (p *sessionRecordingPlanner) sessions() (offered, settled []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return append([]string(nil), p.continueProviderInputs...)
+	return append([]string(nil), p.offered...), append([]string(nil), p.settled...)
 }
 
 func newParallelAutoTitlePlanner() *parallelAutoTitlePlanner {
@@ -615,7 +576,7 @@ func (p *parallelAutoTitlePlanner) GenerateTitle(ctx context.Context, input Agen
 		if onChunk != nil {
 			onChunk("Parallel Title")
 		}
-		metadata, err := parallelAutoTitleMetadata(input, "Parallel Title")
+		metadata, err := testSuccessMetadata(input, "Parallel Title")
 		if err != nil {
 			return GeneratedTitle{}, err
 		}
@@ -629,7 +590,7 @@ func parallelAutoTitleReply(input AgentContext, content string, question Structu
 	if onChunk != nil {
 		onChunk(content)
 	}
-	metadata, err := parallelAutoTitleMetadata(input, content)
+	metadata, err := testSuccessMetadata(input, content)
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -637,23 +598,6 @@ func parallelAutoTitleReply(input AgentContext, content string, question Structu
 		ContentMarkdown: content,
 		Question:        &question,
 		Metadata:        metadata,
-	}, nil
-}
-
-func parallelAutoTitleMetadata(input AgentContext, finalText string) (ProviderExecutionMetadata, error) {
-	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		// Open the durable invocation needed for server-side settlement without
-		// returning a session for post-provider diagnostic export.
-		if err := input.ProviderInvocation.OnProviderSession("settlement-only-session"); err != nil {
-			return ProviderExecutionMetadata{}, err
-		}
-		input.ProviderInvocation.ProviderSessionID = ""
-	}
-	return ProviderExecutionMetadata{
-		FinalText:                       finalText,
-		OutcomeState:                    "success",
-		CompletionStructuredPayloadJSON: "{}",
-		StreamObservation:               terminalPlannerStreamObservation(finalText, ""),
 	}, nil
 }
 
@@ -1000,7 +944,6 @@ func TestServiceFormalizeUsesPersistedProviderSession(t *testing.T) {
 		t.Fatalf("expected succeeded reply operation, got %+v", replyTerminal)
 	}
 
-	const providerSessionID = "provider-session-1"
 	replyInvocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, planningLogicalSessionID(session.PlanningSessionID, state.PlanningOperationTypeReply))
 	if err != nil {
 		t.Fatalf("get persisted reply provider invocation: %v", err)
@@ -1008,8 +951,9 @@ func TestServiceFormalizeUsesPersistedProviderSession(t *testing.T) {
 	if !found {
 		t.Fatal("expected the completed reply to persist a reusable provider invocation")
 	}
-	if replyInvocation.ProviderSessionID != providerSessionID {
-		t.Fatalf("reply provider session=%q, want %q", replyInvocation.ProviderSessionID, providerSessionID)
+	providerSessionID := replyInvocation.ProviderSessionID
+	if providerSessionID == "" {
+		t.Fatal("expected the completed reply to persist its provider session")
 	}
 	if replyInvocation.InvocationState != state.PlanningProviderInvocationStateSettledSuccess || strings.TrimSpace(replyInvocation.OpenedAt) == "" || strings.TrimSpace(replyInvocation.SettledAt) == "" {
 		t.Fatalf("expected reply invocation to be durably opened and settled, got %+v", replyInvocation)
@@ -1035,8 +979,8 @@ func TestServiceFormalizeUsesPersistedProviderSession(t *testing.T) {
 	}
 	if formalizeInput.ProviderInvocation == nil {
 		t.Error("formalize agent received no provider invocation context")
-	} else if formalizeInput.ProviderInvocation.ProviderSessionID != providerSessionID {
-		t.Errorf("formalize provider session=%q, want persisted session %q", formalizeInput.ProviderInvocation.ProviderSessionID, providerSessionID)
+	} else if formalizeInput.ProviderInvocation.ReusableProviderSessionID != providerSessionID {
+		t.Errorf("formalize reusable provider session=%q, want persisted session %q", formalizeInput.ProviderInvocation.ReusableProviderSessionID, providerSessionID)
 	}
 
 	if formalizeTerminal.CanonicalSettlementID == nil || strings.TrimSpace(*formalizeTerminal.CanonicalSettlementID) == "" {
@@ -1080,7 +1024,7 @@ func TestFormalizeSettlementFailureDoesNotPublishCompletedMessageOrRetry(t *test
 	store := state.NewPlanningStore(db)
 	service := NewServiceWithRetryEngine(
 		store,
-		&unopenedFormalizeAgent{},
+		&unactivatedFormalizeAgent{},
 		projectRoot,
 		func() string { return "2026-06-14T12:00:00Z" },
 		deterministicID(),
@@ -1088,7 +1032,7 @@ func TestFormalizeSettlementFailureDoesNotPublishCompletedMessageOrRetry(t *test
 	)
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 
-	session, err := service.CreateSession(context.Background(), "Unopened Formalize", `{"model":"test-model"}`)
+	session, err := service.CreateSession(context.Background(), "Unactivated Formalize", `{"model":"test-model"}`)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
@@ -1098,10 +1042,14 @@ func TestFormalizeSettlementFailureDoesNotPublishCompletedMessageOrRetry(t *test
 	}
 	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
 	if terminal.Status != state.PlanningOperationStatusFailed {
-		t.Fatalf("unopened provider invocation status=%q, want failed", terminal.Status)
+		t.Fatalf("unactivated provider invocation status=%q, want failed", terminal.Status)
 	}
-	if terminal.Error == nil || !strings.Contains(*terminal.Error, "success_requires_open_active_invocation") {
-		t.Fatalf("expected the durable open-invocation failure, got %+v", terminal.Error)
+	failure := ""
+	if terminal.Error != nil {
+		failure = *terminal.Error
+	}
+	if !strings.Contains(failure, "provider settlement requires an active provider invocation") {
+		t.Fatalf("expected the unactivated-invocation failure, got %q", failure)
 	}
 	if _, found, err := store.GetCurrentDraft(context.Background(), session.PlanningSessionID); err != nil || found {
 		t.Fatalf("unsettled provider output became a draft: found=%v err=%v", found, err)
@@ -1116,13 +1064,12 @@ func TestFormalizeSettlementFailureDoesNotPublishCompletedMessageOrRetry(t *test
 	if completedMessages != 0 || partialMessages == 0 {
 		t.Fatalf("message events completed=%d partial=%d, want no completed event and retained streamed preview", completedMessages, partialMessages)
 	}
-	var meaningfulProgress int
-	var decision string
-	if err := db.QueryRow(`SELECT meaningful_progress, decision FROM retry_decisions WHERE planning_operation_id = ?`, operation.Operation.OperationID).Scan(&meaningfulProgress, &decision); err != nil {
-		t.Fatalf("load retry decision: %v", err)
+	var retryDecisions int
+	if err := db.QueryRow(`SELECT COUNT(1) FROM retry_decisions WHERE planning_operation_id = ?`, operation.Operation.OperationID).Scan(&retryDecisions); err != nil {
+		t.Fatalf("count retry decisions: %v", err)
 	}
-	if meaningfulProgress != 1 || decision != string(state.RetryDecisionFailFast) {
-		t.Fatalf("retry decision meaningful_progress=%d decision=%q, want progress and fail-fast", meaningfulProgress, decision)
+	if retryDecisions != 0 {
+		t.Fatalf("a request that never reached the provider produced %d retry decisions, want none", retryDecisions)
 	}
 }
 
@@ -1775,171 +1722,6 @@ func TestServiceSecondReplyAutoGeneratesTitleInParallel(t *testing.T) {
 	}
 }
 
-func TestServiceDiagnosticSessionActivityDoesNotDelayCanonicalSettlement(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	t.Cleanup(func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := service.Close(closeCtx); err != nil {
-			t.Errorf("close planning service: %v", err)
-		}
-	})
-	inspectionStarted := make(chan struct{})
-	releaseInspection := make(chan struct{})
-	var releaseOnce sync.Once
-	t.Cleanup(func() {
-		releaseOnce.Do(func() { close(releaseInspection) })
-	})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		close(inspectionStarted)
-		<-releaseInspection
-		return nil
-	}
-
-	session, err := service.CreateSession(context.Background(), "Diagnostic export", `{"model":"test-model"}`)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	reply, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
-		Type:              state.PlanningOperationTypeReply,
-		ReplyMarkdown:     "Reply that must settle independently",
-		AnswerPayloadJSON: `{"text":"Reply that must settle independently"}`,
-	})
-	if err != nil {
-		t.Fatalf("create reply: %v", err)
-	}
-	<-inspectionStarted
-	terminal, ok, err := store.GetOperation(context.Background(), reply.Operation.OperationID)
-	if err != nil || !ok {
-		t.Fatalf("get canonical reply settlement: ok=%v err=%v", ok, err)
-	}
-	if terminal.Status != state.PlanningOperationStatusSucceeded {
-		t.Fatalf("expected canonical reply settlement despite blocked diagnostic export, got %+v", terminal)
-	}
-	select {
-	case <-service.runner.idle:
-		t.Fatal("runner finished while diagnostic inspection was blocked")
-	default:
-	}
-
-	releaseOnce.Do(func() { close(releaseInspection) })
-	if err := service.runner.Wait(context.Background()); err != nil {
-		t.Fatalf("drain diagnostic inspection: %v", err)
-	}
-	pending, err := store.PlanningActivityReconciliationPending(context.Background(), reply.Operation.OperationID)
-	if err != nil {
-		t.Fatalf("get activity reconciliation: %v", err)
-	}
-	if pending {
-		t.Fatal("expected diagnostic reconciliation marker to complete after empty inspection")
-	}
-	events, err := store.ListOperationEventsAfterEventIDPage(context.Background(), reply.Operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
-	if err != nil {
-		t.Fatalf("list diagnostic reconciliation events: %v", err)
-	}
-	if len(events) == 0 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType {
-		t.Fatalf("expected final activity reconciliation marker, got %+v", events)
-	}
-
-	messages, err := store.ListMessages(context.Background(), session.PlanningSessionID)
-	if err != nil {
-		t.Fatalf("list canonical messages: %v", err)
-	}
-	if len(messages) == 0 || messages[len(messages)-1].ContentMarkdown != defaultPlanningServiceTestScript.ContinueContent {
-		t.Fatalf("diagnostic export altered canonical reply settlement: %+v", messages)
-	}
-}
-
-// TestServiceCloseCancelsAndJoinsContendedActivityReconciliationBeforeSQLiteTeardown
-// proves that a post-settlement diagnostic worker is lifecycle-owned during
-// shutdown. The sole SQLite connection is held after canonical settlement and
-// before the reconciliation marker lookup. Close must cancel and join that
-// waiter before SQLite teardown, so releasing the connection cannot let a
-// stale worker write after the service has returned.
-func TestServiceCloseCancelsAndJoinsContendedActivityReconciliationBeforeSQLiteTeardown(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-26T13:00:00Z" }, deterministicID())
-	service.activity.handoffTimeout = 5 * time.Second
-
-	inspectionStarted := make(chan struct{})
-	releaseInspection := make(chan struct{})
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		close(inspectionStarted)
-		<-releaseInspection
-		return nil
-	}
-
-	session, err := service.CreateSession(context.Background(), "Contended reconciliation", `{"model":"test-model"}`)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
-		Type:              state.PlanningOperationTypeReply,
-		ReplyMarkdown:     "Settle before diagnostic reconciliation.",
-		AnswerPayloadJSON: `{"text":"Settle before diagnostic reconciliation."}`,
-	})
-	if err != nil {
-		t.Fatalf("create reply: %v", err)
-	}
-	<-inspectionStarted
-
-	// Holding the only connection makes the marker lookup concrete SQLite
-	// contention, rather than relying on an artificial reconciliation stub.
-	blocker, err := db.Conn(context.Background())
-	if err != nil {
-		t.Fatalf("acquire SQLite blocker: %v", err)
-	}
-	waitsBefore := db.Stats().WaitCount
-	close(releaseInspection)
-	testutil.Eventually(t, time.Second, time.Millisecond, func() error {
-		if db.Stats().WaitCount > waitsBefore {
-			return nil
-		}
-		return fmt.Errorf("reconciliation marker has not reached the held SQLite connection")
-	})
-
-	closeCtx, cancelClose := context.WithTimeout(context.Background(), 200*time.Millisecond)
-	defer cancelClose()
-	closeErr := service.Close(closeCtx)
-	if closeErr != nil {
-		t.Fatalf("close must cancel and join reconciliation before its handoff deadline, got %v", closeErr)
-	}
-	if db.Stats().WaitCount <= waitsBefore {
-		t.Fatal("reconciliation marker did not encounter the held SQLite connection")
-	}
-	select {
-	case <-service.runner.idle:
-		// The worker stopped before Close returned; no writer survives the error.
-	default:
-		t.Fatal("Close returned while the contended reconciliation worker was still live")
-	}
-
-	if err := blocker.Close(); err != nil {
-		t.Fatalf("release SQLite blocker: %v", err)
-	}
-	pending, err := store.PlanningActivityReconciliationPending(context.Background(), operation.Operation.OperationID)
-	if err != nil {
-		t.Fatalf("get pending reconciliation after close: %v", err)
-	}
-	if !pending {
-		t.Fatal("cancelled reconciliation wrote its marker after Close returned")
-	}
-
-	// Tear SQLite down immediately after Close. Any escaped marker writer would
-	// now race the teardown and reproduce the original post-close DB access.
-	if err := db.Close(); err != nil {
-		t.Fatalf("tear down SQLite after reconciliation drain: %v", err)
-	}
-}
-
 func TestServiceRecoverOperationsCatchesUpEligiblePlaceholderTitles(t *testing.T) {
 	t.Parallel()
 
@@ -2047,366 +1829,6 @@ func TestServiceOperationEventsResumeAfterLastEventID(t *testing.T) {
 	}
 	if eventsAfterFirst[len(eventsAfterFirst)-1].EventType != acp.RunCompletedEventType {
 		t.Fatalf("expected terminal run.completed event, got %+v", eventsAfterFirst[len(eventsAfterFirst)-1])
-	}
-}
-
-func TestServiceRecoversExpiredPlanningActivityReconciliationWithoutRerunningProvider(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	first := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	first.runner.deps.reconcileActivity = nil // Simulate a crash immediately after canonical settlement.
-	session, err := first.CreateSession(context.Background(), "Recover activity", `{"model":"test-model"}`)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	created, err := first.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
-		Type:              state.PlanningOperationTypeReply,
-		ReplyMarkdown:     "Recover the export activity",
-		AnswerPayloadJSON: `{"text":"Recover the export activity"}`,
-	})
-	if err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	awaitOperationTerminal(t, store, created.Operation.OperationID)
-	if err := first.runner.Wait(context.Background()); err != nil {
-		t.Fatalf("wait for canonical settlement: %v", err)
-	}
-	claimed, ok, err := store.ClaimPlanningActivityReconciliation(context.Background(), created.Operation.OperationID, "crashed-reconciler", "2026-04-21T17:10:01Z", "2026-04-21T17:10:00Z")
-	if err != nil || !ok {
-		t.Fatalf("claim pending activity reconciliation: claimed=%+v ok=%v err=%v", claimed, ok, err)
-	}
-	if err := first.Close(context.Background()); err != nil {
-		t.Fatalf("close first service: %v", err)
-	}
-
-	restarted := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:02Z" }, deterministicID())
-	defer func() {
-		if err := restarted.Close(context.Background()); err != nil {
-			t.Errorf("close restarted service: %v", err)
-		}
-	}()
-	restarted.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		return visit(ProviderActivity{ProviderPartID: "export-tool-1", Kind: "tool", ToolName: "webfetch", ToolStatus: "completed", ToolTitle: "https://example.com", Input: providerexecution.ActivityText(`{"url":"https://example.com"}`), OccurredAt: "2026-04-21T17:10:00Z"})
-	}
-	if err := restarted.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("recover activity reconciliation: %v", err)
-	}
-	var invocationCount int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_provider_invocations WHERE planning_operation_id = ?`, created.Operation.OperationID).Scan(&invocationCount); err != nil {
-		t.Fatalf("count provider invocations after activity recovery: %v", err)
-	}
-	if invocationCount != 1 {
-		t.Fatalf("activity recovery reran provider: got %d invocations, want 1", invocationCount)
-	}
-	pending, err := store.PlanningActivityReconciliationPending(context.Background(), created.Operation.OperationID)
-	if err != nil || pending {
-		t.Fatalf("expected expired reconciliation to complete: pending=%v err=%v", pending, err)
-	}
-	events, err := store.ListOperationEventsAfterEventIDPage(context.Background(), created.Operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
-	if err != nil {
-		t.Fatalf("list recovered events: %v", err)
-	}
-	if len(events) < 3 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType || events[len(events)-2].EventType != acp.GenericEventType {
-		t.Fatalf("expected recovered activity immediately before reconciliation marker, got %+v", events)
-	}
-	if err := store.CompletePlanningActivityReconciliation(context.Background(), state.CompletePlanningActivityReconciliationRequest{
-		PlanningOperationID: created.Operation.OperationID,
-		LeaseOwner:          claimed.LeaseOwner,
-		LeaseVersion:        claimed.LeaseVersion,
-		CompletedAt:         "2026-04-21T17:10:03Z",
-		MarkerEvent: state.AppendPlanningOperationEventRequest{
-			EventID:     "stale-reconciliation-marker",
-			OperationID: created.Operation.OperationID,
-			Seq:         99,
-			EventType:   acp.RunActivityReconciledEventType,
-			PayloadJSON: `{}`,
-			CreatedAt:   "2026-04-21T17:10:03Z",
-		},
-	}); !errors.Is(err, state.ErrPlanningLeaseConflict) {
-		t.Fatalf("expected stale reconciliation completion to lose its lease fence, got %v", err)
-	}
-}
-
-func TestServiceActivityReconciliationMarksCompletedWhenDiagnosticExportFails(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	defer func() {
-		if err := service.Close(context.Background()); err != nil {
-			t.Errorf("close service: %v", err)
-		}
-	}()
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		return context.DeadlineExceeded
-	}
-	session, err := service.CreateSession(context.Background(), "Diagnostic failure", `{"model":"test-model"}`)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	created, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Complete despite export failure", AnswerPayloadJSON: `{"text":"Complete despite export failure"}`})
-	if err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	if err := service.runner.Wait(context.Background()); err != nil {
-		t.Fatalf("wait for operation: %v", err)
-	}
-	pending, err := store.PlanningActivityReconciliationPending(context.Background(), created.Operation.OperationID)
-	if err != nil || pending {
-		t.Fatalf("expected marker after diagnostic export failure: pending=%v err=%v", pending, err)
-	}
-	events, err := store.ListOperationEventsAfterEventIDPage(context.Background(), created.Operation.OperationID, "", state.DefaultPlanningOperationEventListLimit)
-	if err != nil {
-		t.Fatalf("list operation events: %v", err)
-	}
-	if len(events) == 0 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType {
-		t.Fatalf("expected reconciliation marker after diagnostic export failure, got %+v", events)
-	}
-}
-
-func TestServiceActivityReconciliationContinuesBeyondFormerEventAndByteCaps(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	defer func() {
-		if err := service.Close(context.Background()); err != nil {
-			t.Errorf("close planning service: %v", err)
-		}
-	}()
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		for index := 0; index < state.MaxPlanningActivityReconciliationEvents*2; index++ {
-			input := strings.Repeat("x", 4096)
-			if index == 0 {
-				input = strings.Repeat("x", 300<<10) + "activity-tail"
-			}
-			if err := visit(ProviderActivity{ProviderPartID: fmt.Sprintf("recovered-tool-%d", index), Kind: "tool", ToolName: "webfetch", ToolStatus: "completed", ToolTitle: fmt.Sprintf("https://example.com/%d", index), Input: providerexecution.ActivityText(input)}); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
-
-	session, err := service.CreateSession(context.Background(), "Bounded reconciliation", `{"model":"test-model"}`)
-	if err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	created, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Bound recovered activity", AnswerPayloadJSON: `{"text":"Bound recovered activity"}`})
-	if err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	if err := service.runner.Wait(context.Background()); err != nil {
-		t.Fatalf("wait for operation: %v", err)
-	}
-	events, err := store.ListOperationEventsAfterSeqPage(context.Background(), created.Operation.OperationID, 0, state.DefaultPlanningOperationEventListLimit*4)
-	if err != nil {
-		t.Fatalf("list reconciliation events: %v", err)
-	}
-	activityCount := 0
-	var largeEventID string
-	for _, event := range events {
-		var payload struct {
-			Kind  string                            `json:"kind"`
-			Input providerexecution.ActivityContent `json:"input"`
-		}
-		if err := json.Unmarshal([]byte(event.PayloadJSON), &payload); err != nil {
-			t.Fatal(err)
-		}
-		if payload.Kind != acp.KingdomToolKind {
-			continue
-		}
-		activityCount++
-		if len(event.PayloadJSON) > 6000 {
-			t.Fatal("large body inflated replay metadata")
-		}
-		if payload.Input.ByteLength != nil && *payload.Input.ByteLength > 300<<10 {
-			largeEventID = event.EventID
-		}
-	}
-	if activityCount != state.MaxPlanningActivityReconciliationEvents*2 {
-		t.Fatalf("recovered activity count=%d, want every event", activityCount)
-	}
-	if largeEventID == "" {
-		t.Fatal("missing complete large content descriptor")
-	}
-	var recovered strings.Builder
-	for offset := int64(0); ; {
-		page, err := state.ReadActivityContentPage(context.Background(), db, state.ActivityScope{OperationID: created.Operation.OperationID}, largeEventID, "input", offset, state.ActivityContentPageBytes)
-		if err != nil {
-			t.Fatal(err)
-		}
-		recovered.WriteString(page.Text)
-		if page.NextOffset == 0 {
-			break
-		}
-		offset = page.NextOffset
-	}
-	if recovered.String() != strings.Repeat("x", 300<<10)+"activity-tail" {
-		t.Fatal("diagnostic content lost its exact tail")
-	}
-
-	if len(events) == 0 || events[len(events)-1].EventType != acp.RunActivityReconciledEventType {
-		t.Fatalf("expected marker after bounded recovered activity, got %+v", events)
-	}
-	if err := service.activity.ReconcileOperation(context.Background(), created.Operation.OperationID); err != nil {
-		t.Fatal(err)
-	}
-	replayed, err := listAllPlanningOperationEvents(context.Background(), store, created.Operation.OperationID)
-	if err != nil || len(replayed) != len(events) {
-		t.Fatalf("diagnostic replay duplicated content: %v", err)
-	}
-}
-
-func TestServiceBoundsStartupActivityRecoveryAndContinuesInBackground(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	service.reconcileEvery = time.Hour
-	defer func() {
-		if err := service.Close(context.Background()); err != nil {
-			t.Errorf("close planning service: %v", err)
-		}
-	}()
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{PlanningSessionID: "ps_reconcile_pages", Title: "Recovery pages", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"test-model"}`, CreatedAt: "2026-04-21T17:00:00Z", UpdatedAt: "2026-04-21T17:00:00Z"}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	for index := 0; index <= state.DefaultPlanningOperationListLimit; index++ {
-		operationID := fmt.Sprintf("op_reconcile_page_%03d", index)
-		invocationID := fmt.Sprintf("inv_reconcile_page_%03d", index)
-		createdAt := fmt.Sprintf("2026-04-21T17:00:%02d.000000000Z", index%60)
-		if _, err := db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_version, created_at, finished_at) VALUES (?, ?, 'ps_reconcile_pages', 'reply', 'succeeded', '{}', '', 0, ?, ?)`, operationID, operationID, createdAt, createdAt); err != nil {
-			t.Fatalf("insert succeeded operation %d: %v", index, err)
-		}
-		if _, err := db.Exec(`INSERT INTO planning_provider_invocations (planning_provider_invocation_id, planning_operation_id, planning_session_id, logical_session_id, provider_session_id, invocation_state, completion_mode, process_guard_required, created_at, updated_at) VALUES (?, ?, 'ps_reconcile_pages', '', ?, 'settled_success', 'server_response', 0, ?, ?)`, invocationID, operationID, fmt.Sprintf("session_reconcile_page_%03d", index), createdAt, createdAt); err != nil {
-			t.Fatalf("insert invocation %d: %v", index, err)
-		}
-		if _, err := db.Exec(`INSERT INTO planning_activity_reconciliations (planning_operation_id, planning_provider_invocation_id, status, lease_owner, lease_expires_at, lease_version, created_at, completed_at) VALUES (?, ?, 'pending', '', NULL, 0, ?, NULL)`, operationID, invocationID, createdAt); err != nil {
-			t.Fatalf("insert reconciliation %d: %v", index, err)
-		}
-	}
-	var inspectionMu sync.Mutex
-	inspectionCalls := make(map[string]int)
-	activeInspections := 0
-	maxActiveInspections := 0
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(_ context.Context, _ string, operationID string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		inspectionMu.Lock()
-		inspectionCalls[operationID]++
-		activeInspections++
-		if activeInspections > maxActiveInspections {
-			maxActiveInspections = activeInspections
-		}
-		inspectionMu.Unlock()
-		defer func() {
-			inspectionMu.Lock()
-			activeInspections--
-			inspectionMu.Unlock()
-		}()
-		return nil
-	}
-
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("run bounded startup activity reconciliation: %v", err)
-	}
-	var completed int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_activity_reconciliations WHERE status = 'completed'`).Scan(&completed); err != nil {
-		t.Fatalf("count startup reconciliations: %v", err)
-	}
-	if completed != planningActivityReconciliationStartupPassItems {
-		t.Fatalf("startup reconciliations=%d, want strict pass budget %d", completed, planningActivityReconciliationStartupPassItems)
-	}
-
-	service.StartRecoveryLoop()
-	want := state.DefaultPlanningOperationListLimit + 1
-	testutil.Eventually(t, 5*time.Second, 10*time.Millisecond, func() error {
-		if err := db.QueryRow(`SELECT COUNT(1) FROM planning_activity_reconciliations WHERE status = 'completed'`).Scan(&completed); err != nil {
-			return err
-		}
-		if completed != want {
-			return fmt.Errorf("background reconciliations=%d, want %d", completed, want)
-		}
-		return nil
-	})
-	inspectionMu.Lock()
-	defer inspectionMu.Unlock()
-	if maxActiveInspections > planningActivityReconciliationContinuationConcurrent {
-		t.Fatalf("background inspection concurrency=%d, limit=%d", maxActiveInspections, planningActivityReconciliationContinuationConcurrent)
-	}
-	for index := 0; index <= state.DefaultPlanningOperationListLimit; index++ {
-		operationID := fmt.Sprintf("op_reconcile_page_%03d", index)
-		if inspectionCalls[operationID] != 1 {
-			t.Fatalf("operation %q inspections=%d, want one durable claim", operationID, inspectionCalls[operationID])
-		}
-		var markers int
-		if err := db.QueryRow(`SELECT COUNT(1) FROM planning_operation_events WHERE operation_id = ? AND event_type = 'run.activity.reconciled'`, operationID).Scan(&markers); err != nil {
-			t.Fatalf("count reconciliation markers for %q: %v", operationID, err)
-		}
-		if markers != 1 {
-			t.Fatalf("operation %q reconciliation markers=%d, want one", operationID, markers)
-		}
-	}
-	var invocations int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM planning_provider_invocations`).Scan(&invocations); err != nil {
-		t.Fatalf("count provider invocations: %v", err)
-	}
-	if invocations != want {
-		t.Fatalf("background reconciliation reran provider: invocations=%d, want %d", invocations, want)
-	}
-}
-
-func TestServiceActivityRecoveryContinuationDrainsOnClose(t *testing.T) {
-	projectRoot := t.TempDir()
-	writeTestFile(t, projectRoot, "README.md", "# Project\n")
-	db := stateTestDB(t)
-	store := state.NewPlanningStore(db)
-	service := NewService(store, &mockAgent{}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
-	service.reconcileEvery = time.Hour
-	if _, err := store.CreateSession(context.Background(), state.CreatePlanningSessionRequest{PlanningSessionID: "ps_reconcile_shutdown", Title: "Recovery shutdown", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive, ConversationState: state.PlanningSessionConversationStateReady, ProjectRoot: projectRoot, ModelSelectionJSON: `{"model":"test-model"}`, CreatedAt: "2026-04-21T17:00:00Z", UpdatedAt: "2026-04-21T17:00:00Z"}); err != nil {
-		t.Fatalf("create session: %v", err)
-	}
-	for index := 0; index < 2; index++ {
-		operationID := fmt.Sprintf("op_reconcile_shutdown_%03d", index)
-		invocationID := fmt.Sprintf("inv_reconcile_shutdown_%03d", index)
-		createdAt := fmt.Sprintf("2026-04-21T17:00:0%d.000000000Z", index)
-		if _, err := db.Exec(`INSERT INTO planning_operations (operation_id, acp_run_id, planning_session_id, type, status, request_payload_json, lease_owner, lease_version, created_at, finished_at) VALUES (?, ?, 'ps_reconcile_shutdown', 'reply', 'succeeded', '{}', '', 0, ?, ?)`, operationID, operationID, createdAt, createdAt); err != nil {
-			t.Fatalf("insert succeeded operation %d: %v", index, err)
-		}
-		if _, err := db.Exec(`INSERT INTO planning_provider_invocations (planning_provider_invocation_id, planning_operation_id, planning_session_id, logical_session_id, provider_session_id, invocation_state, completion_mode, process_guard_required, created_at, updated_at) VALUES (?, ?, 'ps_reconcile_shutdown', '', ?, 'settled_success', 'server_response', 0, ?, ?)`, invocationID, operationID, fmt.Sprintf("session_reconcile_shutdown_%03d", index), createdAt, createdAt); err != nil {
-			t.Fatalf("insert invocation %d: %v", index, err)
-		}
-		if _, err := db.Exec(`INSERT INTO planning_activity_reconciliations (planning_operation_id, planning_provider_invocation_id, status, lease_owner, lease_expires_at, lease_version, created_at, completed_at) VALUES (?, ?, 'pending', '', NULL, 0, ?, NULL)`, operationID, invocationID, createdAt); err != nil {
-			t.Fatalf("insert reconciliation %d: %v", index, err)
-		}
-	}
-	continuationStarted := make(chan struct{})
-	var calls int
-	service.activity.deps.inspectPlannerProviderSessionActivity = func(ctx context.Context, _ string, _ string, _ string, _ string, _ *string, _ string, visit func(ProviderActivity) error) error {
-		calls++
-		if calls == 1 {
-			return nil // The synchronous startup pass.
-		}
-		close(continuationStarted)
-		<-ctx.Done()
-		return ctx.Err()
-	}
-	if err := service.RecoverOperations(context.Background()); err != nil {
-		t.Fatalf("run bounded startup activity reconciliation: %v", err)
-	}
-	service.StartRecoveryLoop()
-	select {
-	case <-continuationStarted:
-	case <-time.After(time.Second):
-		t.Fatal("background activity continuation did not start")
-	}
-	closeCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if err := service.Close(closeCtx); err != nil {
-		t.Fatalf("cleanly close activity continuation: %v", err)
 	}
 }
 
@@ -3843,6 +3265,7 @@ func openPlanningTestDB(t *testing.T) *sql.DB {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(providerledger.Register(db))
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		t.Fatalf("enable foreign keys: %v", err)
 	}
@@ -4689,7 +4112,7 @@ func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
 	projectRoot := t.TempDir()
 	writeTestFile(t, projectRoot, "README.md", "# Project\n")
 
-	planner := &rotatingSessionPlanner{sessions: []string{"provider-session-1", "provider-session-2", "provider-session-2"}}
+	planner := &sessionRecordingPlanner{}
 	db := stateTestDB(t)
 	store := state.NewPlanningStore(db)
 	service := NewService(store, planner, projectRoot, func() string { return "2026-06-14T12:00:00Z" }, deterministicID())
@@ -4741,11 +4164,15 @@ func TestServiceRegenerateAdvancesReusableProviderSessionLineage(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("get latest reusable invocation: found=%v err=%v", found, err)
 	}
-	if invocation.ProviderSessionID != "provider-session-2" {
-		t.Fatalf("expected second reply to reuse regenerated provider session, got %+v", invocation)
+	offered, settled := planner.sessions()
+	if len(settled) != 3 || settled[0] == "" || settled[1] == "" || settled[0] == settled[1] || settled[2] != settled[1] {
+		t.Fatalf("expected regenerate to start a new session that the follow-up continues, settled sessions %v", settled)
 	}
-	if got := planner.continueProviderSessionIDs(); len(got) != 3 || got[0] != "" || got[1] != "" || got[2] != "provider-session-2" {
-		t.Fatalf("expected provider session reuse sequence [empty empty provider-session-2], got %v", got)
+	if offered[0] != "" || offered[1] != "" || offered[2] != settled[1] {
+		t.Fatalf("expected reuse offers [empty empty %s], got %v", settled[1], offered)
+	}
+	if invocation.ProviderSessionID != settled[1] {
+		t.Fatalf("expected second reply to continue the regenerated provider session, got %+v", invocation)
 	}
 }
 
@@ -5008,4 +4435,78 @@ func TestServiceCloseRejectsLaterStart(t *testing.T) {
 
 func refString(value string) *string {
 	return &value
+}
+
+// stuckBoundOperation seeds an operation whose worker is gone and whose
+// provider request is bound canonically, as every V2 dispatch is.
+func stuckBoundOperation(t *testing.T) (*Service, *state.PlanningStore, *sql.DB) {
+	t.Helper()
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	db := stateTestDB(t)
+	store := state.NewPlanningStore(db)
+	service := NewService(store, nil, projectRoot, func() string { return "2026-04-26T11:00:00Z" }, deterministicID())
+	// The service clock is 11:00; the request is bound while its worker was alive.
+	store.SetLeaseClock(func() time.Time { return time.Date(2026, 4, 26, 8, 56, 0, 0, time.UTC) })
+	ctx := context.Background()
+	if _, err := store.CreateSession(ctx, state.CreatePlanningSessionRequest{
+		PlanningSessionID: "ps_bound", Title: "stuck", TitleState: "custom", LifecycleState: state.PlanningSessionLifecycleStateActive,
+		ConversationState: state.PlanningSessionConversationStateProcessing, CurrentOperationID: "po_bound", ProjectRoot: projectRoot,
+		ModelSelectionJSON: `{"model":"test-model"}`, CreatedAt: "2026-04-26T08:00:00Z", UpdatedAt: "2026-04-26T08:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	bindPlanningContextForTest(t, store, "ps_bound")
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
+		OperationID: "po_bound", PlanningSessionID: "ps_bound", Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusRunning,
+		RequestPayloadJSON: `{"assistant_message_id":"pm_bound_assistant","assistant_created_at":"2026-04-26T08:55:05Z","turn_index":1}`,
+		LeaseOwner:         "abandoned-worker", LeaseExpiresAt: "2026-04-26T09:00:00Z", LeaseVersion: 1, CreatedAt: "2026-04-26T08:55:00Z", StartedAt: "2026-04-26T08:55:01Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: projectRoot, SessionID: "ses_bound", ProfileID: "profile", RequestID: "request"}
+	if _, err := store.ActivatePlanningProviderInvocation(ctx, state.ActivatePlanningProviderInvocationRequest{
+		RequestIdentity: &identity, PlanningProviderInvocationID: "ppinv_bound", PlanningOperationID: "po_bound", PlanningSessionID: "ps_bound",
+		LogicalSessionID: "planner-ps_bound", ProviderSessionID: "ses_bound", CreatedAt: "2026-04-26T08:55:02Z", OpenedAt: "2026-04-26T08:55:02Z",
+		LeaseOwner: "abandoned-worker", LeaseVersion: 1,
+	}); err != nil {
+		t.Fatalf("activate bound request: %v", err)
+	}
+	return service, store, db
+}
+
+func TestRecoverySettlesAStuckOperationWhoseRequestNeverAdmittedATool(t *testing.T) {
+	t.Parallel()
+	service, store, _ := stuckBoundOperation(t)
+	ctx := context.Background()
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatalf("recover: %v", err)
+	}
+	op, ok, err := store.GetOperation(ctx, "po_bound")
+	if err != nil || !ok || op.Status != state.PlanningOperationStatusFailed {
+		t.Fatalf("a stuck operation with no admitted tool must fail: %#v %v", op, err)
+	}
+	if op.CanonicalSettlementID == nil {
+		t.Fatalf("the failure must be settled: %#v", op)
+	}
+	invocation, _, err := store.GetPlanningProviderInvocation(ctx, "ppinv_bound")
+	if err != nil || invocation.InvocationState != state.PlanningProviderInvocationStateSettledFailed {
+		t.Fatalf("invocation %#v %v", invocation, err)
+	}
+}
+
+func TestRecoveryLeavesAStuckOperationBlockedWhenItsRequestAdmittedATool(t *testing.T) {
+	t.Parallel()
+	service, store, db := stuckBoundOperation(t)
+	ctx := context.Background()
+	if _, err := db.Exec(`INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) VALUES('grant','ppinv_bound','assistant','call','write','{}',?,'2026-04-26T08:55:03Z')`, strings.Repeat("a", 64)); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RecoverOperations(ctx); err != nil {
+		t.Fatalf("a blocked operation must not stop recovery of others: %v", err)
+	}
+	op, ok, err := store.GetOperation(ctx, "po_bound")
+	if err != nil || !ok || op.Status != state.PlanningOperationStatusRunning {
+		t.Fatalf("an operation whose tool may have changed the workspace must stay running: %#v %v", op, err)
+	}
 }

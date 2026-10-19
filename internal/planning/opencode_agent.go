@@ -10,60 +10,58 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
 type OpenCodeAgent struct {
-	adapter     plannerExecuteAdapter
+	executor    plannerExecutor
 	idGenerator func(prefix string) string
+	limits      requestLimits
 }
 
-func (*OpenCodeAgent) RequiresProcessGuard() bool { return true }
+type requestLimits struct{ firstEvent, inactivity time.Duration }
 
-func (a *OpenCodeAgent) Close() error {
-	return a.CloseContext(context.Background())
+// AgentOption configures an OpenCodeAgent.
+type AgentOption func(*OpenCodeAgent)
+
+// WithRequestLimits interrupts a request that stays silent: before its first
+// event for first, and between events for inactivity. Zero disables a limit.
+func WithRequestLimits(first, inactivity time.Duration) AgentOption {
+	return func(a *OpenCodeAgent) { a.limits = requestLimits{firstEvent: first, inactivity: inactivity} }
 }
 
-func (a *OpenCodeAgent) CloseContext(ctx context.Context) error {
-	if a == nil {
-		return nil
-	}
-	if closer, ok := a.adapter.(ContextCloser); ok {
-		return closer.CloseContext(ctx)
-	}
-	if _, ok := a.adapter.(io.Closer); ok {
-		return fmt.Errorf("planner adapter cleanup requires CloseContext")
-	}
-	return nil
-}
-
-type plannerExecuteAdapter interface {
+// plannerExecutor runs a request in two phases: Prepare fixes the provider
+// identity without sending work, and Execute sends it only after the caller has
+// bound that identity to the canonical invocation.
+type plannerExecutor interface {
+	Prepare(context.Context, opencode.ExecuteRequest) (opencode.Prepared, error)
 	Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error)
+	Discard(context.Context, string) error
 }
 
-// NewOpenCodeAgent owns the adapter's replay-resource lifecycle. Service.Close
-// releases it after planner execution and diagnostic consumers have drained.
-func NewOpenCodeAgent(adapter plannerExecuteAdapter, idGenerator func(prefix string) string) *OpenCodeAgent {
-	return &OpenCodeAgent{
-		adapter:     adapter,
-		idGenerator: idGenerator,
+// NewOpenCodeAgent borrows the executor, which is shared with run execution and
+// model discovery. The assembly that created it closes it after all consumers
+// have drained.
+func NewOpenCodeAgent(executor plannerExecutor, idGenerator func(prefix string) string, options ...AgentOption) *OpenCodeAgent {
+	agent := &OpenCodeAgent{executor: executor, idGenerator: idGenerator}
+	for _, option := range options {
+		option(agent)
 	}
+	return agent
 }
 
 func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentContext, onChunk func(text string)) (AgentTurn, error) {
-	prompt := func(ctx context.Context, out io.Writer) error { return writeContinuePrompt(ctx, out, input) }
+	prompts := promptWriters{bootstrap: writeContinuePrompt, continuation: writeContinuationPrompt}
 	sanitizer := newStreamingQuestionSanitizer(onChunk)
 	streamChunk := onChunk
 	if sanitizer != nil {
 		streamChunk = sanitizer.Write
 	}
-	metadata, err := a.execute(ctx, input, prompt, input.ForceNewSession, "reply", streamChunk)
+	metadata, err := a.execute(ctx, input, prompts, input.ForceNewSession, "reply", streamChunk)
 	if err != nil {
 		return AgentTurn{}, err
 	}
@@ -80,8 +78,7 @@ func (a *OpenCodeAgent) ContinueTurnStream(ctx context.Context, input AgentConte
 }
 
 func (a *OpenCodeAgent) GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error) {
-	prompt := func(ctx context.Context, out io.Writer) error { return writeTitlePrompt(ctx, out, input) }
-	metadata, err := a.execute(ctx, input, prompt, true, "generate_title", onChunk)
+	metadata, err := a.execute(ctx, input, promptWriters{bootstrap: writeTitlePrompt}, true, "generate_title", onChunk)
 	if err != nil {
 		return GeneratedTitle{}, fmt.Errorf("generate title: %w", err)
 	}
@@ -101,13 +98,13 @@ func (a *OpenCodeAgent) GenerateTitle(ctx context.Context, input AgentContext, o
 }
 
 func (a *OpenCodeAgent) FormalizePlanStream(ctx context.Context, input AgentContext, onChunk func(text string)) (FormalizedPlan, error) {
-	prompt := func(ctx context.Context, out io.Writer) error { return writeFormalizePrompt(ctx, out, input) }
+	prompts := promptWriters{bootstrap: writeFormalizePrompt, continuation: writeFormalizeContinuationPrompt}
 	sanitizer := newStreamingQuestionSanitizer(onChunk)
 	streamChunk := onChunk
 	if sanitizer != nil {
 		streamChunk = sanitizer.Write
 	}
-	metadata, err := a.execute(ctx, input, prompt, input.ForceNewSession, "formalize", streamChunk)
+	metadata, err := a.execute(ctx, input, prompts, input.ForceNewSession, "formalize", streamChunk)
 	if err != nil {
 		return FormalizedPlan{}, err
 	}
@@ -124,41 +121,37 @@ func (a *OpenCodeAgent) FormalizePlanStream(ctx context.Context, input AgentCont
 	}, nil
 }
 
-func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt func(context.Context, io.Writer) error, forceNew bool, mode string, onChunk func(text string)) (ProviderExecutionMetadata, error) {
-	if a.adapter == nil {
-		return ProviderExecutionMetadata{}, fmt.Errorf("opencode adapter not available")
+// promptWriters render the two inputs a request can submit: the complete
+// bootstrap for a new provider session, and only the new input for a session
+// that already holds the earlier transcript.
+type promptWriters struct {
+	bootstrap    func(context.Context, io.Writer, AgentContext) error
+	continuation func(context.Context, io.Writer, AgentContext) error
+}
+
+func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts promptWriters, forceNew bool, mode string, onChunk func(text string)) (ProviderExecutionMetadata, error) {
+	if a.executor == nil {
+		return ProviderExecutionMetadata{}, fmt.Errorf("opencode executor not available")
 	}
 	if input.PromptCatalog.Version != 1 {
 		return ProviderExecutionMetadata{}, fmt.Errorf("pinned planner prompt catalog is required")
+	}
+	providerInvocation := input.ProviderInvocation
+	if providerInvocation == nil || providerInvocation.Activate == nil {
+		return ProviderExecutionMetadata{}, fmt.Errorf("a durable planner provider invocation is required")
 	}
 	systemPrompt, err := input.PromptCatalog.PlanningSystemPrompt(input.VoiceInstruction, input.GuidanceInstruction, mode)
 	if err != nil {
 		return ProviderExecutionMetadata{}, fmt.Errorf("build planner system prompt: %w", err)
 	}
-	inlineConfig, err := opencode.PlannerAgentInlineConfig(systemPrompt)
-	if err != nil {
-		return ProviderExecutionMetadata{}, fmt.Errorf("build planner invocation config: %w", err)
-	}
-
-	sessionID := planningLogicalSessionID(input.SessionID, "")
 	attemptID := a.id("planner_attempt")
-	if input.ProviderInvocation != nil && strings.TrimSpace(input.ProviderInvocation.AttemptID) != "" {
-		attemptID = strings.TrimSpace(input.ProviderInvocation.AttemptID)
+	if strings.TrimSpace(providerInvocation.AttemptID) != "" {
+		attemptID = strings.TrimSpace(providerInvocation.AttemptID)
 	}
-	providerInvocation := input.ProviderInvocation
-	if providerInvocation != nil && strings.TrimSpace(providerInvocation.LogicalSessionID) != "" {
-		sessionID = strings.TrimSpace(providerInvocation.LogicalSessionID)
-	}
-	invocationID := invocationIDForPlanner(providerInvocation)
+	invocationID := strings.TrimSpace(providerInvocation.InvocationID)
 	if invocationID == "" {
 		invocationID = a.id("planner_invocation")
 	}
-	providerSessionID := providerSessionIDForInvocation(providerInvocation)
-	// A durable planner invocation may only reuse a provider session whose id
-	// was explicitly loaded from state and attached to the invocation. Without
-	// one, do not let SessionAdapter's process-local logical-session cache
-	// silently select a session that the planning store cannot fence.
-	forceNew = forceNew || (providerInvocation != nil && providerSessionID == "")
 	// A linked issue is the subject the operator wants to work through, not a
 	// hostile payload, and understanding one needs the planner's ordinary
 	// capabilities: reading the repository, researching references, and talking
@@ -173,86 +166,70 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	if hasExternalContext != hasExternalSnapshots {
 		return ProviderExecutionMetadata{}, fmt.Errorf("external planner context requires matching immutable snapshot bindings")
 	}
+	reusable := strings.TrimSpace(providerInvocation.ReusableProviderSessionID)
+	if forceNew {
+		reusable = ""
+	}
 	// Complete and verify immutable inputs before provider dispatch. Prompt
 	// staging is disk-backed and replayable; no final aggregate string is made.
-	stagedPrompt, err := os.CreateTemp("", "kingdom-planner-prompt-*")
+	bootstrap, err := stagePrompt(ctx, prompts.bootstrap, input)
 	if err != nil {
-		return ProviderExecutionMetadata{}, err
-	}
-	defer func() { stagedPrompt.Close(); os.Remove(stagedPrompt.Name()) }()
-	promptBuffer := bufio.NewWriterSize(stagedPrompt, 64<<10)
-	if err := prompt(ctx, promptBuffer); err != nil {
 		return ProviderExecutionMetadata{}, fmt.Errorf("stage planner prompt: %w", err)
 	}
-	if err := promptBuffer.Flush(); err != nil {
-		return ProviderExecutionMetadata{}, fmt.Errorf("flush planner prompt: %w", err)
-	}
-	promptInfo, err := stagedPrompt.Stat()
-	if err != nil {
-		return ProviderExecutionMetadata{}, err
-	}
-
-	executeCtx, cancelExecution := context.WithCancel(ctx)
-	defer cancelExecution()
-	var providerSessionCallbackMu sync.Mutex
-	var providerSessionCallbackErr error
-	resp, err := a.adapter.Execute(executeCtx, opencode.ExecuteRequest{
-		CompletionMode:      opencode.CompletionModeServerResponse,
-		SessionID:           sessionID,
-		AttemptID:           attemptID,
-		RunID:               "planner-" + input.SessionID,
-		NodeRunID:           attemptID,
-		Model:               input.ModelSelection.Model,
-		Variant:             input.ModelSelection.ThinkingEffort,
-		Agent:               "planning-assistant",
-		ForceNewSession:     forceNew,
-		WorkspacePath:       input.ProjectRoot,
-		ConfigDir:           bootstrapassets.ManagedOpenCodeRoot(input.ProjectRoot),
-		InlineConfigContent: inlineConfig,
-		OpenPrompt: func(ctx context.Context) (io.ReadCloser, error) {
-			if err := ctx.Err(); err != nil {
-				return nil, err
-			}
-			return io.NopCloser(io.NewSectionReader(stagedPrompt, 0, promptInfo.Size())), nil
-		},
-		OccurredAt:        time.Now().UTC().Format(time.RFC3339),
-		OnProgress:        onChunk,
-		ProviderSessionID: providerSessionID,
-		InvocationID:      invocationID,
-		OnProviderSession: func(providerSessionID string) {
-			if providerInvocation != nil && providerInvocation.OnProviderSession != nil {
-				if err := providerInvocation.OnProviderSession(providerSessionID); err != nil {
-					providerSessionCallbackMu.Lock()
-					if providerSessionCallbackErr == nil {
-						providerSessionCallbackErr = fmt.Errorf("persist planner provider session: %w", err)
-					}
-					providerSessionCallbackMu.Unlock()
-					cancelExecution()
-				}
-			}
-		},
+	defer bootstrap.Close()
+	request := opencode.ExecuteRequest{
+		CompletionMode:          opencode.CompletionModeServerResponse,
+		AttemptID:               attemptID,
+		InvocationID:            invocationID,
+		Model:                   input.ModelSelection.Model,
+		Variant:                 input.ModelSelection.ThinkingEffort,
+		Agent:                   "planning-assistant",
+		System:                  systemPrompt,
+		KeepSession:             mode != "generate_title",
+		ProviderSessionID:       reusable,
+		ForceNewSession:         reusable == "",
+		WorkspacePath:           input.ProjectRoot,
+		FirstEventTimeout:       a.limits.firstEvent,
+		StreamInactivityTimeout: a.limits.inactivity,
+		OpenPrompt:              bootstrap.Open,
+		OnProgress:              onChunk,
 		OnProcessGuardOwnership: func(ctx context.Context, guard opencode.ProcessGuardOwnership) error {
-			if providerInvocation == nil || providerInvocation.OnProcessGuardOwnership == nil {
+			if providerInvocation.OnProcessGuardOwnership == nil {
 				return fmt.Errorf("planning process guard ownership callback is required")
 			}
 			return providerInvocation.OnProcessGuardOwnership(ctx, guard)
 		},
 		OnProcessGuardQuiescence: func(ctx context.Context, guard opencode.ProcessGuardQuiescence) error {
-			if providerInvocation == nil || providerInvocation.OnProcessGuardQuiescence == nil {
+			if providerInvocation.OnProcessGuardQuiescence == nil {
 				return fmt.Errorf("planning process guard quiescence callback is required")
 			}
 			return providerInvocation.OnProcessGuardQuiescence(ctx, guard)
 		},
 		OnActivity: func(observation opencode.ExecuteActivityObservation) {
-			if providerInvocation == nil || providerInvocation.OnActivity == nil {
-				return
+			if providerInvocation.OnActivity != nil {
+				providerInvocation.OnActivity(observation)
 			}
-			providerInvocation.OnActivity(observation)
 		},
-	})
-	providerSessionCallbackMu.Lock()
-	callbackErr := providerSessionCallbackErr
-	providerSessionCallbackMu.Unlock()
+	}
+	if reusable != "" {
+		continuation, err := stagePrompt(ctx, prompts.continuation, input)
+		if err != nil {
+			return ProviderExecutionMetadata{}, fmt.Errorf("stage planner continuation prompt: %w", err)
+		}
+		defer continuation.Close()
+		request.OpenContinuationPrompt = continuation.Open
+	}
+
+	prepared, err := a.executor.Prepare(ctx, request)
+	if err != nil {
+		return ProviderExecutionMetadata{}, fmt.Errorf("prepare opencode request: %w", err)
+	}
+	if err := providerInvocation.Activate(ctx, prepared); err != nil {
+		discardCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		return ProviderExecutionMetadata{}, errors.Join(fmt.Errorf("activate planner provider invocation: %w", err), a.executor.Discard(discardCtx, invocationID))
+	}
+	resp, err := a.executor.Execute(ctx, request)
 	metadata := ProviderExecutionMetadata{
 		FinalText:               strings.TrimSpace(resp.OutputText),
 		ProviderSessionID:       strings.TrimSpace(resp.ProviderSessionID),
@@ -265,38 +242,57 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompt 
 	if resp.StreamObservation.CanonicalTerminalTextRef != nil {
 		metadata.FinalText = ""
 	}
-	if callbackErr != nil {
-		return metadata, executionError(metadata, callbackErr)
-	}
 	if err != nil {
 		return metadata, executionError(metadata, fmt.Errorf("opencode execute: %w", err))
 	}
-	if providerInvocation != nil {
-		if strings.TrimSpace(providerInvocation.ProviderSessionID) == "" {
-			return metadata, executionError(metadata, fmt.Errorf("planner provider invocation was not durably opened"))
-		}
-		if err := providerexecution.ValidateServerResponseSuccess(resp.StreamObservation); err != nil {
-			return metadata, executionError(metadata, fmt.Errorf("invalid guarded planner terminal observation: %w", err))
-		}
-		if err := requirePlannerTurnSettled(metadata); err != nil {
-			return metadata, executionError(metadata, err)
-		}
+	if err := providerexecution.ValidateServerResponseSuccess(resp.StreamObservation); err != nil {
+		return metadata, executionError(metadata, fmt.Errorf("invalid planner terminal observation: %w", err))
+	}
+	if err := requirePlannerTurnSettled(metadata); err != nil {
+		return metadata, executionError(metadata, err)
 	}
 	return metadata, nil
 }
 
-func providerSessionIDForInvocation(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
+// stagedPrompt is a prompt held on disk so Execute can read it as many times as
+// it needs without a final aggregate string.
+type stagedPrompt struct{ file *os.File }
+
+func stagePrompt(ctx context.Context, write func(context.Context, io.Writer, AgentContext) error, input AgentContext) (*stagedPrompt, error) {
+	if write == nil {
+		return nil, fmt.Errorf("planner prompt is not defined for this request")
 	}
-	return strings.TrimSpace(invocation.ProviderSessionID)
+	file, err := os.CreateTemp("", "kingdom-planner-prompt-*")
+	if err != nil {
+		return nil, err
+	}
+	staged := &stagedPrompt{file: file}
+	buffer := bufio.NewWriterSize(file, 64<<10)
+	if err := write(ctx, buffer, input); err != nil {
+		staged.Close()
+		return nil, err
+	}
+	if err := buffer.Flush(); err != nil {
+		staged.Close()
+		return nil, err
+	}
+	return staged, nil
 }
 
-func invocationIDForPlanner(invocation *ProviderInvocationContext) string {
-	if invocation == nil {
-		return ""
+func (s *stagedPrompt) Open(ctx context.Context) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	return strings.TrimSpace(invocation.InvocationID)
+	info, err := s.file.Stat()
+	if err != nil {
+		return nil, err
+	}
+	return io.NopCloser(io.NewSectionReader(s.file, 0, info.Size())), nil
+}
+
+func (s *stagedPrompt) Close() {
+	s.file.Close()
+	os.Remove(s.file.Name())
 }
 
 func (a *OpenCodeAgent) id(prefix string) string {
@@ -508,6 +504,32 @@ func writeFormalizePrompt(ctx context.Context, out io.Writer, input AgentContext
 	return sb.err
 }
 
+// writeContinuationPrompt submits only the message this request answers. The
+// continued provider session already holds the conversation before it.
+func writeContinuationPrompt(ctx context.Context, out io.Writer, input AgentContext) error {
+	sb := &plannerPromptWriter{ctx: ctx, out: out}
+	appendExternalContext(sb, input)
+	sb.WriteString("## New message\n")
+	appendCurrentMessage(sb, input)
+	appendPlanningFinalChecks(sb, input, "reply")
+	return sb.err
+}
+
+// writeFormalizeContinuationPrompt asks a continued session to formalize the
+// conversation it already holds.
+func writeFormalizeContinuationPrompt(ctx context.Context, out io.Writer, input AgentContext) error {
+	sb := &plannerPromptWriter{ctx: ctx, out: out}
+	if strings.TrimSpace(input.ContextSummary) != "" {
+		sb.WriteString("## Project context\n")
+		sb.WriteString(input.ContextSummary)
+		sb.WriteString("\n\n")
+	}
+	appendExternalContext(sb, input)
+	sb.WriteString("## Current action\nFormalize the plan from the conversation so far.\n")
+	appendPlanningFinalChecks(sb, input, "formalize")
+	return sb.err
+}
+
 func appendPlanningFinalChecks(sb *plannerPromptWriter, input AgentContext, mode string) {
 	if sb.err != nil {
 		return
@@ -629,5 +651,45 @@ func appendPromptConversation(sb *plannerPromptWriter, input AgentContext) {
 	}
 	if count == 0 && sb.err == nil {
 		sb.WriteString("(No conversation yet.)")
+	}
+}
+
+// appendCurrentMessage renders exactly the user message that this request
+// answers, and fails if the transcript does not contain it once.
+func appendCurrentMessage(sb *plannerPromptWriter, input AgentContext) {
+	if sb.err != nil {
+		return
+	}
+	if strings.TrimSpace(input.CurrentMessageID) == "" {
+		sb.err = fmt.Errorf("a continued planner session requires its current message")
+		return
+	}
+	visit := input.VisitMessages
+	if visit == nil {
+		visit = func(ctx context.Context, yield func(state.PlanningMessage) error) error {
+			for _, message := range input.Messages {
+				if err := yield(message); err != nil {
+					return err
+				}
+			}
+			return nil
+		}
+	}
+	found := 0
+	err := visit(sb.ctx, func(message state.PlanningMessage) error {
+		if message.PlanningMessageID != input.CurrentMessageID {
+			return nil
+		}
+		found++
+		if message.Role != state.PlanningMessageRoleUser {
+			return fmt.Errorf("the current planner message is not a user message")
+		}
+		return appendHistoryTurn(sb.ctx, sb, message)
+	})
+	if sb.err == nil {
+		sb.err = err
+	}
+	if sb.err == nil && found != 1 {
+		sb.err = fmt.Errorf("the current planner message was found %d times in the transcript", found)
 	}
 }

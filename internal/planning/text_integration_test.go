@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,25 +12,26 @@ import (
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
 
+// stagedPlannerAdapter plays the shared server for a planner request whose
+// terminal text and diagnostics are staged on disk before canonical ingestion.
 type stagedPlannerAdapter struct {
+	preparer
 	root, text string
 	paths      []string
 	terminal   providerexecution.ContentReference
+	// interrupted makes the provider end the request as cancelled instead of
+	// completing it with text.
+	interrupted bool
 }
 
 func (a *stagedPlannerAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	r, err := req.OpenPrompt(ctx)
-	if err != nil {
+	a.record("execute")
+	if _, err := readPrompt(ctx, req.OpenPrompt); err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
-	_, err = io.Copy(io.Discard, r)
-	r.Close()
-	if err != nil {
-		return opencode.ExecuteResponse{}, err
-	}
-	req.OnProviderSession("streamed-planner-session")
 	prefix, suffix := "not terminal prefix\n", "\nnot terminal suffix"
 	path := filepath.Join(a.root, req.InvocationID+".stdout")
 	all := prefix + a.text + suffix
@@ -39,34 +39,43 @@ func (a *stagedPlannerAdapter) Execute(ctx context.Context, req opencode.Execute
 		return opencode.ExecuteResponse{}, err
 	}
 	a.paths = append(a.paths, path)
-	a.terminal = providerexecution.ReferenceText(req.InvocationID, a.text)
-	terminal := providerexecution.StagedContent{Reference: a.terminal, Path: path, Offset: int64(len(prefix))}
 	diagnostic := providerexecution.StagedContent{Reference: providerexecution.ReferenceText(req.InvocationID, all), Path: path}
-	exit := 0
-	return opencode.ExecuteResponse{Accepted: true, OutputText: "display preview", ProviderSessionID: "streamed-planner-session", Outcome: opencode.ExecutionOutcome{State: "success"}, StreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: "streamed-planner-session", FinalTurnID: "turn", FinalStepID: "step", FinalSequence: 1, RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalTextRef: &a.terminal, StagedTerminalContent: &terminal, TerminalTextOpener: terminal.Open, DiagnosticContent: []providerexecution.ContentReference{diagnostic.Reference}, StagedDiagnosticContent: []providerexecution.StagedContent{diagnostic}, ProcessExited: true, ProcessExitCode: &exit, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}}, nil
+	a.mu.Lock()
+	prepared := a.prepared
+	a.mu.Unlock()
+	observation := opencode.InvocationStreamObservation{
+		ProviderSessionID:       prepared.ProviderSessionID,
+		DiagnosticContent:       []providerexecution.ContentReference{diagnostic.Reference},
+		StagedDiagnosticContent: []providerexecution.StagedContent{diagnostic},
+	}
+	response := opencode.ExecuteResponse{Accepted: true, ProviderSessionID: prepared.ProviderSessionID}
+	if a.interrupted {
+		interrupted, err := providerledger.TerminalObservation(ctx, prepared, req.InvocationID, providerexecution.RequestOutcomeInterrupted)
+		observation.Request, observation.Cancelled = interrupted.Request, interrupted.Cancelled
+		response.Outcome, response.StreamObservation = opencode.ExecutionOutcome{State: "cancelled"}, observation
+		return response, errors.Join(err, context.Canceled)
+	}
+	a.terminal = providerexecution.ReferenceText(req.InvocationID, a.text)
+	terminalContent := providerexecution.StagedContent{Reference: a.terminal, Path: path, Offset: int64(len(prefix))}
+	terminal := providerledger.SuccessTerminal(req.InvocationID, &a.terminal)
+	observation.Request = &providerexecution.RequestObservation{Identity: prepared.Identity, Terminal: terminal}
+	observation.FinalTurnID, observation.RawFinishReason, observation.NormalizedFinishReason = "assistant-message", "stop", "stop"
+	observation.CanonicalTerminalTextRef, observation.StagedTerminalContent, observation.TerminalTextOpener = &a.terminal, &terminalContent, terminalContent.Open
+	response.OutputText, response.Outcome, response.StreamObservation = "display preview", opencode.ExecutionOutcome{State: "success"}, observation
+	return response, providerledger.RecordTerminal(ctx, req.InvocationID, terminal)
 }
+
+// Close removes what the provider staged, as closing the shared provider
+// service does once every consumer has drained.
 func (a *stagedPlannerAdapter) Close() error {
 	var err error
 	for _, path := range a.paths {
-		err = errors.Join(err, os.Remove(path))
+		if removeErr := os.Remove(path); !os.IsNotExist(removeErr) {
+			err = errors.Join(err, removeErr)
+		}
 	}
 	a.paths = nil
 	return err
-}
-func (a *stagedPlannerAdapter) CloseContext(ctx context.Context) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	return a.Close()
-}
-
-// This test adapter has no process. The real agent and its content lifecycle
-// execute unchanged while the fixture omits guardian ownership requirements.
-type unguardedContentAgent struct{ Agent }
-
-func (a unguardedContentAgent) Close() error { return a.Agent.(*OpenCodeAgent).Close() }
-func (a unguardedContentAgent) CloseContext(ctx context.Context) error {
-	return a.Agent.(*OpenCodeAgent).CloseContext(ctx)
 }
 
 func TestPlannerStreamedFinalizationPublishesChunksAndReplaysAfterRelease(t *testing.T) {
@@ -82,7 +91,7 @@ func TestPlannerStreamedFinalizationPublishesChunksAndReplaysAfterRelease(t *tes
 			adapter := &stagedPlannerAdapter{root: t.TempDir(), text: text}
 			db := stateTestDB(t)
 			store := state.NewPlanningStore(db)
-			service := NewService(store, unguardedContentAgent{NewOpenCodeAgent(adapter, deterministicID())}, t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
+			service := NewService(store, NewOpenCodeAgent(adapter, deterministicID()), t.TempDir(), func() string { return "2026-04-21T17:10:00Z" }, deterministicID())
 			defer service.Close(context.Background())
 			session, err := service.CreateSession(context.Background(), "Streamed", "{}")
 			if err != nil {
@@ -155,6 +164,9 @@ func TestPlannerStreamedFinalizationPublishesChunksAndReplaysAfterRelease(t *tes
 			}
 			paths := append([]string(nil), adapter.paths...)
 			if err := service.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := adapter.Close(); err != nil {
 				t.Fatal(err)
 			}
 			for _, path := range paths {

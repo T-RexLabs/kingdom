@@ -41,7 +41,10 @@ func sanitizePlannerToken(raw string) string {
 	return value
 }
 
-func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, providerSessionID string) (*ProviderInvocationContext, error) {
+// createPlanningProviderInvocation prepares the identity of a provider
+// invocation. The canonical invocation is created by Activate, once the
+// provider has fixed the session and profile that it binds.
+func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, session state.PlanningSession, operation state.PlanningOperation, reusableProviderSessionID string) (*ProviderInvocationContext, error) {
 	if r == nil || r.deps.store == nil {
 		return nil, fmt.Errorf("planning store is required for provider invocation creation")
 	}
@@ -49,74 +52,32 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 	issuedAt := now.Format(time.RFC3339)
 	invocationID := newPlanningProviderInvocationID(operation.OperationID, now)
 	logicalSessionID := planningLogicalSessionID(session.PlanningSessionID, operation.Type)
-	providerSessionID = strings.TrimSpace(providerSessionID)
-	if providerSessionID == "" {
-		if _, err := r.deps.store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
-			PlanningProviderInvocationID: invocationID,
-			PlanningOperationID:          operation.OperationID,
-			PlanningSessionID:            session.PlanningSessionID,
-			LogicalSessionID:             logicalSessionID,
-			CreatedAt:                    issuedAt,
-			LeaseOwner:                   operation.LeaseOwner,
-			LeaseVersion:                 operation.LeaseVersion,
-		}); err != nil {
-			return nil, err
-		}
-	} else if _, err := r.deps.store.ActivatePlanningProviderInvocation(ctx, state.ActivatePlanningProviderInvocationRequest{
-		PlanningProviderInvocationID: invocationID,
-		PlanningOperationID:          operation.OperationID,
-		PlanningSessionID:            session.PlanningSessionID,
-		LogicalSessionID:             logicalSessionID,
-		ProviderSessionID:            providerSessionID,
-		CreatedAt:                    issuedAt,
-		OpenedAt:                     issuedAt,
-		LeaseOwner:                   operation.LeaseOwner,
-		LeaseVersion:                 operation.LeaseVersion,
-	}); err != nil {
-		return nil, err
-	}
-	if guarded, ok := r.deps.planner.(interface{ RequiresProcessGuard() bool }); ok && guarded.RequiresProcessGuard() {
-		if err := r.deps.store.RequirePlanningProviderProcessGuard(ctx, invocationID, operation.OperationID); err != nil {
-			return nil, err
-		}
-	}
-	durableProviderSessionID := providerSessionID
-	providerSessionOpenReported := false
 	var invocationContext *ProviderInvocationContext
 	invocationContext = &ProviderInvocationContext{
-		AttemptID:         operation.OperationID,
-		LogicalSessionID:  logicalSessionID,
-		ProviderSessionID: providerSessionID,
-		InvocationID:      invocationID,
-		OnProviderSession: func(providerSessionID string) error {
-			trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
-			if trimmedProviderSessionID != "" && trimmedProviderSessionID == durableProviderSessionID {
-				if !providerSessionOpenReported && invocationContext.OnProviderSessionOpened != nil {
-					invocationContext.OnProviderSessionOpened(trimmedProviderSessionID)
-				}
-				providerSessionOpenReported = true
-				return nil
-			}
-			markCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			defer cancel()
-			if _, err := r.deps.store.MarkPlanningProviderInvocationOpen(markCtx, state.MarkPlanningProviderInvocationOpenRequest{
+		AttemptID:                 operation.OperationID,
+		LogicalSessionID:          logicalSessionID,
+		ReusableProviderSessionID: strings.TrimSpace(reusableProviderSessionID),
+		InvocationID:              invocationID,
+		Activate: func(activateCtx context.Context, prepared opencode.Prepared) error {
+			identity := prepared.Identity
+			if _, err := r.deps.store.ActivatePlanningProviderInvocation(activateCtx, state.ActivatePlanningProviderInvocationRequest{
+				RequestIdentity:              &identity,
 				PlanningProviderInvocationID: invocationID,
 				PlanningOperationID:          operation.OperationID,
-				ProviderSessionID:            trimmedProviderSessionID,
-				OpenedAt:                     r.deps.nowString(),
+				PlanningSessionID:            session.PlanningSessionID,
+				LogicalSessionID:             logicalSessionID,
+				ProviderSessionID:            prepared.ProviderSessionID,
+				CreatedAt:                    issuedAt,
+				OpenedAt:                     issuedAt,
 				LeaseOwner:                   operation.LeaseOwner,
 				LeaseVersion:                 operation.LeaseVersion,
 			}); err != nil {
-				return fmt.Errorf("open planner provider invocation %q: %w", invocationID, err)
+				return err
 			}
-			if trimmedProviderSessionID != "" {
-				durableProviderSessionID = trimmedProviderSessionID
-				invocationContext.ProviderSessionID = trimmedProviderSessionID
-			}
+			invocationContext.activated = true
 			if invocationContext.OnProviderSessionOpened != nil {
-				invocationContext.OnProviderSessionOpened(trimmedProviderSessionID)
+				invocationContext.OnProviderSessionOpened(prepared.ProviderSessionID)
 			}
-			providerSessionOpenReported = true
 			return nil
 		},
 		OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
@@ -141,6 +102,15 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		},
 	}
 	return invocationContext, nil
+}
+
+// adoptActivation makes the invocation canonical state's active one for the
+// failure and cancellation paths, but only once Activate has bound it. A
+// request that failed before activation has nothing to settle.
+func adoptActivation(operation *state.PlanningOperation, invocation *ProviderInvocationContext) {
+	if invocation != nil && invocation.activated {
+		operation.ActiveProviderInvocationID = stringPtr(invocation.InvocationID)
+	}
 }
 
 func planningLogicalSessionID(sessionID string, operationType state.PlanningOperationType) string {
@@ -187,7 +157,6 @@ func providerSettlementForSuccess(invocationID string, metadata ProviderExecutio
 		FinalText:                    finalText,
 		StructuredPayloadJSON:        structuredPayloadJSON,
 		SettledAt:                    settledAt,
-		RequiresProcessGuard:         len(metadata.StreamObservation.ProcessGuards) > 0,
 	}
 }
 
@@ -210,7 +179,6 @@ func providerSettlementForFailure(operation state.PlanningOperation, metadata Pr
 		FailureReasonCode:            failureReasonCodeForPlannerFailure(metadata, cause, cancelled),
 		FailureReasonText:            strings.TrimSpace(firstNonEmpty(failureText, metadata.FailureReasonText)),
 		SettledAt:                    settledAt,
-		RequiresProcessGuard:         len(metadata.StreamObservation.ProcessGuards) > 0,
 	}
 	payload, _ := json.Marshal(map[string]any{
 		"state":                strings.TrimSpace(firstNonEmpty(metadata.OutcomeState, plannerOutcomeStateForCancelled(cancelled))),
@@ -268,13 +236,6 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 	}
 	if cancelled || errors.Is(cause, context.Canceled) {
 		return "provider_cancelled"
-	}
-	if strings.TrimSpace(metadata.OutcomeState) == "incomplete_turn" {
-		return "provider_incomplete_turn"
-	}
-	var incompleteTurnErr *opencode.IncompleteTerminalStateError
-	if errors.As(cause, &incompleteTurnErr) {
-		return "provider_incomplete_turn"
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {
 		return "timeout"

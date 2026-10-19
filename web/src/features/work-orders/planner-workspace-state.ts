@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { API_BASE, currentAuthBinding, currentAuthGeneration } from "@/api/client";
 import type { CreateAcpRunRequest, PlanningSessionDetail } from "@/api/hooks";
-import type { PlannerOperationKind, PlannerOperationState } from "./planner-operation-controller";
+import { isPlannerOperationTerminal, type PlannerOperationKind, type PlannerOperationState } from "./planner-operation-controller";
 
 export type PlannerScope = { workspace: string; sessionId: string };
 export type PlannerScrollPosition = { messageId: string; offset: number; pinned: boolean };
@@ -204,7 +204,7 @@ export class PlannerWorkspaceState {
         return { ...state, leafBranches: { ...state.leafBranches, ...Object.fromEntries(leaves.map((id) => [id, entry.draftBranch!])) } };
       });
     }
-    const terminal = operation.status === "error" || operation.status === "cancelled" || (operation.status === "done" && operation.activityReconciled);
+    const terminal = isPlannerOperationTerminal(operation.status);
     if (!terminal) return;
     this.updateSession(entry, (state) => {
       const stopResolved = state.request?.kind === "stop" && (state.request.body as { runId: string }).runId === operation.operationId;

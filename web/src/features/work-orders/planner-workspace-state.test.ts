@@ -89,7 +89,7 @@ it("keeps later typing on the same conversation as a reply advances its canonica
   store.setText(scope, "old-leaf", "Next thought");
   const entry = { ...scope, operationId: "reply-op", kind: "reply" as const, sessionTitle: "A", draftBranch: "old-leaf" };
   store.trackOperation(entry);
-  store.observeOperation(entry, { kind: "reply", operationId: "reply-op", status: "done", lastEventSeq: 4, userMessageId: "new-user", assistantMessageId: "new-assistant", pendingReply: null, replyText: "Reply", formalizeText: "", error: null, activityReconciled: false, activityItems: [] });
+  store.observeOperation(entry, { kind: "reply", operationId: "reply-op", status: "done", lastEventSeq: 4, userMessageId: "new-user", assistantMessageId: "new-assistant", pendingReply: null, replyText: "Reply", formalizeText: "", error: null, activityItems: [] });
   expect(store.draft(scope, store.branch(scope, "new-assistant")).text).toBe("Next thought");
   expect(store.draft(scope, store.branch(scope, "other-sibling")).text).toBe("");
 });
