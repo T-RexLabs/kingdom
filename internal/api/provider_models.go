@@ -293,7 +293,7 @@ func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, ser
 		case ProviderModelCatalogFailureReasonBinaryMissing:
 			return "Showing the models Kingdom already had. The opencode binary is no longer on PATH."
 		case ProviderModelCatalogFailureReasonConfigurationInvalid:
-			return "Showing the models Kingdom already had. OpenCode configuration needs attention; automatic formatting must be disabled."
+			return "Showing the models Kingdom already had. A higher-priority OpenCode configuration enables automatic formatting, which Kingdom requires to be off."
 		case ProviderModelCatalogFailureReasonParseFailed:
 			return "Showing the models Kingdom already had. Kingdom could not read the model list OpenCode returned."
 		default:
@@ -306,11 +306,11 @@ func operatorCatalogFailureMessage(reason ProviderModelCatalogFailureReason, ser
 	case ProviderModelCatalogFailureReasonBinaryMissing:
 		return "Kingdom could not find the opencode binary on PATH. Install or configure OpenCode, then retry."
 	case ProviderModelCatalogFailureReasonConfigurationInvalid:
-		return "OpenCode configuration needs attention. Disable automatic formatting for Kingdom-managed execution, then retry."
+		return "A higher-priority OpenCode configuration, such as an administrator or managed one, enables automatic formatting, which Kingdom requires to be off. Disable it there, then retry."
 	case ProviderModelCatalogFailureReasonParseFailed:
 		return "Kingdom could not read the model list OpenCode returned. Check the installed OpenCode version, then retry."
 	default:
-		return "Kingdom could not list OpenCode models. Check that the OpenCode service is running and its providers are configured, then retry."
+		return "Kingdom could not list OpenCode models. Kingdom starts OpenCode itself, so check that opencode --version reports 2.x and that your providers are configured, then retry."
 	}
 }
 

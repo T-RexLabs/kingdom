@@ -62,7 +62,7 @@ func (e *ProtocolError) Unwrap() error { return e.Cause }
 type ConfigurationError struct{}
 
 func (*ConfigurationError) Error() string {
-	return "automatic formatting must be disabled in the effective OpenCode configuration"
+	return "automatic formatting is enabled by a higher-priority OpenCode configuration and must be disabled there"
 }
 
 func NewClient(baseURL, password string) (*Client, error) {

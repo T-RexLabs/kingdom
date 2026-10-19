@@ -130,7 +130,7 @@ func (c *capture) fail(err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.err == nil {
-		c.err = fmt.Errorf("OpenCode event capture ended: %w", err)
+		c.err = fmt.Errorf("the OpenCode event stream ended unexpectedly, so Kingdom can no longer prove what requests did; restart Kingdom: %w", err)
 	}
 	c.broadcast()
 }

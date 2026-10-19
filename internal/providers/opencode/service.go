@@ -273,10 +273,11 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 		// Keep draining even if a diagnostic exceeded the scanner bound.
 		_, _ = io.Copy(io.Discard, handle.Stdout())
 	}()
+	var diagnostics boundedBuffer
 	go func() {
 		defer output.Done()
 		defer handle.Stderr().Close()
-		_, _ = io.Copy(io.Discard, handle.Stderr())
+		_, _ = io.Copy(&diagnostics, handle.Stderr())
 	}()
 	go func() {
 		process.result, process.err = handle.Wait(context.Background())
@@ -288,7 +289,10 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 	case <-ctx.Done():
 		return nil, process, fmt.Errorf("wait for OpenCode service address: %w", ctx.Err())
 	case <-process.done:
-		return nil, process, fmt.Errorf("OpenCode service exited before readiness")
+		// The output can name provider configuration, so it is logged and never
+		// returned to callers that show errors to the operator.
+		slog.Warn("OpenCode service exited before readiness", "output", diagnostics.String())
+		return nil, process, fmt.Errorf("OpenCode service exited before readiness; Kingdom requires OpenCode V2 (opencode --version must report 2.x)")
 	case address = <-endpoint:
 	}
 	client, err := NewClient(address, password)
@@ -477,4 +481,28 @@ func (s *Service) retireServer(attempt *serviceStart) error {
 		attempt.client.CloseIdleConnections()
 	}
 	return stopServiceProcess(ctx, attempt.process)
+}
+
+// boundedBuffer keeps the first bytes written to it, which is where a failed
+// start explains itself, and discards the rest.
+type boundedBuffer struct {
+	mu   sync.Mutex
+	data []byte
+}
+
+const boundedBufferLimit = 4 << 10
+
+func (b *boundedBuffer) Write(raw []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if room := boundedBufferLimit - len(b.data); room > 0 {
+		b.data = append(b.data, raw[:min(room, len(raw))]...)
+	}
+	return len(raw), nil
+}
+
+func (b *boundedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data)
 }

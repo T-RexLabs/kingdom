@@ -131,7 +131,7 @@ func awaitPlugin(ctx context.Context, client *Client, directory string) error {
 			case "active":
 				return nil
 			case "failed":
-				return fmt.Errorf("the Kingdom plugin failed to load: %s", plugin.State.Error)
+				return fmt.Errorf("the Kingdom plugin failed to load (%s); restart Kingdom and check for conflicting OpenCode plugins", plugin.State.Error)
 			}
 		}
 		select {

@@ -73,6 +73,14 @@ Kingdom gives each request its own temporary agent profile and installs a small 
 
 Kingdom disables automatic formatting in the server. If administrator configuration overrides this setting, Kingdom reports a configuration error and does not start work. It also reports an error when the Kingdom plugin does not load or when the server's event stream is interrupted, because it can no longer prove what a request did. Interrupted work stays blocked until it can be proven or, when the request never used a tool, is closed as abandoned. Explicit formatter commands remain separate from automatic formatting.
 
+#### Unsupported OpenCode Changes
+
+Kingdom runs its own OpenCode server beside any OpenCode you use yourself, but both use your OpenCode data directory and database. Sessions Kingdom creates appear there. Do not edit, delete, or continue those sessions, and do not change Kingdom's temporary agent profiles, from OpenCode's own interface or API: Kingdom proves what each request did from the events of its own session, and an outside change makes that proof impossible. Your own OpenCode plugins and configuration load in Kingdom's server too. A plugin that changes tool behavior, or a configuration that enables automatic formatting, is unsupported.
+
+#### Restarts and Blocked Work
+
+Restarting Kingdom stops its OpenCode server. On startup Kingdom treats every step that was running as interrupted, fails it as unresponsive, and applies the usual retry rules, without sending the model request again. If an interrupted step had a file change or shell command still in flight, Kingdom cannot tell what that command did. The step stays running and Kingdom logs `stays blocked` for it, instead of guessing. Review the workspace yourself, then start a new run. A step that never changed anything, or whose changes were all recorded, settles on its own within a minute or two.
+
 ### GitHub App identifiers
 
 `github.shared_app.slug` and `github.shared_app.client_id` identify the public App used by Kingdom's shared setup. `kd init` fills in Kingdom's official App. To turn off shared setup, leave both values blank. Set both or leave both blank; setting only one prevents startup.
