@@ -955,7 +955,7 @@ func (f planningExternalBindingFixture) link(t *testing.T, linkID string, snapsh
 
 func (f planningExternalBindingFixture) createOperation(t *testing.T, operationID string) {
 	t.Helper()
-	if _, err := f.planning.CreateOperation(f.ctx, CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: f.sessionID, Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: f.at}); err != nil {
+	if _, err := f.planning.CreateOperation(f.ctx, CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: f.sessionID, Type: PlanningOperationTypeReply, Status: PlanningOperationStatusQueued, RequestPayloadJSON: fmt.Sprintf(`{"assistant_message_id":%q,"assistant_created_at":%q}`, operationID+"_reply", f.at), CreatedAt: f.at}); err != nil {
 		t.Fatal(err)
 	}
 }

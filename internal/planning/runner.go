@@ -418,6 +418,7 @@ func (r *operationRunner) failQueuedUnsupportedExternalContext(ctx context.Conte
 	if err := r.deps.store.FailQueuedOperation(ctx, state.FailQueuedPlanningOperationRequest{
 		OperationID:   operation.OperationID,
 		ErrorMessage:  mismatch.Error(),
+		Failure:       plannerTurnFailure("dependency_blocked", mismatch),
 		UpdatedAt:     now,
 		FinishedAt:    now,
 		TerminalEvent: *event,
@@ -1030,7 +1031,8 @@ func (r *operationRunner) failOperationWithObservedOutput(ctx context.Context, o
 			return eventErr
 		}
 		providerSettlement := providerSettlementForFailure(operation, providerMetadata, now, cause.Error(), cause, false)
-		finalizeErr = r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, false)
+		failure := plannerTurnFailure(string(canonicalPlanningRetryCode(failureReasonCodeForPlannerFailure(providerMetadata, cause, false), providerMetadata)), cause)
+		finalizeErr = r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, failure, false)
 	}
 	if finalizeErr != nil {
 		// A concurrent finaliser (recovery vs SSE-observer, or any
@@ -1096,7 +1098,7 @@ func (r *operationRunner) cancelOperationWithMetadata(ctx context.Context, opera
 	}
 	now := r.deps.nowString()
 	providerSettlement := providerSettlementForFailure(operation, metadata, now, reason, nil, true)
-	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, false); err != nil {
+	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, nil, false); err != nil {
 		// Force/deadline revocation intentionally forbids further handoff
 		// writes. It is distinct from an unsuccessful guardian cancellation.
 		if r.handoffCtx.Err() == context.Canceled && onlyContextCancellation(err) {
@@ -1113,7 +1115,9 @@ func (r *operationRunner) cancelOperationWithMetadata(ctx context.Context, opera
 	return context.Canceled
 }
 
-func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest, allowExpiredLease bool) error {
+// finalizeAbortOperation ends an operation as failed or cancelled. failure
+// explains a failed turn and is nil for a cancellation.
+func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation state.PlanningOperation, status state.PlanningOperationStatus, now, reason, observedOutputText string, providerSettlement *state.FinalizePlanningProviderSettlementRequest, terminalEvent *state.AppendPlanningOperationEventRequest, failure *state.PlanningTurnFailure, allowExpiredLease bool) error {
 	switch operation.Type {
 	case state.PlanningOperationTypeGenerateTitle:
 		return r.deps.store.FinalizeGenerateTitleAbort(ctx, state.FinalizeGenerateTitleAbortRequest{
@@ -1145,6 +1149,7 @@ func (r *operationRunner) finalizeAbortOperation(ctx context.Context, operation 
 			UpdatedAt:          now,
 			FinishedAt:         now,
 			ErrorMessage:       reason,
+			Failure:            failure,
 			ObservedOutputText: observedOutputText,
 			AllowExpiredLease:  allowExpiredLease,
 			ProviderSettlement: providerSettlement,

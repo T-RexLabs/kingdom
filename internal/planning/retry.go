@@ -21,7 +21,8 @@ func (r *operationRunner) finalizeFailureWithRetry(ctx context.Context, operatio
 		if err != nil {
 			return false, err
 		}
-		return false, r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, allowExpiredLease)
+		failure := plannerTurnFailure(string(canonicalPlanningRetryCode(failureReasonCodeForPlannerFailure(metadata, cause, false), metadata)), cause)
+		return false, r.finalizeAbortOperation(ctx, operation, state.PlanningOperationStatusFailed, now, cause.Error(), observedOutputText, providerSettlement, terminalEvent, failure, allowExpiredLease)
 	}
 
 	decision, err := r.planAutomaticRetry(ctx, operation, metadata, providerSettlement, now)
@@ -54,6 +55,7 @@ func (r *operationRunner) finalizeFailureWithRetry(ctx context.Context, operatio
 		UpdatedAt:          now,
 		FinishedAt:         now,
 		ErrorMessage:       cause.Error(),
+		Failure:            plannerTurnFailure(decision.ErrorCode, cause),
 		AllowExpiredLease:  allowExpiredLease,
 		ProviderSettlement: providerSettlement,
 		RetryDecision:      decision,

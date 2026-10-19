@@ -139,13 +139,17 @@ func TestFailQueuedOperationCancelsFutureRetryForUnsupportedExternalContext(t *t
 		PayloadJSON: fmt.Sprintf(`{"error":%q}`, mismatch.Error()), CreatedAt: finishedAt,
 	}
 	if err := store.FailQueuedOperation(fixture.ctx, FailQueuedPlanningOperationRequest{
-		OperationID: operationID, ErrorMessage: mismatch.Error(), UpdatedAt: finishedAt, FinishedAt: finishedAt, TerminalEvent: terminalEvent,
+		OperationID: operationID, ErrorMessage: mismatch.Error(), Failure: &PlanningTurnFailure{ReasonCode: "dependency_blocked"}, UpdatedAt: finishedAt, FinishedAt: finishedAt, TerminalEvent: terminalEvent,
 	}); err != nil {
 		t.Fatalf("fail incompatible queued retry: %v", err)
 	}
 	failed, found, err := store.GetOperation(fixture.ctx, operationID)
 	if err != nil || !found || failed.Status != PlanningOperationStatusFailed || failed.Error == nil || !strings.Contains(*failed.Error, "linked-source context version") {
 		t.Fatalf("failed incompatible operation=%+v found=%v err=%v", failed, found, err)
+	}
+	reply, err := store.GetMessageInSession(fixture.ctx, fixture.sessionID, operationID+"_reply")
+	if err != nil || reply.Failure == nil || reply.Failure.ReasonCode != "dependency_blocked" {
+		t.Fatalf("a failed queued reply must leave its failed turn: %+v %v", reply, err)
 	}
 	var dispatchState, resolution string
 	if err := fixture.db.QueryRow(`SELECT dispatch_state,resolution FROM retry_decisions WHERE source_planning_invocation_id=?`, invocation).Scan(&dispatchState, &resolution); err != nil {

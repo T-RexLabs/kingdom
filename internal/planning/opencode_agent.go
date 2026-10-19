@@ -245,11 +245,23 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 	return metadata, nil
 }
 
-func providerFailure(metadata ProviderExecutionMetadata) error {
-	if metadata.FailureReasonText != "" {
-		return errors.New(metadata.FailureReasonText)
+// ProviderFailureError is a planner request the provider itself failed.
+// Message is the provider's own explanation, when it gave one.
+type ProviderFailureError struct {
+	Outcome    string
+	ReasonCode string
+	Message    string
+}
+
+func (e *ProviderFailureError) Error() string {
+	if e.Message != "" {
+		return e.Message
 	}
-	return fmt.Errorf("the planner request ended as %s (%s)", metadata.OutcomeState, metadata.FailureReasonCode)
+	return fmt.Sprintf("the planner request ended as %s (%s)", e.Outcome, e.ReasonCode)
+}
+
+func providerFailure(metadata ProviderExecutionMetadata) error {
+	return &ProviderFailureError{Outcome: metadata.OutcomeState, ReasonCode: metadata.FailureReasonCode, Message: metadata.FailureReasonText}
 }
 
 // stagedPrompt is a prompt held on disk so Execute can read it as many times as
