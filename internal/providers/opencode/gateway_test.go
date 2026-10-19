@@ -131,7 +131,7 @@ func TestRecoverReceiptsDeliversPersistedReceiptsOnce(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverReceipts(ctx, outbox, bound.authority); err != nil {
+	if err := recoverReceipts(ctx, outbox, bound.authority, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
@@ -145,7 +145,7 @@ func TestRecoverReceiptsDeliversPersistedReceiptsOnce(t *testing.T) {
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := recoverReceipts(ctx, outbox, bound.authority); err != nil {
+	if err := recoverReceipts(ctx, outbox, bound.authority, nil); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -160,7 +160,7 @@ func TestRecoverReceiptsKeepsReceiptsItCannotDeliver(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := recoverReceipts(context.Background(), outbox, bound.authority); err == nil {
+	if err := recoverReceipts(context.Background(), outbox, bound.authority, nil); err == nil {
 		t.Fatal("undeliverable receipts must be reported")
 	}
 	for _, name := range []string{"unknown.json", "garbage.json"} {
@@ -200,5 +200,20 @@ func TestPluginIsInstalledAsALocalPackageAndPreservesUserPlugins(t *testing.T) {
 	}
 	if len(config.Plugins) != 2 || config.Plugins[0] != "/user/plugin" || config.Plugins[1] != directory || config.Formatter || string(config.Providers) != "{}" {
 		t.Fatalf("effective configuration %#v", config)
+	}
+}
+
+func TestRecoverReceiptsForOneRequestIgnoresAnotherRequestsReceipts(t *testing.T) {
+	bound := newBoundRun(t)
+	outbox := t.TempDir()
+	started := true
+	stranger := bound.identity
+	stranger.RequestID = "msg_stranger"
+	raw, _ := json.Marshal(nativeReceipt{Identity: stranger, GrantID: "native_unknown", IdentityDigest: "digest", Outcome: "completed", NativeStarted: &started})
+	if err := os.WriteFile(filepath.Join(outbox, "stranger.json"), raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := recoverReceipts(context.Background(), outbox, bound.authority, &bound.identity); err != nil {
+		t.Fatalf("an unrelated undeliverable receipt blocked this request: %v", err)
 	}
 }

@@ -115,6 +115,9 @@ func TestStockPlanningRequestIsVerifiedAndRecorded(t *testing.T) {
 	if err := providerexecution.ValidateServerResponseSuccess(observation); err != nil {
 		t.Fatalf("verified response failed structural validation: %v", err)
 	}
+	if response.Outcome.State != "success" {
+		t.Fatalf("outcome %#v", response.Outcome)
+	}
 	if observation.Request == nil || observation.Request.Identity != prepared.Identity || observation.Request.Terminal.Outcome != providerexecution.RequestOutcomeSucceeded {
 		t.Fatalf("unexpected request observation: %#v", observation.Request)
 	}
@@ -214,6 +217,7 @@ func TestStockPlanningProfileCannotWrite(t *testing.T) {
 func TestStockContinuationReusesSessionAndSendsOnlyNewInput(t *testing.T) {
 	h := newStockHarness(t)
 	first := h.planningRequest("inv-a", "op-a", "TEXT:first")
+	first.KeepSession = true
 	prepared, _, err := h.run("session-c", "op-a", "inv-a", first)
 	if err != nil {
 		t.Fatal(err)
@@ -372,6 +376,9 @@ func TestStockUnavailableModelFailureIsProvenWithStructuredError(t *testing.T) {
 	if err := providerexecution.ValidateServerResponseSuccess(observation); err == nil {
 		t.Fatal("a failed request must not validate as a successful response")
 	}
+	if response.Outcome.State != "failed" || !strings.Contains(response.Outcome.FailureText, "fixture/missing") {
+		t.Fatalf("outcome %#v", response.Outcome)
+	}
 	if calls := h.model.Calls(); len(calls) != 0 {
 		t.Fatalf("an unavailable model reached the provider: %#v", calls)
 	}
@@ -480,5 +487,17 @@ func TestStockPlanningProfileIsOfferedOnlyReadTools(t *testing.T) {
 	}
 	if offered := h.model.Calls()[0].Tools; strings.Join(offered, ",") != "read" {
 		t.Fatalf("a planning profile must be offered only read tools: %v", offered)
+	}
+}
+
+func TestStockRequestOutlivingTheSettleLimitStillSettles(t *testing.T) {
+	h := newStockHarness(t)
+	h.service.requests.settleLimit = 3 * time.Second
+	_, response, err := h.run("session-long", "op-long", "inv-long", h.planningRequest("inv-long", "op-long", "SLEEP:6 TEXT:late"))
+	if err != nil {
+		t.Fatalf("a request that runs longer than the settle limit must still complete: %v", err)
+	}
+	if response.OutputPreview != "late" || response.StreamObservation.Request.Terminal.Outcome != providerexecution.RequestOutcomeSucceeded {
+		t.Fatalf("response %q %#v", response.OutputPreview, response.StreamObservation.Request)
 	}
 }

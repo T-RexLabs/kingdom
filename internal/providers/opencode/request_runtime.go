@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 )
 
@@ -18,6 +20,10 @@ type requestRuntime struct {
 	registry  *requestRegistry
 	outboxDir string
 	spoolDir  string
+	// settleLimit bounds each step of stopping, verifying and recording a
+	// request. None of them may depend on the caller's cancelled context, and
+	// none counts against how long the request itself ran.
+	settleLimit time.Duration
 }
 
 func newRequestRuntime(authority *providerrequest.Authority, runner GuardianRunner, env []string, root string) (*requestRuntime, error) {
@@ -37,7 +43,7 @@ func newRequestRuntime(authority *providerrequest.Authority, runner GuardianRunn
 	if err != nil {
 		return nil, err
 	}
-	return &requestRuntime{authority: authority, commands: commands, gateway: gateway, registry: newRequestRegistry(), outboxDir: outbox, spoolDir: spool}, nil
+	return &requestRuntime{authority: authority, commands: commands, gateway: gateway, registry: newRequestRegistry(), outboxDir: outbox, spoolDir: spool, settleLimit: 2 * time.Minute}, nil
 }
 
 // environment tells the Kingdom plugin where to reach the gateway. The values
@@ -49,8 +55,15 @@ func (r *requestRuntime) environment(env []string, instanceID string) []string {
 	return replaceServiceEnv(env, "KINGDOM_OUTBOX_DIR", r.outboxDir)
 }
 
+// recover delivers every receipt the plugin could not. It runs when the server
+// starts; a receipt that cannot be delivered stays as resource debt.
 func (r *requestRuntime) recover(ctx context.Context) error {
-	return recoverReceipts(ctx, r.outboxDir, r.authority)
+	return recoverReceipts(ctx, r.outboxDir, r.authority, nil)
+}
+
+// recoverFor delivers only the receipts that belong to one request.
+func (r *requestRuntime) recoverFor(ctx context.Context, identity providerexecution.RequestIdentity) error {
+	return recoverReceipts(ctx, r.outboxDir, r.authority, &identity)
 }
 
 func (r *requestRuntime) close(ctx context.Context) error {

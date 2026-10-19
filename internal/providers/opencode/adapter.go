@@ -56,6 +56,9 @@ type ExecuteRequest struct {
 	// System is the exact instruction pinned into the request's managed
 	// profile. It is the only instruction channel Kingdom authors.
 	System string `json:"-"`
+	// KeepSession retains the provider session's captured history after the
+	// request, because a later request will continue it.
+	KeepSession bool `json:"-"`
 	// FirstEventTimeout and StreamInactivityTimeout bound how long a request
 	// may stay silent before it is interrupted.
 	FirstEventTimeout       time.Duration `json:"-"`

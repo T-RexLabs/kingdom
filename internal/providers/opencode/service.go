@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -158,6 +159,9 @@ func (s *Service) ready(ctx context.Context) (*serviceStart, error) {
 					attempt.err = fmt.Errorf("OpenCode service stopped unexpectedly")
 				default:
 				}
+			}
+			if attempt.err == nil && s.captureBrokenWhileIdle(attempt) {
+				attempt.err = errors.Join(fmt.Errorf("OpenCode event capture was lost"), s.retireServer(attempt))
 			}
 			if attempt.err != nil && serviceProcessStopped(attempt.process) {
 				if attempt.client != nil {
@@ -312,8 +316,9 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 			return nil, process, fmt.Errorf("capture OpenCode service events: %w", err)
 		}
 		if err := s.requests.recover(ctx); err != nil {
-			attempt.capture.stop()
-			return nil, process, fmt.Errorf("recover OpenCode native receipts: %w", err)
+			// Receipts for requests that cannot settle are debt on those requests
+			// alone; they must not keep the server from serving others.
+			slog.Warn("OpenCode native receipts remain undelivered", "error", err)
 		}
 	}
 	select {
@@ -450,4 +455,23 @@ func replaceServiceEnv(env []string, name, value string) []string {
 		}
 	}
 	return append(result, prefix+value)
+}
+
+// captureBrokenWhileIdle reports a server whose event history can no longer
+// serve as evidence and that no request is using. Requests that already ended
+// unproven stay blocked in canonical state; replacing the server settles
+// nothing, it only restores the ability to run new work.
+func (s *Service) captureBrokenWhileIdle(attempt *serviceStart) bool {
+	return s.requests != nil && attempt.capture != nil && attempt.capture.healthy() != nil && s.requests.registry.idle()
+}
+
+// retireServer stops the server with proof, so a replacement may start.
+func (s *Service) retireServer(attempt *serviceStart) error {
+	ctx, cancel := context.WithTimeout(context.Background(), s.stopLimit)
+	defer cancel()
+	attempt.capture.stop()
+	if attempt.client != nil {
+		attempt.client.CloseIdleConnections()
+	}
+	return stopServiceProcess(ctx, attempt.process)
 }

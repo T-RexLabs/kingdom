@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"slices"
 )
@@ -71,14 +72,14 @@ func registerProfile(ctx context.Context, client *Client, directory, instanceID 
 	}
 	agent, err := client.Agent(ctx, directory, p.id)
 	if err != nil {
-		return "", fmt.Errorf("verify OpenCode profile: %w", err)
+		return "", errors.Join(fmt.Errorf("verify OpenCode profile: %w", err), retireProfile(ctx, client, directory, p.id))
 	}
 	want := []Permission{{Action: "*", Resource: "*", Effect: "deny"}}
 	for _, action := range p.actions {
 		want = append(want, Permission{Action: action, Resource: "*", Effect: "allow"})
 	}
 	if agent.System != p.system || agent.Mode != "primary" || !slices.Equal(agent.Permissions, want) {
-		return "", fmt.Errorf("OpenCode resolved a different profile than Kingdom registered")
+		return "", errors.Join(fmt.Errorf("OpenCode resolved a different profile than Kingdom registered"), retireProfile(ctx, client, directory, p.id))
 	}
 	return registered.Generation, nil
 }

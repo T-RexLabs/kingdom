@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
 	"kingdom/internal/core/providerexecution"
 )
@@ -71,6 +70,12 @@ func (r *requestRegistry) remove(req *request) {
 	defer r.mu.Unlock()
 	delete(r.byInvocation, req.invocationID)
 	delete(r.byAttempt, req.attemptID)
+}
+
+func (r *requestRegistry) idle() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.byInvocation) == 0
 }
 
 func (r *requestRegistry) invocation(id string) *request {
@@ -195,10 +200,12 @@ func (s *Service) prepareSession(ctx context.Context, started *serviceStart, req
 		return "", false, err
 	}
 	spec := SessionSpec{ID: sessionID, Title: "Kingdom " + req.Agent, Agent: prepared.profile.id, Model: prepared.model}
-	if err := client.CreateSession(ctx, directory, spec); err != nil {
-		return "", false, err
+	err = client.CreateSession(ctx, directory, spec)
+	if err == nil {
+		err = requireEmptyInbox(ctx, client, directory, sessionID)
 	}
-	if err := requireEmptyInbox(ctx, client, directory, sessionID); err != nil {
+	if err != nil {
+		started.capture.release(sessionID)
 		return "", false, err
 	}
 	return sessionID, false, nil
@@ -258,7 +265,3 @@ func (s *Service) Cancel(ctx context.Context, req CancelRequest) error {
 		return ctx.Err()
 	}
 }
-
-// requestTimeLimit bounds every step of stopping and verifying a request, none
-// of which may depend on the caller's cancelled context.
-const requestTimeLimit = 2 * time.Minute

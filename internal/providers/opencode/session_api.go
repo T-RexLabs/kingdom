@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"strconv"
+	"time"
 )
 
 // ModelRef selects a model and, optionally, one of its exact variant IDs.
@@ -358,4 +359,32 @@ func readBoundedLine(reader *bufio.Reader) ([]byte, error) {
 			return nil, err
 		}
 	}
+}
+
+// retryTransient repeats an idempotent call after a transport failure or a
+// server error, with a short delay, until it succeeds, fails definitively, or
+// the context ends.
+func retryTransient(ctx context.Context, call func() error) error {
+	delay := 100 * time.Millisecond
+	for {
+		err := call()
+		if err == nil || !isTransient(err) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(err, ctx.Err())
+		case <-time.After(delay):
+		}
+		delay = min(delay*2, 2*time.Second)
+	}
+}
+
+func isTransient(err error) bool {
+	var service *ServiceError
+	if errors.As(err, &service) {
+		return service.StatusCode >= http.StatusInternalServerError
+	}
+	var protocol *ProtocolError
+	return !errors.As(err, &protocol)
 }

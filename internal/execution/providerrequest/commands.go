@@ -106,9 +106,10 @@ func AbortCommandTx(ctx context.Context, tx *sql.Tx, id, digest string, now time
 	if id == "" || digest == "" || now.IsZero() {
 		return fmt.Errorf("complete command abort identity is required")
 	}
-	var actual string
+	var actual, bindingID string
+	var ordinal int64
 	var guard, aborted sql.NullString
-	if err := tx.QueryRowContext(ctx, `SELECT identity_digest,guard_id,aborted_at FROM provider_command_calls WHERE claim_id=?`, id).Scan(&actual, &guard, &aborted); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT binding_id,identity_digest,command_ordinal,guard_id,aborted_at FROM provider_command_calls WHERE claim_id=?`, id).Scan(&bindingID, &actual, &ordinal, &guard, &aborted); err != nil {
 		return err
 	}
 	if digest != actual {
@@ -117,9 +118,20 @@ func AbortCommandTx(ctx context.Context, tx *sql.Tx, id, digest string, now time
 	if guard.Valid {
 		return fmt.Errorf("a command with a guardian cannot be aborted")
 	}
+	b, err := Get(ctx, tx, bindingID)
+	if err != nil {
+		return err
+	}
+	var guardians int
+	if err := tx.QueryRowContext(ctx, `SELECT count(*) FROM provider_process_guards WHERE provider_invocation_id=? AND command_ordinal=?`, b.Owner.InvocationID, ordinal).Scan(&guardians); err != nil {
+		return err
+	}
+	if guardians != 0 {
+		return fmt.Errorf("a command whose guardian was acknowledged cannot be aborted")
+	}
 	if aborted.Valid {
 		return nil
 	}
-	_, err := tx.ExecContext(ctx, `UPDATE provider_command_calls SET aborted_at=? WHERE claim_id=? AND guard_id IS NULL AND aborted_at IS NULL`, now.UTC().Format(time.RFC3339Nano), id)
+	_, err = tx.ExecContext(ctx, `UPDATE provider_command_calls SET aborted_at=? WHERE claim_id=? AND guard_id IS NULL AND aborted_at IS NULL`, now.UTC().Format(time.RFC3339Nano), id)
 	return err
 }

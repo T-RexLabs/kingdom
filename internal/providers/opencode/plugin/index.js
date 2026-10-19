@@ -61,7 +61,7 @@ async function deliverReceipt(receipt, target) {
     try {
       const result = await call("/v1/native/finish", receipt)
       if (!result.acknowledged) throw new Error("Receipt was not acknowledged")
-      await fs.unlink(target)
+      await fs.rm(target, { force: true })
       await syncDirectory()
       return
     } catch (error) {

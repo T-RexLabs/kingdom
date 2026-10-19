@@ -30,7 +30,6 @@ type capture struct {
 }
 
 type capturedSession struct {
-	file      *os.File
 	lastSeq   int64
 	lastEvent time.Time
 	spoke     bool
@@ -120,7 +119,6 @@ func (c *capture) stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, session := range c.sessions {
-		_ = session.file.Close()
 		if session.feed != nil {
 			session.feed.close()
 		}
@@ -161,12 +159,31 @@ func (c *capture) track(sessionID string) error {
 	if _, ok := c.sessions[sessionID]; ok {
 		return nil
 	}
-	file, err := os.OpenFile(c.path(sessionID), os.O_CREATE|os.O_EXCL|os.O_RDWR|os.O_APPEND, 0o600)
+	file, err := os.OpenFile(c.path(sessionID), os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return fmt.Errorf("track OpenCode session events: %w", err)
 	}
-	c.sessions[sessionID] = &capturedSession{file: file, lastSeq: -1, lastEvent: time.Now()}
+	if err := file.Close(); err != nil {
+		return err
+	}
+	c.sessions[sessionID] = &capturedSession{lastSeq: -1, lastEvent: time.Now()}
 	return nil
+}
+
+// release stops retaining a session and deletes what was retained. Sessions
+// that a later request will continue are kept instead.
+func (c *capture) release(sessionID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	session, ok := c.sessions[sessionID]
+	if !ok {
+		return
+	}
+	if session.feed != nil {
+		session.feed.close()
+	}
+	delete(c.sessions, sessionID)
+	_ = os.Remove(c.path(sessionID))
 }
 
 func (c *capture) path(sessionID string) string { return filepath.Join(c.dir, sessionID+".events") }
@@ -209,7 +226,7 @@ func (c *capture) record(raw json.RawMessage) error {
 		return err
 	}
 	line.WriteByte('\n')
-	if _, err := session.file.Write(line.Bytes()); err != nil {
+	if err := appendFile(c.path(sessionID), line.Bytes()); err != nil {
 		return fmt.Errorf("retain OpenCode event: %w", err)
 	}
 	session.lastSeq = *event.Durable.Seq
@@ -336,4 +353,14 @@ func (c *capture) writeInterval(sessionID, requestID string, watermark int64, ou
 	}
 	_, err = io.WriteString(out, "]")
 	return err
+}
+
+// appendFile opens per write so a long-lived session holds no descriptor.
+func appendFile(path string, content []byte) error {
+	file, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	_, err = file.Write(content)
+	return errors.Join(err, file.Close())
 }

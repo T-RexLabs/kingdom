@@ -205,10 +205,13 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 		call.result.Output, call.result.Truncated, result, err = superviseCommand(ctx, handle)
 	} else {
 		var launch *processguardian.LaunchError
-		switch {
-		case !errors.As(err, &launch):
-			// The guardian is stopped before it acknowledges ownership, so the
-			// command was never released and the claim can close as unlaunched.
+		if errors.As(err, &launch) && launch.OwnershipPersisted {
+			result = launch.Result
+		} else {
+			// The guardian stops its tree before releasing the command whenever
+			// its ownership was not acknowledged and persisted, so the command
+			// never ran. The claim closes only if no guardian row exists, which
+			// excludes a commit whose outcome was merely reported as an error.
 			if abortErr := b.authority.AbortCommand(context.Background(), in.Identity, claim.ID, claim.Digest); abortErr != nil {
 				err = errors.Join(err, fmt.Errorf("abort command claim: %w", abortErr))
 			} else {
@@ -216,8 +219,6 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 			}
 			call.err = err
 			return
-		case launch.OwnershipPersisted:
-			result = launch.Result
 		}
 	}
 	call.result.Exit, call.result.GuardID, call.result.Quiescent = result.ExitCode, result.GuardID, result.Quiescent

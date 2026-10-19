@@ -68,15 +68,24 @@ func (e *execution) capture() *capture { return e.request.started.capture }
 
 func (e *execution) identity() providerexecution.RequestIdentity { return e.request.identity }
 
+// bounded returns a context for a phase that must finish even after the caller
+// gives up, and that is bounded by its own limit rather than by the request's
+// total duration.
+func (e *execution) bounded(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), e.service.requests.settleLimit)
+}
+
 func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	runtime := e.service.requests
 	authority := runtime.authority
-	// Everything after dispatch must finish even if the caller gives up.
-	settle, cancelSettle := context.WithTimeout(context.WithoutCancel(ctx), requestTimeLimit)
-	defer cancelSettle()
 	defer func() {
-		if err := retireProfile(settle, e.client(), e.request.directory, e.request.profile.id); err != nil {
+		retire, cancel := e.bounded(ctx)
+		defer cancel()
+		if err := retireProfile(retire, e.client(), e.request.directory, e.request.profile.id); err != nil {
 			slog.Warn("OpenCode profile retirement deferred", "profile_id", e.request.profile.id, "error", err)
+		}
+		if !e.req.KeepSession {
+			e.capture().release(e.identity().SessionID)
 		}
 	}()
 
@@ -91,21 +100,23 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	defer runtime.commands.unregister(e.identity())
 
 	if e.stopRequested() {
-		return ExecuteResponse{}, errors.Join(authority.CloseAdmission(settle, e.identity()), context.Canceled)
+		fence, cancel := e.bounded(ctx)
+		defer cancel()
+		return ExecuteResponse{}, errors.Join(authority.CloseAdmission(fence, e.identity()), context.Canceled)
 	}
 	if err := authority.IssueDispatch(ctx, e.identity()); err != nil {
 		return ExecuteResponse{}, err
 	}
 	feed, err := e.capture().follow(e.identity().SessionID)
 	if err != nil {
-		return ExecuteResponse{}, errors.Join(err, e.stop(settle))
+		return ExecuteResponse{}, errors.Join(err, e.stopBounded(ctx))
 	}
 	progress := e.consume(feed)
 	defer progress.wait()
 	defer feed.close()
 
-	if err := e.client().Prompt(ctx, e.request.directory, e.identity().SessionID, e.identity().RequestID, prompt); err != nil {
-		return ExecuteResponse{}, errors.Join(fmt.Errorf("send OpenCode prompt: %w", err), e.stop(settle))
+	if err := e.sendPrompt(ctx, prompt); err != nil {
+		return ExecuteResponse{}, errors.Join(fmt.Errorf("send OpenCode prompt: %w", err), e.stopBounded(ctx))
 	}
 	invokedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if e.req.OnProviderSession != nil {
@@ -114,10 +125,20 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	if e.req.OnInvocationStarted != nil {
 		e.req.OnInvocationStarted()
 	}
-	if err := e.await(ctx, settle); err != nil {
+	if err := e.await(ctx); err != nil {
 		return ExecuteResponse{}, err
 	}
+	settle, cancel := e.bounded(ctx)
+	defer cancel()
 	return e.finalize(settle, invokedAt)
+}
+
+// sendPrompt retries transport failures. The server dedupes a prompt by its
+// message ID, so repeating an admitted prompt cannot send the work twice.
+func (e *execution) sendPrompt(ctx context.Context, text string) error {
+	return retryTransient(ctx, func() error {
+		return e.client().Prompt(ctx, e.request.directory, e.identity().SessionID, e.identity().RequestID, text)
+	})
 }
 
 func (e *execution) stopRequested() bool {
@@ -161,9 +182,9 @@ func (e *execution) prompt(ctx context.Context) (string, error) {
 
 // await waits for the session to become idle, interrupting it on cancellation
 // or silence. Waiting never ends the request by itself: only the verified
-// evidence does.
-func (e *execution) await(ctx, settle context.Context) error {
-	waitCtx, cancel := context.WithCancel(settle)
+// evidence does, and it has no total duration limit of its own.
+func (e *execution) await(ctx context.Context) error {
+	waitCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	defer cancel()
 	waited := make(chan error, 1)
 	go func() { waited <- e.client().Wait(waitCtx, e.request.directory, e.identity().SessionID) }()
@@ -173,7 +194,7 @@ func (e *execution) await(ctx, settle context.Context) error {
 		select {
 		case err := <-waited:
 			if err != nil {
-				return errors.Join(fmt.Errorf("wait for OpenCode request: %w", err), e.stop(settle))
+				return errors.Join(fmt.Errorf("wait for OpenCode request: %w", err), e.stopBounded(ctx))
 			}
 			return nil
 		case <-ctx.Done():
@@ -186,17 +207,19 @@ func (e *execution) await(ctx, settle context.Context) error {
 			}
 		}
 		if e.cause != stopNone {
-			if err := e.stop(settle); err != nil {
+			if err := e.stopBounded(ctx); err != nil {
 				return err
 			}
+			drain, cancelDrain := e.bounded(ctx)
+			defer cancelDrain()
 			select {
 			case err := <-waited:
 				if err != nil {
 					return fmt.Errorf("wait for interrupted OpenCode request: %w", err)
 				}
 				return nil
-			case <-settle.Done():
-				return settle.Err()
+			case <-drain.Done():
+				return drain.Err()
 			}
 		}
 	}
@@ -223,15 +246,22 @@ func (e *execution) silent() bool {
 	return limit > 0 && quiet > limit
 }
 
-// stop fences the request and then interrupts it. Admission closes first, so
-// nothing new can start while the interrupt and command cancellation proceed.
+func (e *execution) stopBounded(ctx context.Context) error {
+	stopCtx, cancel := e.bounded(ctx)
+	defer cancel()
+	return e.stop(stopCtx)
+}
+
+// stop fences the request and interrupts it. Admission closes first, so nothing
+// new can start. Every step is attempted even if an earlier one failed, because
+// a failed fence must not leave the request running.
 func (e *execution) stop(ctx context.Context) error {
 	runtime := e.service.requests
-	if err := runtime.authority.CloseAdmission(ctx, e.identity()); err != nil {
-		return fmt.Errorf("close OpenCode admission: %w", err)
-	}
-	interruptErr := e.client().Interrupt(ctx, e.request.directory, e.identity().SessionID)
-	return errors.Join(interruptErr, runtime.commands.cancel(ctx, e.identity()))
+	fenceErr := runtime.authority.CloseAdmission(ctx, e.identity())
+	interruptErr := retryTransient(ctx, func() error {
+		return e.client().Interrupt(ctx, e.request.directory, e.identity().SessionID)
+	})
+	return errors.Join(fenceErr, interruptErr, runtime.commands.cancel(ctx, e.identity()))
 }
 
 // finalize proves the terminal state from captured events and the projected
@@ -244,7 +274,7 @@ func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResp
 		return ExecuteResponse{}, fmt.Errorf("close OpenCode admission: %w", err)
 	}
 	commandErr := runtime.commands.cancel(ctx, identity)
-	if err := runtime.recover(ctx); err != nil {
+	if err := runtime.recoverFor(ctx, identity); err != nil {
 		return ExecuteResponse{}, fmt.Errorf("recover native receipts: %w", err)
 	}
 	watermark, err := e.client().Log(ctx, e.request.directory, identity.SessionID, func(json.RawMessage) error { return nil })
@@ -410,6 +440,7 @@ func (e *execution) response(ctx context.Context, verified protocol.Verified, ev
 		return errors.Join(failures...)
 	}
 	response.StreamObservation = observation
+	response.Outcome = e.outcome(terminal, verified.Provider)
 	switch e.cause {
 	case stopCancelled:
 		return response, errors.Join(commandErr, context.Canceled)
@@ -417,6 +448,25 @@ func (e *execution) response(ctx context.Context, verified protocol.Verified, ev
 		return response, errors.Join(commandErr, fmt.Errorf("provider request was silent beyond its limit: %w", context.DeadlineExceeded))
 	}
 	return response, commandErr
+}
+
+// outcome reports the verified terminal as the execution outcome that callers
+// persist, so no one re-derives reason codes from error text.
+func (e *execution) outcome(terminal providerexecution.RequestTerminal, failure *protocol.ProviderFailure) ExecutionOutcome {
+	switch {
+	case e.cause == stopTimedOut:
+		return ExecutionOutcome{State: "failed", ReasonCode: "timeout", FailureText: "The provider request was silent beyond its limit.", EvidenceSource: "request"}
+	case terminal.Outcome == providerexecution.RequestOutcomeInterrupted:
+		return ExecutionOutcome{State: "cancelled", ReasonCode: "provider_cancelled", EvidenceSource: "request"}
+	case terminal.Outcome == providerexecution.RequestOutcomeFailed:
+		outcome := ExecutionOutcome{State: "failed", ReasonCode: string(providerexecution.CanonicalProviderErrorCode("", "", 0)), EvidenceSource: "request"}
+		if failure != nil {
+			outcome.ReasonCode = string(providerexecution.CanonicalProviderErrorCode(failure.Code, "", failure.Status))
+			outcome.FailureText = failure.Message
+		}
+		return outcome
+	}
+	return ExecutionOutcome{State: "success", ReasonCode: "execution_completed", EvidenceSource: "request"}
 }
 
 // previewOf reads the bounded display prefix of staged text.

@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 )
 
@@ -46,8 +47,9 @@ func installPlugin(directory string) error {
 
 // recoverReceipts delivers native receipts that the plugin persisted but could
 // not deliver, then removes them. Delivery is idempotent, so a receipt the
-// plugin delivers concurrently is harmless.
-func recoverReceipts(ctx context.Context, outbox string, authority *providerrequest.Authority) error {
+// plugin delivers concurrently is harmless. A non-nil only limits recovery to
+// one request, so a receipt that cannot be delivered never blocks another.
+func recoverReceipts(ctx context.Context, outbox string, authority *providerrequest.Authority, only *providerexecution.RequestIdentity) error {
 	entries, err := os.ReadDir(outbox)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -71,6 +73,9 @@ func recoverReceipts(ctx context.Context, outbox string, authority *providerrequ
 		var receipt nativeReceipt
 		if err := decodeStrict(raw, &receipt); err != nil {
 			failures = append(failures, fmt.Errorf("native receipt %s: %w", entry.Name(), err))
+			continue
+		}
+		if only != nil && receipt.Identity != *only {
 			continue
 		}
 		if err := authority.FinishNative(ctx, receipt.Identity, receipt.providerReceipt()); err != nil {

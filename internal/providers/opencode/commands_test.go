@@ -3,12 +3,14 @@ package opencode
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/processguardian"
 )
 
@@ -164,5 +166,27 @@ func TestCommandEnvironmentWithholdsKingdomServerSettings(t *testing.T) {
 	env := commandEnvironment([]string{"PATH=/bin", "OPENAI_API_KEY=provider", "OPENCODE_PASSWORD=secret", "OPENCODE_CONFIG_CONTENT={}", "KINGDOM_AUTHORITY_TOKEN=token"})
 	if strings.Join(env, ",") != "PATH=/bin,OPENAI_API_KEY=provider" {
 		t.Fatalf("environment %v", env)
+	}
+}
+
+func TestCommandRefusedAtGuardianAdmissionNeverRanAndClosesItsClaim(t *testing.T) {
+	bound := newBoundRun(t)
+	bridge, _ := newTestBridge(t, bound)
+	// Cancellation closes admission in the database before the guardian's
+	// ownership is acknowledged, so the acknowledgement is refused.
+	bridge.registrations[bound.identity].ownership = func(ctx context.Context, _ ProcessGuardOwnership) error {
+		if err := bound.authority.CloseAdmission(ctx, bound.identity); err != nil {
+			return err
+		}
+		return fmt.Errorf("guardian admission closed")
+	}
+	if _, err := bridge.invoke(context.Background(), shellCall(bound, "call-1", "touch ran.txt")); err == nil {
+		t.Fatal("a refused command reported success")
+	}
+	if _, err := os.Stat(filepath.Join(bound.workspace, "ran.txt")); err == nil {
+		t.Fatal("a command ran although its guardian was refused")
+	}
+	if err := providerrequest.RequireResourcesClosedTx(context.Background(), bound.db, "binding-"+bound.invoke); err != nil {
+		t.Fatalf("the unlaunched claim stayed open: %v", err)
 	}
 }
