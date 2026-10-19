@@ -103,9 +103,6 @@ func (r *request) requestStop() bool {
 // Prepare sets up the request's immutable profile and session without sending
 // any work. The returned identity is what the canonical invocation binds.
 func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, error) {
-	if s.requests == nil {
-		return Prepared{}, fmt.Errorf("OpenCode managed execution is not configured")
-	}
 	if err := requirePrepareRequest(req); err != nil {
 		return Prepared{}, err
 	}
@@ -231,9 +228,6 @@ func requireEmptyInbox(ctx context.Context, client *Client, directory, sessionID
 
 // Discard releases a prepared request that will not be executed.
 func (s *Service) Discard(ctx context.Context, invocationID string) error {
-	if s.requests == nil {
-		return nil
-	}
 	prepared := s.requests.registry.invocation(invocationID)
 	if prepared == nil {
 		return nil
@@ -251,9 +245,6 @@ func (s *Service) Discard(ctx context.Context, invocationID string) error {
 // Cancel stops the attempt's request and waits for its Execute to settle the
 // evidence. It interrupts only that request's session.
 func (s *Service) Cancel(ctx context.Context, attemptID string) error {
-	if s.requests == nil {
-		return &AttemptNotFoundError{AttemptID: attemptID}
-	}
 	prepared := s.requests.registry.attempt(attemptID)
 	if prepared == nil {
 		return &AttemptNotFoundError{AttemptID: attemptID}

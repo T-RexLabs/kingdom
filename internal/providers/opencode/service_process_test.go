@@ -62,7 +62,7 @@ func TestServiceStockOpenCodeDiscovery(t *testing.T) {
 		"OPENCODE_DISABLE_MODELS_FETCH=1", "OPENCODE_DISABLE_FFF=1",
 		`OPENCODE_CONFIG_CONTENT={/* Existing OpenCode JSONC. */"formatter":false,}`,
 	}
-	service, err := NewService(ServiceConfig{BinaryPath: binary, WorkDir: filepath.Join(root, "project-a"), RuntimeRoot: filepath.Join(root, "runtime"), Env: env})
+	service, err := NewService(ServiceConfig{BinaryPath: binary, WorkDir: filepath.Join(root, "project-a"), RuntimeRoot: filepath.Join(root, "runtime"), Env: env, Requests: testAuthority(t)})
 	if err != nil {
 		t.Fatal(err)
 	}

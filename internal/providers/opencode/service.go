@@ -35,8 +35,8 @@ type ServiceConfig struct {
 	// Env replaces the inherited environment when non-nil. It allows isolated
 	// installations and fixtures without changing the host's account stores.
 	Env []string
-	// Requests enables managed execution. Without it the service only serves
-	// configuration and model discovery.
+	// Requests is the canonical authority every managed request and server
+	// instance is recorded through.
 	Requests *providerrequest.Authority
 }
 
@@ -88,6 +88,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if workDir == "" {
 		return nil, fmt.Errorf("OpenCode service working directory is required")
 	}
+	if cfg.Requests == nil || strings.TrimSpace(cfg.RuntimeRoot) == "" {
+		return nil, fmt.Errorf("OpenCode service request authority and runtime root are required")
+	}
 	workDir, err := filepath.Abs(workDir)
 	if err != nil {
 		return nil, fmt.Errorf("resolve OpenCode service working directory: %w", err)
@@ -103,15 +106,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	if env == nil {
 		env = os.Environ()
 	}
-	pluginDir := ""
-	if cfg.Requests != nil {
-		if strings.TrimSpace(cfg.RuntimeRoot) == "" {
-			return nil, fmt.Errorf("OpenCode service runtime root is required for managed execution")
-		}
-		pluginDir = filepath.Join(cfg.RuntimeRoot, "plugin")
-		if err := installPlugin(pluginDir); err != nil {
-			return nil, err
-		}
+	pluginDir := filepath.Join(cfg.RuntimeRoot, "plugin")
+	if err := installPlugin(pluginDir); err != nil {
+		return nil, err
 	}
 	env, err = serviceEnvironment(env, pluginDir)
 	if err != nil {
@@ -123,11 +120,9 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, guardianRoot: cfg.RuntimeRoot, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
-	if cfg.Requests != nil {
-		if s.requests, err = newRequestRuntime(cfg.Requests, runner, env, cfg.RuntimeRoot); err != nil {
-			cancel()
-			return nil, err
-		}
+	if s.requests, err = newRequestRuntime(cfg.Requests, runner, env, cfg.RuntimeRoot); err != nil {
+		cancel()
+		return nil, err
 	}
 	return s, nil
 }
@@ -141,12 +136,8 @@ func ServiceRuntimeRoot(runtimeDir string) string {
 
 // registerInstance is the guardian's durable launch gate for the server: the
 // instance is recorded before the server runs, so a crash never leaves one
-// running unrecorded, and its guardian publishes durable stop evidence. It is
-// nil, with no durable guardian, when managed execution is not configured.
+// running unrecorded, and its guardian publishes durable stop evidence.
 func (s *Service) registerInstance(instanceID string) processguardian.PersistOwnership {
-	if s.requests == nil {
-		return nil
-	}
 	return func(ctx context.Context, ownership processguardian.Ownership) error {
 		// The capability authorizes the stop evidence and is never stored.
 		ownership.QuiescenceCapability = ""
@@ -161,7 +152,7 @@ func (s *Service) registerInstance(instanceID string) processguardian.PersistOwn
 // closeInstance records a server's proven stop, so the effects it can no longer
 // perform stop being owed, and removes the evidence that proved it.
 func (s *Service) closeInstance(instanceID string, result processguardian.Result) {
-	if s.requests == nil || instanceID == "" || !result.Quiescent || result.EvidenceSHA256 == "" {
+	if instanceID == "" || !result.Quiescent || result.EvidenceSHA256 == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), s.stopLimit)
@@ -284,10 +275,8 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 	// Both public aliases may be inherited; give this server exactly one
 	// explicit credential so OpenCode never prints a generated password.
 	env = replaceServiceEnv(env, "OPENCODE_PASSWORD", password)
-	if s.requests != nil {
-		attempt.instanceID = "svc_" + hex.EncodeToString(secret[:8])
-		env = s.requests.environment(env, attempt.instanceID)
-	}
+	attempt.instanceID = "svc_" + hex.EncodeToString(secret[:8])
+	env = s.requests.environment(env, attempt.instanceID)
 	handle, err := s.runner.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, s.registerInstance(attempt.instanceID))
 	if err != nil {
 		var launchErr *processguardian.LaunchError
@@ -366,18 +355,16 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 	if err := client.ValidateConfiguration(ctx, s.workDir); err != nil {
 		return nil, process, fmt.Errorf("validate OpenCode service configuration: %w", err)
 	}
-	if s.requests != nil {
-		if err := awaitPlugin(ctx, client, s.workDir); err != nil {
-			return nil, process, err
-		}
-		if attempt.capture, err = startCapture(ctx, client, s.requests.spoolDir); err != nil {
-			return nil, process, fmt.Errorf("capture OpenCode service events: %w", err)
-		}
-		if err := s.requests.recover(ctx); err != nil {
-			// Receipts for requests that cannot settle are debt on those requests
-			// alone; they must not keep the server from serving others.
-			slog.Warn("OpenCode native receipts remain undelivered", "error", err)
-		}
+	if err := awaitPlugin(ctx, client, s.workDir); err != nil {
+		return nil, process, err
+	}
+	if attempt.capture, err = startCapture(ctx, client, s.requests.spoolDir); err != nil {
+		return nil, process, fmt.Errorf("capture OpenCode service events: %w", err)
+	}
+	if err := s.requests.recover(ctx); err != nil {
+		// Receipts for requests that cannot settle are debt on those requests
+		// alone; they must not keep the server from serving others.
+		slog.Warn("OpenCode native receipts remain undelivered", "error", err)
 	}
 	select {
 	case <-process.done:
@@ -492,10 +479,8 @@ func serviceEnvironment(inherited []string, pluginDir string) ([]string, error) 
 		}
 	}
 	config["formatter"] = json.RawMessage("false")
-	if pluginDir != "" {
-		if err := withPlugin(config, pluginDir); err != nil {
-			return nil, err
-		}
+	if err := withPlugin(config, pluginDir); err != nil {
+		return nil, err
 	}
 	encoded, err := json.Marshal(config)
 	if err != nil {
@@ -520,7 +505,7 @@ func replaceServiceEnv(env []string, name, value string) []string {
 // unproven stay blocked in canonical state; replacing the server settles
 // nothing, it only restores the ability to run new work.
 func (s *Service) captureBrokenWhileIdle(attempt *serviceStart) bool {
-	return s.requests != nil && attempt.capture != nil && attempt.capture.healthy() != nil && s.requests.registry.idle()
+	return attempt.capture != nil && attempt.capture.healthy() != nil && s.requests.registry.idle()
 }
 
 // retireServer stops the server with proof, so a replacement may start.

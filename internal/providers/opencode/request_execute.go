@@ -33,9 +33,6 @@ const (
 // reported through that evidence; an error means the request could not be
 // proven and its canonical invocation must stay open.
 func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error) {
-	if s.requests == nil {
-		return ExecuteResponse{}, fmt.Errorf("OpenCode managed execution is not configured")
-	}
 	prepared := s.requests.registry.invocation(req.InvocationID)
 	if prepared == nil {
 		return ExecuteResponse{}, fmt.Errorf("provider invocation %s was not prepared", req.InvocationID)

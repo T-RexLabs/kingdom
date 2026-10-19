@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/processguardian"
 )
 
@@ -86,9 +87,9 @@ func serviceFixture(t *testing.T, handler http.HandlerFunc) (*Service, string) {
 			}
 		}
 	}
-	server := httptest.NewServer(handler)
+	server := httptest.NewServer(managedServerRoutes(handler))
 	t.Cleanup(server.Close)
-	service, err := NewService(ServiceConfig{BinaryPath: "fixture-opencode", WorkDir: t.TempDir(), RuntimeRoot: t.TempDir(), Env: []string{"PATH=" + os.Getenv("PATH")}})
+	service, err := NewService(ServiceConfig{BinaryPath: "fixture-opencode", WorkDir: t.TempDir(), RuntimeRoot: t.TempDir(), Env: []string{"PATH=" + os.Getenv("PATH")}, Requests: testAuthority(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,14 +105,39 @@ func serviceFixture(t *testing.T, handler http.HandlerFunc) (*Service, string) {
 	return service, `{"url":"` + server.URL + `"}`
 }
 
+// managedServerRoutes answers what every managed server provides beside the
+// routes a test controls: the loaded Kingdom plugin and a connected event
+// stream that stays open until the client leaves.
+func managedServerRoutes(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/plugin":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"data":[{"id":"`+pluginID+`","state":{"status":"active"}}]}`)
+		case "/api/event":
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"type\":\"server.connected\"}\n\n")
+			w.(http.Flusher).Flush()
+			<-r.Context().Done()
+		default:
+			handler(w, r)
+		}
+	}
+}
+
+func testAuthority(t *testing.T) *providerrequest.Authority {
+	t.Helper()
+	return providerrequest.NewAuthority(migratedDatabase(t, t.TempDir()), nil)
+}
+
 func TestServiceStartsLazilyAndCollapsesConcurrentClients(t *testing.T) {
 	service, endpoint := serviceFixture(t, nil)
 	var starts atomic.Int32
 	var handle *serviceTestHandle
 	service.runner = serviceRunnerFunc(func(_ context.Context, command processguardian.Command, persist processguardian.PersistOwnership) (processguardian.Handle, error) {
 		starts.Add(1)
-		if persist != nil {
-			t.Error("service launch must not claim invocation ownership")
+		if persist == nil {
+			t.Error("service launch must be recorded before the server runs")
 		}
 		if !reflect.DeepEqual(command.Args, []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}) {
 			t.Errorf("unexpected command args: %v", command.Args)
@@ -296,7 +322,7 @@ func TestServiceStartupTimeoutStopsGuardedProcess(t *testing.T) {
 
 func TestServiceEnvironmentPreservesProviderSetupAndDisablesFormatter(t *testing.T) {
 	inherited := []string{"PATH=/fixture/bin", "OPENCODE_DATABASE_PATH=/existing/opencode.db", "OPENCODE_CONFIG=/existing/user.json", "OPENAI_API_KEY=fixture-key", `OPENCODE_CONFIG_CONTENT={"provider":{"custom":{"options":{"baseURL":"http://127.0.0.1:1234/v1"}}},"formatter":{"prettier":{}}}`}
-	env, err := serviceEnvironment(inherited, "")
+	env, err := serviceEnvironment(inherited, "/kingdom/plugin")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,7 +343,7 @@ func TestServiceEnvironmentPreservesProviderSetupAndDisablesFormatter(t *testing
 		t.Fatalf("wrong configuration %v", config)
 	}
 	for _, invalid := range []string{"null", "[]", "{bad", "{} trailing"} {
-		if _, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + invalid}, ""); err == nil {
+		if _, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + invalid}, "/kingdom/plugin"); err == nil {
 			t.Fatalf("accepted malformed inline configuration %q", invalid)
 		}
 	}
@@ -357,7 +383,7 @@ func TestServiceUsesActualGuardianLease(t *testing.T) {
 }
 
 func TestServiceUnprovenLaunchBlocksReplacementAndReportsShutdownFailure(t *testing.T) {
-	service, err := NewService(ServiceConfig{WorkDir: t.TempDir(), RuntimeRoot: t.TempDir(), Env: []string{}})
+	service, err := NewService(ServiceConfig{WorkDir: t.TempDir(), RuntimeRoot: t.TempDir(), Env: []string{}, Requests: testAuthority(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +439,7 @@ func TestServiceCanonicalizesWorkingDirectorySymlinks(t *testing.T) {
 	if err := os.Symlink(actual, link); err != nil {
 		t.Fatal(err)
 	}
-	service, err := NewService(ServiceConfig{WorkDir: link, RuntimeRoot: t.TempDir(), Env: []string{}})
+	service, err := NewService(ServiceConfig{WorkDir: link, RuntimeRoot: t.TempDir(), Env: []string{}, Requests: testAuthority(t)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -479,7 +505,7 @@ func TestServiceEnvironmentAcceptsOpenCodeJSONC(t *testing.T) {
 		/* Managed formatting overrides this value only. */
 		"formatter": {"custom": {"command": ["formatter", "--write",],},},
 	}`
-	env, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + inline}, "")
+	env, err := serviceEnvironment([]string{"OPENCODE_CONFIG_CONTENT=" + inline}, "/kingdom/plugin")
 	if err != nil {
 		t.Fatalf("valid OpenCode JSONC rejected: %v", err)
 	}

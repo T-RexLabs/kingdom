@@ -67,8 +67,5 @@ func (r *requestRuntime) recoverFor(ctx context.Context, identity providerexecut
 }
 
 func (r *requestRuntime) close(ctx context.Context) error {
-	if r == nil {
-		return nil
-	}
 	return r.gateway.close(ctx)
 }
