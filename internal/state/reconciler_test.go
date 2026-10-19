@@ -2166,7 +2166,7 @@ func TestReconcilerIgnoresSyntheticRuntimeObservationHeartbeats(t *testing.T) {
 	}
 }
 
-func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
+func TestReconcilerDoesNotTreatItsOwnRuntimeObservationAsHeartbeat(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -2187,11 +2187,8 @@ func TestReconcilerTreatsLiveRuntimeObservationAsHeartbeat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reconcile with live runtime observation heartbeat: %v", err)
 	}
-	if result.StaleAttemptsFound != 0 {
-		t.Fatalf("expected no stale attempts when runtime observation shows a live execution, got %d", result.StaleAttemptsFound)
-	}
-	if got := queryNodeStatus(t, db, "nr_builder_live_observe"); got != "running" {
-		t.Fatalf("expected attempt to remain running when runtime observation shows a live execution, got %q", got)
+	if result.StaleAttemptsFound != 1 {
+		t.Fatalf("a runtime observation must not keep an orphaned attempt alive, found %d stale attempts", result.StaleAttemptsFound)
 	}
 }
 

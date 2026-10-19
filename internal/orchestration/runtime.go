@@ -307,6 +307,20 @@ func (r *Runtime) Start(ctx context.Context) (startErr error) {
 		}
 	}
 
+	if r.orchestrator != nil && r.orchestrator.executionStore != nil {
+		expiredAt := time.Now().UTC()
+		if r.orchestrator.now != nil {
+			expiredAt = r.orchestrator.now().UTC()
+		}
+		expired, err := r.orchestrator.executionStore.ExpireProviderExecutionLeases(ctx, expiredAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return fmt.Errorf("startup execution lease expiry: %w", err)
+		}
+		if expired > 0 {
+			slog.Info("expired execution leases held by a previous process", "attempts", expired)
+		}
+	}
+
 	if err := r.recoverDurableExecutionState(ctx); err != nil {
 		return fmt.Errorf("startup durable execution recovery: %w", err)
 	}

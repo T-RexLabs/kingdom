@@ -2603,3 +2603,30 @@ func (s *Store) QueueAttemptCancel(ctx context.Context, req QueueAttemptCancelRe
 	}, sqlitex.Options{})
 	return err
 }
+
+// ExpireProviderExecutionLeases ends the execution leases that earlier
+// processes still hold. Only a live worker renews a lease, and a process that
+// has just started has none, so waiting out the lease would only delay the
+// stale-attempt recovery that settles the orphaned work.
+func (s *Store) ExpireProviderExecutionLeases(ctx context.Context, expiredAt string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store database is required")
+	}
+	expiredAt = strings.TrimSpace(expiredAt)
+	if _, err := time.Parse(time.RFC3339Nano, expiredAt); err != nil {
+		return 0, fmt.Errorf("lease expiry time is required: %w", err)
+	}
+	var expired int64
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+			SET lease_expires_at = ?, updated_at = ?
+			WHERE execution_mode = 'provider_backed' AND state IN ('starting', 'running')
+			  AND lease_owner <> '' AND julianday(lease_expires_at) > julianday(?)`, expiredAt, expiredAt, expiredAt)
+		if err != nil {
+			return err
+		}
+		expired, err = result.RowsAffected()
+		return err
+	}, sqlitex.Options{})
+	return expired, err
+}
