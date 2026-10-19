@@ -99,8 +99,10 @@ type orchestrationLoop struct {
 	asyncDrain                         *executionDrainTracker
 	notifyCompletionReady              func()
 	closeMode                          *runtimeCloseMode
-	commandGuardianRuntimeRoot         string
-	commandGuardianAbsent              func(executionstore.ProviderCommandGuardian) bool
+	guardianRuntimeRoot                string
+	// serverAbsent replaces the real process-identity check in tests.
+	serverAbsent          func(pid, treeID int, childToken, treeToken string) bool
+	commandGuardianAbsent func(executionstore.ProviderCommandGuardian) bool
 }
 
 type keyedLockEntry struct {

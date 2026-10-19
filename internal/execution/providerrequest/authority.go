@@ -123,3 +123,20 @@ func (a *Authority) Abandon(ctx context.Context, identity providerexecution.Requ
 		return AbandonTx(ctx, tx, b.ID, b.Lease, now)
 	})
 }
+
+// RegisterServerInstance records a started shared server. It is the guardian's
+// durable launch gate, so the server never runs unrecorded.
+func (a *Authority) RegisterServerInstance(ctx context.Context, instance ServerInstance) error {
+	_, err := sqlitex.Transaction(ctx, a.db, func(ctx context.Context, tx *sql.Tx) error {
+		return RegisterServerInstanceTx(ctx, tx, instance, a.now())
+	}, sqlitex.Options{})
+	return err
+}
+
+// CloseServerInstance records that a shared server has been proven stopped.
+func (a *Authority) CloseServerInstance(ctx context.Context, id string, closure ServerClosure) error {
+	_, err := sqlitex.Transaction(ctx, a.db, func(ctx context.Context, tx *sql.Tx) error {
+		return CloseServerInstanceTx(ctx, tx, id, closure, a.now())
+	}, sqlitex.Options{})
+	return err
+}

@@ -19,7 +19,7 @@ const recoveryBlockedEventType = "attempt.recovery_blocked"
 func recoveryBlockedText(reason providerrequest.OpenReason) string {
 	switch reason {
 	case providerrequest.OpenNativeReceipts:
-		return "A file change was still in flight when its provider request stopped, so Kingdom cannot yet tell what it changed."
+		return "A file change was in flight and the provider server making it is not yet proven stopped, so Kingdom cannot yet tell what it changed."
 	case providerrequest.OpenCommands:
 		return "A shell command was still running or its end is unconfirmed, so Kingdom cannot yet tell what it did."
 	case providerrequest.OpenAdmissionOpen:

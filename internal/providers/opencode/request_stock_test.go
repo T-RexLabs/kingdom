@@ -16,6 +16,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/processguardian"
 )
 
 // stockHarness runs managed requests against the real OpenCode server with a
@@ -634,5 +635,40 @@ func TestStockRequestWhoseAdmissionClosedBeforeDispatchSettlesAsCancelled(t *tes
 	}
 	if err := response.StreamObservation.ReleaseContent(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStockServerInstanceIsRecordedWhileRunningAndClosedWhenStopped(t *testing.T) {
+	h := newStockHarness(t)
+	ctx := context.Background()
+	if _, err := h.service.Client(ctx); err != nil {
+		t.Fatal(err)
+	}
+	instances, err := providerrequest.OpenServerInstances(ctx, h.db)
+	if err != nil || len(instances) != 1 || !strings.HasPrefix(instances[0].ID, "svc_") {
+		t.Fatalf("a running server must be recorded: %#v %v", instances, err)
+	}
+	var ownership processguardian.Ownership
+	if err := json.Unmarshal([]byte(instances[0].OwnershipJSON), &ownership); err != nil || ownership.GuardID != instances[0].GuardID || ownership.ChildPID == 0 || ownership.QuiescenceCapability != "" {
+		t.Fatalf("the recorded ownership must identify the process and withhold the stop capability: %#v %v", ownership, err)
+	}
+	closeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	if err := h.service.CloseContext(closeCtx); err != nil {
+		t.Fatal(err)
+	}
+	if open, err := providerrequest.OpenServerInstances(ctx, h.db); err != nil || len(open) != 0 {
+		t.Fatalf("a stopped server must be closed: %#v %v", open, err)
+	}
+	var basis string
+	if err := h.db.QueryRow(`SELECT quiescence_basis FROM provider_server_instances WHERE instance_id=?`, instances[0].ID).Scan(&basis); err != nil || basis != string(providerrequest.ClosedByGuardian) {
+		t.Fatalf("closure basis %q %v", basis, err)
+	}
+	evidence, err := os.ReadDir(filepath.Join(h.service.guardianRoot, "provider-process-guards", "quiescence"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(evidence) != 0 {
+		t.Fatalf("the evidence that proved the stop must be removed once recorded: %d files", len(evidence))
 	}
 }

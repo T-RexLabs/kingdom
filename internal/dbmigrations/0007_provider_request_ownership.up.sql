@@ -87,3 +87,23 @@ BEGIN SELECT RAISE(ABORT, 'command claim identity is immutable'); END;
 CREATE TRIGGER provider_command_completion_immutable BEFORE UPDATE OF guard_id,completed_at,aborted_at ON provider_command_calls
 WHEN (OLD.completed_at IS NOT NULL OR OLD.aborted_at IS NOT NULL) AND (NEW.guard_id IS NOT OLD.guard_id OR NEW.completed_at IS NOT OLD.completed_at OR NEW.aborted_at IS NOT OLD.aborted_at)
 BEGIN SELECT RAISE(ABORT, 'command completion is immutable'); END;
+
+-- The shared server is a process Kingdom starts and a crash can orphan. Its
+-- guardian publishes durable quiescence evidence, and an instance is closed once
+-- that evidence, or the absence of its exact process, is proven. A closed
+-- instance can no longer perform an effect, so its unreceipted ones owe nothing.
+CREATE TABLE provider_server_instances (
+  instance_id TEXT PRIMARY KEY CHECK (TRIM(instance_id) <> ''),
+  guard_id TEXT NOT NULL UNIQUE CHECK (TRIM(guard_id) <> ''),
+  ownership_json TEXT NOT NULL CHECK (json_valid(ownership_json)),
+  started_at TEXT NOT NULL,
+  quiescent_at TEXT,
+  quiescence_basis TEXT CHECK (quiescence_basis IN ('guardian','absence')),
+  CHECK ((quiescent_at IS NULL) = (quiescence_basis IS NULL))
+);
+CREATE INDEX idx_provider_server_instances_open ON provider_server_instances(instance_id) WHERE quiescent_at IS NULL;
+CREATE TRIGGER provider_server_instance_identity_immutable BEFORE UPDATE OF instance_id,guard_id,ownership_json,started_at ON provider_server_instances
+BEGIN SELECT RAISE(ABORT, 'server instance identity is immutable'); END;
+CREATE TRIGGER provider_server_instance_closure_immutable BEFORE UPDATE OF quiescent_at,quiescence_basis ON provider_server_instances
+WHEN OLD.quiescent_at IS NOT NULL
+BEGIN SELECT RAISE(ABORT, 'server instance closure cannot change'); END;

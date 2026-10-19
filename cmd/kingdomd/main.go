@@ -143,10 +143,11 @@ func run() (exitCode int) {
 	}
 
 	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
+	providerServiceRoot := filepath.Join(filepath.Dir(dbPath), "runtime", "opencode-service")
 	providerService, err := opencode.NewService(opencode.ServiceConfig{
 		BinaryPath:  providerBinary,
 		WorkDir:     repoRoot,
-		RuntimeRoot: filepath.Join(filepath.Dir(dbPath), "runtime", "opencode-service"),
+		RuntimeRoot: providerServiceRoot,
 		Requests:    providerrequest.NewAuthority(db, nil),
 	})
 	if err != nil {
@@ -170,6 +171,7 @@ func run() (exitCode int) {
 		GovernanceMode:      governanceMode,
 		AutonomousApprovals: &autonomousApprovals,
 		WorkspaceRoot:       filepath.Join(filepath.Dir(dbPath), "runtime"),
+		GuardianRuntimeRoot: providerServiceRoot,
 		Provider:            providerService,
 	})
 	if err != nil {

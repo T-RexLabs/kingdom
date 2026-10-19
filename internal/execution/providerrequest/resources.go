@@ -5,7 +5,10 @@ import "context"
 // RequireResourcesClosedTx is intentionally independent of terminal response
 // validity. Native receipts and command ownership remain debts on cancellation.
 // Only a write, edit or patch can leave an unknown effect behind, so an
-// unreceipted read, glob or grep owes nothing.
+// unreceipted read, glob or grep owes nothing. Neither does one whose server has
+// been proven stopped: it can no longer happen, and the workspace it may have
+// touched is restored or discarded when the attempt settles as anything but a
+// promoted success.
 func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	b, err := Get(ctx, q, id)
 	if err != nil {
@@ -15,7 +18,7 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 		return openResources(OpenAdmissionOpen, "admission is open")
 	}
 	var pending int
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_native_grants WHERE binding_id=? AND outcome IS NULL AND tool IN ('write','edit','patch')`, id).Scan(&pending); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_native_grants g WHERE g.binding_id=? AND g.outcome IS NULL AND g.tool IN ('write','edit','patch') AND NOT EXISTS (SELECT 1 FROM provider_requests pr JOIN provider_server_instances i ON i.instance_id=pr.instance_id WHERE pr.binding_id=g.binding_id AND i.quiescent_at IS NOT NULL)`, id).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 0 {

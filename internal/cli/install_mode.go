@@ -574,10 +574,11 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	bootstrapPaths := bootstrapPathsFromConfig(cfg)
+	providerServiceRoot := filepath.Join(cfg.KingdomHome, "runtime", "opencode-service")
 	providerService, err := opencode.NewService(opencode.ServiceConfig{
 		BinaryPath:  cfg.Provider.BinaryPath,
 		WorkDir:     filepath.Dir(cfg.KingdomHome),
-		RuntimeRoot: filepath.Join(cfg.KingdomHome, "runtime", "opencode-service"),
+		RuntimeRoot: providerServiceRoot,
 		Requests:    providerrequest.NewAuthority(db, nil),
 	})
 	if err != nil {
@@ -602,6 +603,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
 		PublishMode:         cfg.Publish.Mode,
 		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
+		GuardianRuntimeRoot: providerServiceRoot,
 		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
 		WorktreeRetention:   worktreeRetention,
 		Provider:            providerService,

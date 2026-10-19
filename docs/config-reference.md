@@ -79,7 +79,9 @@ Kingdom runs its own OpenCode server beside any OpenCode you use yourself, but b
 
 #### Restarts and Blocked Work
 
-Restarting Kingdom stops its OpenCode server. On startup Kingdom treats every step that was running as interrupted, fails it as unresponsive, and applies the usual retry rules, without sending the model request again. If an interrupted step had a file change or shell command still in flight, Kingdom cannot tell what that command did. The step stays running and Kingdom logs `stays blocked` for it, instead of guessing. Review the workspace yourself, then start a new run. A step that never changed anything, or whose changes were all recorded, settles on its own within a minute or two.
+Restarting Kingdom stops its OpenCode server. On startup Kingdom proves the old server has stopped, using its guardian's durable evidence or the absence of its exact process, and then settles every step that was running: it fails the step as unresponsive, applies the usual retry rules, and never sends the model request again. File changes the stopped server had not finished and commands that never started owe nothing, because they can no longer happen, and the workspace is restored or discarded like after any failed step. Rerun a failed step with node retry or rerun-from.
+
+A step stays blocked only when Kingdom cannot prove what it left running: an older server that is not yet proven stopped, or a shell command whose process is not yet confirmed gone. The run timeline shows a "Recovery Blocked" entry with the reason, and Kingdom keeps checking. Command recovery uses the existing stop retry and guardian evidence recovery actions. Kingdom never guesses what an unfinished change or command did.
 
 ### GitHub App identifiers
 

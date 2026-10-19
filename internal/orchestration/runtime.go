@@ -69,8 +69,11 @@ type Config struct {
 	DispatchInterval                        time.Duration
 	ProviderExecutionLeaseHeartbeatInterval time.Duration
 	WorkspaceRoot                           string
-	YoloOutputRoot                          string
-	WorktreeRetention                       time.Duration
+	// GuardianRuntimeRoot is where the guardians Kingdom starts publish their
+	// durable stop evidence. It must be the root the provider's runner uses.
+	GuardianRuntimeRoot string
+	YoloOutputRoot      string
+	WorktreeRetention   time.Duration
 }
 
 type startupRecoveryStage uint8
@@ -247,7 +250,7 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	closeMode := newRuntimeCloseMode()
 
 	orchestrator := newOrchestrationLoop(cfg.DB, cfg.Provider, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
-	orchestrator.commandGuardianRuntimeRoot = workspaceRoot
+	orchestrator.guardianRuntimeRoot = strings.TrimSpace(cfg.GuardianRuntimeRoot)
 	orchestrator.firstEventTimeout = firstEventTimeout
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
@@ -307,6 +310,9 @@ func (r *Runtime) Start(ctx context.Context) (startErr error) {
 		}
 	}
 
+	if err := r.orchestrator.recoverServerInstances(ctx); err != nil {
+		return fmt.Errorf("startup server instance recovery: %w", err)
+	}
 	if r.orchestrator != nil && r.orchestrator.executionStore != nil {
 		expiredAt := time.Now().UTC()
 		if r.orchestrator.now != nil {
@@ -569,7 +575,7 @@ func replayStartupWork(ctx context.Context, replay func(context.Context, int) (i
 }
 
 func (r *Runtime) replayStartupProviderCommandGuardians(ctx context.Context) (bool, error) {
-	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.commandGuardianRuntimeRoot) == "" {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.guardianRuntimeRoot) == "" {
 		return false, nil
 	}
 	visitedItems := 0

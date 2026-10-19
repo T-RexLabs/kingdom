@@ -32,12 +32,12 @@ describe("timeline milestones", () => {
 			emitted_at: "2026-03-18T11:40:00Z",
 			payload_json: {
 				node_id: "qa_review",
-				operator_text: "A file change was still in flight when its provider request stopped, so Kingdom cannot yet tell what it changed.",
+				operator_text: "A file change was in flight and the provider server making it is not yet proven stopped, so Kingdom cannot yet tell what it changed.",
 			},
 		};
 		expect(buildRawEventLabel(event, buildTimelineLookups([event], []))).toEqual({
 			label: "QA Review Recovery Blocked",
-			detail: "A file change was still in flight when its provider request stopped, so Kingdom cannot yet tell what it changed.",
+			detail: "A file change was in flight and the provider server making it is not yet proven stopped, so Kingdom cannot yet tell what it changed.",
 		});
 	});
 

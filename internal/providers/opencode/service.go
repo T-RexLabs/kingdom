@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net"
 	"net/url"
@@ -47,10 +48,13 @@ type Service struct {
 	workDir    string
 	env        []string
 	runner     GuardianRunner
-	startLimit time.Duration
-	stopLimit  time.Duration
-	ctx        context.Context
-	cancel     context.CancelFunc
+	// guardianRoot holds the durable stop evidence of the guardians this
+	// service starts.
+	guardianRoot string
+	startLimit   time.Duration
+	stopLimit    time.Duration
+	ctx          context.Context
+	cancel       context.CancelFunc
 
 	requests *requestRuntime
 
@@ -118,7 +122,7 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		return nil, fmt.Errorf("initialize OpenCode service guardian: %w", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
+	s := &Service{binaryPath: binaryPath, workDir: workDir, env: env, runner: runner, guardianRoot: cfg.RuntimeRoot, startLimit: 20 * time.Second, stopLimit: 5 * time.Second, ctx: ctx, cancel: cancel}
 	if cfg.Requests != nil {
 		if s.requests, err = newRequestRuntime(cfg.Requests, runner, env, cfg.RuntimeRoot); err != nil {
 			cancel()
@@ -126,6 +130,42 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 		}
 	}
 	return s, nil
+}
+
+// registerInstance is the guardian's durable launch gate for the server: the
+// instance is recorded before the server runs, so a crash never leaves one
+// running unrecorded, and its guardian publishes durable stop evidence. It is
+// nil, with no durable guardian, when managed execution is not configured.
+func (s *Service) registerInstance(instanceID string) processguardian.PersistOwnership {
+	if s.requests == nil {
+		return nil
+	}
+	return func(ctx context.Context, ownership processguardian.Ownership) error {
+		// The capability authorizes the stop evidence and is never stored.
+		ownership.QuiescenceCapability = ""
+		raw, err := json.Marshal(ownership)
+		if err != nil {
+			return err
+		}
+		return s.requests.authority.RegisterServerInstance(ctx, providerrequest.ServerInstance{ID: instanceID, GuardID: ownership.GuardID, OwnershipJSON: string(raw)})
+	}
+}
+
+// closeInstance records a server's proven stop, so the effects it can no longer
+// perform stop being owed, and removes the evidence that proved it.
+func (s *Service) closeInstance(instanceID string, result processguardian.Result) {
+	if s.requests == nil || instanceID == "" || !result.Quiescent || result.EvidenceSHA256 == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), s.stopLimit)
+	defer cancel()
+	if err := s.requests.authority.CloseServerInstance(ctx, instanceID, providerrequest.ClosedByGuardian); err != nil {
+		slog.Warn("OpenCode server stop could not be recorded", "instance_id", instanceID, "error", err)
+		return
+	}
+	if err := processguardian.RemoveQuiescenceEvidence(s.guardianRoot, result.GuardID, result.EvidenceJSON); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		slog.Warn("OpenCode server stop evidence cleanup deferred", "instance_id", instanceID, "error", err)
+	}
 }
 
 // Client collapses concurrent starts. A caller's cancellation stops its wait,
@@ -241,7 +281,7 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 		attempt.instanceID = "svc_" + hex.EncodeToString(secret[:8])
 		env = s.requests.environment(env, attempt.instanceID)
 	}
-	handle, err := s.runner.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, nil)
+	handle, err := s.runner.Start(ctx, processguardian.Command{Path: s.binaryPath, Args: []string{"serve", "--stdio", "--hostname", "127.0.0.1", "--port", "0"}, Dir: s.workDir, Env: env}, s.registerInstance(attempt.instanceID))
 	if err != nil {
 		var launchErr *processguardian.LaunchError
 		if errors.As(err, &launchErr) && !launchErr.Result.Quiescent {
@@ -250,6 +290,9 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 			process := &serviceProcess{done: make(chan struct{}), result: launchErr.Result, err: err}
 			close(process.done)
 			return nil, process, fmt.Errorf("start OpenCode service: %w", err)
+		}
+		if errors.As(err, &launchErr) && launchErr.OwnershipPersisted {
+			s.closeInstance(attempt.instanceID, launchErr.Result)
 		}
 		return nil, nil, fmt.Errorf("start OpenCode service: %w", err)
 	}
@@ -282,6 +325,7 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 	go func() {
 		process.result, process.err = handle.Wait(context.Background())
 		output.Wait()
+		s.closeInstance(attempt.instanceID, process.result)
 		close(process.done)
 	}()
 	var address string

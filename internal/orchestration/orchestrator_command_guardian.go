@@ -57,7 +57,7 @@ type providerCommandGuardianPassResult struct {
 }
 
 func (o *orchestrationLoop) ingestPendingProviderCommandGuardians(ctx context.Context) error {
-	if o == nil || o.executionStore == nil || strings.TrimSpace(o.commandGuardianRuntimeRoot) == "" {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(o.guardianRuntimeRoot) == "" {
 		return nil
 	}
 	for cursor := ""; ; {
@@ -73,7 +73,7 @@ func (o *orchestrationLoop) ingestPendingProviderCommandGuardians(ctx context.Co
 }
 
 func (o *orchestrationLoop) ingestPendingProviderCommandGuardiansPass(ctx context.Context, cursor string, limit int, blockOnLiveGuard bool) (providerCommandGuardianPassResult, error) {
-	if o == nil || o.executionStore == nil || strings.TrimSpace(o.commandGuardianRuntimeRoot) == "" {
+	if o == nil || o.executionStore == nil || strings.TrimSpace(o.guardianRuntimeRoot) == "" {
 		return providerCommandGuardianPassResult{NextCursor: cursor}, nil
 	}
 	guards, err := o.executionStore.ListPendingProviderCommandGuardians(ctx, cursor, limit)
@@ -82,7 +82,7 @@ func (o *orchestrationLoop) ingestPendingProviderCommandGuardiansPass(ctx contex
 	}
 	pass := providerCommandGuardianPassResult{NextCursor: cursor}
 	for _, guard := range guards {
-		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.commandGuardianRuntimeRoot, guard.GuardID)
+		evidenceResult, digest, evidence, err := processguardian.ReadQuiescenceEvidence(o.guardianRuntimeRoot, guard.GuardID)
 		if err != nil {
 			if guard.Lifecycle == executionstore.ProviderCommandGuardianLifecycleQuiescent && errors.Is(err, fs.ErrNotExist) {
 				// The durable quiescence row already contains the accepted proof;
@@ -136,7 +136,7 @@ func (o *orchestrationLoop) ingestPendingProviderCommandGuardiansPass(ctx contex
 }
 
 func (o *orchestrationLoop) removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx context.Context, guardID, evidence string) {
-	removeErr := processguardian.RemoveQuiescenceEvidence(o.commandGuardianRuntimeRoot, guardID, evidence)
+	removeErr := processguardian.RemoveQuiescenceEvidence(o.guardianRuntimeRoot, guardID, evidence)
 	if removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 		slog.Warn("provider command guardian evidence cleanup deferred", "guard_id", guardID, "error", removeErr)
 		return
@@ -381,7 +381,7 @@ func (o *orchestrationLoop) ingestProviderCommandGuardianQuiescence(ctx context.
 		EvidenceSHA256:        result.EvidenceSHA256,
 		EvidenceJSON:          result.EvidenceJSON,
 	})
-	if err == nil && strings.TrimSpace(o.commandGuardianRuntimeRoot) != "" {
+	if err == nil && strings.TrimSpace(o.guardianRuntimeRoot) != "" {
 		o.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, result.GuardID, result.EvidenceJSON)
 	}
 	return err

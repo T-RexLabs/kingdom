@@ -826,7 +826,7 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 
 func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	// A request that is still running a command cannot also have a terminal, so
 	// the completed handoff belongs to another request. The guarded attempt is
@@ -901,7 +901,7 @@ func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.
 
 func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	h.addPendingGuardEvidence(t, 2)
 	const blockedGuardID = "guard_terminal_handoff_002"
@@ -970,7 +970,7 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 			name:                "provider command guardians",
 			commandGuardianRoot: true,
 			seed: func(t *testing.T, h terminalHandoffHarness, items int) {
-				h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+				h.loop.guardianRuntimeRoot = h.runtimeDir
 				for index := 1; index <= items; index++ {
 					h.addPendingGuardEvidence(t, index)
 				}
@@ -1004,9 +1004,9 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 				t.Fatalf("new runtime: %v", err)
 			}
 			if tc.commandGuardianRoot {
-				rt.orchestrator.commandGuardianRuntimeRoot = h.runtimeDir
+				rt.orchestrator.guardianRuntimeRoot = h.runtimeDir
 			} else {
-				rt.orchestrator.commandGuardianRuntimeRoot = ""
+				rt.orchestrator.guardianRuntimeRoot = ""
 			}
 			rt.beginStartupRecovery()
 			if err := rt.recoverDurableExecutionState(context.Background()); err != nil {

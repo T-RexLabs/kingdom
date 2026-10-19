@@ -540,7 +540,7 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	ctx := context.Background()
 	invocation, found, err := h.store.GetProviderInvocation(ctx, "pinv_terminal_handoff_001")
@@ -583,7 +583,7 @@ func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.
 func TestGuardianRecoveryCancellationWaitsForInflightProviderWorkerAndNeverFabricatesClosure(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
 	if err != nil || !found {
@@ -1072,7 +1072,7 @@ func TestStartupReplayBoundsPendingProviderCommandGuardianIngestion(t *testing.T
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			for index := 1; index <= tc.items; index++ {
 				h.addPendingGuardEvidence(t, index)
 			}
@@ -1105,7 +1105,7 @@ func TestStartupReplayBoundsPendingProviderCommandGuardianIngestion(t *testing.T
 func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
@@ -1133,7 +1133,7 @@ func TestProviderCommandGuardianReplayRequiresDurableProofAndMatchingEvidence(t 
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			h := newTerminalHandoffHarness(t)
-			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const guardID = "guard_terminal_handoff_001"
 			if tc.quiescent {
@@ -1171,7 +1171,7 @@ func TestProviderCommandGuardianReplayRequiresDurableProofAndMatchingEvidence(t 
 func TestProviderCommandGuardianCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, evidence, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
@@ -1185,7 +1185,7 @@ func TestProviderCommandGuardianCleanupAcceptsConcurrentEvidenceRemoval(t *testi
 func TestProviderCommandGuardianCleanupMarkerFailureIsRetryable(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
@@ -1223,7 +1223,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const attemptID = "run_terminal_handoff:implementation:1"
 			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`)
@@ -1287,7 +1287,7 @@ func TestGuardRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(
 		{
 			name: "provider guard",
 			seed: func(t *testing.T, h terminalHandoffHarness) {
-				h.loop.commandGuardianRuntimeRoot = h.runtimeDir
+				h.loop.guardianRuntimeRoot = h.runtimeDir
 				h.addPendingGuardEvidence(t, 1)
 				h.addPendingGuardEvidence(t, 2)
 			},
@@ -1672,5 +1672,53 @@ func TestCancelledAttemptWhoseWorkerIsGoneIsSettledCancelledAfterRestart(t *test
 	}
 	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), invocation.AttemptID); err != nil || !quiescent {
 		t.Fatalf("a settled cancellation must release the attempt: %t %v", quiescent, err)
+	}
+}
+
+func TestStoppedServerReleasesItsOrphanedAttemptAtStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+	}{{"server proven stopped", true}, {"server still running", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTerminalHandoffHarness(t)
+			invocation := h.addInvocation(t, 1)
+			binding := h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+			if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+				Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.requests.claimCommand(t, invocation.ProviderInvocationID)
+			if err := h.requests.authority.RegisterServerInstance(context.Background(), providerrequest.ServerInstance{ID: binding.Identity.InstanceID, GuardID: "guard-server", OwnershipJSON: `{"ChildPID":1,"TreeID":1}`}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+				CancelOutboxID: "cancel_server", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+				SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.loop.guardianRuntimeRoot = h.runtimeDir
+			h.loop.serverAbsent = func(int, int, string, string) bool { return tc.stopped }
+
+			if err := h.loop.recoverServerInstances(context.Background()); err != nil {
+				t.Fatalf("recover server instances: %v", err)
+			}
+			if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+				t.Fatalf("settle orphaned attempt: %v", err)
+			}
+			settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found != tc.stopped {
+				t.Fatalf("settled=%t with the server stopped=%t: %#v", found, tc.stopped, settlement)
+			}
+			if tc.stopped && settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
+				t.Fatalf("the orphaned cancellation must settle as cancelled: %#v", settlement)
+			}
+		})
 	}
 }
