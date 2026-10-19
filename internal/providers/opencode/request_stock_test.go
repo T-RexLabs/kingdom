@@ -672,3 +672,35 @@ func TestStockServerInstanceIsRecordedWhileRunningAndClosedWhenStopped(t *testin
 		t.Fatalf("the evidence that proved the stop must be removed once recorded: %d files", len(evidence))
 	}
 }
+
+func TestStockAgentThatIsNotAKingdomProfileCannotRunTools(t *testing.T) {
+	h := newStockHarness(t)
+	ctx := context.Background()
+	client, err := h.service.Client(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID, _ := randomID("ses_")
+	messageID, _ := randomID("msg_")
+	if err := client.CreateSession(ctx, h.workspace, SessionSpec{ID: sessionID, Title: "unmanaged", Agent: "build", Model: ModelRef{ProviderID: "fixture", ID: "scripted"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Prompt(ctx, h.workspace, sessionID, messageID, "WRITE:unmanaged.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Wait(ctx, h.workspace, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(h.workspace, "unmanaged.txt")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("an unmanaged agent wrote a file: %v", statErr)
+	}
+	var refused bool
+	for _, call := range h.model.Calls() {
+		for _, result := range call.ToolResults {
+			refused = refused || strings.Contains(result, "Only Kingdom request profiles may run tools")
+		}
+	}
+	if !refused {
+		t.Fatalf("the write was not refused by Kingdom: %#v", h.model.Calls())
+	}
+}

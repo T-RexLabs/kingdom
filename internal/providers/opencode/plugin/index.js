@@ -90,12 +90,16 @@ export default {
     const retired = new Set()
     let closed = false
 
-    const identityFor = (context) => {
-      const profile = active.get(context.agent)
-      return profile && { instanceID, generation, location, sessionID: context.sessionID, profileID: context.agent, requestID: profile.requestID }
-    }
     const refuseRetired = (context) => {
       if (closed || retired.has(context.agent)) throw new Error("Kingdom profile is no longer active")
+    }
+    // Only a registered request profile may run a tool, so nothing runs without
+    // Kingdom's admission.
+    const identityFor = (context) => {
+      refuseRetired(context)
+      const profile = active.get(context.agent)
+      if (!profile) throw new Error("Only Kingdom request profiles may run tools")
+      return { instanceID, generation, location, sessionID: context.sessionID, profileID: context.agent, requestID: profile.requestID }
     }
 
     const rpc = await ctx.rpc.register(
@@ -153,11 +157,6 @@ export default {
           const nativeExecute = tool.execute
           tool.execute = async (input, context) => {
             const identity = identityFor(context)
-            if (!identity) {
-              refuseRetired(context)
-              return nativeExecute(input, context)
-            }
-            refuseRetired(context)
             const grant = await call("/v1/native/admit", { identity, messageID: context.messageID, callID: context.id, tool: name, input })
             if (!grant.execute) throw new Error("Native operation was already admitted; refusing to run it again")
             let nativeStarted = false
@@ -184,11 +183,6 @@ export default {
         const nativeExecute = tool.execute
         tool.execute = async (input, context) => {
           const identity = identityFor(context)
-          if (!identity) {
-            refuseRetired(context)
-            return nativeExecute(input, context)
-          }
-          refuseRetired(context)
           if (input.background) throw new Error("Managed background commands are not supported")
           if (input.workdir && path.resolve(location, input.workdir) !== location) {
             throw new Error("A managed command must run in its workspace root " + location + ". Omit workdir or set it to that directory.")
