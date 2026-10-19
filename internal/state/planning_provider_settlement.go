@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
@@ -302,7 +303,11 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if err != nil {
 		return "", fmt.Errorf("planning provider request requires terminal observation: %w", err)
 	}
-	if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome)); err != nil {
+	settledAt, err := time.Parse(time.RFC3339Nano, normalized.SettledAt)
+	if err != nil {
+		return "", fmt.Errorf("planning provider settlement time is invalid: %w", err)
+	}
+	if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome), settledAt); err != nil {
 		return "", err
 	}
 	refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)

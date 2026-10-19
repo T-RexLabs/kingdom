@@ -336,10 +336,10 @@ func (o *orchestrationLoop) collectAttemptExecutionDiagnostics(ctx context.Conte
 	if strings.TrimSpace(attemptID) == "" || o == nil || o.db == nil {
 		return diagnostics
 	}
-	var dispatched, admissionClosed, terminal sql.NullBool
-	err := o.db.QueryRowContext(ctx, `SELECT pr.dispatch_issued_at IS NOT NULL, pr.admission_closed_at IS NOT NULL, pr.terminal_sha256 IS NOT NULL
+	var dispatched, admissionClosed sql.NullBool
+	err := o.db.QueryRowContext(ctx, `SELECT pr.dispatch_issued_at IS NOT NULL, pr.admission_closed_at IS NOT NULL
 		FROM attempt_executions ae JOIN provider_requests pr ON pr.run_invocation_id = ae.active_provider_invocation_id
-		WHERE ae.attempt_id = ?`, attemptID).Scan(&dispatched, &admissionClosed, &terminal)
+		WHERE ae.attempt_id = ?`, attemptID).Scan(&dispatched, &admissionClosed)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
@@ -347,7 +347,6 @@ func (o *orchestrationLoop) collectAttemptExecutionDiagnostics(ctx context.Conte
 	default:
 		diagnostics["request_dispatched"] = dispatched.Bool
 		diagnostics["request_admission_closed"] = admissionClosed.Bool
-		diagnostics["request_terminal_recorded"] = terminal.Bool
 	}
 	return diagnostics
 }

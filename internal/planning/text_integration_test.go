@@ -62,7 +62,7 @@ func (a *stagedPlannerAdapter) Execute(ctx context.Context, req opencode.Execute
 	observation.FinalTurnID, observation.RawFinishReason, observation.NormalizedFinishReason = "assistant-message", "stop", "stop"
 	observation.CanonicalTerminalTextRef, observation.StagedTerminalContent, observation.TerminalTextOpener = &a.terminal, &terminalContent, terminalContent.Open
 	response.OutputText, response.Outcome, response.StreamObservation = "display preview", opencode.ExecutionOutcome{State: "success"}, observation
-	return response, providerledger.RecordTerminal(ctx, req.InvocationID, terminal)
+	return response, providerledger.CloseRequest(ctx, req.InvocationID)
 }
 
 // Close removes what the provider staged, as closing the shared provider

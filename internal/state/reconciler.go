@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/timestamporder"
 )
@@ -50,6 +52,20 @@ type ReconcileResult struct {
 	SessionsRenewed    int
 	SessionsClosed     int
 	AgentsBlocked      int
+	// BlockedAttempts are stale attempts whose provider request still owes an
+	// effect, so recovery cannot replace them yet.
+	BlockedAttempts []BlockedAttempt
+}
+
+// BlockedAttempt identifies a stale attempt that recovery had to leave alone,
+// and which kind of unresolved effect keeps it there.
+type BlockedAttempt struct {
+	RunID        string
+	NodeRunID    string
+	NodeID       string
+	Attempt      int
+	RequiredRole string
+	Reason       providerrequest.OpenReason
 }
 
 type Reconciler struct {
@@ -114,6 +130,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, req ReconcileRequest) (Recon
 			return ReconcileResult{}, handleErr
 		}
 
+		if recovery.blockedReason != "" {
+			result.BlockedAttempts = append(result.BlockedAttempts, BlockedAttempt{
+				RunID: attempt.RunID, NodeRunID: attempt.NodeRunID, NodeID: attempt.NodeID, Attempt: attempt.Attempt,
+				RequiredRole: attempt.RequiredRole, Reason: recovery.blockedReason,
+			})
+			slog.Warn("stale attempt stays blocked until its provider request closes", "attempt_id", composeAttemptID(attempt.RunID, attempt.NodeID, attempt.Attempt), "run_id", attempt.RunID, "reason", recovery.blockedReason)
+		}
 		if recovery.agentBlocked {
 			if _, seen := blockedAgents[attempt.AgentID]; !seen {
 				result.AgentsBlocked++
@@ -433,6 +456,9 @@ type recoveryOutcome struct {
 	reassigned   bool
 	failed       bool
 	agentBlocked bool
+	// blockedReason is set when the attempt's provider request cannot be
+	// abandoned yet.
+	blockedReason providerrequest.OpenReason
 }
 
 type staleAttemptQuerier interface {
@@ -446,6 +472,19 @@ type providerSettlementRecoveryCandidate struct {
 }
 
 const staleAttemptFailureReasonText = "agent became unresponsive before completion could be confirmed"
+
+// deferredStaleRecovery reports whether a stale attempt must simply be left for
+// a later pass: its lease changed, its terminal handoff is pending, or its
+// provider request still owes an effect. Any other error is a real failure.
+func deferredStaleRecovery(err error) (bool, recoveryOutcome) {
+	if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
+		return true, recoveryOutcome{}
+	}
+	if reason, open := providerrequest.OpenReasonOf(err); open {
+		return true, recoveryOutcome{blockedReason: reason}
+	}
+	return false, recoveryOutcome{}
+}
 
 func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, nowTime time.Time) (recoveryOutcome, error) {
 	currentAttemptID, err := r.resolveAttemptID(ctx, attempt)
@@ -525,8 +564,8 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			RetryDecision:      retryDecision,
 		})
 		if err != nil {
-			if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
-				return recoveryOutcome{}, nil
+			if deferred, outcome := deferredStaleRecovery(err); deferred {
+				return outcome, nil
 			}
 			return recoveryOutcome{}, err
 		}
@@ -632,14 +671,14 @@ func (r *Reconciler) recoverAttempt(ctx context.Context, attempt staleAttempt, n
 			},
 			EscalationFromAgentID: attempt.AgentID,
 		}); err != nil {
-			if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
-				return recoveryOutcome{}, nil
+			if deferred, outcome := deferredStaleRecovery(err); deferred {
+				return outcome, nil
 			}
 			return recoveryOutcome{}, err
 		}
 	} else if err := r.transition.RecordDirectExecutionTerminal(ctx, DirectExecutionTerminalRequest{Transition: terminalTransition, StaleAttempt: &attempt}); err != nil {
-		if errors.Is(err, errStaleAttemptExecutionLeaseChanged) || errors.Is(err, errProviderTerminalHandoffPending) {
-			return recoveryOutcome{}, nil
+		if deferred, outcome := deferredStaleRecovery(err); deferred {
+			return outcome, nil
 		}
 		return recoveryOutcome{}, err
 	}

@@ -390,9 +390,11 @@ func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResp
 		discard()
 		return ExecuteResponse{}, err
 	}
-	if err := runtime.authority.RecordTerminal(ctx, identity, verified.Terminal); err != nil {
+	// The terminal becomes the request's evidence when it settles. Checking it
+	// here keeps an inconsistent record from ever leaving the provider.
+	if err := runtime.authority.CheckTerminal(ctx, identity, verified.Terminal); err != nil {
 		discard()
-		return ExecuteResponse{}, fmt.Errorf("record OpenCode terminal evidence: %w", err)
+		return ExecuteResponse{}, fmt.Errorf("check OpenCode terminal evidence: %w", err)
 	}
 	return e.response(ctx, verified, eventsContent, messagesContent, textContent, invokedAt, commandErr)
 }

@@ -2,6 +2,7 @@ package providerrequest
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
 
@@ -9,8 +10,11 @@ import (
 )
 
 // RequireCompletionTx checks stored request facts within the canonical
-// settlement transaction. It cannot create terminal evidence or close effects.
-func RequireCompletionTx(ctx context.Context, q Reader, owner Owner, lease Lease, observation providerexecution.InvocationStreamObservation, outcome string) error {
+// settlement transaction and records the observation's terminal as the request's
+// evidence, so the terminal exists exactly when its outcome does. It cannot
+// close effects.
+func RequireCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Lease, observation providerexecution.InvocationStreamObservation, outcome string, now time.Time) error {
+	q := Reader(tx)
 	binding, found, err := ForOwner(ctx, q, owner)
 	if err != nil {
 		return err
@@ -57,15 +61,8 @@ func RequireCompletionTx(ctx context.Context, q Reader, owner Owner, lease Lease
 			return fmt.Errorf("provider request lacks its exact canonical settled outcome")
 		}
 	}
-	if binding.DispatchIssuedAt == "" || binding.TerminalReference == nil {
-		return fmt.Errorf("provider completion requires issued dispatch and stored terminal evidence")
-	}
-	terminalRef, err := request.Terminal.Reference()
-	if err != nil {
+	if err := RecordTerminalTx(ctx, tx, binding.ID, lease, request.Terminal, now); err != nil {
 		return err
-	}
-	if terminalRef.InvocationID != owner.InvocationID || terminalRef != *binding.TerminalReference {
-		return fmt.Errorf("provider completion evidence conflicts with the immutable terminal")
 	}
 	if err := providerexecution.RequireRequestTerminalMatch(observation); err != nil {
 		return err

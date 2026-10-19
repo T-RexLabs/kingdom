@@ -96,9 +96,11 @@ func (a *Authority) CompleteCommand(ctx context.Context, identity providerexecut
 	})
 }
 
-func (a *Authority) RecordTerminal(ctx context.Context, identity providerexecution.RequestIdentity, terminal providerexecution.RequestTerminal) error {
-	return a.transact(ctx, identity, func(b Binding, now time.Time, tx *sql.Tx) error {
-		return RecordTerminalTx(ctx, tx, b.ID, b.Lease, terminal, now)
+// CheckTerminal refuses a terminal that settlement would refuse. It records
+// nothing: the terminal becomes the request's evidence when it settles.
+func (a *Authority) CheckTerminal(ctx context.Context, identity providerexecution.RequestIdentity, terminal providerexecution.RequestTerminal) error {
+	return a.transact(ctx, identity, func(b Binding, _ time.Time, tx *sql.Tx) error {
+		return CheckTerminalTx(ctx, tx, b.ID, b.Lease, terminal)
 	})
 }
 

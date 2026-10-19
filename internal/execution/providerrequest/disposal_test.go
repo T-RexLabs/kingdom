@@ -47,7 +47,7 @@ func TestDisposalRequiresExactHistoricalSettlementAndClosedEffects(t *testing.T)
 			if err := RequireDisposedTx(ctx, db, b.Owner); err != nil {
 				t.Fatal("historical disposal rejected", err)
 			}
-			execSQL(t, db, `INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) VALUES('pending',?,'assistant','late','read','{}',?,'now')`, b.ID, refDigest())
+			execSQL(t, db, `INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) VALUES('pending',?,'assistant','late','write','{}',?,'now')`, b.ID, refDigest())
 			if err := RequireDisposedTx(ctx, db, b.Owner); err == nil {
 				t.Fatal("historical pending native debt ignored")
 			}

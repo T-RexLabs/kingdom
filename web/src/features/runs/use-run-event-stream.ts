@@ -37,6 +37,7 @@ const RUN_STREAM_TIMELINE_ONLY_EVENT_TYPES = new Set([
 	"attempt.progress",
 	"attempt.sequence_gap",
 	"attempt.timeout_warning",
+	"attempt.recovery_blocked",
 ]);
 // Fine-grained provider activity is observability-only: it is routed into the
 // per-attempt live activity buffer and must never enter the coarse timeline or
@@ -280,6 +281,7 @@ function applyRunStreamSideEffects(
 			return;
 		case "attempt.sequence_gap":
 			case "attempt.timeout_warning":
+			case "attempt.recovery_blocked":
 				return;
 			default:
 				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);

@@ -101,7 +101,7 @@ func TerminalObservation(ctx context.Context, prepared opencode.Prepared, invoca
 		Request:           &providerexecution.RequestObservation{Identity: prepared.Identity, Terminal: terminal},
 		ProviderSessionID: prepared.ProviderSessionID,
 		Cancelled:         outcome == providerexecution.RequestOutcomeInterrupted,
-	}, RecordTerminal(ctx, invocationID, terminal)
+	}, CloseRequest(ctx, invocationID)
 }
 
 // Invocation is what a fake agent receives from the runner for one request.
@@ -121,7 +121,7 @@ func Complete(ctx context.Context, invocation Invocation, text string) (opencode
 		return opencode.ExecuteResponse{}, err
 	}
 	response := Success(prepared, invocation.ID, text)
-	return response, RecordTerminal(ctx, invocation.ID, response.StreamObservation.Request.Terminal)
+	return response, CloseRequest(ctx, invocation.ID)
 }
 
 // Fail prepares and activates the invocation's request and closes it with a
@@ -135,10 +135,10 @@ func Fail(ctx context.Context, invocation Invocation) (opencode.InvocationStream
 	return TerminalObservation(ctx, prepared, invocation.ID, providerexecution.RequestOutcomeFailed)
 }
 
-// RecordTerminal does what the server does around a request: it issues
-// dispatch, closes admission, and stores the terminal evidence that canonical
-// settlement requires. The invocation must already be activated.
-func RecordTerminal(ctx context.Context, invocationID string, terminal providerexecution.RequestTerminal) error {
+// CloseRequest does what the server does around a request: it issues dispatch
+// and closes admission. The terminal becomes evidence when it settles. The
+// invocation must already be activated.
+func CloseRequest(ctx context.Context, invocationID string) error {
 	ledger, err := ledgerOf(ctx, invocationID)
 	if err != nil {
 		return err
@@ -166,9 +166,6 @@ func RecordTerminal(ctx context.Context, invocationID string, terminal providere
 		return err
 	}
 	if err := providerrequest.CloseAdmissionTx(ctx, tx, invocationID, binding.Identity, binding.Lease, now); err != nil {
-		return err
-	}
-	if err := providerrequest.RecordTerminalTx(ctx, tx, invocationID, binding.Lease, terminal, now); err != nil {
 		return err
 	}
 	return tx.Commit()

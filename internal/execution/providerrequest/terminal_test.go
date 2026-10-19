@@ -264,7 +264,7 @@ func TestAuthorityCommitsEachFactByIdentity(t *testing.T) {
 	if err := authority.CloseAdmission(ctx, b.Identity); err != nil {
 		t.Fatal(err)
 	}
-	if err := authority.RecordTerminal(ctx, b.Identity, terminalFor(t, b, "response", nativeTool(t, call, "completed"))); err != nil {
+	if err := authority.CheckTerminal(ctx, b.Identity, terminalFor(t, b, "response", nativeTool(t, call, "completed"))); err != nil {
 		t.Fatal(err)
 	}
 	if err := RequireResourcesClosedTx(ctx, db, b.ID); err != nil {

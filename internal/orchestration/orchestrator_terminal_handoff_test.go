@@ -287,6 +287,7 @@ func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 		transition:     state.NewTransitionService(db, schemaSet),
 		validator:      state.NewWorkerOutputValidator(db, schemaSet),
 		executionStore: store,
+		events:         state.NewAttemptEventIngestor(db, schemaSet),
 		fsStore:        fsStore,
 		schemas:        schemaSet,
 		yoloRoot:       projectRoot,
@@ -1597,20 +1598,53 @@ func TestLostHandoffOfARequestWithoutProviderAnswerIsSettledByAbandonment(t *tes
 	}
 }
 
-func TestLostHandoffWhoseProviderAnswerWasRecordedStaysBlockedWithoutStoppingOtherRecoveries(t *testing.T) {
+func TestLostHandoffOfACompletedAnswerIsSettledAsLostBecauseNothingRecordedIt(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	blocked := h.lostHandoffCandidate(t, 1, "Builder complete.")
+	invocation := h.lostHandoffCandidate(t, 1, "Builder complete.")
+
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("settle lost handoff: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_terminal_handoff_lost" {
+		t.Fatalf("a completed answer whose handoff never became durable must settle as lost: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+}
+
+func TestOrphanedRequestWithAnUnreceiptedWriteStaysBlockedWithoutStoppingOtherRecoveries(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	blocked := h.addInvocation(t, 1)
+	binding := h.requests.issueDispatch(t, blocked.ProviderInvocationID)
+	if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+		Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_blocked", AttemptID: blocked.AttemptID, RunID: blocked.RunID, NodeRunID: blocked.NodeRunID,
+		SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	recoverable := h.lostHandoffCandidate(t, 2, "")
 
 	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
 		t.Fatalf("a blocked request must not abort recovery: %v", err)
 	}
 	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), blocked.ProviderInvocationID); err != nil || found {
-		t.Fatalf("a request whose provider answer was recorded but lost was settled: found=%t err=%v", found, err)
+		t.Fatalf("a request with an unreceipted write was settled: found=%t err=%v", found, err)
 	}
 	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), recoverable.ProviderInvocationID); err != nil || !found {
 		t.Fatalf("an unrelated lost handoff was not recovered: found=%t err=%v", found, err)
+	}
+	// The operator is told why, once, however often recovery looks again.
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("second recovery pass: %v", err)
+	}
+	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM events WHERE attempt_id = ? AND event_type = 'attempt.recovery_blocked'`, blocked.AttemptID); count != 1 {
+		t.Fatalf("recovery_blocked events=%d, want exactly 1", count)
 	}
 }
 

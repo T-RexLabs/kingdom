@@ -120,8 +120,8 @@ func TestStockPlanningRequestIsVerifiedAndRecorded(t *testing.T) {
 	if err != nil || !found {
 		t.Fatalf("binding %v %v", found, err)
 	}
-	want, _ := observation.Request.Terminal.Reference()
-	if binding.DispatchIssuedAt == "" || binding.AdmissionClosedAt == "" || binding.TerminalReference == nil || *binding.TerminalReference != want {
+	// The terminal becomes the request's evidence when it settles.
+	if binding.DispatchIssuedAt == "" || binding.AdmissionClosedAt == "" || binding.TerminalReference != nil {
 		t.Fatalf("binding facts %#v", binding)
 	}
 	if err := providerrequest.RequireResourcesClosedTx(context.Background(), h.db, binding.ID); err != nil {
@@ -210,12 +210,13 @@ func TestStockContinuationReusesSessionAndSendsOnlyNewInput(t *testing.T) {
 	h := newStockHarness(t)
 	first := h.planningRequest("inv-a", "op-a", "TEXT:first")
 	first.KeepSession = true
-	prepared, _, err := h.run("session-c", "op-a", "inv-a", first)
+	prepared, firstResponse, err := h.run("session-c", "op-a", "inv-a", first)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The first settlement is a prerequisite for reuse in canonical state.
-	h.settleSuccessfully("session-c", "op-a", "inv-a")
+	// The first settlement is a prerequisite for reuse in canonical state, and
+	// it is what records the request's terminal.
+	h.settleSuccessfully("session-c", "op-a", "inv-a", firstResponse.StreamObservation.Request.Terminal)
 
 	h.planningOwnerNext("session-c", "op-b", "inv-b")
 	second := h.planningRequest("inv-b", "op-b", "TEXT:full-bootstrap-prompt")

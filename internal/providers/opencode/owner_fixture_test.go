@@ -130,8 +130,9 @@ func (h *ownerFixture) planningOwnerNext(session, operation, invocation string) 
 
 // settleSuccessfully models the canonical success that makes a provider
 // session reusable: a settlement for the invocation and a succeeded operation.
-func (h *ownerFixture) settleSuccessfully(session, operation, invocation string) {
+func (h *ownerFixture) settleSuccessfully(session, operation, invocation string, terminal providerexecution.RequestTerminal) {
 	h.t.Helper()
+	h.recordTerminal(invocation, terminal)
 	stamp := h.now.Format(time.RFC3339Nano)
 	h.exec(`INSERT INTO planning_provider_completion_evidence(evidence_id,planning_provider_invocation_id,planning_operation_id,planning_session_id,evidence_kind,payload_json,created_at) VALUES(?,?,?,?,'stream_observation','{}',?)`, "evidence-"+invocation, invocation, operation, session, stamp)
 	h.exec(`INSERT INTO planning_provider_completion_settlements(settlement_id,planning_provider_invocation_id,planning_operation_id,planning_session_id,outcome,primary_evidence_id,settled_at,created_at) VALUES(?,?,?,?,'success',?,?,?)`, "settlement-"+invocation, invocation, operation, session, "evidence-"+invocation, stamp, stamp)
@@ -191,4 +192,20 @@ func newBoundRun(t *testing.T) *boundRun {
 		t.Fatal(err)
 	}
 	return &boundRun{ownerFixture: f, authority: authority, identity: identity, attempt: "attempt", invoke: "invocation"}
+}
+
+// recordTerminal stores the terminal the way settlement does.
+func (h *ownerFixture) recordTerminal(invocation string, terminal providerexecution.RequestTerminal) {
+	h.t.Helper()
+	tx, err := h.db.Begin()
+	if err != nil {
+		h.t.Fatal(err)
+	}
+	if err := providerrequest.RecordTerminalTx(context.Background(), tx, "binding-"+invocation, providerrequest.Lease{Owner: "worker", Version: 1}, terminal, time.Now().UTC()); err != nil {
+		tx.Rollback()
+		h.t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		h.t.Fatal(err)
+	}
 }

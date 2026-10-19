@@ -16,10 +16,9 @@ func TestCompletionRejectsStaleCanonicalLease(t *testing.T) {
 			bind(t, db, b, now)
 			dispatch(t, db, b, now)
 			closeAdmission(t, db, b, now)
-			observation, ref := completionObservation(b)
-			execSQL(t, db, `UPDATE provider_requests SET terminal_sha256=?,terminal_size_bytes=? WHERE binding_id=?`, ref.SHA256, ref.SizeBytes, b.ID)
+			observation, _ := completionObservation(b)
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success")
+				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success", now)
 			}); err != nil {
 				t.Fatal("active canonical owner", err)
 			}
@@ -29,7 +28,7 @@ func TestCompletionRejectsStaleCanonicalLease(t *testing.T) {
 			}
 			execSQL(t, db, "UPDATE "+table+" SET lease_version=lease_version+1")
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success")
+				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success", now)
 			}); err == nil {
 				t.Fatal("stale completion bypassed canonical lease")
 			}
@@ -61,12 +60,12 @@ func terminalObservation(b Binding, text string) (providerexecution.InvocationSt
 }
 
 func TestCompletionRequiresIndependentOwnedFacts(t *testing.T) {
-	for _, name := range []string{"missing observation", "wrong identity", "missing terminal", "missing dispatch", "pending native"} {
+	for _, name := range []string{"missing observation", "wrong identity", "missing dispatch", "pending native"} {
 		t.Run(name, func(t *testing.T) {
 			db, b, now := fixture(t, OwnerRun)
 			bind(t, db, b, now)
 			ctx := context.Background()
-			observation, ref := completionObservation(b)
+			observation, _ := completionObservation(b)
 			if name != "missing dispatch" {
 				dispatch(t, db, b, now)
 			}
@@ -76,25 +75,24 @@ func TestCompletionRequiresIndependentOwnedFacts(t *testing.T) {
 				}
 			}
 			closeAdmission(t, db, b, now)
-			if name != "missing terminal" {
-				execSQL(t, db, `UPDATE provider_requests SET terminal_sha256=?,terminal_size_bytes=? WHERE binding_id=?`, ref.SHA256, ref.SizeBytes, b.ID)
-			}
 			if name == "missing observation" {
 				observation.Request = nil
 			}
 			if name == "wrong identity" {
 				observation.Request.Identity.RequestID = "foreign"
 			}
-			if err := transaction(t, db, func(tx *sql.Tx) error { return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success") }); err == nil {
+			if err := transaction(t, db, func(tx *sql.Tx) error {
+				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+			}); err == nil {
 				t.Fatalf("accepted %s", name)
 			}
-			// The requested negative is the only missing resource fact in each fixture.
+			// A refused settlement leaves no terminal evidence behind.
 			stored, err := Get(ctx, db, b.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if (stored.TerminalReference == nil) != (name == "missing terminal") || (stored.DispatchIssuedAt == "") != (name == "missing dispatch") {
-				t.Fatalf("negative fixture hides another absent fact: %#v", stored)
+			if stored.TerminalReference != nil || (stored.DispatchIssuedAt == "") != (name == "missing dispatch") {
+				t.Fatalf("a refused settlement recorded evidence or the fixture hides another absent fact: %#v", stored)
 			}
 		})
 	}
@@ -127,11 +125,49 @@ func TestCompletionExactSettledReplay(t *testing.T) {
 				execSQL(t, db, `UPDATE provider_invocations SET invocation_state='settled_success'`)
 				execSQL(t, db, `UPDATE attempt_executions SET canonical_settlement_id='settlement',state='committed_failure',lease_owner='',lease_version=lease_version+1`)
 			}
-			if err := transaction(t, db, func(tx *sql.Tx) error { return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success") }); err != nil {
+			if err := transaction(t, db, func(tx *sql.Tx) error {
+				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+			}); err != nil {
 				t.Fatal("exact canonical replay rejected", err)
 			}
-			if err := transaction(t, db, func(tx *sql.Tx) error { return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "failed") }); err == nil {
+			if err := transaction(t, db, func(tx *sql.Tx) error {
+				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "failed", now)
+			}); err == nil {
 				t.Fatal("canonical replay changed its provider outcome")
+			}
+		})
+	}
+}
+
+func TestCompletionRecordsTheTerminalExactlyOnce(t *testing.T) {
+	for _, kind := range []OwnerKind{OwnerRun, OwnerPlanning} {
+		t.Run(string(kind), func(t *testing.T) {
+			db, b, now := fixture(t, kind)
+			bind(t, db, b, now)
+			dispatch(t, db, b, now)
+			closeAdmission(t, db, b, now)
+			ctx := context.Background()
+			observation, ref := completionObservation(b)
+			if stored, err := Get(ctx, db, b.ID); err != nil || stored.TerminalReference != nil {
+				t.Fatalf("a request must not hold terminal evidence before it settles: %#v %v", stored, err)
+			}
+			settle := func(observation providerexecution.InvocationStreamObservation) error {
+				return transaction(t, db, func(tx *sql.Tx) error {
+					return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+				})
+			}
+			if err := settle(observation); err != nil {
+				t.Fatal(err)
+			}
+			if stored, err := Get(ctx, db, b.ID); err != nil || stored.TerminalReference == nil || *stored.TerminalReference != ref {
+				t.Fatalf("settlement did not record the exact terminal: %#v %v", stored, err)
+			}
+			if err := settle(observation); err != nil {
+				t.Fatalf("recording must be idempotent: %v", err)
+			}
+			other, _ := terminalObservation(b, "a different response")
+			if err := settle(other); err == nil {
+				t.Fatal("a different terminal replaced the recorded evidence")
 			}
 		})
 	}

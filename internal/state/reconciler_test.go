@@ -2488,8 +2488,12 @@ func TestReconcilerKeepsAStaleBoundRequestThatAdmittedATool(t *testing.T) {
 	mustExec(t, db, `UPDATE provider_requests SET dispatch_issued_at = '2026-03-01T12:08:02Z'`)
 	mustExecArgs(t, db, `INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) VALUES('grant','invocation_bound','assistant','call','write','{}',?,'2026-03-01T12:08:03Z')`, strings.Repeat("a", 64))
 	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
-	if result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:13:00Z"}); err == nil && result.AttemptsReassigned != 0 {
-		t.Fatalf("a request with an open tool admission was replaced: %#v", result)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:13:00Z"})
+	if err != nil {
+		t.Fatalf("a blocked attempt must not fail the reconcile pass that other runs depend on: %v", err)
+	}
+	if result.AttemptsReassigned != 0 || len(result.BlockedAttempts) != 1 || result.BlockedAttempts[0].Reason != providerrequest.OpenNativeReceipts {
+		t.Fatalf("a request with an open tool admission was replaced or not reported blocked: %#v", result)
 	}
 	attempt, _, err := store.GetAttempt(context.Background(), attemptID)
 	if err != nil || attempt.State != "running" {

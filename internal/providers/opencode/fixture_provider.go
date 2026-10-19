@@ -139,7 +139,7 @@ func (p *FixtureProvider) Execute(ctx context.Context, req ExecuteRequest) (Exec
 	if err != nil {
 		return response, errors.Join(responseErr, err)
 	}
-	if err := p.authority.RecordTerminal(settle, prepared.Identity, terminal); err != nil {
+	if err := p.authority.CheckTerminal(settle, prepared.Identity, terminal); err != nil {
 		release()
 		return response, errors.Join(responseErr, err)
 	}

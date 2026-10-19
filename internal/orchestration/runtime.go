@@ -397,10 +397,12 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 		case <-ctx.Done():
 			return nil
 		case tickAt := <-ticker.C:
-			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)}); err != nil {
+			reconciled, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)})
+			if err != nil {
 				slog.Warn("periodic reconcile failed", "error", err)
 				continue
 			}
+			r.orchestrator.recordRecoveryBlocked(ctx, reconciled.BlockedAttempts)
 			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				slog.Warn("periodic failed-run repair failed", "error", err)
 			}

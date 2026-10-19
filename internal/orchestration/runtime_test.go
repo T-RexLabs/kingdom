@@ -12189,7 +12189,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 		if strings.TrimSpace(fmt.Sprint(execDiag["attempt_id"])) != "run_timeout_diag:work_intake:1" {
 			return fmt.Errorf("expected execution diagnostics attempt id, got %#v", execDiag["attempt_id"])
 		}
-		if execDiag["request_dispatched"] != true || execDiag["request_terminal_recorded"] != true {
+		if execDiag["request_dispatched"] != true || execDiag["request_admission_closed"] != true {
 			return fmt.Errorf("expected durable request facts in execution diagnostics, got %#v", execDiag)
 		}
 		cancelDiag, ok := providerDiag["cancel_diagnostics"].(map[string]any)

@@ -44,6 +44,48 @@ type Reader interface {
 
 var ErrResourcesOpen = errors.New("provider request resources remain open")
 
+// OpenReason says which kind of resource keeps a request from closing, so
+// callers can tell an operator what is unresolved.
+type OpenReason string
+
+const (
+	// OpenUnproven covers every other way a request cannot yet be disposed of.
+	OpenUnproven OpenReason = "unproven"
+	// OpenAdmissionOpen means the request can still admit tools.
+	OpenAdmissionOpen OpenReason = "admission_open"
+	// OpenNativeReceipts means a write, edit or patch has no receipt.
+	OpenNativeReceipts OpenReason = "native_receipts_pending"
+	// OpenCommands means a shell command or its guardian is unresolved.
+	OpenCommands OpenReason = "commands_unresolved"
+)
+
+type openResourcesError struct {
+	reason OpenReason
+	detail string
+}
+
+func (e *openResourcesError) Error() string { return ErrResourcesOpen.Error() + ": " + e.detail }
+
+// Is makes every open-resources error match ErrResourcesOpen.
+func (e *openResourcesError) Is(target error) bool { return target == ErrResourcesOpen }
+
+func openResources(reason OpenReason, detail string) error {
+	return &openResourcesError{reason: reason, detail: detail}
+}
+
+// OpenReasonOf reports why a request is open, or false if err is not an
+// open-resources error.
+func OpenReasonOf(err error) (OpenReason, bool) {
+	var open *openResourcesError
+	if errors.As(err, &open) {
+		return open.reason, true
+	}
+	if errors.Is(err, ErrResourcesOpen) {
+		return OpenUnproven, true
+	}
+	return "", false
+}
+
 // ErrDispatchClosed reports a dispatch that admission closing, for example an
 // operator cancellation, got to first, or that was already issued.
 var ErrDispatchClosed = errors.New("provider dispatch is closed or already issued")

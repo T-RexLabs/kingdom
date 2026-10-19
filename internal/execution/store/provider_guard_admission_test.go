@@ -144,7 +144,7 @@ func TestBoundRunNativeOnlyRequestClosureUsesReceipts(t *testing.T) {
 				if err := providerrequest.IssueDispatchTx(ctx, tx, b.ID, b.Identity, b.Lease, now); err != nil {
 					return err
 				}
-				call := providerrequest.NativeCall{BindingID: b.ID, Identity: b.Identity, MessageID: "message", CallID: "call", Tool: "read", Input: []byte(`{"path":"README.md"}`)}
+				call := providerrequest.NativeCall{BindingID: b.ID, Identity: b.Identity, MessageID: "message", CallID: "call", Tool: "write", Input: []byte(`{"path":"README.md"}`)}
 				if mode == "pending command" {
 					call.Tool = "shell"
 					_, err := providerrequest.ClaimCommandTx(ctx, tx, call, now)

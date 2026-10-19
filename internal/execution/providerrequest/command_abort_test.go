@@ -151,3 +151,27 @@ func TestAbandonRefusesRequestsWithPendingAdmissionsOrAnotherLease(t *testing.T)
 		t.Fatalf("a refused abandonment changed the request: %#v", stored)
 	}
 }
+
+func TestUnreceiptedReadToolsOweNothingButWritesDo(t *testing.T) {
+	for tool, wantOpen := range map[string]bool{"read": false, "glob": false, "grep": false, "write": true, "edit": true, "patch": true} {
+		t.Run(tool, func(t *testing.T) {
+			db, b, now := fixture(t, OwnerRun)
+			bind(t, db, b, now)
+			dispatch(t, db, b, now)
+			call := native(b)
+			call.Tool = tool
+			if err := transaction(t, db, func(tx *sql.Tx) error { _, err := AdmitNativeTx(context.Background(), tx, call, now); return err }); err != nil {
+				t.Fatal(err)
+			}
+			closeAdmission(t, db, b, now)
+			err := RequireResourcesClosedTx(context.Background(), db, b.ID)
+			if open := errors.Is(err, ErrResourcesOpen); open != wantOpen || (err != nil && !open) {
+				t.Fatalf("an unreceipted %s: open=%t err=%v, want open=%t", tool, open, err, wantOpen)
+			}
+			abandon := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(context.Background(), tx, b.ID, b.Lease, now) })
+			if (abandon != nil) != wantOpen {
+				t.Fatalf("abandoning a request with an unreceipted %s: %v", tool, abandon)
+			}
+		})
+	}
+}

@@ -22,6 +22,25 @@ describe("timeline milestones", () => {
     expect(JSON.stringify(event)).toBe(before);
   });
 
+	it("labels a blocked recovery and shows what Kingdom is waiting on", () => {
+		const event: TimelineEvent = {
+			event_id: "evt-recovery-blocked",
+			run_event_seq: 1,
+			attempt_seq: 1,
+			event_type: "attempt.recovery_blocked",
+			reason_code: "recovery_blocked",
+			emitted_at: "2026-03-18T11:40:00Z",
+			payload_json: {
+				node_id: "qa_review",
+				operator_text: "A file change was still in flight when its provider request stopped, so Kingdom cannot yet tell what it changed.",
+			},
+		};
+		expect(buildRawEventLabel(event, buildTimelineLookups([event], []))).toEqual({
+			label: "QA Review Recovery Blocked",
+			detail: "A file change was still in flight when its provider request stopped, so Kingdom cannot yet tell what it changed.",
+		});
+	});
+
 	it.each([
 		["run.retry_reopened", "operator_retry", "Manual Retry Scheduled - Attempt 1"],
 		["run.rerun_reopened", "operator_rerun", "Manual Rerun Scheduled - Attempt 1"],

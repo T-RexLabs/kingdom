@@ -16,6 +16,7 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
 )
 
 func (o *orchestrationLoop) acknowledgeProviderCommandGuardian(ctx context.Context, job asyncExecutionResult, guard opencode.CommandGuardianOwnership) error {
@@ -304,8 +305,12 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 // blocked until its effects can be proven, and other recoveries continue.
 func (o *orchestrationLoop) settleLostHandoffByAbandonment(ctx context.Context, result asyncExecutionResult) error {
 	identity, err := o.executionStore.AbandonProviderRequest(ctx, result.providerInvocationID)
-	if errors.Is(err, providerrequest.ErrResourcesOpen) {
+	if reason, open := providerrequest.OpenReasonOf(err); open {
 		slog.Warn("lost provider terminal handoff stays blocked", "attempt_id", result.attemptID, "provider_invocation_id", result.providerInvocationID, "error", err)
+		o.recordRecoveryBlocked(ctx, []state.BlockedAttempt{{
+			RunID: result.run.RunID, NodeRunID: result.attempt.NodeRunID, NodeID: result.node.NodeID, Attempt: result.attempt.Attempt,
+			RequiredRole: result.node.RequiredRole, Reason: reason,
+		}})
 		return nil
 	}
 	if err != nil {

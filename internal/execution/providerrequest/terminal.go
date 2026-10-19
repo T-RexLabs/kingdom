@@ -13,46 +13,65 @@ import (
 // RecordTerminalTx stores the verified terminal record as the request's
 // immutable evidence. Admission must already be closed, so no further tool can
 // be admitted, and every durable admission must match a projected tool exactly.
-// Pending receipts remain resource debt; recording does not close them.
+// Pending receipts remain resource debt; recording does not close them. Settlement
+// records the terminal in its own transaction, so a request has terminal
+// evidence only once its outcome is canonical, or once it was abandoned.
 func RecordTerminalTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, terminal providerexecution.RequestTerminal, now time.Time) error {
-	ref, err := terminal.Reference()
-	if err != nil {
+	if now.IsZero() {
+		return fmt.Errorf("provider terminal requires a record time")
+	}
+	b, ref, recorded, err := checkTerminal(ctx, tx, id, lease, terminal)
+	if err != nil || recorded {
 		return err
-	}
-	b, err := Get(ctx, tx, id)
-	if err != nil {
-		return err
-	}
-	if b.Lease != lease || ref.InvocationID != b.Owner.InvocationID {
-		return fmt.Errorf("provider terminal does not match its binding and lease")
-	}
-	if b.TerminalReference != nil {
-		if *b.TerminalReference != ref {
-			return fmt.Errorf("conflicting provider terminal evidence")
-		}
-		return nil
-	}
-	if b.DispatchIssuedAt == "" || b.AdmissionClosedAt == "" || now.IsZero() {
-		return fmt.Errorf("provider terminal requires issued dispatch and closed admission")
-	}
-	owner, err := loadOwner(ctx, tx, b.Owner)
-	if err != nil {
-		return err
-	}
-	if err := owner.requireActive(b, false, time.Time{}); err != nil {
-		return err
-	}
-	// An abandoned record has no projected tools; its admissions are instead
-	// proven closed by AbandonTx.
-	if abandoned, err := isAbandoned(Binding{Owner: b.Owner, TerminalReference: &ref}); err != nil {
-		return err
-	} else if !abandoned {
-		if err := matchAdmissions(ctx, tx, b.ID, terminal.Tools); err != nil {
-			return err
-		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET terminal_sha256=?,terminal_size_bytes=? WHERE binding_id=? AND terminal_sha256 IS NULL`, ref.SHA256, ref.SizeBytes, b.ID)
 	return err
+}
+
+// CheckTerminalTx runs every check RecordTerminalTx does without recording, so
+// a provider can refuse an inconsistent terminal before it hands one out.
+func CheckTerminalTx(ctx context.Context, q Reader, id string, lease Lease, terminal providerexecution.RequestTerminal) error {
+	_, _, _, err := checkTerminal(ctx, q, id, lease, terminal)
+	return err
+}
+
+// checkTerminal reports whether the identical terminal is already recorded.
+func checkTerminal(ctx context.Context, q Reader, id string, lease Lease, terminal providerexecution.RequestTerminal) (Binding, providerexecution.ContentReference, bool, error) {
+	ref, err := terminal.Reference()
+	if err != nil {
+		return Binding{}, ref, false, err
+	}
+	b, err := Get(ctx, q, id)
+	if err != nil {
+		return b, ref, false, err
+	}
+	if b.Lease != lease || ref.InvocationID != b.Owner.InvocationID {
+		return b, ref, false, fmt.Errorf("provider terminal does not match its binding and lease")
+	}
+	if b.TerminalReference != nil {
+		if *b.TerminalReference != ref {
+			return b, ref, false, fmt.Errorf("conflicting provider terminal evidence")
+		}
+		return b, ref, true, nil
+	}
+	if b.DispatchIssuedAt == "" || b.AdmissionClosedAt == "" {
+		return b, ref, false, fmt.Errorf("provider terminal requires issued dispatch and closed admission")
+	}
+	owner, err := loadOwner(ctx, q, b.Owner)
+	if err != nil {
+		return b, ref, false, err
+	}
+	if err := owner.requireActive(b, false, time.Time{}); err != nil {
+		return b, ref, false, err
+	}
+	// An abandoned record has no projected tools; its admissions are instead
+	// proven closed by AbandonTx.
+	if !terminal.Abandoned() {
+		if err := matchAdmissions(ctx, q, b.ID, terminal.Tools); err != nil {
+			return b, ref, false, err
+		}
+	}
+	return b, ref, false, nil
 }
 
 type admittedCall struct{ id, messageID, tool, input string }

@@ -152,7 +152,7 @@ func TestPlanningProviderRequestActivationRollsBackInvalidIdentityAndOwner(t *te
 	}
 }
 
-func TestPlanningProviderRequestSettlementRequiresStoredTerminalForEveryOutcome(t *testing.T) {
+func TestPlanningProviderRequestSettlementRequiresADispatchedClosedRequestForEveryOutcome(t *testing.T) {
 	for _, outcome := range []PlanningProviderCompletionOutcome{PlanningProviderCompletionOutcomeSuccess, PlanningProviderCompletionOutcomeFailed, PlanningProviderCompletionOutcomeCancelled} {
 		t.Run(string(outcome), func(t *testing.T) {
 			store, operation, activation := newPlanningRequestActivation(t)
@@ -168,8 +168,8 @@ func TestPlanningProviderRequestSettlementRequiresStoredTerminalForEveryOutcome(
 			}
 			_, err = finalizePlanningProviderSettlementTx(context.Background(), tx, operation.OperationID, operation.PlanningSessionID, request)
 			_ = tx.Rollback()
-			if err == nil || !strings.Contains(err.Error(), "stored terminal evidence") {
-				t.Fatalf("request settled without trusted terminal ingestion: %v", err)
+			if err == nil || !strings.Contains(err.Error(), "issued dispatch and closed admission") {
+				t.Fatalf("request settled before it was dispatched and closed: %v", err)
 			}
 			for _, table := range []string{"planning_provider_completion_evidence", "planning_provider_completion_settlements"} {
 				var count int
@@ -318,7 +318,7 @@ func TestPlanningProviderRequestAbortAndRetryValidateBeforeOwnerRelease(t *testi
 				request.ProviderSettlement = settlement
 				_, err = store.FinalizePlanningFailureWithRetry(context.Background(), request)
 			}
-			if err == nil || !strings.Contains(err.Error(), "stored terminal evidence") {
+			if err == nil || !strings.Contains(err.Error(), "issued dispatch and closed admission") {
 				t.Fatalf("owner released before request validation: %v", err)
 			}
 			current, _, loadErr := store.GetOperation(context.Background(), operation.OperationID)
