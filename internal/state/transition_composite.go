@@ -4405,8 +4405,8 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
 		// A stale attempt's server is gone. Its request can be replaced only
-		// if it never admitted a tool, because then no workspace effect can
-		// be hiding behind the missing provider evidence.
+		// once nothing it admitted can still be running, because otherwise a
+		// workspace effect could be hiding behind the missing provider evidence.
 		occurred, err := time.Parse(time.RFC3339Nano, occurredAt)
 		if err != nil {
 			return fmt.Errorf("parse stale replacement time: %w", err)

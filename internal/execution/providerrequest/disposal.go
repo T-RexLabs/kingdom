@@ -148,8 +148,8 @@ func RequireRunDisposedTx(ctx context.Context, q Reader, runID string) error {
 }
 
 // isAbandoned reports whether the request was closed without a provider
-// answer. Abandonment is only possible for a request that admitted nothing, so
-// a replaced invocation in that state leaves no effect to dispose of.
+// answer. Abandonment requires every admitted effect to be closed, so a replaced
+// invocation in that state leaves no effect to dispose of.
 func isAbandoned(b Binding) (bool, error) {
 	if b.TerminalReference == nil {
 		return false, nil

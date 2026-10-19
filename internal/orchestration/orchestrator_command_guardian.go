@@ -301,8 +301,8 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 
 // settleLostHandoffByAbandonment fails an attempt whose provider answer was lost
 // before it became durable. The request is abandoned first, which succeeds only
-// if every admitted effect is already closed; otherwise the attempt stays
-// blocked until its effects can be proven, and other recoveries continue.
+// once nothing it admitted can still be running; otherwise the attempt stays
+// blocked until that can be proven, and other recoveries continue.
 func (o *orchestrationLoop) settleLostHandoffByAbandonment(ctx context.Context, result asyncExecutionResult) error {
 	identity, err := o.executionStore.AbandonProviderRequest(ctx, result.providerInvocationID)
 	if reason, open := providerrequest.OpenReasonOf(err); open {

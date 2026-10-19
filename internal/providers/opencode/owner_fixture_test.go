@@ -201,7 +201,7 @@ func (h *ownerFixture) recordTerminal(invocation string, terminal providerexecut
 	if err != nil {
 		h.t.Fatal(err)
 	}
-	if err := providerrequest.RecordTerminalTx(context.Background(), tx, "binding-"+invocation, providerrequest.Lease{Owner: "worker", Version: 1}, terminal, time.Now().UTC()); err != nil {
+	if err := providerrequest.RecordTerminalTx(context.Background(), tx, "binding-"+invocation, providerrequest.Lease{Owner: "worker", Version: 1}, terminal); err != nil {
 		tx.Rollback()
 		h.t.Fatal(err)
 	}

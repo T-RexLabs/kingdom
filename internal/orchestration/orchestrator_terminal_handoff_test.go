@@ -1703,8 +1703,9 @@ func TestStoppedServerReleasesItsOrphanedAttemptAtStartup(t *testing.T) {
 			h.loop.guardianRuntimeRoot = h.runtimeDir
 			h.loop.serverAbsent = func(int, int, string, string) bool { return tc.stopped }
 
-			if err := h.loop.recoverServerInstances(context.Background()); err != nil {
-				t.Fatalf("recover server instances: %v", err)
+			unproven, err := h.loop.recoverServerInstances(context.Background())
+			if err != nil || (len(unproven) == 1) == tc.stopped {
+				t.Fatalf("recover server instances: unproven=%v err=%v", unproven, err)
 			}
 			if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
 				t.Fatalf("settle orphaned attempt: %v", err)
@@ -1720,5 +1721,87 @@ func TestStoppedServerReleasesItsOrphanedAttemptAtStartup(t *testing.T) {
 				t.Fatalf("the orphaned cancellation must settle as cancelled: %#v", settlement)
 			}
 		})
+	}
+}
+
+// serverEvidenceFixture is an attempt orphaned with an unreceipted write by a
+// server that is registered but not yet proven stopped.
+func (h terminalHandoffHarness) serverEvidenceFixture(t *testing.T) (executionstore.ProviderInvocation, providerrequest.ServerInstance) {
+	t.Helper()
+	invocation := h.addInvocation(t, 1)
+	binding := h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+	if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+		Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instance := providerrequest.ServerInstance{ID: binding.Identity.InstanceID, GuardID: "guard-server", OwnershipJSON: `{"ChildPID":1,"TreeID":1}`}
+	if err := h.requests.authority.RegisterServerInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_server", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.guardianRuntimeRoot = h.runtimeDir
+	h.loop.serverAbsent = func(int, int, string, string) bool { return false }
+	return invocation, instance
+}
+
+func TestServerStillBeingTornDownIsProvenOnALaterPass(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	invocation, instance := h.serverEvidenceFixture(t)
+	ctx := context.Background()
+	if unproven, err := h.loop.recoverServerInstances(ctx); err != nil || len(unproven) != 1 {
+		t.Fatalf("a server that is not yet gone must stay unproven: %v %v", unproven, err)
+	}
+	if err := h.loop.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("an attempt of an unproven server was settled: found=%t err=%v", found, err)
+	}
+	// The guardian publishes its stop evidence after the first pass.
+	evidence := processguardian.Result{Ownership: processguardian.Ownership{GuardID: instance.GuardID}, Quiescent: true}
+	writeServerStopEvidence(t, h.runtimeDir, evidence)
+	if unproven, err := h.loop.recoverServerInstances(ctx); err != nil || len(unproven) != 0 {
+		t.Fatalf("the later pass must prove the server from its evidence: %v %v", unproven, err)
+	}
+	if err := h.loop.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, invocation.ProviderInvocationID); err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
+		t.Fatalf("a proven server must release its attempt: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	var basis string
+	if err := h.db.QueryRow(`SELECT quiescence_basis FROM provider_server_instances WHERE instance_id=?`, instance.ID).Scan(&basis); err != nil || basis != string(providerrequest.ClosedByGuardian) {
+		t.Fatalf("closure basis %q %v", basis, err)
+	}
+	if _, err := os.Stat(filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence")); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence"))
+		if len(entries) != 0 {
+			t.Fatalf("the evidence that proved the stop must be removed once recorded: %d files", len(entries))
+		}
+	}
+}
+
+// writeServerStopEvidence writes a guardian's durable record where recovery
+// reads it: a file named by the hash of the guard ID.
+func writeServerStopEvidence(t *testing.T, runtimeRoot string, result processguardian.Result) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"type": "result", "result": result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(runtimeRoot, "provider-process-guards", "quiescence")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := sha256.Sum256([]byte(result.GuardID))
+	if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("%x.json", name[:])), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

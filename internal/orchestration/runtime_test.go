@@ -25,6 +25,7 @@ import (
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/processguardian"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
@@ -13891,4 +13892,62 @@ func mustExec(t *testing.T, db *sql.DB, query string) {
 			t.Fatalf("commit test run prompt snapshot: %v", err)
 		}
 	}
+}
+
+func TestRuntimeStartProvesEarlierServersStoppedAndLeavesTheRunningOneOpen(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	root := t.TempDir()
+	const ownership = `{"ChildPID":1,"TreeID":1}`
+	for _, instance := range []string{"svc_stopped", "svc_running"} {
+		if _, err := db.Exec(`INSERT INTO provider_server_instances(instance_id,guard_id,ownership_json,started_at) VALUES(?,?,?,'2026-03-01T12:00:00Z')`, instance, "guard-"+instance, ownership); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeServerStopEvidence(t, root, processguardian.Result{Ownership: processguardian.Ownership{GuardID: "guard-svc_stopped"}, Quiescent: true})
+
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db), GuardianRuntimeRoot: root})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	// svc_running is still alive.
+	rt.orchestrator.serverAbsent = func(pid, treeID int, childToken, treeToken string) bool { return false }
+	rt.orchestrator.guardianRuntimeRoot = root
+	closureOf := func(instance string) string {
+		var basis sql.NullString
+		if err := db.QueryRow(`SELECT quiescence_basis FROM provider_server_instances WHERE instance_id=?`, instance).Scan(&basis); err != nil {
+			t.Fatal(err)
+		}
+		return basis.String
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := rt.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		cancel()
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+	if got := closureOf("svc_stopped"); got != "guardian" {
+		t.Fatalf("a server with guardian stop evidence must be closed by it: %q", got)
+	}
+	if got := closureOf("svc_running"); got != "" {
+		t.Fatalf("a server that is still running must stay open: %q", got)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, "provider-process-guards", "quiescence")); len(entries) != 0 {
+		t.Fatalf("the evidence must be removed once it is recorded: %d files", len(entries))
+	}
+	// A server that was still being torn down is proven on a later pass.
+	rt.orchestrator.serverAbsent = func(int, int, string, string) bool { return true }
+	testutil.Eventually(t, 10*time.Second, 10*time.Millisecond, func() error {
+		if got := closureOf("svc_running"); got != "absence" {
+			return fmt.Errorf("svc_running closure %q", got)
+		}
+		return nil
+	})
 }

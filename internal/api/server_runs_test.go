@@ -3721,7 +3721,7 @@ func recordRequestTerminal(t *testing.T, db *sql.DB, invocationID string, termin
 	if err := providerrequest.CloseAdmissionTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
 		t.Fatalf("close admission for %s: %v", invocationID, err)
 	}
-	if err := providerrequest.RecordTerminalTx(ctx, tx, binding.ID, binding.Lease, terminal, now); err != nil {
+	if err := providerrequest.RecordTerminalTx(ctx, tx, binding.ID, binding.Lease, terminal); err != nil {
 		t.Fatalf("record terminal for %s: %v", invocationID, err)
 	}
 	if err := tx.Commit(); err != nil {

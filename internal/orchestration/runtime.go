@@ -310,8 +310,12 @@ func (r *Runtime) Start(ctx context.Context) (startErr error) {
 		}
 	}
 
-	if err := r.orchestrator.recoverServerInstances(ctx); err != nil {
+	unproven, err := r.orchestrator.recoverServerInstances(ctx)
+	if err != nil {
 		return fmt.Errorf("startup server instance recovery: %w", err)
+	}
+	for _, instance := range unproven {
+		slog.Warn("OpenCode server from an earlier process is not yet proven stopped", "instance_id", instance)
 	}
 	if r.orchestrator != nil && r.orchestrator.executionStore != nil {
 		expiredAt := time.Now().UTC()
@@ -474,6 +478,9 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				}
 			}
 		} else {
+			if _, serverErr := r.orchestrator.recoverServerInstances(ctx); serverErr != nil && !errors.Is(serverErr, context.Canceled) {
+				slog.Warn("OpenCode server instance recovery failed", "error", serverErr)
+			}
 			if guardErr := r.orchestrator.ingestPendingProviderCommandGuardians(ctx); guardErr != nil {
 				if errors.Is(guardErr, context.Canceled) {
 					return nil

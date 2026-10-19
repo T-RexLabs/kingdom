@@ -16,24 +16,27 @@ import (
 // recoverServerInstances proves which shared servers that earlier processes
 // started have stopped, and closes what they can no longer do. Only a stopped
 // server can be known to have no unreceipted write in flight, and a stopped
-// server's command that never reached a guardian never ran. It runs at startup,
-// while nothing is launching commands.
-func (o *orchestrationLoop) recoverServerInstances(ctx context.Context) error {
+// server's command that never reached a guardian never ran, because a guardian
+// releases a command only after its claim is still open. It returns the
+// instances that are not yet proven, so a server whose guardian is still
+// tearing it down is checked again on the next pass.
+func (o *orchestrationLoop) recoverServerInstances(ctx context.Context) ([]string, error) {
 	if o == nil || o.executionStore == nil {
-		return nil
+		return nil, nil
 	}
 	instances, err := o.executionStore.OpenProviderServerInstances(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var unproven []string
 	for _, instance := range instances {
 		closure, evidence, stopped := o.serverInstanceStopped(instance)
 		if !stopped {
-			slog.Warn("OpenCode server from an earlier process is not yet proven stopped", "instance_id", instance.ID)
+			unproven = append(unproven, instance.ID)
 			continue
 		}
 		if err := o.executionStore.CloseProviderServerInstance(ctx, instance.ID, closure); err != nil {
-			return fmt.Errorf("close OpenCode server instance %q: %w", instance.ID, err)
+			return unproven, fmt.Errorf("close OpenCode server instance %q: %w", instance.ID, err)
 		}
 		if evidence != "" {
 			if err := processguardian.RemoveQuiescenceEvidence(o.guardianRuntimeRoot, instance.GuardID, evidence); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -43,12 +46,12 @@ func (o *orchestrationLoop) recoverServerInstances(ctx context.Context) error {
 	}
 	aborted, err := o.executionStore.AbortOrphanedCommandClaims(ctx)
 	if err != nil {
-		return fmt.Errorf("abort command claims that never started: %w", err)
+		return unproven, fmt.Errorf("abort command claims that never started: %w", err)
 	}
 	if aborted > 0 {
 		slog.Info("closed command claims of stopped OpenCode servers that never started", "claims", aborted)
 	}
-	return nil
+	return unproven, nil
 }
 
 // serverInstanceStopped accepts the guardian's own evidence first, and the

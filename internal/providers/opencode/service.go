@@ -132,6 +132,13 @@ func NewService(cfg ServiceConfig) (*Service, error) {
 	return s, nil
 }
 
+// ServiceRuntimeRoot is where the service keeps its plugin, spool and the
+// durable stop evidence of its guardians. The runtime must read evidence from
+// the same root, so both assemble it from here.
+func ServiceRuntimeRoot(runtimeDir string) string {
+	return filepath.Join(runtimeDir, "opencode-service")
+}
+
 // registerInstance is the guardian's durable launch gate for the server: the
 // instance is recorded before the server runs, so a crash never leaves one
 // running unrecorded, and its guardian publishes durable stop evidence. It is

@@ -16,10 +16,7 @@ import (
 // Pending receipts remain resource debt; recording does not close them. Settlement
 // records the terminal in its own transaction, so a request has terminal
 // evidence only once its outcome is canonical, or once it was abandoned.
-func RecordTerminalTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, terminal providerexecution.RequestTerminal, now time.Time) error {
-	if now.IsZero() {
-		return fmt.Errorf("provider terminal requires a record time")
-	}
+func RecordTerminalTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, terminal providerexecution.RequestTerminal) error {
 	b, ref, recorded, err := checkTerminal(ctx, tx, id, lease, terminal)
 	if err != nil || recorded {
 		return err
@@ -140,11 +137,11 @@ func admittedCalls(ctx context.Context, q Reader, table, bindingID string) ([]ad
 }
 
 // AbandonTx closes a request that can no longer be proven, for example when its
-// server is gone, and records the abandoned terminal. It succeeds only if every
-// admitted tool and command is already closed by its exact receipt or guardian:
-// no further effect is possible then, and the lost provider answer can only
-// change what the work reported, never what it did. A pending admission keeps
-// the request blocked, because its effect is unknown.
+// server is gone, and records the abandoned terminal. It succeeds only if
+// nothing the request admitted can still be running: every write, edit, patch
+// and command is closed by its receipt or guardian, or belongs to a server that
+// is proven stopped. The lost provider answer can then only change what the work
+// reported, never what it did. Otherwise the request stays blocked.
 func AbandonTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, now time.Time) error {
 	b, err := Get(ctx, tx, id)
 	if err != nil {
@@ -167,7 +164,7 @@ func AbandonTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, now time
 	if err := RequireResourcesClosedTx(ctx, tx, id); err != nil {
 		return err
 	}
-	return RecordTerminalTx(ctx, tx, id, lease, providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID), now)
+	return RecordTerminalTx(ctx, tx, id, lease, providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID))
 }
 
 // AbandonOwnerTx abandons the request bound to an invocation.

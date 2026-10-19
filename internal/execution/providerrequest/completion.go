@@ -9,11 +9,11 @@ import (
 	"kingdom/internal/core/providerexecution"
 )
 
-// RequireCompletionTx checks stored request facts within the canonical
+// SettleCompletionTx checks stored request facts within the canonical
 // settlement transaction and records the observation's terminal as the request's
 // evidence, so the terminal exists exactly when its outcome does. It cannot
 // close effects.
-func RequireCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Lease, observation providerexecution.InvocationStreamObservation, outcome string, now time.Time) error {
+func SettleCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Lease, observation providerexecution.InvocationStreamObservation, outcome string) error {
 	q := Reader(tx)
 	binding, found, err := ForOwner(ctx, q, owner)
 	if err != nil {
@@ -61,7 +61,7 @@ func RequireCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Lea
 			return fmt.Errorf("provider request lacks its exact canonical settled outcome")
 		}
 	}
-	if err := RecordTerminalTx(ctx, tx, binding.ID, lease, request.Terminal, now); err != nil {
+	if err := RecordTerminalTx(ctx, tx, binding.ID, lease, request.Terminal); err != nil {
 		return err
 	}
 	if err := providerexecution.RequireRequestTerminalMatch(observation); err != nil {

@@ -42,7 +42,7 @@ func recordBoundTerminal(t testing.TB, s *Store, invocationID string, terminal p
 	if err := providerrequest.CloseAdmissionTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
 		t.Fatalf("close admission for %s: %v", invocationID, err)
 	}
-	if err := providerrequest.RecordTerminalTx(ctx, tx, binding.ID, binding.Lease, terminal, now); err != nil {
+	if err := providerrequest.RecordTerminalTx(ctx, tx, binding.ID, binding.Lease, terminal); err != nil {
 		t.Fatalf("record terminal for %s: %v", invocationID, err)
 	}
 	if err := tx.Commit(); err != nil {

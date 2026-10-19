@@ -43,7 +43,7 @@ func recordTerminal(db *sql.DB, b Binding, terminal providerexecution.RequestTer
 		return err
 	}
 	defer tx.Rollback()
-	if err := RecordTerminalTx(context.Background(), tx, b.ID, b.Lease, terminal, now); err != nil {
+	if err := RecordTerminalTx(context.Background(), tx, b.ID, b.Lease, terminal); err != nil {
 		return err
 	}
 	return tx.Commit()

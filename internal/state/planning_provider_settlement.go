@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
@@ -303,11 +302,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if err != nil {
 		return "", fmt.Errorf("planning provider request requires terminal observation: %w", err)
 	}
-	settledAt, err := time.Parse(time.RFC3339Nano, normalized.SettledAt)
-	if err != nil {
-		return "", fmt.Errorf("planning provider settlement time is invalid: %w", err)
-	}
-	if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome), settledAt); err != nil {
+	if err := providerrequest.SettleCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome)); err != nil {
 		return "", err
 	}
 	refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)
@@ -1045,8 +1040,8 @@ func firstNonEmptyPlanningProvider(values ...string) string {
 
 // AbandonPlanningProviderRequest closes the provider request of a planning
 // invocation whose server can no longer prove it, and returns its identity. It
-// fails with providerrequest.ErrResourcesOpen when the request admitted a tool,
-// because the missing provider evidence could then hide a workspace effect.
+// fails with providerrequest.ErrResourcesOpen while an admitted effect may still
+// be running, because the missing provider evidence could then hide it.
 func (s *PlanningStore) AbandonPlanningProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, error) {
 	if s == nil || s.db == nil {
 		return providerexecution.RequestIdentity{}, fmt.Errorf("planning store database is required")

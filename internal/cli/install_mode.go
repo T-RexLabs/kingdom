@@ -574,7 +574,7 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	bootstrapPaths := bootstrapPathsFromConfig(cfg)
-	providerServiceRoot := filepath.Join(cfg.KingdomHome, "runtime", "opencode-service")
+	providerServiceRoot := opencode.ServiceRuntimeRoot(filepath.Join(cfg.KingdomHome, "runtime"))
 	providerService, err := opencode.NewService(opencode.ServiceConfig{
 		BinaryPath:  cfg.Provider.BinaryPath,
 		WorkDir:     filepath.Dir(cfg.KingdomHome),

@@ -95,7 +95,7 @@ func (h *stockHarness) run(session, operation, invocation string, req ExecuteReq
 	return prepared, response, err
 }
 
-func TestStockPlanningRequestIsVerifiedAndRecorded(t *testing.T) {
+func TestStockPlanningRequestIsVerifiedAndLeftForSettlement(t *testing.T) {
 	h := newStockHarness(t)
 	var progress strings.Builder
 	req := h.planningRequest("inv-1", "op-1", "TEXT:hello")

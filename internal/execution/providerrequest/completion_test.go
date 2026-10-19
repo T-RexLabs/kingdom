@@ -18,7 +18,7 @@ func TestCompletionRejectsStaleCanonicalLease(t *testing.T) {
 			closeAdmission(t, db, b, now)
 			observation, _ := completionObservation(b)
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success", now)
+				return SettleCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success")
 			}); err != nil {
 				t.Fatal("active canonical owner", err)
 			}
@@ -28,7 +28,7 @@ func TestCompletionRejectsStaleCanonicalLease(t *testing.T) {
 			}
 			execSQL(t, db, "UPDATE "+table+" SET lease_version=lease_version+1")
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success", now)
+				return SettleCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "success")
 			}); err == nil {
 				t.Fatal("stale completion bypassed canonical lease")
 			}
@@ -82,7 +82,7 @@ func TestCompletionRequiresIndependentOwnedFacts(t *testing.T) {
 				observation.Request.Identity.RequestID = "foreign"
 			}
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+				return SettleCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success")
 			}); err == nil {
 				t.Fatalf("accepted %s", name)
 			}
@@ -126,12 +126,12 @@ func TestCompletionExactSettledReplay(t *testing.T) {
 				execSQL(t, db, `UPDATE attempt_executions SET canonical_settlement_id='settlement',state='committed_failure',lease_owner='',lease_version=lease_version+1`)
 			}
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+				return SettleCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success")
 			}); err != nil {
 				t.Fatal("exact canonical replay rejected", err)
 			}
 			if err := transaction(t, db, func(tx *sql.Tx) error {
-				return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "failed", now)
+				return SettleCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "failed")
 			}); err == nil {
 				t.Fatal("canonical replay changed its provider outcome")
 			}
@@ -153,7 +153,7 @@ func TestCompletionRecordsTheTerminalExactlyOnce(t *testing.T) {
 			}
 			settle := func(observation providerexecution.InvocationStreamObservation) error {
 				return transaction(t, db, func(tx *sql.Tx) error {
-					return RequireCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success", now)
+					return SettleCompletionTx(ctx, tx, b.Owner, b.Lease, observation, "success")
 				})
 			}
 			if err := settle(observation); err != nil {

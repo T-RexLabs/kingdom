@@ -143,7 +143,7 @@ func run() (exitCode int) {
 	}
 
 	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot)
-	providerServiceRoot := filepath.Join(filepath.Dir(dbPath), "runtime", "opencode-service")
+	providerServiceRoot := opencode.ServiceRuntimeRoot(filepath.Join(filepath.Dir(dbPath), "runtime"))
 	providerService, err := opencode.NewService(opencode.ServiceConfig{
 		BinaryPath:  providerBinary,
 		WorkDir:     repoRoot,

@@ -1567,7 +1567,7 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_superseded", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
 	requestOwner := providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}
-	if err := providerrequest.RequireCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, *req.StreamObservation, string(settlementReq.Outcome), s.currentTime()); err != nil {
+	if err := providerrequest.SettleCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, *req.StreamObservation, string(settlementReq.Outcome)); err != nil {
 		return ProviderCompletionSettlement{}, err
 	}
 	// Every row in this atomic boundary uses the canonical settlement time.
