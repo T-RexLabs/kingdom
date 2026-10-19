@@ -180,7 +180,6 @@ export default {
         })
       }
       editor.update("shell", (tool) => {
-        const nativeExecute = tool.execute
         tool.execute = async (input, context) => {
           const identity = identityFor(context)
           if (input.background) throw new Error("Managed background commands are not supported")

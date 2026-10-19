@@ -233,7 +233,6 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	}
 
 	workspacePath := ""
-	projectRootBoundary := ""
 	baseSnapshotID := ""
 	ephemeralWorkspace := false
 	responseOnlyWorkspaceCleanupMarkedAt := ""
@@ -247,7 +246,6 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	}
 	o.emitPreparationProgress(ctx, run, node, attempt, attemptID, "workspace_prepared", preparedWorkspace)
 	workspacePath = preparedWorkspace.WorkspacePath
-	projectRootBoundary = preparedWorkspace.ProjectRootBoundary
 	baseSnapshotID = preparedWorkspace.BaseSnapshotID
 	responseOnlyWorkspaceCleanupMarkedAt = preparedWorkspace.CleanupMarkedAt
 	ephemeralWorkspace = responseOnlyWorkspaceCleanupMarkedAt != ""
@@ -292,7 +290,6 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		workspacePath:                        workspacePath,
 		ephemeralWorkspace:                   ephemeralWorkspace,
 		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
-		projectRootBoundary:                  projectRootBoundary,
 		delegator:                            delegatorID,
 		openPrompt:                           providerPromptOpen,
 		system:                               systemPrompt,

@@ -284,8 +284,6 @@ type AttemptCancelRecord struct {
 	SessionID      string
 	ExecutionMode  ExecutionMode
 	ReasonCode     string
-	ReasonText     string
-	RequestedAt    string
 	Status         string
 	PublishCount   int
 	LastError      string
@@ -2160,7 +2158,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through At
 		`SELECT aco.cancel_outbox_id, aco.attempt_id, aco.run_id, aco.node_run_id,
 		        COALESCE(NULLIF(TRIM(ae.provider_session_id), ''), aco.session_id) AS session_id,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
-		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
+		        aco.reason_code, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
 		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, ''), aco.created_at
 		 FROM attempt_cancel_outbox aco
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id
@@ -2184,7 +2182,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through At
 	for rows.Next() {
 		var rec AttemptCancelRecord
 		var executionMode string
-		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
+		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending attempt cancel: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)

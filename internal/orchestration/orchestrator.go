@@ -282,9 +282,7 @@ type asyncExecutionResult struct {
 	workspacePath                        string
 	ephemeralWorkspace                   bool
 	responseOnlyWorkspaceCleanupMarkedAt string
-	projectRootBoundary                  string
 	delegator                            string
-	prompt                               string
 	openPrompt                           opencodePromptOpener
 	system                               string
 	model                                string

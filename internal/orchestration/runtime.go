@@ -1307,16 +1307,6 @@ func requireRuntimeTableColumns(db *sql.DB, tableName string, requiredColumns []
 	return nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 func cloneStringMap(source map[string]string) map[string]string {
 	if len(source) == 0 {
 		return nil
