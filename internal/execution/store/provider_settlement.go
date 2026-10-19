@@ -3159,8 +3159,9 @@ func sha256Hex(raw string) string {
 
 // AbandonProviderRequest closes the provider request of an invocation whose
 // server can no longer prove it, and returns its identity. It fails with
-// providerrequest.ErrResourcesOpen when the request admitted a tool or already
-// has provider terminal evidence, because settlement could then hide effects.
+// providerrequest.ErrResourcesOpen while something the request admitted may
+// still run, or when it already has provider terminal evidence, because
+// settlement could then hide effects.
 func (s *Store) AbandonProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, error) {
 	if s == nil || s.db == nil {
 		return providerexecution.RequestIdentity{}, fmt.Errorf("store database is required")

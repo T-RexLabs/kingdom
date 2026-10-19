@@ -117,7 +117,7 @@ func (a *Authority) AbortCommand(ctx context.Context, identity providerexecution
 	})
 }
 
-// Abandon closes an unprovable request that never admitted a tool.
+// Abandon closes an unprovable request once nothing it admitted can still run.
 func (a *Authority) Abandon(ctx context.Context, identity providerexecution.RequestIdentity) error {
 	return a.transact(ctx, identity, func(b Binding, now time.Time, tx *sql.Tx) error {
 		return AbandonTx(ctx, tx, b.ID, b.Lease, now)

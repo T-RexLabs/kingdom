@@ -5,10 +5,11 @@ import "context"
 // RequireResourcesClosedTx is intentionally independent of terminal response
 // validity. Native receipts and command ownership remain debts on cancellation.
 // Only a tool that can change the workspace leaves an unknown effect behind, so
-// an unreceipted read, glob or grep owes nothing and every other tool is owed. Neither does one whose server has
-// been proven stopped: it can no longer happen, and the workspace it may have
-// touched is restored or discarded when the attempt settles as anything but a
-// promoted success.
+// an unreceipted read, glob or grep owes nothing, and every other tool is owed
+// until its receipt arrives or its server is proven stopped. A stopped server's
+// unfinished change can no longer happen, and the workspace it may have touched
+// is restored or discarded when the attempt settles as anything but a promoted
+// success.
 func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	b, err := Get(ctx, q, id)
 	if err != nil {

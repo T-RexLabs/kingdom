@@ -71,7 +71,7 @@ Kingdom requires OpenCode V2 (2.x). It runs one local OpenCode server on loopbac
 
 Kingdom gives each request its own temporary agent profile and installs a small plugin in its own state directory so it can admit and record the file and shell tools a request uses. Shell commands run under Kingdom's process supervision. Requests that call other tools are refused.
 
-Kingdom disables automatic formatting in the server. If administrator configuration overrides this setting, Kingdom reports a configuration error and does not start work. It also reports an error when the Kingdom plugin does not load or when the server's event stream is interrupted, because it can no longer prove what a request did. Interrupted work stays blocked until it can be proven or, when the request never used a tool, is closed as abandoned. Explicit formatter commands remain separate from automatic formatting.
+Kingdom disables automatic formatting in the server. If administrator configuration overrides this setting, Kingdom reports a configuration error and does not start work. It also reports an error when the Kingdom plugin does not load or when the server's event stream is interrupted, because it can no longer prove what a request did. Interrupted work is closed as abandoned once nothing it started can still run; until then it stays blocked, as described under [Restarts and Blocked Work](#restarts-and-blocked-work). Explicit formatter commands remain separate from automatic formatting.
 
 #### Unsupported OpenCode Changes
 

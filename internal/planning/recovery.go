@@ -169,9 +169,9 @@ func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOper
 }
 
 // abandonUnprovenRequest closes the provider request of an operation whose
-// worker is gone, so that the operation can settle as failed. A request that
-// admitted a tool cannot be closed without its provider evidence, and its
-// operation stays blocked: errBlockedByProviderRequest.
+// worker is gone, so that the operation can settle as failed. While something
+// the request admitted may still run, it cannot be closed without its provider
+// evidence, and its operation stays blocked: errBlockedByProviderRequest.
 func (r *operationRecovery) abandonUnprovenRequest(ctx context.Context, op state.PlanningOperation, cause error) (error, func(), error) {
 	noRelease := func() {}
 	if operationHasNoActiveProviderInvocation(op) {
