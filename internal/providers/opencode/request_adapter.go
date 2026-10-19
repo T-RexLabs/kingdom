@@ -16,10 +16,7 @@ import (
 // is allowed to send any work.
 type Prepared struct {
 	ProviderSessionID string
-	// Reused is false when a requested session could not be continued, so the
-	// caller must submit its complete prompt rather than only the new input.
-	Reused   bool
-	Identity providerexecution.RequestIdentity
+	Identity          providerexecution.RequestIdentity
 }
 
 // request tracks one prepared request from Prepare to the end of Execute.
@@ -161,7 +158,7 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		defer cancel()
 		return Prepared{}, errors.Join(err, retireProfile(cleanup, started.client, directory, p.id))
 	}
-	return Prepared{ProviderSessionID: sessionID, Reused: reused, Identity: prepared.identity}, nil
+	return Prepared{ProviderSessionID: sessionID, Identity: prepared.identity}, nil
 }
 
 func requirePrepareRequest(req ExecuteRequest) error {
@@ -253,13 +250,13 @@ func (s *Service) Discard(ctx context.Context, invocationID string) error {
 
 // Cancel stops the attempt's request and waits for its Execute to settle the
 // evidence. It interrupts only that request's session.
-func (s *Service) Cancel(ctx context.Context, req CancelRequest) error {
+func (s *Service) Cancel(ctx context.Context, attemptID string) error {
 	if s.requests == nil {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
+		return &AttemptNotFoundError{AttemptID: attemptID}
 	}
-	prepared := s.requests.registry.attempt(req.AttemptID)
+	prepared := s.requests.registry.attempt(attemptID)
 	if prepared == nil {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
+		return &AttemptNotFoundError{AttemptID: attemptID}
 	}
 	prepared.requestStop()
 	prepared.mu.Lock()

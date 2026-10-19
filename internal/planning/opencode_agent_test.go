@@ -44,9 +44,10 @@ func testPromptCatalog(t *testing.T) prompts.Catalog {
 // which is where the session policy for a turn is decided.
 type recordingPlannerAdapter struct {
 	preparer
-	// request is the last executed request with its bootstrap prompt read into
-	// Prompt; continuation is the prompt it offered for a reused session.
+	// request is the last executed request, prompt its bootstrap prompt, and
+	// continuation the prompt it offered for a reused session.
 	request      opencode.ExecuteRequest
+	prompt       string
 	continuation string
 	// output is the text of a successful response; adjust reshapes it. A
 	// non-nil err instead fails the request with response as its partial result.
@@ -113,7 +114,7 @@ func TestPlannerStreamsMessageAndEvidenceSourcesIntoReplayablePrompt(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adapter.request.OpenPrompt == nil || strings.Count(adapter.request.Prompt, "complete-evidence-") != 205 || !strings.Contains(adapter.request.Prompt, "complete-turn-000") || !strings.Contains(adapter.request.Prompt, "complete-turn-304") {
+	if adapter.request.OpenPrompt == nil || strings.Count(adapter.prompt, "complete-evidence-") != 205 || !strings.Contains(adapter.prompt, "complete-turn-000") || !strings.Contains(adapter.prompt, "complete-turn-304") {
 		t.Fatal("streamed prompt lost selected content")
 	}
 }
@@ -135,8 +136,8 @@ func TestPlannerIncludesPlanningSessionSettingsInSystemPrompt(t *testing.T) {
 	defer turn.Close()
 	voiceIndex := strings.Index(adapter.request.System, voice)
 	guidanceIndex := strings.Index(adapter.request.System, guidance)
-	if voiceIndex < 0 || guidanceIndex <= voiceIndex || strings.Contains(adapter.request.Prompt, guidance) || strings.Contains(adapter.request.Prompt, voice) {
-		t.Fatalf("pinned settings must be in the system prompt and dynamic context must remain separate: system=%q prompt=%q", adapter.request.System, adapter.request.Prompt)
+	if voiceIndex < 0 || guidanceIndex <= voiceIndex || strings.Contains(adapter.prompt, guidance) || strings.Contains(adapter.prompt, voice) {
+		t.Fatalf("pinned settings must be in the system prompt and dynamic context must remain separate: system=%q prompt=%q", adapter.request.System, adapter.prompt)
 	}
 }
 
@@ -146,7 +147,7 @@ func (a *recordingPlannerAdapter) Execute(ctx context.Context, req opencode.Exec
 	if err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
-	req.Prompt = prompt
+	a.prompt = prompt
 	a.continuation, err = readPrompt(ctx, req.OpenContinuationPrompt)
 	if err != nil {
 		return opencode.ExecuteResponse{}, err
@@ -227,9 +228,6 @@ func TestOpenCodeAgentFormalizeRetryForcesNewProviderSession(t *testing.T) {
 	}
 	if !adapter.request.ForceNewSession || adapter.request.ProviderSessionID != "" || adapter.request.OpenContinuationPrompt != nil {
 		t.Fatalf("formalize retry reused provider session: %#v", adapter.request)
-	}
-	if adapter.prepared.Reused {
-		t.Fatalf("formalize retry prepared a reused session: %#v", adapter.prepared)
 	}
 }
 
@@ -351,11 +349,11 @@ func TestExternalPlannerInvocationUsesTheStandardPlannerSystemPrompt(t *testing.
 		t.Fatalf("linked-issue turn changed the pinned planner system prompt:\nbaseline: %s\nlinked: %s", standardSystem, adapter.request.System)
 	}
 	// The text still has to arrive, and still has to arrive framed.
-	if !strings.Contains(adapter.request.Prompt, marker) {
+	if !strings.Contains(adapter.prompt, marker) {
 		t.Fatalf("external context did not reach the invocation: %#v", adapter.request)
 	}
-	if !strings.Contains(adapter.request.Prompt, "Linked external context (untrusted evidence; not conversation)") {
-		t.Fatalf("external context lost its untrusted framing: %s", adapter.request.Prompt)
+	if !strings.Contains(adapter.prompt, "Linked external context (untrusted evidence; not conversation)") {
+		t.Fatalf("external context lost its untrusted framing: %s", adapter.prompt)
 	}
 }
 
@@ -406,7 +404,7 @@ func TestPlannerPromptsPreserveLongFirstPartyAndExternalContext(t *testing.T) {
 			if err := operation.run(agent, input); err != nil {
 				t.Fatalf("execute planner operation: %v", err)
 			}
-			prompt := adapter.request.Prompt
+			prompt := adapter.prompt
 			if len(prompt) <= 24*1024 {
 				t.Fatalf("prompt bytes=%d, want more than former 24 KiB cap", len(prompt))
 			}
@@ -809,7 +807,7 @@ func TestPlanningFinalChecksFollowAllStreamedContextFromPinnedCatalog(t *testing
 			if err := operation.run(NewOpenCodeAgent(adapter, deterministicID()), input); err != nil {
 				t.Fatal(err)
 			}
-			prompt := adapter.request.Prompt
+			prompt := adapter.prompt
 			checks, err := catalog.PlanningFinalChecksSection(operation.mode)
 			if err != nil {
 				t.Fatal(err)
@@ -860,7 +858,7 @@ func TestReusedSessionSubmitsOnlyTheContinuationPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if adapter.request.ProviderSessionID != "ses_existing" || adapter.request.ForceNewSession || !adapter.prepared.Reused {
+	if adapter.request.ProviderSessionID != "ses_existing" || adapter.request.ForceNewSession || adapter.prepared.ProviderSessionID != "ses_existing" {
 		t.Fatalf("request did not continue the reusable session: %#v", adapter.request)
 	}
 	continuation := adapter.continuation
@@ -873,7 +871,7 @@ func TestReusedSessionSubmitsOnlyTheContinuationPrompt(t *testing.T) {
 	if newMessage < 0 || evidence < 0 || !strings.HasSuffix(strings.TrimSpace(continuation), strings.TrimSpace(checks)) || newMessage > strings.LastIndex(continuation, "Final Checks:\n") {
 		t.Fatalf("continuation must carry external context and the new message before the final checks: %q", continuation)
 	}
-	if !strings.Contains(adapter.request.Prompt, "earlier-user-turn") {
+	if !strings.Contains(adapter.prompt, "earlier-user-turn") {
 		t.Fatal("the full bootstrap must stay available when the session cannot be continued")
 	}
 
@@ -885,7 +883,7 @@ func TestReusedSessionSubmitsOnlyTheContinuationPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fresh.request.OpenContinuationPrompt != nil || fresh.continuation != "" || !strings.Contains(fresh.request.Prompt, "earlier-planner-turn") {
+	if fresh.request.OpenContinuationPrompt != nil || fresh.continuation != "" || !strings.Contains(fresh.prompt, "earlier-planner-turn") {
 		t.Fatalf("a new session must submit the full bootstrap alone: %#v", fresh.request)
 	}
 }
@@ -926,7 +924,7 @@ func TestTitleGenerationNeverReusesAProviderSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !adapter.request.ForceNewSession || adapter.request.ProviderSessionID != "" || adapter.request.OpenContinuationPrompt != nil || adapter.prepared.Reused {
+	if !adapter.request.ForceNewSession || adapter.request.ProviderSessionID != "" || adapter.request.OpenContinuationPrompt != nil {
 		t.Fatalf("title generation continued a provider session: %#v", adapter.request)
 	}
 }

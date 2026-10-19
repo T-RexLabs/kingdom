@@ -445,83 +445,11 @@ func TestRuntimeForceCloseReturnsPromptlyAndCancelsInflightAttempts(t *testing.T
 	if len(requests) != 1 {
 		t.Fatalf("expected one cancel request, got %d", len(requests))
 	}
-	if requests[0].AttemptID != "run_1:work_intake:1" {
-		t.Fatalf("expected cancel attempt id run_1:work_intake:1, got %q", requests[0].AttemptID)
-	}
-	if requests[0].SessionID != sessionIDForAttempt("run_1:work_intake:1") {
-		t.Fatalf("expected cancel session id %q, got %q", sessionIDForAttempt("run_1:work_intake:1"), requests[0].SessionID)
+	if requests[0] != "run_1:work_intake:1" {
+		t.Fatalf("expected cancel attempt id run_1:work_intake:1, got %q", requests[0])
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("graceful close after force should be a no-op, got %v", err)
-	}
-}
-
-func TestRuntimeForceClosePrefersPersistedProviderSessionID(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	store := executionstore.New(db)
-	attemptID := "run_1:work_intake:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionRef:     sessionIDForAttempt(attemptID),
-		CreatedAt:      "2026-03-01T12:00:01Z",
-		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	if err := store.UpdateProviderSessionID(context.Background(), executionstore.UpdateProviderSessionIDRequest{
-		AttemptID:         attemptID,
-		ProviderSessionID: "ses_force_close_real",
-		UpdatedAt:         "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("update provider session id: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	closeMode := newRuntimeCloseMode()
-	periodicCanceled := make(chan struct{}, 1)
-	dispatchCanceled := make(chan struct{}, 1)
-	loop := &orchestrationLoop{
-		provider:       fixtureProvider(db, adapter),
-		executionStore: store,
-		inflightExec:   map[string]struct{}{attemptID: {}},
-		closeMode:      closeMode,
-	}
-	rt := &Runtime{
-		orchestrator: loop,
-		closeMode:    closeMode,
-		started:      true,
-		periodicDone: make(chan error),
-		dispatchDone: make(chan error),
-		cancelPeriodic: func() {
-			select {
-			case periodicCanceled <- struct{}{}:
-			default:
-			}
-		},
-		cancelDispatch: func() {
-			select {
-			case dispatchCanceled <- struct{}{}:
-			default:
-			}
-		},
-	}
-
-	if err := rt.ForceClose(); err != nil {
-		t.Fatalf("force close runtime: %v", err)
-	}
-	requests := adapter.cancelRequestsSnapshot()
-	if len(requests) != 1 {
-		t.Fatalf("expected one cancel request, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_force_close_real" {
-		t.Fatalf("expected persisted provider session id ses_force_close_real, got %q", requests[0].SessionID)
 	}
 }
 
@@ -1322,63 +1250,6 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(
 	}
 	if status != "published" {
 		t.Fatalf("expected published attempt cancel outbox status, got %q", status)
-	}
-}
-
-func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	store := executionstore.New(db)
-	attemptID := "run_1:work_intake:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionRef:     sessionIDForAttempt(attemptID),
-		CreatedAt:      "2026-03-01T12:00:01Z",
-		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	openBoundRequest(t, db, store, attemptID, "run_1", "nr_1", "pinv_cancel_outbox", "ses_cancel_outbox_real")
-	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
-		CancelOutboxID: "cancel_outbox_1",
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionID:      sessionIDForAttempt(attemptID),
-		ReasonCode:     "run_cancelled_by_user",
-		ReasonText:     "operator cancel",
-		RequestedAt:    "2026-03-01T12:00:02Z",
-		CreatedAt:      "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("queue attempt cancel: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	loop := orchestrationLoop{
-		db:             db,
-		provider:       fixtureProvider(db, adapter),
-		executionStore: store,
-		cancelGrace:    time.Second,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 5, 0, time.UTC)
-		},
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain attempt cancel outbox: %v", err)
-	}
-
-	requests := adapter.cancelRequestsSnapshot()
-	if len(requests) != 1 {
-		t.Fatalf("expected one cancel request snapshot, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_cancel_outbox_real" {
-		t.Fatalf("expected provider session id ses_cancel_outbox_real, got %q", requests[0].SessionID)
 	}
 }
 
@@ -3044,7 +2915,7 @@ func TestActivateProviderInvocationForExecutionBindsPreparedRequestToOpenInvocat
 	}
 	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
 	const providerInvocationID = "pinv_server_response_setup"
-	prepared, err := memoryProvider(db).Prepare(context.Background(), opencode.ExecuteRequest{AttemptID: attemptID, InvocationID: providerInvocationID, WorkspacePath: t.TempDir(), Prompt: "prompt"})
+	prepared, err := memoryProvider(db).Prepare(context.Background(), opencode.ExecuteRequest{AttemptID: attemptID, InvocationID: providerInvocationID, WorkspacePath: t.TempDir(), OpenPrompt: fixturePrompt})
 	if err != nil {
 		t.Fatalf("prepare provider request: %v", err)
 	}
@@ -12167,17 +12038,13 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 			return fmt.Errorf("expected cancel request payload to be captured")
 		}
 		last := requests[len(requests)-1]
-		if last.AttemptID != "run_timeout_diag:work_intake:1" {
-			return fmt.Errorf("expected cancel attempt id run_timeout_diag:work_intake:1, got %q", last.AttemptID)
+		if last != "run_timeout_diag:work_intake:1" {
+			return fmt.Errorf("expected cancel attempt id run_timeout_diag:work_intake:1, got %q", last)
 		}
 		var expectedSessionID string
 		if err := db.QueryRow(`SELECT provider_session_id FROM provider_invocations WHERE provider_invocation_id = ?`, timeoutDiagnosticProviderInvocationID).Scan(&expectedSessionID); err != nil {
 			return err
 		}
-		if last.SessionID != expectedSessionID {
-			return fmt.Errorf("expected cancel session id %q, got %q", expectedSessionID, last.SessionID)
-		}
-
 		payload := queryLatestEventPayload(t, db, "run_timeout_diag:work_intake:1", "attempt.failed")
 		providerDiag, ok := payload["provider_diagnostics"].(map[string]any)
 		if !ok {
@@ -12328,7 +12195,7 @@ func TestTimeoutCancellationRaceCommitsExactlyOneOutcome(t *testing.T) {
 	}
 }
 
-func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
+func TestCancelTimedOutAttemptReportsPersistedProviderSessionID(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -12351,16 +12218,13 @@ func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
 		cancelGrace:    50 * time.Millisecond,
 		cancelForce:    50 * time.Millisecond,
 	}
-	diagnostics, err := loop.cancelTimedOutAttempt(context.Background(), attemptID, time.Now().UTC().Format(time.RFC3339))
+	diagnostics, err := loop.cancelTimedOutAttempt(context.Background(), attemptID)
 	if err != nil {
 		t.Fatalf("cancel timed out attempt: %v", err)
 	}
 	requests := adapter.cancelRequestsSnapshot()
 	if len(requests) != 1 {
 		t.Fatalf("expected one cancel request, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_timeout_real" {
-		t.Fatalf("expected provider session id ses_timeout_real, got %q", requests[0].SessionID)
 	}
 	if strings.TrimSpace(fmt.Sprint(diagnostics["session_id"])) != "ses_timeout_real" {
 		t.Fatalf("expected diagnostics session_id ses_timeout_real, got %#v", diagnostics["session_id"])
@@ -12917,7 +12781,7 @@ type blockingFirstExecutionAdapter struct {
 type timeoutCancelObserverAdapter struct {
 	mu             sync.Mutex
 	cancelCount    int
-	cancelRequests []opencode.CancelRequest
+	cancelRequests []string
 	onCancel       func() error
 }
 
@@ -12969,15 +12833,10 @@ func (a *timeoutCancelObserverAdapter) Execute(context.Context, opencode.Execute
 	return opencode.ExecuteResponse{OutputText: `{"summary":"noop"}`}, nil
 }
 
-func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.CancelRequest) error {
+func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, attemptID string) error {
 	a.mu.Lock()
 	a.cancelCount++
-	a.cancelRequests = append(a.cancelRequests, opencode.CancelRequest{
-		SessionID:  strings.TrimSpace(req.SessionID),
-		AttemptID:  strings.TrimSpace(req.AttemptID),
-		Reason:     strings.TrimSpace(req.Reason),
-		OccurredAt: strings.TrimSpace(req.OccurredAt),
-	})
+	a.cancelRequests = append(a.cancelRequests, attemptID)
 	onCancel := a.onCancel
 	a.mu.Unlock()
 	if onCancel != nil {
@@ -12986,9 +12845,9 @@ func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.Ca
 	return nil
 }
 
-func (a *attemptNotFoundTimeoutAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	_ = a.timeoutCancelObserverAdapter.Cancel(ctx, req)
-	return &opencode.AttemptNotFoundError{AttemptID: strings.TrimSpace(req.AttemptID)}
+func (a *attemptNotFoundTimeoutAdapter) Cancel(ctx context.Context, attemptID string) error {
+	_ = a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID)
+	return &opencode.AttemptNotFoundError{AttemptID: attemptID}
 }
 
 func (a *cancellationCompletionRaceAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
@@ -13002,8 +12861,8 @@ func (a *cancellationCompletionRaceAdapter) Execute(context.Context, opencode.Ex
 	}, nil
 }
 
-func (a *cancellationCompletionRaceAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	if err := a.timeoutCancelObserverAdapter.Cancel(ctx, req); err != nil {
+func (a *cancellationCompletionRaceAdapter) Cancel(ctx context.Context, attemptID string) error {
+	if err := a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID); err != nil {
 		return err
 	}
 	a.cancelOnce.Do(func() { close(a.cancelled) })
@@ -13016,10 +12875,10 @@ func (a *timeoutCancelObserverAdapter) cancelCalls() int {
 	return a.cancelCount
 }
 
-func (a *timeoutCancelObserverAdapter) cancelRequestsSnapshot() []opencode.CancelRequest {
+func (a *timeoutCancelObserverAdapter) cancelRequestsSnapshot() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]opencode.CancelRequest, len(a.cancelRequests))
+	out := make([]string, len(a.cancelRequests))
 	copy(out, a.cancelRequests)
 	return out
 }
@@ -13091,8 +12950,8 @@ func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req openco
 	return interruptedResponse(), context.Canceled
 }
 
-func (a *streamingTimeoutExecutionAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	err := a.timeoutCancelObserverAdapter.Cancel(ctx, req)
+func (a *streamingTimeoutExecutionAdapter) Cancel(ctx context.Context, attemptID string) error {
+	err := a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID)
 	a.cancelOnce.Do(func() {
 		close(a.cancelSignal())
 	})

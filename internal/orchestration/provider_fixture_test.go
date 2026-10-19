@@ -79,14 +79,14 @@ func (f *requestFixture) Execute(ctx context.Context, req opencode.ExecuteReques
 
 // Cancel forwards to the fallback responder when it observes cancellation, and
 // otherwise reports that the server holds no such attempt.
-func (f *requestFixture) Cancel(ctx context.Context, req opencode.CancelRequest) error {
+func (f *requestFixture) Cancel(ctx context.Context, attemptID string) error {
 	f.mu.Lock()
 	fallback := f.fallback
 	f.mu.Unlock()
 	if responder, ok := fallback.(opencode.CancelResponder); ok {
-		return responder.Cancel(ctx, req)
+		return responder.Cancel(ctx, attemptID)
 	}
-	return &opencode.AttemptNotFoundError{AttemptID: req.AttemptID}
+	return &opencode.AttemptNotFoundError{AttemptID: attemptID}
 }
 
 // respondWith answers every request that has no answer of its own.
@@ -97,7 +97,7 @@ func (f *requestFixture) respondWith(responder opencode.Responder) {
 }
 
 func (f *requestFixture) request(attemptID, invocationID string) opencode.ExecuteRequest {
-	return opencode.ExecuteRequest{AttemptID: attemptID, InvocationID: invocationID, WorkspacePath: os.TempDir(), Prompt: "fixture prompt"}
+	return opencode.ExecuteRequest{AttemptID: attemptID, InvocationID: invocationID, WorkspacePath: os.TempDir(), OpenPrompt: fixturePrompt}
 }
 
 // prepare fixes the identity that the invocation's activation binds.

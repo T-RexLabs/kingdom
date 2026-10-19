@@ -10,7 +10,6 @@ import (
 	"time"
 
 	executionstore "kingdom/internal/execution/store"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -60,7 +59,7 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 		return true, nil
 	}
 	cancelCtx, cancel := context.WithTimeout(ctx, defaultDuration(o.cancelGrace, 5*time.Second))
-	cancelErr := o.provider.Cancel(cancelCtx, attemptCancelRequest(*rec, publishedAt))
+	cancelErr := o.provider.Cancel(cancelCtx, strings.TrimSpace(rec.AttemptID))
 	cancel()
 	quiescent, err = o.executionStore.AttemptCommandGuardiansQuiescent(ctx, rec.AttemptID)
 	if err != nil {
@@ -228,15 +227,6 @@ func (o *orchestrationLoop) publishAttemptCancelAfterProjection(ctx context.Cont
 		}
 	}
 	return o.markAttemptCancelPublished(ctx, rec.CancelOutboxID, publishedAt)
-}
-
-func attemptCancelRequest(rec executionstore.AttemptCancelRecord, fallbackOccurredAt string) opencode.CancelRequest {
-	return opencode.CancelRequest{
-		SessionID:  strings.TrimSpace(rec.SessionID),
-		AttemptID:  strings.TrimSpace(rec.AttemptID),
-		Reason:     firstNonEmpty(strings.TrimSpace(rec.ReasonText), strings.TrimSpace(rec.ReasonCode), "run terminalized"),
-		OccurredAt: firstNonEmpty(strings.TrimSpace(rec.RequestedAt), strings.TrimSpace(fallbackOccurredAt)),
-	}
 }
 
 func (o *orchestrationLoop) markAttemptCancelPublished(ctx context.Context, cancelOutboxID, publishedAt string) error {

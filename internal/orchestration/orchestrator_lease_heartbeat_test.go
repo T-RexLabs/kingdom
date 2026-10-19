@@ -300,6 +300,6 @@ func (a *contextBlockingExecutionAdapter) Execute(ctx context.Context, _ opencod
 	return interruptedResponse(), ctx.Err()
 }
 
-func (a *contextBlockingExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
+func (a *contextBlockingExecutionAdapter) Cancel(context.Context, string) error {
 	return nil
 }

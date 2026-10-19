@@ -116,7 +116,6 @@ type Invocation struct {
 // with text.
 func Complete(ctx context.Context, invocation Invocation, text string) (opencode.ExecuteResponse, error) {
 	prepared := Prepared(invocation.ID, SessionFor(invocation.ID, invocation.ReusableSessionID))
-	prepared.Reused = invocation.ReusableSessionID != ""
 	if err := invocation.Activate(ctx, prepared); err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
@@ -128,7 +127,6 @@ func Complete(ctx context.Context, invocation Invocation, text string) (opencode
 // failed terminal, so the failure settles against a canonical invocation.
 func Fail(ctx context.Context, invocation Invocation) (opencode.InvocationStreamObservation, error) {
 	prepared := Prepared(invocation.ID, SessionFor(invocation.ID, invocation.ReusableSessionID))
-	prepared.Reused = invocation.ReusableSessionID != ""
 	if err := invocation.Activate(ctx, prepared); err != nil {
 		return opencode.InvocationStreamObservation{}, err
 	}

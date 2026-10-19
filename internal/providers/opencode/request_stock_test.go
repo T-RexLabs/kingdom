@@ -78,7 +78,7 @@ func newStockHarness(t *testing.T) *stockHarness {
 func (h *stockHarness) planningRequest(invocation, operation, prompt string) ExecuteRequest {
 	req := ExecuteRequest{
 		InvocationID: invocation, AttemptID: operation, WorkspacePath: h.workspace, Model: "fixture/scripted", Agent: "planning-assistant",
-		System: "PINNED SYSTEM " + invocation, Prompt: prompt, FirstEventTimeout: 30 * time.Second, StreamInactivityTimeout: 30 * time.Second,
+		System: "PINNED SYSTEM " + invocation, OpenPrompt: openText(prompt), FirstEventTimeout: 30 * time.Second, StreamInactivityTimeout: 30 * time.Second,
 	}
 	return req
 }
@@ -227,7 +227,7 @@ func TestStockContinuationReusesSessionAndSendsOnlyNewInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !next.Reused || next.ProviderSessionID != prepared.ProviderSessionID || next.Identity.ProfileID == prepared.Identity.ProfileID || next.Identity.RequestID == prepared.Identity.RequestID {
+	if next.ProviderSessionID != prepared.ProviderSessionID || next.Identity.ProfileID == prepared.Identity.ProfileID || next.Identity.RequestID == prepared.Identity.RequestID {
 		t.Fatalf("reuse must keep the session and change profile and request: %#v %#v", prepared, next)
 	}
 	h.bindPlanning(next, "op-b", "inv-b")
@@ -257,7 +257,7 @@ func TestStockUntrackedSessionIsNotContinued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if prepared.Reused || prepared.ProviderSessionID == req.ProviderSessionID {
+	if prepared.ProviderSessionID == req.ProviderSessionID {
 		t.Fatalf("an unknown session must not be adopted: %#v", prepared)
 	}
 	if err := h.service.Discard(context.Background(), "inv-u"); err != nil {
@@ -285,7 +285,7 @@ func TestStockCancellationInterruptsOnlyThisRequestAndIsProven(t *testing.T) {
 	}()
 	<-started
 	time.Sleep(500 * time.Millisecond)
-	if err := h.service.Cancel(context.Background(), CancelRequest{AttemptID: "op-cancel"}); err != nil {
+	if err := h.service.Cancel(context.Background(), "op-cancel"); err != nil {
 		t.Fatal(err)
 	}
 	<-done
@@ -404,7 +404,7 @@ func TestStockCancellingOneRequestLeavesAConcurrentRequestUntouched(t *testing.T
 	if err != nil || fast.OutputPreview != "fast" {
 		t.Fatalf("a concurrent request was disturbed: %q %v", fast.OutputPreview, err)
 	}
-	if err := h.service.Cancel(context.Background(), CancelRequest{AttemptID: "op-slow"}); err != nil {
+	if err := h.service.Cancel(context.Background(), "op-slow"); err != nil {
 		t.Fatal(err)
 	}
 	slowResult := <-slowDone
@@ -505,7 +505,7 @@ func TestStockRequestCancelledBeforeDispatchIsAbandonedAndSettleable(t *testing.
 		t.Fatal(err)
 	}
 	h.bindPlanning(prepared, "op-early", "inv-early")
-	if err := h.service.Cancel(context.Background(), CancelRequest{AttemptID: "op-early"}); err != nil {
+	if err := h.service.Cancel(context.Background(), "op-early"); err != nil {
 		t.Fatal(err)
 	}
 	response, err := h.service.Execute(context.Background(), req)

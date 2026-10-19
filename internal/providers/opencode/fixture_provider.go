@@ -23,7 +23,7 @@ type Responder interface {
 
 // CancelResponder is implemented by responders that observe cancellation.
 type CancelResponder interface {
-	Cancel(context.Context, CancelRequest) error
+	Cancel(ctx context.Context, attemptID string) error
 }
 
 // FixtureProvider runs a Responder behind the real request-ownership layer: it
@@ -49,20 +49,15 @@ func NewMemoryAdapter(authority *providerrequest.Authority) *FixtureProvider {
 type memoryResponder struct{}
 
 func (memoryResponder) Execute(_ context.Context, req ExecuteRequest) (ExecuteResponse, error) {
-	// A string-based fixture may materialize the replay source for its canned
-	// output builder.
-	if req.OpenPrompt != nil {
-		reader, err := req.OpenPrompt(context.Background())
-		if err != nil {
-			return ExecuteResponse{}, err
-		}
-		raw, readErr := io.ReadAll(reader)
-		if err := errors.Join(readErr, reader.Close()); err != nil {
-			return ExecuteResponse{}, err
-		}
-		req.Prompt = string(raw)
+	reader, err := req.OpenPrompt(context.Background())
+	if err != nil {
+		return ExecuteResponse{}, err
 	}
-	summary, err := buildMemoryOutput(req)
+	raw, readErr := io.ReadAll(reader)
+	if err := errors.Join(readErr, reader.Close()); err != nil {
+		return ExecuteResponse{}, err
+	}
+	summary, err := buildMemoryOutput(req, string(raw))
 	if err != nil {
 		return ExecuteResponse{}, err
 	}
@@ -104,11 +99,11 @@ func (p *FixtureProvider) Discard(_ context.Context, invocationID string) error 
 	return nil
 }
 
-func (p *FixtureProvider) Cancel(ctx context.Context, req CancelRequest) error {
+func (p *FixtureProvider) Cancel(ctx context.Context, attemptID string) error {
 	if responder, ok := p.responder.(CancelResponder); ok {
-		return responder.Cancel(ctx, req)
+		return responder.Cancel(ctx, attemptID)
 	}
-	return &AttemptNotFoundError{AttemptID: req.AttemptID}
+	return &AttemptNotFoundError{AttemptID: attemptID}
 }
 
 func (p *FixtureProvider) Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error) {
@@ -238,18 +233,8 @@ func validateExecuteRequest(req ExecuteRequest) error {
 	if req.AttemptID == "" || req.InvocationID == "" {
 		return fmt.Errorf("attempt and invocation identity are required")
 	}
-	sources := 0
-	if req.Prompt != "" {
-		sources++
-	}
-	if req.OpenPrompt != nil {
-		sources++
-	}
-	if req.WritePrompt != nil {
-		sources++
-	}
-	if sources != 1 {
-		return fmt.Errorf("exactly one prompt source is required")
+	if req.OpenPrompt == nil {
+		return fmt.Errorf("a prompt source is required")
 	}
 	return nil
 }

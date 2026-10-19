@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"kingdom/internal/core/providerexecution"
@@ -202,17 +201,8 @@ func (e *execution) stopRequested() bool {
 // continues a session that already holds the earlier history.
 func (e *execution) prompt(ctx context.Context) (string, error) {
 	open := e.req.OpenPrompt
-	switch {
-	case e.request.reused:
+	if e.request.reused {
 		open = e.req.OpenContinuationPrompt
-	case e.req.WritePrompt != nil:
-		var buffer strings.Builder
-		if err := e.req.WritePrompt(ctx, &buffer); err != nil {
-			return "", err
-		}
-		return buffer.String(), nil
-	case open == nil && e.req.Prompt != "":
-		return e.req.Prompt, nil
 	}
 	if open == nil {
 		return "", fmt.Errorf("provider request has no prompt source")

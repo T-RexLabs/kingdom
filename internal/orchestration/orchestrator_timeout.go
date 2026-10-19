@@ -193,7 +193,7 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 	}
 	defer o.releaseExecutionSettlement(attemptID, "timeout")
 
-	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID, now)
+	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID)
 	if err != nil {
 		return err
 	}
@@ -273,24 +273,17 @@ func timeoutEnforcementSkipsDurableState(state string) bool {
 	}
 }
 
-func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID, occurredAt string) (map[string]any, error) {
-	request := opencode.CancelRequest{
-		SessionID:  o.preferredAttemptSessionID(ctx, attemptID),
-		AttemptID:  attemptID,
-		Reason:     "node wall-clock timeout exceeded",
-		OccurredAt: occurredAt,
-	}
-
+func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID string) (map[string]any, error) {
 	diagnostics := map[string]any{
 		"attempt_id":      attemptID,
-		"session_id":      request.SessionID,
+		"session_id":      o.preferredAttemptSessionID(ctx, attemptID),
 		"cancel_grace_ms": o.cancelGrace.Milliseconds(),
 		"cancel_force_ms": o.cancelForce.Milliseconds(),
 	}
 
 	graceCtx, cancelGrace := context.WithTimeout(ctx, o.cancelGrace)
 	defer cancelGrace()
-	err := o.provider.Cancel(graceCtx, request)
+	err := o.provider.Cancel(graceCtx, attemptID)
 	if err == nil {
 		diagnostics["result"] = "grace_success"
 		return diagnostics, nil
@@ -311,7 +304,7 @@ func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID
 		}
 		forceCtx, cancelForce := context.WithTimeout(context.WithoutCancel(ctx), o.cancelForce)
 		defer cancelForce()
-		if forceErr := o.provider.Cancel(forceCtx, request); forceErr == nil {
+		if forceErr := o.provider.Cancel(forceCtx, attemptID); forceErr == nil {
 			diagnostics["result"] = "force_success"
 			return diagnostics, nil
 		} else {

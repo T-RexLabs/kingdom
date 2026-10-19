@@ -1061,7 +1061,6 @@ func (r *Runtime) cancelInflightAttempts() {
 
 	const attemptCancelTimeout = 250 * time.Millisecond
 	const overallCancelBudget = 500 * time.Millisecond
-	occurredAt := time.Now().UTC().Format(time.RFC3339)
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -1071,12 +1070,7 @@ func (r *Runtime) cancelInflightAttempts() {
 			defer wg.Done()
 			cancelCtx, cancel := context.WithTimeout(context.Background(), attemptCancelTimeout)
 			defer cancel()
-			err := r.orchestrator.provider.Cancel(cancelCtx, opencode.CancelRequest{
-				SessionID:  r.orchestrator.preferredAttemptSessionID(cancelCtx, attemptID),
-				AttemptID:  attemptID,
-				Reason:     "runtime forced shutdown",
-				OccurredAt: occurredAt,
-			})
+			err := r.orchestrator.provider.Cancel(cancelCtx, attemptID)
 			if err == nil {
 				return
 			}

@@ -34,7 +34,6 @@ func (p *preparer) Prepare(_ context.Context, req opencode.ExecuteRequest) (open
 		reusable = ""
 	}
 	prepared := providerledger.Prepared(req.InvocationID, providerledger.SessionFor(req.InvocationID, reusable))
-	prepared.Reused = reusable != ""
 	p.mu.Lock()
 	p.prepared, p.executing = prepared, req.InvocationID
 	p.mu.Unlock()

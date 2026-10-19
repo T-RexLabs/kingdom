@@ -33,7 +33,7 @@ type requestObserver struct {
 	boundAtExecute       bool
 	leaseAtExecute       providerrequest.Lease
 	executed             opencode.ExecuteResponse
-	cancelled            []opencode.CancelRequest
+	cancelled            []string
 }
 
 func newRequestObserver(db *sql.DB, provider opencode.Provider) *requestObserver {
@@ -80,12 +80,12 @@ func (o *requestObserver) Execute(ctx context.Context, req opencode.ExecuteReque
 	return response, err
 }
 
-func (o *requestObserver) Cancel(ctx context.Context, req opencode.CancelRequest) error {
+func (o *requestObserver) Cancel(ctx context.Context, attemptID string) error {
 	o.mu.Lock()
-	o.record("cancel:" + req.AttemptID)
-	o.cancelled = append(o.cancelled, req)
+	o.record("cancel:" + attemptID)
+	o.cancelled = append(o.cancelled, attemptID)
 	o.mu.Unlock()
-	return o.Provider.Cancel(ctx, req)
+	return o.Provider.Cancel(ctx, attemptID)
 }
 
 func (o *requestObserver) Discard(ctx context.Context, invocationID string) error {
@@ -313,7 +313,7 @@ func (r *cancellableResponder) Execute(ctx context.Context, _ opencode.ExecuteRe
 	return interruptedResponse(), context.Canceled
 }
 
-func (r *cancellableResponder) Cancel(context.Context, opencode.CancelRequest) error {
+func (r *cancellableResponder) Cancel(context.Context, string) error {
 	r.once.Do(func() { close(r.cancelled) })
 	return nil
 }
@@ -357,10 +357,10 @@ func TestAttemptCancellationInterruptsProviderRequestAndSettlesInterrupted(t *te
 	})
 
 	observer.mu.Lock()
-	cancelled := append([]opencode.CancelRequest(nil), observer.cancelled...)
+	cancelled := append([]string(nil), observer.cancelled...)
 	terminal := observer.executed.StreamObservation.Request
 	observer.mu.Unlock()
-	if len(cancelled) != 1 || cancelled[0].AttemptID != dispatch.attemptID {
+	if len(cancelled) != 1 || cancelled[0] != dispatch.attemptID {
 		t.Fatalf("provider cancellations=%+v, want one for %s", cancelled, dispatch.attemptID)
 	}
 	if terminal == nil || terminal.Terminal.Outcome != providerexecution.RequestOutcomeInterrupted {

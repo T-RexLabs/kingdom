@@ -117,8 +117,8 @@ type verifiedPromptAdapter struct {
 
 func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	check := func() error {
-		if req.Prompt != "" || req.OpenPrompt == nil {
-			return fmt.Errorf("dispatch materialized an inline prompt")
+		if req.OpenPrompt == nil {
+			return fmt.Errorf("dispatch sent no replayable prompt")
 		}
 		systemReader, err := state.OpenRunExecutionSystemPrompt(ctx, a.db, "run_dispatch", req.AttemptID)
 		if err != nil {
