@@ -1431,10 +1431,6 @@ func classifyExecutionReasonCode(err error) string {
 	if err == nil {
 		return "execution_completed"
 	}
-	var neverStartedErr *executionNotStartedError
-	if errors.As(err, &neverStartedErr) {
-		return string(errorcatalog.CodeTimeout)
-	}
 	if providerlimits.IsResourceLimitError(err) {
 		return string(errorcatalog.CodeResourceLimitExceeded)
 	}
@@ -1518,17 +1514,4 @@ func decodeProviderDiagnosticsJSON(raw string) any {
 		return map[string]any{"provider_diagnostics_json": trimmed}
 	}
 	return value
-}
-
-type executionNotStartedError struct {
-	AttemptID string
-	NodeID    string
-	Reason    string
-}
-
-func (e *executionNotStartedError) Error() string {
-	if strings.TrimSpace(e.Reason) == "" {
-		return fmt.Sprintf("execution did not start for node=%s attempt=%s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
-	}
-	return fmt.Sprintf("execution did not start for node=%s attempt=%s: %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID), strings.TrimSpace(e.Reason))
 }

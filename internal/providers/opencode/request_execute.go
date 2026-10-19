@@ -12,8 +12,13 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/providers/opencode/protocol"
 )
+
+// promptSendLimit bounds how long Execute keeps retrying to hand the prompt to
+// the server; past it the server is not serving this request.
+const promptSendLimit = 30 * time.Second
 
 // stopCause records why Execute interrupted a request, if it did.
 type stopCause int
@@ -75,7 +80,7 @@ func (e *execution) bounded(ctx context.Context) (context.Context, context.Cance
 	return context.WithTimeout(context.WithoutCancel(ctx), e.service.requests.settleLimit)
 }
 
-func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
+func (e *execution) execute(ctx context.Context) (response ExecuteResponse, err error) {
 	runtime := e.service.requests
 	authority := runtime.authority
 	defer func() {
@@ -84,14 +89,15 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 		if err := retireProfile(retire, e.client(), e.request.directory, e.request.profile.id); err != nil {
 			slog.Warn("OpenCode profile retirement deferred", "profile_id", e.request.profile.id, "error", err)
 		}
-		if !e.req.KeepSession {
+		// Only a session that ended in a proven success can be continued.
+		if !e.req.KeepSession || err != nil || response.Outcome.State != "success" {
 			e.capture().release(e.identity().SessionID)
 		}
 	}()
 
 	prompt, err := e.prompt(ctx)
 	if err != nil {
-		return e.abandonUndispatched(ctx, err)
+		return e.abandon(ctx, err)
 	}
 	if e.req.OnProcessGuardOwnership != nil {
 		registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnProcessGuardOwnership, quiescence: e.req.OnProcessGuardQuiescence}
@@ -102,10 +108,10 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	}
 
 	if e.stopRequested() {
-		return e.abandonUndispatched(ctx, context.Canceled)
+		return e.abandon(ctx, context.Canceled)
 	}
 	if err := authority.IssueDispatch(ctx, e.identity()); err != nil {
-		return e.abandonUndispatched(ctx, err)
+		return e.abandon(ctx, err)
 	}
 	feed, err := e.capture().follow(e.identity().SessionID)
 	if err != nil {
@@ -116,7 +122,17 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	defer feed.close()
 
 	if err := e.sendPrompt(ctx, prompt); err != nil {
-		return ExecuteResponse{}, errors.Join(fmt.Errorf("send OpenCode prompt: %w", err), e.stopBounded(ctx))
+		// Whether the server received the prompt is unknown, but fencing the
+		// request first means nothing it does can change the workspace, so the
+		// request can be abandoned once its admitted effects have closed.
+		cause := fmt.Errorf("send OpenCode prompt: %w", err)
+		if stopErr := e.stopBounded(ctx); stopErr != nil {
+			return ExecuteResponse{}, errors.Join(cause, stopErr)
+		}
+		if e.stopRequested() {
+			cause = errors.Join(cause, context.Canceled)
+		}
+		return e.abandon(ctx, cause)
 	}
 	invokedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	if e.req.OnProviderSession != nil {
@@ -133,9 +149,11 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	return e.finalize(settle, invokedAt)
 }
 
-// abandonUndispatched closes a request that ended before its prompt was sent.
-// Nothing reached the provider, so abandoning it is proof enough to settle.
-func (e *execution) abandonUndispatched(ctx context.Context, cause error) (ExecuteResponse, error) {
+// abandon closes a request that ended without an answer Kingdom can prove, and
+// returns the abandoned terminal so the attempt can settle. The caller has
+// either sent nothing or has already fenced admission, and abandonment itself
+// succeeds only once every admitted effect is closed.
+func (e *execution) abandon(ctx context.Context, cause error) (ExecuteResponse, error) {
 	fence, cancel := e.bounded(ctx)
 	defer cancel()
 	if err := e.service.requests.authority.Abandon(fence, e.identity()); err != nil {
@@ -146,7 +164,7 @@ func (e *execution) abandonUndispatched(ctx context.Context, cause error) (Execu
 		return ExecuteResponse{}, errors.Join(cause, err)
 	}
 	outcome := ExecutionOutcome{State: "failed", ReasonCode: string(providerexecution.CanonicalProviderErrorCode("", "", 0)), FailureText: cause.Error(), EvidenceSource: "request"}
-	if errors.Is(cause, context.Canceled) {
+	if errors.Is(cause, context.Canceled) || errors.Is(cause, providerrequest.ErrDispatchClosed) {
 		observation.Cancelled = true
 		outcome = ExecutionOutcome{State: "cancelled", ReasonCode: "provider_cancelled", EvidenceSource: "request"}
 	}
@@ -156,11 +174,21 @@ func (e *execution) abandonUndispatched(ctx context.Context, cause error) (Execu
 	}, cause
 }
 
-// sendPrompt retries transport failures. The server dedupes a prompt by its
-// message ID, so repeating an admitted prompt cannot send the work twice.
+// sendPrompt retries transport failures for a bounded time. The server dedupes a
+// prompt by its message ID, so repeating an admitted prompt cannot send the work
+// twice. A stop request ends the retries at once.
 func (e *execution) sendPrompt(ctx context.Context, text string) error {
-	return retryTransient(ctx, func() error {
-		return e.client().Prompt(ctx, e.request.directory, e.identity().SessionID, e.identity().RequestID, text)
+	sendCtx, cancel := context.WithTimeout(ctx, promptSendLimit)
+	defer cancel()
+	go func() {
+		select {
+		case <-e.request.stop:
+			cancel()
+		case <-sendCtx.Done():
+		}
+	}()
+	return retryTransient(sendCtx, func() error {
+		return e.client().Prompt(sendCtx, e.request.directory, e.identity().SessionID, e.identity().RequestID, text)
 	})
 }
 

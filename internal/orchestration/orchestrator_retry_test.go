@@ -40,7 +40,6 @@ func TestClassifyExecutionReasonCodeUsesCanonicalTerminalCodes(t *testing.T) {
 	}{
 		{name: "invalid validation response", err: &invalidValidationVerdictError{reason: "missing verdict"}, want: "llm_invalid_response"},
 		{name: "invalid review response", err: &invalidExecutionReviewVerdictError{reason: "missing verdict"}, want: "llm_invalid_response"},
-		{name: "pre-observation timeout", err: &executionNotStartedError{AttemptID: "attempt_1", NodeID: "node_1"}, want: "timeout"},
 		{name: "setup handoff failure", err: errors.New("provider terminal handoff failed"), want: "internal_error"},
 	}
 	for _, tt := range tests {

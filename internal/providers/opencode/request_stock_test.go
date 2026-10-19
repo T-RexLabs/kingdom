@@ -613,3 +613,25 @@ func TestStockCommandOutsideTheWorkspaceIsRefusedWithTheDirectoryToUse(t *testin
 		t.Fatalf("the refusal must name the directory to use, got %q", refusals)
 	}
 }
+
+func TestStockRequestWhoseAdmissionClosedBeforeDispatchSettlesAsCancelled(t *testing.T) {
+	h := newStockHarness(t)
+	req := h.planningRequest("inv-race", "op-race", "TEXT:never sent")
+	h.planningOwner("session-race", "op-race", "inv-race")
+	prepared, err := h.service.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bindPlanning(prepared, "op-race", "inv-race")
+	// An operator cancellation closes admission before it publishes the stop.
+	if err := providerrequest.NewAuthority(h.db, nil).CloseAdmission(context.Background(), prepared.Identity); err != nil {
+		t.Fatal(err)
+	}
+	response, err := h.service.Execute(context.Background(), req)
+	if err == nil || response.Outcome.State != "cancelled" || !response.StreamObservation.Cancelled {
+		t.Fatalf("a dispatch closed by cancellation must settle as cancelled: err=%v outcome=%#v", err, response.Outcome)
+	}
+	if err := response.StreamObservation.ReleaseContent(); err != nil {
+		t.Fatal(err)
+	}
+}

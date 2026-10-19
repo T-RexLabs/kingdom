@@ -208,14 +208,6 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 	reasonCode := "timeout"
 	reasonText := "node attempt exceeded node wall-clock timeout"
 	errorText := "node timeout exceeded"
-	if executionNeverStarted(cancelDiagnostics) {
-		reasonText = "node execution never started before wall-clock timeout"
-		errorText = (&executionNotStartedError{
-			AttemptID: attemptID,
-			NodeID:    attempt.NodeID,
-			Reason:    "provider execution never became observable before timeout",
-		}).Error()
-	}
 
 	diagnosticsRaw, err := json.Marshal(map[string]any{
 		"reason_code":           reasonCode,
@@ -281,10 +273,6 @@ func timeoutEnforcementSkipsDurableState(state string) bool {
 	}
 }
 
-func executionNeverStarted(cancelDiagnostics map[string]any) bool {
-	return strings.TrimSpace(fmt.Sprint(cancelDiagnostics["result"])) == "attempt_not_found"
-}
-
 func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID, occurredAt string) (map[string]any, error) {
 	request := opencode.CancelRequest{
 		SessionID:  o.preferredAttemptSessionID(ctx, attemptID),
@@ -305,6 +293,13 @@ func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID
 	err := o.provider.Cancel(graceCtx, request)
 	if err == nil {
 		diagnostics["result"] = "grace_success"
+		return diagnostics, nil
+	}
+	var notFound *opencode.AttemptNotFoundError
+	if errors.As(err, &notFound) {
+		// The request has left the provider: its worker has returned and is
+		// settling it, so there is nothing left to interrupt.
+		diagnostics["result"] = "no_live_request"
 		return diagnostics, nil
 	}
 

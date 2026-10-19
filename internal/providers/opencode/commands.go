@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -197,7 +198,7 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 	}
 	ordinal := int(claim.Ordinal)
 	started := time.Now().UTC().Format(time.RFC3339Nano)
-	handle, err := b.runner.Start(ctx, processguardian.Command{Path: "/bin/sh", Args: []string{"-c", in.Command}, Dir: registration.workspace, Env: b.env}, func(ctx context.Context, ownership processguardian.Ownership) error {
+	handle, err := b.runner.Start(ctx, shellCommand(in.Command, registration.workspace, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
 		return registration.ownership(ctx, ProcessGuardOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
 	})
 	var result processguardian.Result
@@ -235,6 +236,14 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 		call.resolved = true
 	}
 	call.err = err
+}
+
+// shellCommand runs the model's command line with the platform shell.
+func shellCommand(line, directory string, env []string) processguardian.Command {
+	if runtime.GOOS == "windows" {
+		return processguardian.Command{Path: "cmd.exe", Args: []string{"/C", line}, Dir: directory, Env: env}
+	}
+	return processguardian.Command{Path: "/bin/sh", Args: []string{"-c", line}, Dir: directory, Env: env}
 }
 
 // superviseCommand drains bounded output and cancels the command tree when its

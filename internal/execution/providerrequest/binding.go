@@ -44,6 +44,10 @@ type Reader interface {
 
 var ErrResourcesOpen = errors.New("provider request resources remain open")
 
+// ErrDispatchClosed reports a dispatch that admission closing, for example an
+// operator cancellation, got to first, or that was already issued.
+var ErrDispatchClosed = errors.New("provider dispatch is closed or already issued")
+
 const selectBinding = `SELECT binding_id,run_invocation_id,planning_invocation_id,instance_id,generation,location,provider_session_id,profile_id,request_id,logical_session_id,lease_owner,lease_version,COALESCE(dispatch_issued_at,''),COALESCE(admission_closed_at,''),terminal_sha256,terminal_size_bytes FROM provider_requests`
 
 func Get(ctx context.Context, q Reader, id string) (Binding, error) {
@@ -143,7 +147,7 @@ func IssueDispatchTx(ctx context.Context, tx *sql.Tx, id string, identity provid
 		return err
 	}
 	if b.AdmissionClosedAt != "" || b.DispatchIssuedAt != "" {
-		return fmt.Errorf("provider dispatch is closed or already issued")
+		return ErrDispatchClosed
 	}
 	if err := RequireOwnerTx(ctx, tx, id, lease, now); err != nil {
 		return err

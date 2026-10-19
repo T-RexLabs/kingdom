@@ -137,6 +137,11 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 	if err := awaitPlugin(ctx, started.client, directory); err != nil {
 		return Prepared{}, err
 	}
+	// A location can carry its own configuration, and a formatter that is on
+	// there would change files outside Kingdom's tool admission.
+	if err := started.client.ValidateConfiguration(ctx, directory); err != nil {
+		return Prepared{}, err
+	}
 	generation, err := registerProfile(ctx, started.client, directory, started.instanceID, p)
 	if err != nil {
 		return Prepared{}, err
