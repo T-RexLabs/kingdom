@@ -132,6 +132,11 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 	if err != nil {
 		return Prepared{}, err
 	}
+	// Each location loads its own plugin instance, so a location the server has
+	// not served before must finish loading before its profile can be registered.
+	if err := awaitPlugin(ctx, started.client, directory); err != nil {
+		return Prepared{}, err
+	}
 	generation, err := registerProfile(ctx, started.client, directory, started.instanceID, p)
 	if err != nil {
 		return Prepared{}, err

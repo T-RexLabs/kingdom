@@ -25,16 +25,19 @@ type fakeModelCall struct {
 	Tools    []string
 	System   []string
 	LastUser string
-	Messages int
+	// ToolResults holds the content of every tool result the model was shown.
+	ToolResults []string
+	Messages    int
 }
 
 var (
-	fakeText   = regexp.MustCompile(`TEXT:(\S+)`)
-	fakeWrite  = regexp.MustCompile(`WRITE:(\S+)`)
-	fakeSleep  = regexp.MustCompile(`SLEEP:(\d+)`)
-	fakeFinish = regexp.MustCompile(`FINISH:(\S+)`)
-	fakeShell  = regexp.MustCompile(`SHELL64:(\S+)`)
-	fakeTool   = regexp.MustCompile(`TOOL:(\w+)`)
+	fakeText    = regexp.MustCompile(`TEXT:(\S+)`)
+	fakeWrite   = regexp.MustCompile(`WRITE:(\S+)`)
+	fakeSleep   = regexp.MustCompile(`SLEEP:(\d+)`)
+	fakeFinish  = regexp.MustCompile(`FINISH:(\S+)`)
+	fakeShell   = regexp.MustCompile(`SHELL64:(\S+)`)
+	fakeWorkdir = regexp.MustCompile(`WORKDIR:(\S+)`)
+	fakeTool    = regexp.MustCompile(`TOOL:(\w+)`)
 )
 
 func newFakeModel(t *testing.T) *fakeModel {
@@ -96,6 +99,7 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		case "user":
 			call.LastUser = fakeMessageText(message)
 		case "tool":
+			call.ToolResults = append(call.ToolResults, fakeMessageText(message))
 			if id, ok := message["tool_call_id"].(string); ok {
 				toolResults[id] = true
 			}
@@ -128,7 +132,11 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if shell := fakeShell.FindStringSubmatch(call.LastUser); shell != nil && !toolResults["call_shell"] {
 		command, _ := base64.StdEncoding.DecodeString(shell[1])
-		arguments, _ := json.Marshal(map[string]any{"command": string(command), "timeout": 20000, "description": "fixture command"})
+		input := map[string]any{"command": string(command), "timeout": 20000, "description": "fixture command"}
+		if workdir := fakeWorkdir.FindStringSubmatch(call.LastUser); workdir != nil {
+			input["workdir"] = workdir[1]
+		}
+		arguments, _ := json.Marshal(input)
 		chunks = []map[string]any{
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_shell", "type": "function", "function": map[string]any{"name": "shell", "arguments": string(arguments)}}}}}}},
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},

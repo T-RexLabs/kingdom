@@ -5,13 +5,17 @@ import crypto from "node:crypto"
 import fs from "node:fs/promises"
 import path from "node:path"
 
-const authority = process.env.KINGDOM_AUTHORITY_URL
-const token = process.env.KINGDOM_AUTHORITY_TOKEN
-const instanceID = process.env.KINGDOM_INSTANCE_ID
-const outbox = process.env.KINGDOM_OUTBOX_DIR
-// Tool processes inherit the server environment, so the credential must not
-// outlive this read.
-for (const name of ["KINGDOM_AUTHORITY_URL", "KINGDOM_AUTHORITY_TOKEN", "KINGDOM_INSTANCE_ID", "KINGDOM_OUTBOX_DIR"]) delete process.env[name]
+// The server evaluates this module once per location, but tool processes
+// inherit the server environment, so the credential is read once, removed from
+// the environment, and kept for the later locations.
+const CONFIGURATION = Symbol.for("kingdom.runtime.configuration")
+const NAMES = ["KINGDOM_AUTHORITY_URL", "KINGDOM_AUTHORITY_TOKEN", "KINGDOM_INSTANCE_ID", "KINGDOM_OUTBOX_DIR"]
+globalThis[CONFIGURATION] ??= (() => {
+  const values = NAMES.map((name) => process.env[name])
+  for (const name of NAMES) delete process.env[name]
+  return values
+})()
+const [authority, token, instanceID, outbox] = globalThis[CONFIGURATION]
 
 const NATIVE_TOOLS = ["write", "edit", "patch", "read", "glob", "grep"]
 const RECEIPT_ATTEMPTS = 3
@@ -186,7 +190,9 @@ export default {
           }
           refuseRetired(context)
           if (input.background) throw new Error("Managed background commands are not supported")
-          if (input.workdir && path.resolve(location, input.workdir) !== location) throw new Error("A managed command must run in its workspace root")
+          if (input.workdir && path.resolve(location, input.workdir) !== location) {
+            throw new Error("A managed command must run in its workspace root " + location + ". Omit workdir or set it to that directory.")
+          }
           await ctx.permission.assert({
             sessionID: context.sessionID,
             agent: context.agent,

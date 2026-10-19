@@ -5,25 +5,20 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+
+	"kingdom/internal/sqlitex"
 )
 
 func (s *PlanningStore) AppendOperationEvent(ctx context.Context, req AppendPlanningOperationEventRequest) (PlanningOperationEvent, error) {
 	if err := validatePlanningOperationEventAppend(req); err != nil {
 		return PlanningOperationEvent{}, err
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return PlanningOperationEvent{}, err
-	}
-	defer tx.Rollback()
-	event, err := insertPlanningOperationEvent(ctx, tx, req)
-	if err != nil {
-		return PlanningOperationEvent{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return PlanningOperationEvent{}, err
-	}
-	return event, nil
+	var event PlanningOperationEvent
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) (err error) {
+		event, err = insertPlanningOperationEvent(ctx, tx, req)
+		return err
+	}, sqlitex.Options{})
+	return event, err
 }
 
 func insertPlanningOperationEvent(ctx context.Context, exec sqlExecutor, req AppendPlanningOperationEventRequest) (PlanningOperationEvent, error) {

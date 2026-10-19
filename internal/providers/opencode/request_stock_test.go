@@ -5,10 +5,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -517,5 +519,97 @@ func TestStockRequestCancelledBeforeDispatchIsAbandonedAndSettleable(t *testing.
 	}
 	if err := observation.ReleaseContent(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestStockConcurrentRequestsRunInTheirOwnWorkspaces(t *testing.T) {
+	h := newStockHarness(t)
+	const requests = 4
+	directories := make([]string, requests)
+	prepared := make([]Prepared, requests)
+	reqs := make([]ExecuteRequest, requests)
+	for i := range directories {
+		directory, err := filepath.EvalSymlinks(t.TempDir())
+		if err != nil {
+			t.Fatal(err)
+		}
+		directories[i] = directory
+		attempt, invocation := fmt.Sprintf("attempt-%d", i), fmt.Sprintf("inv-%d", i)
+		h.runOwner(attempt, invocation)
+		reqs[i] = h.builderRequest(invocation, attempt, "WRITE:created.txt")
+		reqs[i].WorkspacePath = directory
+	}
+	var wg sync.WaitGroup
+	errs := make([]error, requests)
+	for i := range reqs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			var err error
+			if prepared[i], err = h.service.Prepare(context.Background(), reqs[i]); err != nil {
+				errs[i] = err
+			}
+		}()
+	}
+	wg.Wait()
+	for i := range reqs {
+		if errs[i] != nil {
+			t.Fatalf("prepare in a workspace other than the server's: %v", errs[i])
+		}
+		h.bindRun(prepared[i], fmt.Sprintf("attempt-%d", i), fmt.Sprintf("inv-%d", i))
+	}
+	for i := range reqs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = h.service.Execute(context.Background(), reqs[i])
+		}()
+	}
+	wg.Wait()
+	for i, directory := range directories {
+		if errs[i] != nil {
+			t.Fatalf("execute %d: %v", i, errs[i])
+		}
+		if raw, err := os.ReadFile(filepath.Join(directory, "created.txt")); err != nil || string(raw) != "hello\n" {
+			t.Fatalf("workspace %d did not receive its own write: %q %v", i, raw, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(h.workspace, "created.txt")); err == nil {
+		t.Fatal("a request wrote outside its own workspace")
+	}
+}
+
+func TestStockCommandOutsideTheWorkspaceIsRefusedWithTheDirectoryToUse(t *testing.T) {
+	h := newStockHarness(t)
+	h.runOwner("attempt-wd", "inv-wd")
+	command := "touch escaped.txt"
+	elsewhere := t.TempDir()
+	req := h.builderRequest("inv-wd", "attempt-wd", "SHELL64:"+base64.StdEncoding.EncodeToString([]byte(command))+" WORKDIR:"+elsewhere)
+	h.guardianRecorder(&req, "attempt-wd", "inv-wd")
+	prepared, err := h.service.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bindRun(prepared, "attempt-wd", "inv-wd")
+	if _, err := h.service.Execute(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(elsewhere, "escaped.txt")); statErr == nil {
+		t.Fatal("a command ran outside its workspace")
+	}
+	var claims int
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_command_calls`).Scan(&claims); err != nil || claims != 0 {
+		t.Fatalf("a refused command was claimed: %d %v", claims, err)
+	}
+	var refusals []string
+	for _, call := range h.model.Calls() {
+		for _, result := range call.ToolResults {
+			if strings.Contains(result, "must run in its workspace root") {
+				refusals = append(refusals, result)
+			}
+		}
+	}
+	if len(refusals) == 0 || !strings.Contains(refusals[0], h.workspace) {
+		t.Fatalf("the refusal must name the directory to use, got %q", refusals)
 	}
 }
