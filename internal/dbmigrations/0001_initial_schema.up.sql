@@ -565,14 +565,12 @@ ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocati
 
 CREATE TABLE provider_process_guards (
   guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
-  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_order_attempt', 'planning_operation')),
+  owner_kind TEXT NOT NULL CHECK (owner_kind = 'work_order_attempt'),
   owner_id TEXT NOT NULL CHECK (TRIM(owner_id) <> ''),
   provider_invocation_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL DEFAULT '',
   run_id TEXT NOT NULL DEFAULT '',
   node_run_id TEXT NOT NULL DEFAULT '',
-  planning_operation_id TEXT NOT NULL DEFAULT '',
-  planning_session_id TEXT NOT NULL DEFAULT '',
   command_ordinal INTEGER NOT NULL CHECK (command_ordinal >= 1),
   lifecycle TEXT NOT NULL CHECK (lifecycle IN ('acknowledged', 'quiescent')),
   platform TEXT NOT NULL CHECK (platform IN ('unix_process_group', 'windows_job_object')),
@@ -601,11 +599,7 @@ CREATE TABLE provider_process_guards (
   evidence_cleaned_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK (
-    (owner_kind = 'work_order_attempt' AND owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> '' AND planning_operation_id = '' AND planning_session_id = '')
-    OR
-    (owner_kind = 'planning_operation' AND owner_id = planning_operation_id AND planning_operation_id <> '' AND planning_session_id <> '' AND attempt_id = '' AND run_id = '' AND node_run_id = '')
-  ),
+  CHECK (owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> ''),
   CHECK (
     (lifecycle = 'acknowledged' AND quiescent_at IS NULL AND quiescence_evidence_sha256 = '')
     OR
@@ -1290,7 +1284,6 @@ CREATE TABLE planning_provider_invocations (
   provider_session_id TEXT NOT NULL DEFAULT '',
   invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded')),
   completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
-  process_guard_required INTEGER NOT NULL DEFAULT 0 CHECK (process_guard_required IN (0, 1)),
   opened_at TEXT,
   settled_at TEXT,
   failure_reason_code TEXT NOT NULL DEFAULT '',

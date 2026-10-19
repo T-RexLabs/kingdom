@@ -134,7 +134,6 @@ type FinalizePlanningProviderSettlementRequest struct {
 	FailureReasonCode            string
 	FailureReasonText            string
 	SettledAt                    string
-	RequiresProcessGuard         bool
 }
 
 type planningProviderSettlementError struct {
@@ -400,21 +399,6 @@ func (s *PlanningStore) GetPlanningProviderInvocation(ctx context.Context, plann
 	return getPlanningProviderInvocation(ctx, s.db, planningProviderInvocationID)
 }
 
-func (s *PlanningStore) RequirePlanningProviderProcessGuard(ctx context.Context, invocationID, operationID string) error {
-	result, err := s.db.ExecContext(ctx, `UPDATE planning_provider_invocations SET process_guard_required = 1 WHERE planning_provider_invocation_id = ? AND planning_operation_id = ? AND invocation_state IN ('issued','open')`, strings.TrimSpace(invocationID), strings.TrimSpace(operationID))
-	if err != nil {
-		return err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if rows != 1 {
-		return fmt.Errorf("require planning provider process guard: invocation authority conflict")
-	}
-	return nil
-}
-
 func (s *PlanningStore) GetLatestReusablePlanningProviderInvocation(ctx context.Context, logicalSessionID string) (PlanningProviderInvocation, bool, error) {
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, false, fmt.Errorf("planning store database is required")
@@ -532,17 +516,6 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 		if observationErr != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || !textMatches {
 			return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
-	}
-	var invocationGuardRequired bool
-	if err := tx.QueryRowContext(ctx, `SELECT process_guard_required FROM planning_provider_invocations WHERE planning_provider_invocation_id = ?`, invocation.PlanningProviderInvocationID).Scan(&invocationGuardRequired); err != nil {
-		return "", err
-	}
-	var guardTotal, guardUnresolved int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0) FROM provider_process_guards WHERE owner_kind = 'planning_operation' AND provider_invocation_id = ? AND planning_operation_id = ?`, invocation.PlanningProviderInvocationID, invocation.PlanningOperationID).Scan(&guardTotal, &guardUnresolved); err != nil {
-		return "", err
-	}
-	if guardUnresolved != 0 || (!requestBound && (invocationGuardRequired || normalized.RequiresProcessGuard) && guardTotal == 0 && normalized.Outcome == PlanningProviderCompletionOutcomeSuccess) {
-		return "", planningProviderError("finalize_planning_provider_settlement", "provider_process_guard_not_quiescent", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 	}
 	primaryEvidenceID := normalized.PrimaryEvidenceID
 	if normalized.PrimaryEvidencePayloadJSON != "" {
@@ -942,7 +915,6 @@ func normalizeFinalizePlanningProviderSettlementRequest(req FinalizePlanningProv
 		FailureReasonCode:            strings.TrimSpace(req.FailureReasonCode),
 		FailureReasonText:            strings.TrimSpace(req.FailureReasonText),
 		SettledAt:                    strings.TrimSpace(req.SettledAt),
-		RequiresProcessGuard:         req.RequiresProcessGuard,
 	}
 	if normalized.SettlementID == "" || normalized.PlanningProviderInvocationID == "" || normalized.PrimaryEvidenceID == "" {
 		return FinalizePlanningProviderSettlementRequest{}, fmt.Errorf("planning provider settlement id, invocation id, and primary evidence id are required")

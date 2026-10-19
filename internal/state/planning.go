@@ -428,9 +428,8 @@ type FinalizeGenerateTitleAbortRequest struct {
 }
 
 type PlanningStore struct {
-	db                      *sql.DB
-	processGuardRuntimeRoot string
-	leaseClock              func() time.Time
+	db         *sql.DB
+	leaseClock func() time.Time
 }
 
 // SetLeaseClock sets the clock that judges whether an operation lease is still
@@ -447,12 +446,6 @@ func (s *PlanningStore) leaseNow() time.Time {
 		return s.leaseClock().UTC()
 	}
 	return time.Now().UTC()
-}
-
-func (s *PlanningStore) SetProcessGuardRuntimeRoot(root string) {
-	if s != nil {
-		s.processGuardRuntimeRoot = strings.TrimSpace(root)
-	}
 }
 
 type sqlExecutor interface {

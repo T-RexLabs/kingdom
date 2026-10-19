@@ -33,12 +33,8 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 		return err
 	}
 	lineage, args := guardLineage(b, owner)
-	kind := "work_order_attempt"
-	if b.Owner.Kind == OwnerPlanning {
-		kind = "planning_operation"
-	}
-	queryArgs := append([]any{b.Owner.InvocationID, kind}, args...)
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_process_guards g WHERE g.provider_invocation_id=? AND g.owner_kind=? AND NOT (`+lineage+` AND g.lifecycle='quiescent' AND g.quiescent_at IS NOT NULL AND g.quiescence_evidence_sha256<>'')`, queryArgs...).Scan(&pending); err != nil {
+	queryArgs := append([]any{b.Owner.InvocationID}, args...)
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_process_guards g WHERE g.provider_invocation_id=? AND NOT (`+lineage+` AND g.lifecycle='quiescent' AND g.quiescent_at IS NOT NULL AND g.quiescence_evidence_sha256<>'')`, queryArgs...).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 0 {
@@ -51,7 +47,7 @@ func RequireResourcesClosedTx(ctx context.Context, q Reader, id string) error {
 	if pending != 0 {
 		return fmt.Errorf("%w: command completion lacks exact guardian closure", ErrResourcesOpen)
 	}
-	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_process_guards g WHERE g.provider_invocation_id=? AND g.owner_kind=? AND NOT EXISTS (SELECT 1 FROM provider_command_calls c WHERE c.binding_id=? AND c.guard_id=g.guard_id AND c.command_ordinal=g.command_ordinal)`, b.Owner.InvocationID, kind, id).Scan(&pending); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT count(*) FROM provider_process_guards g WHERE g.provider_invocation_id=? AND NOT EXISTS (SELECT 1 FROM provider_command_calls c WHERE c.binding_id=? AND c.guard_id=g.guard_id AND c.command_ordinal=g.command_ordinal)`, b.Owner.InvocationID, id).Scan(&pending); err != nil {
 		return err
 	}
 	if pending != 0 {

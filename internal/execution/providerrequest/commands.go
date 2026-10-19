@@ -25,6 +25,9 @@ func ClaimCommandTx(ctx context.Context, tx *sql.Tx, call NativeCall, now time.T
 	if err != nil {
 		return claim, err
 	}
+	if b.Owner.Kind != OwnerRun {
+		return claim, fmt.Errorf("only run requests may claim managed commands")
+	}
 	input, digest, err := callDigest(b, call)
 	if err != nil {
 		return claim, err

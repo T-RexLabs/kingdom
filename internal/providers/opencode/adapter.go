@@ -97,6 +97,8 @@ type ExecuteRequest struct {
 	// OnProcessGuardOwnership durably records guardian ownership before the
 	// provider launch gate is released. The raw quiescence capability is limited
 	// to this orchestration callback and is never included in diagnostics.
+	// Both guardian callbacks are set together, and only for requests whose
+	// profile may run commands; a request without them refuses every command.
 	OnProcessGuardOwnership func(context.Context, ProcessGuardOwnership) error `json:"-"`
 
 	// OnProcessGuardQuiescence records the guardian's terminal proof after the

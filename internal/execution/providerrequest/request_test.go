@@ -341,7 +341,7 @@ func TestNativeSchemaRejectsPartialReceiptAndTerminalReference(t *testing.T) {
 	}
 }
 func TestCommandReplayAndGuardianLineage(t *testing.T) {
-	db, b, now := fixture(t, OwnerPlanning)
+	db, b, now := fixture(t, OwnerRun)
 	bind(t, db, b, now)
 	dispatch(t, db, b, now)
 	ctx := context.Background()
@@ -366,11 +366,11 @@ func TestCommandReplayAndGuardianLineage(t *testing.T) {
 		t.Fatal("changed command input accepted")
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,planning_operation_id,planning_session_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','planning_operation','operation','inv','operation','foreign-plan',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
+	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','work_order_attempt','attempt','inv','attempt','foreign-run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
 	if err := transaction(t, db, func(tx *sql.Tx) error { return CompleteCommandTx(ctx, tx, claim.ID, claim.Digest, "guard", now) }); err == nil {
-		t.Fatal("foreign planning session guardian accepted")
+		t.Fatal("foreign run guardian accepted")
 	}
-	execSQL(t, db, `UPDATE provider_process_guards SET planning_session_id='plan' WHERE guard_id='guard'`)
+	execSQL(t, db, `UPDATE provider_process_guards SET run_id='run' WHERE guard_id='guard'`)
 	if err := transaction(t, db, func(tx *sql.Tx) error { return CompleteCommandTx(ctx, tx, claim.ID, claim.Digest, "guard", now) }); err != nil {
 		t.Fatal(err)
 	}
@@ -379,9 +379,20 @@ func TestCommandReplayAndGuardianLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An extra quiescent guard still lacks its admitted command identity.
-	execSQL(t, db, `INSERT INTO provider_process_guards SELECT 'orphan',owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,planning_operation_id,planning_session_id,2,lifecycle,platform,guardian_pid,guardian_identity_token,child_pid,child_identity_token,tree_id,tree_identity_token,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,termination_requested_at,exited_at,quiescent_at,exit_code,exit_signal,termination_forced,failure_code,failure_text,quiescence_evidence_sha256,quiescence_evidence_json,quiescence_evidence_lost_at,evidence_cleaned_at,created_at,updated_at FROM provider_process_guards WHERE guard_id='guard'`)
+	execSQL(t, db, `INSERT INTO provider_process_guards SELECT 'orphan',owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,2,lifecycle,platform,guardian_pid,guardian_identity_token,child_pid,child_identity_token,tree_id,tree_identity_token,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,termination_requested_at,exited_at,quiescent_at,exit_code,exit_signal,termination_forced,failure_code,failure_text,quiescence_evidence_sha256,quiescence_evidence_json,quiescence_evidence_lost_at,evidence_cleaned_at,created_at,updated_at FROM provider_process_guards WHERE guard_id='guard'`)
 	if err := RequireResourcesClosedTx(ctx, db, b.ID); err == nil {
 		t.Fatal("unclaimed guardian accepted as closed")
+	}
+}
+
+func TestPlanningRequestsCannotClaimManagedCommands(t *testing.T) {
+	db, b, now := fixture(t, OwnerPlanning)
+	bind(t, db, b, now)
+	dispatch(t, db, b, now)
+	call := native(b)
+	call.Tool = "shell"
+	if err := transaction(t, db, func(tx *sql.Tx) error { _, err := ClaimCommandTx(context.Background(), tx, call, now); return err }); err == nil {
+		t.Fatal("planning request claimed a managed command")
 	}
 }
 

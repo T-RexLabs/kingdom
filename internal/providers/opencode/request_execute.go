@@ -36,8 +36,8 @@ func (s *Service) Execute(ctx context.Context, req ExecuteRequest) (ExecuteRespo
 	if prepared == nil {
 		return ExecuteResponse{}, fmt.Errorf("provider invocation %s was not prepared", req.InvocationID)
 	}
-	if req.OnProcessGuardOwnership == nil || req.OnProcessGuardQuiescence == nil {
-		return ExecuteResponse{}, fmt.Errorf("command guardian callbacks are required")
+	if (req.OnProcessGuardOwnership == nil) != (req.OnProcessGuardQuiescence == nil) {
+		return ExecuteResponse{}, fmt.Errorf("command guardian callbacks must be set together")
 	}
 	prepared.mu.Lock()
 	if prepared.executing {
@@ -93,11 +93,13 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	if err != nil {
 		return e.abandonUndispatched(ctx, err)
 	}
-	registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnProcessGuardOwnership, quiescence: e.req.OnProcessGuardQuiescence}
-	if err := runtime.commands.register(e.identity(), registration); err != nil {
-		return ExecuteResponse{}, err
+	if e.req.OnProcessGuardOwnership != nil {
+		registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnProcessGuardOwnership, quiescence: e.req.OnProcessGuardQuiescence}
+		if err := runtime.commands.register(e.identity(), registration); err != nil {
+			return ExecuteResponse{}, err
+		}
+		defer runtime.commands.unregister(e.identity())
 	}
-	defer runtime.commands.unregister(e.identity())
 
 	if e.stopRequested() {
 		return e.abandonUndispatched(ctx, context.Canceled)

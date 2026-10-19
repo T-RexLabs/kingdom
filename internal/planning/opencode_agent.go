@@ -193,18 +193,6 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		StreamInactivityTimeout: a.limits.inactivity,
 		OpenPrompt:              bootstrap.Open,
 		OnProgress:              onChunk,
-		OnProcessGuardOwnership: func(ctx context.Context, guard opencode.ProcessGuardOwnership) error {
-			if providerInvocation.OnProcessGuardOwnership == nil {
-				return fmt.Errorf("planning process guard ownership callback is required")
-			}
-			return providerInvocation.OnProcessGuardOwnership(ctx, guard)
-		},
-		OnProcessGuardQuiescence: func(ctx context.Context, guard opencode.ProcessGuardQuiescence) error {
-			if providerInvocation.OnProcessGuardQuiescence == nil {
-				return fmt.Errorf("planning process guard quiescence callback is required")
-			}
-			return providerInvocation.OnProcessGuardQuiescence(ctx, guard)
-		},
 		OnActivity: func(observation opencode.ExecuteActivityObservation) {
 			if providerInvocation.OnActivity != nil {
 				providerInvocation.OnActivity(observation)

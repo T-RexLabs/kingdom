@@ -72,21 +72,11 @@ func newStockHarness(t *testing.T) *stockHarness {
 	return h
 }
 
-func noGuardians(req *ExecuteRequest) {
-	req.OnProcessGuardOwnership = func(context.Context, ProcessGuardOwnership) error {
-		return errors.New("unexpected command guardian")
-	}
-	req.OnProcessGuardQuiescence = func(context.Context, ProcessGuardQuiescence) error {
-		return errors.New("unexpected command guardian")
-	}
-}
-
 func (h *stockHarness) planningRequest(invocation, operation, prompt string) ExecuteRequest {
 	req := ExecuteRequest{
 		InvocationID: invocation, AttemptID: operation, WorkspacePath: h.workspace, Model: "fixture/scripted", Agent: "planning-assistant",
 		System: "PINNED SYSTEM " + invocation, Prompt: prompt, FirstEventTimeout: 30 * time.Second, StreamInactivityTimeout: 30 * time.Second,
 	}
-	noGuardians(&req)
 	return req
 }
 

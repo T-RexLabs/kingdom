@@ -203,7 +203,6 @@ func TestPlanningProviderRequestSettlementRequiresStoredTerminalForEveryOutcome(
 			}
 			request := streamObservationSuccessSettlementRequest("Provider request output.", `{}`)
 			request.Outcome = outcome
-			request.RequiresProcessGuard = true // V1 transport requirement grants no request closure.
 			setPlanningRequestObservation(t, request, planningRequestObservation(t, request))
 			tx, err := store.db.BeginTx(context.Background(), nil)
 			if err != nil {

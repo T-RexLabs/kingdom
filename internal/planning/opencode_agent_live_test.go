@@ -53,7 +53,7 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 	var egressCalls atomic.Int32
 	canary := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { egressCalls.Add(1) }))
 	defer canary.Close()
-	agent, invocation := newLiveGuardedPlannerAgent(t, binary, projectRoot, "live-security-attempt")
+	agent, invocation := newLivePlannerAgent(t, binary, projectRoot, "live-security-attempt")
 	var toolActivities atomic.Int32
 	invocation.OnActivity = func(activity ProviderActivity) {
 		if activity.Kind == "tool" {
@@ -115,7 +115,7 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agent, invocation := newLiveGuardedPlannerAgent(t, binary, projectRoot, "live-capability-attempt")
+	agent, invocation := newLivePlannerAgent(t, binary, projectRoot, "live-capability-attempt")
 	var toolActivities livePlannerToolActivities
 	invocation.OnActivity = func(activity ProviderActivity) {
 		toolActivities.Add(activity)
@@ -151,9 +151,9 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 	}
 }
 
-// newLiveGuardedPlannerAgent keeps the direct agent smoke on the same durable
+// newLivePlannerAgent keeps the direct agent smoke on the same durable
 // activation path used by operationRunner in production.
-func newLiveGuardedPlannerAgent(t *testing.T, binary, projectRoot, operationID string) (*OpenCodeAgent, *ProviderInvocationContext) {
+func newLivePlannerAgent(t *testing.T, binary, projectRoot, operationID string) (*OpenCodeAgent, *ProviderInvocationContext) {
 	t.Helper()
 	runtimeRoot := filepath.Join(projectRoot, ".kingdom", "runtime")
 	db := stateTestDB(t)
@@ -173,7 +173,6 @@ func newLiveGuardedPlannerAgent(t *testing.T, binary, projectRoot, operationID s
 	})
 	agent := NewOpenCodeAgent(provider, func(string) string { return operationID }, WithRequestLimits(90*time.Second, 90*time.Second))
 	store := state.NewPlanningStore(db)
-	store.SetProcessGuardRuntimeRoot(runtimeRoot)
 	service := NewService(store, nil, projectRoot, func() string { return time.Now().UTC().Format(time.RFC3339Nano) }, func(prefix string) string { return prefix + "-" + operationID })
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 	session, err := service.CreateSession(context.Background(), "Live planner guard", `{"model":"openai/gpt-5.6-luna","thinking_effort":"none"}`)

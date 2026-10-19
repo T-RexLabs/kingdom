@@ -517,9 +517,6 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 	if err := validateFinalizeOperationRequest(req); err != nil {
 		return err
 	}
-	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
-		return err
-	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

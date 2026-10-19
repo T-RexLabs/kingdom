@@ -297,16 +297,6 @@ func (r *operationRunner) RequestCancel(operationID, reason string) bool {
 }
 
 func (r *operationRunner) CancelRecoveredOperation(ctx context.Context, operation state.PlanningOperation, reason string) error {
-	if err := r.deps.store.ReplayConfiguredPlanningProcessGuardEvidence(ctx); err != nil {
-		return err
-	}
-	unresolved, err := r.deps.store.PlanningOperationHasUnresolvedProcessGuard(ctx, operation.OperationID)
-	if err != nil {
-		return err
-	}
-	if unresolved {
-		return fmt.Errorf("planning operation process quiescence is not yet proven")
-	}
 	next, err := r.nextOperationEventSeq(ctx, operation.OperationID)
 	if err != nil {
 		return err

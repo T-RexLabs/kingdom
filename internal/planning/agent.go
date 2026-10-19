@@ -30,11 +30,9 @@ type ProviderInvocationContext struct {
 	ReusableProviderSessionID string
 	// Activate binds the prepared provider request to this canonical invocation
 	// before any work is dispatched, and fails if the binding cannot be made.
-	Activate                 func(context.Context, opencode.Prepared) error
-	OnProviderSessionOpened  func(sessionID string)
-	OnActivity               func(activity ProviderActivity)
-	OnProcessGuardOwnership  func(context.Context, opencode.ProcessGuardOwnership) error
-	OnProcessGuardQuiescence func(context.Context, opencode.ProcessGuardQuiescence) error
+	Activate                func(context.Context, opencode.Prepared) error
+	OnProviderSessionOpened func(sessionID string)
+	OnActivity              func(activity ProviderActivity)
 
 	activated bool
 }

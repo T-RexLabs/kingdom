@@ -184,10 +184,6 @@ func readPrompt(ctx context.Context, open func(context.Context) (io.ReadCloser, 
 func buildContinuePrompt(input AgentContext) string {
 	return testPromptText(input, writeContinuePrompt)
 }
-func buildFormalizePrompt(input AgentContext) string {
-	return testPromptText(input, writeFormalizePrompt)
-}
-func buildTitlePrompt(input AgentContext) string { return testPromptText(input, writeTitlePrompt) }
 func testPromptText(input AgentContext, write func(context.Context, io.Writer, AgentContext) error) string {
 	var out strings.Builder
 	if err := write(context.Background(), &out, input); err != nil {

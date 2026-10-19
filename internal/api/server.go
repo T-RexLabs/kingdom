@@ -285,11 +285,6 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 	}
 
 	projectRoot := strings.TrimSpace(cfg.ProjectRoot)
-	plannerRuntimeRoot := strings.TrimSpace(cfg.RuntimeRoot)
-	if plannerRuntimeRoot == "" {
-		plannerRuntimeRoot = filepath.Join(projectRoot, ".kingdom", "runtime")
-	}
-	planningStore.SetProcessGuardRuntimeRoot(plannerRuntimeRoot)
 	rawDefaultPublishMode := strings.ToLower(strings.TrimSpace(cfg.DefaultPublishMode))
 	if rawDefaultPublishMode != "" && !workspace.IsSupportedPublishMode(rawDefaultPublishMode) {
 		return nil, fmt.Errorf("unsupported default publish mode %q", cfg.DefaultPublishMode)
