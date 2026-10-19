@@ -106,7 +106,6 @@ export function PlannerThread({
   );
 
   const messagesError = messagePages.error;
-  const operationError = operation?.error ?? null;
   // Transport health is separate from canonical query health and from a
   // server-attested operation failure.
   const transportFailing =
@@ -276,15 +275,6 @@ export function PlannerThread({
           >
             {operationQueryState.isRetrying ? "Retrying..." : "Retry"}
           </button>
-        </div>
-      ) : null}
-
-      {operationError && !isCancelled ? (
-        <div
-          role="alert"
-          className="mx-4 mt-2 rounded-xl border border-status-failed/30 bg-status-failed/10 p-3 text-sm text-status-failed"
-        >
-          {operationError}
         </div>
       ) : null}
 

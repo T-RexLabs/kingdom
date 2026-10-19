@@ -533,4 +533,31 @@ describe("PlannerMessageCard", () => {
     expect(screen.queryByText("Fetched 3 web sources")).not.toBeInTheDocument();
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
   });
+
+  it("keeps a failed reply in place with its reason and a retry", async () => {
+    const onRegenerate = vi.fn();
+    render(
+      <PlannerMessageCard
+        message={{
+          planning_message_id: "assistant-failed",
+          planning_session_id: "session-1",
+          parent_message_id: "user-1",
+          role: "assistant",
+          content_markdown: "",
+          source_run_id: "run-1",
+          failure: { reason_code: "provider_unknown_failure", message: "Attempted to access resource from outside project geography EU" },
+          created_at: "2026-06-12T10:00:00Z",
+        }}
+        activityRunId="run-1"
+        isFirstAssistant
+        onRegenerate={onRegenerate}
+      />,
+    );
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("Reply Failed");
+    expect(alert).toHaveTextContent("Attempted to access resource from outside project geography EU");
+    expect(screen.queryByRole("button", { name: "Regenerate reply" })).not.toBeInTheDocument();
+    await userEvent.click(within(alert).getByRole("button", { name: "Retry" }));
+    expect(onRegenerate).toHaveBeenCalledOnce();
+  });
 });
