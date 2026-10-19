@@ -11867,7 +11867,6 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	startTimeoutDiagnosticWorker(t, rt)
 	rt.orchestrator.nodeTimeouts["work_intake"] = 120 * time.Millisecond
 	rt.orchestrator.streamInactivity = 150 * time.Millisecond
 
@@ -11877,6 +11876,7 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -11915,7 +11915,6 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	startTimeoutDiagnosticWorker(t, rt)
 	rt.orchestrator.nodeTimeouts["work_intake"] = 120 * time.Millisecond
 	rt.orchestrator.streamInactivity = 150 * time.Millisecond
 
@@ -11925,6 +11924,7 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -12139,7 +12139,6 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	startTimeoutDiagnosticWorker(t, rt)
 	rt.orchestrator.nodeTimeouts["work_intake"] = 120 * time.Millisecond
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -12148,6 +12147,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -13791,6 +13791,11 @@ func startTimeoutDiagnosticWorker(t *testing.T, rt *Runtime) nodeAttempt {
 		t.Fatalf("load timeout diagnostic attempt: %v", err)
 	}
 	attempt := latest["work_intake"]
+	// A worker this runtime starts holds a live lease; startup expired the one
+	// the seeded attempt carried from "before" the runtime started.
+	if _, err := rt.orchestrator.db.Exec(`UPDATE attempt_executions SET lease_expires_at = ? WHERE attempt_id = ?`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), "run_timeout_diag:work_intake:1"); err != nil {
+		t.Fatalf("renew timeout diagnostic lease: %v", err)
+	}
 	rt.orchestrator.startAsyncExecution(context.Background(), asyncExecutionResult{
 		run:                  runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"},
 		node:                 nodeDefinition{NodeID: "work_intake", NodeClass: "work_intake", RequiredRole: "governance"},
