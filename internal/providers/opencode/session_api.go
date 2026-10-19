@@ -388,3 +388,24 @@ func isTransient(err error) bool {
 	var protocol *ProtocolError
 	return !errors.As(err, &protocol)
 }
+
+// PluginState is a loaded plugin's status at a location.
+type PluginState struct {
+	ID    string `json:"id"`
+	State struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	} `json:"state"`
+}
+
+// Plugins lists the plugins that the server has loaded, or is loading, at a
+// location. Loading is lazy, so a plugin can be absent just after a request.
+func (c *Client) Plugins(ctx context.Context, directory string) ([]PluginState, error) {
+	var plugins struct {
+		Data []PluginState `json:"data"`
+	}
+	if err := c.send(ctx, c.http, http.MethodGet, "/api/plugin", atLocation(directory), nil, &plugins); err != nil {
+		return nil, err
+	}
+	return plugins.Data, nil
+}

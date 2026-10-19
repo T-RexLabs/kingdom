@@ -312,6 +312,9 @@ func (s *Service) launch(ctx context.Context, attempt *serviceStart) (*Client, *
 		return nil, process, fmt.Errorf("validate OpenCode service configuration: %w", err)
 	}
 	if s.requests != nil {
+		if err := awaitPlugin(ctx, client, s.workDir); err != nil {
+			return nil, process, err
+		}
 		if attempt.capture, err = startCapture(ctx, client, s.requests.spoolDir); err != nil {
 			return nil, process, fmt.Errorf("capture OpenCode service events: %w", err)
 		}

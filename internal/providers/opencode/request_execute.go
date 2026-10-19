@@ -91,7 +91,7 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 
 	prompt, err := e.prompt(ctx)
 	if err != nil {
-		return ExecuteResponse{}, err
+		return e.abandonUndispatched(ctx, err)
 	}
 	registration := &commandRegistration{workspace: e.request.directory, ownership: e.req.OnProcessGuardOwnership, quiescence: e.req.OnProcessGuardQuiescence}
 	if err := runtime.commands.register(e.identity(), registration); err != nil {
@@ -100,12 +100,10 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	defer runtime.commands.unregister(e.identity())
 
 	if e.stopRequested() {
-		fence, cancel := e.bounded(ctx)
-		defer cancel()
-		return ExecuteResponse{}, errors.Join(authority.CloseAdmission(fence, e.identity()), context.Canceled)
+		return e.abandonUndispatched(ctx, context.Canceled)
 	}
 	if err := authority.IssueDispatch(ctx, e.identity()); err != nil {
-		return ExecuteResponse{}, err
+		return e.abandonUndispatched(ctx, err)
 	}
 	feed, err := e.capture().follow(e.identity().SessionID)
 	if err != nil {
@@ -131,6 +129,29 @@ func (e *execution) execute(ctx context.Context) (ExecuteResponse, error) {
 	settle, cancel := e.bounded(ctx)
 	defer cancel()
 	return e.finalize(settle, invokedAt)
+}
+
+// abandonUndispatched closes a request that ended before its prompt was sent.
+// Nothing reached the provider, so abandoning it is proof enough to settle.
+func (e *execution) abandonUndispatched(ctx context.Context, cause error) (ExecuteResponse, error) {
+	fence, cancel := e.bounded(ctx)
+	defer cancel()
+	if err := e.service.requests.authority.Abandon(fence, e.identity()); err != nil {
+		return ExecuteResponse{}, errors.Join(cause, err)
+	}
+	observation, err := providerexecution.AbandonedObservation(e.identity(), e.req.InvocationID)
+	if err != nil {
+		return ExecuteResponse{}, errors.Join(cause, err)
+	}
+	outcome := ExecutionOutcome{State: "failed", ReasonCode: string(providerexecution.CanonicalProviderErrorCode("", "", 0)), FailureText: cause.Error(), EvidenceSource: "request"}
+	if errors.Is(cause, context.Canceled) {
+		observation.Cancelled = true
+		outcome = ExecutionOutcome{State: "cancelled", ReasonCode: "provider_cancelled", EvidenceSource: "request"}
+	}
+	return ExecuteResponse{
+		ProviderSessionID: e.identity().SessionID, ProviderInvocationID: e.req.InvocationID,
+		StreamObservation: observation, Outcome: outcome,
+	}, cause
 }
 
 // sendPrompt retries transport failures. The server dedupes a prompt by its

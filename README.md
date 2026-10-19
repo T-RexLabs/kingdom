@@ -46,7 +46,7 @@ The current crew includes advisors, a planner, a builder, a reviewer, and valida
 
 <h2 id="firstmission">Start Your First Mission</h2>
 
-You’ll need Go 1.27.0, Node 26.2.0 with Corepack, and [OpenCode](https://opencode.ai/docs/) installed and authenticated for the providers you want to use.
+You’ll need Go 1.27.0, Node 26.2.0 with Corepack, and [OpenCode](https://opencode.ai/docs/) V2 installed and authenticated for the providers you want to use.
 
 From the Kingdom repository, build and install the `kd` command:
 

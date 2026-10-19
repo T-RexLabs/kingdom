@@ -501,3 +501,31 @@ func TestStockRequestOutlivingTheSettleLimitStillSettles(t *testing.T) {
 		t.Fatalf("response %q %#v", response.OutputPreview, response.StreamObservation.Request)
 	}
 }
+
+func TestStockRequestCancelledBeforeDispatchIsAbandonedAndSettleable(t *testing.T) {
+	h := newStockHarness(t)
+	req := h.planningRequest("inv-early", "op-early", "TEXT:never sent")
+	h.planningOwner("session-early", "op-early", "inv-early")
+	prepared, err := h.service.Prepare(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.bindPlanning(prepared, "op-early", "inv-early")
+	if err := h.service.Cancel(context.Background(), CancelRequest{AttemptID: "op-early"}); err != nil {
+		t.Fatal(err)
+	}
+	response, err := h.service.Execute(context.Background(), req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("a request cancelled before dispatch must report cancellation: %v", err)
+	}
+	observation := response.StreamObservation
+	if observation.Request == nil || observation.Request.Terminal.Outcome != providerexecution.RequestOutcomeFailed || !observation.Cancelled || response.Outcome.State != "cancelled" {
+		t.Fatalf("an undispatched request is not settleable: %#v %#v", observation.Request, response.Outcome)
+	}
+	if err := providerrequest.RequireResourcesClosedTx(context.Background(), h.db, "binding-inv-early"); err != nil {
+		t.Fatal(err)
+	}
+	if err := observation.ReleaseContent(); err != nil {
+		t.Fatal(err)
+	}
+}

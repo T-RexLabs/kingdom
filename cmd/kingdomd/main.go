@@ -21,6 +21,7 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
 	kingdom "kingdom/internal/orchestration"
@@ -71,12 +72,9 @@ func run() (exitCode int) {
 		listen               string
 		basePath             string
 		providerEngine       string
-		providerStrict       bool
 		governanceMode       string
 		autonomousApprovals  bool
 		providerBinary       string
-		providerModel        string
-		providerAgent        string
 		credentialFile       string
 		githubSharedSlug     string
 		githubSharedClientID string
@@ -86,12 +84,9 @@ func run() (exitCode int) {
 	flag.StringVar(&listen, "listen", "127.0.0.1:8080", "HTTP listen address")
 	flag.StringVar(&basePath, "base-path", "/api/v1", "API base path")
 	flag.StringVar(&providerEngine, "provider-engine", envOrDefault("KINGDOM_PROVIDER_ENGINE", "opencode"), "provider engine: opencode or mock_engine")
-	flag.BoolVar(&providerStrict, "provider-strict", envBoolOrDefault("KINGDOM_PROVIDER_STRICT", true), "fail startup when selected provider engine cannot initialize")
 	flag.StringVar(&governanceMode, "governance-mode", envOrDefault("KINGDOM_GOVERNANCE_MODE", "autonomous"), "governance mode (MVP): autonomous")
 	flag.BoolVar(&autonomousApprovals, "autonomous-approvals", envBoolOrDefault("KINGDOM_AUTONOMOUS_APPROVALS", true), "autonomous governance approvals for plan and final closure")
 	flag.StringVar(&providerBinary, "provider-binary", envOrDefault("KINGDOM_PROVIDER_BINARY", "opencode"), "opencode binary path")
-	flag.StringVar(&providerModel, "provider-model", envOrDefault("KINGDOM_PROVIDER_MODEL", ""), "optional model override for opencode")
-	flag.StringVar(&providerAgent, "provider-agent", envOrDefault("KINGDOM_PROVIDER_AGENT", ""), "optional agent override for opencode")
 	flag.StringVar(&credentialFile, "credential-file", "./.kingdom/secrets/operator-token", "local operator credential file")
 	flag.StringVar(&githubSharedSlug, "github-shared-app-slug", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_SLUG", githubexternal.OfficialSharedAppSlug), "public shared GitHub App slug (paired with client id)")
 	flag.StringVar(&githubSharedClientID, "github-shared-app-client-id", envOrDefaultAllowEmpty("KINGDOM_GITHUB_SHARED_APP_CLIENT_ID", githubexternal.OfficialSharedAppClientID), "public shared GitHub App client id (paired with slug)")
@@ -152,6 +147,7 @@ func run() (exitCode int) {
 		BinaryPath:  providerBinary,
 		WorkDir:     repoRoot,
 		RuntimeRoot: filepath.Join(filepath.Dir(dbPath), "runtime", "opencode-service"),
+		Requests:    providerrequest.NewAuthority(db, nil),
 	})
 	if err != nil {
 		log.Printf("configure OpenCode service: %v", err)
@@ -171,16 +167,10 @@ func run() (exitCode int) {
 		DB:                  db,
 		Paths:               bootstrapPaths,
 		ProviderEngine:      providerEngine,
-		ProviderStrict:      providerStrict,
 		GovernanceMode:      governanceMode,
 		AutonomousApprovals: &autonomousApprovals,
 		WorkspaceRoot:       filepath.Join(filepath.Dir(dbPath), "runtime"),
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: providerBinary,
-			WorkDir:    repoRoot,
-			Model:      providerModel,
-			Agent:      providerAgent,
-		},
+		Provider:            providerService,
 	})
 	if err != nil {
 		log.Printf("bootstrap runtime: %v", err)
@@ -196,7 +186,7 @@ func run() (exitCode int) {
 		StartupContext:             ctx,
 		BasePath:                   basePath,
 		AutonomousApprovalsDefault: &autonomousApprovals,
-		OpenCodeBinaryPath:         providerBinary,
+		ProviderService:            providerService,
 		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, 10*time.Minute),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,

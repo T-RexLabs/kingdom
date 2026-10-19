@@ -28,12 +28,8 @@ server:
 
 provider:
   engine: opencode
-  strict: true
   governance_mode: autonomous
   binary_path: ""
-  model: ""
-  agent: ""
-  skip_permissions: true
 
 github:
   shared_app:
@@ -67,19 +63,15 @@ github:
 
 `provider.engine` must be `opencode`. There is no other supported engine.
 
-`provider.strict` is set to `true` by `kd init`. At startup, this checks the managed OpenCode files, the binary, and role resolution before Kingdom reports ready. Set it to `false` only when debugging a local setup.
-
 `provider.governance_mode` must be `autonomous`. Manual provider governance is not implemented.
 
 `provider.binary_path` is optional. Set it when the `opencode` binary is not available on your `PATH`.
 
-`provider.model` and `provider.agent` are optional defaults for OpenCode. A run still needs an explicit global model choice.
+Kingdom requires OpenCode V2 (2.x). It runs one local OpenCode server on loopback and uses it to list models and to run every planning and execution request. Configure provider sign-ins, API keys, and custom model endpoints in OpenCode. Kingdom does not copy or refresh those credentials, and it writes no OpenCode agent profiles or configuration into your project. The model selector supports custom provider and model IDs; a listed model can still fail if its provider is unavailable or access has changed. Refreshing the model list reads the catalog without restarting active OpenCode locations.
 
-Model discovery requires OpenCode V2 and reads the configured providers through a dedicated local service. Configure provider sign-ins, API keys, and custom model endpoints in OpenCode. Kingdom does not copy or refresh those credentials. The model selector supports custom provider and model IDs; a listed model can still fail if its provider is unavailable or access has changed. Refreshing the model list reads the catalog without restarting active OpenCode locations.
+Kingdom gives each request its own temporary agent profile and installs a small plugin in its own state directory so it can admit and record the file and shell tools a request uses. Shell commands run under Kingdom's process supervision. Requests that call other tools are refused.
 
-Kingdom disables automatic formatting in that service. If administrator configuration overrides this setting, model discovery reports a configuration error. Explicit formatter commands remain separate from automatic formatting.
-
-`provider.skip_permissions` defaults to `true` and keeps OpenCode runs from stopping for interactive permission prompts.
+Kingdom disables automatic formatting in the server. If administrator configuration overrides this setting, Kingdom reports a configuration error and does not start work. It also reports an error when the Kingdom plugin does not load or when the server's event stream is interrupted, because it can no longer prove what a request did. Interrupted work stays blocked until it can be proven or, when the request never used a tool, is closed as abandoned. Explicit formatter commands remain separate from automatic formatting.
 
 ### GitHub App identifiers
 

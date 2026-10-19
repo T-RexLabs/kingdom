@@ -138,7 +138,7 @@ func TestRunSummonStatusPrefersLocalSummonStateFile(t *testing.T) {
 		PID:                  process.PID(),
 		ProcessIdentityToken: identity,
 		State:                summonStatusStateStarting,
-		Phase:                "validating OpenCode agents (3/9)",
+		Phase:                "starting runtime",
 		ConfigPath:           configPath,
 		KingdomHome:          cfg.KingdomHome,
 		Listen:               cfg.Server.Listen,
@@ -157,7 +157,7 @@ func TestRunSummonStatusPrefersLocalSummonStateFile(t *testing.T) {
 	if !strings.Contains(output, "summon status: starting (pid=") {
 		t.Fatalf("expected starting status, got %q", output)
 	}
-	if !strings.Contains(output, "phase: validating OpenCode agents (3/9)") {
+	if !strings.Contains(output, "phase: starting runtime") {
 		t.Fatalf("expected summon phase in status, got %q", output)
 	}
 	if !strings.Contains(output, "logs: ") {
@@ -216,7 +216,7 @@ func TestRunSummonStatusSurfacesFailedLocalState(t *testing.T) {
 	}
 	if err := saveSummonState(summonStatePath(cfg.KingdomHome), summonStateRecord{
 		State:       summonStatusStateFailed,
-		Phase:       "validating OpenCode agents (4/9)",
+		Phase:       "starting runtime",
 		ConfigPath:  configPath,
 		KingdomHome: cfg.KingdomHome,
 		LogPath:     summonLogPath(cfg.KingdomHome),
@@ -383,7 +383,6 @@ func TestRunSummonReturnsBindErrorBeforeReadinessTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read install config: %v", err)
 	}
-	cfg.Provider.Strict = false
 	cfg.Provider.BinaryPath = "/bin/sh"
 	cfg.Server.Listen = listener.Addr().String()
 	if err := writeInstallConfig(configPath, cfg, true); err != nil {
@@ -534,20 +533,6 @@ func TestRunSummonLogsFollowStreamsAppendedOutput(t *testing.T) {
 func TestSummonLogsFollowCommandOmitsConfigPath(t *testing.T) {
 	if got := summonLogsFollowCommand("/tmp/project/.kingdom/config.yaml"); got != "kd summon logs --follow" {
 		t.Fatalf("expected canonical follow command, got %q", got)
-	}
-}
-
-func TestSummonDetachedProgressTextUsesAgentProgressBar(t *testing.T) {
-	text := summonDetachedProgressText(summonStateRecord{
-		State:       summonStatusStateStarting,
-		PhaseCode:   string(kingdom.StartupPhaseValidatingOpenCodeAgent),
-		Phase:       "validating OpenCode agents",
-		ProgressNow: 3,
-		ProgressMax: 9,
-	})
-	want := "[startup] validating OpenCode agents [####--------] 3/9"
-	if text != want {
-		t.Fatalf("detached progress text = %q, want %q", text, want)
 	}
 }
 
@@ -706,63 +691,6 @@ func TestInitScaffoldWorkflowMatchesEmbeddedSeed(t *testing.T) {
 	}
 }
 
-func TestInitScaffoldIncludesManagedOpenCodeAgentProfiles(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
-		t.Fatalf("run init command: %v", err)
-	}
-
-	for _, rel := range []string{
-		filepath.Join(".kingdom", "opencode", "agents", "advisor.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "builder.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "coordinator.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "plan-author.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "governance.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "security-validator.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "qa-validator.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "reviewer.md"),
-		filepath.Join(".kingdom", "opencode", "agents", "resilience-validator.md"),
-	} {
-		if _, err := os.Stat(filepath.Join(projectRoot, rel)); err != nil {
-			t.Fatalf("expected managed opencode agent profile %s: %v", rel, err)
-		}
-	}
-}
-
-func TestInitForceRemovesRetiredManagedToolFromProjectAndRunTargetOverlays(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
-		t.Fatalf("run initial init command: %v", err)
-	}
-
-	toolName := "kingdom_complete_attempt.ts"
-	toolPaths := []string{
-		filepath.Join(projectRoot, ".kingdom", "opencode", "tools", toolName),
-		filepath.Join(projectRoot, ".kingdom", "runtime", "run-targets", "run-1", "target", ".kingdom", "opencode", "tools", toolName),
-	}
-	for _, toolPath := range toolPaths {
-		if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
-			t.Fatalf("create retired tool directory %s: %v", toolPath, err)
-		}
-		if err := os.WriteFile(toolPath, []byte("retired managed tool"), 0o644); err != nil {
-			t.Fatalf("write retired tool %s: %v", toolPath, err)
-		}
-	}
-
-	if err := runInitCommand(io.Discard, []string{"--path", projectRoot, "--force"}); err != nil {
-		t.Fatalf("run forced init command: %v", err)
-	}
-	for _, toolPath := range toolPaths {
-		if _, err := os.Stat(toolPath); !os.IsNotExist(err) {
-			t.Fatalf("expected forced init to remove retired managed tool %s, stat err=%v", toolPath, err)
-		}
-	}
-}
-
 func TestRunCleanCommandRemovesKingdomHomeAndLeavesProjectOpencodeUntouched(t *testing.T) {
 	t.Parallel()
 
@@ -834,7 +762,6 @@ func TestInitAppliesConfigFlags(t *testing.T) {
 		"--publish-mode", kingdom.PublishModeGitWorktree,
 		"--autonomous-approvals", "false",
 		"--provider-engine", "opencode",
-		"--provider-strict", "false",
 		"--listen", "127.0.0.1:19090",
 		"--base-path", "/api/custom",
 	})
@@ -854,9 +781,6 @@ func TestInitAppliesConfigFlags(t *testing.T) {
 	}
 	if cfg.Provider.Engine != "opencode" {
 		t.Fatalf("expected provider engine opencode, got %q", cfg.Provider.Engine)
-	}
-	if cfg.Provider.Strict {
-		t.Fatal("expected provider strict false")
 	}
 	if cfg.Server.Listen != "127.0.0.1:19090" {
 		t.Fatalf("expected listen 127.0.0.1:19090, got %q", cfg.Server.Listen)
@@ -1384,35 +1308,6 @@ func TestWorkflowSeedAlreadyExistsRequiresPublishConflictIdentity(t *testing.T) 
 	}
 	if workflowSeedAlreadyExists(http.StatusConflict, []byte(`{"error":{"code":"idempotency_conflict","message":"idempotency key reused with different request","correlation_id":"idempotency-middleware"}}`)) {
 		t.Fatal("middleware idempotency conflict was accepted as published")
-	}
-}
-
-func TestResolveSummonReadyTimeoutAlignsWithStrictStartupBudget(t *testing.T) {
-	t.Parallel()
-
-	projectRoot := t.TempDir()
-	if err := runInitCommand(io.Discard, []string{"--path", projectRoot}); err != nil {
-		t.Fatalf("run init command: %v", err)
-	}
-
-	cfg, err := readInstallConfig(filepath.Join(projectRoot, ".kingdom", "config.yaml"))
-	if err != nil {
-		t.Fatalf("read install config: %v", err)
-	}
-
-	got := resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), defaultSummonReadyTimeout, false)
-	if got != 120*time.Second {
-		t.Fatalf("expected strict opencode summon readiness timeout 120s, got %s", got)
-	}
-}
-
-func TestResolveSummonReadyTimeoutPreservesExplicitOverride(t *testing.T) {
-	t.Parallel()
-
-	cfg := defaultInstallConfig(filepath.Join(t.TempDir(), ".kingdom"))
-	got := resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), 10*time.Second, true)
-	if got != 10*time.Second {
-		t.Fatalf("expected explicit summon readiness timeout 10s, got %s", got)
 	}
 }
 
@@ -2036,7 +1931,7 @@ func TestReadInstallConfigRejectsUnknownFields(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n" +
 		"operator:\n  actor_id: summon-system\n  role_id: operator\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2061,7 +1956,7 @@ func TestReadInstallConfigRequiresGovernanceMode(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n"
+		"provider:\n  engine: opencode\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2085,7 +1980,7 @@ func TestReadInstallConfigRejectsManualGovernanceMode(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: manual\n"
+		"provider:\n  engine: opencode\n  governance_mode: manual\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2109,7 +2004,7 @@ func TestReadInstallConfigRejectsInvalidListenAddress(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: invalid\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2133,7 +2028,7 @@ func TestReadInstallConfigDefaultsAutonomousApprovalsToTrue(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2160,7 +2055,7 @@ func TestReadInstallConfigRejectsUnsupportedMockProviderEngine(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: mock_engine\n  strict: true\n  governance_mode: autonomous\n"
+		"provider:\n  engine: mock_engine\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2187,7 +2082,7 @@ func TestReadInstallConfigRespectsAutonomousApprovalsFalse(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n" +
 		"governance:\n  autonomous_approvals: false\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
@@ -2215,7 +2110,7 @@ func TestReadInstallConfigDefaultsPublishModeToDirect(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n"
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
@@ -2242,7 +2137,7 @@ func TestReadInstallConfigRejectsUnknownPublishMode(t *testing.T) {
 		"kingdom_home: " + filepath.Join(root, ".kingdom") + "\n" +
 		"db_path: " + filepath.Join(root, ".kingdom", "kingdom.db") + "\n" +
 		"server:\n  listen: 127.0.0.1:8080\n  base_path: /api/v1\n" +
-		"provider:\n  engine: opencode\n  strict: true\n  governance_mode: autonomous\n" +
+		"provider:\n  engine: opencode\n  governance_mode: autonomous\n" +
 		"publish:\n  mode: moonshot\n"
 	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)

@@ -138,7 +138,7 @@ func TestCommandCancellationStopsTheTreeAndClosesTheClaim(t *testing.T) {
 		t.Fatal("the invoking call never returned")
 	}
 	var open int
-	if err := bound.db.QueryRow(`SELECT count(*) FROM provider_command_calls WHERE completed_at IS NULL`).Scan(&open); err != nil || open != 0 {
+	if err := bound.db.QueryRow(`SELECT count(*) FROM provider_command_calls WHERE completed_at IS NULL AND aborted_at IS NULL`).Scan(&open); err != nil || open != 0 {
 		t.Fatalf("cancelled command left an unresolved claim: %d %v", open, err)
 	}
 	if _, err := os.Stat(filepath.Join(bound.workspace, "survived.txt")); err == nil {

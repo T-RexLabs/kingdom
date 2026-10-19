@@ -4,7 +4,7 @@ Use this guide when changing Kingdom itself. If you only want to run it on a pro
 
 ## Install the tools
 
-Kingdom pins its Go, Node, and pnpm versions in the Makefile. Check them with `make tool-versions`. You also need OpenCode installed and signed in to the providers you plan to use.
+Kingdom pins its Go, Node, and pnpm versions in the Makefile. Check them with `make tool-versions`. You also need OpenCode V2 installed and signed in to the providers you plan to use.
 
 From the repository root, run:
 
@@ -54,7 +54,7 @@ Kingdom serves the built web app from the Go process. Rebuild it with `make inst
 
 ## Useful boundaries
 
-`kd init` creates a local `.kingdom/` directory with config, runtime state, and managed OpenCode role profiles. Do not edit managed profiles directly. Kingdom checks them at startup.
+`kd init` creates a local `.kingdom/` directory with config and runtime state.
 
 The installed runtime listens on loopback. A port flag changes the local port for that process. It does not enable remote access.
 

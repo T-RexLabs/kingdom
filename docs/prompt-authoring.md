@@ -36,10 +36,6 @@ Run and planning-session creation persist the effective settings and reference o
 
 Content changes produce a new catalog digest. Keep `Catalog.Version` aligned with the serialized catalog shape and validation rules. Never update or delete persisted catalog revisions or snapshots.
 
-## Provider Profiles
-
-`internal/bootstrapassets/files/opencode/agents/` stores provider capabilities and restrictions in YAML frontmatter. Keep each profile's model mode, tool settings, permission rules, and role-to-profile mapping there. Do not add role prompt prose to a profile body. Kingdom supplies the protected, snapshot-resolved system prompt through invocation-scoped OpenCode configuration, preserving the shared session hardening and profile restrictions. Profile frontmatter configures the provider; it is not part of the authored role instructions.
-
 ## Changing The Catalog
 
 1. Inventory every source clause affected and record its protected/default destination or explicit equivalent before editing.
@@ -51,4 +47,4 @@ Content changes produce a new catalog digest. Keep `Catalog.Version` aligned wit
 
 ## Inspecting Dispatched Instructions
 
-The Agent Activity Instructions tab shows Kingdom's captured input in two Markdown sections: System Instructions and User Instructions. The system section is the exact invocation-scoped agent prompt, including protected role instructions, communication style, Agent Guidance, and Kingdom Contract. The user section is the complete captured Run Context and Final Checks, followed by the initial provider invocation metadata using the same framing as dispatch. Both prompt channels are published atomically under the attempt's queued lease and verified against their immutable content hashes before the API publishes bytes. Historical attempts never use current settings to rebuild their instructions. OpenCode's own environment and tool prompts are outside Kingdom's visibility.
+The Agent Activity Instructions tab shows Kingdom's captured input in two Markdown sections: System Instructions and User Instructions. The system section is the exact invocation-scoped agent prompt, including protected role instructions, communication style, Agent Guidance, and Kingdom Contract. The user section is the complete captured Run Context and Final Checks, exactly as stored. Both prompt channels are published atomically under the attempt's queued lease and verified against their immutable content hashes before the API publishes bytes. Historical attempts never use current settings to rebuild their instructions. OpenCode's own environment and tool prompts are outside Kingdom's visibility.

@@ -8,15 +8,11 @@ package opencode
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"kingdom/internal/core/providerexecution"
@@ -31,10 +27,16 @@ const (
 	AttemptEventTypeCancelled = "attempt.cancelled"
 )
 
-type Adapter interface {
+// Provider runs requests on a shared model server. Prepare fixes a request's
+// provider identity without sending work; the caller binds that identity to its
+// canonical invocation, and only then Execute sends the work. Cancel interrupts
+// one attempt's request, and Discard releases a prepared request that will not
+// run.
+type Provider interface {
+	Prepare(ctx context.Context, req ExecuteRequest) (Prepared, error)
 	Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error)
 	Cancel(ctx context.Context, req CancelRequest) error
-	Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error)
+	Discard(ctx context.Context, invocationID string) error
 }
 
 type ExecuteRequest struct {
@@ -217,253 +219,7 @@ func (e *AttemptNotFoundError) Error() string {
 	return fmt.Sprintf("attempt not found: %q", e.AttemptID)
 }
 
-type MemoryAdapter struct {
-	mu     sync.Mutex
-	events map[string][]AttemptStreamEvent
-}
-
-func NewMemoryAdapter() *MemoryAdapter {
-	return &MemoryAdapter{events: make(map[string][]AttemptStreamEvent)}
-}
-
-func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteResponse, error) {
-	if err := validateExecuteRequest(req); err != nil {
-		return ExecuteResponse{}, err
-	}
-	// This adapter is a string-based fixture, not a production provider. Its
-	// canned output builder may materialize the replay source for assertions.
-	if req.OpenPrompt != nil || req.WritePrompt != nil {
-		var prompt strings.Builder
-		if err := writeRequestPrompt(context.Background(), req, "", &prompt); err != nil {
-			return ExecuteResponse{}, err
-		}
-		req.Prompt = prompt.String()
-	}
-	if strings.TrimSpace(req.WorkspacePath) == "" {
-		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
-	}
-	if err := invokeSyntheticGuardCallbacks(req); err != nil {
-		return ExecuteResponse{}, err
-	}
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
-	providerSessionID := "memory_" + strings.TrimSpace(req.InvocationID)
-	if req.OnProviderSession != nil {
-		req.OnProviderSession(providerSessionID)
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if _, exists := a.events[req.AttemptID]; !exists {
-		a.events[req.AttemptID] = []AttemptStreamEvent{
-			{
-				AttemptID:   req.AttemptID,
-				Seq:         1,
-				EventType:   AttemptEventTypeStarted,
-				PayloadJSON: `{}`,
-				OccurredAt:  req.OccurredAt,
-			},
-		}
-	}
-
-	summary, err := buildMemoryOutput(req)
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-
-	zero := 0
-	return ExecuteResponse{
-		Accepted:             true,
-		OutputText:           summary,
-		ProviderSessionID:    providerSessionID,
-		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		Outcome: ExecutionOutcome{
-			State:          string(attemptCompletionStateSuccess),
-			ReasonCode:     "execution_completed",
-			EvidenceSource: string(completionEvidenceSourceStream),
-		},
-		StreamObservation: InvocationStreamObservation{
-			ProviderSessionID:      providerSessionID,
-			FinalTurnID:            "turn_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
-			FinalStepID:            "step_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
-			FinalSequence:          2,
-			RawFinishReason:        "stop",
-			NormalizedFinishReason: "stop",
-			CanonicalTerminalText:  summary,
-			ProcessExited:          true,
-			ProcessExitCode:        &zero,
-			StdoutDrained:          true,
-			StderrDrained:          true,
-			ProcessQuiescent:       true,
-			ProcessGuards:          []ProcessGuardObservation{syntheticProcessGuardObservation(req)},
-		},
-	}, nil
-}
-
-// invokeSyntheticGuardCallbacks keeps the in-memory test double compatible
-// with the durable guard contract without pretending that it launches a host
-// provider process. Production OpenCode commands always use SessionAdapter.
-func invokeSyntheticGuardCallbacks(req ExecuteRequest) error {
-	guardID := "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID))
-	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "memory-guardian", ChildPID: 1, ChildIdentityToken: "memory-child", TreeID: 1, TreeIdentityToken: "memory-child", Platform: "unix_process_group", QuiescenceCapability: "memory-guardian-capability"}
-	if req.OnProcessGuardOwnership != nil {
-		if err := req.OnProcessGuardOwnership(context.Background(), ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}); err != nil {
-			return err
-		}
-	}
-	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
-	evidence, err := json.Marshal(struct {
-		Type   string                 `json:"type"`
-		Result processguardian.Result `json:"result"`
-	}{Type: "result", Result: result})
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(evidence)
-	result.EvidenceJSON = string(evidence)
-	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
-	if req.OnProcessGuardQuiescence != nil {
-		if err := req.OnProcessGuardQuiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func syntheticProcessGuardObservation(req ExecuteRequest) ProcessGuardObservation {
-	return ProcessGuardObservation{CommandOrdinal: 1, GuardID: "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)), GuardianPID: 1, ChildPID: 1, TreeID: 1, Platform: "unix_process_group", Quiescent: true}
-}
-
-func (a *MemoryAdapter) Cancel(_ context.Context, req CancelRequest) error {
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.OccurredAt == "" {
-		return fmt.Errorf("occurred_at is required")
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	nextSeq := len(events) + 1
-	a.events[req.AttemptID] = append(events, AttemptStreamEvent{
-		AttemptID:   req.AttemptID,
-		Seq:         nextSeq,
-		EventType:   AttemptEventTypeCancelled,
-		PayloadJSON: `{"reason":"` + req.Reason + `"}`,
-		OccurredAt:  req.OccurredAt,
-	})
-
-	return nil
-}
-
-func (a *MemoryAdapter) Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error) {
-	if req.AttemptID == "" {
-		return nil, nil, fmt.Errorf("attempt id is required")
-	}
-
-	a.mu.Lock()
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		a.mu.Unlock()
-		return nil, nil, &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	snapshot := make([]AttemptStreamEvent, len(events))
-	copy(snapshot, events)
-	a.mu.Unlock()
-
-	sort.Slice(snapshot, func(i, j int) bool {
-		return snapshot[i].Seq < snapshot[j].Seq
-	})
-
-	eventCh := make(chan AttemptStreamEvent)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(eventCh)
-		defer close(errCh)
-
-		for _, event := range snapshot {
-			select {
-			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-			case eventCh <- event:
-			}
-		}
-	}()
-
-	return eventCh, errCh, nil
-}
-
-func (a *MemoryAdapter) PublishEvent(req AttemptStreamEvent) error {
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.Seq <= 0 {
-		return fmt.Errorf("seq must be positive")
-	}
-	if req.EventType == "" {
-		return fmt.Errorf("event type is required")
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	a.events[req.AttemptID] = append(events, req)
-	return nil
-}
-
-func validateExecuteRequest(req ExecuteRequest) error {
-	if req.CompletionMode != CompletionModeServerResponse {
-		return fmt.Errorf("completion mode must be %q", CompletionModeServerResponse)
-	}
-	if req.SessionID == "" {
-		return fmt.Errorf("session id is required")
-	}
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.RunID == "" {
-		return fmt.Errorf("run id is required")
-	}
-	if req.NodeRunID == "" {
-		return fmt.Errorf("node run id is required")
-	}
-	sources := 0
-	if req.Prompt != "" {
-		sources++
-	}
-	if req.OpenPrompt != nil {
-		sources++
-	}
-	if req.WritePrompt != nil {
-		sources++
-	}
-	if sources != 1 {
-		return fmt.Errorf("exactly one prompt source is required")
-	}
-	if req.OccurredAt == "" {
-		return fmt.Errorf("occurred_at is required")
-	}
-
-	return nil
-}
-
+// buildMemoryOutput is the canned answer of the in-memory fixture provider.
 func buildMemoryOutput(req ExecuteRequest) (string, error) {
 	prompt := strings.ToLower(req.Prompt)
 	implementationAuthorized := strings.Contains(prompt, "roleid: builder")

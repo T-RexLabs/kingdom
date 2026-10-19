@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
@@ -109,4 +110,34 @@ func withPlugin(config map[string]json.RawMessage, directory string) error {
 	}
 	config["plugins"] = encoded
 	return nil
+}
+
+const pluginID = "kingdom.runtime"
+
+// awaitPlugin returns once the Kingdom plugin is active at the location, and
+// reports why it failed to load otherwise, so a broken installation surfaces at
+// startup rather than at the first request.
+func awaitPlugin(ctx context.Context, client *Client, directory string) error {
+	for {
+		plugins, err := client.Plugins(ctx, directory)
+		if err != nil {
+			return err
+		}
+		for _, plugin := range plugins {
+			if plugin.ID != pluginID {
+				continue
+			}
+			switch plugin.State.Status {
+			case "active":
+				return nil
+			case "failed":
+				return fmt.Errorf("the Kingdom plugin failed to load: %s", plugin.State.Error)
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("the Kingdom plugin did not load: %w", ctx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }

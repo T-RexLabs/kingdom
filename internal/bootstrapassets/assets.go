@@ -3,7 +3,6 @@ package bootstrapassets
 import (
 	"embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -13,10 +12,9 @@ import (
 	"strings"
 
 	"kingdom/internal/dbmigrations"
-	"kingdom/internal/securefs"
 )
 
-//go:embed files/policies/*.yaml files/schemas/*.json files/workflows/*.json files/opencode/agents/*.md
+//go:embed files/policies/*.yaml files/schemas/*.json files/workflows/*.json
 var embeddedFiles embed.FS
 
 const (
@@ -24,8 +22,6 @@ const (
 	schemaDirName    = "schemas"
 	workflowDirName  = "workflows"
 	migrationDirName = "migrations"
-	kingdomDirName   = ".kingdom"
-	opencodeDirName  = "opencode"
 )
 
 var canonicalAssetDirs = map[string]string{
@@ -39,22 +35,14 @@ type WorkflowSeed struct {
 	Definition map[string]any
 }
 
-func WriteScaffold(root string, projectRoot string, force bool) error {
+func WriteScaffold(root string, force bool) error {
 	if strings.TrimSpace(root) == "" {
 		return fmt.Errorf("scaffold root is required")
 	}
-	if strings.TrimSpace(projectRoot) == "" {
-		return fmt.Errorf("project root is required")
-	}
 
 	targetRoot := filepath.Clean(root)
-	targetProjectRoot := filepath.Clean(projectRoot)
 	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
 		return fmt.Errorf("create scaffold root: %w", err)
-	}
-
-	if err := os.MkdirAll(targetProjectRoot, 0o755); err != nil {
-		return fmt.Errorf("create project root: %w", err)
 	}
 
 	if err := writeDir("files/policies", canonicalAssetDirs["files/policies"], filepath.Join(targetRoot, policyDirName), force); err != nil {
@@ -69,17 +57,10 @@ func WriteScaffold(root string, projectRoot string, force bool) error {
 	if err := writeMigrations(filepath.Join(targetRoot, migrationDirName), force); err != nil {
 		return err
 	}
-	if err := WriteManagedOpenCodeAssets(filepath.Join(targetRoot, opencodeDirName), force); err != nil {
-		return err
-	}
-	if force {
-		if err := removeRetiredManagedOpenCodeToolFromRunTargets(targetRoot); err != nil {
-			return err
-		}
-	}
 
 	return nil
 }
+
 func ReadWorkflowSeed(name string) ([]byte, error) {
 	cleanName := strings.TrimSpace(name)
 	if cleanName == "" {
@@ -123,68 +104,6 @@ func ListWorkflowSeeds() ([]WorkflowSeed, error) {
 	return seeds, nil
 }
 
-func ListManagedOpenCodeAgentProfiles() ([]string, error) {
-	names, err := listAssetFiles("files/opencode/agents", "")
-	if err != nil {
-		return nil, fmt.Errorf("list managed opencode agent profiles: %w", err)
-	}
-	return names, nil
-}
-
-func ManagedOpenCodeRoot(projectRoot string) string {
-	trimmed := strings.TrimSpace(projectRoot)
-	if trimmed == "" {
-		return ""
-	}
-	return filepath.Join(filepath.Clean(trimmed), kingdomDirName, opencodeDirName)
-}
-
-func ManagedOpenCodeDatabasePath(projectRoot string) string {
-	overlayRoot := ManagedOpenCodeRoot(projectRoot)
-	if overlayRoot == "" {
-		return ""
-	}
-	return filepath.Join(overlayRoot, "opencode.db")
-}
-
-type ManagedOpenCodePaths struct {
-	ConfigDir    string
-	DatabasePath string
-}
-
-func ManagedOpenCodePathsForProjectRoot(projectRoot string) ManagedOpenCodePaths {
-	return ManagedOpenCodePaths{
-		ConfigDir:    ManagedOpenCodeRoot(projectRoot),
-		DatabasePath: ManagedOpenCodeDatabasePath(projectRoot),
-	}
-}
-
-func WriteManagedOpenCodeAssets(overlayRoot string, force bool) error {
-	if err := WriteManagedOpenCodeAgentProfiles(overlayRoot, force); err != nil {
-		return err
-	}
-	if force {
-		return removeRetiredManagedOpenCodeTool(overlayRoot)
-	}
-	return nil
-}
-
-func WriteManagedOpenCodeAgentProfiles(overlayRoot string, force bool) error {
-	resolvedOverlayRoot, err := cleanManagedOpenCodeRoot(overlayRoot)
-	if err != nil {
-		return err
-	}
-	return writeDir("files/opencode/agents", "", filepath.Join(resolvedOverlayRoot, "agents"), force)
-}
-
-func ValidateManagedOpenCodeAgentProfiles(overlayRoot string) error {
-	return validateManagedOpenCodeAssets(overlayRoot, "files/opencode/agents", "agents", ListManagedOpenCodeAgentProfiles, "managed opencode agent profile")
-}
-
-func ValidateManagedOpenCodePlannerAssets(overlayRoot string) error {
-	return validateManagedOpenCodeNamedAssets(overlayRoot, "files/opencode/agents", "agents", []string{"planning-assistant.md"}, "managed opencode planner profile")
-}
-
 func writeDir(sourceDir string, canonicalDir string, targetDir string, force bool) error {
 	entries, err := listAssetFiles(sourceDir, canonicalDir)
 	if err != nil {
@@ -214,97 +133,6 @@ func writeDir(sourceDir string, canonicalDir string, targetDir string, force boo
 		}
 	}
 
-	return nil
-}
-
-func validateManagedOpenCodeAssets(overlayRoot string, sourceDir string, relDir string, list func() ([]string, error), label string) error {
-	names, err := list()
-	if err != nil {
-		return err
-	}
-	return validateManagedOpenCodeNamedAssets(overlayRoot, sourceDir, relDir, names, label)
-}
-
-func validateManagedOpenCodeNamedAssets(overlayRoot string, sourceDir string, relDir string, names []string, label string) error {
-	resolvedOverlayRoot, err := cleanManagedOpenCodeRoot(overlayRoot)
-	if err != nil {
-		return err
-	}
-	for _, name := range names {
-		cleanName := strings.TrimSpace(name)
-		if cleanName == "" {
-			continue
-		}
-		wanted, err := readAssetFile(sourceDir, "", cleanName)
-		if err != nil {
-			return fmt.Errorf("read %s %q: %w", label, cleanName, err)
-		}
-		targetPath := filepath.Join(resolvedOverlayRoot, relDir, cleanName)
-		actual, err := os.ReadFile(targetPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return fmt.Errorf("%s %q is missing; run `kd init --force` to reinstall Kingdom-managed OpenCode assets", label, targetPath)
-			}
-			return fmt.Errorf("read %s %q: %w", label, targetPath, err)
-		}
-		if !bytesEqual(actual, wanted) {
-			return fmt.Errorf("%s %q is stale; run `kd init --force` to reinstall Kingdom-managed OpenCode assets", label, targetPath)
-		}
-	}
-	return nil
-}
-
-func cleanManagedOpenCodeRoot(overlayRoot string) (string, error) {
-	trimmed := strings.TrimSpace(overlayRoot)
-	if trimmed == "" {
-		return "", fmt.Errorf("managed opencode root is required")
-	}
-	return filepath.Clean(trimmed), nil
-}
-
-const retiredManagedOpenCodeToolName = "kingdom_complete_attempt.ts"
-
-func removeRetiredManagedOpenCodeTool(overlayRoot string) error {
-	resolvedOverlayRoot, err := cleanManagedOpenCodeRoot(overlayRoot)
-	if err != nil {
-		return err
-	}
-	root, err := securefs.OpenRoot(resolvedOverlayRoot)
-	if err != nil {
-		return fmt.Errorf("open managed opencode root for retired tool cleanup: %w", err)
-	}
-	defer root.Close()
-
-	if err := root.RemoveEntry(filepath.Join("tools", retiredManagedOpenCodeToolName)); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		return fmt.Errorf("remove retired managed opencode tool from %q: %w", resolvedOverlayRoot, err)
-	}
-	return nil
-}
-
-func removeRetiredManagedOpenCodeToolFromRunTargets(kingdomHome string) error {
-	root, err := securefs.OpenRoot(kingdomHome)
-	if err != nil {
-		return fmt.Errorf("open kingdom home for run-target asset cleanup: %w", err)
-	}
-	defer root.Close()
-
-	const runTargetsPath = "runtime/run-targets"
-	runTargets, err := root.ReadDir(runTargetsPath)
-	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read run-target directories for retired tool cleanup: %w", err)
-	}
-	for _, runTarget := range runTargets {
-		if !runTarget.IsDir() {
-			continue
-		}
-		relativeToolPath := filepath.Join(runTargetsPath, runTarget.Name(), "target", kingdomDirName, opencodeDirName, "tools", retiredManagedOpenCodeToolName)
-		if err := root.RemoveEntry(relativeToolPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove retired managed opencode tool from run target %q: %w", runTarget.Name(), err)
-		}
-	}
 	return nil
 }
 
@@ -390,18 +218,6 @@ func fileNames(entries []fs.DirEntry) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-func bytesEqual(left, right []byte) bool {
-	if len(left) != len(right) {
-		return false
-	}
-	for idx := range left {
-		if left[idx] != right[idx] {
-			return false
-		}
-	}
-	return true
 }
 
 func resolveRepoAssetPath(relativePath string) (string, bool) {
