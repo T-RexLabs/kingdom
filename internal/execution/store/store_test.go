@@ -12,7 +12,6 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/dbmigrations"
 )
 
@@ -455,7 +454,7 @@ func activateProviderInvocationForTest(t *testing.T, s *Store, ctx context.Conte
 	}
 	req.ExpectedLeaseOwner = attempt.LeaseOwner
 	req.ExpectedLeaseVersion = attempt.LeaseVersion
-	return s.ActivateProviderInvocation(ctx, req)
+	return s.ActivateProviderInvocation(ctx, withBoundRequest(req))
 }
 
 func TestStoreClaimQueuedProviderAttemptFencesCompetingClaimantsWithoutStarting(t *testing.T) {
@@ -717,23 +716,18 @@ func TestStoreCommitRecoveredTerminalRejectsActiveUnsettledProviderInvocation(t 
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	if _, err := s.CreateProviderInvocation(ctx, CreateProviderInvocationRequest{
+	if _, err := activateProviderInvocationForTest(t, s, ctx, ActivateProviderInvocationRequest{
 		ProviderInvocationID: "invocation_recovered_terminal_guard",
 		AttemptID:            attemptID,
 		RunID:                "run_1",
 		NodeRunID:            "nr_1",
+		LogicalSessionID:     "logical_recovered_terminal_guard",
+		ProviderSessionID:    "ses_recovered_terminal_guard",
 		CompletionMode:       ProviderCompletionModeServerResponse,
 		CreatedAt:            "2026-03-01T12:00:01Z",
-	}); err != nil {
-		t.Fatalf("create invocation: %v", err)
-	}
-	if _, err := s.MarkProviderInvocationOpen(ctx, MarkProviderInvocationOpenRequest{
-		ProviderInvocationID: "invocation_recovered_terminal_guard",
-		AttemptID:            attemptID,
-		ProviderSessionID:    "ses_recovered_terminal_guard",
 		OpenedAt:             "2026-03-01T12:00:02Z",
 	}); err != nil {
-		t.Fatalf("open invocation: %v", err)
+		t.Fatalf("activate invocation: %v", err)
 	}
 	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:02Z' WHERE attempt_id = ?`, attemptID); err != nil {
 		t.Fatalf("mark attempt running: %v", err)
@@ -1501,33 +1495,17 @@ func seedCanonicalProviderExecutionOutput(t *testing.T, db *sql.DB, attemptID, r
 	}); err != nil {
 		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
 	}
-	acknowledgeQuiescentProviderProcessGuard(t, s, providerInvocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion)
 	structuredPayloadJSON := canonicalStructuredPayloadForStoreTest(outputText)
 	var requiredRole string
 	if err := db.QueryRow(`SELECT required_role FROM node_runs WHERE node_run_id = ?`, nodeRunID).Scan(&requiredRole); err != nil {
 		t.Fatalf("load canonical provider role %q: %v", attemptID, err)
 	}
 	settlementOutcome := ProviderCompletionOutcomeSuccess
-	switch strings.TrimSpace(stateValue) {
-	case "committed_failure":
+	if strings.TrimSpace(stateValue) == "committed_failure" {
 		settlementOutcome = ProviderCompletionOutcomeFailed
-	case "committed_cancelled":
-		settlementOutcome = ProviderCompletionOutcomeCancelled
 	}
-	zero := 0
-	observation := providerexecution.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_" + providerInvocationID,
-		FinalStepID:            "step_" + providerInvocationID,
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  outputText,
-		ProcessExited:          true,
-		ProcessExitCode:        &zero,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-	}
+	observation := boundSuccessObservation(providerInvocationID, providerSessionID, outputText)
+	recordBoundTerminal(t, s, providerInvocationID, observation.Request.Terminal)
 	handoff, err := s.PersistProviderTerminalHandoff(context.Background(), PersistProviderTerminalHandoffRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,

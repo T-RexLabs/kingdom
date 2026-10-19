@@ -3141,7 +3141,7 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 			FROM provider_process_guards
-			WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, req.AttemptID).Scan(&unresolved, &unquarantined); err != nil {
+			WHERE attempt_id = ?`, req.AttemptID).Scan(&unresolved, &unquarantined); err != nil {
 			return fmt.Errorf("check guardian evidence recovery quarantine: %w", err)
 		}
 		if unresolved == 0 || unquarantined != 0 {
@@ -3151,7 +3151,7 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1)
 		FROM provider_process_guards
-		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ? AND `+guardCondition, req.AttemptID).Scan(&addressableGuards); err != nil {
+		WHERE attempt_id = ? AND `+guardCondition, req.AttemptID).Scan(&addressableGuards); err != nil {
 		return fmt.Errorf("check attempt stop retry guardian: %w", err)
 	}
 	if addressableGuards == 0 {
@@ -4404,19 +4404,15 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
-		if binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}); err != nil {
-			return err
-		} else if bound {
-			// A stale attempt's server is gone. Its request can be replaced only
-			// if it never admitted a tool, because then no workspace effect can
-			// be hiding behind the missing provider evidence.
-			occurred, err := time.Parse(time.RFC3339Nano, occurredAt)
-			if err != nil {
-				return fmt.Errorf("parse stale replacement time: %w", err)
-			}
-			if err := providerrequest.AbandonTx(ctx, tx, binding.ID, binding.Lease, occurred); err != nil {
-				return fmt.Errorf("provider request cannot be abandoned for stale replacement: %w", err)
-			}
+		// A stale attempt's server is gone. Its request can be replaced only
+		// if it never admitted a tool, because then no workspace effect can
+		// be hiding behind the missing provider evidence.
+		occurred, err := time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			return fmt.Errorf("parse stale replacement time: %w", err)
+		}
+		if _, err := providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}, occurred); err != nil {
+			return fmt.Errorf("provider request cannot be abandoned for stale replacement: %w", err)
 		}
 		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
 			return err

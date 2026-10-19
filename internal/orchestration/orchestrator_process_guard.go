@@ -184,7 +184,7 @@ const lostHandoffCandidateConditions = `ae.state IN ('starting','running') AND a
 		AND (
 		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
 		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
-		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt') OR
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id) OR
 		  EXISTS (SELECT 1 FROM attempt_cancel_outbox pending WHERE pending.attempt_id = ae.attempt_id AND pending.status = 'pending')
 		)
 		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
@@ -303,7 +303,7 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 // if every admitted effect is already closed; otherwise the attempt stays
 // blocked until its effects can be proven, and other recoveries continue.
 func (o *orchestrationLoop) settleLostHandoffByAbandonment(ctx context.Context, result asyncExecutionResult) error {
-	identity, bound, err := o.executionStore.AbandonProviderRequest(ctx, result.providerInvocationID)
+	identity, err := o.executionStore.AbandonProviderRequest(ctx, result.providerInvocationID)
 	if errors.Is(err, providerrequest.ErrResourcesOpen) {
 		slog.Warn("lost provider terminal handoff stays blocked", "attempt_id", result.attemptID, "provider_invocation_id", result.providerInvocationID, "error", err)
 		return nil
@@ -311,16 +311,13 @@ func (o *orchestrationLoop) settleLostHandoffByAbandonment(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	if !bound {
-		return fmt.Errorf("provider invocation %q has no canonical request", result.providerInvocationID)
-	}
 	observation, err := providerexecution.AbandonedObservation(identity, result.providerInvocationID)
 	if err != nil {
 		return err
 	}
 	observation.Cancelled = result.outcome.State == "cancelled"
 	result.providerStreamObservation = observation
-	return errors.Join(o.commitRecoveredGuardFailure(ctx, result), observation.ReleaseContent())
+	return errors.Join(o.commitLostHandoffFailure(ctx, result), observation.ReleaseContent())
 }
 
 func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {

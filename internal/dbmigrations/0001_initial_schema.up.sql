@@ -542,10 +542,8 @@ CREATE TABLE provider_invocations (
   updated_at TEXT NOT NULL,
   terminal_handoff_pending_lease_owner TEXT NOT NULL DEFAULT '',
   terminal_handoff_pending_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_lease_version >= 0),
-  terminal_handoff_pending_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_process_quiescent IN (0, 1)),
   terminal_recovery_required_lease_owner TEXT NOT NULL DEFAULT '',
   terminal_recovery_required_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_lease_version >= 0),
-  terminal_recovery_required_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_process_quiescent IN (0, 1)),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
@@ -565,8 +563,6 @@ ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocati
 
 CREATE TABLE provider_process_guards (
   guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
-  owner_kind TEXT NOT NULL CHECK (owner_kind = 'work_order_attempt'),
-  owner_id TEXT NOT NULL CHECK (TRIM(owner_id) <> ''),
   provider_invocation_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL DEFAULT '',
   run_id TEXT NOT NULL DEFAULT '',
@@ -599,7 +595,7 @@ CREATE TABLE provider_process_guards (
   evidence_cleaned_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK (owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> ''),
+  CHECK (attempt_id <> '' AND run_id <> '' AND node_run_id <> ''),
   CHECK (
     (lifecycle = 'acknowledged' AND quiescent_at IS NULL AND quiescence_evidence_sha256 = '')
     OR

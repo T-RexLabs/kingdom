@@ -64,7 +64,6 @@ func (o *orchestrationLoop) markProviderTerminalHandoffPending(ctx context.Conte
 		NodeRunID:            result.attempt.NodeRunID,
 		ExpectedLeaseOwner:   result.expectedLeaseOwner,
 		ExpectedLeaseVersion: result.expectedLeaseVersion,
-		ProcessQuiescent:     result.providerStreamObservation.ProcessQuiescent,
 		MarkedAt:             o.now().UTC().Format(time.RFC3339Nano),
 	})
 	if err == nil {
@@ -84,7 +83,6 @@ func (o *orchestrationLoop) markProviderTerminalRecoveryRequired(ctx context.Con
 		NodeRunID:            result.attempt.NodeRunID,
 		ExpectedLeaseOwner:   result.expectedLeaseOwner,
 		ExpectedLeaseVersion: result.expectedLeaseVersion,
-		ProcessQuiescent:     result.providerStreamObservation.ProcessQuiescent,
 		MarkedAt:             o.now().UTC().Format(time.RFC3339Nano),
 	})
 }

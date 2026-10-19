@@ -167,8 +167,6 @@ type InvocationStreamObservation = providerexecution.InvocationStreamObservation
 
 type InvocationToolObservation = providerexecution.InvocationToolObservation
 
-type ProcessGuardObservation = providerexecution.ProcessGuardObservation
-
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
 type ExecutionOutcome struct {

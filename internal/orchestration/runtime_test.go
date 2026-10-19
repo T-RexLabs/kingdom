@@ -1343,13 +1343,7 @@ func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T)
 	}); err != nil {
 		t.Fatalf("enqueue attempt: %v", err)
 	}
-	if err := store.UpdateProviderSessionID(context.Background(), executionstore.UpdateProviderSessionIDRequest{
-		AttemptID:         attemptID,
-		ProviderSessionID: "ses_cancel_outbox_real",
-		UpdatedAt:         "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("update provider session id: %v", err)
-	}
+	openBoundRequest(t, db, store, attemptID, "run_1", "nr_1", "pinv_cancel_outbox", "ses_cancel_outbox_real")
 	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
 		CancelOutboxID: "cancel_outbox_1",
 		AttemptID:      attemptID,
@@ -1442,84 +1436,6 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T)
 	}
 }
 
-func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	now := "2026-03-01T12:00:05Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_provider_blocked', 'run_1', 'work_intake', 2, 2, 'blocked', 'governance', 'agent_governance', 1, '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_provider_blocked', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_blocked', 'ses_retry_provider_blocked', '2026-03-01T12:00:00Z', NULL, '`+now+`', '`+now+`', 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', '`+now+`', '`+now+`')`)
-
-	store := executionstore.New(db)
-	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
-		CancelOutboxID: "cancel_outbox_blocked_retry",
-		AttemptID:      "run_1:work_intake:2",
-		RunID:          "run_1",
-		NodeRunID:      "nr_retry_provider_blocked",
-		SessionID:      "session_retry_provider_blocked",
-		ReasonCode:     "superseded_after_launch_handoff",
-		ReasonText:     "retry attempt superseded after launch handoff by an earlier successful attempt",
-		RequestedAt:    now,
-		CreatedAt:      now,
-	}); err != nil {
-		t.Fatalf("queue attempt cancel: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	loop := orchestrationLoop{
-		db:             db,
-		provider:       fixtureProvider(db, adapter),
-		executionStore: store,
-		cancelGrace:    time.Second,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 6, 0, time.UTC)
-		},
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain attempt cancel outbox: %v", err)
-	}
-
-	var nodeStatus string
-	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_retry_provider_blocked'`).Scan(&nodeStatus); err != nil {
-		t.Fatalf("query blocked retry node status after cancel drain: %v", err)
-	}
-	if nodeStatus != "blocked" {
-		t.Fatalf("expected unproven launched retry to remain blocked, got %q", nodeStatus)
-	}
-
-	var outboxStatus string
-	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&outboxStatus); err != nil {
-		t.Fatalf("query blocked retry cancel outbox status: %v", err)
-	}
-	if outboxStatus != "pending" {
-		t.Fatalf("expected unproven launched retry cancel outbox to remain pending, got %q", outboxStatus)
-	}
-	var handoffState string
-	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&handoffState); err != nil {
-		t.Fatalf("query blocked retry cancellation handoff state: %v", err)
-	}
-	if handoffState != "awaiting_quiescence" {
-		t.Fatalf("expected unproven launched retry to pause, got %q", handoffState)
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain paused attempt cancel outbox: %v", err)
-	}
-	if got := adapter.cancelCalls(); got != 1 {
-		t.Fatalf("expected paused handoff to avoid automatic cancellation retry, got %d calls", got)
-	}
-	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_requested', last_error = '', updated_at = '2026-03-01T12:00:07Z' WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`)
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain explicitly retried attempt cancel outbox: %v", err)
-	}
-	if got := adapter.cancelCalls(); got != 2 {
-		t.Fatalf("expected exactly one further provider cancellation after explicit retry, got %d calls", got)
-	}
-}
-
 func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOperatorRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -1533,7 +1449,7 @@ func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOper
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_1', 'nr_1', 'committed_cancelled', 'provider_backed', 'server_response', '', 1, 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', '`+now+`', '`+now+`', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', 'superseded', 'server_response', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv_guardian_evidence_lost' WHERE attempt_id = '`+attemptID+`'`)
-	mustExec(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard_guardian_evidence_lost', 'work_order_attempt', '`+attemptID+`', 'inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_guardian_evidence_lost', 1, '`+now+`', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO provider_process_guards (guard_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard_guardian_evidence_lost', 'inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_guardian_evidence_lost', 1, '`+now+`', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'ses_guardian_evidence_lost', 'agent_unresponsive', 'provider stopped responding', '`+now+`', 'pending', 'guardian_evidence_lost', 1, 'guardian evidence missing', '`+now+`', '`+now+`')`)
 
 	adapter := &timeoutCancelObserverAdapter{}
@@ -1586,6 +1502,7 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_peer_restore', 'run_1', 'delegated_execution_artisan', 1, 1, 'running', 'builder-artisan', 'agent_builder_peer_restore', 1, '`+now+`', NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, base_snapshot_id, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:implementation:1', 'run_1', 'nr_builder_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_restore', 'snap_attempt_base', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, created_at, updated_at) VALUES ('run_1:delegated_execution_artisan:1', 'run_1', 'nr_builder_peer_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_peer_restore', 'ses_builder_peer_restore', '`+now+`', '`+now+`', '`+now+`')`)
+	openBoundRequest(t, db, executionstore.New(db), "run_1:delegated_execution_artisan:1", "run_1", "nr_builder_peer_restore", "pinv_builder_peer_restore", "ses_builder_peer_restore")
 	if err := executionstore.New(db).QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{CancelOutboxID: "cancel_builder_peer_restore", AttemptID: "run_1:delegated_execution_artisan:1", RunID: "run_1", NodeRunID: "nr_builder_peer_restore", SessionID: "session_builder_peer_restore", ReasonCode: "agent_unresponsive", RequestedAt: now, CreatedAt: now}); err != nil {
 		t.Fatalf("queue active builder_peer cancellation: %v", err)
 	}
@@ -1629,6 +1546,14 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 	if string(content) != "dirty workspace\n" {
 		t.Fatalf("active workspace sibling allowed restore: %q", content)
 	}
+	// The peer's request ends without ever admitting work, so its cancellation
+	// can be published.
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', lease_owner = 'bound-request-holder' WHERE attempt_id = 'run_1:delegated_execution_artisan:1'`)
+	if _, err := executionstore.New(db).AbandonProviderRequest(context.Background(), "pinv_builder_peer_restore"); err != nil {
+		t.Fatalf("abandon builder_peer request: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_cancelled', lease_owner = '' WHERE attempt_id = 'run_1:delegated_execution_artisan:1'`)
+	mustExec(t, db, `UPDATE provider_invocations SET invocation_state = 'superseded' WHERE provider_invocation_id = 'pinv_builder_peer_restore'`)
 	if err := executionstore.New(db).MarkAttemptCancelPublished(context.Background(), "cancel_builder_peer_restore", now); err != nil {
 		t.Fatalf("publish builder_peer cancellation: %v", err)
 	}
@@ -3122,7 +3047,7 @@ func TestActivateProviderInvocationForExecutionBindsPreparedRequestToOpenInvocat
 	if err != nil {
 		t.Fatalf("prepare provider request: %v", err)
 	}
-	if err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_server_response_setup"}, nodeAttempt{NodeRunID: "nr_server_response_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_server_response_setup", providerInvocationID, prepared, executionstore.ProviderCompletionModeServerResponse, "2026-03-01T12:00:00Z", ""); err != nil {
+	if err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_server_response_setup"}, nodeAttempt{NodeRunID: "nr_server_response_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_server_response_setup", providerInvocationID, prepared, executionstore.ProviderCompletionModeServerResponse, "2026-03-01T12:00:00Z"); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	binding, bound, err := providerrequest.ForOwner(context.Background(), db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: providerInvocationID})
@@ -5161,7 +5086,7 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
 	requests := newRequestFixture(db, nil)
 	prepared := requests.prepare(t, attemptID, invocationID)
-	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{RequestIdentity: &prepared.Identity, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_provider_replay", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: prepared.ProviderSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
+	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{RequestIdentity: prepared.Identity, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_provider_replay", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: prepared.ProviderSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
 	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"first canonical response"}`}, nil)
@@ -12319,8 +12244,8 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	if evidence.CompletionMode != executionstore.ProviderCompletionModeServerResponse || evidence.LeaseOwner != "runtime_orchestrator" || evidence.LeaseVersion != 1 {
 		t.Fatalf("unexpected durable timeout lineage: %#v", evidence)
 	}
-	if !evidence.Observation.TimedOut || evidence.Observation.ProcessExited || evidence.Observation.ProcessExitCode != nil || evidence.Observation.StdoutDrained || evidence.Observation.StderrDrained {
-		t.Fatalf("timeout observation fabricated provider process evidence: %#v", evidence.Observation)
+	if !evidence.Observation.TimedOut {
+		t.Fatalf("timeout observation was not recorded: %#v", evidence.Observation)
 	}
 
 	for table, condition := range map[string]string{

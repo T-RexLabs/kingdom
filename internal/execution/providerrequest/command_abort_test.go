@@ -67,7 +67,7 @@ func TestAbortRejectsWrongIdentityAndStartedCommands(t *testing.T) {
 	if err := transaction(t, db, func(tx *sql.Tx) error { return AbortCommandTx(ctx, tx, claim.ID, "wrong", testNow()) }); err == nil {
 		t.Fatal("aborted a claim under another identity")
 	}
-	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','work_order_attempt','attempt','inv','attempt','run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,'t','t','t',?,'t','t')`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','inv','attempt','run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,'t','t','t',?,'t','t')`, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	execSQL(t, db, `UPDATE provider_command_calls SET guard_id='guard',completed_at='t'`)
 	if err := transaction(t, db, func(tx *sql.Tx) error { return AbortCommandTx(ctx, tx, claim.ID, claim.Digest, testNow()) }); err == nil {
 		t.Fatal("aborted a command that a guardian started")

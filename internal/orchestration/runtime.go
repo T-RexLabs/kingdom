@@ -1185,8 +1185,6 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"provider_terminal_handoffs": nil,
 		"provider_process_guards": {
 			"guard_id",
-			"owner_kind",
-			"owner_id",
 			"provider_invocation_id",
 			"attempt_id",
 			"run_id",

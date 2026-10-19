@@ -81,7 +81,7 @@ func TestRunTerminalizationRetriesConcurrentPreparationWriter(t *testing.T) {
 				if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: nodeRunID, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_" + nodeID, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
 					t.Fatal(err)
 				}
-				if _, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "preparer_" + nodeID, LeaseUntil: "2026-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || !acquired {
+				if _, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "preparer_" + nodeID, LeaseUntil: "2999-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"}); err != nil || !acquired {
 					t.Fatalf("claim preparation: acquired=%t err=%v", acquired, err)
 				}
 			}
@@ -90,7 +90,7 @@ func TestRunTerminalizationRetriesConcurrentPreparationWriter(t *testing.T) {
 			connector.beforeWrite = func() {
 				interleaved = true
 				if scenario.writer == "provider_activated" {
-					_, writerErr = store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_cancel_race", AttemptID: "run_1:advisor_0:1", RunID: "run_1", NodeRunID: "nr_advisor_0", LogicalSessionID: "session_advisor_0", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: "provider_session_cancel_race", CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: "preparer_advisor_0", ExpectedLeaseVersion: 1})
+					_, writerErr = store.ActivateProviderInvocation(ctx, withBoundRequest(executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_cancel_race", AttemptID: "run_1:advisor_0:1", RunID: "run_1", NodeRunID: "nr_advisor_0", LogicalSessionID: "session_advisor_0", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: "provider_session_cancel_race", CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: "preparer_advisor_0", ExpectedLeaseVersion: 1}))
 					return
 				}
 				_, writerErr = otherDB.ExecContext(ctx, `UPDATE attempt_executions SET lease_expires_at='2026-03-01T12:02:00Z' WHERE attempt_id='run_1:advisor_0:1'`)

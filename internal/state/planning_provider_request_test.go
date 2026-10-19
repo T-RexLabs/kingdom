@@ -38,12 +38,6 @@ func planningRequestObservation(t *testing.T, request *FinalizePlanningProviderS
 	if err != nil {
 		t.Fatal(err)
 	}
-	observation.ProcessExited = false
-	observation.ProcessExitCode = nil
-	observation.ProcessExitSignal = nil
-	observation.ProcessQuiescent = false
-	observation.StdoutDrained = false
-	observation.StderrDrained = false
 	invocationID := request.PlanningProviderInvocationID
 	terminal := providerexecution.RequestTerminal{
 		Outcome: providerexecution.RequestOutcomeSucceeded, AssistantMessageID: observation.FinalTurnID,
@@ -80,7 +74,7 @@ func setPlanningRequestObservation(t *testing.T, request *FinalizePlanningProvid
 
 func newPlanningRequestActivation(t *testing.T) (*PlanningStore, PlanningOperation, ActivatePlanningProviderInvocationRequest) {
 	t.Helper()
-	store, operation := newPlanningProviderSettlementTestStore(t)
+	store, operation := newPlanningOperationTestStore(t)
 	// V2 admission checks the actual clock, never caller-authored OpenedAt.
 	if _, err := store.db.Exec(`UPDATE planning_operations SET lease_expires_at='2099-01-01T00:00:00Z' WHERE operation_id=?`, operation.OperationID); err != nil {
 		t.Fatal(err)
@@ -88,15 +82,12 @@ func newPlanningRequestActivation(t *testing.T) (*PlanningStore, PlanningOperati
 	if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id=NULL,provider_session_id=NULL WHERE operation_id=?`, operation.OperationID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.db.Exec(`DELETE FROM planning_provider_invocations WHERE planning_provider_invocation_id='ppinv_test_1'`); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := store.db.Exec(`UPDATE planning_sessions SET current_operation_id=? WHERE planning_session_id=?`, operation.OperationID, operation.PlanningSessionID); err != nil {
 		t.Fatal(err)
 	}
 	identity := planningRequestIdentity()
 	return store, operation, ActivatePlanningProviderInvocationRequest{
-		RequestIdentity:              &identity,
+		RequestIdentity:              identity,
 		PlanningProviderInvocationID: "ppinv_test_1", PlanningOperationID: operation.OperationID,
 		PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-ps_planning_reuse",
 		ProviderSessionID: identity.SessionID, CreatedAt: "2026-04-21T16:00:02Z", OpenedAt: "2026-04-21T16:00:03Z",
@@ -114,7 +105,7 @@ func TestPlanningProviderRequestActivationBindsExactCanonicalOwner(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("binding not published: %+v %v", binding, err)
 	}
-	if binding.ID != invocation.PlanningProviderInvocationID || binding.Identity != *request.RequestIdentity || binding.Lease != (providerrequest.Lease{Owner: request.LeaseOwner, Version: int64(request.LeaseVersion)}) || binding.LogicalSessionID != request.LogicalSessionID {
+	if binding.ID != invocation.PlanningProviderInvocationID || binding.Identity != request.RequestIdentity || binding.Lease != (providerrequest.Lease{Owner: request.LeaseOwner, Version: int64(request.LeaseVersion)}) || binding.LogicalSessionID != request.LogicalSessionID {
 		t.Fatalf("binding differs from activation: %+v", binding)
 	}
 	current, found, err := store.GetOperation(context.Background(), operation.OperationID)
@@ -127,7 +118,7 @@ func TestPlanningProviderRequestActivationBindsExactCanonicalOwner(t *testing.T)
 }
 
 func TestPlanningProviderRequestActivationRollsBackInvalidIdentityAndOwner(t *testing.T) {
-	for _, name := range []string{"session", "blank", "lease", "current-operation"} {
+	for _, name := range []string{"session", "blank", "omitted", "lease", "current-operation"} {
 		t.Run(name, func(t *testing.T) {
 			store, operation, request := newPlanningRequestActivation(t)
 			switch name {
@@ -135,6 +126,8 @@ func TestPlanningProviderRequestActivationRollsBackInvalidIdentityAndOwner(t *te
 				request.RequestIdentity.SessionID = "another-provider-session"
 			case "blank":
 				request.RequestIdentity.ProfileID = ""
+			case "omitted":
+				request.RequestIdentity = providerexecution.RequestIdentity{}
 			case "lease":
 				request.LeaseVersion++
 			case "current-operation":
@@ -156,41 +149,6 @@ func TestPlanningProviderRequestActivationRollsBackInvalidIdentityAndOwner(t *te
 				t.Fatalf("activation leaked operation state: %+v %v", current, err)
 			}
 		})
-	}
-}
-
-func TestPlanningProviderRequestCannotAttachToOpenUnboundInvocation(t *testing.T) {
-	store, operation := newPlanningProviderSettlementTestStore(t)
-	identity := planningRequestIdentity()
-	_, err := store.ActivatePlanningProviderInvocation(context.Background(), ActivatePlanningProviderInvocationRequest{
-		RequestIdentity: &identity, PlanningProviderInvocationID: "ppinv_test_1", PlanningOperationID: operation.OperationID,
-		PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-ps_planning_reuse", ProviderSessionID: identity.SessionID,
-		CreatedAt: "2026-04-21T16:00:02Z", OpenedAt: "2026-04-21T16:00:03Z", LeaseOwner: "worker_1", LeaseVersion: 1,
-	})
-	if err == nil || !strings.Contains(err.Error(), "cannot attach") {
-		t.Fatalf("open unbound invocation was not rejected at ownership boundary: %v", err)
-	}
-	var count int
-	if err := store.db.QueryRow(`SELECT COUNT(*) FROM provider_requests`).Scan(&count); err != nil || count != 0 {
-		t.Fatalf("unexpected binding count=%d err=%v", count, err)
-	}
-}
-
-func TestPlanningProviderRequestMarkOpenCannotBypassAtomicBinding(t *testing.T) {
-	store, operation, request := newPlanningRequestActivation(t)
-	if _, err := store.ActivatePlanningProviderInvocation(context.Background(), request); err != nil {
-		t.Fatal(err)
-	}
-	_, err := store.MarkPlanningProviderInvocationOpen(context.Background(), MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: request.PlanningProviderInvocationID, PlanningOperationID: operation.OperationID,
-		ProviderSessionID: request.ProviderSessionID, OpenedAt: "2026-04-21T16:00:04Z", LeaseOwner: request.LeaseOwner, LeaseVersion: request.LeaseVersion,
-	})
-	if err == nil || !strings.Contains(err.Error(), "atomic activation") {
-		t.Fatalf("low-level mark-open bypassed binding: %v", err)
-	}
-	request.RequestIdentity = nil
-	if _, err := store.ActivatePlanningProviderInvocation(context.Background(), request); err == nil {
-		t.Fatal("bound invocation downgraded to unbound activation")
 	}
 }
 
@@ -222,35 +180,6 @@ func TestPlanningProviderRequestSettlementRequiresStoredTerminalForEveryOutcome(
 			var state string
 			if err := store.db.QueryRow(`SELECT invocation_state FROM planning_provider_invocations WHERE planning_provider_invocation_id=?`, activation.PlanningProviderInvocationID).Scan(&state); err != nil || state != "open" {
 				t.Fatalf("invocation released before closure: %s %v", state, err)
-			}
-		})
-	}
-}
-
-func TestPlanningProviderRequestV1CallbackCannotReuseOwnedSession(t *testing.T) {
-	for _, atomicActivation := range []bool{false, true} {
-		t.Run(fmt.Sprint(atomicActivation), func(t *testing.T) {
-			store, operation, request := newPlanningRequestActivation(t)
-			if _, err := store.ActivatePlanningProviderInvocation(context.Background(), request); err != nil {
-				t.Fatal(err)
-			}
-			if _, err := store.db.Exec(`UPDATE planning_operations SET status='failed',active_provider_invocation_id=NULL WHERE operation_id=?`, operation.OperationID); err != nil {
-				t.Fatal(err)
-			}
-			second, err := store.CreateOperation(context.Background(), CreatePlanningOperationRequest{OperationID: "po_second", PlanningSessionID: operation.PlanningSessionID, Type: PlanningOperationTypeReply, Status: PlanningOperationStatusRunning, RequestPayloadJSON: `{}`, LeaseOwner: "worker_2", LeaseVersion: 1, LeaseExpiresAt: "2026-04-21T16:05:00Z", CreatedAt: "2026-04-21T16:00:10Z"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if atomicActivation {
-				_, err = store.ActivatePlanningProviderInvocation(context.Background(), ActivatePlanningProviderInvocationRequest{PlanningProviderInvocationID: "ppinv_second", PlanningOperationID: second.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: request.LogicalSessionID, ProviderSessionID: request.ProviderSessionID, LeaseOwner: "worker_2", LeaseVersion: 1, CreatedAt: "2026-04-21T16:00:11Z", OpenedAt: "2026-04-21T16:00:11Z"})
-			} else {
-				if _, err := store.CreatePlanningProviderInvocation(context.Background(), CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: "ppinv_second", PlanningOperationID: second.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: request.LogicalSessionID, LeaseOwner: "worker_2", LeaseVersion: 1, CreatedAt: "2026-04-21T16:00:11Z"}); err != nil {
-					t.Fatal(err)
-				}
-				_, err = store.MarkPlanningProviderInvocationOpen(context.Background(), MarkPlanningProviderInvocationOpenRequest{PlanningProviderInvocationID: "ppinv_second", PlanningOperationID: second.OperationID, ProviderSessionID: request.ProviderSessionID, LeaseOwner: "worker_2", LeaseVersion: 1, OpenedAt: "2026-04-21T16:00:12Z"})
-			}
-			if err == nil || !strings.Contains(err.Error(), "atomic request ownership") {
-				t.Fatalf("unbound path reused owned session: %v", err)
 			}
 		})
 	}
@@ -383,7 +312,7 @@ func TestPlanningProviderRequestAbortAndRetryValidateBeforeOwnerRelease(t *testi
 				err = store.FinalizeGenerateTitleAbort(context.Background(), FinalizeGenerateTitleAbortRequest{SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: activation.LeaseOwner, LeaseVersion: activation.LeaseVersion, Status: PlanningOperationStatusFailed, UpdatedAt: "2026-04-21T16:02:05Z", FinishedAt: "2026-04-21T16:02:05Z", ErrorMessage: "timeout", ProviderSettlement: settlement, TerminalEvent: &AppendPlanningOperationEventRequest{EventID: "title-terminal", OperationID: operation.OperationID, Seq: 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: "2026-04-21T16:02:05Z"}})
 			} else {
 				now, _ := time.Parse(time.RFC3339, "2026-04-21T16:02:05Z")
-				request := planningRetryFailureRequest(operation, operation, activation.PlanningProviderInvocationID, now, now.Add(time.Minute), RetryDecisionRetry, 1)
+				request := unclosedPlanningRetryFailureRequest(operation, operation, activation.PlanningProviderInvocationID, now, now.Add(time.Minute), RetryDecisionRetry, 1)
 				request.LeaseOwner = activation.LeaseOwner
 				request.LeaseVersion = activation.LeaseVersion
 				request.ProviderSettlement = settlement
@@ -397,17 +326,6 @@ func TestPlanningProviderRequestAbortAndRetryValidateBeforeOwnerRelease(t *testi
 				t.Fatalf("failed gate changed owner: %+v %v", current, loadErr)
 			}
 		})
-	}
-}
-
-func TestPlanningProviderRequestLowLevelCreateCannotReplayBoundInvocation(t *testing.T) {
-	store, operation, request := newPlanningRequestActivation(t)
-	if _, err := store.ActivatePlanningProviderInvocation(context.Background(), request); err != nil {
-		t.Fatal(err)
-	}
-	_, err := store.CreatePlanningProviderInvocation(context.Background(), CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: request.PlanningProviderInvocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: request.LogicalSessionID, CreatedAt: request.CreatedAt, LeaseOwner: request.LeaseOwner, LeaseVersion: request.LeaseVersion})
-	if err == nil || !strings.Contains(err.Error(), "atomic request activation") {
-		t.Fatalf("low-level create replayed bound invocation without identity: %v", err)
 	}
 }
 

@@ -30,12 +30,12 @@ func requestActivationFixture(t *testing.T, db *sql.DB) (*Store, ActivateProvide
 	return s, ActivateProviderInvocationRequest{
 		ProviderInvocationID: "request-invocation", AttemptID: "request-attempt", RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical-request", ProviderSessionID: identity.SessionID,
 		CompletionMode: ProviderCompletionModeServerResponse, IssuedAt: "2026-03-01T12:00:02Z", CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z",
-		ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, RequestIdentity: &identity,
+		ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, RequestIdentity: identity,
 	}
 }
 
 func TestProviderRequestActivationIsAtomicAndIdentityFenced(t *testing.T) {
-	for _, mutation := range []string{"none", "session", "lease", "invalid identity", "expired"} {
+	for _, mutation := range []string{"none", "session", "lease", "invalid identity", "omitted identity", "expired"} {
 		t.Run(mutation, func(t *testing.T) {
 			db := openTestDB(t)
 			s, req := requestActivationFixture(t, db)
@@ -46,6 +46,8 @@ func TestProviderRequestActivationIsAtomicAndIdentityFenced(t *testing.T) {
 				req.ExpectedLeaseVersion++
 			case "invalid identity":
 				req.RequestIdentity.ProfileID = ""
+			case "omitted identity":
+				req.RequestIdentity = providerexecution.RequestIdentity{}
 			case "expired":
 				s.now = func() time.Time { return time.Date(2026, 3, 1, 12, 11, 0, 0, time.UTC) }
 			}
@@ -63,7 +65,7 @@ func TestProviderRequestActivationIsAtomicAndIdentityFenced(t *testing.T) {
 				t.Fatal(err)
 			}
 			binding, found, err := providerrequest.ForOwner(context.Background(), db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: req.ProviderInvocationID})
-			if err != nil || !found || binding.Identity != *req.RequestIdentity {
+			if err != nil || !found || binding.Identity != req.RequestIdentity {
 				t.Fatalf("exact binding missing: %+v %v", binding, err)
 			}
 			if _, err := s.ActivateProviderInvocation(context.Background(), req); err != nil {
@@ -74,23 +76,6 @@ func TestProviderRequestActivationIsAtomicAndIdentityFenced(t *testing.T) {
 				t.Fatal("changed activation callback accepted")
 			}
 		})
-	}
-}
-
-func TestProviderRequestActivationCannotAdoptOpenUnboundInvocation(t *testing.T) {
-	db := openTestDB(t)
-	s, req := requestActivationFixture(t, db)
-	identity := req.RequestIdentity
-	req.RequestIdentity = nil
-	if _, err := s.ActivateProviderInvocation(context.Background(), req); err != nil {
-		t.Fatal(err)
-	}
-	req.RequestIdentity = identity
-	if _, err := s.ActivateProviderInvocation(context.Background(), req); err == nil {
-		t.Fatal("adopted an already open unbound invocation")
-	}
-	if countPhase2Table(t, db, "provider_requests") != 0 {
-		t.Fatal("created retroactive authority")
 	}
 }
 
@@ -110,7 +95,7 @@ func TestProviderRequestActivationConfirmsExactBindingAfterCommitError(t *testin
 	}
 }
 
-func TestProviderSettlementRejectsUnboundRequestObservation(t *testing.T) {
+func TestProviderSettlementRejectsForeignRequestObservation(t *testing.T) {
 	s, db, req := phase2ProviderSettlementFixture(t)
 	req.Settlement.Outcome = ProviderCompletionOutcomeFailed
 	req.Terminal.TerminalState = "committed_failure"
@@ -120,62 +105,45 @@ func TestProviderSettlementRejectsUnboundRequestObservation(t *testing.T) {
 		Terminal: providerexecution.RequestTerminal{Outcome: providerexecution.RequestOutcomeFailed, Events: providerexecution.ReferenceText(id, "events"), Messages: providerexecution.ReferenceText(id, "messages")},
 	}
 	if _, err := s.PersistProviderTerminalHandoff(context.Background(), terminalHandoffRequest(req)); err == nil || !strings.Contains(err.Error(), "provider request") {
-		t.Fatalf("unbound request handoff was not rejected: %v", err)
+		t.Fatalf("foreign request handoff was not rejected: %v", err)
 	}
-	// Recovered completion is another entry point and must be fenced too.
-	req.RecoveredGuardQuiescence = true
+	// Lost-handoff completion is another entry point and must be fenced too.
+	req.LostHandoff = true
 	_, err := s.SettleProviderCompletionAndTerminal(context.Background(), req)
-	if err == nil || !strings.Contains(err.Error(), "provider request") {
-		t.Fatalf("unbound request observation was not rejected at ownership boundary: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "bound identity") {
+		t.Fatalf("foreign request observation was not rejected at ownership boundary: %v", err)
 	}
 	if countPhase2Table(t, db, "provider_completion_settlements") != 0 {
-		t.Fatal("unbound request settled")
+		t.Fatal("foreign request settled")
 	}
 }
 
-func TestProviderRequestCannotBypassActivationOrRollbackDispatch(t *testing.T) {
-	for _, action := range []string{"open", "omit identity", "invalidate", "replace", "unlaunched", "dispatched rollback"} {
+func TestProviderRequestRollbackFencesDispatch(t *testing.T) {
+	for _, action := range []string{"unlaunched", "dispatched rollback"} {
 		t.Run(action, func(t *testing.T) {
 			db := openTestDB(t)
 			s, req := requestActivationFixture(t, db)
 			if _, err := s.ActivateProviderInvocation(context.Background(), req); err != nil {
 				t.Fatal(err)
 			}
-			var err error
-			switch action {
-			case "open":
-				_, err = s.MarkProviderInvocationOpen(context.Background(), MarkProviderInvocationOpenRequest{ProviderInvocationID: req.ProviderInvocationID, AttemptID: req.AttemptID, ProviderSessionID: req.ProviderSessionID, OpenedAt: req.OpenedAt})
-			case "omit identity":
-				req.RequestIdentity = nil
-				_, err = s.ActivateProviderInvocation(context.Background(), req)
-			case "invalidate":
-				err = s.InvalidateProviderInvocation(context.Background(), InvalidateProviderInvocationRequest{ProviderInvocationID: req.ProviderInvocationID, InvalidReason: "test", UpdatedAt: req.OpenedAt})
-			case "replace":
-				_, err = s.CreateProviderInvocation(context.Background(), CreateProviderInvocationRequest{ProviderInvocationID: "replacement", AttemptID: req.AttemptID, RunID: req.RunID, NodeRunID: req.NodeRunID, LogicalSessionID: req.LogicalSessionID, CompletionMode: req.CompletionMode, IssuedAt: req.IssuedAt, CreatedAt: req.CreatedAt})
-				if err != nil {
-					t.Fatal(err)
+			if action == "dispatched rollback" {
+				// Canonical dispatch first requires a started attempt. A
+				// queued flag alone must never hide an issued request.
+				mustExec(t, db, `UPDATE attempt_executions SET state='running'`)
+				tx, txErr := db.BeginTx(context.Background(), nil)
+				if txErr != nil {
+					t.Fatal(txErr)
 				}
-				err = s.SupersedeProviderInvocation(context.Background(), SupersedeProviderInvocationRequest{ProviderInvocationID: req.ProviderInvocationID, SupersededByInvocationID: "replacement", UpdatedAt: req.OpenedAt})
-			case "unlaunched", "dispatched rollback":
-				if action == "dispatched rollback" {
-					// Canonical dispatch first requires a started attempt. A
-					// queued flag alone must never hide an issued request.
-					mustExec(t, db, `UPDATE attempt_executions SET state='running'`)
-					tx, txErr := db.BeginTx(context.Background(), nil)
-					if txErr != nil {
-						t.Fatal(txErr)
-					}
-					if txErr = providerrequest.IssueDispatchTx(context.Background(), tx, req.ProviderInvocationID, *req.RequestIdentity, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, s.currentTime()); txErr != nil {
-						_ = tx.Rollback()
-						t.Fatal(txErr)
-					}
-					if txErr = tx.Commit(); txErr != nil {
-						t.Fatal(txErr)
-					}
-					mustExec(t, db, `UPDATE attempt_executions SET state='queued'`)
+				if txErr = providerrequest.IssueDispatchTx(context.Background(), tx, req.ProviderInvocationID, req.RequestIdentity, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, s.currentTime()); txErr != nil {
+					_ = tx.Rollback()
+					t.Fatal(txErr)
 				}
-				err = s.InvalidateUnlaunchedProviderInvocation(context.Background(), InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: req.ProviderInvocationID, InvalidReason: "test", UpdatedAt: req.OpenedAt, ExpectedLeaseOwner: req.ExpectedLeaseOwner, ExpectedLeaseVersion: req.ExpectedLeaseVersion})
+				if txErr = tx.Commit(); txErr != nil {
+					t.Fatal(txErr)
+				}
+				mustExec(t, db, `UPDATE attempt_executions SET state='queued'`)
 			}
+			err := s.InvalidateUnlaunchedProviderInvocation(context.Background(), InvalidateUnlaunchedProviderInvocationRequest{ProviderInvocationID: req.ProviderInvocationID, InvalidReason: "test", UpdatedAt: req.OpenedAt, ExpectedLeaseOwner: req.ExpectedLeaseOwner, ExpectedLeaseVersion: req.ExpectedLeaseVersion})
 			if action == "unlaunched" {
 				if err != nil {
 					t.Fatal(err)

@@ -477,7 +477,7 @@ func (s *Store) runProviderProcessGuardsQuiescent(ctx context.Context, runID str
 		SELECT 1
 		FROM provider_process_guards ppg
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
-		WHERE ae.run_id = ? AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle <> 'quiescent'
+		WHERE ae.run_id = ? AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("load direct target provider process guard quiescence: %w", err)
 	}

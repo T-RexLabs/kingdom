@@ -104,7 +104,7 @@ func ledgerInvocation(invocation *ProviderInvocationContext) providerledger.Invo
 func completeProviderRequest(ctx context.Context, invocation *ProviderInvocationContext, text string) (ProviderExecutionMetadata, error) {
 	metadata := ProviderExecutionMetadata{FinalText: text, OutcomeState: "success", CompletionStructuredPayloadJSON: "{}"}
 	if invocation == nil || invocation.Activate == nil {
-		metadata.StreamObservation = terminalPlannerStreamObservation(text, "")
+		metadata.StreamObservation = terminalPlannerStreamObservation(text)
 		return metadata, nil
 	}
 	response, err := providerledger.Complete(ctx, ledgerInvocation(invocation), text)
@@ -142,21 +142,10 @@ func failProviderRequest(ctx context.Context, invocation *ProviderInvocationCont
 	return executionError(metadata, cause)
 }
 
-// terminalPlannerStreamObservation is the terminal observation of a turn that no
-// provider request backs, for agents that settle without ever activating.
-func terminalPlannerStreamObservation(finalText, providerSessionID string) providerexecution.InvocationStreamObservation {
-	exitCode := 0
-	return providerexecution.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_test",
-		FinalStepID:            "step_test",
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  finalText,
-		ProcessExited:          true,
-		ProcessExitCode:        &exitCode,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-	}
+// terminalPlannerStreamObservation is the terminal observation of a turn whose
+// request was never activated, for agents that settle without a runner-issued
+// invocation.
+func terminalPlannerStreamObservation(finalText string) providerexecution.InvocationStreamObservation {
+	const invocationID = "invocation-unactivated"
+	return providerledger.Success(providerledger.Prepared(invocationID, "ses-unactivated"), invocationID, finalText).StreamObservation
 }

@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) {
@@ -31,27 +33,17 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		t.Fatalf("create second planning operation: %v", err)
 	}
 
-	if _, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{
+	activatePlanningBoundInvocation(t, store, ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_test_2",
 		PlanningOperationID:          secondOperation.OperationID,
 		PlanningSessionID:            secondOperation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_reuse",
-		CreatedAt:                    "2026-04-21T16:05:00Z",
-		LeaseOwner:                   "worker_2",
-		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("create second planning provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_test_2",
-		PlanningOperationID:          secondOperation.OperationID,
 		ProviderSessionID:            "ses_planning_reuse_2",
+		CreatedAt:                    "2026-04-21T16:05:00Z",
 		OpenedAt:                     "2026-04-21T16:05:01Z",
 		LeaseOwner:                   "worker_2",
 		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("mark second planning provider invocation open: %v", err)
-	}
+	})
 
 	if _, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_reuse"); err != nil || found {
 		t.Fatalf("a conversation cannot continue from an unsettled request: found=%t err=%v", found, err)
@@ -104,54 +96,6 @@ func TestPlanningProviderInvocationSchemaRejectsUnknownCompletionMode(t *testing
 		updated_at
 	) VALUES (?, ?, ?, 'issued', 'external_callback', '2026-04-21T16:00:00Z', '2026-04-21T16:00:00Z')`, "ppinv_invalid_mode", operation.OperationID, operation.PlanningSessionID); err == nil {
 		t.Fatal("expected planning provider invocation schema to reject unknown completion mode")
-	}
-}
-
-func TestPlanningStoreMarkPlanningProviderInvocationOpenRejectsProviderSessionLineageConflict(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	store, operation := newPlanningProviderSettlementTestStore(t)
-
-	_, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_test_1",
-		PlanningOperationID:          operation.OperationID,
-		ProviderSessionID:            "ses_planning_reuse_conflict",
-		OpenedAt:                     "2026-04-21T16:00:04Z",
-		LeaseOwner:                   "worker_1",
-		LeaseVersion:                 1,
-	})
-	if err == nil {
-		t.Fatal("expected planning provider session lineage conflict to fail")
-	}
-	var settlementErr *planningProviderSettlementError
-	if !errors.As(err, &settlementErr) {
-		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
-	}
-	if settlementErr.Reason != "provider_session_lineage_conflict" {
-		t.Fatalf("expected provider_session_lineage_conflict reason, got %q", settlementErr.Reason)
-	}
-
-	invocation, found, err := store.GetPlanningProviderInvocation(ctx, "ppinv_test_1")
-	if err != nil {
-		t.Fatalf("get planning provider invocation: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning provider invocation to exist")
-	}
-	if invocation.ProviderSessionID != "ses_planning_reuse" {
-		t.Fatalf("expected original planning provider session id to remain authoritative, got %#v", invocation)
-	}
-
-	persistedOperation, found, err := store.GetOperation(ctx, operation.OperationID)
-	if err != nil {
-		t.Fatalf("get planning operation: %v", err)
-	}
-	if !found {
-		t.Fatal("expected planning operation to exist")
-	}
-	if persistedOperation.ProviderSessionID == nil || strings.TrimSpace(*persistedOperation.ProviderSessionID) != "ses_planning_reuse" {
-		t.Fatalf("expected planning operation provider session id to remain unchanged, got %#v", persistedOperation)
 	}
 }
 
@@ -211,6 +155,7 @@ func TestFinalizePlanningProviderSettlementAcceptsStreamObservationSuccess(t *te
 	store, operation := newPlanningProviderSettlementTestStore(t)
 
 	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{"verdict":"PASS"}`)
+	bindPlanningSettlement(t, store, request)
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
@@ -271,14 +216,14 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithEmptyFinalText(t *t
 
 	ctx := context.Background()
 	store, operation := newPlanningProviderSettlementTestStore(t)
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	bindPlanningSettlement(t, store, request)
+	request.FinalText = ""
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
 	defer tx.Rollback()
-
-	request := streamObservationSuccessSettlementRequest("", `{}`)
-	request.FinalText = ""
 	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
 	if err == nil {
 		t.Fatal("expected success settlement without final text to fail")
@@ -297,16 +242,16 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutStreamObservatio
 
 	ctx := context.Background()
 	store, operation := newPlanningProviderSettlementTestStore(t)
+	// A non-stream-observation evidence kind (e.g. a diagnostic) must not be
+	// accepted as proof of a settled-success turn.
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	bindPlanningSettlement(t, store, request)
+	request.PrimaryEvidenceKind = PlanningProviderCompletionEvidenceKindExportDiagnostic
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
 	defer tx.Rollback()
-
-	// A non-stream-observation evidence kind (e.g. a diagnostic) must not be
-	// accepted as proof of a settled-success turn.
-	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
-	request.PrimaryEvidenceKind = PlanningProviderCompletionEvidenceKindExportDiagnostic
 	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
 	if err == nil {
 		t.Fatal("expected success settlement without stream observation evidence to fail")
@@ -325,14 +270,20 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithInvalidTerminalStre
 
 	ctx := context.Background()
 	store, operation := newPlanningProviderSettlementTestStore(t)
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	bindPlanningSettlement(t, store, request)
+	observation, err := planningProviderTerminalStreamObservation(request.PrimaryEvidencePayloadJSON)
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation.PendingToolCount = 1
+	setPlanningRequestObservation(t, request, observation)
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
 	}
 	defer tx.Rollback()
 
-	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
-	request.PrimaryEvidencePayloadJSON = `{"state":"success","stream_observation":{"normalized_finish_reason":"stop"}}`
 	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
 	if err == nil {
 		t.Fatal("expected invalid terminal stream observation to fail")
@@ -351,6 +302,8 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutOpenActiveInvoca
 
 	ctx := context.Background()
 	store, operation := newPlanningProviderSettlementTestStore(t)
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	bindPlanningSettlement(t, store, request)
 	if _, err := store.db.Exec(`UPDATE planning_provider_invocations SET invocation_state = 'issued', opened_at = NULL WHERE planning_provider_invocation_id = 'ppinv_test_1'`); err != nil {
 		t.Fatalf("close planning provider invocation: %v", err)
 	}
@@ -360,16 +313,9 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutOpenActiveInvoca
 	}
 	defer tx.Rollback()
 
-	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, streamObservationSuccessSettlementRequest("Planner settled output.", `{}`))
-	if err == nil {
-		t.Fatal("expected success settlement without open active invocation to fail")
-	}
-	var settlementErr *planningProviderSettlementError
-	if !errors.As(err, &settlementErr) {
-		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
-	}
-	if settlementErr.Reason != "success_requires_open_active_invocation" {
-		t.Fatalf("expected success_requires_open_active_invocation, got %q", settlementErr.Reason)
+	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
+	if err == nil || !strings.Contains(err.Error(), "owner or lease conflict") {
+		t.Fatalf("expected the canonical owner to reject success without an open active invocation, got %v", err)
 	}
 }
 
@@ -378,6 +324,8 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutActiveInvocation
 
 	ctx := context.Background()
 	store, operation := newPlanningProviderSettlementTestStore(t)
+	request := streamObservationSuccessSettlementRequest("Planner settled output.", `{}`)
+	bindPlanningSettlement(t, store, request)
 	if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id = NULL WHERE operation_id = ?`, operation.OperationID); err != nil {
 		t.Fatalf("clear active planning provider invocation: %v", err)
 	}
@@ -387,16 +335,9 @@ func TestFinalizePlanningProviderSettlementRejectsSuccessWithoutActiveInvocation
 	}
 	defer tx.Rollback()
 
-	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, streamObservationSuccessSettlementRequest("Planner settled output.", `{}`))
-	if err == nil {
-		t.Fatal("expected success settlement without active invocation to fail")
-	}
-	var settlementErr *planningProviderSettlementError
-	if !errors.As(err, &settlementErr) {
-		t.Fatalf("expected planning provider settlement error, got %T: %v", err, err)
-	}
-	if settlementErr.Reason != "success_requires_open_active_invocation" {
-		t.Fatalf("expected success_requires_open_active_invocation, got %q", settlementErr.Reason)
+	_, err = finalizePlanningProviderSettlementTx(ctx, tx, operation.OperationID, operation.PlanningSessionID, request)
+	if err == nil || !strings.Contains(err.Error(), "owner or lease conflict") {
+		t.Fatalf("expected the canonical owner to reject success without an active invocation, got %v", err)
 	}
 }
 
@@ -420,6 +361,7 @@ func TestFinalizePlanningProviderSettlementAllowsFailureRetryWhenOnlySettledAtDi
 		SettledAt:                    "2026-04-21T16:03:01Z",
 	}
 
+	bindPlanningSettlement(t, store, request)
 	tx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin transaction: %v", err)
@@ -431,6 +373,10 @@ func TestFinalizePlanningProviderSettlementAllowsFailureRetryWhenOnlySettledAtDi
 		t.Fatalf("commit failed planning provider settlement: %v", err)
 	}
 
+	// The replay follows the operation's own terminal state.
+	if _, err := store.db.Exec(`UPDATE planning_operations SET status = 'failed', canonical_settlement_id = ? WHERE operation_id = ?`, request.SettlementID, operation.OperationID); err != nil {
+		t.Fatal(err)
+	}
 	retryTx, err := store.db.BeginTx(ctx, nil)
 	if err != nil {
 		t.Fatalf("begin retry transaction: %v", err)
@@ -482,7 +428,16 @@ func TestPlanningStoreActivatePlanningProviderInvocationOpensAndLinksOperation(t
 		t.Fatalf("create planning operation: %v", err)
 	}
 
+	// Activation judges the lease by the real clock.
+	if _, err := db.Exec(`UPDATE planning_operations SET lease_expires_at = '2099-01-01T00:00:00Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE planning_sessions SET current_operation_id = ? WHERE planning_session_id = ?`, operation.OperationID, operation.PlanningSessionID); err != nil {
+		t.Fatal(err)
+	}
 	activated, err := store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{
+		RequestIdentity:              providerledger.Prepared("ppinv_activation", providerledger.SessionFor("ppinv_activation", "")).Identity,
+		ProviderSessionID:            providerledger.SessionFor("ppinv_activation", ""),
 		PlanningProviderInvocationID: "ppinv_activation",
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
@@ -518,6 +473,8 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 	store, operation := newPlanningProviderSettlementTestStore(t)
 
 	_, err := store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{
+		RequestIdentity:              providerledger.Prepared("ppinv_conflict", providerledger.SessionFor("ppinv_conflict", "")).Identity,
+		ProviderSessionID:            providerledger.SessionFor("ppinv_conflict", ""),
 		PlanningProviderInvocationID: "ppinv_conflict",
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
@@ -548,7 +505,7 @@ func TestPlanningStoreActivatePlanningProviderInvocationRollsBackOnConflict(t *t
 	}
 }
 
-func TestPlanningProviderInvocationCreationAndActivationRequireActiveLease(t *testing.T) {
+func TestPlanningProviderInvocationActivationRequiresActiveLease(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -568,31 +525,25 @@ func TestPlanningProviderInvocationCreationAndActivationRequireActiveLease(t *te
 		{name: "stale version", status: PlanningOperationStatusRunning, operationOwn: "worker_1", operationVer: 2, requestOwner: "worker_1", requestVer: 1},
 	}
 
-	for _, method := range []string{"create", "activate"} {
-		for _, tc := range tests {
-			t.Run(method+"/"+tc.name, func(t *testing.T) {
-				ctx := context.Background()
-				store, operation := newPlanningProviderSettlementTestStore(t)
-				if _, err := store.db.Exec(`UPDATE planning_operations SET status = ?, lease_owner = ?, lease_version = ?, active_provider_invocation_id = NULL WHERE operation_id = ?`, tc.status, tc.operationOwn, tc.operationVer, operation.OperationID); err != nil {
-					t.Fatalf("prepare operation: %v", err)
-				}
-				invocationID := "ppinv_fence_" + strings.ReplaceAll(method+"_"+tc.name, " ", "_")
-				var err error
-				if method == "create" {
-					_, err = store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:04Z", LeaseOwner: tc.requestOwner, LeaseVersion: tc.requestVer})
-				} else {
-					_, err = store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:04Z", OpenedAt: "2026-04-21T16:00:04Z", LeaseOwner: tc.requestOwner, LeaseVersion: tc.requestVer})
-				}
-				if err == nil {
-					t.Fatal("expected invocation write without the active lease lineage to fail")
-				}
-				if _, found, getErr := store.GetPlanningProviderInvocation(ctx, invocationID); getErr != nil {
-					t.Fatalf("get rejected invocation: %v", getErr)
-				} else if found {
-					t.Fatal("expected rejected invocation write to roll back")
-				}
-			})
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store, operation := newPlanningProviderSettlementTestStore(t)
+			if _, err := store.db.Exec(`UPDATE planning_operations SET status = ?, lease_owner = ?, lease_version = ?, lease_expires_at = '2099-01-01T00:00:00Z', active_provider_invocation_id = NULL WHERE operation_id = ?`, tc.status, tc.operationOwn, tc.operationVer, operation.OperationID); err != nil {
+				t.Fatalf("prepare operation: %v", err)
+			}
+			invocationID := "ppinv_fence_" + strings.ReplaceAll(tc.name, " ", "_")
+			session := providerledger.SessionFor(invocationID, "")
+			_, err := store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{RequestIdentity: providerledger.Prepared(invocationID, session).Identity, PlanningProviderInvocationID: invocationID, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, ProviderSessionID: session, CreatedAt: "2026-04-21T16:00:04Z", OpenedAt: "2026-04-21T16:00:04Z", LeaseOwner: tc.requestOwner, LeaseVersion: tc.requestVer})
+			if err == nil {
+				t.Fatal("expected invocation write without the active lease lineage to fail")
+			}
+			if _, found, getErr := store.GetPlanningProviderInvocation(ctx, invocationID); getErr != nil {
+				t.Fatalf("get rejected invocation: %v", getErr)
+			} else if found {
+				t.Fatal("expected rejected invocation write to roll back")
+			}
+		})
 	}
 }
 
@@ -640,7 +591,8 @@ func TestPlanningOperationLeaseFencesUseTemporalFractionComparisons(t *testing.T
 		if _, err := store.db.Exec(`UPDATE planning_operations SET active_provider_invocation_id = NULL, lease_expires_at = '2026-04-21T16:00:00.1Z' WHERE operation_id = ?`, operation.OperationID); err != nil {
 			t.Fatal(err)
 		}
-		_, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: "ppinv_fractional_expired", PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: "2026-04-21T16:00:00.19Z", LeaseOwner: "worker_1", LeaseVersion: 1})
+		session := providerledger.SessionFor("ppinv_fractional_expired", "")
+		_, err := store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{RequestIdentity: providerledger.Prepared("ppinv_fractional_expired", session).Identity, PlanningProviderInvocationID: "ppinv_fractional_expired", PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, ProviderSessionID: session, CreatedAt: "2026-04-21T16:00:00.19Z", OpenedAt: "2026-04-21T16:00:00.19Z", LeaseOwner: "worker_1", LeaseVersion: 1})
 		if err == nil {
 			t.Fatal("expected provider invocation link after fractional lease expiry to fail")
 		}
@@ -657,7 +609,12 @@ func newPlanningProviderSettlementTestStore(t *testing.T) (*PlanningStore, Plann
 	return newPlanningProviderSettlementTestStoreWithDB(t, openTestDB(t))
 }
 
-func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*PlanningStore, PlanningOperation) {
+func newPlanningOperationTestStore(t *testing.T) (*PlanningStore, PlanningOperation) {
+	t.Helper()
+	return newPlanningOperationTestStoreWithDB(t, openTestDB(t))
+}
+
+func newPlanningOperationTestStoreWithDB(t *testing.T, db *sql.DB) (*PlanningStore, PlanningOperation) {
 	t.Helper()
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	store := NewPlanningStore(db)
@@ -691,27 +648,23 @@ func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*Pl
 	if err != nil {
 		t.Fatalf("create planning operation: %v", err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{
+	return store, operation
+}
+
+func newPlanningProviderSettlementTestStoreWithDB(t *testing.T, db *sql.DB) (*PlanningStore, PlanningOperation) {
+	t.Helper()
+	store, operation := newPlanningOperationTestStoreWithDB(t, db)
+	activatePlanningBoundInvocation(t, store, ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_planning_reuse",
+		ProviderSessionID:            planningRequestIdentity().SessionID,
 		CreatedAt:                    "2026-04-21T16:00:02Z",
-		LeaseOwner:                   "worker_1",
-		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("create planning provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_test_1",
-		PlanningOperationID:          operation.OperationID,
-		ProviderSessionID:            "ses_planning_reuse",
 		OpenedAt:                     "2026-04-21T16:00:03Z",
 		LeaseOwner:                   "worker_1",
 		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("mark planning provider invocation open: %v", err)
-	}
+	})
 	return store, operation
 }
 
@@ -724,7 +677,7 @@ func streamObservationSuccessSettlementRequest(finalText, structuredPayloadJSON 
 		PlanningProviderInvocationID: "ppinv_test_1",
 		PrimaryEvidenceID:            "evidence_success_ppinv_test_1",
 		PrimaryEvidenceKind:          PlanningProviderCompletionEvidenceKindStreamObservation,
-		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}","stream_observation":{"provider_session_id":"ses_planning_reuse","final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"` + finalText + `","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`,
+		PrimaryEvidencePayloadJSON:   `{"state":"success","final_text":"` + finalText + `","structured_payload_json":"{}","stream_observation":{"provider_session_id":"ses_planning_reuse","final_turn_id":"turn_test","raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"` + finalText + `"}}`,
 		PrimaryEvidenceCreatedAt:     "2026-04-21T16:02:05Z",
 		Outcome:                      PlanningProviderCompletionOutcomeSuccess,
 		FinalText:                    finalText,

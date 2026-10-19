@@ -75,14 +75,9 @@ func TestProviderSettlementDiagnosticsDegradeToEmptyObject(t *testing.T) {
 func TestProviderSuccessSettlementEmbedsTerminalStreamObservation(t *testing.T) {
 	t.Parallel()
 
-	exitCode := 0
 	settlement := providerSettlementForSuccess("ppinv_success", ProviderExecutionMetadata{
-		FinalText: "settled response",
-		StreamObservation: providerexecution.InvocationStreamObservation{
-			FinalTurnID: "turn_1", FinalStepID: "step_1", FinalSequence: 1,
-			RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalText: "settled response",
-			ProcessExited: true, ProcessExitCode: &exitCode, StdoutDrained: true, StderrDrained: true,
-		},
+		FinalText:         "settled response",
+		StreamObservation: providerledger.Success(providerledger.Prepared("ppinv_success", "ses_success"), "ppinv_success", "settled response").StreamObservation,
 	}, "2026-05-22T08:41:20Z")
 	if settlement == nil {
 		t.Fatal("expected settlement")
@@ -182,27 +177,17 @@ func TestStaleActivationCannotOverwriteRetriedOperation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create old provider invocation: %v", err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: oldInvocation.InvocationID,
 		PlanningOperationID:          operation.OperationID,
 		PlanningSessionID:            operation.PlanningSessionID,
 		LogicalSessionID:             oldInvocation.LogicalSessionID,
-		CreatedAt:                    "2026-05-22T08:40:02Z",
-		LeaseOwner:                   operation.LeaseOwner,
-		LeaseVersion:                 operation.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("persist old provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: oldInvocation.InvocationID,
-		PlanningOperationID:          operation.OperationID,
 		ProviderSessionID:            "ses_retry_old",
+		CreatedAt:                    "2026-05-22T08:40:02Z",
 		OpenedAt:                     "2026-05-22T08:40:03Z",
 		LeaseOwner:                   operation.LeaseOwner,
 		LeaseVersion:                 operation.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("open old provider invocation: %v", err)
-	}
+	})
 
 	retryScheduled, err := store.FinalizePlanningFailureWithRetry(ctx, state.FinalizePlanningFailureWithRetryRequest{
 		SessionID:    operation.PlanningSessionID,
@@ -217,7 +202,7 @@ func TestStaleActivationCannotOverwriteRetriedOperation(t *testing.T) {
 			PlanningProviderInvocationID: oldInvocation.InvocationID,
 			PrimaryEvidenceID:            "evidence_stale_callback_old",
 			PrimaryEvidenceKind:          state.PlanningProviderCompletionEvidenceKindStreamObservation,
-			PrimaryEvidencePayloadJSON:   `{"state":"failed"}`,
+			PrimaryEvidencePayloadJSON:   failedRequestEvidence(t, db, oldInvocation.InvocationID, "ses_retry_old"),
 			PrimaryEvidenceCreatedAt:     "2026-05-22T08:41:00Z",
 			Outcome:                      state.PlanningProviderCompletionOutcomeFailed,
 			FailureReasonCode:            "timeout",
@@ -256,27 +241,17 @@ func TestStaleActivationCannotOverwriteRetriedOperation(t *testing.T) {
 	if err != nil || !claimed {
 		t.Fatalf("claim retried operation: claimed=%v err=%v", claimed, err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stale_callback_new",
 		PlanningOperationID:          retried.OperationID,
 		PlanningSessionID:            retried.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_stale_callback",
-		CreatedAt:                    "2026-05-22T08:42:01Z",
-		LeaseOwner:                   retried.LeaseOwner,
-		LeaseVersion:                 retried.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("create retry provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_stale_callback_new",
-		PlanningOperationID:          retried.OperationID,
 		ProviderSessionID:            "ses_retry_current",
+		CreatedAt:                    "2026-05-22T08:42:01Z",
 		OpenedAt:                     "2026-05-22T08:42:02Z",
 		LeaseOwner:                   retried.LeaseOwner,
 		LeaseVersion:                 retried.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("open retry provider invocation: %v", err)
-	}
+	})
 
 	if err := oldInvocation.Activate(ctx, providerledger.Prepared(oldInvocation.InvocationID, "ses_stale_old")); err == nil {
 		t.Fatal("expected stale invocation activation to be rejected")

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestQueuedPreparationLeaseRenewsWithoutAdvancingLifecycle(t *testing.T) {
@@ -82,6 +83,7 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	s := New(db)
+	s.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }
 	ctx := context.Background()
 	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
@@ -91,7 +93,7 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	if err != nil || !acquired {
 		t.Fatalf("claim: acquired=%t err=%v", acquired, err)
 	}
-	_, err = s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_prepare", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
+	_, err = s.ActivateProviderInvocation(ctx, withBoundRequest(ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_prepare", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_prepare", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}))
 	if err != nil {
 		t.Fatal(err)
 	}

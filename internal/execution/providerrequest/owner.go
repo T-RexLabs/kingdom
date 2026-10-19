@@ -124,6 +124,6 @@ func requireSessionReusable(ctx context.Context, q Reader, b Binding, current ca
 // capability is ingested elsewhere; these checks consume only canonical facts.
 // Only run attempts own command guardians.
 func guardLineage(b Binding, owner canonicalOwner) (string, []any) {
-	clause := `g.owner_kind='work_order_attempt' AND g.owner_id=? AND g.provider_invocation_id=? AND g.lease_owner=? AND g.lease_version=? AND g.attempt_id=? AND g.run_id=? AND g.node_run_id=?`
-	return clause, []any{owner.id, b.Owner.InvocationID, b.Lease.Owner, b.Lease.Version, owner.id, owner.parent, owner.node}
+	clause := `g.provider_invocation_id=? AND g.lease_owner=? AND g.lease_version=? AND g.attempt_id=? AND g.run_id=? AND g.node_run_id=?`
+	return clause, []any{b.Owner.InvocationID, b.Lease.Owner, b.Lease.Version, owner.id, owner.parent, owner.node}
 }

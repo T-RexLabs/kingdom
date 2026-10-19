@@ -33,10 +33,11 @@ func TestReferencedTerminalSuccessRequiresCompleteVerifiedReader(t *testing.T) {
 	h := sha256.New()
 	_, _ = io.Copy(h, &repeatedContent{remaining: size, value: 'x'})
 	ref := ContentReference{InvocationID: "invocation", SHA256: fmt.Sprintf("%x", h.Sum(nil)), SizeBytes: size}
-	zero := 0
-	o := InvocationStreamObservation{CanonicalTerminalTextRef: &ref, NormalizedFinishReason: "stop", FinalTurnID: "turn", FinalStepID: "step", FinalSequence: 1, ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true}
+	o := successfulRequestObservation()
+	o.Request.Terminal.Text, o.Request.Terminal.Tools = &ref, nil
+	o.CanonicalTerminalText, o.CanonicalTerminalTextRef, o.ToolCalls = "", &ref, nil
 	if err := ValidateServerResponseSuccess(o); err == nil {
-		t.Fatal("reference and process exit alone authorized success")
+		t.Fatal("reference alone authorized success")
 	}
 	o.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
 		return io.NopCloser(&repeatedContent{remaining: size, value: 'x'}), nil

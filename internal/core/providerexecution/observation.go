@@ -26,8 +26,6 @@ type InvocationStreamObservation struct {
 	Request                  *RequestObservation `json:"request,omitempty"`
 	ProviderSessionID        string              `json:"provider_session_id,omitempty"`
 	FinalTurnID              string              `json:"final_turn_id,omitempty"`
-	FinalStepID              string              `json:"final_step_id,omitempty"`
-	FinalSequence            int                 `json:"final_sequence"`
 	RawFinishReason          string              `json:"raw_finish_reason,omitempty"`
 	NormalizedFinishReason   string              `json:"normalized_finish_reason,omitempty"`
 	CanonicalTerminalText    string              `json:"canonical_terminal_text,omitempty"`
@@ -45,13 +43,6 @@ type InvocationStreamObservation struct {
 	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
 	PendingToolCount            int                         `json:"pending_tool_count"`
 	Tokens                      TokenUsage                  `json:"tokens"`
-	ProcessExited               bool                        `json:"process_exited"`
-	ProcessExitCode             *int                        `json:"process_exit_code,omitempty"`
-	ProcessExitSignal           *int                        `json:"process_exit_signal,omitempty"`
-	StdoutDrained               bool                        `json:"stdout_drained"`
-	StderrDrained               bool                        `json:"stderr_drained"`
-	ProcessQuiescent            bool                        `json:"process_quiescent"`
-	ProcessGuards               []ProcessGuardObservation   `json:"process_guards,omitempty"`
 	TimedOut                    bool                        `json:"timed_out"`
 	Cancelled                   bool                        `json:"cancelled"`
 	ProviderErrorPresent        bool                        `json:"provider_error_present"`
@@ -121,22 +112,6 @@ func providerErrorFieldContains(value string, terms ...string) bool {
 		}
 	}
 	return false
-}
-
-// ProcessGuardObservation intentionally excludes the guardian's raw
-// quiescence capability. It is persisted only through orchestration callbacks.
-type ProcessGuardObservation struct {
-	CommandOrdinal int    `json:"command_ordinal"`
-	GuardID        string `json:"guard_id,omitempty"`
-	GuardianPID    int    `json:"guardian_pid,omitempty"`
-	ChildPID       int    `json:"child_pid,omitempty"`
-	TreeID         int    `json:"tree_id,omitempty"`
-	Platform       string `json:"platform,omitempty"`
-	Quiescent      bool   `json:"quiescent"`
-	Forced         bool   `json:"forced"`
-	EvidenceSHA256 string `json:"evidence_sha256,omitempty"`
-	FailureCode    string `json:"failure_code,omitempty"`
-	FailureText    string `json:"failure_text,omitempty"`
 }
 
 type InvocationToolObservation struct {
@@ -217,12 +192,6 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if strings.TrimSpace(observation.FinalTurnID) == "" {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final turn identity")
 	}
-	if observation.Request == nil && strings.TrimSpace(observation.FinalStepID) == "" {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final step identity")
-	}
-	if observation.Request == nil && observation.FinalSequence <= 0 {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal step is missing a valid stream sequence")
-	}
 	reader, err := OpenTerminalText(context.Background(), observation)
 	if err != nil {
 		return fail("provider_unknown_failure", err.Error())
@@ -251,23 +220,11 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if observation.LaterEventAfterTerminal {
 		return fail("provider_incomplete_turn", "provider stream remained active after the terminal response")
 	}
-	if observation.Request != nil {
-		if err := validateRequestSuccess(observation); err != nil {
-			return fail("provider_incomplete_turn", err.Error())
-		}
-	} else {
-		if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
-			return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider process did not exit successfully")
-		}
-		if !observation.StdoutDrained || !observation.StderrDrained {
-			return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider output streams were not fully drained")
-		}
+	if err := validateRequestSuccess(observation); err != nil {
+		return fail("provider_incomplete_turn", err.Error())
 	}
 	if observation.TimedOut {
 		return fail("timeout", "provider execution timed out")
-	}
-	if observation.Cancelled {
-		return fail("provider_cancelled", "provider execution was cancelled")
 	}
 	if observation.ProviderErrorPresent || strings.TrimSpace(observation.ProviderError) != "" {
 		return fail(string(CanonicalProviderErrorCode(observation.ProviderErrorCode, observation.ProviderErrorCategory, observation.ProviderErrorStatus)), strings.TrimSpace(observation.ProviderError))

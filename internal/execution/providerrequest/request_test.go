@@ -277,7 +277,7 @@ func TestCommandClaimRequiresExactGuardianClosure(t *testing.T) {
 		t.Fatal("completed command without guardian")
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','work_order_attempt','attempt','inv','attempt','run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
+	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','inv','attempt','run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
 	if err := transaction(t, db, func(tx *sql.Tx) error { return CompleteCommandTx(ctx, tx, claim.ID, claim.Digest, "guard", now) }); err != nil {
 		t.Fatal(err)
 	}
@@ -366,7 +366,7 @@ func TestCommandReplayAndGuardianLineage(t *testing.T) {
 		t.Fatal("changed command input accepted")
 	}
 	stamp := now.Format(time.RFC3339Nano)
-	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','work_order_attempt','attempt','inv','attempt','foreign-run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
+	execSQL(t, db, `INSERT INTO provider_process_guards(guard_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES('guard','inv','attempt','foreign-run','node',1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?, ?,?,?)`, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
 	if err := transaction(t, db, func(tx *sql.Tx) error { return CompleteCommandTx(ctx, tx, claim.ID, claim.Digest, "guard", now) }); err == nil {
 		t.Fatal("foreign run guardian accepted")
 	}
@@ -379,7 +379,7 @@ func TestCommandReplayAndGuardianLineage(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An extra quiescent guard still lacks its admitted command identity.
-	execSQL(t, db, `INSERT INTO provider_process_guards SELECT 'orphan',owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,2,lifecycle,platform,guardian_pid,guardian_identity_token,child_pid,child_identity_token,tree_id,tree_identity_token,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,termination_requested_at,exited_at,quiescent_at,exit_code,exit_signal,termination_forced,failure_code,failure_text,quiescence_evidence_sha256,quiescence_evidence_json,quiescence_evidence_lost_at,evidence_cleaned_at,created_at,updated_at FROM provider_process_guards WHERE guard_id='guard'`)
+	execSQL(t, db, `INSERT INTO provider_process_guards SELECT 'orphan',provider_invocation_id,attempt_id,run_id,node_run_id,2,lifecycle,platform,guardian_pid,guardian_identity_token,child_pid,child_identity_token,tree_id,tree_identity_token,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,termination_requested_at,exited_at,quiescent_at,exit_code,exit_signal,termination_forced,failure_code,failure_text,quiescence_evidence_sha256,quiescence_evidence_json,quiescence_evidence_lost_at,evidence_cleaned_at,created_at,updated_at FROM provider_process_guards WHERE guard_id='guard'`)
 	if err := RequireResourcesClosedTx(ctx, db, b.ID); err == nil {
 		t.Fatal("unclaimed guardian accepted as closed")
 	}

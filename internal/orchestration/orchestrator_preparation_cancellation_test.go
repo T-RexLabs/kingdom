@@ -11,6 +11,7 @@ import (
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestRunTerminalizationCancelsBlockedPreparationThroughDurableHandoff(t *testing.T) {
@@ -107,7 +108,9 @@ func TestCancellationBeforeCanonicalPreparationNeedsNoWorkspaceRestore(t *testin
 					t.Fatal(err)
 				}
 				if scenario == "invocation" {
-					if _, err := rt.orchestrator.executionStore.CreateProviderInvocation(ctx, executionstore.CreateProviderInvocationRequest{ProviderInvocationID: "pinv_cancel_prep", AttemptID: attemptID, RunID: "run_cancel_prep", NodeRunID: "nr_cancel_prep", CompletionMode: executionstore.ProviderCompletionModeServerResponse, CreatedAt: now}); err != nil {
+					mustExec(t, db, `UPDATE attempt_executions SET lease_owner = 'preparer', lease_version = 1, lease_expires_at = '2999-01-01T00:00:00Z' WHERE attempt_id = '`+attemptID+`'`)
+					session := providerledger.SessionFor("pinv_cancel_prep", "")
+					if _, err := rt.orchestrator.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{RequestIdentity: providerledger.Prepared("pinv_cancel_prep", session).Identity, ProviderInvocationID: "pinv_cancel_prep", AttemptID: attemptID, RunID: "run_cancel_prep", NodeRunID: "nr_cancel_prep", LogicalSessionID: "session_cancel_prep", ProviderSessionID: session, CompletionMode: executionstore.ProviderCompletionModeServerResponse, CreatedAt: now, OpenedAt: now, ExpectedLeaseOwner: "preparer", ExpectedLeaseVersion: 1}); err != nil {
 						t.Fatal(err)
 					}
 				}

@@ -13,18 +13,14 @@ type RequestObservation struct {
 
 func validateRequestSuccess(observation InvocationStreamObservation) error {
 	request := observation.Request
+	if request == nil {
+		return fmt.Errorf("provider request observation is required")
+	}
 	if err := request.Identity.Validate(); err != nil {
 		return err
 	}
 	if request.Terminal.Outcome != RequestOutcomeSucceeded || observation.ProviderSessionID != request.Identity.SessionID {
 		return fmt.Errorf("provider request did not succeed in its bound session")
 	}
-	if err := RequireRequestTerminalMatch(observation); err != nil {
-		return err
-	}
-	if observation.ProcessExited || observation.ProcessExitCode != nil || observation.ProcessExitSignal != nil ||
-		observation.ProcessQuiescent || observation.StdoutDrained || observation.StderrDrained {
-		return fmt.Errorf("provider request cannot assert server process completion")
-	}
-	return nil
+	return RequireRequestTerminalMatch(observation)
 }

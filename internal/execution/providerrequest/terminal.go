@@ -151,12 +151,11 @@ func AbandonTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, now time
 	return RecordTerminalTx(ctx, tx, id, lease, providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID), now)
 }
 
-// AbandonOwnerTx abandons the request bound to an invocation. It reports false
-// when the invocation has no bound request.
-func AbandonOwnerTx(ctx context.Context, tx *sql.Tx, owner Owner, now time.Time) (providerexecution.RequestIdentity, bool, error) {
-	b, found, err := ForOwner(ctx, tx, owner)
-	if err != nil || !found {
-		return providerexecution.RequestIdentity{}, false, err
+// AbandonOwnerTx abandons the request bound to an invocation.
+func AbandonOwnerTx(ctx context.Context, tx *sql.Tx, owner Owner, now time.Time) (providerexecution.RequestIdentity, error) {
+	b, err := RequiredForOwner(ctx, tx, owner)
+	if err != nil {
+		return providerexecution.RequestIdentity{}, err
 	}
-	return b.Identity, true, AbandonTx(ctx, tx, b.ID, b.Lease, now)
+	return b.Identity, AbandonTx(ctx, tx, b.ID, b.Lease, now)
 }

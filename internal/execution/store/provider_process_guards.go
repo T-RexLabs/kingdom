@@ -28,8 +28,6 @@ const (
 
 type ProviderProcessGuard struct {
 	GuardID                  string
-	OwnerKind                string
-	OwnerID                  string
 	ProviderInvocationID     string
 	AttemptID                string
 	RunID                    string
@@ -166,15 +164,9 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 	if !found {
 		return result, providerSettlementError("acknowledge_provider_process_guard", "attempt_not_found", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
-	binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
+	binding, err := runRequestTx(ctx, tx, invocation.ProviderInvocationID)
 	if err != nil {
 		return result, err
-	}
-	// An exact existing V2 acknowledgement is a receipt, not new execution.
-	if !bound {
-		if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
-			return result, err
-		}
 	}
 
 	existing, found, err := loadProviderProcessGuardTx(ctx, tx, normalized.GuardID)
@@ -184,7 +176,8 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 	if found {
 		candidate := providerProcessGuardFromAcknowledgement(normalized)
 		immutable := existing
-		if bound && immutable.Lifecycle == ProviderProcessGuardLifecycleQuiescent {
+		// An exact existing acknowledgement is a receipt, not new execution.
+		if immutable.Lifecycle == ProviderProcessGuardLifecycleQuiescent {
 			immutable.Lifecycle = ProviderProcessGuardLifecycleAcknowledged
 		}
 		if !sameProviderProcessGuardAcknowledgement(immutable, candidate) {
@@ -202,22 +195,20 @@ func (s *Store) acknowledgeProviderProcessGuardOnce(ctx context.Context, req Ack
 		return AcknowledgeProviderProcessGuardResult{Guard: existing, Idempotent: true}, nil
 	}
 
-	if bound {
-		if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
-			return result, err
-		}
-		if err := providerrequest.RequireGuardianAdmissionTx(ctx, tx, binding.ID, providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}, normalized.CommandOrdinal, s.currentTime()); err != nil {
-			return result, err
-		}
+	if err := validateProviderProcessGuardAcknowledgementAuthority(invocation, authority, normalized, s.currentTime()); err != nil {
+		return result, err
+	}
+	if err := providerrequest.RequireGuardianAdmissionTx(ctx, tx, binding.ID, providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}, normalized.CommandOrdinal, s.currentTime()); err != nil {
+		return result, err
 	}
 	guard := providerProcessGuardFromAcknowledgement(normalized)
 	if _, err := tx.ExecContext(ctx, `INSERT INTO provider_process_guards (
-		guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id,
+		guard_id, provider_invocation_id, attempt_id, run_id, node_run_id,
 		command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid,
 		child_identity_token, tree_id, tree_identity_token, quiescence_capability_hash, lease_owner,
 		lease_version, started_at, acknowledged_at, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		guard.GuardID, guard.OwnerKind, guard.OwnerID, guard.ProviderInvocationID, guard.AttemptID, guard.RunID, guard.NodeRunID,
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		guard.GuardID, guard.ProviderInvocationID, guard.AttemptID, guard.RunID, guard.NodeRunID,
 		guard.CommandOrdinal, string(guard.Lifecycle), guard.Platform, guard.GuardianPID, guard.GuardianIdentityToken, guard.ChildPID,
 		guard.ChildIdentityToken, guard.TreeID, guard.TreeIdentityToken, guard.QuiescenceCapabilityHash, guard.LeaseOwner,
 		guard.LeaseVersion, guard.StartedAt, guard.AcknowledgedAt, guard.CreatedAt, guard.UpdatedAt,
@@ -270,7 +261,7 @@ func (s *Store) ListPendingProviderProcessGuards(ctx context.Context, afterGuard
 		return nil, fmt.Errorf("limit must be positive")
 	}
 	rows, err := s.db.QueryContext(ctx, providerProcessGuardSelect+`
-		WHERE owner_kind = 'work_order_attempt' AND guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)
+		WHERE guard_id > ? AND (lifecycle = 'acknowledged' OR evidence_cleaned_at IS NULL)
 		ORDER BY guard_id ASC
 		LIMIT ?`, strings.TrimSpace(afterGuardID), limit)
 	if err != nil {
@@ -296,9 +287,8 @@ func (s *Store) MarkProviderProcessGuardEvidenceCleaned(ctx context.Context, gua
 	return err
 }
 
-// AttemptProcessGuardsQuiescent requires bound request disposal, including
-// native and command receipts. Unbound execution retains its process-guardian
-// and lease-fenced terminal requirements.
+// AttemptProcessGuardsQuiescent requires every request bound to the attempt to
+// be disposed, including its native and command receipts.
 func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID string) (bool, error) {
 	if s == nil || s.db == nil {
 		return false, fmt.Errorf("store database is required")
@@ -309,79 +299,7 @@ func (s *Store) AttemptProcessGuardsQuiescent(ctx context.Context, attemptID str
 		}
 		return false, err
 	}
-	var state, launchStartedAt, startedAt, providerSessionID, activeProviderInvocationID string
-	var leaseOwner, leaseExpiresAt, pendingMarkedAt, pendingLeaseOwner, invocationState string
-	var recoveryMarkedAt, recoveryLeaseOwner string
-	var leaseVersion, pendingLeaseVersion, recoveryLeaseVersion int64
-	var pendingProcessQuiescent, recoveryProcessQuiescent int
-	if err := s.db.QueryRowContext(ctx, `SELECT ae.state, COALESCE(ae.launch_started_at, ''), COALESCE(ae.started_at, ''), ae.provider_session_id,
-		COALESCE(ae.active_provider_invocation_id, ''), ae.lease_owner, ae.lease_version, COALESCE(ae.lease_expires_at, ''),
-		COALESCE(pi.terminal_handoff_pending_at, ''), COALESCE(pi.terminal_handoff_pending_lease_owner, ''), COALESCE(pi.terminal_handoff_pending_lease_version, 0), COALESCE(pi.terminal_handoff_pending_process_quiescent, 0),
-		COALESCE(pi.terminal_recovery_required_at, ''), COALESCE(pi.terminal_recovery_required_lease_owner, ''), COALESCE(pi.terminal_recovery_required_lease_version, 0), COALESCE(pi.terminal_recovery_required_process_quiescent, 0), COALESCE(pi.invocation_state, '')
-		FROM attempt_executions ae
-		LEFT JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
-		WHERE ae.attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(
-		&state, &launchStartedAt, &startedAt, &providerSessionID, &activeProviderInvocationID,
-		&leaseOwner, &leaseVersion, &leaseExpiresAt, &pendingMarkedAt, &pendingLeaseOwner, &pendingLeaseVersion,
-		&pendingProcessQuiescent, &recoveryMarkedAt, &recoveryLeaseOwner, &recoveryLeaseVersion, &recoveryProcessQuiescent, &invocationState,
-	); err != nil {
-		return false, fmt.Errorf("load attempt launch state: %w", err)
-	}
-	if activeProviderInvocationID != "" {
-		_, bound, err := providerrequest.ForOwner(ctx, s.db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: activeProviderInvocationID})
-		if err != nil {
-			return false, err
-		}
-		if bound {
-			return true, nil
-		}
-	}
-	var total, pending int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(guard_id), COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0)
-		FROM provider_process_guards
-		WHERE provider_invocation_id = ? AND owner_kind = 'work_order_attempt'`, strings.TrimSpace(activeProviderInvocationID)).Scan(&total, &pending)
-	if err != nil {
-		return false, fmt.Errorf("load attempt process guard quiescence: %w", err)
-	}
-	if pending != 0 {
-		return false, nil
-	}
-	if total > 0 {
-		return true, nil
-	}
-	if (state == "queued" || state == "starting" || state == "committed_success" || state == "committed_failure" || state == "committed_cancelled") &&
-		strings.TrimSpace(launchStartedAt) == "" && strings.TrimSpace(startedAt) == "" && strings.TrimSpace(providerSessionID) == "" {
-		return true, nil
-	}
-	// A durable handoff or recovery marker can stand in for missing guardian
-	// rows only when it attests completion under this exact lease generation.
-	if providerTerminalMarkerProvesQuiescence(state, activeProviderInvocationID, leaseOwner, leaseVersion, leaseExpiresAt, invocationState, pendingMarkedAt, pendingLeaseOwner, pendingLeaseVersion, pendingProcessQuiescent) ||
-		providerTerminalMarkerProvesQuiescence(state, activeProviderInvocationID, leaseOwner, leaseVersion, leaseExpiresAt, invocationState, recoveryMarkedAt, recoveryLeaseOwner, recoveryLeaseVersion, recoveryProcessQuiescent) {
-		return true, nil
-	}
-	return false, nil
-}
-
-func providerTerminalMarkerProvesQuiescence(attemptState, activeInvocationID, leaseOwner string, leaseVersion int64, leaseExpiresAt, invocationState, markerAt, markerLeaseOwner string, markerLeaseVersion int64, markerProcessQuiescent int) bool {
-	if strings.TrimSpace(activeInvocationID) == "" || strings.TrimSpace(markerAt) == "" || strings.TrimSpace(markerLeaseOwner) == "" || markerLeaseVersion <= 0 || markerLeaseVersion != leaseVersion {
-		return false
-	}
-	if markerProcessQuiescent != 1 {
-		return false
-	}
-	switch attemptState {
-	case "starting", "running":
-		if markerLeaseOwner != leaseOwner || (invocationState != "issued" && invocationState != "open") {
-			return false
-		}
-		markedAt, markErr := time.Parse(time.RFC3339Nano, markerAt)
-		leaseExpiry, expiryErr := time.Parse(time.RFC3339Nano, leaseExpiresAt)
-		return markErr == nil && expiryErr == nil && markedAt.Before(leaseExpiry)
-	case "committed_success", "committed_failure", "committed_cancelled":
-		return invocationState == "settled_success" || invocationState == "settled_failed" || invocationState == "settled_cancelled"
-	default:
-		return false
-	}
+	return true, nil
 }
 
 // RunProviderProcessGuardsQuiescent requires all bound requests to be disposed
@@ -401,7 +319,7 @@ func (s *Store) RunProviderProcessGuardsQuiescent(ctx context.Context, runID str
 		SELECT 1
 		FROM provider_process_guards ppg
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
-		WHERE ae.run_id = ? AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle <> 'quiescent'
+		WHERE ae.run_id = ? AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
 		return false, fmt.Errorf("load run provider process guard quiescence: %w", err)
 	}
@@ -438,7 +356,7 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 	var attemptID, lifecycle string
 	var quarantinedAt sql.NullString
 	if err := tx.QueryRowContext(ctx, `SELECT attempt_id, lifecycle, quiescence_evidence_lost_at
-		FROM provider_process_guards WHERE guard_id = ? AND owner_kind = 'work_order_attempt'`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
+		FROM provider_process_guards WHERE guard_id = ?`, guardID).Scan(&attemptID, &lifecycle, &quarantinedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, fmt.Errorf("provider process guard %q not found", guardID)
 		}
@@ -463,7 +381,7 @@ func (s *Store) QuarantineProviderProcessGuardEvidence(ctx context.Context, guar
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, attemptID).Scan(&unresolved, &unquarantined); err != nil {
+		WHERE attempt_id = ?`, attemptID).Scan(&unresolved, &unquarantined); err != nil {
 		return false, fmt.Errorf("load attempt evidence quarantine for guard %q: %w", guardID, err)
 	}
 	if unresolved > 0 && unquarantined == 0 {
@@ -496,7 +414,7 @@ func (s *Store) AttemptProcessGuardEvidenceQuarantined(ctx context.Context, atte
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
+		WHERE attempt_id = ?`, strings.TrimSpace(attemptID)).Scan(&unresolved, &unquarantined); err != nil {
 		return false, fmt.Errorf("load attempt process guard evidence quarantine: %w", err)
 	}
 	return unresolved > 0 && unquarantined == 0, nil
@@ -604,7 +522,7 @@ func resumeQuiescentAttemptCancellation(ctx context.Context, tx *sql.Tx, attempt
 		  AND handoff_state IN ('cancellation_requested', 'cancellation_dispatched', 'stop_retry_requested', 'stop_retry_dispatched', 'awaiting_quiescence', 'guardian_evidence_lost', 'guardian_evidence_recovery_requested')
 		  AND NOT EXISTS (
 			SELECT 1 FROM provider_process_guards unresolved
-			WHERE unresolved.owner_kind = 'work_order_attempt' AND unresolved.attempt_id = attempt_cancel_outbox.attempt_id
+			WHERE unresolved.attempt_id = attempt_cancel_outbox.attempt_id
 			  AND unresolved.lifecycle <> 'quiescent'
 		  )`, quiescentAt, attemptID)
 	if err != nil {
@@ -613,7 +531,7 @@ func resumeQuiescentAttemptCancellation(ctx context.Context, tx *sql.Tx, attempt
 	return nil
 }
 
-const providerProcessGuardSelect = `SELECT guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id,
+const providerProcessGuardSelect = `SELECT guard_id, provider_invocation_id, attempt_id, run_id, node_run_id,
 	command_ordinal, lifecycle, platform, guardian_pid, guardian_identity_token, child_pid, child_identity_token,
 	tree_id, tree_identity_token, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at,
 	COALESCE(termination_requested_at, ''), COALESCE(exited_at, ''), COALESCE(quiescent_at, ''), exit_code, exit_signal,
@@ -629,7 +547,7 @@ func scanProviderProcessGuard(scanner providerProcessGuardScanner) (ProviderProc
 	var lifecycle string
 	var forced int
 	if err := scanner.Scan(
-		&guard.GuardID, &guard.OwnerKind, &guard.OwnerID, &guard.ProviderInvocationID, &guard.AttemptID, &guard.RunID, &guard.NodeRunID,
+		&guard.GuardID, &guard.ProviderInvocationID, &guard.AttemptID, &guard.RunID, &guard.NodeRunID,
 		&guard.CommandOrdinal, &lifecycle, &guard.Platform, &guard.GuardianPID, &guard.GuardianIdentityToken, &guard.ChildPID, &guard.ChildIdentityToken,
 		&guard.TreeID, &guard.TreeIdentityToken, &guard.QuiescenceCapabilityHash, &guard.LeaseOwner, &guard.LeaseVersion, &guard.StartedAt, &guard.AcknowledgedAt,
 		&guard.TerminationRequestedAt, &guard.ExitedAt, &guard.QuiescentAt, &guard.ExitCode, &guard.ExitSignal, &forced, &guard.FailureCode, &guard.FailureText,
@@ -695,7 +613,7 @@ func normalizeAcknowledgeProviderProcessGuardRequest(req AcknowledgeProviderProc
 
 func providerProcessGuardFromAcknowledgement(req normalizedAcknowledgeProviderProcessGuardRequest) ProviderProcessGuard {
 	return ProviderProcessGuard{
-		GuardID: req.GuardID, OwnerKind: "work_order_attempt", OwnerID: req.AttemptID, ProviderInvocationID: req.ProviderInvocationID,
+		GuardID: req.GuardID, ProviderInvocationID: req.ProviderInvocationID,
 		AttemptID: req.AttemptID, RunID: req.RunID, NodeRunID: req.NodeRunID, CommandOrdinal: req.CommandOrdinal,
 		Lifecycle: ProviderProcessGuardLifecycleAcknowledged, Platform: req.Platform, GuardianPID: req.GuardianPID,
 		GuardianIdentityToken: req.GuardianIdentityToken, ChildPID: req.ChildPID, ChildIdentityToken: req.ChildIdentityToken,
@@ -834,7 +752,7 @@ func providerProcessGuardQuiescenceTimesValid(guard ProviderProcessGuard, req no
 }
 
 func sameProviderProcessGuardAcknowledgement(existing, candidate ProviderProcessGuard) bool {
-	return existing.Lifecycle == ProviderProcessGuardLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.OwnerKind == candidate.OwnerKind && existing.OwnerID == candidate.OwnerID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt && existing.CreatedAt == candidate.CreatedAt
+	return existing.Lifecycle == ProviderProcessGuardLifecycleAcknowledged && existing.GuardID == candidate.GuardID && existing.ProviderInvocationID == candidate.ProviderInvocationID && existing.AttemptID == candidate.AttemptID && existing.RunID == candidate.RunID && existing.NodeRunID == candidate.NodeRunID && existing.CommandOrdinal == candidate.CommandOrdinal && existing.Platform == candidate.Platform && existing.GuardianPID == candidate.GuardianPID && existing.GuardianIdentityToken == candidate.GuardianIdentityToken && existing.ChildPID == candidate.ChildPID && existing.ChildIdentityToken == candidate.ChildIdentityToken && existing.TreeID == candidate.TreeID && existing.TreeIdentityToken == candidate.TreeIdentityToken && existing.QuiescenceCapabilityHash == candidate.QuiescenceCapabilityHash && existing.LeaseOwner == candidate.LeaseOwner && existing.LeaseVersion == candidate.LeaseVersion && existing.StartedAt == candidate.StartedAt && existing.AcknowledgedAt == candidate.AcknowledgedAt && existing.CreatedAt == candidate.CreatedAt
 }
 
 func sameProviderProcessGuardQuiescence(guard ProviderProcessGuard, req normalizedIngestProviderProcessGuardQuiescenceRequest) bool {
@@ -866,102 +784,28 @@ func isLowercaseSHA256(value string) bool {
 	return err == nil && value == strings.ToLower(value)
 }
 
-func validateProviderProcessGuardsForSettlementTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, outcome ProviderCompletionOutcome, attemptState string, recoveredGuardQuiescence, terminalHandoffProcessQuiescent bool, expectedLeaseOwner string, expectedLeaseVersion int64) error {
-	var total, nonQuiescent, forced int64
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1),
-		COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
-		COALESCE(SUM(CASE WHEN termination_forced = 1 THEN 1 ELSE 0 END), 0)
+// requireCleanProviderCommandGuardsTx refuses to settle success over a command
+// that was forced down, exited uncleanly, or left a gap in the command
+// ordinals. Closure of every guardian is already proven by the request's
+// resource check in the same transaction.
+func requireCleanProviderCommandGuardsTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, outcome ProviderCompletionOutcome, attemptState string) error {
+	if outcome != ProviderCompletionOutcomeSuccess {
+		return nil
+	}
+	var count, maxOrdinal, forced, unclean int64
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1), COALESCE(MAX(command_ordinal), 0),
+		COALESCE(SUM(CASE WHEN termination_forced = 1 THEN 1 ELSE 0 END), 0),
+		COALESCE(SUM(CASE WHEN exit_code IS NULL OR exit_code <> 0 OR COALESCE(exit_signal, 0) <> 0 OR failure_code <> '' THEN 1 ELSE 0 END), 0)
 		FROM provider_process_guards
-		WHERE provider_invocation_id = ? AND attempt_id = ? AND run_id = ? AND node_run_id = ?`,
-		invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID,
-	).Scan(&total, &nonQuiescent, &forced); err != nil {
+		WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID,
+	).Scan(&count, &maxOrdinal, &forced, &unclean); err != nil {
 		return fmt.Errorf("load provider process guard settlement state: %w", err)
 	}
-	if total == 0 {
-		binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID})
-		if err != nil {
-			return err
-		}
-		if bound {
-			// Shared server requests need no fabricated process guardian when
-			// all effects were native. Their actual receipts prove closure.
-			return providerrequest.RequireResourcesClosedTx(ctx, tx, binding.ID)
-		}
-	}
-	if outcome == ProviderCompletionOutcomeSuccess && total == 0 {
-		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_missing", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
-	}
-	if nonQuiescent != 0 {
-		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_not_quiescent", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
-	}
-	if total == 0 {
-		quiescent, err := providerTerminalQuiescenceMarkerMatchesTx(ctx, tx, invocation, attemptState, expectedLeaseOwner, expectedLeaseVersion)
-		if err != nil {
-			return err
-		}
-		if !quiescent && !recoveredGuardQuiescence && terminalHandoffProcessQuiescent {
-			quiescent = true
-		}
-		if !quiescent {
-			return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_not_quiescent", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
-		}
-	}
-	if outcome == ProviderCompletionOutcomeSuccess && forced != 0 {
+	if forced != 0 {
 		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_forced", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
 	}
+	if unclean != 0 || count != maxOrdinal {
+		return providerSettlementError("settle_provider_completion_and_terminal", "provider_process_guard_incomplete", invocation.ProviderInvocationID, invocation.AttemptID, attemptState)
+	}
 	return nil
-}
-
-func providerTerminalQuiescenceMarkerMatchesTx(ctx context.Context, tx *sql.Tx, invocation ProviderInvocation, attemptState, expectedLeaseOwner string, expectedLeaseVersion int64) (bool, error) {
-	var state, leaseOwner, leaseExpiresAt, activeInvocationID, launchStartedAt, startedAt, providerSessionID, invocationState string
-	var leaseVersion int64
-	var pendingAt, pendingLeaseOwner, recoveryAt, recoveryLeaseOwner string
-	var pendingLeaseVersion, recoveryLeaseVersion int64
-	var pendingProcessQuiescent, recoveryProcessQuiescent int
-	if err := tx.QueryRowContext(ctx, `SELECT ae.state, ae.lease_owner, ae.lease_version, COALESCE(ae.lease_expires_at, ''),
-		COALESCE(ae.active_provider_invocation_id, ''), COALESCE(ae.launch_started_at, ''), COALESCE(ae.started_at, ''), ae.provider_session_id,
-		pi.invocation_state, COALESCE(pi.terminal_handoff_pending_at, ''), pi.terminal_handoff_pending_lease_owner,
-		pi.terminal_handoff_pending_lease_version, pi.terminal_handoff_pending_process_quiescent,
-		COALESCE(pi.terminal_recovery_required_at, ''), pi.terminal_recovery_required_lease_owner,
-		pi.terminal_recovery_required_lease_version, pi.terminal_recovery_required_process_quiescent
-		FROM attempt_executions ae
-		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
-		WHERE ae.attempt_id = ? AND pi.provider_invocation_id = ?`, invocation.AttemptID, invocation.ProviderInvocationID).Scan(
-		&state, &leaseOwner, &leaseVersion, &leaseExpiresAt, &activeInvocationID, &launchStartedAt, &startedAt, &providerSessionID,
-		&invocationState, &pendingAt, &pendingLeaseOwner, &pendingLeaseVersion, &pendingProcessQuiescent,
-		&recoveryAt, &recoveryLeaseOwner, &recoveryLeaseVersion, &recoveryProcessQuiescent,
-	); err != nil {
-		return false, fmt.Errorf("load lease-fenced terminal quiescence marker: %w", err)
-	}
-	if state != attemptState || activeInvocationID != invocation.ProviderInvocationID || leaseOwner != expectedLeaseOwner || leaseVersion != expectedLeaseVersion {
-		return false, nil
-	}
-	if state == "starting" && launchStartedAt == "" && startedAt == "" && providerSessionID == "" {
-		return true, nil
-	}
-	if invocationState != string(ProviderInvocationStateIssued) && invocationState != string(ProviderInvocationStateOpen) {
-		return false, nil
-	}
-	leaseExpiry, expiryErr := time.Parse(time.RFC3339Nano, leaseExpiresAt)
-	if expiryErr != nil {
-		return false, nil
-	}
-	for _, marker := range []struct {
-		at        string
-		owner     string
-		version   int64
-		quiescent int
-	}{
-		{at: pendingAt, owner: pendingLeaseOwner, version: pendingLeaseVersion, quiescent: pendingProcessQuiescent},
-		{at: recoveryAt, owner: recoveryLeaseOwner, version: recoveryLeaseVersion, quiescent: recoveryProcessQuiescent},
-	} {
-		if marker.at == "" || marker.owner != expectedLeaseOwner || marker.version != expectedLeaseVersion || marker.quiescent != 1 {
-			continue
-		}
-		markedAt, parseErr := time.Parse(time.RFC3339Nano, marker.at)
-		if parseErr == nil && markedAt.Before(leaseExpiry) {
-			return true, nil
-		}
-	}
-	return false, nil
 }

@@ -178,11 +178,11 @@ func (r *operationRecovery) abandonUnprovenRequest(ctx context.Context, op state
 		return cause, noRelease, nil
 	}
 	invocationID := strings.TrimSpace(*op.ActiveProviderInvocationID)
-	identity, bound, err := r.deps.store.AbandonPlanningProviderRequest(ctx, invocationID)
+	identity, err := r.deps.store.AbandonPlanningProviderRequest(ctx, invocationID)
 	if errors.Is(err, providerrequest.ErrResourcesOpen) {
 		return cause, noRelease, errBlockedByProviderRequest
 	}
-	if err != nil || !bound {
+	if err != nil {
 		return cause, noRelease, err
 	}
 	observation, err := providerexecution.AbandonedObservation(identity, invocationID)

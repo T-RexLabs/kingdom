@@ -159,8 +159,8 @@ func (h *ownerFixture) guardianRecorder(req *ExecuteRequest, attempt, invocation
 	}
 	req.OnProcessGuardQuiescence = func(_ context.Context, quiescence ProcessGuardQuiescence) error {
 		stamp := time.Now().UTC().Format(time.RFC3339Nano)
-		_, err := h.db.Exec(`INSERT INTO provider_process_guards(guard_id,owner_kind,owner_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES(?,'work_order_attempt',?,?,?,'run',?,?,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?,?,?,?)`,
-			quiescence.Result.GuardID, attempt, invocation, attempt, "node-"+attempt, quiescence.CommandOrdinal, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
+		_, err := h.db.Exec(`INSERT INTO provider_process_guards(guard_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES(?,?,?,'run',?,?,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?,?,?,?)`,
+			quiescence.Result.GuardID, invocation, attempt, "node-"+attempt, quiescence.CommandOrdinal, strings.Repeat("a", 64), stamp, stamp, stamp, strings.Repeat("b", 64), stamp, stamp)
 		return err
 	}
 	return &ordinals

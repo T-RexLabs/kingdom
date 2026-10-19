@@ -40,7 +40,7 @@ func (a *unactivatedFormalizeAgent) FormalizePlanStream(_ context.Context, input
 	metadata := ProviderExecutionMetadata{
 		FinalText:         text,
 		OutcomeState:      "success",
-		StreamObservation: terminalPlannerStreamObservation(text, ""),
+		StreamObservation: terminalPlannerStreamObservation(text),
 	}
 	return FormalizedPlan{WorkOrderTitle: "Durable Planner Settlement", WorkOrderText: text, Metadata: metadata}, nil
 }
@@ -2124,27 +2124,17 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	// The invocation is created+opened but never settled: server-side success
 	// is only minted inside FinalizeOperation, which this abandoned op never
 	// reached.
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), state.CreatePlanningProviderInvocationRequest{
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stuck_e2e",
 		PlanningOperationID:          "po_stuck_e2e",
 		PlanningSessionID:            "ps_stuck_e2e",
 		LogicalSessionID:             "planner-ps_stuck_e2e",
-		CreatedAt:                    "2026-04-26T08:55:02Z",
-		LeaseOwner:                   "abandoned-worker",
-		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_stuck_e2e",
-		PlanningOperationID:          "po_stuck_e2e",
 		ProviderSessionID:            "ses_stuck_e2e",
+		CreatedAt:                    "2026-04-26T08:55:02Z",
 		OpenedAt:                     "2026-04-26T08:55:03Z",
 		LeaseOwner:                   "abandoned-worker",
 		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("mark provider invocation open: %v", err)
-	}
+	})
 
 	// A single recovery pass must finalise the abandoned op as failed. With the
 	// timestamp-derived predicate, there is no per-observer counter to ramp through.
@@ -2240,27 +2230,17 @@ func TestStaleFormalizeWithDurableOutputDoesNotAutomaticallyRetry(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("seed running formalize: %v", err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stuck_formalize_progress",
 		PlanningOperationID:          "po_stuck_formalize_progress",
 		PlanningSessionID:            "ps_stuck_formalize_progress",
 		LogicalSessionID:             "planner-ps_stuck_formalize_progress",
-		CreatedAt:                    "2026-04-26T08:55:02Z",
-		LeaseOwner:                   "abandoned-worker",
-		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("create provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_stuck_formalize_progress",
-		PlanningOperationID:          "po_stuck_formalize_progress",
 		ProviderSessionID:            "ses_stuck_formalize_progress",
+		CreatedAt:                    "2026-04-26T08:55:02Z",
 		OpenedAt:                     "2026-04-26T08:55:03Z",
 		LeaseOwner:                   "abandoned-worker",
 		LeaseVersion:                 1,
-	}); err != nil {
-		t.Fatalf("open provider invocation: %v", err)
-	}
+	})
 	if _, err := store.AppendOperationEvent(ctx, state.AppendPlanningOperationEventRequest{
 		EventID:     "po_stuck_formalize_progress:1",
 		OperationID: "po_stuck_formalize_progress",
@@ -4382,7 +4362,7 @@ func stuckBoundOperation(t *testing.T) (*Service, *state.PlanningStore, *sql.DB)
 	}
 	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: projectRoot, SessionID: "ses_bound", ProfileID: "profile", RequestID: "request"}
 	if _, err := store.ActivatePlanningProviderInvocation(ctx, state.ActivatePlanningProviderInvocationRequest{
-		RequestIdentity: &identity, PlanningProviderInvocationID: "ppinv_bound", PlanningOperationID: "po_bound", PlanningSessionID: "ps_bound",
+		RequestIdentity: identity, PlanningProviderInvocationID: "ppinv_bound", PlanningOperationID: "po_bound", PlanningSessionID: "ps_bound",
 		LogicalSessionID: "planner-ps_bound", ProviderSessionID: "ses_bound", CreatedAt: "2026-04-26T08:55:02Z", OpenedAt: "2026-04-26T08:55:02Z",
 		LeaseOwner: "abandoned-worker", LeaseVersion: 1,
 	}); err != nil {

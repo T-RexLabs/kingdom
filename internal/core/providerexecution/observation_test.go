@@ -93,20 +93,7 @@ func TestCanonicalProviderErrorCodeUsesOnlyStructuredMetadata(t *testing.T) {
 
 func TestValidateServerResponseSuccess(t *testing.T) {
 	t.Parallel()
-	zero := 0
-	valid := InvocationStreamObservation{
-		FinalTurnID:            "turn_1",
-		FinalStepID:            "step_1",
-		FinalSequence:          3,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  "canonical response",
-		ToolCalls:              []InvocationToolObservation{{ID: "call_1", Status: "completed"}},
-		ProcessExited:          true,
-		ProcessExitCode:        &zero,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-	}
+	valid := successfulRequestObservation()
 	if err := ValidateServerResponseSuccess(valid); err != nil {
 		t.Fatalf("valid observation rejected: %v", err)
 	}
@@ -118,18 +105,13 @@ func TestValidateServerResponseSuccess(t *testing.T) {
 	}{
 		{name: "finish reason", mutate: func(o *InvocationStreamObservation) { o.NormalizedFinishReason = "length" }, reason: "provider_incomplete_turn"},
 		{name: "missing final turn", mutate: func(o *InvocationStreamObservation) { o.FinalTurnID = "" }, reason: "provider_unknown_failure"},
-		{name: "missing final step", mutate: func(o *InvocationStreamObservation) { o.FinalStepID = "" }, reason: "provider_unknown_failure"},
-		{name: "missing sequence", mutate: func(o *InvocationStreamObservation) { o.FinalSequence = 0 }, reason: "provider_unknown_failure"},
+		{name: "missing request", mutate: func(o *InvocationStreamObservation) { o.Request = nil }, reason: "provider_incomplete_turn"},
 		{name: "empty output", mutate: func(o *InvocationStreamObservation) { o.CanonicalTerminalText = " " }, reason: "provider_empty_output"},
 		{name: "pending tools", mutate: func(o *InvocationStreamObservation) { o.PendingToolCount = 1 }, reason: "provider_incomplete_turn"},
 		{name: "nonterminal tool", mutate: func(o *InvocationStreamObservation) { o.ToolCalls[0].Status = "running" }, reason: "provider_incomplete_turn"},
 		{name: "later event", mutate: func(o *InvocationStreamObservation) { o.LaterEventAfterTerminal = true }, reason: "provider_incomplete_turn"},
-		{name: "process missing", mutate: func(o *InvocationStreamObservation) { o.ProcessExited = false }, reason: "provider_unknown_failure"},
-		{name: "nonzero exit", mutate: func(o *InvocationStreamObservation) { code := 7; o.ProcessExitCode = &code }, reason: "provider_unknown_failure"},
-		{name: "stdout undrained", mutate: func(o *InvocationStreamObservation) { o.StdoutDrained = false }, reason: "provider_unknown_failure"},
-		{name: "stderr undrained", mutate: func(o *InvocationStreamObservation) { o.StderrDrained = false }, reason: "provider_unknown_failure"},
 		{name: "timeout", mutate: func(o *InvocationStreamObservation) { o.TimedOut = true }, reason: "timeout"},
-		{name: "cancelled", mutate: func(o *InvocationStreamObservation) { o.Cancelled = true }, reason: "provider_cancelled"},
+		{name: "cancelled", mutate: func(o *InvocationStreamObservation) { o.Cancelled = true }, reason: "provider_incomplete_turn"},
 		{name: "unstructured provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "upstream failed" }, reason: "provider_unknown_failure"},
 		{name: "unstructured quota prose", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "quota exceeded" }, reason: "provider_unknown_failure"},
 		{name: "rate limited provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderErrorPresent = true; o.ProviderErrorStatus = 429 }, reason: "llm_rate_limited"},

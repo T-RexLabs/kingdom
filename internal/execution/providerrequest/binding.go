@@ -194,6 +194,19 @@ func ForOwner(ctx context.Context, q Reader, owner Owner) (Binding, bool, error)
 	return b, err == nil, err
 }
 
+// RequiredForOwner resolves the binding of an invocation that must have one:
+// every provider invocation is bound to its request when it is activated.
+func RequiredForOwner(ctx context.Context, q Reader, owner Owner) (Binding, error) {
+	b, found, err := ForOwner(ctx, q, owner)
+	if err != nil {
+		return Binding{}, err
+	}
+	if !found {
+		return Binding{}, fmt.Errorf("provider invocation %q has no canonical provider request", owner.InvocationID)
+	}
+	return b, nil
+}
+
 // ByIdentity resolves the binding that a provider-side caller names by its
 // request identity. The caller's claimed identity must match every stored
 // field; a partial match is a conflict, never a lookup miss.

@@ -107,7 +107,7 @@ type MarkPlanningProviderInvocationOpenRequest struct {
 }
 
 type ActivatePlanningProviderInvocationRequest struct {
-	RequestIdentity              *providerexecution.RequestIdentity
+	RequestIdentity              providerexecution.RequestIdentity
 	PlanningProviderInvocationID string
 	PlanningOperationID          string
 	PlanningSessionID            string
@@ -171,71 +171,6 @@ func (e *planningProviderSettlementError) Error() string {
 	return message
 }
 
-func (s *PlanningStore) CreatePlanningProviderInvocation(ctx context.Context, req CreatePlanningProviderInvocationRequest) (PlanningProviderInvocation, error) {
-	if s == nil || s.db == nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
-	}
-	normalized, err := normalizeCreatePlanningProviderInvocationRequest(req)
-	if err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("begin create planning provider invocation: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-	invocation, err := createPlanningProviderInvocationTx(ctx, tx, normalized)
-	if err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}); err != nil {
-		return PlanningProviderInvocation{}, err
-	} else if bound {
-		return PlanningProviderInvocation{}, fmt.Errorf("bound planning invocation requires atomic request activation")
-	}
-	query := fmt.Sprintf(`UPDATE planning_operations
-		SET active_provider_invocation_id = CASE
-			WHEN COALESCE(TRIM(active_provider_invocation_id), '') = '' THEN ?
-			ELSE active_provider_invocation_id
-		END
-		WHERE operation_id = ?
-		  AND planning_session_id = ?
-		  AND (COALESCE(TRIM(active_provider_invocation_id), '') = '' OR active_provider_invocation_id = ?)
-		  AND status = 'running'
-		  AND lease_owner = ?
-		  AND lease_version = ?
-		  AND %s`, timestamporder.ComparisonSQL("lease_expires_at", "?", ">"))
-	result, err := tx.ExecContext(ctx, query,
-		invocation.PlanningProviderInvocationID,
-		invocation.PlanningOperationID,
-		invocation.PlanningSessionID,
-		invocation.PlanningProviderInvocationID,
-		normalized.LeaseOwner,
-		normalized.LeaseVersion,
-		normalized.CreatedAt,
-	)
-	if err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("link planning operation %q active invocation: %w", invocation.PlanningOperationID, err)
-	}
-	linkedRows, err := result.RowsAffected()
-	if err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("read planning operation active invocation rows affected for %q: %w", invocation.PlanningOperationID, err)
-	}
-	if linkedRows == 0 {
-		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	if err := tx.Commit(); err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("commit create planning provider invocation: %w", err)
-	}
-	committed = true
-	return invocation, nil
-}
-
 func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, req ActivatePlanningProviderInvocationRequest) (PlanningProviderInvocation, error) {
 	if s == nil || s.db == nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
@@ -264,37 +199,23 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	if err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	if req.RequestIdentity == nil {
-		if bound {
-			return PlanningProviderInvocation{}, fmt.Errorf("bound planning invocation requires its exact provider request identity")
-		}
-		if err := requireUnboundPlanningProviderSessionTx(ctx, tx, openReq.ProviderSessionID); err != nil {
-			return PlanningProviderInvocation{}, err
-		}
-	} else {
-		if err := req.RequestIdentity.Validate(); err != nil {
-			return PlanningProviderInvocation{}, err
-		}
-		if req.RequestIdentity.SessionID != openReq.ProviderSessionID {
-			return PlanningProviderInvocation{}, fmt.Errorf("planning provider request session differs from activation")
-		}
-		if !bound && invocation.InvocationState == PlanningProviderInvocationStateOpen {
-			return PlanningProviderInvocation{}, fmt.Errorf("cannot attach provider request ownership to an open planning invocation")
-		}
-		if bound && (binding.Identity != *req.RequestIdentity || binding.Lease != (providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)})) {
-			return PlanningProviderInvocation{}, fmt.Errorf("planning provider request identity or lease conflicts with activation")
-		}
+	if err := req.RequestIdentity.Validate(); err != nil {
+		return PlanningProviderInvocation{}, err
+	}
+	if req.RequestIdentity.SessionID != openReq.ProviderSessionID {
+		return PlanningProviderInvocation{}, fmt.Errorf("planning provider request session differs from activation")
+	}
+	lease := providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)}
+	if bound && (binding.Identity != req.RequestIdentity || binding.Lease != lease) {
+		return PlanningProviderInvocation{}, fmt.Errorf("planning provider request identity or lease conflicts with activation")
 	}
 	if err := activatePlanningProviderInvocationTx(ctx, tx, invocation, openReq); err != nil {
 		return PlanningProviderInvocation{}, err
 	}
-	if req.RequestIdentity != nil {
-		if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
-			ID: invocation.PlanningProviderInvocationID, Identity: *req.RequestIdentity, Owner: owner,
-			Lease: providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)},
-		}, s.leaseNow()); err != nil {
-			return PlanningProviderInvocation{}, err
-		}
+	if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
+		ID: invocation.PlanningProviderInvocationID, Identity: req.RequestIdentity, Owner: owner, Lease: lease,
+	}, s.leaseNow()); err != nil {
+		return PlanningProviderInvocation{}, err
 	}
 	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
 	if err != nil {
@@ -305,88 +226,6 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 	}
 	if err := tx.Commit(); err != nil {
 		return PlanningProviderInvocation{}, fmt.Errorf("commit activate planning provider invocation: %w", err)
-	}
-	committed = true
-	return invocation, nil
-}
-
-func (s *PlanningStore) MarkPlanningProviderInvocationOpen(ctx context.Context, req MarkPlanningProviderInvocationOpenRequest) (PlanningProviderInvocation, error) {
-	if s == nil || s.db == nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("planning store database is required")
-	}
-	normalized, err := normalizeMarkPlanningProviderInvocationOpenRequest(req)
-	if err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("begin mark planning provider invocation open: %w", err)
-	}
-	committed := false
-	defer func() {
-		if !committed {
-			_ = tx.Rollback()
-		}
-	}()
-
-	invocation, found, err := loadPlanningProviderInvocationTx(ctx, tx, normalized.PlanningProviderInvocationID)
-	if err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if !found {
-		return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-	}
-	if invocation.PlanningOperationID != normalized.PlanningOperationID {
-		return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, normalized.PlanningOperationID, string(invocation.InvocationState))
-	}
-	if err := ensurePlanningProviderInvocationStateForOpen(invocation); err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if err := ensurePlanningProviderSessionLineage(invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, invocation.ProviderSessionID, normalized.ProviderSessionID, string(invocation.InvocationState), "mark_planning_provider_invocation_open"); err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}); err != nil {
-		return PlanningProviderInvocation{}, err
-	} else if bound {
-		return PlanningProviderInvocation{}, fmt.Errorf("bound planning provider request requires atomic activation")
-	}
-	if err := requireUnboundPlanningProviderSessionTx(ctx, tx, normalized.ProviderSessionID); err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if err := fencePlanningOperationProviderSessionTx(ctx, tx, invocation, normalized); err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if invocation.InvocationState != PlanningProviderInvocationStateOpen || invocation.OpenedAt == "" {
-		result, err := tx.ExecContext(ctx, `UPDATE planning_provider_invocations
-			SET invocation_state = 'open',
-			    provider_session_id = CASE WHEN TRIM(?) <> '' THEN TRIM(?) ELSE provider_session_id END,
-			    opened_at = COALESCE(opened_at, ?),
-			    updated_at = ?
-			WHERE planning_provider_invocation_id = ? AND invocation_state = 'issued'`,
-			normalized.ProviderSessionID,
-			normalized.ProviderSessionID,
-			normalized.OpenedAt,
-			normalized.OpenedAt,
-			invocation.PlanningProviderInvocationID,
-		)
-		if err != nil {
-			return PlanningProviderInvocation{}, fmt.Errorf("mark planning provider invocation %q open: %w", invocation.PlanningProviderInvocationID, err)
-		}
-		if affected, err := result.RowsAffected(); err != nil {
-			return PlanningProviderInvocation{}, fmt.Errorf("read planning provider invocation %q open rows affected: %w", invocation.PlanningProviderInvocationID, err)
-		} else if affected != 1 {
-			return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "active_invocation_conflict", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-		}
-	}
-	invocation, found, err = loadPlanningProviderInvocationTx(ctx, tx, invocation.PlanningProviderInvocationID)
-	if err != nil {
-		return PlanningProviderInvocation{}, err
-	}
-	if !found {
-		return PlanningProviderInvocation{}, planningProviderError("mark_planning_provider_invocation_open", "invocation_not_found", normalized.PlanningProviderInvocationID, normalized.PlanningOperationID, "")
-	}
-	if err := tx.Commit(); err != nil {
-		return PlanningProviderInvocation{}, fmt.Errorf("commit mark planning provider invocation open: %w", err)
 	}
 	committed = true
 	return invocation, nil
@@ -452,40 +291,31 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 	if invocation.PlanningOperationID != strings.TrimSpace(operationID) || invocation.PlanningSessionID != strings.TrimSpace(sessionID) {
 		return "", planningProviderError("finalize_planning_provider_settlement", "operation_lineage_mismatch", invocation.PlanningProviderInvocationID, operationID, string(invocation.InvocationState))
 	}
-	observation, observationErr := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
 	owner := providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: invocation.PlanningProviderInvocationID}
-	binding, requestBound, err := providerrequest.ForOwner(ctx, tx, owner)
+	binding, err := providerrequest.RequiredForOwner(ctx, tx, owner)
 	if err != nil {
 		return "", err
 	}
-	if requestBound {
-		if observationErr != nil {
-			return "", fmt.Errorf("bound planning provider request requires terminal observation")
-		}
-		if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome)); err != nil {
+	observation, err := planningProviderTerminalStreamObservation(normalized.PrimaryEvidencePayloadJSON)
+	if err != nil {
+		return "", fmt.Errorf("planning provider request requires terminal observation: %w", err)
+	}
+	if err := providerrequest.RequireCompletionTx(ctx, tx, owner, binding.Lease, observation, string(normalized.Outcome)); err != nil {
+		return "", err
+	}
+	refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)
+	if observation.CanonicalTerminalTextRef != nil {
+		refs = append(refs, *observation.CanonicalTerminalTextRef)
+	}
+	for _, ref := range refs {
+		if err := importPlanningProviderContent(ctx, tx, invocation.PlanningProviderInvocationID, ref, normalized.StagedContent); err != nil {
 			return "", err
 		}
-	} else if observation.Request != nil {
-		return "", fmt.Errorf("unbound planning invocation cannot claim provider request completion")
 	}
-	if observationErr != nil && (normalized.Outcome == PlanningProviderCompletionOutcomeSuccess || len(normalized.StagedContent) > 0) {
-		return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
-	}
-	if observationErr == nil {
-		refs := append([]providerexecution.ContentReference(nil), observation.DiagnosticContent...)
-		if observation.CanonicalTerminalTextRef != nil {
-			refs = append(refs, *observation.CanonicalTerminalTextRef)
-		}
-		for _, ref := range refs {
-			if err := importPlanningProviderContent(ctx, tx, invocation.PlanningProviderInvocationID, ref, normalized.StagedContent); err != nil {
-				return "", err
-			}
-		}
-		if observation.CanonicalTerminalTextRef != nil {
-			ref := *observation.CanonicalTerminalTextRef
-			observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
-				return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
-			}
+	if observation.CanonicalTerminalTextRef != nil {
+		ref := *observation.CanonicalTerminalTextRef
+		observation.TerminalTextOpener = func(context.Context) (io.ReadCloser, error) {
+			return providerexecution.OpenContentCopy(ctx, func(ctx context.Context, out io.Writer) error { return copyPlanningProviderContent(ctx, tx, ref, out) }), nil
 		}
 	}
 	if normalized.Outcome == PlanningProviderCompletionOutcomeSuccess {
@@ -513,7 +343,7 @@ func finalizePlanningProviderSettlementTx(ctx context.Context, tx *sql.Tx, opera
 				textMatches = providerexecution.ReferenceText(invocation.PlanningProviderInvocationID, normalized.FinalText) == *observation.CanonicalTerminalTextRef
 			}
 		}
-		if observationErr != nil || providerexecution.ValidateServerResponseSuccess(observation) != nil || !textMatches {
+		if providerexecution.ValidateServerResponseSuccess(observation) != nil || !textMatches {
 			return "", planningProviderError("finalize_planning_provider_settlement", "invalid_stream_success", invocation.PlanningProviderInvocationID, invocation.PlanningOperationID, string(invocation.InvocationState))
 		}
 	}
@@ -783,22 +613,6 @@ func createPlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, req Cre
 		return PlanningProviderInvocation{}, planningProviderError("create_planning_provider_invocation", "invocation_identity_conflict", req.PlanningProviderInvocationID, req.PlanningOperationID, string(invocation.InvocationState))
 	}
 	return invocation, nil
-}
-
-// Low-level V1 session callbacks cannot open an invocation on a session that
-// has canonical request ownership. That path must bind identity atomically.
-func requireUnboundPlanningProviderSessionTx(ctx context.Context, tx *sql.Tx, sessionID string) error {
-	if sessionID == "" {
-		return nil
-	}
-	var count int
-	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM provider_requests WHERE provider_session_id=?`, sessionID).Scan(&count); err != nil {
-		return err
-	}
-	if count != 0 {
-		return fmt.Errorf("planning provider session requires atomic request ownership")
-	}
-	return nil
 }
 
 func activatePlanningProviderInvocationTx(ctx context.Context, tx *sql.Tx, invocation PlanningProviderInvocation, openReq MarkPlanningProviderInvocationOpenRequest) error {
@@ -1226,15 +1040,14 @@ func firstNonEmptyPlanningProvider(values ...string) string {
 // invocation whose server can no longer prove it, and returns its identity. It
 // fails with providerrequest.ErrResourcesOpen when the request admitted a tool,
 // because the missing provider evidence could then hide a workspace effect.
-func (s *PlanningStore) AbandonPlanningProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, bool, error) {
+func (s *PlanningStore) AbandonPlanningProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, error) {
 	if s == nil || s.db == nil {
-		return providerexecution.RequestIdentity{}, false, fmt.Errorf("planning store database is required")
+		return providerexecution.RequestIdentity{}, fmt.Errorf("planning store database is required")
 	}
 	var identity providerexecution.RequestIdentity
-	var bound bool
 	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) (err error) {
-		identity, bound, err = providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: strings.TrimSpace(invocationID)}, s.leaseNow())
+		identity, err = providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: strings.TrimSpace(invocationID)}, s.leaseNow())
 		return err
 	}, sqlitex.Options{})
-	return identity, bound, err
+	return identity, err
 }

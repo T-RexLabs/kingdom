@@ -109,7 +109,7 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	requests := newRequestFixture(db, nil)
 	prepared := requests.prepare(t, attemptID, invocationID)
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
-		RequestIdentity:      &prepared.Identity,
+		RequestIdentity:      prepared.Identity,
 		ProviderInvocationID: invocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,

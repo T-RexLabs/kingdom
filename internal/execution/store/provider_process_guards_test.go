@@ -13,7 +13,7 @@ import (
 func TestStoreAcknowledgeProviderProcessGuardFencesActiveLeaseAndReplaysExactly(t *testing.T) {
 	t.Parallel()
 	s, db, req := providerProcessGuardFixture(t)
-	ack := providerProcessGuardAcknowledgement(req, "guard_fenced", 1)
+	ack := providerProcessGuardAcknowledgement(t, s, req, "guard_fenced", 1)
 
 	stale := ack
 	stale.ExpectedLeaseOwner = "stale-worker"
@@ -53,7 +53,7 @@ func TestStoreAcknowledgeProviderProcessGuardConfirmsDurableCommitError(t *testi
 		t.Fatalf("enable foreign keys: %v", err)
 	}
 	s, db, settlement := providerProcessGuardFixtureWithDB(t, db)
-	ack := providerProcessGuardAcknowledgement(settlement, "guard_commit_then_error", 1)
+	ack := providerProcessGuardAcknowledgement(t, s, settlement, "guard_commit_then_error", 1)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -91,7 +91,7 @@ func TestStoreAcknowledgeProviderProcessGuardRejectsMismatchedDurableCommitReadb
 		t.Fatalf("enable foreign keys: %v", err)
 	}
 	s, db, settlement := providerProcessGuardFixtureWithDB(t, db)
-	ack := providerProcessGuardAcknowledgement(settlement, "guard_mismatched_commit", 1)
+	ack := providerProcessGuardAcknowledgement(t, s, settlement, "guard_mismatched_commit", 1)
 	if _, err := db.Exec(`CREATE TRIGGER alter_acknowledged_guard_lease AFTER INSERT ON provider_process_guards WHEN NEW.guard_id = 'guard_mismatched_commit' BEGIN UPDATE provider_process_guards SET lease_version = lease_version + 1 WHERE guard_id = NEW.guard_id; END`); err != nil {
 		t.Fatalf("create acknowledgement lineage trigger: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestStoreAcknowledgeProviderProcessGuardRejectsMismatchedDurableCommitReadb
 func TestStoreProviderProcessGuardQuiescenceIsIdempotentAndRejectsConflicts(t *testing.T) {
 	t.Parallel()
 	s, _, req := providerProcessGuardFixture(t)
-	ack := providerProcessGuardAcknowledgement(req, "guard_quiescence", 1)
+	ack := providerProcessGuardAcknowledgement(t, s, req, "guard_quiescence", 1)
 	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
 		t.Fatalf("acknowledge guard: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestStoreProviderQuiescenceResumesCancellationPhases(t *testing.T) {
 				t.Parallel()
 				s, db, req := providerProcessGuardFixture(t)
 				ctx := context.Background()
-				ack := providerProcessGuardAcknowledgement(req, "guard_cancel_phase", 1)
+				ack := providerProcessGuardAcknowledgement(t, s, req, "guard_cancel_phase", 1)
 				if _, err := s.AcknowledgeProviderProcessGuard(ctx, ack); err != nil {
 					t.Fatal(err)
 				}
@@ -196,8 +196,8 @@ func TestStoreProviderQuiescenceResumesCancellationPhases(t *testing.T) {
 func TestStoreListPendingProviderProcessGuardsUsesKeyset(t *testing.T) {
 	t.Parallel()
 	s, _, req := providerProcessGuardFixture(t)
-	firstAck := providerProcessGuardAcknowledgement(req, "guard_a", 1)
-	secondAck := providerProcessGuardAcknowledgement(req, "guard_b", 2)
+	firstAck := providerProcessGuardAcknowledgement(t, s, req, "guard_a", 1)
+	secondAck := providerProcessGuardAcknowledgement(t, s, req, "guard_b", 2)
 	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), firstAck); err != nil {
 		t.Fatalf("acknowledge first guard: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 	t.Parallel()
 
 	s, db, req := providerProcessGuardFixture(t)
-	ack := providerProcessGuardAcknowledgement(req, "guard_evidence_lost", 1)
+	ack := providerProcessGuardAcknowledgement(t, s, req, "guard_evidence_lost", 1)
 	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
 		t.Fatalf("acknowledge guard: %v", err)
 	}
@@ -269,26 +269,21 @@ func TestStoreQuarantinesMissingGuardianEvidenceWithoutProvingQuiescence(t *test
 	}
 }
 
-func TestAttemptProcessGuardsQuiescentRejectsAcknowledgedPrelaunchGuard(t *testing.T) {
+func TestAttemptProcessGuardsQuiescentRejectsAcknowledgedGuard(t *testing.T) {
 	t.Parallel()
 
-	s, db, req := providerProcessGuardFixture(t)
-	if _, err := db.Exec(`UPDATE attempt_executions
-		SET state = 'starting', launch_started_at = NULL, started_at = NULL, provider_session_id = ''
-		WHERE attempt_id = ?`, req.Settlement.AttemptID); err != nil {
-		t.Fatalf("prepare prelaunch attempt: %v", err)
-	}
-	ack := providerProcessGuardAcknowledgement(req, "guard_prelaunch_acknowledged", 1)
+	s, _, req := providerProcessGuardFixture(t)
+	ack := providerProcessGuardAcknowledgement(t, s, req, "guard_acknowledged", 1)
 	if _, err := s.AcknowledgeProviderProcessGuard(context.Background(), ack); err != nil {
-		t.Fatalf("acknowledge prelaunch provider guard: %v", err)
+		t.Fatalf("acknowledge provider guard: %v", err)
 	}
 
 	quiescent, err := s.AttemptProcessGuardsQuiescent(context.Background(), req.Settlement.AttemptID)
 	if err != nil {
-		t.Fatalf("check prelaunch provider guard quiescence: %v", err)
+		t.Fatalf("check provider guard quiescence: %v", err)
 	}
 	if quiescent {
-		t.Fatal("acknowledged launch guard must block quiescence before launch observation is recorded")
+		t.Fatal("an acknowledged command guard must block quiescence until the guardian proves it")
 	}
 }
 
@@ -299,12 +294,14 @@ func providerProcessGuardFixture(t *testing.T) (*Store, *sql.DB, SettleProviderC
 
 func providerProcessGuardFixtureWithDB(t *testing.T, db *sql.DB) (*Store, *sql.DB, SettleProviderCompletionAndTerminalRequest) {
 	t.Helper()
-	s, db, req := atomicProviderSettlementFixtureWithDB(t, db)
-	mustExec(t, db, `DELETE FROM provider_process_guards`)
-	return s, db, req
+	return unfinishedAtomicProviderSettlementFixtureWithDB(t, db)
 }
 
-func providerProcessGuardAcknowledgement(req SettleProviderCompletionAndTerminalRequest, guardID string, commandOrdinal int64) AcknowledgeProviderProcessGuardRequest {
+// providerProcessGuardAcknowledgement admits the managed commands up to the
+// ordinal, as the server does before a command guardian launches one.
+func providerProcessGuardAcknowledgement(t testing.TB, s *Store, req SettleProviderCompletionAndTerminalRequest, guardID string, commandOrdinal int64) AcknowledgeProviderProcessGuardRequest {
+	t.Helper()
+	claimBoundCommands(t, s, req.Settlement.ProviderInvocationID, commandOrdinal)
 	return AcknowledgeProviderProcessGuardRequest{
 		GuardID:               guardID,
 		ProviderInvocationID:  req.Settlement.ProviderInvocationID,

@@ -15,6 +15,7 @@ import (
 	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/testutil/providerledger"
 )
 
 // fixtureProvider runs a responder behind the real request-ownership layer, so
@@ -136,7 +137,7 @@ func (f *requestFixture) complete(t testing.TB, job *asyncExecutionResult, outpu
 func (f *requestFixture) activate(t testing.TB, store *executionstore.Store, req executionstore.ActivateProviderInvocationRequest) executionstore.ProviderInvocation {
 	t.Helper()
 	prepared := f.prepare(t, req.AttemptID, req.ProviderInvocationID)
-	req.RequestIdentity, req.ProviderSessionID = &prepared.Identity, prepared.ProviderSessionID
+	req.RequestIdentity, req.ProviderSessionID = prepared.Identity, prepared.ProviderSessionID
 	invocation, err := store.ActivateProviderInvocation(context.Background(), req)
 	if err != nil {
 		t.Fatalf("activate provider invocation %s: %v", req.ProviderInvocationID, err)
@@ -192,4 +193,31 @@ type responderFunc func(context.Context, opencode.ExecuteRequest) (opencode.Exec
 
 func (f responderFunc) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	return f(ctx, req)
+}
+
+// openBoundRequest gives an attempt an unresolved provider request bound to a
+// synthetic identity, as dispatch leaves it while the server still works. The
+// attempt keeps its recorded state and is left without a lease, so only the
+// open request tells that its work has not ended.
+func openBoundRequest(t *testing.T, db *sql.DB, store *executionstore.Store, attemptID, runID, nodeRunID, invocationID, providerSessionID string) {
+	t.Helper()
+	var state string
+	if err := db.QueryRow(`SELECT state FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&state); err != nil {
+		t.Fatalf("load attempt %s: %v", attemptID, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', lease_owner = 'bound-request-holder', lease_version = 1, lease_expires_at = '2999-01-01T00:00:00Z' WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	session := providerledger.SessionFor(invocationID, providerSessionID)
+	if _, err := store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity: providerledger.Prepared(invocationID, session).Identity, ProviderInvocationID: invocationID, AttemptID: attemptID,
+		RunID: runID, NodeRunID: nodeRunID, LogicalSessionID: "logical-" + invocationID, ProviderSessionID: session,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z",
+		ExpectedLeaseOwner: "bound-request-holder", ExpectedLeaseVersion: 1,
+	}); err != nil {
+		t.Fatalf("open bound request %s: %v", invocationID, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = ?, lease_owner = '', lease_expires_at = NULL WHERE attempt_id = ?`, state, attemptID); err != nil {
+		t.Fatal(err)
+	}
 }

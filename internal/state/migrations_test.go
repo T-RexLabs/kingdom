@@ -150,7 +150,7 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !indexExists(t, db, "idx_provider_terminal_handoffs_pending") {
 		t.Fatal("expected pending provider terminal handoff index after up migration")
 	}
-	for _, column := range []string{"guard_id", "owner_kind", "owner_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "command_ordinal", "lifecycle", "platform", "guardian_pid", "guardian_identity_token", "child_pid", "child_identity_token", "tree_id", "tree_identity_token", "quiescence_capability_hash", "lease_owner", "lease_version", "started_at", "acknowledged_at", "termination_requested_at", "exited_at", "quiescent_at", "exit_code", "exit_signal", "termination_forced", "failure_code", "failure_text", "quiescence_evidence_sha256", "quiescence_evidence_json", "quiescence_evidence_lost_at", "created_at", "updated_at"} {
+	for _, column := range []string{"guard_id", "provider_invocation_id", "attempt_id", "run_id", "node_run_id", "command_ordinal", "lifecycle", "platform", "guardian_pid", "guardian_identity_token", "child_pid", "child_identity_token", "tree_id", "tree_identity_token", "quiescence_capability_hash", "lease_owner", "lease_version", "started_at", "acknowledged_at", "termination_requested_at", "exited_at", "quiescent_at", "exit_code", "exit_signal", "termination_forced", "failure_code", "failure_text", "quiescence_evidence_sha256", "quiescence_evidence_json", "quiescence_evidence_lost_at", "created_at", "updated_at"} {
 		if !columnExists(t, db, "provider_process_guards", column) {
 			t.Fatalf("expected provider_process_guards.%s column to exist after up migration", column)
 		}
@@ -206,10 +206,8 @@ func TestMigrationBaselineContainsRecoveryLeaseAndResponseWorkspaceCleanupFields
 	for _, tableColumn := range [][2]string{
 		{"provider_invocations", "terminal_handoff_pending_lease_owner"},
 		{"provider_invocations", "terminal_handoff_pending_lease_version"},
-		{"provider_invocations", "terminal_handoff_pending_process_quiescent"},
 		{"provider_invocations", "terminal_recovery_required_lease_owner"},
 		{"provider_invocations", "terminal_recovery_required_lease_version"},
-		{"provider_invocations", "terminal_recovery_required_process_quiescent"},
 		{"attempt_executions", "response_only_workspace_cleanup_pending_at"},
 	} {
 		if !columnExists(t, db, tableColumn[0], tableColumn[1]) {

@@ -333,7 +333,7 @@ func (h terminalHandoffHarness) addInvocation(t *testing.T, index int) execution
 	}
 	prepared := h.requests.prepare(t, attemptID, invocationID)
 	invocation, err := h.store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
-		RequestIdentity:      &prepared.Identity,
+		RequestIdentity:      prepared.Identity,
 		ProviderInvocationID: invocationID,
 		AttemptID:            attemptID,
 		RunID:                "run_terminal_handoff",
@@ -492,7 +492,7 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 	lostDone := make(chan error, 1)
 	go func() {
 		close(lostStarted)
-		lostDone <- h.loop.commitRecoveredGuardFailure(context.Background(), lostJob)
+		lostDone <- h.loop.commitLostHandoffFailure(context.Background(), lostJob)
 	}()
 	<-lostStarted
 	select {

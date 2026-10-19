@@ -30,7 +30,7 @@ func boundTransitionRequestFixture(t *testing.T) (*sql.DB, liveNodeAttempt, prov
 		t.Fatalf("claim: %v %v", acquired, err)
 	}
 	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: "/project", SessionID: "shared-session", ProfileID: "profile", RequestID: "request"}
-	_, err = store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: "shared-invocation", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "conversation", ProviderSessionID: identity.SessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: stamp, CreatedAt: stamp, OpenedAt: stamp, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, RequestIdentity: &identity})
+	_, err = store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: "shared-invocation", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "conversation", ProviderSessionID: identity.SessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: stamp, CreatedAt: stamp, OpenedAt: stamp, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, RequestIdentity: identity})
 	if err != nil {
 		t.Fatal(err)
 	}

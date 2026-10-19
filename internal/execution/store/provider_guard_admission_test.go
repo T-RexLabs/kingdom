@@ -135,10 +135,10 @@ func TestBoundRunGuardianExactReplayAfterAdmissionCloses(t *testing.T) {
 	}
 }
 
-func TestBoundRunNativeOnlyGuardSettlementUsesReceipts(t *testing.T) {
+func TestBoundRunNativeOnlyRequestClosureUsesReceipts(t *testing.T) {
 	for _, mode := range []string{"closed", "open", "pending native", "pending command"} {
 		t.Run(mode, func(t *testing.T) {
-			s, db, b, ack := boundRunGuardianFixture(t)
+			s, db, b, _ := boundRunGuardianFixture(t)
 			ctx, now := context.Background(), s.currentTime()
 			runGuardianTransaction(t, db, func(tx *sql.Tx) error {
 				if err := providerrequest.IssueDispatchTx(ctx, tx, b.ID, b.Identity, b.Lease, now); err != nil {
@@ -173,11 +173,7 @@ func TestBoundRunNativeOnlyGuardSettlementUsesReceipts(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer tx.Rollback()
-			invocation, found, err := loadProviderInvocationTx(ctx, tx, ack.ProviderInvocationID)
-			if err != nil || !found {
-				t.Fatalf("invocation: %v", err)
-			}
-			err = validateProviderProcessGuardsForSettlementTx(ctx, tx, invocation, ProviderCompletionOutcomeSuccess, "running", false, false, ack.ExpectedLeaseOwner, ack.ExpectedLeaseVersion)
+			err = providerrequest.RequireResourcesClosedTx(ctx, tx, b.ID)
 			if (err == nil) != (mode == "closed") {
 				t.Fatalf("native resource closure %s: %v", mode, err)
 			}

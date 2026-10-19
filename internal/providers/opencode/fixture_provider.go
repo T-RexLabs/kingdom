@@ -155,8 +155,6 @@ func (p *FixtureProvider) Execute(ctx context.Context, req ExecuteRequest) (Exec
 	observation.StagedDiagnosticContent = staged.diagnostics
 	observation.DiagnosticContent = staged.diagnosticRefs()
 	observation.ToolCalls = nil
-	observation.ProcessExited, observation.ProcessExitCode, observation.ProcessExitSignal = false, nil, nil
-	observation.ProcessQuiescent, observation.StdoutDrained, observation.StderrDrained, observation.ProcessGuards = false, false, false, nil
 	if terminal.Text != nil {
 		observation.StagedTerminalContent, observation.TerminalTextOpener = &staged.text, staged.text.Open
 	}

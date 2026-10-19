@@ -59,9 +59,8 @@ func (r *operationRunner) createPlanningProviderInvocation(ctx context.Context, 
 		ReusableProviderSessionID: strings.TrimSpace(reusableProviderSessionID),
 		InvocationID:              invocationID,
 		Activate: func(activateCtx context.Context, prepared opencode.Prepared) error {
-			identity := prepared.Identity
 			if _, err := r.deps.store.ActivatePlanningProviderInvocation(activateCtx, state.ActivatePlanningProviderInvocationRequest{
-				RequestIdentity:              &identity,
+				RequestIdentity:              prepared.Identity,
 				PlanningProviderInvocationID: invocationID,
 				PlanningOperationID:          operation.OperationID,
 				PlanningSessionID:            session.PlanningSessionID,

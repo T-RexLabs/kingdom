@@ -70,10 +70,6 @@ func RequireCompletionTx(ctx context.Context, q Reader, owner Owner, lease Lease
 	if err := providerexecution.RequireRequestTerminalMatch(observation); err != nil {
 		return err
 	}
-	if observation.ProcessExited || observation.ProcessExitCode != nil || observation.ProcessExitSignal != nil ||
-		observation.ProcessQuiescent || observation.StdoutDrained || observation.StderrDrained {
-		return fmt.Errorf("provider request cannot assert server process completion")
-	}
 	switch outcome {
 	case "success":
 		if request.Terminal.Outcome != providerexecution.RequestOutcomeSucceeded || observation.Cancelled || observation.TimedOut {

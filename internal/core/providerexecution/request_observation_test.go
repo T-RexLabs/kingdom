@@ -34,10 +34,10 @@ func successfulRequestObservation() InvocationStreamObservation {
 	}
 }
 
-func TestRequestResponseSuccessDoesNotClaimServerProcessExit(t *testing.T) {
+func TestRequestResponseSuccessNeedsOnlyTheRequestObservation(t *testing.T) {
 	observation := successfulRequestObservation()
 	if err := ValidateServerResponseSuccess(observation); err != nil {
-		t.Fatalf("shared request must not fabricate process/CLI step facts: %v", err)
+		t.Fatalf("shared request success must hold on the request observation alone: %v", err)
 	}
 }
 
@@ -91,7 +91,6 @@ func TestRequestTerminalRejectsInvalidRecords(t *testing.T) {
 }
 
 func TestRequestResponseRejectsFabricatedOrIncompleteFacts(t *testing.T) {
-	zero := 0
 	for name, mutate := range map[string]func(*InvocationStreamObservation){
 		"missing identity":  func(o *InvocationStreamObservation) { o.Request.Identity.RequestID = "" },
 		"wrong session":     func(o *InvocationStreamObservation) { o.ProviderSessionID = "other" },
@@ -104,12 +103,6 @@ func TestRequestResponseRejectsFabricatedOrIncompleteFacts(t *testing.T) {
 		"other tools":       func(o *InvocationStreamObservation) { o.ToolCalls[0].Status = "error" },
 		"dropped tools":     func(o *InvocationStreamObservation) { o.ToolCalls = nil },
 		"invalid evidence":  func(o *InvocationStreamObservation) { o.Request.Terminal.Events.SHA256 = "invalid" },
-		"process exited":    func(o *InvocationStreamObservation) { o.ProcessExited = true },
-		"exit code":         func(o *InvocationStreamObservation) { o.ProcessExitCode = &zero },
-		"exit signal":       func(o *InvocationStreamObservation) { o.ProcessExitSignal = &zero },
-		"stdout drained":    func(o *InvocationStreamObservation) { o.StdoutDrained = true },
-		"stderr drained":    func(o *InvocationStreamObservation) { o.StderrDrained = true },
-		"process quiescent": func(o *InvocationStreamObservation) { o.ProcessQuiescent = true },
 		"pending tool":      func(o *InvocationStreamObservation) { o.PendingToolCount = 1 },
 		"later event":       func(o *InvocationStreamObservation) { o.LaterEventAfterTerminal = true },
 		"cancelled":         func(o *InvocationStreamObservation) { o.Cancelled = true },

@@ -18,10 +18,9 @@ func RunStartStateSelectExpr(alias string) string {
 		WHEN COUNT(NULLIF(TRIM(ae.started_at), '')) > 0 THEN 'observed'
 		WHEN COALESCE(MAX(CASE WHEN pcs.settlement_id IS NOT NULL
 			AND pe.evidence_kind = 'stream_observation'
-			AND (json_extract(pe.payload_json, '$.process_exited') = 1
-				OR EXISTS (SELECT 1 FROM provider_process_guards pg
-					WHERE pg.provider_invocation_id=pcs.provider_invocation_id
-					AND pg.owner_kind='work_order_attempt' AND pg.attempt_id=ae.attempt_id))
+			AND EXISTS (SELECT 1 FROM provider_process_guards pg
+				WHERE pg.provider_invocation_id=pcs.provider_invocation_id
+				AND pg.attempt_id=ae.attempt_id)
 			THEN 1 ELSE 0 END), 0) > 0 THEN 'unrecorded'
 		ELSE 'not_started' END
 		FROM attempt_executions ae

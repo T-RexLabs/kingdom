@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/testutil"
 )
@@ -143,14 +145,36 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 		t.Fatalf("mark provider attempt running: %v", err)
 	}
 	invocationID := "invocation_commit_outcome"
+	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: "/project", SessionID: "session_commit_outcome", ProfileID: "profile", RequestID: "request"}
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
-		ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
+		RequestIdentity: identity, ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
 		LogicalSessionID: "logical_commit_outcome", ProviderSessionID: "session_commit_outcome",
 		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 		IssuedAt:       startedAtText, CreatedAt: startedAtText, OpenedAt: startedAtText,
 		ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion,
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
+	}
+	// The server dispatches the request and admits the command that the
+	// guardian will launch.
+	binding, err := providerrequest.Get(ctx, db, invocationID)
+	if err != nil {
+		t.Fatalf("load request binding: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	if err := providerrequest.IssueDispatchTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
+		t.Fatalf("issue dispatch: %v", err)
+	}
+	if _, err := providerrequest.ClaimCommandTx(ctx, tx, providerrequest.NativeCall{BindingID: binding.ID, Identity: binding.Identity, MessageID: "message", CallID: "call", Tool: "shell", Input: []byte(`{"command":"true"}`)}, now); err != nil {
+		t.Fatalf("claim command: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
 	}
 	return store, executionstore.AcknowledgeProviderProcessGuardRequest{
 		ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,

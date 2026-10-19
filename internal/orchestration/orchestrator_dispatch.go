@@ -308,7 +308,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	if prepareErr != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider request", prepareErr)
 	}
-	if invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, providerInvocationID, prepared, executionSpec.CompletionMode, now, ""); invocationErr != nil {
+	if invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, providerInvocationID, prepared, executionSpec.CompletionMode, now); invocationErr != nil {
 		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
