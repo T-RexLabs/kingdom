@@ -330,7 +330,6 @@ model_policy:
   fallback_enabled: true
   fallback_strategy: disabled_for_mvp
 timeouts:
-  strict_startup_total_timeout: 60s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -349,8 +348,8 @@ escalation:
 	paths.ProviderPolicyPath = invalidProviderPolicy
 
 	_, err := NewRuntime(Config{DB: db, Paths: paths})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail with invalid provider policy")
+	if err == nil || !strings.Contains(err.Error(), "fallback_enabled") {
+		t.Fatalf("expected runtime bootstrap to reject the fallback policy, got %v", err)
 	}
 }
 
@@ -1993,7 +1992,7 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 			FailureText:    "upstream exploded",
 			EvidenceSource: "stream",
 		},
-		err: errors.New("opencode run failed: upstream exploded"),
+		err: errors.New("provider request failed: upstream exploded"),
 	}, "committed_failure", "2026-03-01T12:00:02Z")
 	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
 		t.Fatalf("drain execution outbox: %v", err)
@@ -3871,7 +3870,7 @@ func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *test
 		attempt:   nodeAttempt{NodeRunID: "nr_raw_error_fallback_1", NodeID: "implementation", Attempt: 1, AgentID: "agent_builder", RequiredRole: "builder"},
 		attemptID: "run_raw_error_fallback:implementation:1",
 		delegator: "agent_council",
-		err:       errors.New("opencode run failed: signal: killed"),
+		err:       errors.New("provider request failed: signal: killed"),
 	}
 
 	if err := loop.completeExecution(context.Background(), result); err != nil {
@@ -3882,10 +3881,10 @@ func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *test
 	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full'), json_extract(payload_json, '$.response_raw') FROM mailbox_messages WHERE run_id = 'run_raw_error_fallback' AND json_extract(payload_json, '$.communication_type') = 'response_received' LIMIT 1`).Scan(&responseFull, &responseRaw); err != nil {
 		t.Fatalf("query response message: %v", err)
 	}
-	if responseRaw != "opencode run failed: signal: killed" {
+	if responseRaw != "provider request failed: signal: killed" {
 		t.Fatalf("expected response_raw fallback to error text, got %q", responseRaw)
 	}
-	if responseFull != "opencode run failed: signal: killed" {
+	if responseFull != "provider request failed: signal: killed" {
 		t.Fatalf("expected response_full error text, got %q", responseFull)
 	}
 }
@@ -8579,7 +8578,7 @@ func TestShouldUseErrorAsResponseFallbackExcludesOwnerFailureClasses(t *testing.
 	if shouldUseErrorAsResponseFallback("quality_validation", &providerEmptyOutputError{NodeID: "quality_validation", AttemptID: "run:x:1"}, "") {
 		t.Fatal("expected provider empty output errors to skip error-text fallback")
 	}
-	if shouldUseErrorAsResponseFallback("execution_review", errors.New("opencode run failed: incomplete"), "provider_incomplete_turn") {
+	if shouldUseErrorAsResponseFallback("execution_review", errors.New("provider request failed: incomplete"), "provider_incomplete_turn") {
 		t.Fatal("expected durable provider_incomplete_turn reason code to skip owner error-text fallback")
 	}
 	if !shouldUseErrorAsResponseFallback("implementation", errors.New("provider response is incomplete"), "provider_incomplete_turn") {

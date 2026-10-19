@@ -876,7 +876,7 @@ describe("issue work order page", () => {
             thinking_effort_options: [{ value: "medium", label: "Medium" }],
           },
         ],
-        failure_reason: "command_failed",
+        failure_reason: "service_unavailable",
         failure_message: "Showing the models Kingdom already had.",
       },
       isLoading: false,
