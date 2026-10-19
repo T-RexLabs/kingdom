@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/providerlimits"
@@ -150,7 +149,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	modelSource := string(executionSpec.Mode)
 	var providerPromptOpen opencodePromptOpener
 	var providerPromptRef *state.RequestContentReference
-	var inlineConfigContent string
+	systemPrompt := ""
 	scopedDelegatorInstruction := ""
 	agentForRole := ""
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
@@ -165,7 +164,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "persist provider prompt", promptErr)
 		}
 		scopedDelegatorInstruction = scoped
-		inlineConfigContent = invocationConfig.InlineConfig
+		systemPrompt = invocationConfig.SystemPrompt
 		providerPromptRef = &ref
 		providerPromptOpen = func(ctx context.Context) (io.ReadCloser, error) {
 			return state.OpenExecutionPrompt(ctx, o.db, attemptID, ref)
@@ -270,13 +269,51 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	if err := o.ensureSessionLease(ctx, sessionID, attempt.AgentID, now); err != nil {
 		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "ensure provider session lease", err)
 	}
-	providerInvocationID, providerInvocationAt, invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, executionSpec.CompletionMode, now, "")
-	if invocationErr != nil {
+	issuedAt, err := time.Parse(time.RFC3339Nano, now)
+	if err != nil {
+		issuedAt = o.now().UTC()
+	}
+	providerInvocationID := newProviderInvocationID(attemptID, issuedAt)
+	job := asyncExecutionResult{
+		run:                                  run,
+		node:                                 node,
+		attempt:                              attempt,
+		attemptID:                            attemptID,
+		sessionID:                            sessionID,
+		providerInvocationID:                 providerInvocationID,
+		providerInvocationAt:                 now,
+		completionMode:                       executionSpec.CompletionMode,
+		expectedLeaseOwner:                   attempt.LeaseOwner,
+		expectedLeaseVersion:                 attempt.LeaseVersion,
+		expectedLeaseExpiresAt:               expectedLeaseExpiresAt,
+		providerLeaseDuration:                providerLeaseDuration,
+		baseSnapshotID:                       baseSnapshotID,
+		workspaceID:                          run.RunID,
+		workspacePath:                        workspacePath,
+		ephemeralWorkspace:                   ephemeralWorkspace,
+		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
+		projectRootBoundary:                  projectRootBoundary,
+		delegator:                            delegatorID,
+		openPrompt:                           providerPromptOpen,
+		system:                               systemPrompt,
+		model:                                resolvedModel,
+		variant:                              resolvedVariant,
+		agent:                                agentForRole,
+		occurredAt:                           now,
+	}
+	// The provider fixes the request's session and profile without sending any
+	// work. Activation then binds exactly that identity to the canonical
+	// invocation, and only after it commits may the request be dispatched.
+	prepared, prepareErr := o.provider.Prepare(ctx, o.providerRequest(job))
+	if prepareErr != nil {
+		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider request", prepareErr)
+	}
+	if invocationErr := o.activateProviderInvocationForExecution(ctx, run, attempt, attemptID, sessionID, providerInvocationID, prepared, executionSpec.CompletionMode, now, ""); invocationErr != nil {
 		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
 		if errors.As(invocationErr, &outcomeUnknown) {
 			return fmt.Errorf("provider invocation activation outcome is unresolved for attempt %q: %w", attemptID, invocationErr)
 		}
-		return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr)
+		return errors.Join(o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "create provider invocation", invocationErr), o.discardProviderRequest(ctx, providerInvocationID))
 	}
 
 	_ = o.emitCommunicationMessage(ctx, communicationMessageRequest{
@@ -310,6 +347,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 			ExpectedLeaseVersion: attempt.LeaseVersion,
 		})
 		cancelRollback()
+		rollbackErr = errors.Join(rollbackErr, o.discardProviderRequest(ctx, providerInvocationID))
 		if rollbackErr != nil {
 			return errors.Join(
 				fmt.Errorf("record provider execution start: %w", err),
@@ -320,35 +358,8 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	}
 	attempt.NodeStatus = "starting"
 
-	job := asyncExecutionResult{
-		run:                                  run,
-		node:                                 node,
-		attempt:                              attempt,
-		attemptID:                            attemptID,
-		sessionID:                            sessionID,
-		providerInvocationID:                 providerInvocationID,
-		providerInvocationAt:                 providerInvocationAt,
-		completionMode:                       executionSpec.CompletionMode,
-		expectedLeaseOwner:                   attempt.LeaseOwner,
-		expectedLeaseVersion:                 attempt.LeaseVersion,
-		expectedLeaseExpiresAt:               expectedLeaseExpiresAt,
-		providerLeaseDuration:                providerLeaseDuration,
-		baseSnapshotID:                       baseSnapshotID,
-		workspaceID:                          run.RunID,
-		workspacePath:                        workspacePath,
-		ephemeralWorkspace:                   ephemeralWorkspace,
-		responseOnlyWorkspaceCleanupMarkedAt: responseOnlyWorkspaceCleanupMarkedAt,
-		projectRootBoundary:                  projectRootBoundary,
-		delegator:                            delegatorID,
-		openPrompt:                           providerPromptOpen,
-		inlineConfigContent:                  inlineConfigContent,
-		model:                                resolvedModel,
-		variant:                              resolvedVariant,
-		agent:                                agentForRole,
-		occurredAt:                           now,
-	}
 	if err := o.preparationMayLaunch(ctx, &job); err != nil {
-		return err
+		return errors.Join(err, o.discardProviderRequest(ctx, providerInvocationID))
 	}
 	preparation.transferred = true
 	o.startOwnedAsyncExecution(preparation.ctx, job, preparation.cancel)
@@ -734,7 +745,6 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 		defer cancelExecution()
 		heartbeat := o.startProviderLeaseHeartbeat(executionCtx, cancelExecution, job)
 
-		workspaceOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(job.workspacePath)
 		launchObserved := false
 		launchObservedAt := ""
 		startPayloadRaw, startPayloadErr := marshalAsyncExecutionAttemptEventPayload(job, "orchestration_progress", map[string]any{
@@ -746,41 +756,20 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 			slog.Warn("failed to marshal provider execution start payload", "attempt_id", job.attemptID, "error", startPayloadErr)
 			startPayloadRaw = "{}"
 		}
-		response, execErr := o.executeWithDurableProgress(executionCtx, job, opencode.ExecuteRequest{
-			SessionID:           job.sessionID,
-			AttemptID:           job.attemptID,
-			RunID:               job.run.RunID,
-			NodeRunID:           job.attempt.NodeRunID,
-			Model:               job.model,
-			Variant:             job.variant,
-			Agent:               job.agent,
-			WorkspacePath:       job.workspacePath,
-			ProjectRootBoundary: job.projectRootBoundary,
-			ConfigDir:           workspaceOpenCode.ConfigDir,
-			DatabasePath:        workspaceOpenCode.DatabasePath,
-			Prompt:              job.prompt,
-			OpenPrompt:          job.openPrompt,
-			InlineConfigContent: job.inlineConfigContent,
-			OccurredAt:          job.occurredAt,
-			InvocationID:        job.providerInvocationID,
-			InvocationIssuedAt:  job.providerInvocationAt,
-			CompletionMode:      opencode.CompletionMode(job.completionMode),
-			OnProcessGuardOwnership: func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
-				return o.acknowledgeProviderProcessGuard(callbackCtx, job, guard)
-			},
-			OnProcessGuardQuiescence: func(callbackCtx context.Context, guard opencode.ProcessGuardQuiescence) error {
-				return o.ingestProviderProcessGuardQuiescence(callbackCtx, job, guard)
-			},
-			OnProcessStarted: func() {
-				launchObserved = true
-				launchObservedAt = o.now().UTC().Format(time.RFC3339Nano)
-				o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
-			},
-			OnProviderSession: func(providerSessionID string) {
-				o.observeProviderSessionForInvocation(ctx, job.attemptID, job.providerInvocationID, providerSessionID)
-			},
-			OnActivity: o.providerExecutionActivityObserver(ctx, job),
-		})
+		request := o.providerRequest(job)
+		request.OnProcessGuardOwnership = func(callbackCtx context.Context, guard opencode.ProcessGuardOwnership) error {
+			return o.acknowledgeProviderProcessGuard(callbackCtx, job, guard)
+		}
+		request.OnProcessGuardQuiescence = func(callbackCtx context.Context, guard opencode.ProcessGuardQuiescence) error {
+			return o.ingestProviderProcessGuardQuiescence(callbackCtx, job, guard)
+		}
+		request.OnInvocationStarted = func() {
+			launchObserved = true
+			launchObservedAt = o.now().UTC().Format(time.RFC3339Nano)
+			o.observeExecutionLaunchAsync(ctx, job, startPayloadRaw, launchObservedAt)
+		}
+		request.OnActivity = o.providerExecutionActivityObserver(ctx, job)
+		response, execErr := o.executeWithDurableProgress(executionCtx, job, request)
 		heartbeatResult := heartbeat.stopAndWait()
 		applyExecuteResponseToAsyncResult(&job, response, execErr)
 		job.outcome = normalizeExecutionOutcome(job.outcome, job.err)
@@ -816,7 +805,7 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 					err = errors.Join(err, fmt.Errorf("mark terminal handoff recovery required: %w", recoveryMarkerErr))
 				}
 				o.recordProviderTerminalHandoffError(job, err)
-				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be fenced for recovery.", EvidenceSource: "process_guard"}
+				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be fenced for recovery.", EvidenceSource: "request"}
 				job.err = err
 				if recoveryMarkerErr != nil {
 					return
@@ -844,7 +833,7 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 					err = errors.Join(err, fmt.Errorf("mark terminal handoff recovery required: %w", recoveryMarkerErr))
 				}
 				o.recordProviderTerminalHandoffError(job, err)
-				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be persisted.", EvidenceSource: "process_guard"}
+				job.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation could not be persisted.", EvidenceSource: "request"}
 				job.err = err
 				if recoveryMarkerErr != nil {
 					return
@@ -1229,4 +1218,29 @@ func (o *orchestrationLoop) awaitExecutionResult(ctx context.Context, attemptID 
 	case <-ctx.Done():
 		return asyncExecutionResult{}, false
 	}
+}
+
+// providerRequest describes a job's request to the provider. Prepare and
+// Execute receive the same description, and the provider holds the prepared
+// identity between them.
+func (o *orchestrationLoop) providerRequest(job asyncExecutionResult) opencode.ExecuteRequest {
+	return opencode.ExecuteRequest{
+		AttemptID:               job.attemptID,
+		InvocationID:            job.providerInvocationID,
+		Model:                   job.model,
+		Variant:                 job.variant,
+		Agent:                   job.agent,
+		System:                  job.system,
+		WorkspacePath:           job.workspacePath,
+		OpenPrompt:              job.openPrompt,
+		FirstEventTimeout:       o.firstEventTimeout,
+		StreamInactivityTimeout: o.streamInactivity,
+	}
+}
+
+// discardProviderRequest releases a prepared request that will not run.
+func (o *orchestrationLoop) discardProviderRequest(ctx context.Context, providerInvocationID string) error {
+	discardCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
+	defer cancel()
+	return o.provider.Discard(discardCtx, providerInvocationID)
 }

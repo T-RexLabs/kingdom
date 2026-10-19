@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providers/opencode"
@@ -174,6 +176,20 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffs(ctx context.Conte
 	}
 }
 
+// lostHandoffCandidateConditions selects running attempts whose worker is gone
+// before its terminal handoff became durable: the worker fenced the handoff, a
+// command guardian remembers the attempt, or the attempt was cancelled and no
+// worker is left to settle it.
+const lostHandoffCandidateConditions = `ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL
+		AND (
+		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
+		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
+		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt') OR
+		  EXISTS (SELECT 1 FROM attempt_cancel_outbox pending WHERE pending.attempt_id = ae.attempt_id AND pending.status = 'pending')
+		)
+		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
+		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)`
+
 func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.Context, onlyMarked bool, cursor string, limit int) (string, int, error) {
 	if o == nil || o.db == nil {
 		return cursor, 0, nil
@@ -181,20 +197,14 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 	rows, err := o.db.QueryContext(ctx, `SELECT ae.attempt_id, ae.run_id, ae.node_run_id, ae.completion_mode, ae.session_ref,
 		pi.provider_invocation_id, ae.lease_owner, ae.lease_version, nr.node_id, nr.required_role,
 		nr.attempt, nr.agent_id, nr.wave, nr.node_status, COALESCE(nr.started_at, ''), wn.node_class,
-		ae.state, ae.provider_timeout_ms, ae.provider_session_id, ae.base_snapshot_id, ae.result_snapshot_id
+		ae.state, ae.provider_timeout_ms, ae.provider_session_id, ae.base_snapshot_id, ae.result_snapshot_id,
+		EXISTS (SELECT 1 FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending')
 		FROM attempt_executions ae
 		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
 		JOIN node_runs nr ON nr.node_run_id = ae.node_run_id AND nr.run_id = ae.run_id
 		JOIN workflow_runs wr ON wr.run_id = ae.run_id
 		JOIN workflow_nodes wn ON wn.workflow_definition_id = wr.workflow_definition_id AND wn.node_id = nr.node_id
-		WHERE ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL AND pi.provider_invocation_id > ?
-		AND (
-		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
-		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
-		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt')
-		)
-		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
-		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
+		WHERE pi.provider_invocation_id > ? AND `+lostHandoffCandidateConditions+`
 		AND (? = 0 OR (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version))
 		ORDER BY pi.provider_invocation_id LIMIT ?`, cursor, boolToQueryInt(onlyMarked), limit)
 	if err != nil {
@@ -205,12 +215,13 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 	for rows.Next() {
 		var result asyncExecutionResult
 		var startedAt, nodeClass, attemptState, providerSessionID, baseSnapshotID, resultSnapshotID string
+		var cancelPending bool
 		if err := rows.Scan(
 			&result.attemptID, &result.run.RunID, &result.attempt.NodeRunID, &result.completionMode, &result.sessionID,
 			&result.providerInvocationID, &result.expectedLeaseOwner, &result.expectedLeaseVersion,
 			&result.node.NodeID, &result.node.RequiredRole,
 			&result.attempt.Attempt, &result.attempt.AgentID, &result.attempt.Wave, &result.attempt.NodeStatus, &startedAt,
-			&nodeClass, &attemptState, &result.attempt.ProviderTimeoutMillis, &providerSessionID, &baseSnapshotID, &resultSnapshotID,
+			&nodeClass, &attemptState, &result.attempt.ProviderTimeoutMillis, &providerSessionID, &baseSnapshotID, &resultSnapshotID, &cancelPending,
 		); err != nil {
 			return cursor, 0, err
 		}
@@ -230,9 +241,11 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 		result.providerSessionID = providerSessionID
 		result.baseSnapshotID = strings.TrimSpace(baseSnapshotID)
 		result.resultSnapshotID = strings.TrimSpace(resultSnapshotID)
-		result.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation was lost before durable handoff.", EvidenceSource: "process_guard"}
+		result.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "Provider execution ended, but its terminal observation was lost before durable handoff.", EvidenceSource: "request"}
+		if cancelPending {
+			result.outcome = opencode.ExecutionOutcome{State: "cancelled", ReasonCode: "provider_cancelled", EvidenceSource: "request"}
+		}
 		result.providerDiagnosticsJSON = `{}`
-		result.providerStreamObservation = opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, ProcessExited: true, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true}
 		candidates = append(candidates, result)
 	}
 	if err := rows.Err(); err != nil {
@@ -243,6 +256,11 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 	}
 	visited := 0
 	for _, result := range candidates {
+		if o.executionAttemptInflight(result.attemptID) {
+			cursor = result.providerInvocationID
+			visited++
+			continue
+		}
 		run, found, err := o.loadRunSnapshotForRepair(ctx, result.run.RunID)
 		if err != nil {
 			return cursor, visited, err
@@ -271,13 +289,38 @@ func (o *orchestrationLoop) settleLostProviderTerminalHandoffsPass(ctx context.C
 				return cursor, visited, err
 			}
 		}
-		if err := o.commitRecoveredGuardFailure(ctx, result); err != nil {
+		if err := o.settleLostHandoffByAbandonment(ctx, result); err != nil {
 			return cursor, visited, err
 		}
 		cursor = result.providerInvocationID
 		visited++
 	}
 	return cursor, visited, nil
+}
+
+// settleLostHandoffByAbandonment fails an attempt whose provider answer was lost
+// before it became durable. The request is abandoned first, which succeeds only
+// if every admitted effect is already closed; otherwise the attempt stays
+// blocked until its effects can be proven, and other recoveries continue.
+func (o *orchestrationLoop) settleLostHandoffByAbandonment(ctx context.Context, result asyncExecutionResult) error {
+	identity, bound, err := o.executionStore.AbandonProviderRequest(ctx, result.providerInvocationID)
+	if errors.Is(err, providerrequest.ErrResourcesOpen) {
+		slog.Warn("lost provider terminal handoff stays blocked", "attempt_id", result.attemptID, "provider_invocation_id", result.providerInvocationID, "error", err)
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !bound {
+		return fmt.Errorf("provider invocation %q has no canonical request", result.providerInvocationID)
+	}
+	observation, err := providerexecution.AbandonedObservation(identity, result.providerInvocationID)
+	if err != nil {
+		return err
+	}
+	observation.Cancelled = result.outcome.State == "cancelled"
+	result.providerStreamObservation = observation
+	return errors.Join(o.commitRecoveredGuardFailure(ctx, result), observation.ReleaseContent())
 }
 
 func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context) (bool, error) {
@@ -289,14 +332,7 @@ func (o *orchestrationLoop) hasLostProviderTerminalHandoffs(ctx context.Context)
 		SELECT 1
 		FROM attempt_executions ae
 		JOIN provider_invocations pi ON pi.provider_invocation_id = ae.active_provider_invocation_id
-		WHERE ae.state IN ('starting','running') AND ae.canonical_settlement_id IS NULL
-		AND (
-		  (pi.terminal_handoff_pending_at IS NOT NULL AND pi.terminal_handoff_pending_lease_owner = ae.lease_owner AND pi.terminal_handoff_pending_lease_version = ae.lease_version) OR
-		  (pi.terminal_recovery_required_at IS NOT NULL AND pi.terminal_recovery_required_lease_owner = ae.lease_owner AND pi.terminal_recovery_required_lease_version = ae.lease_version) OR
-		  EXISTS (SELECT 1 FROM provider_process_guards known WHERE known.provider_invocation_id = pi.provider_invocation_id AND known.owner_kind = 'work_order_attempt')
-		)
-		AND NOT EXISTS (SELECT 1 FROM provider_process_guards unresolved WHERE unresolved.provider_invocation_id = pi.provider_invocation_id AND unresolved.lifecycle <> 'quiescent')
-		AND NOT EXISTS (SELECT 1 FROM provider_terminal_handoffs pth WHERE pth.provider_invocation_id = pi.provider_invocation_id)
+		WHERE `+lostHandoffCandidateConditions+`
 	)`).Scan(&found)
 	if err != nil {
 		return false, err

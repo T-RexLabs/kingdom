@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
+	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
 )
 
@@ -293,7 +293,7 @@ func (s *PlanningStore) ActivatePlanningProviderInvocation(ctx context.Context, 
 		if err := providerrequest.BindTx(ctx, tx, providerrequest.Binding{
 			ID: invocation.PlanningProviderInvocationID, Identity: *req.RequestIdentity, Owner: owner,
 			Lease: providerrequest.Lease{Owner: openReq.LeaseOwner, Version: int64(openReq.LeaseVersion)},
-		}, time.Now().UTC()); err != nil {
+		}, s.leaseNow()); err != nil {
 			return PlanningProviderInvocation{}, err
 		}
 	}
@@ -426,18 +426,21 @@ func (s *PlanningStore) GetLatestReusablePlanningProviderInvocation(ctx context.
 	row := s.db.QueryRowContext(ctx, planningProviderInvocationSelect+`
 		 WHERE logical_session_id = ?
 		   AND TRIM(provider_session_id) <> ''
-		   AND invocation_state IN (?, ?)
 		 ORDER BY created_at DESC, planning_provider_invocation_id DESC
 		 LIMIT 1`,
 		trimmedLogicalSessionID,
-		string(PlanningProviderInvocationStateOpen),
-		string(PlanningProviderInvocationStateSettledSuccess),
 	)
 	invocation, found, err := scanPlanningProviderInvocation(row)
 	if err != nil {
 		return PlanningProviderInvocation{}, false, fmt.Errorf("get latest reusable planning provider invocation %q: %w", trimmedLogicalSessionID, err)
 	}
-	return invocation, found, nil
+	// The conversation continues only from a request that settled successfully.
+	// Any later request, including a cancelled or failed one, may have changed
+	// the provider's history in ways the canonical transcript does not show.
+	if !found || invocation.InvocationState != PlanningProviderInvocationStateSettledSuccess {
+		return PlanningProviderInvocation{}, false, nil
+	}
+	return invocation, true, nil
 }
 
 func (s *PlanningStore) GetPlanningProviderCompletionSettlement(ctx context.Context, settlementID string) (PlanningProviderCompletionSettlement, bool, error) {
@@ -1245,4 +1248,21 @@ func firstNonEmptyPlanningProvider(values ...string) string {
 		}
 	}
 	return ""
+}
+
+// AbandonPlanningProviderRequest closes the provider request of a planning
+// invocation whose server can no longer prove it, and returns its identity. It
+// fails with providerrequest.ErrResourcesOpen when the request admitted a tool,
+// because the missing provider evidence could then hide a workspace effect.
+func (s *PlanningStore) AbandonPlanningProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, bool, error) {
+	if s == nil || s.db == nil {
+		return providerexecution.RequestIdentity{}, false, fmt.Errorf("planning store database is required")
+	}
+	var identity providerexecution.RequestIdentity
+	var bound bool
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) (err error) {
+		identity, bound, err = providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerPlanning, InvocationID: strings.TrimSpace(invocationID)}, s.leaseNow())
+		return err
+	}, sqlitex.Options{})
+	return identity, bound, err
 }

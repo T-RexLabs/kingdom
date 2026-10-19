@@ -32,12 +32,11 @@ type AgentPolicy struct {
 }
 
 type Timeouts struct {
-	StrictStartupTotalTimeout string            `yaml:"strict_startup_total_timeout" json:"strict_startup_total_timeout"`
-	FirstEventTimeout         string            `yaml:"first_event_timeout" json:"first_event_timeout"`
-	StreamInactivityTimeout   string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
-	CancelGraceTimeout        string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
-	CancelForceTimeout        string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
-	NodeWallClock             map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
+	FirstEventTimeout       string            `yaml:"first_event_timeout" json:"first_event_timeout"`
+	StreamInactivityTimeout string            `yaml:"stream_inactivity_timeout" json:"stream_inactivity_timeout"`
+	CancelGraceTimeout      string            `yaml:"cancel_grace_timeout" json:"cancel_grace_timeout"`
+	CancelForceTimeout      string            `yaml:"cancel_force_timeout" json:"cancel_force_timeout"`
+	NodeWallClock           map[string]string `yaml:"node_wall_clock" json:"node_wall_clock"`
 }
 
 type Escalation struct {
@@ -107,9 +106,6 @@ func normalizeAndValidate(policy *Policy) error {
 		}
 	}
 
-	if err := validateTimeout(policy.Timeouts.StrictStartupTotalTimeout, "strict_startup_total_timeout"); err != nil {
-		return err
-	}
 	if err := validateTimeout(policy.Timeouts.FirstEventTimeout, "first_event_timeout"); err != nil {
 		return err
 	}
@@ -180,24 +176,6 @@ func (p Policy) AgentForRole(roleID string) string {
 func validateTimeout(value string, field string) error {
 	_, err := parseDuration(value, field)
 	return err
-}
-
-func parseDurationSchedule(raws []string, field string) ([]time.Duration, error) {
-	if len(raws) == 0 {
-		return nil, nil
-	}
-	durations := make([]time.Duration, 0, len(raws))
-	for i, raw := range raws {
-		parsed, err := time.ParseDuration(strings.TrimSpace(raw))
-		if err != nil {
-			return nil, fmt.Errorf("parse %s[%d]: %w", field, i, err)
-		}
-		if parsed <= 0 {
-			return nil, fmt.Errorf("%s[%d] must be > 0", field, i)
-		}
-		durations = append(durations, parsed)
-	}
-	return durations, nil
 }
 
 func parseDuration(raw, field string) (time.Duration, error) {

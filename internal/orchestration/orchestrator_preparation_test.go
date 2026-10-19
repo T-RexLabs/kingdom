@@ -23,7 +23,7 @@ func TestDispatchPreparationDoesNotWaitForBusyWorkspace(t *testing.T) {
 		NodeRunID: "nr_prepare_busy", NodeID: "implementation", NodeClass: workflow.NodeClassDelegatedExecution,
 		RequiredRole: "builder", AgentID: "agent_prepare_busy", RoleIDs: []string{"builder"},
 	})
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: &sequenceExecutionAdapter{}, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, &sequenceExecutionAdapter{}), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,9 +131,12 @@ func TestDispatchPreparationRenewsQueuedLeaseAndUsesFreshLaunchTime(t *testing.T
 	})
 	release()
 	awaitPreparationDrain(t, rt.orchestrator)
-	requests := adapter.requestsSnapshot()
-	if len(requests) != 1 || requests[0].OccurredAt != launchAt.Format(time.RFC3339Nano) {
-		t.Fatalf("launch requests=%#v", requests)
+	if adapter.callsCount() != 1 {
+		t.Fatalf("launch requests=%d, want 1", adapter.callsCount())
+	}
+	var invocationCreatedAt string
+	if err := rt.orchestrator.db.QueryRow(`SELECT created_at FROM provider_invocations WHERE attempt_id = ?`, attemptID).Scan(&invocationCreatedAt); err != nil || invocationCreatedAt != launchAt.Format(time.RFC3339Nano) {
+		t.Fatalf("provider invocation created_at=%q err=%v, want fresh %s", invocationCreatedAt, err, launchAt)
 	}
 	var sessionCreatedAt string
 	if err := rt.orchestrator.db.QueryRow(`SELECT created_at FROM session_leases WHERE session_id = ?`, sessionIDForAttempt(attemptID)).Scan(&sessionCreatedAt); err != nil {
@@ -245,7 +248,7 @@ func TestDispatchPreparationFreedCapacityRotatesAcrossRuns(t *testing.T) {
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_b_waiting", WorkOrderID: "work_order_b", WorkflowID: "wf_b", NodeRunID: "nr_b", NodeID: "advisor_b", NodeClass: workflow.NodeClassAdvisorySynthesis, RequiredRole: "coordinator", AgentID: "agent_b"})
 	adapter := newBlockingFirstExecutionAdapter()
 	projectRoot := t.TempDir()
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: projectRoot})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: projectRoot})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,7 +380,7 @@ func newBlockedPreparation(t *testing.T) (*Runtime, *sequenceExecutionAdapter, r
 	applyMigration(t, db)
 	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_prepare", WorkOrderID: "work_order_prepare", WorkflowID: "wf_prepare", NodeRunID: "nr_prepare", NodeID: "plan_drafting", NodeClass: workflow.NodeClassPlanDrafting, RequiredRole: "plan-author", AgentID: "agent_prepare", RoleIDs: []string{"plan-author", "coordinator"}, ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_prepare_coordinator", RoleID: "coordinator"}}})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"prepared response", "second response"}}
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,9 +414,13 @@ func awaitPreparationDrain(t *testing.T, loop *orchestrationLoop) {
 }
 
 // Provider-worker tests bypass preparation explicitly while retaining its drain ownership.
+// A job without a persisted prompt runs a fixture prompt, because every request needs one.
 func (o *orchestrationLoop) startAsyncExecution(ctx context.Context, job asyncExecutionResult) bool {
 	if !o.markExecutionInflight(job.attemptID, job.run.RunID) {
 		return false
+	}
+	if job.openPrompt == nil {
+		job.openPrompt = fixturePrompt
 	}
 
 	o.startOwnedAsyncExecution(ctx, job, nil)

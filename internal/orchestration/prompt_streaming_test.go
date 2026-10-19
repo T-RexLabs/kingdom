@@ -2,9 +2,7 @@ package orchestration
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -18,7 +16,6 @@ import (
 	"time"
 
 	"kingdom/internal/api"
-	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/idempotency"
@@ -111,7 +108,6 @@ func (r promptRepeatReader) Read(p []byte) (int, error) {
 }
 
 type verifiedPromptAdapter struct {
-	opencode.Adapter
 	db         *sql.DB
 	root       string
 	size       int64
@@ -124,7 +120,7 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 		if req.Prompt != "" || req.OpenPrompt == nil {
 			return fmt.Errorf("dispatch materialized an inline prompt")
 		}
-		systemReader, err := state.OpenRunExecutionSystemPrompt(ctx, a.db, req.RunID, req.AttemptID)
+		systemReader, err := state.OpenRunExecutionSystemPrompt(ctx, a.db, "run_dispatch", req.AttemptID)
 		if err != nil {
 			return err
 		}
@@ -136,16 +132,8 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 		if closeErr != nil {
 			return closeErr
 		}
-		var config struct {
-			Agent map[string]struct {
-				Prompt string `json:"prompt"`
-			} `json:"agent"`
-		}
-		if err := json.Unmarshal([]byte(req.InlineConfigContent), &config); err != nil {
-			return err
-		}
-		if string(systemText) != config.Agent[req.Agent].Prompt || len(systemText) == 0 {
-			return fmt.Errorf("captured system instructions differ from dispatched agent configuration")
+		if string(systemText) != req.System || len(systemText) == 0 {
+			return fmt.Errorf("captured system instructions differ from the dispatched instruction")
 		}
 
 		runtime.GC()
@@ -202,37 +190,11 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 	if err != nil {
 		return opencode.ExecuteResponse{}, err
 	}
-	// Only the fixture response generator gets a materialized, tiny prompt.
-	fixture := req
-	fixture.Prompt = "fixture"
-	fixture.OpenPrompt = nil
-	fixture.WritePrompt = nil
-	response, err := a.Adapter.Execute(ctx, fixture)
-	if err != nil {
-		return response, err
-	}
 	prefix, suffix := "ADVICE-BEGIN\n", "\nADVICE-END"
 	if strings.Contains(req.AttemptID, ":plan_drafting:") {
 		prefix, suffix = "PLAN-BEGIN\n", "\nPLAN-END"
 	}
-	file, err := os.CreateTemp(a.root, "provider-content-*")
-	if err != nil {
-		return response, err
-	}
-	hash := sha256.New()
-	n, err := io.Copy(io.MultiWriter(file, hash), io.MultiReader(strings.NewReader(prefix), io.LimitReader(promptRepeatReader('y'), a.size), strings.NewReader(suffix)))
-	file.Close()
-	if err != nil {
-		return response, err
-	}
-	content := &providerexecution.StagedContent{Reference: providerexecution.ContentReference{InvocationID: req.InvocationID, SizeBytes: n, SHA256: hex.EncodeToString(hash.Sum(nil))}, Path: file.Name()}
-	response.OutputText = ""
-	response.OutputPreview = prefix + "preview"
-	response.StreamObservation.CanonicalTerminalText = ""
-	response.StreamObservation.CanonicalTerminalTextRef = &content.Reference
-	response.StreamObservation.StagedTerminalContent = content
-	response.StreamObservation.TerminalTextOpener = content.Open
-	return response, nil
+	return opencode.ExecuteResponse{Accepted: true, OutputText: prefix + strings.Repeat("y", int(a.size)) + suffix}, nil
 }
 
 func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testing.T) {
@@ -252,7 +214,7 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 	mustExec(t, db, `UPDATE workflow_edges SET to_node_id='advisory_synthesis' WHERE workflow_edge_id='edge_dispatch_1'`)
 	mustExec(t, db, `INSERT INTO workflow_edges(workflow_edge_id,workflow_definition_id,from_node_id,to_node_id,on_condition,created_at) VALUES('edge_advice','wfdef_dispatch','advisory_synthesis','plan_drafting','always','2026-03-01T12:00:00Z')`)
 	const credential = "streaming-integration-operator"
-	handler, err := api.NewHandler(api.ServerConfig{DB: db, ProviderModelCatalog: api.NewOpenCodeProviderModelCatalog(nil, nil, time.Minute), OperatorCredential: []byte(credential), ProjectRoot: t.TempDir(), PlannerAgent: planning.NewOpenCodeAgent(opencode.NewMemoryAdapter(), func(prefix string) string { return prefix + "-fixture" })})
+	handler, err := api.NewHandler(api.ServerConfig{DB: db, ProviderModelCatalog: api.NewOpenCodeProviderModelCatalog(nil, nil, time.Minute), OperatorCredential: []byte(credential), ProjectRoot: t.TempDir(), PlannerAgent: planning.NewOpenCodeAgent(memoryProvider(db), func(prefix string) string { return prefix + "-fixture" })})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,8 +247,8 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 	if _, err := db.Exec(`UPDATE workflow_runs SET work_order_id=? WHERE run_id='run_dispatch'`, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &verifiedPromptAdapter{Adapter: opencode.NewMemoryAdapter(), db: db, root: root, size: size, results: make(chan error, 2)}
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	adapter := &verifiedPromptAdapter{db: db, root: root, size: size, results: make(chan error, 2)}
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,15 +366,7 @@ func TestAdvisorDispatchDoesNotReintroduceDefaultGuidanceAsUpstreamContext(t *te
 	if !strings.Contains(prompt, "Current Work Order:\ndispatch run") {
 		t.Fatal("complete canonical work order missing")
 	}
-	var configJSON struct {
-		Agent map[string]struct {
-			Prompt string `json:"prompt"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal([]byte(invocationConfig.InlineConfig), &configJSON); err != nil {
-		t.Fatal(err)
-	}
-	system := configJSON.Agent["execution-advisor"].Prompt
+	system := invocationConfig.SystemPrompt
 	for _, required := range []string{guidance, "You are the Usability Advisor", "Provide counsel only; you do not have implementation or approval authority.", "State material uncertainty and missing evidence."} {
 		if !strings.Contains(system, required) {
 			t.Errorf("system prompt missing protected/custom content %q", required)
@@ -456,15 +410,7 @@ func TestPlanDispatchUsesPinnedContractWithoutFabricatedUpstreamGuidance(t *test
 	if !strings.Contains(prompt, "Current Work Order:\ndispatch run") {
 		t.Fatal("complete canonical work order missing")
 	}
-	var configJSON struct {
-		Agent map[string]struct {
-			Prompt string `json:"prompt"`
-		} `json:"agent"`
-	}
-	if err := json.Unmarshal([]byte(invocationConfig.InlineConfig), &configJSON); err != nil {
-		t.Fatal(err)
-	}
-	system := configJSON.Agent["execution-planner"].Prompt
+	system := invocationConfig.SystemPrompt
 	for _, required := range []string{guidance, "You are the Plan Author", "Produce execution-ready planning output, not an approval memo.", "State material uncertainty and missing evidence."} {
 		if !strings.Contains(system, required) {
 			t.Errorf("system prompt missing protected/custom content %q", required)

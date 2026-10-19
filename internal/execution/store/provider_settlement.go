@@ -3627,3 +3627,20 @@ func sha256Hex(raw string) string {
 	sum := sha256.Sum256([]byte(strings.TrimSpace(raw)))
 	return hex.EncodeToString(sum[:])
 }
+
+// AbandonProviderRequest closes the provider request of an invocation whose
+// server can no longer prove it, and returns its identity. It fails with
+// providerrequest.ErrResourcesOpen when the request admitted a tool or already
+// has provider terminal evidence, because settlement could then hide effects.
+func (s *Store) AbandonProviderRequest(ctx context.Context, invocationID string) (providerexecution.RequestIdentity, bool, error) {
+	if s == nil || s.db == nil {
+		return providerexecution.RequestIdentity{}, false, fmt.Errorf("store database is required")
+	}
+	var identity providerexecution.RequestIdentity
+	var bound bool
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) (err error) {
+		identity, bound, err = providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: strings.TrimSpace(invocationID)}, s.currentTime())
+		return err
+	}, sqlitex.Options{})
+	return identity, bound, err
+}

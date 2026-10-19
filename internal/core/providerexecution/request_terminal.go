@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -133,8 +134,53 @@ func RequireRequestTerminalMatch(o InvocationStreamObservation) error {
 			return fmt.Errorf("provider request tool calls conflict with its verified record")
 		}
 	}
-	if o.Cancelled && terminal.Outcome != RequestOutcomeInterrupted {
-		return fmt.Errorf("provider request cancellation requires an interrupted terminal")
+	if o.Cancelled && terminal.Outcome != RequestOutcomeInterrupted && !terminal.Abandoned() {
+		return fmt.Errorf("provider request cancellation requires an interrupted or abandoned terminal")
 	}
 	return nil
+}
+
+// AbandonedRequestTerminal is the terminal of a request that Kingdom closed
+// without a provider answer. Both of its evidence references name the same
+// empty list, so the record can be rebuilt from the invocation alone.
+func AbandonedRequestTerminal(invocationID string) RequestTerminal {
+	empty := ReferenceText(invocationID, "[]")
+	return RequestTerminal{Outcome: RequestOutcomeFailed, Events: empty, Messages: empty}
+}
+
+// Abandoned reports whether the terminal is the one Kingdom records for a
+// request it closed without a provider answer.
+func (t RequestTerminal) Abandoned() bool {
+	ref, err := t.Reference()
+	if err != nil {
+		return false
+	}
+	abandoned, err := AbandonedRequestTerminal(t.InvocationID()).Reference()
+	return err == nil && ref == abandoned
+}
+
+// AbandonedObservation is the stream observation of a request that Kingdom
+// closed without a provider answer. It stages the empty evidence list that the
+// abandoned terminal references, and releases it with ReleaseContent.
+func AbandonedObservation(identity RequestIdentity, invocationID string) (InvocationStreamObservation, error) {
+	file, err := os.CreateTemp("", "kingdom-abandoned-evidence-*")
+	if err != nil {
+		return InvocationStreamObservation{}, err
+	}
+	_, err = file.WriteString("[]")
+	if closeErr := file.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		_ = os.Remove(file.Name())
+		return InvocationStreamObservation{}, fmt.Errorf("stage abandoned request evidence: %w", err)
+	}
+	evidence := StagedContent{Reference: ReferenceText(invocationID, "[]"), Path: file.Name()}
+	return InvocationStreamObservation{
+		Request:                 &RequestObservation{Identity: identity, Terminal: AbandonedRequestTerminal(invocationID)},
+		ProviderSessionID:       identity.SessionID,
+		DiagnosticContent:       []ContentReference{evidence.Reference},
+		StagedDiagnosticContent: []StagedContent{evidence},
+		ReleaseContent:          func() error { return os.Remove(evidence.Path) },
+	}, nil
 }

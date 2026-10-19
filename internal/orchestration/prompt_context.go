@@ -12,7 +12,6 @@ import (
 	"kingdom/internal/core/workflow"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/prompts"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/securefs"
 	"kingdom/internal/state"
 )
@@ -268,7 +267,6 @@ func (o *orchestrationLoop) dispatchGuidanceDocument(ctx context.Context, runID,
 
 type dispatchPromptConfiguration struct {
 	SystemPrompt string
-	InlineConfig string
 }
 
 func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, delegator string) (*promptFile, string, dispatchPromptConfiguration, error) {
@@ -304,11 +302,6 @@ func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSn
 	if err != nil {
 		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("compose run-pinned agent system prompt: %w", err)
 	}
-	agentName := strings.TrimSpace(o.providerPolicy.AgentForRole(node.RequiredRole))
-	inlineConfig, err := opencode.ExecutionAgentInlineConfig(agentName, systemPrompt)
-	if err != nil {
-		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("compose invocation-scoped provider config: %w", err)
-	}
 	finalChecks := agentConfigurationSnapshot.PromptCatalog.FinalChecksSection(
 		resolvedNodeClass(node.NodeID, node.NodeClass),
 		behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse,
@@ -330,5 +323,5 @@ func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSn
 		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	file.sha = hex.EncodeToString(h.Sum(nil))
-	return file, scoped, dispatchPromptConfiguration{SystemPrompt: systemPrompt, InlineConfig: inlineConfig}, nil
+	return file, scoped, dispatchPromptConfiguration{SystemPrompt: systemPrompt}, nil
 }

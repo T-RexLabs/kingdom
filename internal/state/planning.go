@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
 )
@@ -155,103 +156,6 @@ type PlanningOperationEvent struct {
 	EventType   string
 	PayloadJSON string
 	CreatedAt   string
-}
-
-type PlanningActivityReconciliationStatus string
-
-const (
-	PlanningActivityReconciliationStatusPending   PlanningActivityReconciliationStatus = "pending"
-	PlanningActivityReconciliationStatusCompleted PlanningActivityReconciliationStatus = "completed"
-)
-
-// PlanningActivityReconciliation is a post-settlement diagnostic activity
-// delivery lifecycle. It is deliberately independent of the operation lease.
-type PlanningActivityReconciliation struct {
-	PlanningOperationID          string
-	PlanningProviderInvocationID string
-	Status                       PlanningActivityReconciliationStatus
-	LeaseOwner                   string
-	LeaseExpiresAt               *string
-	LeaseVersion                 int
-	CreatedAt                    string
-	CompletedAt                  *string
-}
-
-type CompletePlanningActivityReconciliationRequest struct {
-	PlanningOperationID string
-	LeaseOwner          string
-	LeaseVersion        int
-	CompletedAt         string
-	ActivityEvents      []AppendPlanningOperationEventRequest
-	MarkerEvent         AppendPlanningOperationEventRequest
-}
-
-// AppendPlanningActivityReconciliationBatch commits diagnostic continuation
-// without completing the reconciliation. A crash leaves the row pending and
-// durable activity available for replay de-duplication. The lease fence and its
-// renewal commit with the events; canonical operation settlement is untouched.
-func (s *PlanningStore) AppendPlanningActivityReconciliationBatch(ctx context.Context, claimed PlanningActivityReconciliation, events []AppendPlanningOperationEventRequest, now, expiresAt string) error {
-	if len(events) == 0 {
-		return nil
-	}
-	if len(events) > MaxPlanningActivityReconciliationEvents {
-		return fmt.Errorf("activity batch exceeds %d events", MaxPlanningActivityReconciliationEvents)
-	}
-	now, err := canonicalPlanningActivityReconciliationTimestamp(now)
-	if err != nil {
-		return err
-	}
-	expiresAt, err = canonicalPlanningActivityReconciliationTimestamp(expiresAt)
-	if err != nil {
-		return err
-	}
-	if expiresAt <= now {
-		return fmt.Errorf("activity lease expiry must follow current time")
-	}
-	for _, event := range events {
-		if err := validatePlanningOperationEventAppend(event); err != nil {
-			return err
-		}
-		if event.OperationID != claimed.PlanningOperationID {
-			return fmt.Errorf("activity batch operation mismatch")
-		}
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE planning_activity_reconciliations SET lease_expires_at=?,delivered_activity_count=delivered_activity_count+?
-		WHERE planning_operation_id=? AND status='pending' AND lease_owner=? AND lease_version=? AND lease_expires_at>?
-		AND EXISTS (SELECT 1 FROM planning_operations WHERE operation_id=planning_operation_id AND status='succeeded')`,
-		expiresAt, len(events), claimed.PlanningOperationID, claimed.LeaseOwner, claimed.LeaseVersion, now)
-	if err != nil {
-		return err
-	}
-	if n, err := result.RowsAffected(); err != nil {
-		return err
-	} else if n != 1 {
-		return ErrPlanningLeaseConflict
-	}
-	var seq int
-	if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq),0)+1 FROM planning_operation_events WHERE operation_id=?`, claimed.PlanningOperationID).Scan(&seq); err != nil {
-		return err
-	}
-	for _, event := range events {
-		event.Seq = seq
-		event.EventID = fmt.Sprintf("%s:%d", claimed.PlanningOperationID, seq)
-		if _, err := insertPlanningOperationEvent(ctx, tx, event); err != nil {
-			return err
-		}
-		seq++
-	}
-	return tx.Commit()
-}
-
-func (s *PlanningStore) PlanningActivityDeliveredCount(ctx context.Context, operationID string) (int, error) {
-	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT delivered_activity_count FROM planning_activity_reconciliations WHERE planning_operation_id=?`, operationID).Scan(&count)
-	return count, err
 }
 
 type PlanningOperationTelemetrySample struct {
@@ -526,6 +430,23 @@ type FinalizeGenerateTitleAbortRequest struct {
 type PlanningStore struct {
 	db                      *sql.DB
 	processGuardRuntimeRoot string
+	leaseClock              func() time.Time
+}
+
+// SetLeaseClock sets the clock that judges whether an operation lease is still
+// current when a provider request binds to it. It must be the clock that issues
+// those leases; the wall clock applies until one is set.
+func (s *PlanningStore) SetLeaseClock(now func() time.Time) {
+	if s != nil {
+		s.leaseClock = now
+	}
+}
+
+func (s *PlanningStore) leaseNow() time.Time {
+	if s.leaseClock != nil {
+		return s.leaseClock().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (s *PlanningStore) SetProcessGuardRuntimeRoot(root string) {

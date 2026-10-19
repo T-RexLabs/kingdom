@@ -482,10 +482,6 @@ func executionOutcomeStateFromError(err error) string {
 	if err == nil {
 		return "success"
 	}
-	var incompleteTurnErr *opencode.IncompleteTerminalStateError
-	if errors.As(err, &incompleteTurnErr) {
-		return "incomplete_turn"
-	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
 	}
@@ -534,9 +530,6 @@ func errorFromExecutionOutcome(outcome opencode.ExecutionOutcome) error {
 		return nil
 	case "cancelled":
 		return context.Canceled
-	case "incomplete_turn":
-		reason := firstNonEmptyString(strings.TrimSpace(outcome.ReasonCode), strings.TrimSpace(outcome.FailureText), "provider_incomplete_turn")
-		return &opencode.IncompleteTerminalStateError{Reason: reason}
 	default:
 		failureText := firstNonEmptyString(strings.TrimSpace(outcome.FailureText), strings.TrimSpace(outcome.ReasonCode), "execution failed")
 		return errors.New(failureText)
@@ -1464,10 +1457,6 @@ func classifyExecutionReasonCode(err error) string {
 	var emptyOutputErr *providerEmptyOutputError
 	if errors.As(err, &emptyOutputErr) {
 		return "provider_empty_output"
-	}
-	var incompleteTurnErr *opencode.IncompleteTerminalStateError
-	if errors.As(err, &incompleteTurnErr) {
-		return "provider_incomplete_turn"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "provider_cancelled"

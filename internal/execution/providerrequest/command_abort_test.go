@@ -3,8 +3,12 @@ package providerrequest
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"testing"
 	"time"
+
+	"kingdom/internal/core/providerexecution"
 )
 
 func claimedCommand(t *testing.T) (*sql.DB, Binding, CommandClaim) {
@@ -71,3 +75,79 @@ func TestAbortRejectsWrongIdentityAndStartedCommands(t *testing.T) {
 }
 
 func testNow() time.Time { return time.Date(2026, 10, 18, 10, 5, 0, 0, time.UTC) }
+
+func TestAbandonClosesAnUnprovenRequestWithNothingAdmitted(t *testing.T) {
+	for _, dispatched := range []bool{true, false} {
+		t.Run(fmt.Sprintf("dispatched=%t", dispatched), func(t *testing.T) {
+			db, b, now := fixture(t, OwnerRun)
+			bind(t, db, b, now)
+			if dispatched {
+				dispatch(t, db, b, now)
+			}
+			ctx := context.Background()
+			if err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(ctx, tx, b.ID, b.Lease, now) }); err != nil {
+				t.Fatal(err)
+			}
+			stored, err := Get(ctx, db, b.ID)
+			want, _ := providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID).Reference()
+			if err != nil || stored.TerminalReference == nil || *stored.TerminalReference != want || stored.AdmissionClosedAt == "" || stored.DispatchIssuedAt == "" {
+				t.Fatalf("abandoned request facts: %#v %v", stored, err)
+			}
+			if err := RequireResourcesClosedTx(ctx, db, b.ID); err != nil {
+				t.Fatal(err)
+			}
+			if err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(ctx, tx, b.ID, b.Lease, now) }); err != nil {
+				t.Fatalf("abandonment must be idempotent: %v", err)
+			}
+		})
+	}
+}
+
+func TestAbandonAcceptsAdmissionsThatAreAlreadyClosedByTheirReceipts(t *testing.T) {
+	db, b, now, _ := admitted(t, OwnerRun)
+	ctx := context.Background()
+	var grantID, digest string
+	if err := db.QueryRow(`SELECT grant_id,identity_digest FROM provider_native_grants WHERE binding_id=?`, b.ID).Scan(&grantID, &digest); err != nil {
+		t.Fatal(err)
+	}
+	started := true
+	receipt := NativeReceipt{GrantID: grantID, Digest: digest, Outcome: "completed", Started: &started}
+	if err := transaction(t, db, func(tx *sql.Tx) error { return FinishNativeTx(ctx, tx, receipt, now) }); err != nil {
+		t.Fatal(err)
+	}
+	if err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(ctx, tx, b.ID, b.Lease, now) }); err != nil {
+		t.Fatalf("a request whose admissions are all receipted must be abandonable: %v", err)
+	}
+}
+
+func TestAbandonRefusesARequestThatHasProviderTerminalEvidence(t *testing.T) {
+	db, b, now := fixture(t, OwnerRun)
+	bind(t, db, b, now)
+	dispatch(t, db, b, now)
+	closeAdmission(t, db, b, now)
+	terminal := providerexecution.RequestTerminal{Outcome: providerexecution.RequestOutcomeFailed, Events: providerexecution.ReferenceText(b.Owner.InvocationID, "[{}]"), Messages: providerexecution.ReferenceText(b.Owner.InvocationID, "[]")}
+	if err := recordTerminal(db, b, terminal, now); err != nil {
+		t.Fatal(err)
+	}
+	err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(context.Background(), tx, b.ID, b.Lease, now) })
+	if !errors.Is(err, ErrResourcesOpen) {
+		t.Fatalf("a request with provider terminal evidence was abandoned: %v", err)
+	}
+}
+
+func TestAbandonRefusesRequestsWithPendingAdmissionsOrAnotherLease(t *testing.T) {
+	db, b, now, _ := admitted(t, OwnerRun)
+	ctx := context.Background()
+	if err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(ctx, tx, b.ID, b.Lease, now) }); err == nil || !errors.Is(err, ErrResourcesOpen) {
+		t.Fatalf("a request with a pending admission was abandoned: %v", err)
+	}
+	other := b.Lease
+	other.Version++
+	if err := transaction(t, db, func(tx *sql.Tx) error { return AbandonTx(ctx, tx, b.ID, other, now) }); err == nil {
+		t.Fatal("abandoned under another owner's lease")
+	}
+	stored, _ := Get(ctx, db, b.ID)
+	if stored.TerminalReference != nil || stored.AdmissionClosedAt != "" {
+		t.Fatalf("a refused abandonment changed the request: %#v", stored)
+	}
+}

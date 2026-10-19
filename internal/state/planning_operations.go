@@ -699,12 +699,6 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 			return rollbackPlanningTx(tx, "finalize planning operation", err)
 		}
 	}
-	if terminalStatus == PlanningOperationStatusSucceeded {
-		if err := createPlanningActivityReconciliationTx(ctx, tx, operation, req.FinishedAt); err != nil {
-			return rollbackPlanningTx(tx, "finalize planning operation", err)
-		}
-	}
-
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize planning operation: %w", err)
 	}

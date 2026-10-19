@@ -4404,10 +4404,19 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
-		if _, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}); err != nil {
+		if binding, bound, err := providerrequest.ForOwner(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}); err != nil {
 			return err
 		} else if bound {
-			return fmt.Errorf("provider request requires canonical settlement before stale replacement")
+			// A stale attempt's server is gone. Its request can be replaced only
+			// if it never admitted a tool, because then no workspace effect can
+			// be hiding behind the missing provider evidence.
+			occurred, err := time.Parse(time.RFC3339Nano, occurredAt)
+			if err != nil {
+				return fmt.Errorf("parse stale replacement time: %w", err)
+			}
+			if err := providerrequest.AbandonTx(ctx, tx, binding.ID, binding.Lease, occurred); err != nil {
+				return fmt.Errorf("provider request cannot be abandoned for stale replacement: %w", err)
+			}
 		}
 		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
 			return err

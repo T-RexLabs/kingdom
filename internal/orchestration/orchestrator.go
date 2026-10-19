@@ -51,7 +51,7 @@ type orchestrationLoop struct {
 	scheduler                          *workflow.Scheduler
 	sessions                           *state.SessionManager
 	events                             *state.AttemptEventIngestor
-	adapter                            opencode.Adapter
+	provider                           opencode.Provider
 	fsStore                            *runtimefs.Store
 	schemas                            *schemas.Set
 	validator                          *state.WorkerOutputValidator
@@ -59,6 +59,7 @@ type orchestrationLoop struct {
 	planningOutputs                    *state.RunPlanningOutputStore
 	executionStore                     *executionstore.Store
 	nodeTimeouts                       map[string]time.Duration
+	firstEventTimeout                  time.Duration
 	streamInactivity                   time.Duration
 	cancelGrace                        time.Duration
 	cancelForce                        time.Duration
@@ -283,7 +284,7 @@ type asyncExecutionResult struct {
 	delegator                            string
 	prompt                               string
 	openPrompt                           opencodePromptOpener
-	inlineConfigContent                 string
+	system                               string
 	model                                string
 	variant                              string
 	agent                                string
@@ -341,7 +342,7 @@ func marshalAsyncExecutionAttemptEventPayload(result asyncExecutionResult, reaso
 	return marshalExecutionAttemptEventPayload(result.attemptID, result.node.NodeID, result.attempt.NodeRunID, result.attempt.Attempt, reasonCode, extra)
 }
 
-func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, retryEngine *retryengine.Engine, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
+func newOrchestrationLoop(db *sql.DB, provider opencode.Provider, sessionManager *state.SessionManager, fsStore *runtimefs.Store, outputValidator *state.WorkerOutputValidator, eventSchemas *schemas.Set, nodeTimeouts map[string]time.Duration, streamInactivity time.Duration, cancelGrace time.Duration, cancelForce time.Duration, yoloOutputRoot string, policy rolecomm.Policy, providerPolicy providerpolicy.Policy, retryEngine *retryengine.Engine, governanceMode string, autonomousApprovals bool, publishMode string, worktreeRetention time.Duration, closeMode *runtimeCloseMode) *orchestrationLoop {
 	registry := state.NewAgentRegistry(db)
 	mailbox := state.NewMailboxStore(db, eventSchemas)
 	return &orchestrationLoop{
@@ -353,7 +354,7 @@ func newOrchestrationLoop(db *sql.DB, adapter opencode.Adapter, sessionManager *
 		scheduler:              workflow.NewScheduler(workflow.SchedulerConfig{}),
 		sessions:               sessionManager,
 		events:                 state.NewAttemptEventIngestor(db, eventSchemas).WithRoleCommunicationPolicy(policy),
-		adapter:                adapter,
+		provider:               provider,
 		fsStore:                fsStore,
 		schemas:                eventSchemas,
 		validator:              outputValidator,
@@ -1007,10 +1008,10 @@ func (o *orchestrationLoop) emitCommunicationMessage(ctx context.Context, req co
 	}
 	mailboxTemplate := o.roleComm.MailboxTemplateForRole(senderRoleID)
 	body := rolecomm.RenderTemplate(mailboxTemplate.BodyTemplate, map[string]string{
-			"RunID":      strings.TrimSpace(req.RunID),
-			"EventType":  firstNonEmptyString(strings.TrimSpace(req.CommunicationType), "communication.recorded"),
-			"ReasonText": firstNonEmptyString(strings.TrimSpace(req.ReasonText), fmt.Sprintf("communication type=%s node=%s", strings.TrimSpace(req.CommunicationType), strings.TrimSpace(req.NodeID))),
-		}, "Communication record updated.")
+		"RunID":      strings.TrimSpace(req.RunID),
+		"EventType":  firstNonEmptyString(strings.TrimSpace(req.CommunicationType), "communication.recorded"),
+		"ReasonText": firstNonEmptyString(strings.TrimSpace(req.ReasonText), fmt.Sprintf("communication type=%s node=%s", strings.TrimSpace(req.CommunicationType), strings.TrimSpace(req.NodeID))),
+	}, "Communication record updated.")
 	payload["body_markdown"] = body
 
 	raw, err := json.Marshal(payload)

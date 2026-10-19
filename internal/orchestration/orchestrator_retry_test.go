@@ -4,7 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"os"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -198,17 +198,13 @@ func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 	const retryAfterMS = 10000
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, created_at, updated_at) VALUES ('run_1:work_intake:1', 'run_1', 'nr_1', 'committed_failure', 'provider_backed', 'server_response', '2026-03-01T12:00:00Z', '2026-03-01T12:00:00Z')`)
 
-	binaryPath := filepath.Join(t.TempDir(), "retry-hint-opencode.sh")
-	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nprintf '%s\\n' '{\"type\":\"error\",\"error\":{\"data\":{\"message\":\"rate limited\",\"statusCode\":429,\"retry_after_ms\":10000}}}'\nexit 17\n"), 0o700); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{BinaryPath: binaryPath})
-	if err != nil {
-		t.Fatalf("new session adapter: %v", err)
-	}
-	response, executeErr := adapter.Execute(context.Background(), opencode.ExecuteRequest{CompletionMode: opencode.CompletionModeServerResponse, SessionID: "session_retry_hint", AttemptID: "run_1:work_intake:1", RunID: "run_1", NodeRunID: "nr_1", WorkspacePath: t.TempDir(), Prompt: "retry hint", OccurredAt: now.Format(time.RFC3339Nano)})
-	if executeErr == nil {
-		t.Fatal("expected fake OpenCode provider failure")
+	// The provider reports a rate limit as a structured failure, with the
+	// server's retry hint carried in its diagnostics.
+	response := opencode.ExecuteResponse{
+		Accepted:                true,
+		Outcome:                 opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "rate limited", EvidenceSource: "stream"},
+		ProviderDiagnosticsJSON: fmt.Sprintf(`{"retry_after_ms":%d}`, retryAfterMS),
+		StreamObservation:       opencode.InvocationStreamObservation{ProviderErrorPresent: true, ProviderErrorStatus: 429},
 	}
 
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
@@ -220,9 +216,6 @@ func TestOpenCodeRetryHintReachesPersistedAutomaticRetrySchedule(t *testing.T) {
 		t.Fatalf("create retry engine: %v", err)
 	}
 	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), retryEngine: engine}
-	if response.Outcome.ReasonCode != "llm_rate_limited" {
-		t.Fatalf("adapter outcome code=%q, want llm_rate_limited", response.Outcome.ReasonCode)
-	}
 	retry, planned, err := loop.planAutomaticWorkOrderRetry(context.Background(), asyncExecutionResult{run: runSnapshot{RunID: "run_1"}, node: nodeDefinition{NodeID: "work_intake"}, attempt: nodeAttempt{NodeRunID: "nr_1"}, attemptID: "run_1:work_intake:1", providerDiagnosticsJSON: response.ProviderDiagnosticsJSON, providerStreamObservation: response.StreamObservation}, response.Outcome.ReasonCode, now.Format(time.RFC3339Nano))
 	if err != nil || !planned || retry.Decision != state.RetryDecisionRetry {
 		t.Fatalf("plan retry from OpenCode result: retry=%#v planned=%t err=%v", retry, planned, err)
@@ -434,7 +427,6 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 			const attemptID = "run_1:work_intake:1"
 			const invocationID = "pinv_terminal_failure"
 			const sessionID = "session_terminal_failure"
-			const providerSessionID = "ses_terminal_failure"
 			const now = "2026-03-19T18:30:00Z"
 
 			store := executionstore.New(db)
@@ -446,8 +438,12 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 				t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
 			}
 			mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '`+now+`' WHERE attempt_id = '`+attemptID+`'`)
-			seedOpenProviderInvocationForAttempt(t, store, attemptID, "run_1", "nr_1", sessionID, providerSessionID, invocationID, now)
-			attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, now)
+			requests := newRequestFixture(db, nil)
+			seedOpenProviderInvocationForAttempt(t, store, requests, attemptID, "run_1", "nr_1", sessionID, invocationID, now)
+			response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
+				Accepted: true,
+				Outcome:  opencode.ExecutionOutcome{State: "failed", ReasonCode: legacyCode, FailureText: "provider terminal failure", EvidenceSource: "stream"},
+			}, nil)
 
 			policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 			if err != nil {
@@ -468,15 +464,15 @@ func TestAdapterTerminalFailureReasonIsConsistentAcrossSettlementProjectionAndRe
 				attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", AgentID: "agent_governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 				attemptID:                 attemptID,
 				sessionID:                 sessionID,
-				providerSessionID:         providerSessionID,
+				providerSessionID:         response.ProviderSessionID,
 				providerInvocationID:      invocationID,
 				providerInvocationAt:      now,
 				completionMode:            executionstore.ProviderCompletionModeServerResponse,
 				expectedLeaseOwner:        claim.LeaseOwner,
 				expectedLeaseVersion:      claim.LeaseVersion,
 				occurredAt:                now,
-				outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: legacyCode, FailureText: "provider terminal failure", EvidenceSource: "stream"},
-				providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID},
+				outcome:                   response.Outcome,
+				providerStreamObservation: response.StreamObservation,
 			}
 			persistProviderTerminalHandoffForTest(t, loop, &job)
 			if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {
@@ -512,7 +508,6 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 	const attemptID = "run_1:work_intake:1"
 	const invocationID = "pinv_resource_limit"
 	const sessionID = "session_resource_limit"
-	const providerSessionID = "ses_resource_limit"
 	const now = "2026-03-19T18:30:00Z"
 
 	store := executionstore.New(db)
@@ -524,8 +519,8 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 		t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '`+now+`' WHERE attempt_id = '`+attemptID+`'`)
-	seedOpenProviderInvocationForAttempt(t, store, attemptID, "run_1", "nr_1", sessionID, providerSessionID, invocationID, now)
-	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, now)
+	requests := newRequestFixture(db, nil)
+	seedOpenProviderInvocationForAttempt(t, store, requests, attemptID, "run_1", "nr_1", sessionID, invocationID, now)
 
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
@@ -544,6 +539,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 	if outcome.ReasonCode != "resource_limit_exceeded" || outcome.FailureText != limitErr.Error() {
 		t.Fatalf("resource-limit execution outcome=%+v", outcome)
 	}
+	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{}, limitErr)
 	loop := &orchestrationLoop{db: db, transition: state.NewTransitionService(db, nil), mailbox: state.NewMailboxStore(db, nil), events: state.NewAttemptEventIngestor(db, nil), executionStore: store, retryEngine: retries, now: func() time.Time { return nowTime }}
 	job := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "draft"},
@@ -551,7 +547,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", AgentID: "agent_governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		sessionID:                 sessionID,
-		providerSessionID:         providerSessionID,
+		providerSessionID:         response.ProviderSessionID,
 		providerInvocationID:      invocationID,
 		providerInvocationAt:      now,
 		completionMode:            executionstore.ProviderCompletionModeServerResponse,
@@ -560,7 +556,7 @@ func TestResourceLimitFailureSettlesDurablyWithoutRetry(t *testing.T) {
 		occurredAt:                now,
 		outcome:                   outcome,
 		err:                       limitErr,
-		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID},
+		providerStreamObservation: response.StreamObservation,
 	}
 	persistProviderTerminalHandoffForTest(t, loop, &job)
 	if err := loop.commitExecutionCompletion(context.Background(), job); err != nil {

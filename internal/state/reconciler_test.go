@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"kingdom/internal/core/errorcatalog"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/retryengine"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 )
 
@@ -2691,4 +2693,73 @@ func queryReconcilerAgentStatus(t *testing.T, db *sql.DB, agentID string) string
 		t.Fatalf("query agent status: %v", err)
 	}
 	return status
+}
+
+// staleBoundRequestFixture is a stale provider attempt whose request was bound
+// canonically, as every V2 dispatch is.
+func staleBoundRequestFixture(t *testing.T) (*sql.DB, *executionstore.Store, string) {
+	t.Helper()
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	attemptID := composeAttemptID("run_1", "work_intake", 2)
+	store := executionstore.New(db)
+	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '2026-03-01T12:08:00Z' WHERE agent_id = 'agent_governance'`)
+	mustExec(t, db, `INSERT INTO agents (agent_id, role_id, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES ('agent_governance_backup', 'governance', 'idle', NULL, 0, '2026-03-01T12:08:00Z', '2026-03-01T12:08:00Z')`)
+	mustExec(t, db, `UPDATE node_runs SET node_status = 'succeeded', finished_at = '2026-03-01T12:07:00Z' WHERE node_run_id = 'nr_1'`)
+	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_2', 'run_1', 'work_intake', 2,2, 'running', 'governance', 'agent_governance', 1, '2026-03-01T12:08:00Z', NULL)`)
+	mustExec(t, db, fmt.Sprintf(`INSERT INTO events (event_id, run_id, run_event_seq, node_run_id, attempt_id, schema_version, event_type, seq, payload_json, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('evt_nr_2_started_bound', 'run_1', COALESCE((SELECT MAX(run_event_seq) FROM events WHERE run_id = 'run_1'), 0) + 1, 'nr_2', '%s', 'v1', 'attempt.started', 1, '{}', 'actor_1', 'governance', 'system', 'internal_error', 'seed', 'corr_bound', 'caus_bound', 'prev_bound', 'entry_bound', '2026-03-01T12:08:00Z')`, attemptID))
+	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_2", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse, SessionRef: "session_bound", CreatedAt: "2026-03-01T12:08:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:08:00Z', lease_owner = 'worker', lease_version = 1, lease_expires_at = '2999-01-01T00:00:00Z', updated_at = '2026-03-01T12:08:00Z' WHERE attempt_id = '%s'`, attemptID))
+	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: "/project", SessionID: "ses_bound", ProfileID: "profile", RequestID: "request"}
+	if _, err := store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity: &identity, ProviderInvocationID: "invocation_bound", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_2", LogicalSessionID: "session_bound",
+		ProviderSessionID: "ses_bound", CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		IssuedAt: "2026-03-01T12:08:01Z", CreatedAt: "2026-03-01T12:08:01Z", OpenedAt: "2026-03-01T12:08:01Z", ExpectedLeaseOwner: "worker", ExpectedLeaseVersion: 1,
+	}); err != nil {
+		t.Fatalf("activate bound request: %v", err)
+	}
+	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions SET lease_expires_at = '2026-03-01T12:09:00Z' WHERE attempt_id = '%s'`, attemptID))
+	return db, store, attemptID
+}
+
+func TestReconcilerAbandonsAStaleBoundRequestThatAdmittedNothing(t *testing.T) {
+	t.Parallel()
+	db, store, attemptID := staleBoundRequestFixture(t)
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
+	result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:13:00Z"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.AttemptsReassigned != 1 {
+		t.Fatalf("a stale request with no admissions must be replaceable: %#v", result)
+	}
+	invocation, _, err := store.GetProviderInvocation(context.Background(), "invocation_bound")
+	if err != nil || invocation.InvocationState != executionstore.ProviderInvocationStateSuperseded {
+		t.Fatalf("invocation %#v %v", invocation, err)
+	}
+	if err := providerrequest.RequireAttemptDisposedTx(context.Background(), db, attemptID); err != nil {
+		t.Fatalf("the abandoned request must be disposed: %v", err)
+	}
+}
+
+func TestReconcilerKeepsAStaleBoundRequestThatAdmittedATool(t *testing.T) {
+	t.Parallel()
+	db, store, attemptID := staleBoundRequestFixture(t)
+	mustExec(t, db, `UPDATE provider_requests SET dispatch_issued_at = '2026-03-01T12:08:02Z'`)
+	mustExecArgs(t, db, `INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) VALUES('grant','invocation_bound','assistant','call','write','{}',?,'2026-03-01T12:08:03Z')`, strings.Repeat("a", 64))
+	reconciler := NewReconciler(db, NewSessionManager(db, NewSessionLifecycleMetrics()), alwaysRetryPlanner{}, nil)
+	if result, err := reconciler.Reconcile(context.Background(), ReconcileRequest{Now: "2026-03-01T12:13:00Z"}); err == nil && result.AttemptsReassigned != 0 {
+		t.Fatalf("a request with an open tool admission was replaced: %#v", result)
+	}
+	attempt, _, err := store.GetAttempt(context.Background(), attemptID)
+	if err != nil || attempt.State != "running" {
+		t.Fatalf("the blocked attempt must keep its authority: %#v %v", attempt, err)
+	}
+	invocation, _, _ := store.GetProviderInvocation(context.Background(), "invocation_bound")
+	if invocation.InvocationState != executionstore.ProviderInvocationStateOpen {
+		t.Fatalf("invocation %#v", invocation)
+	}
 }

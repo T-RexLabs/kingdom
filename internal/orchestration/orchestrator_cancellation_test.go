@@ -13,15 +13,14 @@ import (
 	"kingdom/internal/state"
 )
 
+// staleCancellationFixture fences a stale attempt whose request had begun but
+// admitted nothing, which Kingdom abandons so the attempt can be replaced. Its
+// local worker is still unwinding.
 func staleCancellationFixture(t *testing.T) (terminalHandoffHarness, executionstore.ProviderInvocation, *state.Reconciler) {
 	t.Helper()
 	h := newTerminalHandoffHarness(t)
-	h.addPendingGuardEvidence(t, 1)
-	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
-	if err != nil || !found {
-		t.Fatalf("load stale invocation: found=%t err=%v", found, err)
-	}
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	invocation := h.addInvocation(t, 1)
+	h.requests.issueDispatch(t, invocation.ProviderInvocationID)
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 10, 1, 0, time.UTC) }
 	mustExec(t, h.db, `UPDATE attempt_executions SET lease_expires_at='2026-03-01T12:02:00Z'`)
 	reconciler := state.NewReconciler(h.db, state.NewSessionManager(h.db, state.NewSessionLifecycleMetrics()), staleRetryChainPlanner{}, h.loop.schemas)
@@ -45,162 +44,63 @@ func assertCancellationHandoff(t *testing.T, h terminalHandoffHarness, attemptID
 	}
 }
 
-func TestQuiescentCancellationWaitsForWorkerAndResumes(t *testing.T) {
-	for _, proofTiming := range []string{"before_stop", "during_stop", "after_stop"} {
-		for _, restart := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/restart=%t", proofTiming, restart), func(t *testing.T) {
-				t.Parallel()
-				h, invocation, reconciler := staleCancellationFixture(t)
-				ctx := context.Background()
-				target, err := h.fsStore.GetExecutionTarget(ctx, invocation.RunID)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := h.fsStore.UpdateExecutionTargetState(ctx, invocation.RunID, "attempt_dirty", target.TrustedSnapshotID, invocation.AttemptID, "2026-03-01T12:01:00Z"); err != nil {
-					t.Fatal(err)
-				}
-				workspaceFile := filepath.Join(target.ExecutionRoot, "README.md")
-				if err := os.WriteFile(workspaceFile, []byte("provider worker still cleaning up\n"), 0o644); err != nil {
-					t.Fatal(err)
-				}
-				adapter := &timeoutCancelObserverAdapter{}
-				h.loop.adapter = adapter
-				if proofTiming == "before_stop" {
-					if err := h.loop.ingestPendingProviderProcessGuards(ctx); err != nil {
-						t.Fatal(err)
-					}
-				}
-				if proofTiming == "during_stop" {
-					// Execute records guardian proof before its done channel releases
-					// Cancel, while the outer worker can still be unwinding.
-					adapter.onCancel = func() error { return h.loop.ingestPendingProviderProcessGuards(ctx) }
-				}
-				if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-					t.Fatal(err)
-				}
-				if proofTiming == "after_stop" {
-					if err := h.loop.ingestPendingProviderProcessGuards(ctx); err != nil {
-						t.Fatal(err)
-					}
-				}
-				for range 2 {
-					if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-						t.Fatal(err)
-					}
-				}
-				assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_workspace_quiescence")
-				if content, err := os.ReadFile(workspaceFile); err != nil || string(content) != "provider worker still cleaning up\n" {
-					t.Fatalf("workspace restored before worker drained: content=%q err=%v", content, err)
-				}
-				var replacementState string
-				if err := h.db.QueryRow(`SELECT node_status FROM node_runs WHERE handoff_source_attempt_id=?`, invocation.AttemptID).Scan(&replacementState); err != nil || replacementState != "pending" {
-					t.Fatalf("worker released replacement early: state=%q err=%v", replacementState, err)
-				}
-				h.loop.clearExecutionInflight(invocation.AttemptID)
-				if restart {
-					runtime := &Runtime{orchestrator: h.loop, reconciler: reconciler}
-					runtime.beginStartupRecovery()
-					if err := runtime.recoverDurableExecutionState(ctx); err != nil {
-						t.Fatal(err)
-					}
-					if err := runtime.finishStartupRecovery(ctx, false); err != nil {
-						t.Fatal(err)
-					}
-					drainCtx, cancelDrain := context.WithTimeout(ctx, 5*time.Second)
-					defer cancelDrain()
-					defer runtime.stopMaintenance()
-					if err := runtime.drainMaintenance(drainCtx); err != nil {
-						t.Fatal(err)
-					}
-				} else if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-					t.Fatal(err)
-				}
-				assertCancellationHandoff(t, h, invocation.AttemptID, "published", "released")
-				if content, err := os.ReadFile(workspaceFile); err != nil || string(content) != "trusted baseline\n" {
-					t.Fatalf("workspace did not restore after worker drained: content=%q err=%v", content, err)
-				}
-				wantCalls := 1
-				if proofTiming == "before_stop" {
-					wantCalls = 0
-				}
-				if got := adapter.cancelCalls(); got != wantCalls {
-					t.Fatalf("stop calls=%d; want %d", got, wantCalls)
-				}
-			})
-		}
-	}
-}
-
-func TestCancellationReturnPreservesConcurrentStopRetryAuthorization(t *testing.T) {
-	t.Parallel()
-	h, invocation, _ := staleCancellationFixture(t)
-	ctx := context.Background()
-	adapter := &timeoutCancelObserverAdapter{onCancel: func() error {
-		return h.loop.transitionService().RequestAttemptStopRetry(ctx, state.AttemptStopRetryRequest{
-			RunID: invocation.RunID, AttemptID: invocation.AttemptID, ActorID: "local-operator", RoleID: "allfather",
-			OccurredAt: "2026-03-01T12:10:02Z", GenerateID: func(s string) string { return s + "_concurrent_stop_retry" },
-		})
-	}}
-	h.loop.adapter = adapter
-	if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "stop_retry_requested")
-	adapter.onCancel = nil
-	for range 3 {
-		if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_quiescence")
-	if got := adapter.cancelCalls(); got != 2 {
-		t.Fatalf("stop calls=%d; want original request and one authorized retry", got)
-	}
-}
-
-func TestCancellationRecoveryResumesInterruptedDispatchFromGuardianProof(t *testing.T) {
-	for _, retry := range []bool{false, true} {
-		t.Run(fmt.Sprintf("retry=%t", retry), func(t *testing.T) {
+func TestAbandonedRequestCancellationWaitsForWorkerAndResumes(t *testing.T) {
+	for _, restart := range []bool{false, true} {
+		t.Run(fmt.Sprintf("restart=%t", restart), func(t *testing.T) {
 			t.Parallel()
 			h, invocation, reconciler := staleCancellationFixture(t)
 			ctx := context.Background()
-			var cancelOutboxID string
-			if err := h.db.QueryRow(`SELECT cancel_outbox_id FROM attempt_cancel_outbox WHERE attempt_id=?`, invocation.AttemptID).Scan(&cancelOutboxID); err != nil {
+			target, err := h.fsStore.GetExecutionTarget(ctx, invocation.RunID)
+			if err != nil {
 				t.Fatal(err)
 			}
-			if phase, err := h.loop.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, cancelOutboxID, "2026-03-01T12:10:02Z"); err != nil || phase != "cancellation_dispatched" {
-				t.Fatalf("claim interrupted initial dispatch: phase=%q err=%v", phase, err)
+			if err := h.fsStore.UpdateExecutionTargetState(ctx, invocation.RunID, "attempt_dirty", target.TrustedSnapshotID, invocation.AttemptID, "2026-03-01T12:01:00Z"); err != nil {
+				t.Fatal(err)
 			}
-			if retry {
-				if err := h.loop.transitionService().RequestAttemptStopRetry(ctx, state.AttemptStopRetryRequest{
-					RunID: invocation.RunID, AttemptID: invocation.AttemptID, ActorID: "local-operator", RoleID: "allfather", OccurredAt: "2026-03-01T12:10:03Z",
-				}); err != nil {
-					t.Fatal(err)
-				}
-				if phase, err := h.loop.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, cancelOutboxID, "2026-03-01T12:10:04Z"); err != nil || phase != "stop_retry_dispatched" {
-					t.Fatalf("claim interrupted retry dispatch: phase=%q err=%v", phase, err)
-				}
+			workspaceFile := filepath.Join(target.ExecutionRoot, "README.md")
+			if err := os.WriteFile(workspaceFile, []byte("provider worker still cleaning up\n"), 0o644); err != nil {
+				t.Fatal(err)
 			}
 			adapter := &timeoutCancelObserverAdapter{}
-			h.loop.adapter = adapter
+			h.requests.respondWith(adapter)
+			for range 3 {
+				if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_workspace_quiescence")
+			if content, err := os.ReadFile(workspaceFile); err != nil || string(content) != "provider worker still cleaning up\n" {
+				t.Fatalf("workspace restored before worker drained: content=%q err=%v", content, err)
+			}
+			var replacementState string
+			if err := h.db.QueryRow(`SELECT node_status FROM node_runs WHERE handoff_source_attempt_id=?`, invocation.AttemptID).Scan(&replacementState); err != nil || replacementState != "pending" {
+				t.Fatalf("worker released replacement early: state=%q err=%v", replacementState, err)
+			}
 			h.loop.clearExecutionInflight(invocation.AttemptID)
-			runtime := &Runtime{orchestrator: h.loop, reconciler: reconciler}
-			runtime.beginStartupRecovery()
-			if err := runtime.recoverDurableExecutionState(ctx); err != nil {
-				t.Fatal(err)
-			}
-			if err := runtime.finishStartupRecovery(ctx, false); err != nil {
-				t.Fatal(err)
-			}
-			drainCtx, cancelDrain := context.WithTimeout(ctx, 5*time.Second)
-			defer cancelDrain()
-			defer runtime.stopMaintenance()
-			if err := runtime.drainMaintenance(drainCtx); err != nil {
+			if restart {
+				runtime := &Runtime{orchestrator: h.loop, reconciler: reconciler}
+				runtime.beginStartupRecovery()
+				if err := runtime.recoverDurableExecutionState(ctx); err != nil {
+					t.Fatal(err)
+				}
+				if err := runtime.finishStartupRecovery(ctx, false); err != nil {
+					t.Fatal(err)
+				}
+				drainCtx, cancelDrain := context.WithTimeout(ctx, 5*time.Second)
+				defer cancelDrain()
+				defer runtime.stopMaintenance()
+				if err := runtime.drainMaintenance(drainCtx); err != nil {
+					t.Fatal(err)
+				}
+			} else if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
 				t.Fatal(err)
 			}
 			assertCancellationHandoff(t, h, invocation.AttemptID, "published", "released")
-			if calls := adapter.cancelCalls(); calls != 0 {
-				t.Fatalf("startup replayed interrupted external stop: calls=%d", calls)
+			if content, err := os.ReadFile(workspaceFile); err != nil || string(content) != "trusted baseline\n" {
+				t.Fatalf("workspace did not restore after worker drained: content=%q err=%v", content, err)
+			}
+			if got := adapter.cancelCalls(); got != 0 {
+				t.Fatalf("abandoned request needed %d provider stops", got)
 			}
 		})
 	}
@@ -211,9 +111,6 @@ func TestResponseOnlyCancellationWaitsForWorker(t *testing.T) {
 	h, invocation, _ := staleCancellationFixture(t)
 	ctx := context.Background()
 	mustExec(t, h.db, `UPDATE workflow_nodes SET node_class='advisory_synthesis'`)
-	if err := h.loop.ingestPendingProviderProcessGuards(ctx); err != nil {
-		t.Fatal(err)
-	}
 	if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
 		t.Fatal(err)
 	}

@@ -1269,23 +1269,6 @@ ON planning_operations (canonical_settlement_id);
 CREATE INDEX idx_planning_operations_context_snapshot
 ON planning_operations (planning_context_snapshot_id);
 
-CREATE TABLE planning_activity_reconciliations (
-  planning_operation_id TEXT PRIMARY KEY,
-  planning_provider_invocation_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
-  lease_owner TEXT NOT NULL DEFAULT '',
-  lease_expires_at TEXT,
-  lease_version INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  completed_at TEXT,
-  delivered_activity_count INTEGER NOT NULL DEFAULT 0 CHECK(delivered_activity_count >= 0),
-  FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
-  FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id)
-);
-
-CREATE INDEX idx_planning_activity_reconciliations_claim
-ON planning_activity_reconciliations (status, lease_expires_at, planning_operation_id);
-
 CREATE TRIGGER planning_operation_context_binding_immutable
 BEFORE UPDATE OF planning_context_snapshot_id ON planning_operations
 WHEN NEW.planning_context_snapshot_id IS NOT OLD.planning_context_snapshot_id

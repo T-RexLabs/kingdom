@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,15 +70,18 @@ func TestRunTerminalizationClosesBoundRequestAdmission(t *testing.T) {
 	}
 }
 
-func TestStaleRecoveryCannotSupersedeBoundRequest(t *testing.T) {
+func TestStaleRecoveryCannotSupersedeBoundRequestThatAdmittedATool(t *testing.T) {
 	db, attempt, _, stamp := boundTransitionRequestFixture(t)
+	if _, err := db.Exec(`INSERT INTO provider_native_grants(grant_id,binding_id,message_id,call_id,tool,input_json,identity_digest,created_at) SELECT 'grant',binding_id,'assistant','call','write','{}',?,? FROM provider_requests`, strings.Repeat("a", 64), stamp); err != nil {
+		t.Fatal(err)
+	}
 	tx, err := db.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
 	if err := supersedeStaleProviderInvocationTx(context.Background(), tx, attempt, stamp); err == nil {
-		t.Fatal("process-based stale recovery superseded bound request")
+		t.Fatal("stale recovery superseded a request with an admitted tool")
 	}
 }
 

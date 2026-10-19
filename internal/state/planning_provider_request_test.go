@@ -446,3 +446,30 @@ func TestPlanningProviderRequestActivationCannotBackdateExpiredLease(t *testing.
 		t.Fatalf("expired lease leaked binding: %d %v", count, err)
 	}
 }
+
+func TestPlanningProviderRequestActivationJudgesTheLeaseOnTheStoreLeaseClock(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		now     string
+		wantErr bool
+	}{
+		{name: "before expiry", now: "2026-04-21T16:04:59Z"},
+		{name: "at expiry", now: "2026-04-21T16:05:00Z", wantErr: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store, operation, request := newPlanningRequestActivation(t)
+			if _, err := store.db.Exec(`UPDATE planning_operations SET lease_expires_at='2026-04-21T16:05:00Z' WHERE operation_id=?`, operation.OperationID); err != nil {
+				t.Fatal(err)
+			}
+			now, err := time.Parse(time.RFC3339, tc.now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			store.SetLeaseClock(func() time.Time { return now })
+			_, err = store.ActivatePlanningProviderInvocation(context.Background(), request)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("activation at %s: err=%v, want error=%t", tc.now, err, tc.wantErr)
+			}
+		})
+	}
+}

@@ -80,8 +80,10 @@ func RequireCompletionTx(ctx context.Context, q Reader, owner Owner, lease Lease
 			return fmt.Errorf("successful completion requires the successful provider request")
 		}
 	case "cancelled":
-		if request.Terminal.Outcome != providerexecution.RequestOutcomeInterrupted || !observation.Cancelled {
-			return fmt.Errorf("cancellation requires the interrupted provider request")
+		// A request cancelled before anything was sent, or whose server is gone,
+		// was abandoned rather than interrupted.
+		if (request.Terminal.Outcome != providerexecution.RequestOutcomeInterrupted && !request.Terminal.Abandoned()) || !observation.Cancelled {
+			return fmt.Errorf("cancellation requires the interrupted or abandoned provider request")
 		}
 	case "failed":
 		// Kingdom may derive failure from a successful raw response, for

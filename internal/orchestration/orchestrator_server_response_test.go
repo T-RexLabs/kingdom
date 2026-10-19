@@ -65,7 +65,6 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 		attemptStartedAt   = "2026-03-01T12:00:00Z"
 		attemptClaimedAt   = "2026-03-01T12:00:01Z"
 		invocationOpenedAt = "2026-03-01T12:00:02Z"
-		terminalObservedAt = "2026-03-01T12:00:03Z"
 	)
 
 	db := openTestDB(t)
@@ -107,16 +106,16 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '`+attemptStartedAt+`' WHERE attempt_id = '`+attemptID+`'`)
 
-	observation := testSuccessfulExecuteObservation(opencode.ExecuteRequest{InvocationID: invocationID}, "Partial streamed response")
-	observation.RawFinishReason = "tool-calls"
-	observation.NormalizedFinishReason = "tool-calls"
+	requests := newRequestFixture(db, nil)
+	prepared := requests.prepare(t, attemptID, invocationID)
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity:      &prepared.Identity,
 		ProviderInvocationID: invocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     logicalSessionID,
-		ProviderSessionID:    observation.ProviderSessionID,
+		ProviderSessionID:    prepared.ProviderSessionID,
 		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		IssuedAt:             invocationOpenedAt,
 		CreatedAt:            invocationOpenedAt,
@@ -126,7 +125,11 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 	}); err != nil {
 		t.Fatalf("activate response-first invocation: %v", err)
 	}
-	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion, terminalObservedAt)
+	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
+		Accepted:          true,
+		OutputText:        "Partial streamed response",
+		StreamObservation: opencode.InvocationStreamObservation{PendingToolCount: 1},
+	}, nil)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime filesystem store: %v", err)
@@ -152,7 +155,8 @@ func TestCommitProviderExecutionCompletionRejectsNonterminalServerResponse(t *te
 		expectedLeaseOwner:        claim.LeaseOwner,
 		expectedLeaseVersion:      claim.LeaseVersion,
 		outputText:                "Direct adapter text must not authorize a nonterminal response.",
-		providerStreamObservation: observation,
+		providerSessionID:         response.ProviderSessionID,
+		providerStreamObservation: response.StreamObservation,
 		outcome: opencode.ExecutionOutcome{
 			State:          "success",
 			ReasonCode:     "execution_completed",

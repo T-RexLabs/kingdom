@@ -95,7 +95,7 @@ func TestCancellationBeforeCanonicalPreparationNeedsNoWorkspaceRestore(t *testin
 			applyMigration(t, db)
 			seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{RunID: "run_cancel_prep", WorkOrderID: "work_order_cancel_prep", WorkflowID: "wf_cancel_prep", NodeRunID: "nr_cancel_prep", NodeID: "builder", NodeClass: workflow.NodeClassDelegatedExecution, RequiredRole: "builder", AgentID: "agent_cancel_prep", RoleIDs: []string{"builder"}})
 			root := t.TempDir()
-			rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: &sequenceExecutionAdapter{}, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: root})
+			rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, &sequenceExecutionAdapter{}), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: root})
 			if err != nil {
 				t.Fatal(err)
 			}

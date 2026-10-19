@@ -32,7 +32,7 @@ func privateCompletionOrderingFixture(t *testing.T) (terminalHandoffHarness, asy
 	if err := os.WriteFile(filepath.Join(path, "private.txt"), []byte("inspection input"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	configureSuccessfulHandoff(&job, "VERDICT: PASS\nVerified pinned implementation.")
+	h.configureSuccessfulHandoff(t, &job, "VERDICT: PASS\nVerified pinned implementation.")
 	h.loop.emitCompletionLifecycleObservation(context.Background(), job, "before_settlement", terminalHandoffFixtureNow, nil)
 	persistProviderTerminalHandoffForTest(t, h.loop, &job)
 	return h, job
@@ -132,6 +132,12 @@ func TestPrivateCleanupFollowsCancellationHandoff(t *testing.T) {
 	h, job := privateCompletionOrderingFixture(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	// The request is disposed once its canonical settlement exists; the attempt
+	// is then fenced as cancelled before its result is projected.
+	if _, err := h.loop.convergeProviderTerminalHandoffsWithLimit(ctx, 8); err != nil {
+		t.Fatal(err)
+	}
+	mustExec(t, h.db, `UPDATE attempt_outbox SET status='published', published_at=created_at`)
 	mustExec(t, h.db, `UPDATE attempt_executions SET state='committed_cancelled',lease_owner='',lease_expires_at=NULL`)
 	mustExec(t, h.db, `UPDATE node_runs SET node_status='cancelled'`)
 	if err := h.store.QueueAttemptCancel(ctx, executionstore.QueueAttemptCancelRequest{

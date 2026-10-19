@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"kingdom/internal/core/providerexecution"
 )
 
 // RequireDisposedTx permits releasing an invocation's resources only after its
@@ -28,6 +30,11 @@ func RequireDisposedTx(ctx context.Context, q Reader, owner Owner) error {
 	}
 	if canonical.session != b.Identity.SessionID || canonical.logicalSession != b.LogicalSessionID {
 		return fmt.Errorf("provider disposal conflicts with immutable invocation identity")
+	}
+	if owner.Kind == OwnerRun && (canonical.invocationState == "superseded" || canonical.invocationState == "invalidated") {
+		if abandoned, err := isAbandoned(b); err != nil || abandoned {
+			return err
+		}
 	}
 	if b.DispatchIssuedAt == "" {
 		if owner.Kind != OwnerRun || canonical.invocationState != "invalidated" || b.TerminalReference != nil {
@@ -138,4 +145,18 @@ func RequireRunDisposedTx(ctx context.Context, q Reader, runID string) error {
 		}
 	}
 	return nil
+}
+
+// isAbandoned reports whether the request was closed without a provider
+// answer. Abandonment is only possible for a request that admitted nothing, so
+// a replaced invocation in that state leaves no effect to dispose of.
+func isAbandoned(b Binding) (bool, error) {
+	if b.TerminalReference == nil {
+		return false, nil
+	}
+	abandoned, err := providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID).Reference()
+	if err != nil {
+		return false, err
+	}
+	return *b.TerminalReference == abandoned, nil
 }

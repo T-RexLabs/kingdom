@@ -53,6 +53,12 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 		t.Fatalf("mark second planning provider invocation open: %v", err)
 	}
 
+	if _, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_reuse"); err != nil || found {
+		t.Fatalf("a conversation cannot continue from an unsettled request: found=%t err=%v", found, err)
+	}
+	if _, err := store.db.Exec(`UPDATE planning_provider_invocations SET invocation_state='settled_success' WHERE planning_provider_invocation_id='ppinv_test_2'`); err != nil {
+		t.Fatal(err)
+	}
 	invocation, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_reuse")
 	if err != nil {
 		t.Fatalf("get latest reusable planning provider invocation: %v", err)
@@ -68,6 +74,19 @@ func TestPlanningStoreGetLatestReusablePlanningProviderInvocation(t *testing.T) 
 	}
 	if invocation.CompletionMode != PlanningProviderCompletionModeServerResponse {
 		t.Fatalf("expected planning invocation server_response completion mode, got %#v", invocation)
+	}
+	// A later cancelled request may have added history that the transcript lacks.
+	for _, later := range []string{"settled_cancelled", "settled_failed"} {
+		if _, err := store.db.Exec(`INSERT INTO planning_provider_invocations(planning_provider_invocation_id,planning_operation_id,planning_session_id,logical_session_id,provider_session_id,invocation_state,completion_mode,created_at,updated_at) VALUES(?,?,?,?,?,?,'server_response',?,?)`,
+			"ppinv_later_"+later, secondOperation.OperationID, secondOperation.PlanningSessionID, "planner-ps_planning_reuse", "ses_planning_reuse_2", later, "2026-04-21T16:06:00Z", "2026-04-21T16:06:00Z"); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, err := store.GetLatestReusablePlanningProviderInvocation(ctx, "planner-ps_planning_reuse"); err != nil || found {
+			t.Fatalf("a %s request must end reuse: found=%t err=%v", later, found, err)
+		}
+		if _, err := store.db.Exec(`DELETE FROM planning_provider_invocations WHERE planning_provider_invocation_id=?`, "ppinv_later_"+later); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 

@@ -72,9 +72,6 @@ func TestMigrationBaselineSchema(t *testing.T) {
 	if !tableExists(t, db, "planning_operation_events") {
 		t.Fatal("expected planning_operation_events table to exist after up migration")
 	}
-	if !tableExists(t, db, "planning_activity_reconciliations") {
-		t.Fatal("expected planning_activity_reconciliations table to exist after up migration")
-	}
 	if !tableExists(t, db, "run_plan_reviews") {
 		t.Fatal("expected run_plan_reviews table to exist after up migration")
 	}
@@ -827,7 +824,7 @@ func TestBootstrapMigrationScaffoldMatchesCanonicalMigrations(t *testing.T) {
 
 	projectRoot := t.TempDir()
 	kingdomHome := filepath.Join(projectRoot, ".kingdom")
-	if err := bootstrapassets.WriteScaffold(kingdomHome, projectRoot, false); err != nil {
+	if err := bootstrapassets.WriteScaffold(kingdomHome, false); err != nil {
 		t.Fatalf("write scaffold: %v", err)
 	}
 

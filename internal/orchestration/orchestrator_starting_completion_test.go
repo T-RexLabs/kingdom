@@ -22,7 +22,6 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 	const attemptID = "run_1:work_intake:1"
 	const invocationID = "pinv_starting_failure"
 	const sessionID = "session_starting_failure"
-	const providerSessionID = "ses_starting_failure"
 	const now = "2026-03-01T12:00:05.123456789Z"
 	mustExec(t, db, `UPDATE node_runs SET node_status = 'starting', started_at = NULL WHERE node_run_id = 'nr_1'`)
 
@@ -35,8 +34,13 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 		t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'starting', launch_started_at = '2026-03-01T12:00:05.123456789Z' WHERE attempt_id = 'run_1:work_intake:1'`)
-	seedOpenProviderInvocationForAttempt(t, store, attemptID, "run_1", "nr_1", sessionID, providerSessionID, invocationID, now)
-	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, now)
+	requests := newRequestFixture(db, nil)
+	seedOpenProviderInvocationForAttempt(t, store, requests, attemptID, "run_1", "nr_1", sessionID, invocationID, now)
+	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{
+		Accepted:          true,
+		Outcome:           opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "provider rate limit", EvidenceSource: "stream"},
+		StreamObservation: opencode.InvocationStreamObservation{ProviderErrorPresent: true, ProviderErrorStatus: 429},
+	}, nil)
 
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
@@ -61,15 +65,15 @@ func TestProviderFailureSchedulesRetryWhileLaunchObservationIsDelayed(t *testing
 		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", AgentID: "agent_governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
 		attemptID:                 attemptID,
 		sessionID:                 sessionID,
-		providerSessionID:         providerSessionID,
+		providerSessionID:         response.ProviderSessionID,
 		providerInvocationID:      invocationID,
 		providerInvocationAt:      now,
 		completionMode:            executionstore.ProviderCompletionModeServerResponse,
 		expectedLeaseOwner:        claim.LeaseOwner,
 		expectedLeaseVersion:      claim.LeaseVersion,
 		occurredAt:                now,
-		outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: "llm_rate_limited", FailureText: "provider rate limit", EvidenceSource: "stream"},
-		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, ProviderErrorPresent: true, ProviderErrorStatus: 429},
+		outcome:                   response.Outcome,
+		providerStreamObservation: response.StreamObservation,
 	}
 	if err := loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
 		t.Fatalf("persist provider terminal handoff: %v", err)

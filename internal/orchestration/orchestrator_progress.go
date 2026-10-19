@@ -31,7 +31,7 @@ type bufferedExecutionProgressWriter struct {
 
 func (o *orchestrationLoop) executeWithDurableProgress(ctx context.Context, result asyncExecutionResult, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	req, writer := o.attachDurableProgressWriter(ctx, result, req)
-	response, err := o.adapter.Execute(ctx, req)
+	response, err := o.provider.Execute(ctx, req)
 	return response, closeDurableProgressWriter(writer, err)
 }
 

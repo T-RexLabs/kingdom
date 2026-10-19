@@ -42,8 +42,14 @@ func RecordTerminalTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, t
 	if err := owner.requireActive(b, false, time.Time{}); err != nil {
 		return err
 	}
-	if err := matchAdmissions(ctx, tx, b.ID, terminal.Tools); err != nil {
+	// An abandoned record has no projected tools; its admissions are instead
+	// proven closed by AbandonTx.
+	if abandoned, err := isAbandoned(Binding{Owner: b.Owner, TerminalReference: &ref}); err != nil {
 		return err
+	} else if !abandoned {
+		if err := matchAdmissions(ctx, tx, b.ID, terminal.Tools); err != nil {
+			return err
+		}
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE provider_requests SET terminal_sha256=?,terminal_size_bytes=? WHERE binding_id=? AND terminal_sha256 IS NULL`, ref.SHA256, ref.SizeBytes, b.ID)
 	return err
@@ -112,4 +118,45 @@ func admittedCalls(ctx context.Context, q Reader, table, bindingID string) ([]ad
 		calls = append(calls, call)
 	}
 	return calls, rows.Err()
+}
+
+// AbandonTx closes a request that can no longer be proven, for example when its
+// server is gone, and records the abandoned terminal. It succeeds only if every
+// admitted tool and command is already closed by its exact receipt or guardian:
+// no further effect is possible then, and the lost provider answer can only
+// change what the work reported, never what it did. A pending admission keeps
+// the request blocked, because its effect is unknown.
+func AbandonTx(ctx context.Context, tx *sql.Tx, id string, lease Lease, now time.Time) error {
+	b, err := Get(ctx, tx, id)
+	if err != nil {
+		return err
+	}
+	if b.Lease != lease || now.IsZero() {
+		return fmt.Errorf("provider abandonment does not match its binding and lease")
+	}
+	if b.TerminalReference != nil {
+		abandoned, err := isAbandoned(b)
+		if err != nil || abandoned {
+			return err
+		}
+		return fmt.Errorf("%w: request has provider terminal evidence and cannot be abandoned", ErrResourcesOpen)
+	}
+	stamp := now.UTC().Format(time.RFC3339Nano)
+	if _, err := tx.ExecContext(ctx, `UPDATE provider_requests SET dispatch_issued_at=COALESCE(dispatch_issued_at,?),admission_closed_at=COALESCE(admission_closed_at,?) WHERE binding_id=?`, stamp, stamp, id); err != nil {
+		return err
+	}
+	if err := RequireResourcesClosedTx(ctx, tx, id); err != nil {
+		return err
+	}
+	return RecordTerminalTx(ctx, tx, id, lease, providerexecution.AbandonedRequestTerminal(b.Owner.InvocationID), now)
+}
+
+// AbandonOwnerTx abandons the request bound to an invocation. It reports false
+// when the invocation has no bound request.
+func AbandonOwnerTx(ctx context.Context, tx *sql.Tx, owner Owner, now time.Time) (providerexecution.RequestIdentity, bool, error) {
+	b, found, err := ForOwner(ctx, tx, owner)
+	if err != nil || !found {
+		return providerexecution.RequestIdentity{}, false, err
+	}
+	return b.Identity, true, AbandonTx(ctx, tx, b.ID, b.Lease, now)
 }

@@ -34,14 +34,12 @@ func newScriptedExecutionAdapter(steps map[string]scriptedExecutionStep) *script
 }
 
 func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	step, ok := a.steps[req.AttemptID]
 	a.mu.Unlock()
 	if !ok {
-		output := `{"summary":"ok"}`
-		return opencode.ExecuteResponse{Accepted: true, OutputText: output, ProviderInvocationID: req.InvocationID, ProviderInvocationAt: req.InvocationIssuedAt, StreamObservation: testSuccessfulExecuteObservation(req, output)}, nil
+		return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"ok"}`}, nil
 	}
 	if step.block != nil {
 		select {
@@ -53,26 +51,7 @@ func (a *scriptedExecutionAdapter) Execute(ctx context.Context, req opencode.Exe
 	if step.err != nil {
 		return opencode.ExecuteResponse{}, step.err
 	}
-	response := opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           step.output,
-		ProviderInvocationID: req.InvocationID,
-		ProviderInvocationAt: req.InvocationIssuedAt,
-		StreamObservation:    testSuccessfulExecuteObservation(req, step.output),
-	}
-	return response, nil
-}
-
-func (a *scriptedExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *scriptedExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+	return opencode.ExecuteResponse{Accepted: true, OutputText: step.output}, nil
 }
 
 func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t *testing.T) {
@@ -103,7 +82,7 @@ func TestRuntimeDispatchLoopValidationReworkWaitsForWaveSettlementAndSucceeds(t 
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		GovernanceMode:   "autonomous",
 		DispatchInterval: 10 * time.Millisecond,
 	})

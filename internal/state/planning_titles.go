@@ -107,9 +107,6 @@ func (s *PlanningStore) FinalizeGenerateTitle(ctx context.Context, req FinalizeG
 	if err := resolveRecoveredPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {
 		return rollbackPlanningTx(tx, "finalize generate title", err)
 	}
-	if err := createPlanningActivityReconciliationTx(ctx, tx, operation, req.FinishedAt); err != nil {
-		return rollbackPlanningTx(tx, "finalize generate title", err)
-	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit finalize generate title: %w", err)

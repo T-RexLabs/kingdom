@@ -22,9 +22,11 @@ import (
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/external"
 	"kingdom/internal/idempotency"
 	kingdom "kingdom/internal/orchestration"
+	"kingdom/internal/planning"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 
@@ -369,7 +371,7 @@ func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter
 
 	seedRoles(t, db)
 	projectRoot := t.TempDir()
-	if err := bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
+	if err := bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), false); err != nil {
 		t.Fatalf("write managed opencode scaffold: %v", err)
 	}
 
@@ -377,12 +379,13 @@ func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter
 	bootstrapPaths := kingdom.DefaultBootstrapPaths(repoRoot(t))
 	bootstrapPaths.ProviderPolicyPath = filepath.Join(projectRoot, ".kingdom", "policies", "opencode_provider_policy.yaml")
 	bootstrapPaths.ProviderPolicySchemaPath = filepath.Join(projectRoot, ".kingdom", "schemas", "opencode_provider_policy.schema.json")
+	provider := opencode.NewMemoryAdapter(providerrequest.NewAuthority(db, nil))
 	handler, err := api.NewHandler(api.ServerConfig{
 		DB:                       db,
 		IDGenerator:              generator.Next,
 		ProjectRoot:              projectRoot,
 		ProviderEngine:           "opencode",
-		OpenCodeBinaryPath:       "/bin/sh",
+		PlannerAgent:             planning.NewOpenCodeAgent(provider, generator.Next),
 		ProviderPolicyPath:       bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath: bootstrapPaths.ProviderPolicySchemaPath,
 		ProviderModelCatalog: staticProviderModelCatalog{items: []gen.ProviderModel{{
@@ -405,7 +408,7 @@ func newE2EEnvWithExternalAdapter(t *testing.T, externalAdapter external.Adapter
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:               db,
 		Paths:            bootstrapPaths,
-		Adapter:          opencode.NewMemoryAdapter(),
+		Provider:         provider,
 		ProviderEngine:   "opencode",
 		DispatchInterval: 20 * time.Millisecond,
 	})

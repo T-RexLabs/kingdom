@@ -44,8 +44,8 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 	if rec.HandoffState == "awaiting_workspace_quiescence" || rec.HandoffState == "workspace_restore_failed" {
 		return false, o.recordAttemptCancelFailure(ctx, *rec, publishedAt)
 	}
-	if o.adapter == nil {
-		return false, fmt.Errorf("execution adapter is not configured")
+	if o.provider == nil {
+		return false, fmt.Errorf("execution provider is not configured")
 	}
 	dispatchedState, err := o.transitionService().ClaimAttemptCancelHandoffDispatch(ctx, rec.CancelOutboxID, publishedAt)
 	if err != nil || dispatchedState == "" {
@@ -60,7 +60,7 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 		return true, nil
 	}
 	cancelCtx, cancel := context.WithTimeout(ctx, defaultDuration(o.cancelGrace, 5*time.Second))
-	cancelErr := o.adapter.Cancel(cancelCtx, attemptCancelRequest(*rec, publishedAt))
+	cancelErr := o.provider.Cancel(cancelCtx, attemptCancelRequest(*rec, publishedAt))
 	cancel()
 	quiescent, err = o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
 	if err != nil {
@@ -75,7 +75,9 @@ func (o *orchestrationLoop) requestAttemptCancelStop(ctx context.Context, rec *e
 		return false, ctx.Err()
 	}
 	if cancelErr == nil {
-		cancelErr = fmt.Errorf("managed provider process quiescence has not been proven")
+		// The request is interrupted. Its worker settles it, and the next
+		// maintenance pass completes the cancellation once it has.
+		return false, o.recordAttemptCancelFailureMessage(ctx, *rec, "Kingdom is waiting for the provider request to settle before completing cancellation.", "awaiting_quiescence", o.now().UTC().Format(time.RFC3339Nano))
 	}
 	slog.Warn("failed to dispatch provider cancel for terminalized attempt", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", cancelErr)
 	return false, o.recordAttemptCancelFailure(ctx, *rec, o.now().UTC().Format(time.RFC3339Nano))
