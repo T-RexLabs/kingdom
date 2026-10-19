@@ -2879,8 +2879,15 @@ export interface components {
             branch_count?: number;
             /** Format: uuid */
             source_run_id?: string;
+            failure?: components["schemas"]["PlanningMessageFailure"];
             /** Format: date-time */
             created_at: string;
+        };
+        /** @description Present when this assistant turn failed. The turn then has no content, and message explains why in words meant for the operator. */
+        PlanningMessageFailure: {
+            /** @description Error catalog code the failure settled under. */
+            reason_code: string;
+            message: string;
         };
         AcpRunActivityItem: {
             /** @description Stable identity for one observed activity within its invocation; repeated observations have higher sequences. */

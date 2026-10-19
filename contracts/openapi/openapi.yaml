@@ -4921,9 +4921,25 @@ components:
         source_run_id:
           type: string
           format: uuid
+        failure:
+          $ref: "#/components/schemas/PlanningMessageFailure"
         created_at:
           type: string
           format: date-time
+
+    PlanningMessageFailure:
+      type: object
+      additionalProperties: false
+      description: Present when this assistant turn failed. The turn then has no content, and message explains why in words meant for the operator.
+      required: [reason_code, message]
+      properties:
+        reason_code:
+          type: string
+          minLength: 1
+          description: Error catalog code the failure settled under.
+        message:
+          type: string
+          minLength: 1
 
     AcpRunActivityItem:
       type: object

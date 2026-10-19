@@ -18,7 +18,7 @@ The web app, command line, and API all work with the same local runtime. They do
 
 ## How Work Moves
 
-Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly.
+Planning is a separate workspace where an operator can shape a task before making a Work Order. It is optional. A Work Order can also be created directly. A planner turn that fails stays in the conversation as a failed reply with its reason; the planner never sees it, and retrying it adds a new reply beside it.
 
 The workflow definition controls which roles run and when decisions happen. In the default workflow, advisor roles help shape the plan, a plan decision comes before implementation, and the work then moves through Build, Review, validation, and a final decision. Some stages record a decision or handoff without starting a model session. An alternate workflow can skip Review and validation. The workflow files define the exact steps.
 
