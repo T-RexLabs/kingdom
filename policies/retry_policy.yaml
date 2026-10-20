@@ -70,6 +70,7 @@ error_code_map:
   provider_incomplete_turn: non_retryable
   provider_empty_output: non_retryable
   provider_unknown_failure: non_retryable
+  provider_protocol_error: non_retryable
   provider_cancelled: non_retryable
 
   resource_limit_exceeded: non_retryable

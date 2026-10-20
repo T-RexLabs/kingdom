@@ -14,13 +14,14 @@ const pluginRPCName = "kingdom"
 // profileActions are the stock permissions a managed role may use. Every other
 // action, including background work and subagents, stays denied.
 func profileActions(agent string) []string {
+	actions := []string{"read", "glob", "grep"}
 	switch agent {
 	case "builder":
-		return []string{"read", "edit", "shell"}
+		return append(actions, "edit", "shell")
 	case "qa-validator", "security-validator", "resilience-validator":
-		return []string{"read", "shell"}
+		return append(actions, "shell")
 	default:
-		return []string{"read"}
+		return actions
 	}
 }
 

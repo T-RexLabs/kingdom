@@ -188,6 +188,7 @@ func planningMessageFromState(item state.PlanningMessage) (gen.PlanningMessage, 
 // planningTurnFailureMessages explains a failed planner turn by its error code.
 // Internal error text is never shown to the operator.
 var planningTurnFailureMessages = map[string]string{
+	"provider_protocol_error":  "Kingdom could not verify the OpenCode reply. Diagnostic evidence has been retained.",
 	"llm_rate_limited":         "The provider is limiting requests right now. Wait a moment, then retry.",
 	"llm_usage_limit_reached":  "The provider account has reached its usage limit.",
 	"llm_model_unavailable":    "The selected model is unavailable.",

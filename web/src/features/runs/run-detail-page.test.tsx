@@ -526,6 +526,7 @@ describe("run detail page", () => {
 		mockRun.status = "failed";
 		mockRun.display_state = "failed";
 		mockSearch.tab = "execution";
+    useRunGraphMock.mockImplementation(() => ({ data: undefined, isPending: true }));
     mockRun.failed_nodes = [
       {
         node_id: "implementation",
@@ -541,21 +542,21 @@ describe("run detail page", () => {
 		expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
 		expect(governanceActionsPropsMock).toHaveBeenCalledWith(
 			expect.objectContaining({
-				failedNodes: mockRun.failed_nodes,
+				recovery: { nodes: mockRun.failed_nodes, defaultNodeId: "implementation" },
         showFinalApproval: false,
       }),
     );
   });
 
-  it("loads graph nodes for cancelled-run replay controls", () => {
+  it.each(["failed", "cancelled"])("loads interrupted graph nodes for %s-run replay controls", (status) => {
     const cancelledNode = {
       node_id: "implementation",
       required_role: "builder",
       execution_ownership: "provider_backed",
       state: "cancelled",
     };
-    mockRun.status = "cancelled";
-    mockRun.display_state = "cancelled";
+    mockRun.status = status;
+    mockRun.display_state = status;
     mockSearch.panel = "details"; mockSearch.section = "context";
     useRunGraphMock.mockImplementation(() => ({
       data: { run_id: "run-1", nodes: [cancelledNode], edges: [] },
@@ -570,7 +571,7 @@ describe("run detail page", () => {
     expect(useRunGraphMock).toHaveBeenCalledWith("run-1", { enabled: true });
     expect(governanceActionsPropsMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        cancelledNodes: [cancelledNode],
+        recovery: { nodes: [cancelledNode], defaultNodeId: "implementation" },
         showFinalApproval: false,
       }),
     );

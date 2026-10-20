@@ -2125,7 +2125,9 @@ func (s *Store) ListPendingOutboxAfter(ctx context.Context, after, through Outbo
 	return records, nil
 }
 
-const pendingAttemptCancelStates = `('cancellation_requested', 'stop_retry_requested', 'guardian_evidence_recovery_requested', 'awaiting_workspace_quiescence', 'workspace_restore_failed')`
+// Waiting provider requests stay discoverable so their handoff can finish once
+// disposal is proven. Eligibility does not authorize another external stop.
+const pendingAttemptCancelStates = `('cancellation_requested', 'cancellation_dispatched', 'stop_retry_requested', 'stop_retry_dispatched', 'guardian_evidence_recovery_requested', 'awaiting_quiescence', 'awaiting_workspace_quiescence', 'workspace_restore_failed')`
 
 // PendingAttemptCancelHighWatermark fixes the end of one finite scan cycle.
 // New cancellations wait for the next cycle instead of delaying revisits.

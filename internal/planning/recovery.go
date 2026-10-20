@@ -190,8 +190,24 @@ func (d runtimeDeps) abandonUnprovenRequest(ctx context.Context, op state.Planni
 	if err != nil {
 		return cause, noRelease, err
 	}
-	metadata := ProviderExecutionMetadata{ProviderSessionID: identity.SessionID, OutcomeState: "failed", StreamObservation: observation}
-	return executionError(metadata, cause), func() { _ = observation.ReleaseContent() }, nil
+	releaseAbandoned := observation.ReleaseContent
+	original := providerMetadataFromError(cause)
+	if len(original.StreamObservation.DiagnosticContent) > 0 {
+		// Rejected snapshots remain diagnostics when the runtime can finally
+		// abandon the request. Keep the exact list the adapter's retirement
+		// callback owns; the canonical empty terminal is independently derived.
+		observation.DiagnosticContent = original.StreamObservation.DiagnosticContent
+		observation.StagedDiagnosticContent = original.StreamObservation.StagedDiagnosticContent
+		observation.ReleaseContent = original.StreamObservation.ReleaseContent
+		observation.MalformedProtocolCount = original.StreamObservation.MalformedProtocolCount
+		observation.MeaningfulProgress = original.StreamObservation.MeaningfulProgress
+	}
+	metadata := ProviderExecutionMetadata{
+		ProviderSessionID: identity.SessionID, OutcomeState: "failed",
+		FailureReasonCode: original.FailureReasonCode, FailureReasonText: original.FailureReasonText,
+		StreamObservation: observation,
+	}
+	return executionError(metadata, cause), func() { _ = releaseAbandoned() }, nil
 }
 
 // errBlockedByProviderRequest marks an operation that recovery cannot settle

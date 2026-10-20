@@ -20,6 +20,7 @@ const data = vi.hoisted(() => {
   };
   return {
     text,
+    pending: false,
     items: [
       ...Array.from({ length: 100 }, (_, i) => ({
         ...base,
@@ -49,10 +50,11 @@ const data = vi.hoisted(() => {
 vi.mock("@/api/hooks-runs", () => ({
   useRunExecutionActivity: (_runId: string, attemptId: string) => ({
     data: {
-      items: attemptId === "attempt-a" ? data.items : [],
+      items: attemptId === "attempt-a" && !data.pending ? data.items : [],
       snapshotThrough: 101,
     },
     gaps: [],
+    isLoading: data.pending,
     loadMore: vi.fn(),
     isLoadingMore: false,
     loadError: null,
@@ -76,11 +78,33 @@ function Wrapper({ children }: PropsWithChildren) {
     </QueryClientProvider>
   );
 }
+const scrollToLatest = vi.fn();
 let restoreGeometry: () => void;
+const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
 beforeEach(() => {
+  data.pending = false;
+  scrollToLatest.mockClear();
   restoreGeometry = mockActivityScrollGeometry();
+  Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollToLatest });
 });
-afterEach(() => restoreGeometry());
+afterEach(() => {
+  restoreGeometry();
+  if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
+  else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+});
+
+it("opens async activity at the last virtual row after attempt detail is ready", async () => {
+  data.pending = true;
+  const view = render(<RunExecutionActivity runId="run" attemptId="attempt-a" status="running" isDetailLoading />, { wrapper: Wrapper });
+  expect(scrollToLatest).not.toHaveBeenCalled();
+  data.pending = false;
+  view.rerender(<RunExecutionActivity runId="run" attemptId="attempt-a" status="running" isDetailLoading />);
+  await waitFor(() => expect(screen.getByText("Tool 100")).toBeVisible());
+  expect(scrollToLatest).not.toHaveBeenCalled();
+  view.rerender(<RunExecutionActivity runId="run" attemptId="attempt-a" status="running" />);
+  expect(scrollToLatest).toHaveBeenCalledTimes(1);
+  expect(scrollToLatest.mock.instances[0]).toBe(screen.getByRole("region", { name: "Provider activity" }));
+});
 
 it("keeps the inline settled response outside virtual activity and resets its source on attempt change", async () => {
   const detail = {

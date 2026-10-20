@@ -35,7 +35,9 @@ vi.mock("./timeline-panel", () => ({
   TimelinePanel: () => <div data-testid="timeline-panel" />,
 }));
 vi.mock("./run-execution-activity", () => ({
-  RunExecutionActivity: () => <div data-testid="run-execution-activity" />,
+  RunExecutionActivity: ({ isVisible, isDetailLoading }: { isVisible: boolean; isDetailLoading: boolean }) => (
+    <div data-testid="run-execution-activity" data-visible={isVisible} data-loading={isDetailLoading} />
+  ),
 }));
 
 function execution(overrides: Partial<RunExecution> = {}): RunExecution {
@@ -170,6 +172,19 @@ function renderSurface(
 }
 
 describe("focused execution inspector", () => {
+  it("passes async detail readiness and conversation visibility to activity scrolling", async () => {
+    const props = renderSurface({ isDetailLoading: true });
+    const activity = screen.getByTestId("run-execution-activity");
+    expect(activity).toHaveAttribute("data-visible", "true");
+    expect(activity).toHaveAttribute("data-loading", "true");
+    props.view.rerender(<RunExecutionSurface {...props} isDetailLoading={false} />);
+    expect(activity).toHaveAttribute("data-loading", "false");
+    await userEvent.click(screen.getByRole("tab", { name: "Instructions" }));
+    expect(activity).toHaveAttribute("data-visible", "false");
+    await userEvent.click(screen.getByRole("tab", { name: "Conversation" }));
+    expect(activity).toHaveAttribute("data-visible", "true");
+  });
+
   it("adds Final Response only for the exact settled attempt and preserves the mounted conversation", async () => {
     const props = renderSurface({
       detail: {

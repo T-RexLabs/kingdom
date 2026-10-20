@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -118,14 +119,16 @@ func (b *commandBridge) invoke(ctx context.Context, in commandInput) (commandRes
 		b.mu.Unlock()
 		return commandResult{}, fmt.Errorf("command request is not registered")
 	}
-	if filepath.Clean(in.Cwd) != registration.workspace {
-		b.mu.Unlock()
-		return commandResult{}, fmt.Errorf("a managed command must run in its workspace root")
-	}
-	if err := requireShellInput(in); err != nil {
+	directory, err := resolveCommandDirectory(registration.workspace, in.Cwd)
+	if err != nil {
 		b.mu.Unlock()
 		return commandResult{}, err
 	}
+	if err := requireShellInput(in, registration.workspace, directory); err != nil {
+		b.mu.Unlock()
+		return commandResult{}, err
+	}
+	in.Cwd = directory
 	// Claiming under the lock keeps a concurrent replay from observing a claim
 	// that has no running call yet.
 	claim, err := b.authority.ClaimCommand(ctx, providerrequest.NativeCall{Identity: in.Identity, MessageID: in.MessageID, CallID: in.CallID, Tool: "shell", Input: in.ToolInput})
@@ -152,7 +155,7 @@ func (b *commandBridge) invoke(ctx context.Context, in commandInput) (commandRes
 
 // requireShellInput ensures the guarded command is exactly what the stock tool
 // call asked for, so the projected tool and the durable claim stay comparable.
-func requireShellInput(in commandInput) error {
+func requireShellInput(in commandInput, workspace, directory string) error {
 	var input struct {
 		Command    string `json:"command"`
 		Workdir    string `json:"workdir"`
@@ -166,17 +169,42 @@ func requireShellInput(in commandInput) error {
 	if input.Timeout != nil {
 		timeout = *input.Timeout
 	}
-	workdir := in.Cwd
-	if input.Workdir != "" {
-		workdir = input.Workdir
-		if !filepath.IsAbs(workdir) {
-			workdir = filepath.Join(in.Identity.Location, workdir)
-		}
+	workdir, err := resolveCommandDirectory(workspace, input.Workdir)
+	if err != nil {
+		return err
 	}
-	if input.Background || input.Command != in.Command || timeout != in.Timeout || filepath.Clean(workdir) != filepath.Clean(in.Cwd) {
+	if input.Background || input.Command != in.Command || timeout != in.Timeout || workdir != directory {
 		return fmt.Errorf("managed command differs from its tool input")
 	}
 	return nil
+}
+
+// resolveCommandDirectory permits existing directories inside the workspace,
+// including aliases that resolve there, without allowing symlinks to escape.
+func resolveCommandDirectory(workspace, directory string) (string, error) {
+	root, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		return "", fmt.Errorf("resolve managed command workspace: %w", err)
+	}
+	if !filepath.IsAbs(directory) {
+		directory = filepath.Join(root, directory)
+	}
+	resolved, err := filepath.EvalSymlinks(directory)
+	if err != nil {
+		return "", fmt.Errorf("resolve managed command directory: %w", err)
+	}
+	relative, err := filepath.Rel(root, resolved)
+	if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("a managed command must run within its workspace %s", workspace)
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("inspect managed command directory: %w", err)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("managed command directory is not a directory: %s", directory)
+	}
+	return resolved, nil
 }
 
 func awaitCommand(ctx context.Context, call *commandCall) (commandResult, error) {
@@ -198,7 +226,7 @@ func (b *commandBridge) execute(ctx context.Context, in commandInput, claim prov
 	}
 	ordinal := int(claim.Ordinal)
 	started := time.Now().UTC().Format(time.RFC3339Nano)
-	handle, err := b.runner.Start(ctx, shellCommand(in.Command, registration.workspace, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
+	handle, err := b.runner.Start(ctx, shellCommand(in.Command, in.Cwd, b.env), func(ctx context.Context, ownership processguardian.Ownership) error {
 		return registration.ownership(ctx, CommandGuardianOwnership{CommandOrdinal: ordinal, StartedAt: started, AcknowledgedAt: time.Now().UTC().Format(time.RFC3339Nano), Ownership: ownership})
 	})
 	var result processguardian.Result

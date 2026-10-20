@@ -1097,6 +1097,9 @@ func (r *operationRunner) cancelOperationWithMetadata(ctx context.Context, opera
 		return eventErr
 	}
 	now := r.deps.nowString()
+	// The runtime requested cancellation even if the provider completed before
+	// it received the interrupt. Preserve that raw terminal outcome separately.
+	metadata.StreamObservation.Cancelled = true
 	providerSettlement := providerSettlementForFailure(operation, metadata, now, reason, nil, true)
 	if err := r.finalizeAbortOperation(writeCtx, operation, state.PlanningOperationStatusCancelled, now, reason, "", providerSettlement, terminalEvent, nil, false); err != nil {
 		// Force/deadline revocation intentionally forbids further handoff

@@ -13,6 +13,7 @@ func TestFailedPlanningTurnIsExplainedInOperatorWords(t *testing.T) {
 		want    string
 	}{
 		{"the provider's own words win", state.PlanningTurnFailure{ReasonCode: "provider_unknown_failure", ProviderMessage: " Attempted to access resource from outside project geography EU "}, "Attempted to access resource from outside project geography EU"},
+		{"an adapter rejection", state.PlanningTurnFailure{ReasonCode: "provider_protocol_error"}, "Kingdom could not verify the OpenCode reply. Diagnostic evidence has been retained."},
 		{"a known code", state.PlanningTurnFailure{ReasonCode: "agent_unresponsive"}, "The planner stopped responding before the reply finished."},
 		{"an unknown code", state.PlanningTurnFailure{ReasonCode: "internal_error"}, "The planner could not finish this reply."},
 	} {

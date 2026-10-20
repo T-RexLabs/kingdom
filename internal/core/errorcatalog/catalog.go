@@ -29,6 +29,7 @@ const (
 	CodeProviderIncompleteTurn Code = "provider_incomplete_turn"
 	CodeProviderEmptyOutput    Code = "provider_empty_output"
 	CodeProviderUnknownFailure Code = "provider_unknown_failure"
+	CodeProviderProtocolError  Code = "provider_protocol_error"
 	CodeProviderCancelled      Code = "provider_cancelled"
 	CodeAgentUnresponsive      Code = "agent_unresponsive"
 	CodeEventSequenceGap       Code = "event_sequence_gap"
@@ -59,6 +60,7 @@ var catalog = map[Code]RetryProfile{
 	CodeLLMInvalidResponse:     {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
 	CodeProviderIncompleteTurn: {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
 	CodeProviderEmptyOutput:    {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
+	CodeProviderProtocolError:  {Category: CategoryRuntime, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
 	CodeProviderUnknownFailure: {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
 	CodeProviderCancelled:      {Category: CategoryProvider, RetryClass: "non_retryable", Retryable: false, EscalationTarget: "coordinator"},
 	CodeAgentUnresponsive:      {Category: CategoryRuntime, RetryClass: "conditional_limited", Retryable: true, EscalationTarget: "coordinator"},

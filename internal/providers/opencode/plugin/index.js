@@ -183,9 +183,6 @@ export default {
         tool.execute = async (input, context) => {
           const identity = identityFor(context)
           if (input.background) throw new Error("Managed background commands are not supported")
-          if (input.workdir && path.resolve(location, input.workdir) !== location) {
-            throw new Error("A managed command must run in its workspace root " + location + ". Omit workdir or set it to that directory.")
-          }
           await ctx.permission.assert({
             sessionID: context.sessionID,
             agent: context.agent,
@@ -199,7 +196,7 @@ export default {
           try {
             const result = await call(
               "/v1/command/invoke",
-              { identity, messageID: context.messageID, callID: context.id, command: input.command, cwd: location, timeout: input.timeout ?? 120_000, toolInput: input },
+              { identity, messageID: context.messageID, callID: context.id, command: input.command, cwd: path.resolve(location, input.workdir || "."), timeout: input.timeout ?? 120_000, toolInput: input },
               context.signal,
             )
             return {

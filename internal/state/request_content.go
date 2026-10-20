@@ -100,6 +100,16 @@ func CopyRequestContent(ctx context.Context, db *sql.DB, id string, dst io.Write
 		return ref, err
 	}
 	defer tx.Rollback()
+	return copyRequestContent(ctx, tx, id, dst)
+}
+
+type requestContentReader interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}
+
+func copyRequestContent(ctx context.Context, tx requestContentReader, id string, dst io.Writer) (RequestContentReference, error) {
+	ref := RequestContentReference{ContentID: id}
 	var count int
 	if err := tx.QueryRowContext(ctx, `SELECT sha256,size_bytes,chunk_count FROM request_contents WHERE content_id=?`, id).Scan(&ref.SHA256, &ref.SizeBytes, &count); err != nil {
 		return ref, err

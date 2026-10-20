@@ -209,8 +209,11 @@ func (c *Client) Messages(ctx context.Context, directory, sessionID string, visi
 	for {
 		query := atLocation(directory)
 		query.Set("limit", strconv.Itoa(messagePageSize))
-		query.Set("order", "desc")
-		if cursor != "" {
+		if cursor == "" {
+			query.Set("order", "desc")
+		} else {
+			// The opaque cursor carries ordering; OpenCode rejects order when
+			// it accompanies a cursor, even if the value is unchanged.
 			query.Set("cursor", cursor)
 		}
 		var page struct {

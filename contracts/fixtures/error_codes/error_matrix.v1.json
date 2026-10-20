@@ -100,6 +100,13 @@
       "escalation_target": "coordinator"
     },
     {
+      "code": "provider_protocol_error",
+      "category": "runtime",
+      "retry_class": "non_retryable",
+      "retryable": false,
+      "escalation_target": "coordinator"
+    },
+    {
       "code": "provider_unknown_failure",
       "category": "provider",
       "retry_class": "non_retryable",

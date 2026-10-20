@@ -189,6 +189,9 @@ func providerMetadataFromError(err error) ProviderExecutionMetadata {
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
+	if cancelled {
+		return "provider_cancelled"
+	}
 	var contextVersionErr *state.UnsupportedPlanningExternalContextVersionError
 	if errors.As(cause, &contextVersionErr) {
 		return "dependency_blocked"
@@ -207,7 +210,7 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 		reasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(reasonCode)
 		return reasonCode
 	}
-	if cancelled || errors.Is(cause, context.Canceled) {
+	if errors.Is(cause, context.Canceled) {
 		return "provider_cancelled"
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {

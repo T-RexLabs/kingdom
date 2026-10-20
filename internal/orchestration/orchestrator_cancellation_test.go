@@ -197,3 +197,60 @@ func testCancellationBatchFairness(t *testing.T, arrivalsDuringScan int) {
 		t.Fatalf("unchanged workspace wait rewrote bookkeeping: writes=%d err=%v", writeCount, err)
 	}
 }
+
+func TestCancellationWaitingStopResumesAfterWorkerDisposal(t *testing.T) {
+	for _, phase := range []string{"awaiting_quiescence", "cancellation_dispatched", "stop_retry_dispatched"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			h, invocation, _ := staleCancellationFixture(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			mustExec(t, h.db, fmt.Sprintf(`UPDATE attempt_cancel_outbox SET handoff_state=%q`, phase))
+			// Disposal does not release a handoff while the original worker unwinds.
+			if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 0 {
+				t.Fatalf("worker still active: admitted=%d err=%v", admitted, err)
+			}
+			assertCancellationHandoff(t, h, invocation.AttemptID, "pending", phase)
+			h.loop.clearExecutionInflight(invocation.AttemptID)
+			if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 1 {
+				t.Fatalf("disposed request cancellation must resume automatically: admitted=%d err=%v", admitted, err)
+			}
+			if err := h.loop.waitForMaintenance(ctx); err != nil {
+				t.Fatal(err)
+			}
+			assertCancellationHandoff(t, h, invocation.AttemptID, "published", "released")
+
+		})
+	}
+}
+
+func TestCancellationWaitingStopDoesNotRedispatchStop(t *testing.T) {
+	for _, phase := range []string{"awaiting_quiescence", "cancellation_dispatched", "stop_retry_dispatched"} {
+		t.Run(phase, func(t *testing.T) {
+			t.Parallel()
+			h := newTerminalHandoffHarness(t)
+			invocation := h.addInvocation(t, 1)
+			h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+			ctx := context.Background()
+			if err := h.store.QueueAttemptCancel(ctx, executionstore.QueueAttemptCancelRequest{
+				CancelOutboxID: "cancel_awaiting", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+				SessionID: invocation.LogicalSessionID, ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow, CreatedAt: terminalHandoffFixtureNow,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, h.db, fmt.Sprintf(`UPDATE attempt_cancel_outbox SET handoff_state=%q`, phase))
+			adapter := &timeoutCancelObserverAdapter{}
+			h.requests.respondWith(adapter)
+			for range 3 {
+				if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 0 {
+					t.Fatalf("unsettled request must only be observed: admitted=%d err=%v", admitted, err)
+				}
+			}
+			assertCancellationHandoff(t, h, invocation.AttemptID, "pending", phase)
+			if got := adapter.cancelCalls(); got != 0 {
+				t.Fatalf("waiting handoff redispatched %d stops", got)
+			}
+
+		})
+	}
+}

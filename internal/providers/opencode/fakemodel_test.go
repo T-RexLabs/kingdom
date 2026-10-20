@@ -31,13 +31,16 @@ type fakeModelCall struct {
 }
 
 var (
-	fakeText    = regexp.MustCompile(`TEXT:(\S+)`)
-	fakeWrite   = regexp.MustCompile(`WRITE:(\S+)`)
-	fakeSleep   = regexp.MustCompile(`SLEEP:(\d+)`)
-	fakeFinish  = regexp.MustCompile(`FINISH:(\S+)`)
-	fakeShell   = regexp.MustCompile(`SHELL64:(\S+)`)
-	fakeWorkdir = regexp.MustCompile(`WORKDIR:(\S+)`)
-	fakeTool    = regexp.MustCompile(`TOOL:(\w+)`)
+	fakeText           = regexp.MustCompile(`TEXT:(\S+)`)
+	fakeWrite          = regexp.MustCompile(`WRITE:(\S+)`)
+	fakeSleep          = regexp.MustCompile(`SLEEP:(\d+)`)
+	fakePauseAfterTool = regexp.MustCompile(`PAUSE_AFTER_TOOL:(\d+)`)
+	fakeFinish         = regexp.MustCompile(`FINISH:(\S+)`)
+	fakeShell          = regexp.MustCompile(`SHELL64:(\S+)`)
+	fakeWorkdir        = regexp.MustCompile(`WORKDIR:(\S+)`)
+	fakeTool           = regexp.MustCompile(`TOOL:(\w+)`)
+	fakeSearch         = regexp.MustCompile(`SEARCH:(glob|grep)`)
+	fakeRead           = regexp.MustCompile(`READ:(\S+)`)
 )
 
 func newFakeModel(t *testing.T) *fakeModel {
@@ -109,7 +112,11 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 	m.calls = append(m.calls, call)
 	m.mu.Unlock()
 
-	if sleep := fakeSleep.FindStringSubmatch(call.LastUser); sleep != nil && len(toolResults) == 0 {
+	sleep := fakeSleep.FindStringSubmatch(call.LastUser)
+	if len(toolResults) > 0 {
+		sleep = fakePauseAfterTool.FindStringSubmatch(call.LastUser)
+	}
+	if sleep != nil {
 		var seconds int
 		fmt.Sscan(sleep[1], &seconds)
 		select {
@@ -123,6 +130,22 @@ func (m *fakeModel) serve(w http.ResponseWriter, r *http.Request) {
 		arguments, _ := json.Marshal(map[string]string{"path": write[1], "content": "hello\n"})
 		chunks = []map[string]any{
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_write", "type": "function", "function": map[string]any{"name": "write", "arguments": string(arguments)}}}}}}},
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},
+		}
+	} else if read := fakeRead.FindStringSubmatch(call.LastUser); read != nil && !toolResults["call_read"] {
+		arguments, _ := json.Marshal(map[string]string{"path": read[1]})
+		chunks = []map[string]any{
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_read", "type": "function", "function": map[string]any{"name": "read", "arguments": string(arguments)}}}}}}},
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},
+		}
+	} else if search := fakeSearch.FindStringSubmatch(call.LastUser); search != nil && !toolResults["call_search"] {
+		input := map[string]string{"pattern": "**/*.txt"}
+		if search[1] == "grep" {
+			input["pattern"] = "search-needle"
+		}
+		arguments, _ := json.Marshal(input)
+		chunks = []map[string]any{
+			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{"role": "assistant", "tool_calls": []any{map[string]any{"index": 0, "id": "call_search", "type": "function", "function": map[string]any{"name": search[1], "arguments": string(arguments)}}}}}}},
 			{"choices": []any{map[string]any{"index": 0, "delta": map[string]any{}, "finish_reason": "tool_calls"}}},
 		}
 	} else if tool := fakeTool.FindStringSubmatch(call.LastUser); tool != nil && !toolResults["call_other"] {

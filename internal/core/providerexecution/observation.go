@@ -31,25 +31,27 @@ type InvocationStreamObservation struct {
 	// ReleaseContent acknowledges durable ingestion of the complete terminal
 	// and diagnostic content. It retires adapter staging/replay storage.
 	ReleaseContent func() error `json:"-"`
-	// DiagnosticContent is the complete invocation stdout followed by stderr.
-	// StagedDiagnosticContent carries those same bytes to a durable consumer;
-	// consumers ingest and verify them before retiring the process-local files.
-	DiagnosticContent           []ContentReference          `json:"diagnostic_content,omitempty"`
-	StagedDiagnosticContent     []StagedContent             `json:"-"`
-	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
-	PendingToolCount            int                         `json:"pending_tool_count"`
-	Tokens                      TokenUsage                  `json:"tokens"`
-	TimedOut                    bool                        `json:"timed_out"`
-	Cancelled                   bool                        `json:"cancelled"`
-	ProviderErrorPresent        bool                        `json:"provider_error_present"`
-	ProviderError               string                      `json:"provider_error,omitempty"`
-	ProviderErrorCode           string                      `json:"provider_error_code,omitempty"`
-	ProviderErrorCategory       string                      `json:"provider_error_category,omitempty"`
-	ProviderErrorStatus         int                         `json:"provider_error_status,omitempty"`
-	MalformedProtocolCount      int                         `json:"malformed_protocol_count"`
-	ConflictingTerminalEvidence bool                        `json:"conflicting_terminal_evidence"`
-	LaterEventAfterTerminal     bool                        `json:"later_event_after_terminal"`
-	MeaningfulProgress          bool                        `json:"meaningful_progress"`
+	// DiagnosticContent references complete invocation-scoped provider snapshots,
+	// including rejected evidence. These bytes are not completion authority.
+	// Consumers verify and ingest their staged copies before retiring the files.
+	DiagnosticContent       []ContentReference          `json:"diagnostic_content,omitempty"`
+	StagedDiagnosticContent []StagedContent             `json:"-"`
+	ToolCalls               []InvocationToolObservation `json:"tool_calls,omitempty"`
+	PendingToolCount        int                         `json:"pending_tool_count"`
+	Tokens                  TokenUsage                  `json:"tokens"`
+	TimedOut                bool                        `json:"timed_out"`
+	// Cancelled records Kingdom's cancellation decision. The provider may have
+	// completed concurrently; Request.Terminal retains its actual outcome.
+	Cancelled                   bool   `json:"cancelled"`
+	ProviderErrorPresent        bool   `json:"provider_error_present"`
+	ProviderError               string `json:"provider_error,omitempty"`
+	ProviderErrorCode           string `json:"provider_error_code,omitempty"`
+	ProviderErrorCategory       string `json:"provider_error_category,omitempty"`
+	ProviderErrorStatus         int    `json:"provider_error_status,omitempty"`
+	MalformedProtocolCount      int    `json:"malformed_protocol_count"`
+	ConflictingTerminalEvidence bool   `json:"conflicting_terminal_evidence"`
+	LaterEventAfterTerminal     bool   `json:"later_event_after_terminal"`
+	MeaningfulProgress          bool   `json:"meaningful_progress"`
 }
 
 // CanonicalProviderErrorCode classifies only provider-supplied structured
@@ -134,6 +136,9 @@ func (e *InvalidServerResponseObservationError) Error() string {
 func ValidateServerResponseSuccess(observation InvocationStreamObservation) error {
 	fail := func(reasonCode, message string) error {
 		return &InvalidServerResponseObservationError{ReasonCode: reasonCode, Message: message}
+	}
+	if observation.Cancelled {
+		return fail("provider_cancelled", "provider request was cancelled by Kingdom")
 	}
 	if strings.TrimSpace(observation.NormalizedFinishReason) != "stop" {
 		return fail("provider_incomplete_turn", fmt.Sprintf("provider final step reason must be stop, got %q", observation.RawFinishReason))

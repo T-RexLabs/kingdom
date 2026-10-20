@@ -1,9 +1,11 @@
 package protocol
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"kingdom/internal/core/providerexecution"
 )
@@ -12,20 +14,22 @@ import (
 // message is decoded at a time, so large user, tool and assistant content is
 // never held beyond its own turn.
 type message struct {
-	ID        string `json:"id"`
-	Type      string `json:"type"`
-	Agent     string `json:"agent"`
-	Finish    string `json:"finish"`
-	RawFinish string `json:"rawFinish"`
-	Outcome   string `json:"outcome"`
-	Status    string `json:"status"`
-	Reason    string `json:"reason"`
-	Summary   string `json:"summary"`
-	Recent    string `json:"recent"`
-	Error     *struct {
-		Type string `json:"type"`
-	} `json:"error"`
-	Time struct {
+	ID              string          `json:"id"`
+	Type            string          `json:"type"`
+	Agent           string          `json:"agent"`
+	Finish          string          `json:"finish"`
+	RawFinish       string          `json:"rawFinish"`
+	Outcome         string          `json:"outcome"`
+	Status          string          `json:"status"`
+	Reason          string          `json:"reason"`
+	Summary         string          `json:"summary"`
+	Recent          string          `json:"recent"`
+	Text            *string         `json:"text"`
+	Description     *string         `json:"description"`
+	Metadata        json.RawMessage `json:"metadata"`
+	ProviderContext json.RawMessage `json:"providerContext"`
+	Error           *providerError  `json:"error"`
+	Time            struct {
 		Completed *int64 `json:"completed"`
 	} `json:"time"`
 	Tokens struct {
@@ -65,25 +69,18 @@ type projection struct {
 	tokens providerexecution.TokenUsage
 }
 
-type previousMessage struct {
-	kind   string
-	id     string
-	finish string
-}
-
 type messageScanner struct {
-	identity providerexecution.RequestIdentity
-	facts    eventFacts
-	count    int
-	previous previousMessage
-	// resume is the assistant a synthetic message must be followed by.
-	resume     string
-	assistants int
-	synthetics int
-	compacted  bool
-	idle       bool
-	toolIDs    map[string]struct{}
-	result     projection
+	identity    providerexecution.RequestIdentity
+	facts       eventFacts
+	count       int
+	assistants  int
+	synthetics  int
+	systems     int
+	compactions int
+	projected   int
+	idle        bool
+	toolIDs     map[string]struct{}
+	result      projection
 }
 
 func scanMessages(ctx context.Context, identity providerexecution.RequestIdentity, ev Evidence, facts eventFacts) (projection, error) {
@@ -105,17 +102,21 @@ func (s *messageScanner) observe(m *message) error {
 	} else if m.ID == s.identity.RequestID {
 		return fmt.Errorf("duplicate request projection %q", m.ID)
 	}
-	if s.resume != "" && (m.Type != "assistant" || m.ID != s.resume) {
-		return fmt.Errorf("message %q does not resume with assistant %q", m.ID, s.resume)
-	}
-	s.resume = ""
 	if s.count > 0 {
+		if m.Type == "assistant" || m.Type == "synthetic" || m.Type == "compaction" || m.Type == "system" {
+			if s.projected >= len(s.facts.order) || s.facts.order[s.projected] != (projectionIdentity{m.Type, m.ID}) {
+				return fmt.Errorf("%s message %q matches no %s projection creation event in order", m.Type, m.ID, m.Type)
+			}
+			s.projected++
+		}
 		var err error
 		switch m.Type {
 		case "assistant":
 			err = s.assistant(m)
 		case "synthetic":
 			err = s.synthetic(m)
+		case "system":
+			err = s.system(m)
 		case "compaction":
 			err = s.compaction(m)
 		case "idle":
@@ -128,7 +129,6 @@ func (s *messageScanner) observe(m *message) error {
 		}
 	}
 	s.count++
-	s.previous = previousMessage{kind: m.Type, id: m.ID, finish: m.Finish}
 	return nil
 }
 
@@ -188,35 +188,68 @@ func (s *messageScanner) tool(messageID, id, name, status string, input json.Raw
 }
 
 func (s *messageScanner) synthetic(m *message) error {
-	synthetics := s.facts.synthetics
-	if s.synthetics >= len(synthetics) || synthetics[s.synthetics].messageID != m.ID {
-		return fmt.Errorf("synthetic message %q matches no length continuation event", m.ID)
+	if s.synthetics >= len(s.facts.synthetics) {
+		return fmt.Errorf("synthetic message %q matches no synthetic event", m.ID)
 	}
-	current := synthetics[s.synthetics]
-	if s.previous.kind != "assistant" || s.previous.id != current.before || s.previous.finish != "length" {
-		return fmt.Errorf("synthetic message %q does not follow the length-limited assistant", m.ID)
+	c := s.facts.synthetics[s.synthetics]
+	if m.ID != c.messageID || !reflect.DeepEqual(m.Text, c.text) || !reflect.DeepEqual(m.Description, c.description) || !sameJSON(m.Metadata, c.metadata) {
+		return fmt.Errorf("synthetic message %q conflicts with its context event", m.ID)
 	}
 	s.synthetics++
-	s.resume = current.after
 	return nil
 }
 
+// System display labels and metadata are derived by OpenCode, not carried in
+// the instruction event. Only its identity and authored context can be matched.
+func (s *messageScanner) system(m *message) error {
+	if s.systems >= len(s.facts.systems) {
+		return fmt.Errorf("system message %q matches no instruction update", m.ID)
+	}
+	c := s.facts.systems[s.systems]
+	if m.ID != c.messageID || !reflect.DeepEqual(m.Text, c.text) {
+		return fmt.Errorf("system message %q conflicts with its instruction event", m.ID)
+	}
+	s.systems++
+	return nil
+}
+
+// sameJSON compares immutable JSON values without depending on object key order
+// or rounding large integer metadata through float64.
+func sameJSON(a, b json.RawMessage) bool {
+	decode := func(raw json.RawMessage) (any, error) {
+		if len(raw) == 0 {
+			return nil, nil
+		}
+		var value any
+		decoder := json.NewDecoder(bytes.NewReader(raw))
+		decoder.UseNumber()
+		err := decoder.Decode(&value)
+		return value, err
+	}
+	av, ae := decode(a)
+	bv, be := decode(b)
+	return ae == nil && be == nil && reflect.DeepEqual(av, bv)
+}
+
 func (s *messageScanner) compaction(m *message) error {
-	c := s.facts.compaction
-	if c == nil || s.compacted || s.assistants > 0 || m.ID != c.messageID || m.Reason != "auto" {
+	if s.compactions >= len(s.facts.compactions) {
+		return fmt.Errorf("compaction message %q matches no automatic compaction event", m.ID)
+	}
+	c := s.facts.compactions[s.compactions]
+	if m.ID != c.messageID || m.Reason != "auto" {
 		return fmt.Errorf("compaction message %q matches no automatic compaction event", m.ID)
 	}
 	switch c.state {
 	case compactionEnded:
-		if m.Status != "completed" || m.Summary != c.summary || m.Recent != c.recent {
+		if m.Status != "completed" || m.Summary != c.summary || m.Recent != c.recent || !sameJSON(m.ProviderContext, c.providerContext) {
 			return fmt.Errorf("compaction message %q conflicts with its checkpoint event", m.ID)
 		}
 	case compactionFailed:
-		if m.Status != "failed" || m.Error == nil || m.Error.Type != compactionInterrupted {
-			return fmt.Errorf("compaction message %q conflicts with its interruption event", m.ID)
+		if m.Status != "failed" || !reflect.DeepEqual(m.Error, c.failure) {
+			return fmt.Errorf("compaction message %q conflicts with its failure event", m.ID)
 		}
 	}
-	s.compacted = true
+	s.compactions++
 	return nil
 }
 
@@ -247,8 +280,10 @@ func (s *messageScanner) finish() (projection, error) {
 	case s.assistants != len(s.facts.steps):
 		return projection{}, fmt.Errorf("step events have no assistant projection")
 	case s.synthetics != len(s.facts.synthetics):
-		return projection{}, fmt.Errorf("length continuation events have no synthetic projection")
-	case s.facts.compaction != nil && !s.compacted:
+		return projection{}, fmt.Errorf("synthetic events have no synthetic projection")
+	case s.systems != len(s.facts.systems):
+		return projection{}, fmt.Errorf("instruction events have no system projection")
+	case s.compactions != len(s.facts.compactions):
 		return projection{}, fmt.Errorf("compaction events have no compaction projection")
 	}
 	return s.result, nil

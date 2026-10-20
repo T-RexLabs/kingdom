@@ -51,7 +51,7 @@ func TestValidateServerResponseSuccess(t *testing.T) {
 		{name: "nonterminal tool", mutate: func(o *InvocationStreamObservation) { o.ToolCalls[0].Status = "running" }, reason: "provider_incomplete_turn"},
 		{name: "later event", mutate: func(o *InvocationStreamObservation) { o.LaterEventAfterTerminal = true }, reason: "provider_incomplete_turn"},
 		{name: "timeout", mutate: func(o *InvocationStreamObservation) { o.TimedOut = true }, reason: "timeout"},
-		{name: "cancelled", mutate: func(o *InvocationStreamObservation) { o.Cancelled = true }, reason: "provider_incomplete_turn"},
+		{name: "cancelled", mutate: func(o *InvocationStreamObservation) { o.Cancelled = true }, reason: "provider_cancelled"},
 		{name: "unstructured provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "upstream failed" }, reason: "provider_unknown_failure"},
 		{name: "unstructured quota prose", mutate: func(o *InvocationStreamObservation) { o.ProviderError = "quota exceeded" }, reason: "provider_unknown_failure"},
 		{name: "rate limited provider error", mutate: func(o *InvocationStreamObservation) { o.ProviderErrorPresent = true; o.ProviderErrorStatus = 429 }, reason: "llm_rate_limited"},
