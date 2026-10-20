@@ -9,6 +9,7 @@ import {
 import { RunFinalResponse } from "./run-conversation";
 import { hasSettledResponse } from "./run-conversation-state";
 import { ActivityHistory } from "@/features/activity/activity-history";
+import { ActivityDisclosure } from "@/features/activity/activity-disclosure";
 import { ActivitySources } from "@/features/activity/activity-sources";
 import { selectLiveRunActivity, useLiveRunActivity } from "./run-live-activity";
 import {
@@ -76,6 +77,9 @@ function RunAttemptActivity({
     [state.items],
   );
   const hasHistory = conversationItems.length > 0 || durable.gaps.length > 0;
+  // Like a finished planner reply: once the attempt settles with a response,
+  // its thinking and tool calls fold away. Without one, the activity is the record.
+  const folded = hasFinished && hasSettledResponse(detail);
   const phaseLabel =
     liveExecutionLabel(detail?.progress_reason_code, detail?.progress_event_type) ??
     state.items.filter((item) => item.kind === "progress").at(-1)?.label;
@@ -141,16 +145,27 @@ function RunAttemptActivity({
           New live activity is awaiting durable reconciliation.
         </p>
       )}
-      {hasHistory && (
-        <ActivityHistory
-          scopeKey={JSON.stringify([runId, attemptId])}
-          items={conversationItems}
-          gaps={durable.gaps}
-          isLoadingMore={durable.isLoadingMore}
-          loadError={durable.loadError}
-          loadMore={durable.loadMore}
-        />
-      )}
+      {hasHistory &&
+        (folded ? (
+          <ActivityDisclosure
+            scopeKey={JSON.stringify([runId, attemptId])}
+            items={conversationItems}
+            gaps={durable.gaps}
+            isLoadingMore={durable.isLoadingMore}
+            loadError={durable.loadError}
+            loadMore={durable.loadMore}
+            isLive={false}
+          />
+        ) : (
+          <ActivityHistory
+            scopeKey={JSON.stringify([runId, attemptId])}
+            items={conversationItems}
+            gaps={durable.gaps}
+            isLoadingMore={durable.isLoadingMore}
+            loadError={durable.loadError}
+            loadMore={durable.loadMore}
+          />
+        ))}
       <RunFinalResponse key={attemptId} detail={detail} />
       <ActivitySources sources={state.sources} />
     </section>
