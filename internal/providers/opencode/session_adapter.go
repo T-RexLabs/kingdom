@@ -470,7 +470,7 @@ func (a *SessionAdapter) startOpencodeRun(ctx context.Context, req ExecuteReques
 	if err != nil {
 		releaseStartup()
 		var launchErr *processguardian.LaunchError
-		if errors.As(err, &launchErr) && req.OnProcessGuardQuiescence != nil {
+		if errors.As(err, &launchErr) && launchErr.OwnershipPersisted && req.OnProcessGuardQuiescence != nil {
 			if callbackErr := req.OnProcessGuardQuiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: commandOrdinal, ExitedAt: time.Now().UTC().Format(time.RFC3339Nano), QuiescentAt: time.Now().UTC().Format(time.RFC3339Nano), Result: launchErr.Result}); callbackErr != nil {
 				err = errors.Join(err, fmt.Errorf("record aborted process guard quiescence: %w", callbackErr))
 			}

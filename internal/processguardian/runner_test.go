@@ -84,12 +84,13 @@ func TestRunnerPersistenceFailureNeverReleasesProvider(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(t.TempDir(), "provider-ran")
-	_, err = runner.Start(context.Background(), shellCommand("echo provider > "+shellQuote(marker)), func(context.Context, Ownership) error { return errors.New("sqlite unavailable") })
-	if err == nil || !strings.Contains(err.Error(), "persist guardian ownership") {
+	persistenceErr := errors.New("sqlite unavailable")
+	_, err = runner.Start(context.Background(), shellCommand("echo provider > "+shellQuote(marker)), func(context.Context, Ownership) error { return persistenceErr })
+	if !errors.Is(err, persistenceErr) || !strings.Contains(err.Error(), "persist guardian ownership") {
 		t.Fatalf("expected persistence error, got %v", err)
 	}
 	var launchErr *LaunchError
-	if !errors.As(err, &launchErr) || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 != "" || launchErr.Result.EvidenceJSON != "" {
+	if !errors.As(err, &launchErr) || launchErr.OwnershipPersisted || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 != "" || launchErr.Result.EvidenceJSON != "" {
 		t.Fatalf("expected non-durable aborted launch quiescence, got %#v", err)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -155,7 +156,7 @@ func TestRunnerStartCancelsAcknowledgedTreeWhileStartedAcknowledgementIsBlocked(
 		t.Fatalf("expected blocked started acknowledgement to return context cancellation, got %v", err)
 	}
 	var launchErr *LaunchError
-	if !errors.As(err, &launchErr) || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 == "" || launchErr.Result.EvidenceJSON == "" {
+	if !errors.As(err, &launchErr) || !launchErr.OwnershipPersisted || !launchErr.Result.Quiescent || launchErr.Result.EvidenceSHA256 == "" || launchErr.Result.EvidenceJSON == "" {
 		t.Fatalf("expected durable acknowledged launch quiescence, got %#v", err)
 	}
 	evidence, digest, raw, readErr := ReadQuiescenceEvidence(runtimeRoot, ownership.GuardID)

@@ -9,11 +9,15 @@ import (
 )
 
 // LaunchError reports a failed gated launch after the guardian had already
-// acknowledged ownership. Result is present only when tree quiescence was
-// proved and lets the caller durably ingest the aborted guard before returning.
+// acknowledged ownership. OwnershipPersisted records successful acknowledgement
+// by the caller's durable launch gate, requiring durable ingestion of Result.
+// False means persistence was not confirmed, not that the database is empty. A
+// persistence failure retains its cause and stopped-tree result; any uncertain
+// durable ownership remains subject to the caller's reconciliation rules.
 type LaunchError struct {
-	Cause  error
-	Result Result
+	Cause              error
+	Result             Result
+	OwnershipPersisted bool
 }
 
 func (e *LaunchError) Error() string { return fmt.Sprintf("guardian launch failed: %v", e.Cause) }
