@@ -6,6 +6,7 @@ import type {
 } from "@/api/hooks";
 import { RunExecutionPicker } from "./run-execution-picker";
 import { RunExecutionActivity } from "./run-execution-activity";
+import { RunAttemptTasks } from "./run-attempt-tasks";
 import { RoleIdentity } from "@/theme";
 import {
   RunInstructions,
@@ -288,10 +289,18 @@ export function RunExecutionSurface({
         hidden={view !== "conversation"}
       >
         {node?.execution_ownership === "provider_backed" && (
-          <div className="pt-4 text-sm font-medium">
-            <RoleIdentity
-              role={node.required_role}
-              showResponsibility={false}
+          <div className="space-y-1 pt-4">
+            <div className="text-sm font-medium">
+              <RoleIdentity
+                role={node.required_role}
+                showResponsibility={false}
+              />
+            </div>
+            <RunAttemptTasks
+              key={selectedID}
+              runId={run.run_id}
+              attemptId={selectedID ?? null}
+              status={execution?.status}
             />
           </div>
         )}

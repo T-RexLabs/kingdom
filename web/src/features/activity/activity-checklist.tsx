@@ -8,7 +8,7 @@ import {
 import { Virtuoso } from "react-virtuoso";
 import type { ActivityContent } from "./activity-view";
 
-type ReportedTask = { content: string; status: string };
+export type ReportedTask = { content: string; status: string };
 
 /** A readable projection of one complete provider snapshot, never inferred task state. */
 export function ActivityChecklist({ content }: { content: ActivityContent }) {
@@ -45,7 +45,7 @@ export function ActivityChecklist({ content }: { content: ActivityContent }) {
   );
 }
 
-function ReportedTaskRow({ task }: { task: ReportedTask }) {
+export function ReportedTaskRow({ task }: { task: ReportedTask }) {
   const Icon =
     task.status === "completed"
       ? CheckCircle2

@@ -34,6 +34,9 @@ vi.mock("./run-conversation", () => ({
 vi.mock("./timeline-panel", () => ({
   TimelinePanel: () => <div data-testid="timeline-panel" />,
 }));
+vi.mock("./run-attempt-tasks", () => ({
+  RunAttemptTasks: () => null,
+}));
 vi.mock("./run-execution-activity", () => ({
   RunExecutionActivity: ({ isVisible, isDetailLoading }: { isVisible: boolean; isDetailLoading: boolean }) => (
     <div data-testid="run-execution-activity" data-visible={isVisible} data-loading={isDetailLoading} />

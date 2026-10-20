@@ -27,6 +27,7 @@ import type {
   RerunFromNodeResult,
 	RolesResponse,
 	RunExecutionDetail,
+	RunExecutionTaskList,
 	RunExecutionsResponse,
 	RunNodeAttemptsResponse,
 	RunGraphResponse,
@@ -72,6 +73,7 @@ export const runQueryKeys = {
 	nodeAttempts: (runId: string, nodeId: string) => ["runs", runId, "nodes", nodeId, "attempts"] as const,
 	executionDetail: (runId: string, attemptId: string) => ["runs", runId, "executions", "detail", attemptId] as const,
 	executionActivity: (runId: string, attemptId: string) => ["runs", runId, "executions", "activity", attemptId] as const,
+	executionTasks: (runId: string, attemptId: string) => ["runs", runId, "executions", "tasks", attemptId] as const,
 	timelineRoot: (runId: string) => ["runs", runId, "timeline"] as const,
 	timeline: (runId: string, limit: number) => ["runs", runId, "timeline", limit] as const,
 
@@ -369,6 +371,24 @@ export function useRunExecution(runId: string, attemptId?: string | null, option
 		retry: retryRunDetailQuery,
 		...manualRefetchQueryOptions,
 	});
+}
+
+// useRunExecutionTasks reads the agent's newest reported task list across the
+// attempt's whole history. Callers refetch when live activity reports a newer one.
+export function useRunExecutionTasks(
+  runId: string,
+  attemptId?: string | null,
+  options?: { enabled?: boolean; refetchIntervalMs?: number | false },
+) {
+  const trimmedAttemptId = attemptId?.trim() ?? "";
+  return useQuery({
+    queryKey: runQueryKeys.executionTasks(runId, trimmedAttemptId),
+    queryFn: runId && trimmedAttemptId && (options?.enabled ?? true)
+      ? () => apiFetch<RunExecutionTaskList>(`/runs/${runId}/executions/${trimmedAttemptId}/tasks`)
+      : skipToken,
+    retry: retryRunDetailQuery,
+    refetchInterval: options?.refetchIntervalMs ?? false,
+  });
 }
 
 // useRunExecutionActivity fetches the durable provider activity (agent reasoning +

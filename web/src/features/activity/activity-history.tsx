@@ -206,16 +206,12 @@ function ActivityHistoryRow({
   setExpanded: (field: keyof Expansion, open: boolean) => void;
 }) {
   const checklistTool = item.kind === "tool" ? item.toolName?.toLowerCase() : undefined;
-  const isChecklist = checklistTool === "todowrite" || checklistTool === "todoread";
-  const checklistContent = checklistTool === "todoread" ? item.outputContent : item.inputContent;
-  const checklistExpanded = checklistTool === "todoread" ? expanded.output : expanded.input;
   if (item.kind === "thinking") {
     return <div data-activity-event={item.eventId} className="py-2">
       <ActivityContentReader label="Provider Reasoning" presentation="reasoning" content={item.reasoningContent ?? { availability: "not_provided" }} open={expanded.row ?? false} onOpenChange={(open) => setExpanded("row", open)} />
     </div>;
   }
   return (
-    <>
     <details
       data-activity-event={item.eventId}
       open={expanded.row ?? false}
@@ -280,8 +276,6 @@ function ActivityHistoryRow({
         </div>
       )}
     </details>
-    {isChecklist && (!expanded.row || !checklistExpanded) && checklistContent && <ActivityChecklist content={checklistContent} />}
-    </>
   );
 }
 
