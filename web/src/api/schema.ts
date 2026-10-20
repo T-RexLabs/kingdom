@@ -2812,7 +2812,7 @@ export interface components {
             run_id: string;
             seq: number;
             /** @enum {string} */
-            type: "run.created" | "run.in-progress" | "message.part" | "message.completed" | "run.completed" | "run.activity.reconciled" | "run.failed" | "run.cancelled" | "error" | "generic";
+            type: "run.created" | "run.in-progress" | "message.part" | "message.completed" | "run.completed" | "run.failed" | "run.cancelled" | "error" | "generic";
             payload: {
                 [key: string]: unknown;
             };
@@ -3223,7 +3223,7 @@ export interface components {
             /** Format: date-time */
             last_success_at?: string;
             /** @enum {string} */
-            failure_reason?: "timeout" | "binary_missing" | "command_failed" | "parse_failed";
+            failure_reason?: "timeout" | "binary_missing" | "service_unavailable" | "parse_failed" | "configuration_invalid";
             failure_message?: string;
         };
         Role: {

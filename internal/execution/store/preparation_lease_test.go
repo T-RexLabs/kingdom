@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 func TestQueuedPreparationLeaseRenewsWithoutAdvancingLifecycle(t *testing.T) {
@@ -82,6 +83,7 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedMinimumGraph(t, db)
 	s := New(db)
+	s.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC) }
 	ctx := context.Background()
 	const attemptID = "run_1:work_intake:1"
 	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
@@ -91,7 +93,7 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	if err != nil || !acquired {
 		t.Fatalf("claim: acquired=%t err=%v", acquired, err)
 	}
-	_, err = s.ActivateProviderInvocation(ctx, ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_prepare", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
+	_, err = s.ActivateProviderInvocation(ctx, withBoundRequest(ActivateProviderInvocationRequest{ProviderInvocationID: "invocation_prepare", AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "logical_prepare", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:01Z", OpenedAt: "2026-03-01T12:00:01Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,5 +116,39 @@ func TestUnlaunchedInvocationRollbackRetainsOnlyItsPreparationLease(t *testing.T
 	invocation, _, err = s.GetProviderInvocation(ctx, req.ProviderInvocationID)
 	if err != nil || invocation.InvocationState != ProviderInvocationStateInvalidated {
 		t.Fatalf("owned rollback: %#v err=%v", invocation, err)
+	}
+}
+
+func TestStartupExpiresOnlyTheLiveLeasesOfStartedProviderAttempts(t *testing.T) {
+	db := openTestDB(t)
+	applyMigration(t, db, "0001_initial_schema.up.sql")
+	seedMinimumGraph(t, db)
+	s := New(db)
+	ctx := context.Background()
+	const attemptID = "run_1:work_intake:1"
+	if err := s.EnqueueAttempt(ctx, EnqueueAttemptRequest{AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: ProviderCompletionModeServerResponse, CreatedAt: "2026-03-01T12:00:00Z"}); err != nil {
+		t.Fatal(err)
+	}
+	claim, acquired, err := s.ClaimQueuedProviderAttempt(ctx, ClaimQueuedProviderAttemptRequest{AttemptID: attemptID, LeaseOwner: "previous-process", LeaseUntil: "2099-03-01T12:01:00Z", ClaimedAt: "2026-03-01T12:00:00Z"})
+	if err != nil || !acquired {
+		t.Fatalf("claim: acquired=%t err=%v", acquired, err)
+	}
+	const startedAt = "2026-03-01T12:30:00Z"
+	expired, err := s.ExpireProviderExecutionLeases(ctx, startedAt)
+	if err != nil || expired != 0 {
+		t.Fatalf("a queued preparation lease must be left to its own recovery: expired=%d err=%v", expired, err)
+	}
+	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running' WHERE attempt_id = ?`, attemptID); err != nil {
+		t.Fatal(err)
+	}
+	if expired, err = s.ExpireProviderExecutionLeases(ctx, startedAt); err != nil || expired != 1 {
+		t.Fatalf("a running attempt's lease must expire: expired=%d err=%v", expired, err)
+	}
+	attempt, _, err := s.GetAttempt(ctx, attemptID)
+	if err != nil || attempt.LeaseExpiresAt != startedAt || attempt.LeaseOwner != "previous-process" || attempt.LeaseVersion != claim.LeaseVersion {
+		t.Fatalf("expiry must keep the lease lineage and only end it: %#v err=%v", attempt, err)
+	}
+	if expired, err = s.ExpireProviderExecutionLeases(ctx, startedAt); err != nil || expired != 0 {
+		t.Fatalf("expiry must be idempotent: expired=%d err=%v", expired, err)
 	}
 }

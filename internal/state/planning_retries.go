@@ -60,9 +60,6 @@ func (s *PlanningStore) FinalizePlanningFailureWithRetry(ctx context.Context, re
 	if err := validateFinalizePlanningFailureWithRetryRequest(req); err != nil {
 		return false, err
 	}
-	if err := s.replayConfiguredPlanningProcessGuardEvidenceForFinalizer(ctx, req.OperationID, req.ProviderSettlement); err != nil {
-		return false, err
-	}
 	var retry bool
 	_, err := sqlitex.Retry(ctx, func() error {
 		var retryErr error
@@ -92,6 +89,11 @@ func (s *PlanningStore) finalizePlanningFailureWithRetryOnce(ctx context.Context
 	}
 	if operation.ActiveProviderInvocationID == nil || strings.TrimSpace(*operation.ActiveProviderInvocationID) != strings.TrimSpace(req.RetryDecision.SourcePlanningInvocationID) {
 		return false, rollbackPlanningTx(tx, "finalize planning failure with retry", ErrPlanningLeaseConflict)
+	}
+
+	// Settle the exact invocation before retry clears its owner and provider session.
+	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
+		return false, rollbackPlanningTx(tx, "finalize planning failure with retry", err)
 	}
 
 	retry := req.RetryDecision.Decision == RetryDecisionRetry
@@ -148,9 +150,6 @@ func (s *PlanningStore) finalizePlanningFailureWithRetryOnce(ctx context.Context
 		event.PayloadJSON = payload
 	}
 	if _, err := insertPlanningOperationEvent(ctx, tx, event); err != nil {
-		return false, rollbackPlanningTx(tx, "finalize planning failure with retry", err)
-	}
-	if _, err := finalizePlanningProviderSettlementTx(ctx, tx, req.OperationID, req.SessionID, req.ProviderSettlement); err != nil {
 		return false, rollbackPlanningTx(tx, "finalize planning failure with retry", err)
 	}
 	if err := resolveFailedPlanningRetryTx(ctx, tx, req.OperationID, req.FinishedAt); err != nil {

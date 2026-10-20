@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/timestamporder"
 )
 
@@ -219,9 +218,6 @@ func (o *orchestrationLoop) prepareNodeWorkspace(ctx context.Context, run runSna
 	if err := o.ensureOpenCodeProjectBoundary(ctx, path, false); err != nil {
 		return preparedNodeWorkspace{}, err
 	}
-	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(path), true); err != nil {
-		return preparedNodeWorkspace{}, err
-	}
 	return preparedNodeWorkspace{WorkspacePath: path, ProjectRootBoundary: path, BaseSnapshotID: base, CleanupMarkedAt: markedAt}, nil
 }
 
@@ -299,9 +295,6 @@ func (o *orchestrationLoop) preparePrivateGitWorkspace(ctx context.Context, runI
 		}
 	}
 	if err := o.ensureOpenCodeProjectBoundary(ctx, project, true); err != nil {
-		return "", "", err
-	}
-	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(project), true); err != nil {
 		return "", "", err
 	}
 	return project, markedAt, nil

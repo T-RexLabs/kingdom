@@ -189,7 +189,7 @@ func ListRunNodeExecutions(ctx context.Context, q ReadQuerier, runID string) ([]
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 		   SELECT 1 FROM attempt_cancel_outbox aco
-		   JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
+		   JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.lifecycle = 'acknowledged'
 		   WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
 		     AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
 		          OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))
@@ -382,7 +382,7 @@ func (s *Store) ListRunNodeAttemptsPage(ctx context.Context, runID, nodeID strin
 		(SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'),
 		CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 			SELECT 1 FROM attempt_cancel_outbox aco
-			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
+			JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.lifecycle = 'acknowledged'
 			WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending' AND aco.reason_code = 'agent_unresponsive'
 			  AND (aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
 			       OR (aco.handoff_state = 'guardian_evidence_lost' AND ppg.quiescence_evidence_lost_at IS NOT NULL))

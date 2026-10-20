@@ -27,8 +27,8 @@ import (
 	"kingdom/internal/api"
 	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/errorcatalog"
-	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/external"
 	githubexternal "kingdom/internal/external/github"
 	"kingdom/internal/localauth"
@@ -54,8 +54,7 @@ const (
 	defaultWorkflowSeedName = "work-order-v1.json"
 	defaultWorkflowVersion  = "seed-v1"
 
-	defaultSummonReadyTimeout   = 30 * time.Second
-	strictSummonReadyTimeoutPad = 30 * time.Second
+	defaultSummonReadyTimeout = 30 * time.Second
 
 	summonGracefulShutdownTimeout = 10 * time.Second
 	// summonProviderWarmTimeout bounds the post-listen provider warm. Warming
@@ -90,15 +89,17 @@ const (
 	summonStatusStateStopped  summonStatusState = "stopped"
 )
 
+const (
+	summonPhaseStartingRuntime = "starting runtime"
+	summonPhaseReady           = "ready"
+)
+
 type summonStateRecord struct {
 	PID                  int               `json:"pid"`
 	ProcessIdentityToken string            `json:"process_identity_token,omitempty"`
 	StopControlToken     string            `json:"stop_control_token,omitempty"`
 	State                summonStatusState `json:"state"`
-	PhaseCode            string            `json:"phase_code,omitempty"`
 	Phase                string            `json:"phase,omitempty"`
-	ProgressNow          int               `json:"progress_now,omitempty"`
-	ProgressMax          int               `json:"progress_max,omitempty"`
 	ConfigPath           string            `json:"config_path,omitempty"`
 	KingdomHome          string            `json:"kingdom_home,omitempty"`
 	Listen               string            `json:"listen,omitempty"`
@@ -125,13 +126,9 @@ type installConfig struct {
 		BasePath string `yaml:"base_path"`
 	} `yaml:"server"`
 	Provider struct {
-		Engine          string `yaml:"engine"`
-		Strict          bool   `yaml:"strict"`
-		GovernanceMode  string `yaml:"governance_mode"`
-		BinaryPath      string `yaml:"binary_path"`
-		Model           string `yaml:"model"`
-		Agent           string `yaml:"agent"`
-		SkipPermissions *bool  `yaml:"skip_permissions"`
+		Engine         string `yaml:"engine"`
+		GovernanceMode string `yaml:"governance_mode"`
+		BinaryPath     string `yaml:"binary_path"`
 	} `yaml:"provider"`
 	GitHub struct {
 		SharedApp struct {
@@ -173,27 +170,22 @@ func summonConnectAddress(listen string) string {
 
 type summonStartupTracker struct {
 	writer        io.Writer
-	interactive   bool
 	statePath     string
 	state         summonStateRecord
-	lineActive    bool
-	lastLineWidth int
 	lastPhaseLine string
 	warnedStateIO bool
 }
 
 func newSummonStartupTracker(writer io.Writer, statePath string, cfg installConfig, configPath string, pid int, identityToken, stopControlToken, startedAt string) *summonStartupTracker {
 	return &summonStartupTracker{
-		writer:      writer,
-		interactive: isInteractiveWriter(writer),
-		statePath:   strings.TrimSpace(statePath),
+		writer:    writer,
+		statePath: strings.TrimSpace(statePath),
 		state: summonStateRecord{
 			PID:                  pid,
 			ProcessIdentityToken: strings.TrimSpace(identityToken),
 			StopControlToken:     strings.TrimSpace(stopControlToken),
 			State:                summonStatusStateStarting,
-			PhaseCode:            string(kingdom.StartupPhaseStartingRuntime),
-			Phase:                startupPhaseLabel(kingdom.StartupPhaseStartingRuntime),
+			Phase:                summonPhaseStartingRuntime,
 			ConfigPath:           strings.TrimSpace(configPath),
 			KingdomHome:          strings.TrimSpace(cfg.KingdomHome),
 			Listen:               summonConnectAddress(cfg.Server.Listen),
@@ -210,66 +202,12 @@ func (t *summonStartupTracker) Initialize() {
 	t.printPhaseLine(t.state.Phase)
 }
 
-func (t *summonStartupTracker) Report(event kingdom.StartupEvent) {
-	if t == nil {
-		return
-	}
-	label := startupPhaseLabel(event.Phase)
-	switch event.Status {
-	case kingdom.StartupEventStatusStarted:
-		if label != "" {
-			t.state.State = summonStatusStateStarting
-			t.state.PhaseCode = string(event.Phase)
-			t.state.Phase = label
-			t.state.ProgressNow = 0
-			t.state.ProgressMax = event.Total
-			t.state.LastError = ""
-			t.writeState()
-			t.printPhaseLine(label)
-		}
-	case kingdom.StartupEventStatusProgress:
-		if label != "" {
-			t.state.State = summonStatusStateStarting
-			t.state.PhaseCode = string(event.Phase)
-			t.state.Phase = label
-			t.state.ProgressNow = event.Completed
-			t.state.ProgressMax = event.Total
-			t.state.LastError = ""
-			t.writeState()
-			t.printProgressLine(label, event.Completed, event.Total)
-		}
-	case kingdom.StartupEventStatusCompleted:
-		if label != "" {
-			t.state.PhaseCode = string(event.Phase)
-			t.state.Phase = label
-			t.state.ProgressNow = event.Completed
-			t.state.ProgressMax = event.Total
-			t.writeState()
-			if event.Phase == kingdom.StartupPhaseValidatingOpenCodeAgent {
-				t.finishProgressLine(label, event.Completed, event.Total)
-			}
-		}
-	case kingdom.StartupEventStatusFailed:
-		message := strings.TrimSpace(event.Message)
-		if message == "" {
-			message = strings.TrimSpace(label)
-		}
-		if message == "" {
-			message = "startup failed"
-		}
-		t.MarkFailed(message)
-	}
-}
-
 func (t *summonStartupTracker) MarkReady() {
 	if t == nil {
 		return
 	}
 	t.state.State = summonStatusStateRunning
-	t.state.PhaseCode = string(kingdom.StartupPhaseReady)
-	t.state.Phase = startupPhaseLabel(kingdom.StartupPhaseReady)
-	t.state.ProgressNow = 0
-	t.state.ProgressMax = 0
+	t.state.Phase = summonPhaseReady
 	t.state.LastError = ""
 	t.writeState()
 	t.printPhaseLine(t.state.Phase)
@@ -295,12 +233,8 @@ func (t *summonStartupTracker) MarkStopped() {
 	if t == nil {
 		return
 	}
-	t.clearActiveLine()
 	t.state.State = summonStatusStateStopped
-	t.state.PhaseCode = ""
 	t.state.Phase = ""
-	t.state.ProgressNow = 0
-	t.state.ProgressMax = 0
 	t.state.LastError = ""
 	t.writeState()
 }
@@ -310,53 +244,11 @@ func (t *summonStartupTracker) printPhaseLine(line string) {
 	if trimmed == "" || t.writer == nil {
 		return
 	}
-	if t.interactive {
-		t.clearActiveLine()
-	}
 	if t.lastPhaseLine == trimmed {
 		return
 	}
 	t.lastPhaseLine = trimmed
 	_, _ = fmt.Fprintf(t.writer, "[startup] %s\n", trimmed)
-}
-
-func (t *summonStartupTracker) printProgressLine(label string, completed, total int) {
-	if strings.TrimSpace(label) == "" || total <= 0 || t.writer == nil {
-		return
-	}
-	text := detachedProgressBar(label, completed, total)
-	if !t.interactive {
-		_, _ = fmt.Fprintf(t.writer, "[startup] %s (%d/%d)\n", label, completed, total)
-		return
-	}
-	t.lineActive = true
-	t.lastLineWidth = maxInt(t.lastLineWidth, len(text))
-	padding := strings.Repeat(" ", t.lastLineWidth-len(text))
-	_, _ = fmt.Fprintf(t.writer, "\r%s%s", text, padding)
-}
-
-func (t *summonStartupTracker) finishProgressLine(label string, completed, total int) {
-	if strings.TrimSpace(label) == "" || total <= 0 || t.writer == nil {
-		return
-	}
-	if !t.interactive {
-		return
-	}
-	text := detachedProgressBar(label, completed, total)
-	padding := strings.Repeat(" ", maxInt(t.lastLineWidth, len(text))-len(text))
-	_, _ = fmt.Fprintf(t.writer, "\r%s%s\n", text, padding)
-	t.lineActive = false
-	t.lastLineWidth = 0
-	t.lastPhaseLine = ""
-}
-
-func (t *summonStartupTracker) clearActiveLine() {
-	if !t.interactive || !t.lineActive || t.writer == nil {
-		return
-	}
-	_, _ = fmt.Fprintf(t.writer, "\r%s\r", strings.Repeat(" ", t.lastLineWidth))
-	t.lineActive = false
-	t.lastLineWidth = 0
 }
 
 func (t *summonStartupTracker) writeState() {
@@ -369,21 +261,6 @@ func (t *summonStartupTracker) writeState() {
 		if t.writer != nil {
 			_, _ = fmt.Fprintf(t.writer, "summon: unable to persist local state: %v\n", err)
 		}
-	}
-}
-
-func startupPhaseLabel(phase kingdom.StartupPhase) string {
-	switch phase {
-	case kingdom.StartupPhaseStartingRuntime:
-		return "starting runtime"
-	case kingdom.StartupPhaseCheckingOpenCodeSetup:
-		return "checking Kingdom OpenCode setup"
-	case kingdom.StartupPhaseValidatingOpenCodeAgent:
-		return "validating OpenCode agents"
-	case kingdom.StartupPhaseReady:
-		return "ready"
-	default:
-		return ""
 	}
 }
 
@@ -448,10 +325,6 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	if err != nil {
 		return usageError{err: fmt.Errorf("--autonomous-approvals must be true or false")}
 	}
-	providerStrict, err := strconv.ParseBool(strings.TrimSpace(opts.providerStrictRaw))
-	if err != nil {
-		return usageError{err: fmt.Errorf("--provider-strict must be true or false")}
-	}
 
 	absProjectPath, err := filepath.Abs(strings.TrimSpace(opts.projectPath))
 	if err != nil {
@@ -466,7 +339,7 @@ func runInitCommand(stdout io.Writer, args []string) error {
 		return err
 	}
 
-	if err := bootstrapassets.WriteScaffold(kingdomHome, absProjectPath, opts.force); err != nil {
+	if err := bootstrapassets.WriteScaffold(kingdomHome, opts.force); err != nil {
 		return fmt.Errorf("write embedded scaffold: %w", err)
 	}
 
@@ -481,7 +354,6 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	cfg.Publish.Mode = strings.ToLower(strings.TrimSpace(opts.publishMode))
 	cfg.Governance.AutonomousApprovals = boolPtr(autonomousApprovals)
 	cfg.Provider.Engine = strings.ToLower(strings.TrimSpace(opts.providerEngine))
-	cfg.Provider.Strict = providerStrict
 	cfg.Server.Listen = strings.TrimSpace(opts.listen)
 	cfg.Server.BasePath = strings.TrimSpace(opts.basePath)
 	// Capture the validator's normalized return back into cfg before
@@ -588,7 +460,6 @@ type summonDependencies struct {
 func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.Writer, args []string, deps summonDependencies) (err error) {
 	opts := summonOptions{}
 	flags := newFlagSet("summon")
-	readyTimeoutExplicit := false
 	bindSummonFlags(flags, &opts)
 	if err := parseLeafFlags(flags, args, []string{"summon"}); err != nil {
 		return err
@@ -597,11 +468,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		if f == nil {
 			return
 		}
-		switch f.Name {
-		case "port":
+		if f.Name == "port" {
 			opts.portExplicit = true
-		case "ready-timeout":
-			readyTimeoutExplicit = true
 		}
 	})
 
@@ -619,7 +487,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return usageError{err: err}
 	}
 	cfg.Server.Listen = effectiveListen
-	opts.readyTimeout = resolveSummonReadyTimeout(cfg, bootstrapPathsFromConfig(cfg), opts.readyTimeout, readyTimeoutExplicit)
 	startedAt := time.Now().UTC().Format(time.RFC3339)
 	statePath := summonStatePath(cfg.KingdomHome)
 
@@ -698,10 +565,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		}
 		_ = db.Close()
 	}()
-	skipPermissions := true
-	if cfg.Provider.SkipPermissions != nil {
-		skipPermissions = *cfg.Provider.SkipPermissions
-	}
 	worktreeRetention, err := workspace.ParseRunWorktreeRetention(cfg.Publish.WorktreeRetention)
 	if err != nil {
 		return fmt.Errorf("parse publish.worktree_retention: %w", err)
@@ -711,27 +574,39 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		return err
 	}
 	bootstrapPaths := bootstrapPathsFromConfig(cfg)
+	providerServiceRoot := opencode.ServiceRuntimeRoot(filepath.Join(cfg.KingdomHome, "runtime"))
+	providerService, err := opencode.NewService(opencode.ServiceConfig{
+		BinaryPath:  cfg.Provider.BinaryPath,
+		WorkDir:     filepath.Dir(cfg.KingdomHome),
+		RuntimeRoot: providerServiceRoot,
+		Requests:    providerrequest.NewAuthority(db, nil),
+	})
+	if err != nil {
+		return fmt.Errorf("configure OpenCode service: %w", err)
+	}
+	// Registered before the consumers' cleanup: the shared provider must stay
+	// available until both planning and run consumers have finished draining.
+	defer func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if closeErr := providerService.CloseContext(closeCtx); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close OpenCode service: %w", closeErr))
+		}
+	}()
 
 	runtimeInstance, err := kingdom.NewRuntime(kingdom.Config{
 		DB:                  db,
 		StartupContext:      startupCtx,
-		StartupReporter:     startupTracker.Report,
 		Paths:               bootstrapPaths,
 		ProviderEngine:      cfg.Provider.Engine,
-		ProviderStrict:      cfg.Provider.Strict,
 		GovernanceMode:      cfg.Provider.GovernanceMode,
 		AutonomousApprovals: cfg.Governance.AutonomousApprovals,
 		PublishMode:         cfg.Publish.Mode,
 		WorkspaceRoot:       filepath.Join(cfg.KingdomHome, "runtime"),
+		GuardianRuntimeRoot: providerServiceRoot,
 		YoloOutputRoot:      publishOutputRootFromConfig(cfg),
 		WorktreeRetention:   worktreeRetention,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath:      cfg.Provider.BinaryPath,
-			WorkDir:         filepath.Dir(cfg.KingdomHome),
-			Model:           cfg.Provider.Model,
-			Agent:           cfg.Provider.Agent,
-			SkipPermissions: skipPermissions,
-		},
+		Provider:            providerService,
 	})
 	if err != nil {
 		if startupStopWasRequested() {
@@ -770,7 +645,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		BasePath:                   cfg.Server.BasePath,
 		AutonomousApprovalsDefault: cfg.Governance.AutonomousApprovals,
 		ProviderEngine:             cfg.Provider.Engine,
-		OpenCodeBinaryPath:         cfg.Provider.BinaryPath,
+		ProviderService:            providerService,
+		ProviderModelCatalog:       api.NewOpenCodeProviderModelCatalog(providerService, nil, api.ProviderModelCatalogTTL),
 		ProviderPolicyPath:         bootstrapPaths.ProviderPolicyPath,
 		ProviderPolicySchemaPath:   bootstrapPaths.ProviderPolicySchemaPath,
 		ProjectRoot:                filepath.Dir(cfg.KingdomHome),
@@ -849,16 +725,6 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		errCh <- server.ListenAndServe()
 	}()
 
-	// Warm the provider surfaces the first operator would otherwise wait on:
-	// listing OpenCode models, and OpenCode's own one-time database and agent
-	// resolution. It runs beside the listener rather than before it, because
-	// readiness must not wait on OpenCode — a slow or broken provider has to
-	// leave the operator with a running Kingdom that can explain itself, not
-	// with a summon that hangs. For the same reason it reports through the log
-	// and never through the startup tracker, whose phases are a gate on
-	// readiness and are already past.
-	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
-
 	if err := waitForSummonReadyWithContext(startupCtx, cfg, opts.readyTimeout, nil, errCh, "", "", nil); err != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -869,6 +735,17 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 		// server.Shutdown(...) here that would muddy ownership.
 		return err
 	}
+	// Warm the provider surfaces the first operator would otherwise wait on:
+	// listing OpenCode models, which also starts the shared OpenCode server
+	// that every request then reuses. It runs beside the listener rather than
+	// before it, because
+	// readiness must not wait on OpenCode — a slow or broken provider has to
+	// leave the operator with a running Kingdom that can explain itself, not
+	// with a summon that hangs. For the same reason it reports through the log
+	// and never through the startup tracker, whose phases are a gate on
+	// readiness and are already past.
+	go warmSummonProviderSurfaces(startupCtx, apiHandler, stderr)
+
 	if err := ensureWorkflowSeeds(startupCtx, cfg); err != nil {
 		if startupStopWasRequested() {
 			return nil
@@ -924,7 +801,8 @@ func runSummonWithDependencies(ctx context.Context, stdout io.Writer, stderr io.
 			// turn a hard stop back into a bounded drain.
 			skipGracefulSafetyNet = true
 			skipDBClose = true
-			return forceCloseSummon(runtimeInstance, apiHandler, server, stderr)
+			forceErr := forceCloseSummon(runtimeInstance, apiHandler, server, stderr)
+			return errors.Join(forceErr, providerService.ForceClose())
 		},
 	)
 	return err
@@ -1241,31 +1119,6 @@ func splitSummonListenAddress(listen string) (string, string, error) {
 	return host, port, nil
 }
 
-func resolveSummonReadyTimeout(cfg installConfig, paths kingdom.BootstrapPaths, requested time.Duration, explicit bool) time.Duration {
-	if explicit {
-		return requested
-	}
-	if strings.TrimSpace(cfg.Provider.Engine) != "opencode" || !cfg.Provider.Strict {
-		return requested
-	}
-
-	policy, err := providerpolicy.LoadPolicyFromFile(paths.ProviderPolicyPath, paths.ProviderPolicySchemaPath)
-	if err != nil {
-		return requested
-	}
-
-	strictStartupTotalTimeout, err := time.ParseDuration(strings.TrimSpace(policy.Timeouts.StrictStartupTotalTimeout))
-	if err != nil || strictStartupTotalTimeout <= 0 {
-		return requested
-	}
-
-	effective := strictStartupTotalTimeout + strictSummonReadyTimeoutPad
-	if effective < requested {
-		return requested
-	}
-	return effective
-}
-
 func publishOutputRootFromConfig(cfg installConfig) string {
 	return filepath.Clean(filepath.Dir(cfg.KingdomHome))
 }
@@ -1450,9 +1303,8 @@ func writeSummonStateStatus(stdout io.Writer, state summonStateRecord, source, n
 		return err
 	}
 	if state.State == summonStatusStateStarting {
-		phaseText := summonStatePhaseDisplay(state)
-		if strings.TrimSpace(phaseText) != "" {
-			if _, err := fmt.Fprintf(stdout, "  phase: %s\n", phaseText); err != nil {
+		if phase := strings.TrimSpace(state.Phase); phase != "" {
+			if _, err := fmt.Fprintf(stdout, "  phase: %s\n", phase); err != nil {
 				return err
 			}
 		}
@@ -1493,17 +1345,6 @@ func writeSummonStateStatus(stdout io.Writer, state summonStateRecord, source, n
 		}
 	}
 	return nil
-}
-
-func summonStatePhaseDisplay(state summonStateRecord) string {
-	phase := strings.TrimSpace(state.Phase)
-	if phase == "" {
-		return ""
-	}
-	if state.ProgressMax > 0 {
-		return fmt.Sprintf("%s (%d/%d)", phase, state.ProgressNow, state.ProgressMax)
-	}
-	return phase
 }
 
 func stopSummonRegistryRecord(stdout io.Writer, record summonInstanceRecord) error {
@@ -2082,34 +1923,7 @@ func summonDetachedProgressText(state summonStateRecord) string {
 	if phase == "" {
 		return ""
 	}
-	if state.PhaseCode == string(kingdom.StartupPhaseValidatingOpenCodeAgent) && state.ProgressMax > 0 {
-		return detachedProgressBar(phase, state.ProgressNow, state.ProgressMax)
-	}
 	return fmt.Sprintf("[startup] %s", phase)
-}
-
-func detachedProgressBar(label string, current, total int) string {
-	if total <= 0 {
-		return fmt.Sprintf("[startup] %s", label)
-	}
-	if current < 0 {
-		current = 0
-	}
-	if current > total {
-		current = total
-	}
-	const width = 12
-	filled := 0
-	if total > 0 {
-		filled = (current * width) / total
-	}
-	if filled < 0 {
-		filled = 0
-	}
-	if filled > width {
-		filled = width
-	}
-	return fmt.Sprintf("[startup] %s [%s%s] %d/%d", label, strings.Repeat("#", filled), strings.Repeat("-", width-filled), current, total)
 }
 
 func ensureWorkflowSeeds(ctx context.Context, cfg installConfig) error {
@@ -2287,9 +2101,7 @@ func defaultInstallConfig(kingdomHome string) installConfig {
 	cfg.Server.Listen = "127.0.0.1:8080"
 	cfg.Server.BasePath = "/api/v1"
 	cfg.Provider.Engine = "opencode"
-	cfg.Provider.Strict = true
 	cfg.Provider.GovernanceMode = "autonomous"
-	cfg.Provider.SkipPermissions = boolPtr(true)
 	cfg.Governance.AutonomousApprovals = boolPtr(true)
 	cfg.Publish.Mode = kingdom.PublishModeDirect
 	cfg.Publish.WorktreeRetention = workspace.DefaultRunWorktreeRetention.String()
@@ -2396,9 +2208,6 @@ func readInstallConfigFromStruct(cfg installConfig) (installConfig, error) {
 		return installConfig{}, fmt.Errorf("config provider.governance_mode must be: autonomous")
 	}
 	cfg.Provider.GovernanceMode = mode
-	if cfg.Provider.SkipPermissions == nil {
-		cfg.Provider.SkipPermissions = boolPtr(true)
-	}
 
 	if cfg.Governance.AutonomousApprovals == nil {
 		cfg.Governance.AutonomousApprovals = boolPtr(true)

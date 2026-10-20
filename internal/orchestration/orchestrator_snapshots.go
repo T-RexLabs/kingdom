@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/timestamporder"
 )
@@ -111,9 +110,6 @@ func (o *orchestrationLoop) restoreExecutionTarget(ctx context.Context, runID, e
 	}
 	if err := o.fsStore.RestoreSnapshot(ctx, trustedSnapshotID, executionRoot); err != nil {
 		return err
-	}
-	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(executionRoot), true); err != nil {
-		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
 	}
 	if o.now != nil {
 		restoredAt = o.now().UTC().Format(time.RFC3339Nano)

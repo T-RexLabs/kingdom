@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/testutil"
 )
@@ -50,7 +52,7 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		acknowledgement.QuiescenceCapability = ownership.QuiescenceCapability
 		acknowledgement.StartedAt = time.Now().UTC().Format(time.RFC3339Nano)
 		acknowledgement.AcknowledgedAt = time.Now().UTC().Format(time.RFC3339Nano)
-		_, callbackErr := store.AcknowledgeProviderProcessGuard(callbackCtx, acknowledgement)
+		_, callbackErr := store.AcknowledgeProviderCommandGuardian(callbackCtx, acknowledgement)
 		return callbackErr
 	})
 	var launchErr *LaunchError
@@ -71,7 +73,7 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		t.Fatalf("read durable abort evidence: digest=%q result=%+v err=%v", digest, launchErr.Result, err)
 	}
 	quiescentAt := time.Now().UTC().Format(time.RFC3339Nano)
-	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+	if _, err := store.IngestProviderCommandGuardianQuiescence(context.Background(), executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID: persistedOwnership.GuardID, ProviderInvocationID: acknowledgement.ProviderInvocationID,
 		AttemptID: acknowledgement.AttemptID, RunID: acknowledgement.RunID, NodeRunID: acknowledgement.NodeRunID,
 		Platform: persistedOwnership.Platform, GuardianPID: int64(persistedOwnership.GuardianPID), GuardianIdentityToken: persistedOwnership.GuardianIdentityToken,
@@ -85,12 +87,12 @@ func TestRunnerKeepsGateClosedAndPublishesEvidenceAfterConfirmedCommitError(t *t
 		t.Fatalf("ingest durable aborted launch evidence: %v", err)
 	}
 	var lifecycle string
-	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = ?`, persistedOwnership.GuardID).Scan(&lifecycle); err != nil || lifecycle != string(executionstore.ProviderProcessGuardLifecycleQuiescent) {
+	if err := db.QueryRow(`SELECT lifecycle FROM provider_process_guards WHERE guard_id = ?`, persistedOwnership.GuardID).Scan(&lifecycle); err != nil || lifecycle != string(executionstore.ProviderCommandGuardianLifecycleQuiescent) {
 		t.Fatalf("durable abort evidence did not quiesce the persisted guard: lifecycle=%q err=%v", lifecycle, err)
 	}
 }
 
-func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionstore.Store, executionstore.AcknowledgeProviderProcessGuardRequest) {
+func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionstore.Store, executionstore.AcknowledgeProviderCommandGuardianRequest) {
 	t.Helper()
 	names, err := dbmigrations.List()
 	if err != nil {
@@ -143,8 +145,9 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 		t.Fatalf("mark provider attempt running: %v", err)
 	}
 	invocationID := "invocation_commit_outcome"
+	identity := providerexecution.RequestIdentity{InstanceID: "instance", Generation: "generation", Location: "/project", SessionID: "session_commit_outcome", ProfileID: "profile", RequestID: "request"}
 	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
-		ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
+		RequestIdentity: identity, ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
 		LogicalSessionID: "logical_commit_outcome", ProviderSessionID: "session_commit_outcome",
 		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
 		IssuedAt:       startedAtText, CreatedAt: startedAtText, OpenedAt: startedAtText,
@@ -152,7 +155,28 @@ func processGuardianCommitOutcomeFixture(t *testing.T, db *sql.DB) (*executionst
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	return store, executionstore.AcknowledgeProviderProcessGuardRequest{
+	// The server dispatches the request and admits the command that the
+	// guardian will launch.
+	binding, err := providerrequest.Get(ctx, db, invocationID)
+	if err != nil {
+		t.Fatalf("load request binding: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	if err := providerrequest.IssueDispatchTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
+		t.Fatalf("issue dispatch: %v", err)
+	}
+	if _, err := providerrequest.ClaimCommandTx(ctx, tx, providerrequest.NativeCall{BindingID: binding.ID, Identity: binding.Identity, MessageID: "message", CallID: "call", Tool: "shell", Input: []byte(`{"command":"true"}`)}, now); err != nil {
+		t.Fatalf("claim command: %v", err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	return store, executionstore.AcknowledgeProviderCommandGuardianRequest{
 		ProviderInvocationID: invocationID, AttemptID: claim.AttemptID, RunID: claim.RunID, NodeRunID: claim.NodeRunID,
 		CommandOrdinal: 1, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion,
 	}

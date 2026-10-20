@@ -1,0 +1,279 @@
+{
+ "identity": {
+  "instanceID": "service-instance-df6dd038c814648a728b697f",
+  "generation": "17d1c233-10c2-4b0b-8447-7c257e5ba0e0",
+  "location": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002",
+  "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+  "profileID": "service-profile-ca6f16797c4d4d9377f81d1c",
+  "requestID": "msg_8d9b565b509555ac5cbab18c"
+ },
+ "watermark": 24,
+ "events": [
+  {
+   "id": "evt_14fe1a0d9001LRDdRLEZVO6KBW",
+   "created": 1792341549273,
+   "type": "session.inbox.delivered",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "inboxID": "msg_8d9b565b509555ac5cbab18c"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 15,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0e1001EOW2WPq6Vuohf9",
+   "created": 1792341549281,
+   "type": "session.compaction.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "reason": "auto",
+    "recent": "[User]: ## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose."
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 16,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0ed001VjL5hWRyzCPX21",
+   "created": 1792341549293,
+   "type": "session.compaction.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "reason": "auto",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "text": "## Objective\n- COMPACTION_SUMMARY_ONLY preserve planning continuity.\n\n## Requirements\n- Retain native evidence.\n\n## Next Move\n1. Complete the next requested planning action.\n",
+    "recent": "[User]: ## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose.",
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    },
+    "cost": 0
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 18,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f6001S35kG5cVPOMUDY",
+   "created": 1792341549302,
+   "type": "session.step.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "agent": "service-profile-ca6f16797c4d4d9377f81d1c",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_14fe1a0ed002QmA7o0OAEJe5e1",
+    "started": 1792341549300
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 19,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f70010VR4iWI4MFRbiy",
+   "created": 1792341549303,
+   "type": "session.text.started",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe1a0ed002QmA7o0OAEJe5e1",
+    "ordinal": 0
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 20,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f8002OQkDzZVuqUMkOl",
+   "created": 1792341549304,
+   "type": "session.text.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe1a0ed002QmA7o0OAEJe5e1",
+    "ordinal": 0,
+    "text": "COMPACT_REPLY_B: continue with the accepted requirements."
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 21,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f80034gFFTW9I4r4fJX",
+   "created": 1792341549304,
+   "type": "session.step.streamed",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe1a0ed002QmA7o0OAEJe5e1"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 22,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f9001UjjJvZE0XM5ybZ",
+   "created": 1792341549305,
+   "type": "session.step.ended",
+   "location": {
+    "directory": "/private/var/folders/fh/jn7g5cyn7r15hxb5wwx51cpr0000gn/T/TestServiceV2AutomaticCompaction2732933267/002"
+   },
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "assistantMessageID": "msg_14fe1a0ed002QmA7o0OAEJe5e1",
+    "finish": "stop",
+    "rawFinish": "stop",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 23,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_14fe1a0f9003HzKifpHIdk3ZQb",
+   "created": 1792341549305,
+   "type": "session.execution.succeeded",
+   "data": {
+    "sessionID": "ses_7bde3f399ae2fdf7c5c24d25"
+   },
+   "durable": {
+    "aggregateID": "ses_7bde3f399ae2fdf7c5c24d25",
+    "seq": 24,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_8d9b565b509555ac5cbab18c",
+   "time": {
+    "created": 1792341549273
+   },
+   "text": "## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose.",
+   "type": "user"
+  },
+  {
+   "type": "compaction",
+   "id": "msg_14fe1a0e1001EOW2WPq6Vuohf9",
+   "time": {
+    "created": 1792341549281
+   },
+   "status": "completed",
+   "reason": "auto",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "summary": "## Objective\n- COMPACTION_SUMMARY_ONLY preserve planning continuity.\n\n## Requirements\n- Retain native evidence.\n\n## Next Move\n1. Complete the next requested planning action.\n",
+   "recent": "[User]: ## Project context\n- Captured files: 1 of 1\n- Project layout: (root) (1)\n- Excluded entries: 0\n\n### User\nCOMPACT_USER_B: retain native evidence.\n\n\n\nFinal Checks:\n- Respond to the user\u2019s latest contribution with up to 3 short conversational context sentences.\n- End with exactly one structured_question JSON block using the required UI schema; do not repeat its question in prose.",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14fe1a0ed002QmA7o0OAEJe5e1",
+   "time": {
+    "created": 1792341549300,
+    "streamed": 1792341549304,
+    "completed": 1792341549305
+   },
+   "type": "assistant",
+   "agent": "service-profile-ca6f16797c4d4d9377f81d1c",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "COMPACT_REPLY_B: continue with the accepted requirements."
+    }
+   ],
+   "finish": "stop",
+   "rawFinish": "stop",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   }
+  },
+  {
+   "id": "msg_14fe1a0f9003HzKifpHIdk3ZQb",
+   "time": {
+    "created": 1792341549305
+   },
+   "type": "idle",
+   "outcome": "succeeded"
+  }
+ ]
+}

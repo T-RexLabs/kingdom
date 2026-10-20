@@ -122,7 +122,7 @@ func (o *orchestrationLoop) cleanupManagedRunWorktree(ctx context.Context, runID
 		return failCleanup(fmt.Sprintf("managed worktree boundary is invalid: %v", err))
 	}
 	if o.executionStore != nil {
-		quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, record.RunID)
+		quiescent, err := o.executionStore.RunProviderCommandGuardiansQuiescent(ctx, record.RunID)
 		if err != nil {
 			_, markErr := failCleanup(fmt.Sprintf("inspect managed provider process quiescence failed: %v", err))
 			return false, errors.Join(err, markErr)

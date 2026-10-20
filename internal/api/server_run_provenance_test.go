@@ -3,8 +3,8 @@ package api
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -24,8 +24,12 @@ func seedRunProvenanceSettlement(t *testing.T, db *sql.DB, runID, id string, lau
 	t.Helper()
 	const at = "2026-04-30T12:01:00Z"
 	mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES (?,?,?,?, 'settled_failed','server_response',?,?)`, "inv-"+id, id, runID, id, at, at)
-	// A reused session identity alone is not proof that this invocation ran.
-	payload := fmt.Sprintf(`{"process_exited":%t,"provider_session_id":"known-session"}`, launched)
+	// A reused session identity alone is not proof that this invocation ran;
+	// a command guardian is.
+	payload := `{"provider_session_id":"known-session"}`
+	if launched {
+		mustExecSQL(t, db, `INSERT INTO provider_process_guards(guard_id,provider_invocation_id,attempt_id,run_id,node_run_id,command_ordinal,lifecycle,platform,guardian_pid,child_pid,tree_id,quiescence_capability_hash,lease_owner,lease_version,started_at,acknowledged_at,quiescent_at,quiescence_evidence_sha256,created_at,updated_at) VALUES(?,?,?,?,?,1,'quiescent','unix_process_group',1,2,'tree',?,'worker',1,?,?,?,?,?,?)`, "guard-"+id, "inv-"+id, id, runID, id, strings.Repeat("a", 64), at, at, at, strings.Repeat("b", 64), at, at)
+	}
 	mustExecSQL(t, db, `INSERT INTO provider_completion_evidence (evidence_id,provider_invocation_id,attempt_id,run_id,node_run_id,evidence_kind,payload_json,created_at) VALUES (?,?,?,?,?,'stream_observation',?,?)`, "evidence-"+id, "inv-"+id, id, runID, id, payload, at)
 	mustExecSQL(t, db, `INSERT INTO provider_completion_settlements (settlement_id,provider_invocation_id,attempt_id,run_id,node_run_id,outcome,primary_evidence_id,settled_at,created_at) VALUES (?,?,?,?,?,'failed',?,?,?)`, "settlement-"+id, "inv-"+id, id, runID, id, "evidence-"+id, at, at)
 	mustExecSQL(t, db, `UPDATE attempt_executions SET canonical_settlement_id=? WHERE attempt_id=?`, "settlement-"+id, id)

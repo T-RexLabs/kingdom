@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/nodeattempt"
 	"kingdom/internal/sqlitex"
@@ -2815,6 +2816,9 @@ func cancelAttemptExecutionForSupersessionTx(ctx context.Context, tx *sql.Tx, at
 	if isDurablyTerminalAttemptExecutionState(trimmedState) {
 		return nil
 	}
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attempt.AttemptID); err != nil {
+		return err
+	}
 	seq, err := nextAttemptExecutionSeqTx(ctx, tx, attempt.AttemptID)
 	if err != nil {
 		return err
@@ -3039,7 +3043,7 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 	if attempt.ExecutionMode != executionstore.ExecutionModeProviderBacked {
 		return nil
 	}
-	if strings.TrimSpace(attempt.SessionID) == "" && !attemptPreparationWasAdmitted(attempt) {
+	if strings.TrimSpace(attempt.SessionID) == "" && strings.TrimSpace(attempt.ProviderSessionID) == "" && strings.TrimSpace(attempt.ActiveProviderInvocationID) == "" && !attemptPreparationWasAdmitted(attempt) {
 		return nil
 	}
 	if !attemptCancelDispatchRequired(attempt) {
@@ -3051,6 +3055,9 @@ func queueAttemptCancelOutboxForReasonTx(ctx context.Context, tx *sql.Tx, attemp
 		reasonText = reasonCode
 	}
 	occurredAt = firstNonEmptyTrimmed(occurredAt, time.Now().UTC().Format(time.RFC3339))
+	if err := providerrequest.CloseAttemptAdmissionTx(ctx, tx, attempt.AttemptID, occurredAt); err != nil {
+		return err
+	}
 	_, err := tx.ExecContext(ctx,
 		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
@@ -3134,7 +3141,7 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' THEN 1 ELSE 0 END), 0),
 			COALESCE(SUM(CASE WHEN lifecycle <> 'quiescent' AND quiescence_evidence_lost_at IS NULL THEN 1 ELSE 0 END), 0)
 			FROM provider_process_guards
-			WHERE owner_kind = 'work_order_attempt' AND attempt_id = ?`, req.AttemptID).Scan(&unresolved, &unquarantined); err != nil {
+			WHERE attempt_id = ?`, req.AttemptID).Scan(&unresolved, &unquarantined); err != nil {
 			return fmt.Errorf("check guardian evidence recovery quarantine: %w", err)
 		}
 		if unresolved == 0 || unquarantined != 0 {
@@ -3144,7 +3151,7 @@ func (s *TransitionService) RequestAttemptStopRetry(ctx context.Context, req Att
 	}
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1)
 		FROM provider_process_guards
-		WHERE owner_kind = 'work_order_attempt' AND attempt_id = ? AND `+guardCondition, req.AttemptID).Scan(&addressableGuards); err != nil {
+		WHERE attempt_id = ? AND `+guardCondition, req.AttemptID).Scan(&addressableGuards); err != nil {
 		return fmt.Errorf("check attempt stop retry guardian: %w", err)
 	}
 	if addressableGuards == 0 {
@@ -4119,6 +4126,9 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 	if err != nil {
 		return false, fmt.Errorf("load stale cancellation handoff: %w", err)
 	}
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, sourceAttemptID); err != nil {
+		return false, err
+	}
 	if strings.TrimSpace(status) == "pending" {
 		if _, err := tx.ExecContext(ctx, `UPDATE attempt_cancel_outbox
 			SET status = 'published', handoff_state = 'released', publish_attempts = publish_attempts + 1, last_error = '', updated_at = ?, published_at = ?
@@ -4137,6 +4147,9 @@ func (s *TransitionService) ReleaseFencedStaleRetryAfterCancellation(ctx context
 }
 
 func (s *TransitionService) releaseFencedStaleRetryTx(ctx context.Context, tx *sql.Tx, sourceAttemptID, occurredAt string) error {
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, sourceAttemptID); err != nil {
+		return err
+	}
 	var successor struct {
 		QueuedNodeAttempt
 		HandoffSourceAttemptID string
@@ -4391,6 +4404,16 @@ func fenceStaleAttemptExecutionTx(ctx context.Context, tx *sql.Tx, attempt liveN
 
 func supersedeStaleProviderInvocationTx(ctx context.Context, tx *sql.Tx, attempt liveNodeAttempt, occurredAt string) error {
 	if attempt.ExecutionMode == executionstore.ExecutionModeProviderBacked && strings.TrimSpace(attempt.ActiveProviderInvocationID) != "" {
+		// A stale attempt's server is gone. Its request can be replaced only
+		// once nothing it admitted can still be running, because otherwise a
+		// workspace effect could be hiding behind the missing provider evidence.
+		occurred, err := time.Parse(time.RFC3339Nano, occurredAt)
+		if err != nil {
+			return fmt.Errorf("parse stale replacement time: %w", err)
+		}
+		if _, err := providerrequest.AbandonOwnerTx(ctx, tx, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: attempt.ActiveProviderInvocationID}, occurred); err != nil {
+			return fmt.Errorf("provider request cannot be abandoned for stale replacement: %w", err)
+		}
 		if err := ensureProviderTerminalHandoffNotPendingTx(ctx, tx, attempt); err != nil {
 			return err
 		}

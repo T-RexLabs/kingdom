@@ -1,0 +1,210 @@
+{
+ "identity": {
+  "instanceID": "instance-probe",
+  "generation": "generation-probe",
+  "location": "/Users/simon/project/kingdom/kd-sandbox/opencode-v2-production-20261018/batch-3/probes/run/q6-x4tqt7uj/real",
+  "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+  "profileID": "prof-a",
+  "requestID": "msg_10d24dee550a2db6adf986b68b"
+ },
+ "watermark": 10,
+ "events": [
+  {
+   "id": "evt_150ecc47d0018DjvhRL5h8LdSp",
+   "created": 1792359056509,
+   "type": "session.inbox.delivered",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "inboxID": "msg_10d24dee550a2db6adf986b68b"
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 4,
+    "version": 1
+   },
+   "location": {
+    "directory": "/Users/simon/project/kingdom/kd-sandbox/opencode-v2-production-20261018/batch-3/probes/run/q6-x4tqt7uj/real"
+   }
+  },
+  {
+   "id": "evt_150ecc499001BDXlsvQT827GJg",
+   "created": 1792359056537,
+   "type": "session.step.started",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "agent": "prof-a",
+    "model": {
+     "id": "scripted",
+     "providerID": "fixture",
+     "variant": "default"
+    },
+    "assistantMessageID": "msg_150ecc47e001IBJrg7jJcEv7to",
+    "snapshot": "494c06842faaf93eeb5d0dc96e19e35533eb5d16",
+    "started": 1792359056514
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 5,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_150ecc49a0019FQOrF3Aob30FS",
+   "created": 1792359056538,
+   "type": "session.text.started",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "assistantMessageID": "msg_150ecc47e001IBJrg7jJcEv7to",
+    "ordinal": 0
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 6,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_150ecc49b001KEzsHAESjkDST8",
+   "created": 1792359056539,
+   "type": "session.text.ended",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "assistantMessageID": "msg_150ecc47e001IBJrg7jJcEv7to",
+    "ordinal": 0,
+    "text": "x"
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 7,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_150ecc49b002bJsZ24NJu7x8P1",
+   "created": 1792359056539,
+   "type": "session.step.streamed",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "assistantMessageID": "msg_150ecc47e001IBJrg7jJcEv7to"
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 8,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_150ecc4a9001D5ZHMryLCTOiVS",
+   "created": 1792359056553,
+   "type": "session.step.failed",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "assistantMessageID": "msg_150ecc47e001IBJrg7jJcEv7to",
+    "error": {
+     "type": "provider.content-filter",
+     "message": "Provider blocked the response"
+    },
+    "finish": "content-filter",
+    "rawFinish": "content_filter",
+    "cost": 0,
+    "tokens": {
+     "input": 0,
+     "output": 0,
+     "reasoning": 0,
+     "cache": {
+      "read": 0,
+      "write": 0
+     }
+    },
+    "snapshot": "494c06842faaf93eeb5d0dc96e19e35533eb5d16",
+    "files": []
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 9,
+    "version": 1
+   }
+  },
+  {
+   "id": "evt_150ecc4ab001vVTZONV0wIbdN9",
+   "created": 1792359056555,
+   "type": "session.execution.failed",
+   "data": {
+    "sessionID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "error": {
+     "type": "provider.content-filter",
+     "message": "Provider blocked the response"
+    }
+   },
+   "durable": {
+    "aggregateID": "ses_d04d905fe58f6ac3a7f879d36e",
+    "seq": 10,
+    "version": 1
+   }
+  }
+ ],
+ "messages": [
+  {
+   "id": "msg_10d24dee550a2db6adf986b68b",
+   "time": {
+    "created": 1792359056509
+   },
+   "text": "TEXT:x FINISH:content_filter",
+   "type": "user"
+  },
+  {
+   "id": "msg_150ecc47e001IBJrg7jJcEv7to",
+   "time": {
+    "created": 1792359056514,
+    "streamed": 1792359056539,
+    "completed": 1792359056553
+   },
+   "type": "assistant",
+   "agent": "prof-a",
+   "model": {
+    "id": "scripted",
+    "providerID": "fixture",
+    "variant": "default"
+   },
+   "content": [
+    {
+     "type": "text",
+     "text": "x"
+    }
+   ],
+   "snapshot": {
+    "start": "494c06842faaf93eeb5d0dc96e19e35533eb5d16",
+    "end": "494c06842faaf93eeb5d0dc96e19e35533eb5d16",
+    "files": []
+   },
+   "finish": "content-filter",
+   "rawFinish": "content_filter",
+   "cost": 0,
+   "tokens": {
+    "input": 0,
+    "output": 0,
+    "reasoning": 0,
+    "cache": {
+     "read": 0,
+     "write": 0
+    }
+   },
+   "error": {
+    "type": "provider.content-filter",
+    "message": "Provider blocked the response"
+   }
+  },
+  {
+   "id": "msg_150ecc4ab001vVTZONV0wIbdN9",
+   "time": {
+    "created": 1792359056555
+   },
+   "type": "idle",
+   "outcome": "failed",
+   "error": {
+    "type": "provider.content-filter",
+    "message": "Provider blocked the response"
+   }
+  }
+ ]
+}

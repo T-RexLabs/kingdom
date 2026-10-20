@@ -14,18 +14,15 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/policyguard"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/core/retryengine"
 	"kingdom/internal/core/rolecomm"
 	"kingdom/internal/core/schemas"
-	"kingdom/internal/processguardian"
 	"kingdom/internal/providerlimits"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/runtimefs"
@@ -58,33 +55,26 @@ func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
 }
 
 type Config struct {
-	DB                                      *sql.DB
-	StartupContext                          context.Context
-	StartupReporter                         StartupReporter
-	Paths                                   BootstrapPaths
-	Adapter                                 opencode.Adapter
+	DB             *sql.DB
+	StartupContext context.Context
+	Paths          BootstrapPaths
+	// Provider runs provider-backed work. It is shared with planning and model
+	// discovery and is closed by the process that created it.
+	Provider                                opencode.Provider
 	ProviderEngine                          string
-	ProviderStrict                          bool
 	GovernanceMode                          string
 	AutonomousApprovals                     *bool
 	PublishMode                             string
-	ProviderSession                         opencode.SessionAdapterConfig
 	ReconcileInterval                       time.Duration
 	DispatchInterval                        time.Duration
 	ProviderExecutionLeaseHeartbeatInterval time.Duration
 	WorkspaceRoot                           string
-	YoloOutputRoot                          string
-	WorktreeRetention                       time.Duration
+	// GuardianRuntimeRoot is where the guardians Kingdom starts publish their
+	// durable stop evidence. It must be the root the provider's runner uses.
+	GuardianRuntimeRoot string
+	YoloOutputRoot      string
+	WorktreeRetention   time.Duration
 }
-
-type StartupPhase string
-
-const (
-	StartupPhaseStartingRuntime         StartupPhase = "starting_runtime"
-	StartupPhaseCheckingOpenCodeSetup   StartupPhase = "checking_opencode_setup"
-	StartupPhaseValidatingOpenCodeAgent StartupPhase = "validating_opencode_agents"
-	StartupPhaseReady                   StartupPhase = "ready"
-)
 
 type startupRecoveryStage uint8
 
@@ -94,32 +84,6 @@ const (
 	startupRecoveryStageHandoffs
 	startupRecoveryStageLostHandoffs
 )
-
-type StartupEventStatus string
-
-const (
-	StartupEventStatusStarted   StartupEventStatus = "started"
-	StartupEventStatusProgress  StartupEventStatus = "progress"
-	StartupEventStatusCompleted StartupEventStatus = "completed"
-	StartupEventStatusFailed    StartupEventStatus = "failed"
-)
-
-type StartupEvent struct {
-	Phase       StartupPhase
-	Status      StartupEventStatus
-	Completed   int
-	Total       int
-	CurrentItem string
-	Message     string
-}
-
-type StartupReporter func(StartupEvent)
-
-func (r StartupReporter) Report(event StartupEvent) {
-	if r != nil {
-		r(event)
-	}
-}
 
 const (
 	PublishModeDirect      = workspace.PublishModeDirect
@@ -140,9 +104,8 @@ type Runtime struct {
 	reconciler      *state.Reconciler
 	eventIngestor   *state.AttemptEventIngestor
 	outputValidator *state.WorkerOutputValidator
-	adapter         opencode.Adapter
-	adapterCloseMu  sync.Mutex
-	adapterClosed   bool
+	closeMu         sync.Mutex
+	drained         bool
 	providerEngine  string
 	orchestrator    *orchestrationLoop
 	dispatchEvery   time.Duration
@@ -274,56 +237,21 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse provider execution timeouts: %w", err)
 	}
-	strictStartupTotalTimeout, err := parseStrictStartupTotalTimeout(providerCfg.Timeouts.StrictStartupTotalTimeout)
-	if err != nil {
-		return nil, fmt.Errorf("parse provider strict_startup_total_timeout: %w", err)
+	if cfg.Provider == nil {
+		return nil, fmt.Errorf("provider is required")
 	}
-	if cfg.ProviderSession.Runner == nil {
-		providerRunner, runnerErr := processguardian.NewRunner(processguardian.Config{
-			RuntimeRoot: workspaceRoot,
-			CancelGrace: cancelGraceTimeout,
-			CancelForce: cancelForceTimeout,
-		})
-		if runnerErr != nil {
-			return nil, fmt.Errorf("initialize provider process guardian: %w", runnerErr)
-		}
-		cfg.ProviderSession.Runner = providerRunner
+	providerEngine := strings.ToLower(strings.TrimSpace(cfg.ProviderEngine))
+	if providerEngine == "" {
+		providerEngine = "opencode"
 	}
-
-	cfg.ProviderSession.FirstEventTimeout = firstEventTimeout
-	cfg.ProviderSession.StreamInactivityTimeout = streamInactivityTimeout
-	providerWorkDir := strings.TrimSpace(cfg.ProviderSession.WorkDir)
-	providerConfigDir := bootstrapassets.ManagedOpenCodeRoot(providerWorkDir)
-	providerEngineName := strings.ToLower(strings.TrimSpace(cfg.ProviderEngine))
-	if providerEngineName == "" {
-		providerEngineName = "opencode"
-	}
-	if providerEngineName == "opencode" && providerWorkDir != "" {
-		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusStarted})
-		if err := bootstrapassets.ValidateManagedOpenCodeAgentProfiles(providerConfigDir); err != nil {
-			reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusFailed, Message: err.Error()})
-			return nil, fmt.Errorf("validate managed opencode agent profiles: %w", err)
-		}
-		reportStartup(cfg.StartupReporter, StartupEvent{Phase: StartupPhaseCheckingOpenCodeSetup, Status: StartupEventStatusCompleted})
-		cfg.ProviderSession.ConfigDir = providerConfigDir
-		cfg.ProviderSession.DatabasePath = bootstrapassets.ManagedOpenCodeDatabasePath(providerWorkDir)
-	}
-	if providerEngineName == "opencode" {
-		executionInlineConfig, err := opencode.ExecutionSessionInlineConfig()
-		if err != nil {
-			return nil, fmt.Errorf("build execution opencode inline config: %w", err)
-		}
-		cfg.ProviderSession.InlineConfigContent = executionInlineConfig
-	}
-
-	adapter, providerEngine, err := resolveAdapter(startupCtx, cfg, providerCfg, strictStartupTotalTimeout)
-	if err != nil {
-		return nil, err
+	if providerEngine != "opencode" {
+		return nil, fmt.Errorf("unsupported provider engine %q (expected opencode)", cfg.ProviderEngine)
 	}
 	closeMode := newRuntimeCloseMode()
 
-	orchestrator := newOrchestrationLoop(cfg.DB, adapter, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
-	orchestrator.processGuardRuntimeRoot = workspaceRoot
+	orchestrator := newOrchestrationLoop(cfg.DB, cfg.Provider, sessionManager, fsStore, outputValidator, schemaSet, nodeTimeouts, streamInactivityTimeout, cancelGraceTimeout, cancelForceTimeout, cfg.YoloOutputRoot, roleCommPolicy, providerCfg, retryPlanEngine, cfg.GovernanceMode, autonomousApprovals, cfg.PublishMode, cfg.WorktreeRetention, closeMode)
+	orchestrator.guardianRuntimeRoot = strings.TrimSpace(cfg.GuardianRuntimeRoot)
+	orchestrator.firstEventTimeout = firstEventTimeout
 	runtimeInstance := &Runtime{
 		db:              cfg.DB,
 		paths:           cfg.Paths,
@@ -338,7 +266,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		reconciler:      state.NewReconcilerWithRoleCommunicationPolicy(cfg.DB, sessionManager, retryPlanEngine, roleCommPolicy, schemaSet),
 		eventIngestor:   state.NewAttemptEventIngestor(cfg.DB, schemaSet).WithRoleCommunicationPolicy(roleCommPolicy),
 		outputValidator: outputValidator,
-		adapter:         adapter,
 		providerEngine:  providerEngine,
 		orchestrator:    orchestrator,
 		fsStore:         fsStore,
@@ -348,194 +275,6 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	runtimeInstance.orchestrator.notifyCompletionReady = runtimeInstance.signalCompletionReady
 	runtimeInstance.orchestrator.providerLeaseHeartbeatInterval = cfg.ProviderExecutionLeaseHeartbeatInterval
 	return runtimeInstance, nil
-}
-
-func resolveAdapter(startupCtx context.Context, cfg Config, providerCfg providerpolicy.Policy, strictStartupTotalTimeout time.Duration) (opencode.Adapter, string, error) {
-	if startupCtx == nil {
-		startupCtx = context.Background()
-	}
-	engine := strings.ToLower(strings.TrimSpace(cfg.ProviderEngine))
-	if engine == "" {
-		engine = "opencode"
-	}
-	if engine != "opencode" {
-		return nil, "", fmt.Errorf("unsupported provider engine %q (expected opencode)", cfg.ProviderEngine)
-	}
-
-	if cfg.Adapter != nil {
-		return cfg.Adapter, engine, nil
-	}
-
-	switch engine {
-	case "opencode":
-		sessionAdapter, err := opencode.NewSessionAdapter(cfg.ProviderSession)
-		if err != nil {
-			return nil, "", fmt.Errorf("initialize opencode session adapter: %w", err)
-		}
-		if cfg.ProviderStrict {
-			validationCtx, cancelValidation := context.WithTimeout(startupCtx, strictStartupTotalTimeout)
-			defer cancelValidation()
-			if err := validateOpenCodeAgentResolution(validationCtx, cfg.ProviderSession.Runner, cfg.ProviderSession.BinaryPath, cfg.ProviderSession.WorkDir, cfg.ProviderSession.ConfigDir, cfg.ProviderSession.DatabasePath, providerCfg.AgentPolicy, cfg.StartupReporter); err != nil {
-				return nil, "", err
-			}
-		}
-		return sessionAdapter, engine, nil
-	default:
-		return nil, "", fmt.Errorf("unsupported provider engine %q (expected opencode)", cfg.ProviderEngine)
-	}
-}
-
-func validateOpenCodeAgentResolution(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, policy providerpolicy.AgentPolicy, reporter StartupReporter) error {
-	resolvedBinary := strings.TrimSpace(binaryPath)
-	if resolvedBinary == "" {
-		resolvedBinary = "opencode"
-	}
-
-	agentSet := map[string]struct{}{}
-	for _, candidate := range []string{policy.DefaultAgent} {
-		trimmed := strings.TrimSpace(candidate)
-		if trimmed != "" {
-			agentSet[trimmed] = struct{}{}
-		}
-	}
-	for _, agent := range policy.RoleAgents {
-		trimmed := strings.TrimSpace(agent)
-		if trimmed != "" {
-			agentSet[trimmed] = struct{}{}
-		}
-	}
-
-	agents := make([]string, 0, len(agentSet))
-	for agent := range agentSet {
-		agents = append(agents, agent)
-	}
-	sort.Strings(agents)
-	return validateOpenCodeAgentsConcurrently(ctx, runner, resolvedBinary, strings.TrimSpace(workDir), strings.TrimSpace(configDir), strings.TrimSpace(databasePath), agents, 4, reporter)
-}
-
-func validateOpenCodeAgentsConcurrently(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agents []string, workerCount int, reporter StartupReporter) error {
-	if len(agents) == 0 {
-		return nil
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if workerCount <= 0 {
-		workerCount = 1
-	}
-	if workerCount > len(agents) {
-		workerCount = len(agents)
-	}
-	reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusStarted, Total: len(agents)})
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	jobs := make(chan string)
-	errCh := make(chan error, 1)
-	var wg sync.WaitGroup
-	var completedMu sync.Mutex
-	completed := 0
-
-	worker := func() {
-		defer wg.Done()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case agent, ok := <-jobs:
-				if !ok {
-					return
-				}
-				if err := validateOpenCodeAgent(ctx, runner, binaryPath, workDir, configDir, databasePath, agent); err != nil {
-					reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusFailed, CurrentItem: agent, Total: len(agents), Message: err.Error()})
-					select {
-					case errCh <- err:
-						cancel()
-					default:
-						var diagnostic *opencode.HelperCommandError
-						if errors.As(err, &diagnostic) {
-							_ = diagnostic.Close()
-						}
-					}
-					return
-				}
-				completedMu.Lock()
-				completed++
-				current := completed
-				completedMu.Unlock()
-				reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusProgress, Completed: current, Total: len(agents), CurrentItem: agent})
-			}
-		}
-	}
-
-	wg.Add(workerCount)
-	for i := 0; i < workerCount; i++ {
-		go worker()
-	}
-
-	go func() {
-		defer close(jobs)
-		for _, agent := range agents {
-			select {
-			case <-ctx.Done():
-				return
-			case jobs <- agent:
-			}
-		}
-	}()
-
-	wg.Wait()
-
-	select {
-	case err := <-errCh:
-		return err
-	default:
-		reportStartup(reporter, StartupEvent{Phase: StartupPhaseValidatingOpenCodeAgent, Status: StartupEventStatusCompleted, Completed: len(agents), Total: len(agents)})
-		return nil
-	}
-}
-
-func reportStartup(reporter StartupReporter, event StartupEvent) {
-	reporter.Report(event)
-}
-
-func validateOpenCodeAgent(ctx context.Context, runner opencode.GuardianRunner, binaryPath string, workDir string, configDir string, databasePath string, agent string) error {
-	isolatedDBPath, cleanupDBPath, err := isolatedValidationDatabasePath(databasePath)
-	if err != nil {
-		return fmt.Errorf("prepare isolated validation database for %q: %w", agent, err)
-	}
-	defer cleanupDBPath()
-	output, err := runGuardedValidationCommand(ctx, runner, processguardian.Command{Path: binaryPath, Args: []string{"debug", "agent", agent}, Dir: workDir, Env: append(os.Environ(), append(opencode.ConfigDirEnvironment(configDir), opencode.DatabasePathEnvironment(isolatedDBPath)...)...)})
-	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return fmt.Errorf("provider agent resolution timed out while validating %q: %w", agent, output.DiagnosticError(errors.Join(ctxErr, err)))
-		}
-		return fmt.Errorf("provider agent %q is not resolvable: %w", agent, output.DiagnosticError(err))
-	}
-	return output.Close()
-}
-
-func runGuardedValidationCommand(ctx context.Context, runner opencode.GuardianRunner, command processguardian.Command) (*opencode.HelperCommandOutput, error) {
-	if runner == nil {
-		return nil, fmt.Errorf("process guardian runner is required")
-	}
-	return opencode.RunHelperCommand(ctx, runner, command)
-}
-
-func isolatedValidationDatabasePath(databasePath string) (string, func(), error) {
-	trimmed := strings.TrimSpace(databasePath)
-	if trimmed == "" {
-		return "", func() {}, nil
-	}
-	tmpDir, err := os.MkdirTemp("", "kingdom-opencode-validate-")
-	if err != nil {
-		return "", nil, err
-	}
-	cleanup := func() {
-		_ = os.RemoveAll(tmpDir)
-	}
-	return filepath.Join(tmpDir, filepath.Base(trimmed)), cleanup, nil
 }
 
 func (r *Runtime) Start(ctx context.Context) (startErr error) {
@@ -568,6 +307,27 @@ func (r *Runtime) Start(ctx context.Context) (startErr error) {
 		}
 		if err := r.orchestrator.runWorktrees.ReclaimAbandonedCleanupClaims(ctx, reclaimedAt.Format(time.RFC3339)); err != nil {
 			return fmt.Errorf("startup run worktree cleanup claim recovery: %w", err)
+		}
+	}
+
+	unproven, err := r.orchestrator.recoverServerInstances(ctx)
+	if err != nil {
+		return fmt.Errorf("startup server instance recovery: %w", err)
+	}
+	for _, instance := range unproven {
+		slog.Warn("OpenCode server from an earlier process is not yet proven stopped", "instance_id", instance)
+	}
+	if r.orchestrator != nil && r.orchestrator.executionStore != nil {
+		expiredAt := time.Now().UTC()
+		if r.orchestrator.now != nil {
+			expiredAt = r.orchestrator.now().UTC()
+		}
+		expired, err := r.orchestrator.executionStore.ExpireProviderExecutionLeases(ctx, expiredAt.Format(time.RFC3339Nano))
+		if err != nil {
+			return fmt.Errorf("startup execution lease expiry: %w", err)
+		}
+		if expired > 0 {
+			slog.Info("expired execution leases held by a previous process", "attempts", expired)
 		}
 	}
 
@@ -647,10 +407,12 @@ func (r *Runtime) runPeriodicLoop(ctx context.Context, interval time.Duration) e
 		case <-ctx.Done():
 			return nil
 		case tickAt := <-ticker.C:
-			if _, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)}); err != nil {
+			reconciled, err := r.reconciler.Reconcile(ctx, state.ReconcileRequest{Now: tickAt.UTC().Format(time.RFC3339Nano)})
+			if err != nil {
 				slog.Warn("periodic reconcile failed", "error", err)
 				continue
 			}
+			r.orchestrator.recordRecoveryBlocked(ctx, reconciled.BlockedAttempts)
 			if err := r.orchestrator.repairRecoverableFailedRuns(ctx, tickAt.UTC().Format(time.RFC3339Nano)); err != nil {
 				slog.Warn("periodic failed-run repair failed", "error", err)
 			}
@@ -716,11 +478,14 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 				}
 			}
 		} else {
-			if guardErr := r.orchestrator.ingestPendingProviderProcessGuards(ctx); guardErr != nil {
+			if _, serverErr := r.orchestrator.recoverServerInstances(ctx); serverErr != nil && !errors.Is(serverErr, context.Canceled) {
+				slog.Warn("OpenCode server instance recovery failed", "error", serverErr)
+			}
+			if guardErr := r.orchestrator.ingestPendingProviderCommandGuardians(ctx); guardErr != nil {
 				if errors.Is(guardErr, context.Canceled) {
 					return nil
 				}
-				slog.Warn("provider process guard ingestion loop failed", "error", guardErr)
+				slog.Warn("provider command guardian ingestion loop failed", "error", guardErr)
 			} else {
 				_, caughtUp, err := r.orchestrator.scheduleProviderTerminalHandoffFiles(ctx, providerTerminalHandoffPassLimit)
 				if err != nil {
@@ -761,14 +526,14 @@ func (r *Runtime) runCompletionLoop(ctx context.Context, interval time.Duration)
 }
 
 // replayPendingStartupRecovery advances exactly one bounded prerequisite stage.
-// Stages stay ordered across completion-loop iterations so process guard
+// Stages stay ordered across completion-loop iterations so command guardian
 // evidence is authoritative before terminal recovery proceeds.
 func (r *Runtime) replayPendingStartupRecovery(ctx context.Context) (bool, error) {
 	switch r.pendingStartupRecoveryStage() {
 	case startupRecoveryStageGuards:
-		result, err := r.replayPendingProviderProcessGuards(ctx)
+		result, err := r.replayPendingProviderCommandGuardians(ctx)
 		if err != nil {
-			return false, fmt.Errorf("replay provider process guards: %w", err)
+			return false, fmt.Errorf("replay provider command guardians: %w", err)
 		}
 		if result.Blocked {
 			return false, nil
@@ -816,14 +581,14 @@ func replayStartupWork(ctx context.Context, replay func(context.Context, int) (i
 	return pending(ctx)
 }
 
-func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool, error) {
-	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.processGuardRuntimeRoot) == "" {
+func (r *Runtime) replayStartupProviderCommandGuardians(ctx context.Context) (bool, error) {
+	if r == nil || r.orchestrator == nil || r.orchestrator.executionStore == nil || strings.TrimSpace(r.orchestrator.guardianRuntimeRoot) == "" {
 		return false, nil
 	}
 	visitedItems := 0
 	for pass := 0; pass < providerlimits.StartupReplayMaxPasses && visitedItems < providerlimits.StartupReplayMaxItems; pass++ {
 		limit := min(providerlimits.StartupReplayBatchItems, providerlimits.StartupReplayMaxItems-visitedItems)
-		result, err := r.replayPendingProviderProcessGuardsWithLimit(ctx, limit)
+		result, err := r.replayPendingProviderCommandGuardiansWithLimit(ctx, limit)
 		if err != nil {
 			return false, err
 		}
@@ -835,7 +600,7 @@ func (r *Runtime) replayStartupProviderProcessGuards(ctx context.Context) (bool,
 			return false, nil
 		}
 	}
-	guards, err := r.orchestrator.executionStore.ListPendingProviderProcessGuards(ctx, "", 1)
+	guards, err := r.orchestrator.executionStore.ListPendingProviderCommandGuardians(ctx, "", 1)
 	if err != nil {
 		return false, err
 	}
@@ -859,15 +624,15 @@ func (r *Runtime) replayStartupLostProviderTerminalHandoffs(ctx context.Context)
 	}, r.orchestrator.hasLostProviderTerminalHandoffs)
 }
 
-func (r *Runtime) replayPendingProviderProcessGuards(ctx context.Context) (providerProcessGuardPassResult, error) {
-	return r.replayPendingProviderProcessGuardsWithLimit(ctx, providerlimits.StartupReplayBatchItems)
+func (r *Runtime) replayPendingProviderCommandGuardians(ctx context.Context) (providerCommandGuardianPassResult, error) {
+	return r.replayPendingProviderCommandGuardiansWithLimit(ctx, providerlimits.StartupReplayBatchItems)
 }
 
-func (r *Runtime) replayPendingProviderProcessGuardsWithLimit(ctx context.Context, limit int) (providerProcessGuardPassResult, error) {
+func (r *Runtime) replayPendingProviderCommandGuardiansWithLimit(ctx context.Context, limit int) (providerCommandGuardianPassResult, error) {
 	r.mu.Lock()
 	cursor := r.startupGuardCursor
 	r.mu.Unlock()
-	result, err := r.orchestrator.ingestPendingProviderProcessGuardsPass(ctx, cursor, limit, true)
+	result, err := r.orchestrator.ingestPendingProviderCommandGuardiansPass(ctx, cursor, limit, true)
 	r.mu.Lock()
 	r.startupGuardCursor = result.NextCursor
 	r.mu.Unlock()
@@ -975,9 +740,9 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 	if r.closeMode != nil && r.closeMode.IsForced() {
 		return nil
 	}
-	r.adapterCloseMu.Lock()
-	alreadyClosed := r.adapterClosed
-	r.adapterCloseMu.Unlock()
+	r.closeMu.Lock()
+	alreadyClosed := r.drained
+	r.closeMu.Unlock()
 	if alreadyClosed {
 		return nil
 	}
@@ -995,7 +760,7 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		if err := r.drainMaintenance(ctx); err != nil {
 			return err
 		}
-		return r.closeProviderAdapter(ctx)
+		return r.markDrained()
 	}
 
 	if cancel != nil {
@@ -1036,30 +801,20 @@ func (r *Runtime) GracefulClose(ctx context.Context) error {
 		consumersDrained = false
 	}
 	if consumersDrained {
-		closeErr = errors.Join(closeErr, r.closeProviderAdapter(ctx))
+		closeErr = errors.Join(closeErr, r.markDrained())
 	}
 	return closeErr
 }
 
-func (r *Runtime) closeProviderAdapter(ctx context.Context) error {
+// markDrained records that every runtime consumer of the shared provider has
+// finished. The provider itself is closed by the process that created it.
+func (r *Runtime) markDrained() error {
 	if r == nil {
 		return nil
 	}
-	r.adapterCloseMu.Lock()
-	defer r.adapterCloseMu.Unlock()
-	if r.adapterClosed {
-		return nil
-	}
-	if closer, ok := r.adapter.(interface{ CloseContext(context.Context) error }); ok {
-		if err := closer.CloseContext(ctx); err != nil {
-			return err
-		}
-	} else if closer, ok := r.adapter.(interface{ Close() error }); ok {
-		if err := closer.Close(); err != nil {
-			return err
-		}
-	}
-	r.adapterClosed = true
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	r.drained = true
 	return nil
 }
 
@@ -1088,9 +843,9 @@ func (r *Runtime) recoverDurableExecutionState(ctx context.Context) error {
 	if r == nil || r.orchestrator == nil {
 		return nil
 	}
-	guardsDeferred, err := r.replayStartupProviderProcessGuards(ctx)
+	guardsDeferred, err := r.replayStartupProviderCommandGuardians(ctx)
 	if err != nil {
-		return fmt.Errorf("replay provider process guards: %w", err)
+		return fmt.Errorf("replay provider command guardians: %w", err)
 	}
 	if guardsDeferred {
 		logDeferredStartupReplay("provider_process_guards")
@@ -1296,7 +1051,7 @@ func (r *Runtime) stopHandles(force bool) (context.CancelFunc, context.CancelFun
 }
 
 func (r *Runtime) cancelInflightAttempts() {
-	if r == nil || r.orchestrator == nil || r.adapter == nil {
+	if r == nil || r.orchestrator == nil || r.orchestrator.provider == nil {
 		return
 	}
 	attemptIDs := r.orchestrator.inflightAttemptIDs()
@@ -1306,7 +1061,6 @@ func (r *Runtime) cancelInflightAttempts() {
 
 	const attemptCancelTimeout = 250 * time.Millisecond
 	const overallCancelBudget = 500 * time.Millisecond
-	occurredAt := time.Now().UTC().Format(time.RFC3339)
 
 	var wg sync.WaitGroup
 	done := make(chan struct{})
@@ -1316,12 +1070,7 @@ func (r *Runtime) cancelInflightAttempts() {
 			defer wg.Done()
 			cancelCtx, cancel := context.WithTimeout(context.Background(), attemptCancelTimeout)
 			defer cancel()
-			err := r.adapter.Cancel(cancelCtx, opencode.CancelRequest{
-				SessionID:  r.orchestrator.preferredAttemptSessionID(cancelCtx, attemptID),
-				AttemptID:  attemptID,
-				Reason:     "runtime forced shutdown",
-				OccurredAt: occurredAt,
-			})
+			err := r.orchestrator.provider.Cancel(cancelCtx, attemptID)
 			if err == nil {
 				return
 			}
@@ -1339,119 +1088,6 @@ func (r *Runtime) cancelInflightAttempts() {
 	case <-done:
 	case <-timer.C:
 	}
-}
-
-type StreamIngestionRequest struct {
-	SessionID       string
-	AttemptID       string
-	RunID           string
-	NodeRunID       string
-	ActorID         string
-	RoleID          string
-	AuthoritySource string
-	ReasonCode      string
-	ReasonText      string
-	CorrelationID   string
-	CausationID     string
-	SchemaVersion   string
-	CreatedAt       string
-}
-
-func (r *Runtime) IngestAttemptStream(ctx context.Context, req StreamIngestionRequest) error {
-	if strings.TrimSpace(req.AttemptID) == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if strings.TrimSpace(req.RunID) == "" {
-		return fmt.Errorf("run id is required")
-	}
-
-	eventCh, errCh, err := r.adapter.Stream(ctx, opencode.StreamRequest{SessionID: req.SessionID, AttemptID: req.AttemptID})
-	if err != nil {
-		return err
-	}
-
-	nodeRunID := sql.NullString{}
-	if strings.TrimSpace(req.NodeRunID) != "" {
-		nodeRunID = sql.NullString{String: strings.TrimSpace(req.NodeRunID), Valid: true}
-	}
-
-	var sequenceGapErr error
-
-	for eventCh != nil || errCh != nil {
-		select {
-		case event, ok := <-eventCh:
-			if !ok {
-				eventCh = nil
-				continue
-			}
-
-			eventType := strings.TrimSpace(event.EventType)
-			if eventType == "" {
-				eventType = opencode.AttemptEventTypeProgress
-			}
-
-			reasonCode := firstNonEmpty(req.ReasonCode, "stream_event")
-			reasonText := firstNonEmpty(req.ReasonText, "stream event ingested")
-			payload := strings.TrimSpace(event.PayloadJSON)
-			if payload == "" {
-				payload = `{}`
-			}
-
-			createdAt := firstNonEmpty(event.OccurredAt, req.CreatedAt)
-			if createdAt == "" {
-				createdAt = time.Now().UTC().Format(time.RFC3339)
-			}
-
-			_, ingestErr := r.eventIngestor.Ingest(ctx, state.AttemptEventIngestionRequest{
-				EventID:         fmt.Sprintf("evt_stream_%s_%d", req.AttemptID, event.Seq),
-				RunID:           req.RunID,
-				NodeRunID:       nodeRunID,
-				AttemptID:       req.AttemptID,
-				SchemaVersion:   firstNonEmpty(req.SchemaVersion, "v1"),
-				EventType:       eventType,
-				Seq:             event.Seq,
-				PayloadJSON:     payload,
-				ActorID:         firstNonEmpty(req.ActorID, "runtime"),
-				RoleID:          firstNonEmpty(req.RoleID, "system"),
-				AuthoritySource: firstNonEmpty(req.AuthoritySource, "runtime.event_bridge"),
-				ReasonCode:      reasonCode,
-				ReasonText:      reasonText,
-				CorrelationID:   firstNonEmpty(req.CorrelationID, "corr_stream_"+req.AttemptID),
-				CausationID:     firstNonEmpty(req.CausationID, "caus_stream_"+req.AttemptID),
-				CreatedAt:       createdAt,
-			})
-			if ingestErr != nil {
-				var gapErr *state.EventSequenceGapError
-				if errors.As(ingestErr, &gapErr) {
-					if sequenceGapErr == nil {
-						sequenceGapErr = ingestErr
-					}
-					continue
-				}
-				return ingestErr
-			}
-		case streamErr, ok := <-errCh:
-			if !ok {
-				errCh = nil
-				continue
-			}
-			if streamErr != nil {
-				return streamErr
-			}
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-
-	if err := r.eventIngestor.EnsureTerminalEvent(ctx, req.AttemptID); err != nil {
-		return err
-	}
-
-	if sequenceGapErr != nil {
-		return sequenceGapErr
-	}
-
-	return nil
 }
 
 func (r *Runtime) ValidateAndPersistWorkerOutput(ctx context.Context, req state.WorkerOutputValidationRequest) (state.WorkerOutputValidationResult, error) {
@@ -1572,8 +1208,6 @@ func ensureDurableExecutionSchema(db *sql.DB) error {
 		"provider_terminal_handoffs": nil,
 		"provider_process_guards": {
 			"guard_id",
-			"owner_kind",
-			"owner_id",
 			"provider_invocation_id",
 			"attempt_id",
 			"run_id",
@@ -1673,16 +1307,6 @@ func requireRuntimeTableColumns(db *sql.DB, tableName string, requiredColumns []
 	return nil
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		trimmed := strings.TrimSpace(value)
-		if trimmed != "" {
-			return trimmed
-		}
-	}
-	return ""
-}
-
 func cloneStringMap(source map[string]string) map[string]string {
 	if len(source) == 0 {
 		return nil
@@ -1713,19 +1337,4 @@ func parseNodeWallClockTimeouts(source map[string]string) (map[string]time.Durat
 		parsed[normalizedNodeID] = durationValue
 	}
 	return parsed, nil
-}
-
-func parseStrictStartupTotalTimeout(raw string) (time.Duration, error) {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return 0, fmt.Errorf("strict_startup_total_timeout is required")
-	}
-	timeout, err := time.ParseDuration(trimmed)
-	if err != nil {
-		return 0, fmt.Errorf("strict_startup_total_timeout parse failed: %w", err)
-	}
-	if timeout <= 0 {
-		return 0, fmt.Errorf("strict_startup_total_timeout must be > 0")
-	}
-	return timeout, nil
 }

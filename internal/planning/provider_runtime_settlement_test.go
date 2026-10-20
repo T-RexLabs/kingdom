@@ -7,82 +7,16 @@ import (
 	"time"
 
 	"kingdom/internal/core/providerexecution"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
-
-func TestProviderSettlementsEmbedProviderDiagnostics(t *testing.T) {
-	t.Parallel()
-
-	const diagnostics = `{"stream":{"events":4},"repair":{"attempted":true}}`
-	success := providerSettlementForSuccess("ppinv_success", ProviderExecutionMetadata{
-		FinalText:               "settled response",
-		ProviderDiagnosticsJSON: diagnostics,
-	}, "2026-05-22T08:41:20Z")
-	assertProviderDiagnostics(t, success, map[string]any{
-		"stream": map[string]any{"events": float64(4)},
-		"repair": map[string]any{"attempted": true},
-	})
-
-	invocationID := "ppinv_failure"
-	failure := providerSettlementForFailure(state.PlanningOperation{ActiveProviderInvocationID: &invocationID}, ProviderExecutionMetadata{
-		OutcomeState:            "failed",
-		ProviderDiagnosticsJSON: diagnostics,
-	}, "2026-05-22T08:41:20Z", "planner failed", contextError("provider failed"), false)
-	assertProviderDiagnostics(t, failure, map[string]any{
-		"stream": map[string]any{"events": float64(4)},
-		"repair": map[string]any{"attempted": true},
-	})
-}
-
-func TestProviderSettlementDiagnosticsDegradeToEmptyObject(t *testing.T) {
-	t.Parallel()
-
-	invocationID := "ppinv_invalid_diagnostics"
-	tests := []struct {
-		name       string
-		settlement *state.FinalizePlanningProviderSettlementRequest
-	}{
-		{
-			name: "invalid success diagnostics",
-			settlement: providerSettlementForSuccess(invocationID, ProviderExecutionMetadata{
-				FinalText:               "settled response",
-				ProviderDiagnosticsJSON: `{not-json}`,
-			}, "2026-05-22T08:41:20Z"),
-		},
-		{
-			name: "empty failure diagnostics",
-			settlement: providerSettlementForFailure(state.PlanningOperation{ActiveProviderInvocationID: &invocationID}, ProviderExecutionMetadata{
-				OutcomeState: "failed",
-			}, "2026-05-22T08:41:20Z", "planner failed", contextError("provider failed"), false),
-		},
-		{
-			name: "non-object success diagnostics",
-			settlement: providerSettlementForSuccess(invocationID, ProviderExecutionMetadata{
-				FinalText:               "settled response",
-				ProviderDiagnosticsJSON: `["diagnostic"]`,
-			}, "2026-05-22T08:41:20Z"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assertProviderDiagnostics(t, tt.settlement, map[string]any{})
-		})
-	}
-}
 
 func TestProviderSuccessSettlementEmbedsTerminalStreamObservation(t *testing.T) {
 	t.Parallel()
 
-	exitCode := 0
 	settlement := providerSettlementForSuccess("ppinv_success", ProviderExecutionMetadata{
-		FinalText: "settled response",
-		StreamObservation: providerexecution.InvocationStreamObservation{
-			FinalTurnID: "turn_1", FinalStepID: "step_1", FinalSequence: 1,
-			RawFinishReason: "stop", NormalizedFinishReason: "stop", CanonicalTerminalText: "settled response",
-			ProcessExited: true, ProcessExitCode: &exitCode, StdoutDrained: true, StderrDrained: true,
-		},
+		FinalText:         "settled response",
+		StreamObservation: providerledger.Success(providerledger.Prepared("ppinv_success", "ses_success"), "ppinv_success", "settled response").StreamObservation,
 	}, "2026-05-22T08:41:20Z")
 	if settlement == nil {
 		t.Fatal("expected settlement")
@@ -95,30 +29,6 @@ func TestProviderSuccessSettlementEmbedsTerminalStreamObservation(t *testing.T) 
 	}
 	if err := providerexecution.ValidateServerResponseSuccess(payload.StreamObservation); err != nil {
 		t.Fatalf("expected valid terminal stream observation, got %v", err)
-	}
-}
-
-func assertProviderDiagnostics(t *testing.T, settlement *state.FinalizePlanningProviderSettlementRequest, want map[string]any) {
-	t.Helper()
-	if settlement == nil {
-		t.Fatal("expected provider settlement request")
-	}
-	var payload struct {
-		ProviderDiagnostics map[string]any `json:"provider_diagnostics"`
-	}
-	if err := json.Unmarshal([]byte(settlement.PrimaryEvidencePayloadJSON), &payload); err != nil {
-		t.Fatalf("decode primary evidence payload: %v", err)
-	}
-	gotJSON, err := json.Marshal(payload.ProviderDiagnostics)
-	if err != nil {
-		t.Fatalf("marshal provider diagnostics: %v", err)
-	}
-	wantJSON, err := json.Marshal(want)
-	if err != nil {
-		t.Fatalf("marshal expected provider diagnostics: %v", err)
-	}
-	if string(gotJSON) != string(wantJSON) {
-		t.Fatalf("expected provider diagnostics %s, got %s", wantJSON, gotJSON)
 	}
 }
 
@@ -138,7 +48,7 @@ func TestPlanningLogicalSessionIDIsolatesGeneratedTitleRuns(t *testing.T) {
 	}
 }
 
-func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.T) {
+func TestStaleActivationCannotOverwriteRetriedOperation(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -182,6 +92,17 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 	if err != nil {
 		t.Fatalf("create old provider invocation: %v", err)
 	}
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
+		PlanningProviderInvocationID: oldInvocation.InvocationID,
+		PlanningOperationID:          operation.OperationID,
+		PlanningSessionID:            operation.PlanningSessionID,
+		LogicalSessionID:             oldInvocation.LogicalSessionID,
+		ProviderSessionID:            "ses_retry_old",
+		CreatedAt:                    "2026-05-22T08:40:02Z",
+		OpenedAt:                     "2026-05-22T08:40:03Z",
+		LeaseOwner:                   operation.LeaseOwner,
+		LeaseVersion:                 operation.LeaseVersion,
+	})
 
 	retryScheduled, err := store.FinalizePlanningFailureWithRetry(ctx, state.FinalizePlanningFailureWithRetryRequest{
 		SessionID:    operation.PlanningSessionID,
@@ -196,7 +117,7 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 			PlanningProviderInvocationID: oldInvocation.InvocationID,
 			PrimaryEvidenceID:            "evidence_stale_callback_old",
 			PrimaryEvidenceKind:          state.PlanningProviderCompletionEvidenceKindStreamObservation,
-			PrimaryEvidencePayloadJSON:   `{"state":"failed"}`,
+			PrimaryEvidencePayloadJSON:   failedRequestEvidence(t, db, oldInvocation.InvocationID, "ses_retry_old"),
 			PrimaryEvidenceCreatedAt:     "2026-05-22T08:41:00Z",
 			Outcome:                      state.PlanningProviderCompletionOutcomeFailed,
 			FailureReasonCode:            "timeout",
@@ -235,30 +156,23 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 	if err != nil || !claimed {
 		t.Fatalf("claim retried operation: claimed=%v err=%v", claimed, err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, state.CreatePlanningProviderInvocationRequest{
+	activateBoundPlanningInvocation(t, db, store, state.ActivatePlanningProviderInvocationRequest{
 		PlanningProviderInvocationID: "ppinv_stale_callback_new",
 		PlanningOperationID:          retried.OperationID,
 		PlanningSessionID:            retried.PlanningSessionID,
 		LogicalSessionID:             "planner-ps_stale_callback",
-		CreatedAt:                    "2026-05-22T08:42:01Z",
-		LeaseOwner:                   retried.LeaseOwner,
-		LeaseVersion:                 retried.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("create retry provider invocation: %v", err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(ctx, state.MarkPlanningProviderInvocationOpenRequest{
-		PlanningProviderInvocationID: "ppinv_stale_callback_new",
-		PlanningOperationID:          retried.OperationID,
 		ProviderSessionID:            "ses_retry_current",
+		CreatedAt:                    "2026-05-22T08:42:01Z",
 		OpenedAt:                     "2026-05-22T08:42:02Z",
 		LeaseOwner:                   retried.LeaseOwner,
 		LeaseVersion:                 retried.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("open retry provider invocation: %v", err)
-	}
+	})
 
-	if err := oldInvocation.OnProviderSession("ses_stale_old"); err == nil {
-		t.Fatal("expected stale invocation session callback to be rejected")
+	if err := oldInvocation.Activate(ctx, providerledger.Prepared(oldInvocation.InvocationID, "ses_stale_old")); err == nil {
+		t.Fatal("expected stale invocation activation to be rejected")
+	}
+	if oldInvocation.activated {
+		t.Fatal("a rejected activation marked the invocation activated")
 	}
 
 	persisted, found, err := store.GetOperation(ctx, operation.OperationID)
@@ -266,17 +180,17 @@ func TestStaleProviderSessionCallbackCannotOverwriteRetriedOperation(t *testing.
 		t.Fatalf("get retried operation: found=%v err=%v", found, err)
 	}
 	if persisted.ActiveProviderInvocationID == nil || *persisted.ActiveProviderInvocationID != "ppinv_stale_callback_new" {
-		t.Fatalf("stale callback replaced active invocation: %#v", persisted)
+		t.Fatalf("stale activation replaced active invocation: %#v", persisted)
 	}
 	if persisted.ProviderSessionID == nil || *persisted.ProviderSessionID != "ses_retry_current" {
-		t.Fatalf("stale callback replaced provider session: %#v", persisted)
+		t.Fatalf("stale activation replaced provider session: %#v", persisted)
 	}
 	oldPersisted, found, err := store.GetPlanningProviderInvocation(ctx, oldInvocation.InvocationID)
 	if err != nil || !found {
 		t.Fatalf("get old provider invocation: found=%v err=%v", found, err)
 	}
-	if oldPersisted.InvocationState != state.PlanningProviderInvocationStateSettledFailed || oldPersisted.ProviderSessionID != "" {
-		t.Fatalf("stale callback changed old provider invocation: %#v", oldPersisted)
+	if oldPersisted.InvocationState != state.PlanningProviderInvocationStateSettledFailed || oldPersisted.ProviderSessionID != "ses_retry_old" {
+		t.Fatalf("stale activation changed old provider invocation: %#v", oldPersisted)
 	}
 }
 
@@ -356,11 +270,6 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 			wantReason: "provider_empty_output",
 		},
 		{
-			name:       "incomplete terminal state maps to incomplete turn",
-			cause:      &opencode.IncompleteTerminalStateError{Reason: "provider_incomplete_turn"},
-			wantReason: "provider_incomplete_turn",
-		},
-		{
 			name:       "generic failures map to internal error",
 			cause:      contextError("planner adapter exploded"),
 			wantReason: "internal_error",
@@ -386,4 +295,25 @@ type contextError string
 
 func (e contextError) Error() string {
 	return string(e)
+}
+
+func TestAdoptActivationOnlyAdoptsAnActivatedInvocation(t *testing.T) {
+	t.Parallel()
+
+	failedBeforeActivation := &ProviderInvocationContext{InvocationID: "ppinv_never_activated"}
+	operation := state.PlanningOperation{OperationID: "po_adopt"}
+	adoptActivation(&operation, failedBeforeActivation)
+	adoptActivation(&operation, nil)
+	if operation.ActiveProviderInvocationID != nil {
+		t.Fatalf("a request that failed before activation became the active invocation: %q", *operation.ActiveProviderInvocationID)
+	}
+	if settlement := providerSettlementForFailure(operation, ProviderExecutionMetadata{}, "2026-05-22T08:41:20Z", "prepare failed", contextError("prepare failed"), false); settlement != nil {
+		t.Fatalf("a request that failed before activation produced a provider settlement: %+v", settlement)
+	}
+
+	activated := &ProviderInvocationContext{InvocationID: "ppinv_activated", activated: true}
+	adoptActivation(&operation, activated)
+	if operation.ActiveProviderInvocationID == nil || *operation.ActiveProviderInvocationID != "ppinv_activated" {
+		t.Fatalf("an activated invocation was not adopted: %v", operation.ActiveProviderInvocationID)
+	}
 }

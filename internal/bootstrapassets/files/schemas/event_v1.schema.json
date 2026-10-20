@@ -69,6 +69,7 @@
         "attempt.rerun_queued",
 		"attempt.final_rework_queued",
         "attempt.timeout_warning",
+        "attempt.recovery_blocked",
         "attempt.sequence_gap",
         "approval.recorded",
         "escalation.raised",

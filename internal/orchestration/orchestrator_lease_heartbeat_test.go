@@ -18,17 +18,20 @@ func TestProviderLeaseHeartbeatRenewsSilentExecution(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
-	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	job := seedHeartbeatProviderAttempt(t, db, store, base)
-
+	base := time.Now().UTC().Truncate(time.Second)
 	var clock atomic.Int64
 	clock.Store(base.UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	requests := newRequestFixture(db, now)
+	job := seedHeartbeatProviderAttempt(t, db, store, requests, base)
+
 	adapter := newContextBlockingExecutionAdapter()
+	requests.respondWith(adapter)
 	created := make(chan *manualProviderLeaseTicker, 1)
 	loop := &orchestrationLoop{
 		executionStore: store,
-		adapter:        adapter,
-		now:            func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+		provider:       requests.provider,
+		now:            now,
 		asyncDrain:     newExecutionDrainTracker(),
 		newProviderLeaseTicker: func(time.Duration) providerLeaseTicker {
 			ticker := newManualProviderLeaseTicker()
@@ -44,7 +47,7 @@ func TestProviderLeaseHeartbeatRenewsSilentExecution(t *testing.T) {
 	}
 	executeDone := make(chan error, 1)
 	go func() {
-		_, err := loop.executeWithDurableProgress(executionCtx, job, opencode.ExecuteRequest{AttemptID: job.attemptID})
+		_, err := loop.executeWithDurableProgress(executionCtx, job, loop.providerRequest(job))
 		executeDone <- err
 	}()
 	<-adapter.started
@@ -84,13 +87,15 @@ func TestProviderLeaseOwnershipLossCancelsAdapterAndCannotSettle(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
-	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	job := seedHeartbeatProviderAttempt(t, db, store, base)
+	base := time.Now().UTC().Truncate(time.Second)
+	requests := newRequestFixture(db, func() time.Time { return base })
+	job := seedHeartbeatProviderAttempt(t, db, store, requests, base)
 	adapter := newContextBlockingExecutionAdapter()
+	requests.respondWith(adapter)
 	created := make(chan *manualProviderLeaseTicker, 1)
 	loop := &orchestrationLoop{
 		db:             db,
-		adapter:        adapter,
+		provider:       requests.provider,
 		executionStore: store,
 		inflightExec:   make(map[string]struct{}),
 		asyncDrain:     newExecutionDrainTracker(),
@@ -161,8 +166,8 @@ func TestProviderLeaseHeartbeatReportsDatabaseErrorsThroughAsyncDrain(t *testing
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 	store := executionstore.New(db)
-	base := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
-	job := seedHeartbeatProviderAttempt(t, db, store, base)
+	base := time.Now().UTC().Truncate(time.Second)
+	job := seedHeartbeatProviderAttempt(t, db, store, newRequestFixture(db, func() time.Time { return base }), base)
 	created := make(chan *manualProviderLeaseTicker, 1)
 	loop := &orchestrationLoop{
 		executionStore: store,
@@ -209,7 +214,7 @@ func TestProviderLeaseHeartbeatIntervalIsCappedByLeaseDuration(t *testing.T) {
 	}
 }
 
-func seedHeartbeatProviderAttempt(t *testing.T, db *sql.DB, store *executionstore.Store, base time.Time) asyncExecutionResult {
+func seedHeartbeatProviderAttempt(t *testing.T, db *sql.DB, store *executionstore.Store, requests *requestFixture, base time.Time) asyncExecutionResult {
 	t.Helper()
 	const attemptID = "run_1:work_intake:1"
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
@@ -231,12 +236,28 @@ func seedHeartbeatProviderAttempt(t *testing.T, db *sql.DB, store *executionstor
 	if err != nil || !acquired {
 		t.Fatalf("claim heartbeat provider attempt: acquired=%t err=%v", acquired, err)
 	}
+	const invocationID = "pinv_heartbeat"
+	requests.activate(t, store, executionstore.ActivateProviderInvocationRequest{
+		ProviderInvocationID: invocationID,
+		AttemptID:            attemptID,
+		RunID:                "run_1",
+		NodeRunID:            "nr_1",
+		LogicalSessionID:     "session_heartbeat",
+		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
+		IssuedAt:             base.Format(time.RFC3339Nano),
+		CreatedAt:            base.Format(time.RFC3339Nano),
+		OpenedAt:             base.Format(time.RFC3339Nano),
+		ExpectedLeaseOwner:   claim.LeaseOwner,
+		ExpectedLeaseVersion: claim.LeaseVersion,
+	})
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = 'run_1:work_intake:1'`)
 	return asyncExecutionResult{
 		run:                    runSnapshot{RunID: "run_1", RunStatus: "running"},
 		node:                   nodeDefinition{NodeID: "work_intake", NodeClass: "work_intake", RequiredRole: "governance"},
 		attempt:                nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, ExecutionMode: executionstore.ExecutionModeProviderBacked},
 		attemptID:              attemptID,
+		providerInvocationID:   invocationID,
+		openPrompt:             fixturePrompt,
 		expectedLeaseOwner:     claim.LeaseOwner,
 		expectedLeaseVersion:   claim.LeaseVersion,
 		expectedLeaseExpiresAt: claim.LeaseExpiresAt,
@@ -276,17 +297,9 @@ func (a *contextBlockingExecutionAdapter) Execute(ctx context.Context, _ opencod
 	close(a.started)
 	<-ctx.Done()
 	a.once.Do(func() { close(a.cancelled) })
-	return opencode.ExecuteResponse{}, ctx.Err()
+	return interruptedResponse(), ctx.Err()
 }
 
-func (a *contextBlockingExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
+func (a *contextBlockingExecutionAdapter) Cancel(context.Context, string) error {
 	return nil
-}
-
-func (a *contextBlockingExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	events := make(chan opencode.AttemptStreamEvent)
-	errs := make(chan error)
-	close(events)
-	close(errs)
-	return events, errs, nil
 }

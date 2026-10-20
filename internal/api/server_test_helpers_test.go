@@ -24,50 +24,41 @@ import (
 	_ "modernc.org/sqlite"
 
 	gen "kingdom/internal/apigen"
-	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
 	"kingdom/internal/idempotency"
 	"kingdom/internal/planning"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil/planningfixture"
+	"kingdom/internal/testutil/providerledger"
 )
 
 type testPlannerAgent struct{}
 
 // apiTestTerminalMetadata models a planner turn that settles server-side: the
 // provider reports a terminal success outcome and the runtime assembles the
-// final text. The API tests surface the provider session so the invocation opens.
+// final text. The turn plays the shared server for its runner-issued
+// invocation, which binds the request and records its terminal evidence.
 func apiTestTerminalMetadata(input planning.AgentContext, finalText string) (planning.ProviderExecutionMetadata, error) {
-	if input.ProviderInvocation != nil && input.ProviderInvocation.OnProviderSession != nil {
-		if err := input.ProviderInvocation.OnProviderSession("provider-session-1"); err != nil {
-			return planning.ProviderExecutionMetadata{}, err
-		}
+	invocation := input.ProviderInvocation
+	if invocation == nil || invocation.Activate == nil {
+		return planning.ProviderExecutionMetadata{}, errors.New("a fake planner turn requires its runner-issued invocation")
+	}
+	response, err := providerledger.Complete(context.Background(), apiTestLedgerInvocation(invocation), finalText)
+	if err != nil {
+		return planning.ProviderExecutionMetadata{}, err
 	}
 	return planning.ProviderExecutionMetadata{
 		FinalText:                       finalText,
-		ProviderSessionID:               "provider-session-1",
+		ProviderSessionID:               response.ProviderSessionID,
 		OutcomeState:                    "success",
 		CompletionStructuredPayloadJSON: "{}",
-		StreamObservation:               apiTestTerminalStreamObservation(finalText),
+		StreamObservation:               response.StreamObservation,
 	}, nil
 }
 
-func apiTestTerminalStreamObservation(finalText string) providerexecution.InvocationStreamObservation {
-	exitCode := 0
-	return providerexecution.InvocationStreamObservation{
-		ProviderSessionID:      "provider-session-1",
-		FinalTurnID:            "turn_api_test",
-		FinalStepID:            "step_api_test",
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  finalText,
-		ProcessExited:          true,
-		ProcessExitCode:        &exitCode,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-	}
+func apiTestLedgerInvocation(invocation *planning.ProviderInvocationContext) providerledger.Invocation {
+	return providerledger.Invocation{ID: invocation.InvocationID, ReusableSessionID: invocation.ReusableProviderSessionID, Activate: invocation.Activate}
 }
 
 var defaultPlannerAPITestScript = planningfixture.DefaultAPIScript()
@@ -330,6 +321,7 @@ func openAPIServerTestDB(t *testing.T) *sql.DB {
 	}
 	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { _ = db.Close() })
+	t.Cleanup(providerledger.Register(db))
 
 	if _, err := db.Exec("PRAGMA foreign_keys = ON"); err != nil {
 		t.Fatalf("enable foreign keys pragma: %v", err)

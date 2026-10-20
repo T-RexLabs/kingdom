@@ -916,7 +916,7 @@ describe("execution query keys", () => {
 		const staleResponse = {
 			catalog_status: "stale",
 			items: [],
-			failure_reason: "command_failed",
+			failure_reason: "service_unavailable",
 			failure_message: "cached fallback",
 		};
 		const freshResponse = {
@@ -960,7 +960,7 @@ describe("execution query keys", () => {
 		const staleResponse = {
 			catalog_status: "stale",
 			items: [],
-			failure_reason: "command_failed",
+			failure_reason: "service_unavailable",
 			failure_message: "older cached fallback",
 		};
 		const freshResponse = {

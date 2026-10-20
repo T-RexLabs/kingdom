@@ -439,7 +439,6 @@ func applyExecuteResponseToAsyncResult(result *asyncExecutionResult, response op
 	result.providerSessionID = strings.TrimSpace(response.ProviderSessionID)
 	result.providerInvocationID = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationID), strings.TrimSpace(result.providerInvocationID))
 	result.providerInvocationAt = firstNonEmptyString(strings.TrimSpace(response.ProviderInvocationAt), strings.TrimSpace(result.providerInvocationAt))
-	result.providerDiagnosticsJSON = strings.TrimSpace(response.ProviderDiagnosticsJSON)
 	result.providerStreamObservation = response.StreamObservation
 	result.outcome = response.Outcome
 	result.tokens = response.Tokens
@@ -481,10 +480,6 @@ func normalizeExecutionOutcome(outcome opencode.ExecutionOutcome, err error) ope
 func executionOutcomeStateFromError(err error) string {
 	if err == nil {
 		return "success"
-	}
-	var incompleteTurnErr *opencode.IncompleteTerminalStateError
-	if errors.As(err, &incompleteTurnErr) {
-		return "incomplete_turn"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "cancelled"
@@ -534,9 +529,6 @@ func errorFromExecutionOutcome(outcome opencode.ExecutionOutcome) error {
 		return nil
 	case "cancelled":
 		return context.Canceled
-	case "incomplete_turn":
-		reason := firstNonEmptyString(strings.TrimSpace(outcome.ReasonCode), strings.TrimSpace(outcome.FailureText), "provider_incomplete_turn")
-		return &opencode.IncompleteTerminalStateError{Reason: reason}
 	default:
 		failureText := firstNonEmptyString(strings.TrimSpace(outcome.FailureText), strings.TrimSpace(outcome.ReasonCode), "execution failed")
 		return errors.New(failureText)
@@ -567,11 +559,7 @@ func (o *orchestrationLoop) planAutomaticWorkOrderRetry(ctx context.Context, res
 	if err != nil {
 		return state.RetryDecisionCreateRequest{}, false, fmt.Errorf("parse automatic retry timestamp: %w", err)
 	}
-	providerRetryAt := providerexecution.RetryAtFromDiagnostics(result.providerDiagnosticsJSON, createdAt)
 	dueAt := createdAt.Add(plan.NextDelay)
-	if providerRetryAt != nil && providerRetryAt.After(dueAt) {
-		dueAt = *providerRetryAt
-	}
 	decision := state.RetryDecisionFailFast
 	if plan.ShouldRetry && !result.providerStreamObservation.MeaningfulProgress {
 		decision = state.RetryDecisionRetry
@@ -601,7 +589,6 @@ func (o *orchestrationLoop) planAutomaticWorkOrderRetry(ctx context.Context, res
 		RetryIndex:         retryIndex,
 		MaxRetries:         plan.MaxRetries,
 		PolicyDelay:        plan.NextDelay,
-		ProviderRetryAt:    providerRetryAt,
 		DueAt:              dueAt,
 		CreatedAt:          createdAt,
 		EscalationTarget:   plan.EscalationTarget,
@@ -1438,10 +1425,6 @@ func classifyExecutionReasonCode(err error) string {
 	if err == nil {
 		return "execution_completed"
 	}
-	var neverStartedErr *executionNotStartedError
-	if errors.As(err, &neverStartedErr) {
-		return string(errorcatalog.CodeTimeout)
-	}
 	if providerlimits.IsResourceLimitError(err) {
 		return string(errorcatalog.CodeResourceLimitExceeded)
 	}
@@ -1464,10 +1447,6 @@ func classifyExecutionReasonCode(err error) string {
 	var emptyOutputErr *providerEmptyOutputError
 	if errors.As(err, &emptyOutputErr) {
 		return "provider_empty_output"
-	}
-	var incompleteTurnErr *opencode.IncompleteTerminalStateError
-	if errors.As(err, &incompleteTurnErr) {
-		return "provider_incomplete_turn"
 	}
 	if errors.Is(err, context.Canceled) {
 		return "provider_cancelled"
@@ -1529,17 +1508,4 @@ func decodeProviderDiagnosticsJSON(raw string) any {
 		return map[string]any{"provider_diagnostics_json": trimmed}
 	}
 	return value
-}
-
-type executionNotStartedError struct {
-	AttemptID string
-	NodeID    string
-	Reason    string
-}
-
-func (e *executionNotStartedError) Error() string {
-	if strings.TrimSpace(e.Reason) == "" {
-		return fmt.Sprintf("execution did not start for node=%s attempt=%s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID))
-	}
-	return fmt.Sprintf("execution did not start for node=%s attempt=%s: %s", strings.TrimSpace(e.NodeID), strings.TrimSpace(e.AttemptID), strings.TrimSpace(e.Reason))
 }

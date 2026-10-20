@@ -18,6 +18,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/schemas"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providerlimits"
@@ -34,7 +35,7 @@ func TestLargeContentFileOnlyHandoffReplaysAfterCrashAndLeaseExpiry(t *testing.T
 	if len(text) <= 32*1024*1024 {
 		t.Fatal("fixture must cross old handoff ceiling")
 	}
-	configureSuccessfulHandoff(&job, text)
+	h.configureSuccessfulHandoff(t, &job, text)
 	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +72,8 @@ func TestLargeContentFileOnlyHandoffReplaysAfterCrashAndLeaseExpiry(t *testing.T
 	if err != nil || !found || len(handoff.PayloadJSON) > 64*1024 || len(handoff.StreamObservationJSON) > 64*1024 {
 		t.Fatalf("DB handoff not compact: found=%t err=%v", found, err)
 	}
-	if err := h.db.QueryRow(`SELECT count(*) FROM provider_contents`).Scan(&count); err != nil || count != 1 {
+	// The request's events and messages are empty lists, stored once.
+	if err := h.db.QueryRow(`SELECT count(*) FROM provider_contents WHERE size_bytes > ?`, len("[]")).Scan(&count); err != nil || count != 1 {
 		t.Fatalf("terminal/output content duplicated: count=%d err=%v", count, err)
 	}
 	if err := h.fsStore.CopyProviderContent(*ref, io.Discard); err == nil {
@@ -105,68 +107,29 @@ func TestLargeContentFileOnlyHandoffReplaysAfterCrashAndLeaseExpiry(t *testing.T
 	if err := h.store.CopyProviderContent(context.Background(), *result.providerStreamObservation.CanonicalTerminalTextRef, io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.db.QueryRow(`SELECT sum(length(content)) FROM provider_content_chunks`).Scan(&count); err != nil || count != len(strings.TrimSpace(text)) {
+	if err := h.db.QueryRow(`SELECT sum(length(content)) FROM provider_content_chunks`).Scan(&count); err != nil || count != len(strings.TrimSpace(text))+len("[]") {
 		t.Fatalf("settlement did not retain exactly one content copy: bytes=%d err=%v", count, err)
 	}
 }
 
 const terminalHandoffFixtureNow = "2026-03-01T12:00:00Z"
 
-type countedRuntimeAdapter struct {
-	*opencode.MemoryAdapter
-	closes int
-	fail   bool
-}
-
-func (a *countedRuntimeAdapter) Close() error {
-	a.closes++
-	if a.fail {
-		a.fail = false
-		return errors.New("cleanup failed")
-	}
-	return nil
-}
-
-func TestRuntimeOwnsAdapterCloseBeforeStartAndRetriesCleanupFailure(t *testing.T) {
-	adapter := &countedRuntimeAdapter{MemoryAdapter: opencode.NewMemoryAdapter(), fail: true}
-	runtime := &Runtime{adapter: adapter}
-	if err := runtime.Close(); err == nil {
-		t.Fatal("adapter cleanup failure was lost")
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := runtime.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if adapter.closes != 2 {
-		t.Fatalf("adapter closed %d times; want failed attempt and one success", adapter.closes)
-	}
-}
-
-func TestRuntimeCloseTimeoutPreservesProviderContentUntilHandoffReadersDrain(t *testing.T) {
+func TestRuntimeGracefulCloseWaitsForHandoffReadersToDrain(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
 	tracker := newExecutionDrainTracker()
 	tracker.Start()
 	h.loop.asyncDrain = tracker
 	done := make(chan error)
 	close(done)
-	adapter := &countedRuntimeAdapter{MemoryAdapter: opencode.NewMemoryAdapter()}
-	runtime := &Runtime{adapter: adapter, orchestrator: h.loop, started: true, periodicDone: done, dispatchDone: done, completionDone: done}
+	runtime := &Runtime{orchestrator: h.loop, started: true, periodicDone: done, dispatchDone: done, completionDone: done}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if err := runtime.GracefulClose(ctx); err == nil {
 		t.Fatal("expected incomplete drain")
 	}
-	if adapter.closes != 0 {
-		t.Fatal("shutdown deleted adapter content while a handoff consumer was active")
-	}
 	tracker.Done()
 	if err := runtime.GracefulClose(context.Background()); err != nil {
 		t.Fatal(err)
-	}
-	if adapter.closes != 1 {
-		t.Fatalf("adapter close calls=%d", adapter.closes)
 	}
 }
 
@@ -183,7 +146,7 @@ func TestReferencedResponseProjectionIsCompleteAndIdempotentWithOneConnection(t 
 	job.node.NodeClass = "advisory_synthesis"
 	job.attempt.RequiredRole = "coordinator"
 	body := strings.Repeat("full canonical response\n", 450000)
-	configureSuccessfulHandoff(&job, body)
+	h.configureSuccessfulHandoff(t, &job, body)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := h.loop.commitProviderExecutionCompletion(ctx, job); err != nil {
@@ -225,7 +188,7 @@ func TestReferencedHandoffAndSettlementReplayAfterSourceFilesAreRetired(t *testi
 	job := h.runningHandoffJob(t, invocation, 1)
 	body := strings.Repeat("canonical response\n", 250000)
 	body = strings.TrimSpace(body)
-	configureSuccessfulHandoff(&job, body)
+	h.configureSuccessfulHandoff(t, &job, body)
 	path := filepath.Join(t.TempDir(), "terminal")
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		t.Fatal(err)
@@ -267,6 +230,7 @@ type terminalHandoffHarness struct {
 	db                 *sql.DB
 	store              *executionstore.Store
 	fsStore            *runtimefs.Store
+	requests           *requestFixture
 	loop               *orchestrationLoop
 	runtimeDir         string
 	projectRoot        string
@@ -316,11 +280,14 @@ func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 		t.Fatalf("load schemas: %v", err)
 	}
 	store := executionstore.New(db)
+	requests := newRequestFixture(db, nil)
 	loop := &orchestrationLoop{
 		db:             db,
+		provider:       requests.provider,
 		transition:     state.NewTransitionService(db, schemaSet),
 		validator:      state.NewWorkerOutputValidator(db, schemaSet),
 		executionStore: store,
+		events:         state.NewAttemptEventIngestor(db, schemaSet),
 		fsStore:        fsStore,
 		schemas:        schemaSet,
 		yoloRoot:       projectRoot,
@@ -330,7 +297,7 @@ func newTerminalHandoffHarness(t *testing.T) terminalHandoffHarness {
 		},
 		sleep: func(time.Duration) {},
 	}
-	return terminalHandoffHarness{db: db, store: store, fsStore: fsStore, loop: loop, runtimeDir: runtimeDir, projectRoot: projectRoot, baselineSnapshotID: baselineSnapshotID}
+	return terminalHandoffHarness{db: db, store: store, fsStore: fsStore, requests: requests, loop: loop, runtimeDir: runtimeDir, projectRoot: projectRoot, baselineSnapshotID: baselineSnapshotID}
 }
 
 func (h terminalHandoffHarness) addInvocation(t *testing.T, index int) executionstore.ProviderInvocation {
@@ -365,12 +332,15 @@ func (h terminalHandoffHarness) addInvocation(t *testing.T, index int) execution
 	if err != nil || !acquired {
 		t.Fatalf("claim provider attempt %d: claim=%#v acquired=%t err=%v", index, claim, acquired, err)
 	}
+	prepared := h.requests.prepare(t, attemptID, invocationID)
 	invocation, err := h.store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity:      prepared.Identity,
 		ProviderInvocationID: invocationID,
 		AttemptID:            attemptID,
 		RunID:                "run_terminal_handoff",
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     sessionID,
+		ProviderSessionID:    prepared.ProviderSessionID,
 		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		IssuedAt:             terminalHandoffFixtureNow,
 		CreatedAt:            terminalHandoffFixtureNow,
@@ -389,33 +359,14 @@ func (h terminalHandoffHarness) runningHandoffJob(t *testing.T, invocation execu
 	t.Helper()
 	job := h.baseHandoffJob(invocation, index)
 	mustExec(t, h.db, fmt.Sprintf(`UPDATE attempt_executions SET state = 'running', started_at = %q WHERE attempt_id = %q`, terminalHandoffFixtureNow, invocation.AttemptID))
-	attachQuiescentProviderProcessGuard(t, h.store, invocation.ProviderInvocationID, invocation.AttemptID, invocation.RunID, invocation.NodeRunID, job.expectedLeaseOwner, job.expectedLeaseVersion, "2026-03-01T12:00:01Z")
 	return job
 }
 
-func configureSuccessfulHandoff(job *asyncExecutionResult, output string) {
-	if job == nil {
-		return
-	}
-	zero := 0
-	providerSessionID := "ses_terminal_handoff_" + sanitizeFileToken(job.providerInvocationID)
-	job.providerStreamObservation = opencode.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_terminal_handoff_" + sanitizeFileToken(job.providerInvocationID),
-		FinalStepID:            "step_terminal_handoff_" + sanitizeFileToken(job.providerInvocationID),
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  strings.TrimSpace(output),
-		ProcessExited:          true,
-		ProcessExitCode:        &zero,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-		ProcessQuiescent:       true,
-	}
-	job.providerSessionID = providerSessionID
-	job.outputText = strings.TrimSpace(output)
-	job.outcome = opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed", EvidenceSource: "stream"}
+// configureSuccessfulHandoff runs the job's prepared request to a successful
+// answer, so the job carries the verified terminal that settlement requires.
+func (h terminalHandoffHarness) configureSuccessfulHandoff(t *testing.T, job *asyncExecutionResult, output string) {
+	t.Helper()
+	h.requests.complete(t, job, output)
 }
 
 func persistProviderTerminalHandoffForTest(t *testing.T, loop *orchestrationLoop, job *asyncExecutionResult) {
@@ -447,7 +398,7 @@ func persistProviderTerminalHandoffForTest(t *testing.T, loop *orchestrationLoop
 func (h terminalHandoffHarness) persistHandoffJob(t *testing.T, invocation executionstore.ProviderInvocation, index int) asyncExecutionResult {
 	t.Helper()
 	job := h.runningHandoffJob(t, invocation, index)
-	configureSuccessfulHandoff(&job, "Builder complete.")
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
 	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
 		t.Fatalf("persist terminal handoff: %v", err)
 	}
@@ -459,24 +410,13 @@ func TestTimeoutOwnedSettlementMarksHandoffPendingBeforeFallbackPublication(t *t
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
 	job := h.runningHandoffJob(t, invocation, 1)
-	zero := 0
-	job.providerSessionID = "ses_terminal_handoff_timeout"
-	job.providerStreamObservation = opencode.InvocationStreamObservation{
-		ProviderSessionID: job.providerSessionID,
-		ProcessExited:     true,
-		ProcessExitCode:   &zero,
-		StdoutDrained:     true,
-		StderrDrained:     true,
-		ProcessQuiescent:  true,
-		TimedOut:          true,
-	}
-	job.outcome = opencode.ExecutionOutcome{
-		State:          "failed",
-		ReasonCode:     "timeout",
-		FailureText:    "Provider execution exceeded its inactivity budget.",
-		EvidenceSource: "stream",
-	}
-	job.err = errors.New(job.outcome.FailureText)
+	timeoutErr := errors.New("Provider execution exceeded its inactivity budget.")
+	response := h.requests.run(t, job.attemptID, job.providerInvocationID, opencode.ExecuteResponse{
+		Outcome:           opencode.ExecutionOutcome{State: "failed", ReasonCode: "timeout", FailureText: timeoutErr.Error(), EvidenceSource: "stream"},
+		StreamObservation: opencode.InvocationStreamObservation{TimedOut: true},
+	}, timeoutErr)
+	applyExecuteResponseToAsyncResult(&job, response, timeoutErr)
+
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 3, 0, time.UTC) }
 	if err := h.loop.commitProviderExecutionCompletion(context.Background(), job); err != nil {
 		t.Fatalf("commit timeout-owned provider completion: %v", err)
@@ -522,112 +462,23 @@ func TestRejectedProviderTerminalHandoffPendingDoesNotFenceActiveInvocation(t *t
 	}
 }
 
-func TestRejectedPendingMarkerWithoutGuardianPersistsLeaseFencedRecovery(t *testing.T) {
-	t.Parallel()
-	h := newTerminalHandoffHarness(t)
-	invocation := h.addInvocation(t, 1)
-	job := h.baseHandoffJob(invocation, 1)
-	job.providerStreamObservation.ProcessQuiescent = true
-	workspaceCtx, err := h.loop.resolveExecutionWorkspaceContextForMode(context.Background(), invocation.RunID, PublishModeDirect)
-	if err != nil {
-		t.Fatalf("resolve lost-handoff execution target: %v", err)
-	}
-	if err := h.loop.prepareExecutionWorkspaceContext(context.Background(), workspaceCtx.ExecutionRoot, workspaceCtx); err != nil {
-		t.Fatalf("prepare lost-handoff execution target: %v", err)
-	}
-	if err := h.fsStore.UpdateExecutionTargetState(context.Background(), invocation.RunID, "attempt_dirty", workspaceCtx.TrustedSnapshotID, "", "2026-03-01T12:00:01Z"); err != nil {
-		t.Fatalf("mark lost-handoff execution target dirty: %v", err)
-	}
-	const recoveredPath = "RECOVERED-DELIVERABLE.txt"
-	if err := os.WriteFile(filepath.Join(workspaceCtx.ExecutionRoot, recoveredPath), []byte("recovered workspace delta\n"), 0o644); err != nil {
-		t.Fatalf("write unhanded workspace delta: %v", err)
-	}
-	mustExec(t, h.db, `UPDATE attempt_executions
-		SET state = 'running', started_at = '2026-03-01T12:00:01Z', launch_started_at = '2026-03-01T12:00:01Z', provider_session_id = ''
-		WHERE attempt_id = '`+invocation.AttemptID+`'`)
-	mustExec(t, h.db, `CREATE TRIGGER fail_pending_marker_for_recovery
-		BEFORE UPDATE OF terminal_handoff_pending_at ON provider_invocations
-		WHEN NEW.provider_invocation_id = '`+invocation.ProviderInvocationID+`'
-		BEGIN SELECT RAISE(ABORT, 'forced pending-marker rejection'); END`)
-
-	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err == nil {
-		t.Fatal("pending-marker trigger unexpectedly allowed a terminal handoff")
-	}
-	if err := h.loop.markProviderTerminalRecoveryRequired(context.Background(), job); err != nil {
-		t.Fatalf("persist lease-fenced recovery marker without a guardian: %v", err)
-	}
-	var pendingAt, recoveryAt sql.NullString
-	if err := h.db.QueryRow(`SELECT terminal_handoff_pending_at, terminal_recovery_required_at FROM provider_invocations WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID).Scan(&pendingAt, &recoveryAt); err != nil {
-		t.Fatalf("load no-guardian recovery markers: %v", err)
-	}
-	if pendingAt.Valid || !recoveryAt.Valid {
-		t.Fatalf("no-guardian recovery markers pending=%#v recovery=%#v", pendingAt, recoveryAt)
-	}
-	var recoveryOwner string
-	var recoveryVersion int64
-	if err := h.db.QueryRow(`SELECT terminal_recovery_required_lease_owner, terminal_recovery_required_lease_version FROM provider_invocations WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID).Scan(&recoveryOwner, &recoveryVersion); err != nil {
-		t.Fatalf("load no-guardian recovery lease lineage: %v", err)
-	}
-	if recoveryOwner != job.expectedLeaseOwner || recoveryVersion != job.expectedLeaseVersion {
-		t.Fatalf("recovery marker lease lineage owner=%q version=%d, want owner=%q version=%d", recoveryOwner, recoveryVersion, job.expectedLeaseOwner, job.expectedLeaseVersion)
-	}
-	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE provider_invocation_id = ?`, invocation.ProviderInvocationID); count != 0 {
-		t.Fatalf("no-guardian fixture has %d durable process guards", count)
-	}
-	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), invocation.AttemptID); err != nil || !quiescent {
-		t.Fatalf("lease-fenced terminal recovery marker did not attest no-guardian quiescence: quiescent=%t err=%v", quiescent, err)
-	}
-
-	if _, visited, err := h.loop.settleLostProviderTerminalHandoffsPass(context.Background(), true, "", 1); err != nil || visited != 1 {
-		t.Fatalf("settle marked no-guardian lost handoff: visited=%d err=%v", visited, err)
-	}
-	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
-	if err != nil || !found || settlement.FailureReasonCode != "provider_terminal_handoff_lost" {
-		t.Fatalf("no-guardian recovery settlement found=%t settlement=%#v err=%v", found, settlement, err)
-	}
-	attempt, found, err := h.store.GetAttempt(context.Background(), invocation.AttemptID)
-	if err != nil || !found || attempt.State != "committed_failure" {
-		t.Fatalf("no-guardian recovery attempt found=%t attempt=%#v err=%v", found, attempt, err)
-	}
-	if err := (&Runtime{orchestrator: h.loop}).drainExecutionOutboxUntilIdle(context.Background()); err != nil {
-		t.Fatalf("project no-guardian lost-handoff completion: %v", err)
-	}
-	if paths := persistedArtifactPathsForAttempt(t, h.db, invocation.AttemptID); len(paths) != 1 || paths[0] != recoveredPath {
-		t.Fatalf("lost-handoff projection dropped workspace delta %q: %v", recoveredPath, paths)
-	}
-	if _, err := os.Stat(filepath.Join(workspaceCtx.ExecutionRoot, recoveredPath)); !os.IsNotExist(err) {
-		t.Fatalf("lost-handoff projection did not restore the trusted workspace: %v", err)
-	}
-	var payloadJSON string
-	if err := h.db.QueryRow(`SELECT payload_json FROM attempt_outbox WHERE attempt_id = ?`, invocation.AttemptID).Scan(&payloadJSON); err != nil {
-		t.Fatalf("load recovered no-guardian outbox payload: %v", err)
-	}
-	var payload executionOutboxPayload
-	if err := json.Unmarshal([]byte(payloadJSON), &payload); err != nil {
-		t.Fatalf("decode recovered no-guardian outbox payload: %v", err)
-	}
-	if payload.Attempt.Attempt != 1 || payload.Attempt.NodeID != "implementation" || payload.Attempt.AgentID != "agent_terminal_handoff" || payload.Node.NodeClass != "delegated_execution" {
-		t.Fatalf("lost-handoff replay dropped node-attempt lineage: attempt=%#v node=%#v", payload.Attempt, payload.Node)
-	}
-}
-
 func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
 	job := h.runningHandoffJob(t, invocation, 1)
-	configureSuccessfulHandoff(&job, "Builder complete.")
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
 	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
 		t.Fatalf("mark handoff pending: %v", err)
 	}
-	persistHandoffFileOnlyFromJob(t, h, invocation, job, "2026-03-01T12:00:03Z")
+	persistHandoffFileOnlyFromJob(t, h, job, "2026-03-01T12:00:03Z")
 	candidate, found, err := h.store.GetProviderInvocation(context.Background(), invocation.ProviderInvocationID)
 	if err != nil || !found {
 		t.Fatalf("load file replay candidate: found=%t err=%v", found, err)
 	}
 
 	lostJob := job
-	lostJob.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "lost terminal handoff", EvidenceSource: "process_guard"}
+	lostJob.outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_terminal_handoff_lost", FailureText: "lost terminal handoff", EvidenceSource: "request"}
 	lostJob.err = errors.New(lostJob.outcome.FailureText)
 	unlock := h.loop.lockProviderTerminalHandoffFile(invocation.ProviderInvocationID)
 	recoveryStarted := make(chan struct{})
@@ -641,7 +492,7 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 	lostDone := make(chan error, 1)
 	go func() {
 		close(lostStarted)
-		lostDone <- h.loop.commitRecoveredGuardFailure(context.Background(), lostJob)
+		lostDone <- h.loop.commitLostHandoffFailure(context.Background(), lostJob)
 	}()
 	<-lostStarted
 	select {
@@ -686,51 +537,53 @@ func TestTerminalHandoffReplaySerializesAgainstLostHandoffSettlement(t *testing.
 	}
 }
 
-func TestAttemptCancellationFencesFurtherCommandsAndWaitsForWorker(t *testing.T) {
+func TestAttemptCancellationClosesAdmissionToFurtherCommandGuardians(t *testing.T) {
 	t.Parallel()
-	h, invocation, _ := staleCancellationFixture(t)
+	h := newTerminalHandoffHarness(t)
+	h.loop.guardianRuntimeRoot = h.runtimeDir
+	h.addPendingGuardEvidence(t, 1)
 	ctx := context.Background()
-	guards, err := h.store.ListPendingProviderProcessGuards(ctx, "", 1)
+	invocation, found, err := h.store.GetProviderInvocation(ctx, "pinv_terminal_handoff_001")
+	if err != nil || !found {
+		t.Fatalf("load invocation: found=%t err=%v", found, err)
+	}
+	guards, err := h.store.ListPendingProviderCommandGuardians(ctx, "", 1)
 	if err != nil || len(guards) != 1 {
 		t.Fatalf("load original command guard: guards=%v err=%v", guards, err)
 	}
 	guard := guards[0]
-	// Production cancellation is queued in the same transaction that fences
-	// launch authority. Even an intermediate quiescent command cannot relaunch.
-	if _, err := h.store.AcknowledgeProviderProcessGuard(ctx, executionstore.AcknowledgeProviderProcessGuardRequest{
+	// A second command was admitted before cancellation but has not launched.
+	h.requests.claimCommand(t, invocation.ProviderInvocationID)
+	// Cancellation is queued in the same transaction that closes admission, so
+	// the admitted command cannot gain a guardian afterwards.
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := providerrequest.CloseAttemptAdmissionTx(ctx, tx, invocation.AttemptID, "2026-03-01T12:00:05Z"); err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	_, err = h.store.AcknowledgeProviderCommandGuardian(ctx, executionstore.AcknowledgeProviderCommandGuardianRequest{
 		GuardID: "guard_after_cancellation", ProviderInvocationID: invocation.ProviderInvocationID,
 		AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
 		CommandOrdinal: 2, Platform: guard.Platform, GuardianPID: 1002, GuardianIdentityToken: "guardian-after-cancel",
 		ChildPID: 2002, ChildIdentityToken: "child-after-cancel", TreeID: "2002", TreeIdentityToken: "tree-after-cancel",
 		QuiescenceCapability: "capability-after-cancel", ExpectedLeaseOwner: guard.LeaseOwner, ExpectedLeaseVersion: guard.LeaseVersion,
 		StartedAt: "2026-03-01T12:10:00Z", AcknowledgedAt: "2026-03-01T12:10:00Z",
-	}); err == nil {
-		t.Fatal("cancelled attempt acknowledged a subsequent command")
-	} else {
-		var settlementErr *executionstore.ProviderSettlementError
-		if !errors.As(err, &settlementErr) || (settlementErr.Reason != "invocation_not_active" && settlementErr.Reason != "attempt_not_active") {
-			t.Fatalf("subsequent command rejected for the wrong reason: %v", err)
-		}
+	})
+	if err == nil || !strings.Contains(err.Error(), "admission is closed") {
+		t.Fatalf("cancelled attempt acknowledged a subsequent command: %v", err)
 	}
-	if err := h.loop.ingestPendingProviderProcessGuards(ctx); err != nil {
-		t.Fatal(err)
-	}
-	adapter := &timeoutCancelObserverAdapter{}
-	h.loop.adapter = adapter
-
-	if _, err := h.loop.drainAttemptCancelOutbox(ctx); err != nil {
-		t.Fatalf("drain cancellation while provider execution remains active: %v", err)
-	}
-	if got := adapter.cancelCalls(); got != 0 {
-		t.Fatalf("quiescent fenced cancellation repeated provider stop: calls=%d", got)
-	}
-	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_workspace_quiescence")
 }
 
-func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T) {
+func TestGuardianRecoveryCancellationWaitsForInflightProviderWorkerAndNeverFabricatesClosure(t *testing.T) {
 	t.Parallel()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
 	if err != nil || !found {
@@ -756,8 +609,8 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 	if err := os.Remove(providerGuardEvidencePath(h.runtimeDir, guardID)); err != nil {
 		t.Fatalf("remove guardian evidence: %v", err)
 	}
-	h.loop.processGuardAbsent = func(executionstore.ProviderProcessGuard) bool { return true }
-	if result, err := h.loop.ingestPendingProviderProcessGuardsPass(context.Background(), "", 1, true); err != nil || result.Visited != 1 || result.Blocked {
+	h.loop.commandGuardianAbsent = func(executionstore.ProviderCommandGuardian) bool { return true }
+	if result, err := h.loop.ingestPendingProviderCommandGuardiansPass(context.Background(), "", 1, true); err != nil || result.Visited != 1 || result.Blocked {
 		t.Fatalf("quarantine absent guardian evidence: result=%#v err=%v", result, err)
 	}
 	if err := h.loop.transitionService().RequestAttemptStopRetry(context.Background(), state.AttemptStopRetryRequest{
@@ -771,7 +624,7 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 		t.Fatalf("authorize guardian-evidence recovery: %v", err)
 	}
 	adapter := &timeoutCancelObserverAdapter{}
-	h.loop.adapter = adapter
+	h.requests.respondWith(adapter)
 	h.loop.inflightExec = map[string]struct{}{attemptID: {}}
 	h.loop.inflightRunIDs = map[string]string{attemptID: invocation.RunID}
 
@@ -789,11 +642,13 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 		t.Fatalf("in-flight guardian recovery released cancellation: status=%q handoff_state=%q", status, handoffState)
 	}
 	h.loop.clearExecutionInflight(attemptID)
-	if processed, err := h.loop.drainAttemptCancelOutbox(context.Background()); err != nil || processed != 1 {
-		t.Fatalf("resume authorized guardian recovery after worker drain: processed=%d err=%v", processed, err)
+	// Operator authorization cannot close the request: its admitted command has
+	// no guardian proof, and the request is not disposed without it.
+	if processed, err := h.loop.drainAttemptCancelOutbox(context.Background()); !errors.Is(err, providerrequest.ErrResourcesOpen) || processed != 0 {
+		t.Fatalf("authorized recovery released a request with an unproven command: processed=%d err=%v", processed, err)
 	}
-	assertCancellationHandoff(t, h, attemptID, "published", "released")
-	if quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), attemptID); err != nil || quiescent {
+	assertCancellationHandoff(t, h, attemptID, "pending", "guardian_evidence_recovery_requested")
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), attemptID); err != nil || quiescent {
 		t.Fatalf("operator recovery fabricated process proof: quiescent=%t err=%v", quiescent, err)
 	}
 	if got := adapter.cancelCalls(); got != 0 {
@@ -804,34 +659,29 @@ func TestGuardianRecoveryCancellationWaitsForInflightProviderWorker(t *testing.T
 func (h terminalHandoffHarness) persistHandoffFileOnly(t *testing.T, invocation executionstore.ProviderInvocation, index int, createdAt string) asyncExecutionResult {
 	t.Helper()
 	job := h.runningHandoffJob(t, invocation, index)
-	configureSuccessfulHandoff(&job, "Builder complete.")
-	persistHandoffFileOnlyFromJob(t, h, invocation, job, createdAt)
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatalf("mark handoff pending: %v", err)
+	}
+	persistHandoffFileOnlyFromJob(t, h, job, createdAt)
 	return job
 }
 
-func persistHandoffFileOnlyFromJob(t *testing.T, h terminalHandoffHarness, invocation executionstore.ProviderInvocation, job asyncExecutionResult, createdAt string) {
+// persistHandoffFileOnlyFromJob publishes a job's trusted handoff file and
+// content, then interrupts the SQLite insert, as a crash between them would.
+func persistHandoffFileOnlyFromJob(t *testing.T, h terminalHandoffHarness, job asyncExecutionResult, createdAt string) {
 	t.Helper()
-	payloadJSON, err := marshalExecutionOutboxPayload(job)
+	observedAt, err := time.Parse(time.RFC3339Nano, createdAt)
 	if err != nil {
-		t.Fatalf("marshal handoff payload: %v", err)
+		t.Fatalf("parse handoff time: %v", err)
 	}
-	wire, err := json.Marshal(providerTerminalHandoffWire{
-		Version:              providerTerminalHandoffWireVersion,
-		ProviderInvocationID: invocation.ProviderInvocationID,
-		AttemptID:            invocation.AttemptID,
-		RunID:                invocation.RunID,
-		NodeRunID:            invocation.NodeRunID,
-		ExpectedLeaseOwner:   job.expectedLeaseOwner,
-		ExpectedLeaseVersion: job.expectedLeaseVersion,
-		StreamObservation:    job.providerStreamObservation,
-		ExecutionPayloadJSON: payloadJSON,
-		CreatedAt:            createdAt,
-	})
-	if err != nil {
-		t.Fatalf("marshal terminal handoff file: %v", err)
-	}
-	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, wire); err != nil {
-		t.Fatalf("persist file-only terminal handoff: %v", err)
+	previous := h.loop.now
+	h.loop.now = func() time.Time { return observedAt }
+	defer func() { h.loop.now = previous }()
+	mustExec(t, h.db, `CREATE TRIGGER interrupt_file_only_handoff BEFORE INSERT ON provider_terminal_handoffs BEGIN SELECT RAISE(ABORT,'simulated crash before DB handoff'); END`)
+	defer mustExec(t, h.db, `DROP TRIGGER interrupt_file_only_handoff`)
+	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil {
+		t.Fatal("expected the interrupted SQLite handoff to fail")
 	}
 }
 
@@ -884,7 +734,7 @@ func TestProviderTerminalHandoffPublicationFailurePreventsSQLiteInsert(t *testin
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
 	job := h.runningHandoffJob(t, invocation, 1)
-	configureSuccessfulHandoff(&job, "Builder complete.")
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
 
 	handoffsPath := filepath.Join(h.runtimeDir, "provider-completion", "handoffs")
 	if err := os.MkdirAll(filepath.Dir(handoffsPath), 0o700); err != nil {
@@ -967,7 +817,7 @@ func TestProviderTerminalHandoffChangedFileReplayConflictsAndRetainsOriginal(t *
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
 	invocation := h.addInvocation(t, 1)
 	job := h.runningHandoffJob(t, invocation, 1)
-	configureSuccessfulHandoff(&job, "Original terminal response.")
+	h.configureSuccessfulHandoff(t, &job, "Original terminal response.")
 	mustExec(t, h.db, `CREATE TRIGGER fail_terminal_handoff_insert BEFORE INSERT ON provider_terminal_handoffs BEGIN SELECT RAISE(FAIL, 'forced handoff insert failure'); END`)
 	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil {
 		t.Fatal("expected initial SQLite handoff failure")
@@ -977,7 +827,7 @@ func TestProviderTerminalHandoffChangedFileReplayConflictsAndRetainsOriginal(t *
 	if err != nil {
 		t.Fatalf("read original trusted handoff: %v", err)
 	}
-	job.outputText = "Changed terminal response."
+	job.tokens.TotalTokens++
 	if err := h.loop.persistProviderTerminalHandoff(context.Background(), &job); err == nil || !strings.Contains(err.Error(), "replay conflicts") {
 		t.Fatalf("changed trusted handoff replay error=%v, want conflict", err)
 	}
@@ -990,7 +840,11 @@ func TestProviderTerminalHandoffChangedFileReplayConflictsAndRetainsOriginal(t *
 func TestProviderTerminalHandoffMalformedFileFailsClosed(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
 	invocation := h.addInvocation(t, 1)
-	h.runningHandoffJob(t, invocation, 1)
+	job := h.runningHandoffJob(t, invocation, 1)
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatalf("mark handoff pending: %v", err)
+	}
 	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, []byte(`{"version":"v1","unknown":true}`)); err != nil {
 		t.Fatalf("persist malformed handoff fixture: %v", err)
 	}
@@ -1170,63 +1024,6 @@ func TestStartupHandoffAuthorityDoesNotWaitForSnapshotFinalization(t *testing.T)
 	}
 }
 
-func TestStartupReplayBoundsLostTerminalHandoffSettlement(t *testing.T) {
-	for _, tc := range []struct {
-		name     string
-		items    int
-		deferred bool
-	}{
-		{name: "exact budget", items: providerlimits.StartupReplayMaxItems},
-		{name: "one item overflow", items: providerlimits.StartupReplayMaxItems + 1, deferred: true},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newTerminalHandoffHarness(t)
-			for index := 1; index <= tc.items; index++ {
-				invocation := h.addInvocation(t, index)
-				h.runningHandoffJob(t, invocation, index)
-			}
-
-			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupLostProviderTerminalHandoffs(context.Background())
-			if err != nil {
-				t.Fatalf("replay lost terminal handoffs: %v", err)
-			}
-			if deferred != tc.deferred {
-				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
-			}
-			settled := countTestRows(t, h.db, `SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`)
-			want := min(tc.items, providerlimits.StartupReplayMaxItems)
-			if settled != want {
-				t.Fatalf("startup settled %d lost handoffs, want %d", settled, want)
-			}
-			if deferred {
-				if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
-					t.Fatalf("normal lost-handoff loop did not continue deferred work: %v", err)
-				}
-				settled = countTestRows(t, h.db, `SELECT COUNT(1) FROM attempt_executions WHERE state = 'committed_failure' AND failure_code = 'provider_terminal_handoff_lost'`)
-				if settled != tc.items {
-					t.Fatalf("normal lost-handoff loop settled %d items, want %d", settled, tc.items)
-				}
-			}
-		})
-	}
-}
-
-func TestProviderTerminalHandoffWithoutFileOrSQLiteRowSettlesFailure(t *testing.T) {
-	h := newTerminalHandoffHarness(t)
-	invocation := h.addInvocation(t, 1)
-	h.runningHandoffJob(t, invocation, 1)
-	if deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupLostProviderTerminalHandoffs(context.Background()); err != nil || deferred {
-		t.Fatalf("settle lost handoff: deferred=%t err=%v", deferred, err)
-	}
-	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
-	if err != nil || !found {
-		t.Fatalf("load lost-handoff settlement: found=%t err=%v", found, err)
-	}
-	if settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_terminal_handoff_lost" {
-		t.Fatalf("lost terminal observation settlement=%#v", settlement)
-	}
-}
-
 func TestProviderTerminalHandoffMalformedSQLitePayloadRetainsCursor(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
 	first := h.addInvocation(t, 1)
@@ -1264,7 +1061,7 @@ func TestProviderTerminalHandoffPassVisitsAtMostOneHundredTwentyEight(t *testing
 	}
 }
 
-func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
+func TestStartupReplayBoundsPendingProviderCommandGuardianIngestion(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
 		items    int
@@ -1275,14 +1072,14 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			for index := 1; index <= tc.items; index++ {
 				h.addPendingGuardEvidence(t, index)
 			}
 
-			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderProcessGuards(context.Background())
+			deferred, err := (&Runtime{orchestrator: h.loop}).replayStartupProviderCommandGuardians(context.Background())
 			if err != nil {
-				t.Fatalf("replay pending process guards: %v", err)
+				t.Fatalf("replay pending command guardians: %v", err)
 			}
 			if deferred != tc.deferred {
 				t.Fatalf("deferred=%t, want %t", deferred, tc.deferred)
@@ -1293,12 +1090,12 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 				t.Fatalf("startup ingested %d guards, want %d", quiescent, want)
 			}
 			if deferred {
-				if err := h.loop.ingestPendingProviderProcessGuards(context.Background()); err != nil {
-					t.Fatalf("normal process guard loop did not continue deferred work: %v", err)
+				if err := h.loop.ingestPendingProviderCommandGuardians(context.Background()); err != nil {
+					t.Fatalf("normal command guardian loop did not continue deferred work: %v", err)
 				}
 				quiescent = countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`)
 				if quiescent != tc.items {
-					t.Fatalf("normal process guard loop ingested %d guards, want %d", quiescent, tc.items)
+					t.Fatalf("normal command guardian loop ingested %d guards, want %d", quiescent, tc.items)
 				}
 			}
 		})
@@ -1308,7 +1105,7 @@ func TestStartupReplayBoundsPendingProviderProcessGuardIngestion(t *testing.T) {
 func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
@@ -1316,14 +1113,14 @@ func TestReplayMarksCleanupCompleteForQuiescentProviderGuardWithMissingEvidence(
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
 
-	pass, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false)
+	pass, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false)
 	if err != nil || pass.Visited != 1 || pass.NextCursor != guardID {
 		t.Fatalf("replay missing quiescent evidence: pass=%#v err=%v", pass, err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
 }
 
-func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *testing.T) {
+func TestProviderCommandGuardianReplayRequiresDurableProofAndMatchingEvidence(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		quiescent   bool
@@ -1336,7 +1133,7 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const guardID = "guard_terminal_handoff_001"
 			if tc.quiescent {
@@ -1359,7 +1156,7 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 				t.Fatalf("remove acknowledged guardian evidence: %v", err)
 			}
 
-			if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+			if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 				t.Fatalf("replay untrusted provider guard evidence: %v", err)
 			}
 			wantLifecycle := "acknowledged"
@@ -1371,36 +1168,36 @@ func TestProviderProcessGuardReplayRequiresDurableProofAndMatchingEvidence(t *te
 	}
 }
 
-func TestProviderProcessGuardCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
+func TestProviderCommandGuardianCleanupAcceptsConcurrentEvidenceRemoval(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, evidence, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
 		t.Fatalf("remove evidence after replay read: %v", err)
 	}
 
-	h.loop.removeAndMarkProviderProcessGuardEvidenceCleaned(ctx, guardID, evidence)
+	h.loop.removeAndMarkProviderCommandGuardianEvidenceCleaned(ctx, guardID, evidence)
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
 }
 
-func TestProviderProcessGuardCleanupMarkerFailureIsRetryable(t *testing.T) {
+func TestProviderCommandGuardianCleanupMarkerFailureIsRetryable(t *testing.T) {
 	ctx := context.Background()
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	guardID, _, evidencePath := h.persistPendingProviderGuardQuiescence(t, 1)
 	if err := os.Remove(evidencePath); err != nil {
 		t.Fatalf("remove already-ingested guardian evidence: %v", err)
 	}
 	mustExec(t, h.db, `CREATE TRIGGER fail_provider_guard_cleanup_marker BEFORE UPDATE OF evidence_cleaned_at ON provider_process_guards WHEN NEW.guard_id = 'guard_terminal_handoff_001' BEGIN SELECT RAISE(ABORT, 'cleanup marker unavailable'); END`)
-	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+	if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 		t.Fatalf("cleanup marker failure turned durable quiescence into replay failure: %v", err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", true)
 	mustExec(t, h.db, `DROP TRIGGER fail_provider_guard_cleanup_marker`)
-	if _, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", 1, false); err != nil {
+	if _, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", 1, false); err != nil {
 		t.Fatalf("retry provider guard cleanup marker: %v", err)
 	}
 	assertProviderGuardCleanupState(t, h, guardID, "quiescent", false)
@@ -1426,7 +1223,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newTerminalHandoffHarness(t)
-			h.loop.processGuardRuntimeRoot = h.runtimeDir
+			h.loop.guardianRuntimeRoot = h.runtimeDir
 			h.addPendingGuardEvidence(t, 1)
 			const attemptID = "run_terminal_handoff:implementation:1"
 			mustExec(t, h.db, `UPDATE attempt_executions SET launch_started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`)
@@ -1437,9 +1234,9 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 			}); err != nil {
 				t.Fatalf("queue cancelled attempt handoff: %v", err)
 			}
-			h.loop.processGuardAbsent = func(executionstore.ProviderProcessGuard) bool { return true }
+			h.loop.commandGuardianAbsent = func(executionstore.ProviderCommandGuardian) bool { return true }
 
-			result, err := h.loop.ingestPendingProviderProcessGuardsPass(context.Background(), "", 1, true)
+			result, err := h.loop.ingestPendingProviderCommandGuardiansPass(context.Background(), "", 1, true)
 			if err != nil || result.Blocked || result.Visited != 1 {
 				t.Fatalf("ingest absent guardian evidence: result=%#v err=%v", result, err)
 			}
@@ -1451,7 +1248,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 			if lifecycle != "acknowledged" || !quarantinedAt.Valid {
 				t.Fatalf("missing guardian evidence authorized quiescence: lifecycle=%q quarantined_at=%#v", lifecycle, quarantinedAt)
 			}
-			quiescent, err := h.store.AttemptProcessGuardsQuiescent(context.Background(), attemptID)
+			quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), attemptID)
 			if err != nil || quiescent {
 				t.Fatalf("quarantined guardian evidence authorized attempt quiescence: quiescent=%t err=%v", quiescent, err)
 			}
@@ -1466,7 +1263,7 @@ func TestPendingGuardianEvidenceAbsenceQuarantinesCancelledAttemptWithoutProving
 	}
 }
 
-func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *testing.T) {
+func TestGuardRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *testing.T) {
 	type recoveryPass struct {
 		name     string
 		seed     func(*testing.T, terminalHandoffHarness)
@@ -1478,15 +1275,6 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 		count    func(*testing.T, terminalHandoffHarness) int
 	}
 
-	trigger := func(name, table, condition string) (func(*testing.T, terminalHandoffHarness), func(*testing.T, terminalHandoffHarness)) {
-		return func(t *testing.T, h terminalHandoffHarness) {
-				t.Helper()
-				mustExec(t, h.db, `CREATE TRIGGER `+name+` BEFORE INSERT ON `+table+` WHEN `+condition+` BEGIN SELECT RAISE(FAIL, 'forced `+name+` failure'); END`)
-			}, func(t *testing.T, h terminalHandoffHarness) {
-				t.Helper()
-				mustExec(t, h.db, `DROP TRIGGER `+name)
-			}
-	}
 	guardArm := func(t *testing.T, h terminalHandoffHarness) {
 		t.Helper()
 		mustExec(t, h.db, `CREATE TRIGGER fail_recovery_guard BEFORE UPDATE ON provider_process_guards WHEN NEW.guard_id = 'guard_terminal_handoff_001' AND NEW.lifecycle = 'quiescent' BEGIN SELECT RAISE(FAIL, 'forced fail_recovery_guard failure'); END`)
@@ -1495,20 +1283,18 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 		t.Helper()
 		mustExec(t, h.db, `DROP TRIGGER fail_recovery_guard`)
 	}
-	lostArm, lostDrop := trigger("fail_recovery_lost_handoff", "provider_completion_settlements", "NEW.provider_invocation_id = 'pinv_terminal_handoff_001'")
-
 	for _, tc := range []recoveryPass{
 		{
 			name: "provider guard",
 			seed: func(t *testing.T, h terminalHandoffHarness) {
-				h.loop.processGuardRuntimeRoot = h.runtimeDir
+				h.loop.guardianRuntimeRoot = h.runtimeDir
 				h.addPendingGuardEvidence(t, 1)
 				h.addPendingGuardEvidence(t, 2)
 			},
 			arm:  guardArm,
 			drop: guardDrop,
 			normal: func(ctx context.Context, h terminalHandoffHarness) (string, error) {
-				pass, err := h.loop.ingestPendingProviderProcessGuardsPass(ctx, "", providerProcessGuardPassLimit, false)
+				pass, err := h.loop.ingestPendingProviderCommandGuardiansPass(ctx, "", providerCommandGuardianPassLimit, false)
 				return pass.NextCursor, err
 			},
 			deferred: func(rt *Runtime) startupRecoveryStage {
@@ -1518,29 +1304,6 @@ func TestRecoveryPassFailureRetainsFailedCursorForNormalAndDeferredStartup(t *te
 			cursor: func(rt *Runtime, _ terminalHandoffHarness) string { return rt.startupGuardCursor },
 			count: func(t *testing.T, h terminalHandoffHarness) int {
 				return countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`)
-			},
-		},
-		{
-			name: "lost terminal handoff",
-			seed: func(t *testing.T, h terminalHandoffHarness) {
-				for index := 1; index <= 2; index++ {
-					invocation := h.addInvocation(t, index)
-					h.runningHandoffJob(t, invocation, index)
-				}
-			},
-			arm:  lostArm,
-			drop: lostDrop,
-			normal: func(ctx context.Context, h terminalHandoffHarness) (string, error) {
-				cursor, _, err := h.loop.settleLostProviderTerminalHandoffsPass(ctx, false, "", providerTerminalHandoffPassLimit)
-				return cursor, err
-			},
-			deferred: func(rt *Runtime) startupRecoveryStage {
-				rt.setStartupRecoveryPending(false, false, true)
-				return startupRecoveryStageLostHandoffs
-			},
-			cursor: func(rt *Runtime, _ terminalHandoffHarness) string { return rt.startupLostHandoffCursor },
-			count: func(t *testing.T, h terminalHandoffHarness) int {
-				return countTestRows(t, h.db, `SELECT COUNT(1) FROM provider_completion_settlements`)
 			},
 		},
 	} {
@@ -1597,7 +1360,7 @@ func (h terminalHandoffHarness) persistPendingProviderGuardQuiescence(t *testing
 		t.Fatalf("read provider guard evidence before ingest: %v", err)
 	}
 	quiescentAt := "2026-03-01T12:00:04Z"
-	_, err = h.store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
+	_, err = h.store.IngestProviderCommandGuardianQuiescence(context.Background(), executionstore.IngestProviderCommandGuardianQuiescenceRequest{
 		GuardID: guardID, ProviderInvocationID: fmt.Sprintf("pinv_terminal_handoff_%03d", index),
 		AttemptID: fmt.Sprintf("run_terminal_handoff:implementation:%d", index), RunID: "run_terminal_handoff",
 		NodeRunID: fmt.Sprintf("nr_terminal_handoff_%03d", index), Platform: result.Platform,
@@ -1633,7 +1396,7 @@ func assertProviderGuardCleanupState(t *testing.T, h terminalHandoffHarness, gua
 	if markerPending != wantPending {
 		t.Fatalf("unexpected provider guard cleanup state: lifecycle=%q want=%q marker_valid=%t pending=%t", lifecycle, wantLifecycle, cleanedAt.Valid, markerPending)
 	}
-	pending, err := h.store.ListPendingProviderProcessGuards(context.Background(), "", 2)
+	pending, err := h.store.ListPendingProviderCommandGuardians(context.Background(), "", 2)
 	if err != nil {
 		t.Fatalf("list provider guards after cleanup replay: %v", err)
 	}
@@ -1653,41 +1416,42 @@ func (h terminalHandoffHarness) addPendingGuardEvidence(t *testing.T, index int)
 	t.Helper()
 	invocation := h.addInvocation(t, index)
 	job := h.baseHandoffJob(invocation, index)
+	h.requests.claimCommand(t, invocation.ProviderInvocationID)
 	guardID := fmt.Sprintf("guard_terminal_handoff_%03d", index)
 	ownership := processguardian.Ownership{
 		GuardID: guardID, GuardianPID: index + 1000, GuardianIdentityToken: fmt.Sprintf("guardian-%03d", index),
 		ChildPID: index + 2000, ChildIdentityToken: fmt.Sprintf("child-%03d", index), TreeID: index + 2000,
 		TreeIdentityToken: fmt.Sprintf("tree-%03d", index), Platform: "unix_process_group", QuiescenceCapability: fmt.Sprintf("guardian-quiescence-%03d", index),
 	}
-	if _, err := h.store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
+	if _, err := h.store.AcknowledgeProviderCommandGuardian(context.Background(), executionstore.AcknowledgeProviderCommandGuardianRequest{
 		GuardID: ownership.GuardID, ProviderInvocationID: invocation.ProviderInvocationID, AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
 		CommandOrdinal: 1, Platform: ownership.Platform, GuardianPID: int64(ownership.GuardianPID), GuardianIdentityToken: ownership.GuardianIdentityToken,
 		ChildPID: int64(ownership.ChildPID), ChildIdentityToken: ownership.ChildIdentityToken, TreeID: strconv.Itoa(ownership.TreeID), TreeIdentityToken: ownership.TreeIdentityToken,
 		QuiescenceCapability: ownership.QuiescenceCapability, ExpectedLeaseOwner: job.expectedLeaseOwner, ExpectedLeaseVersion: job.expectedLeaseVersion,
 		StartedAt: "2026-03-01T11:59:59Z", AcknowledgedAt: "2026-03-01T11:59:59Z",
 	}); err != nil {
-		t.Fatalf("acknowledge pending process guard: %v", err)
+		t.Fatalf("acknowledge pending command guardian: %v", err)
 	}
 	evidence, err := json.Marshal(struct {
 		Type   string                 `json:"type"`
 		Result processguardian.Result `json:"result"`
 	}{Type: "result", Result: processguardian.Result{Ownership: ownership, Quiescent: true}})
 	if err != nil {
-		t.Fatalf("marshal process guard evidence: %v", err)
+		t.Fatalf("marshal command guardian evidence: %v", err)
 	}
 	evidenceDir := filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence")
 	if err := os.MkdirAll(evidenceDir, 0o700); err != nil {
-		t.Fatalf("create process guard evidence directory: %v", err)
+		t.Fatalf("create command guardian evidence directory: %v", err)
 	}
 	if err := os.WriteFile(providerGuardEvidencePath(h.runtimeDir, guardID), evidence, 0o600); err != nil {
-		t.Fatalf("write process guard evidence: %v", err)
+		t.Fatalf("write command guardian evidence: %v", err)
 	}
 	observed, _, _, err := processguardian.ReadQuiescenceEvidence(h.runtimeDir, guardID)
 	if err != nil {
-		t.Fatalf("read process guard evidence: %v", err)
+		t.Fatalf("read command guardian evidence: %v", err)
 	}
 	if observed.GuardID != guardID || observed.ChildPID != ownership.ChildPID || observed.TreeID != ownership.TreeID || observed.Platform != ownership.Platform || !observed.Quiescent {
-		t.Fatalf("process guard evidence decoded incorrectly: %#v", observed)
+		t.Fatalf("command guardian evidence decoded incorrectly: %#v", observed)
 	}
 }
 
@@ -1794,5 +1558,250 @@ func TestTerminalFinalizationFailureRetainsDurableRetryAfterStartupAuthority(t *
 	finalizePendingHandoffsThroughMaintenance(t, h)
 	if settled := countTestRows(t, h.db, `SELECT COUNT(*) FROM provider_completion_settlements`); settled != 2 {
 		t.Fatalf("finalization retry settled %d invocations", settled)
+	}
+}
+
+// lostHandoffCandidate is an attempt whose worker ended and fenced its terminal
+// handoff, but died before the handoff became durable.
+func (h terminalHandoffHarness) lostHandoffCandidate(t *testing.T, index int, answer string) executionstore.ProviderInvocation {
+	t.Helper()
+	invocation := h.addInvocation(t, index)
+	job := h.runningHandoffJob(t, invocation, index)
+	if answer != "" {
+		h.configureSuccessfulHandoff(t, &job, answer)
+	} else {
+		binding := h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+		if err := h.requests.authority.CloseAdmission(context.Background(), binding.Identity); err != nil {
+			t.Fatalf("close admission: %v", err)
+		}
+	}
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatalf("mark handoff pending: %v", err)
+	}
+	return invocation
+}
+
+func TestLostHandoffOfARequestWithoutProviderAnswerIsSettledByAbandonment(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	invocation := h.lostHandoffCandidate(t, 1, "")
+
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("settle lost handoff: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_terminal_handoff_lost" {
+		t.Fatalf("lost handoff was not settled as a failure: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	if executions := h.requests.executions(invocation.ProviderInvocationID); executions != 0 {
+		t.Fatalf("recovery redispatched the provider request %d times", executions)
+	}
+}
+
+func TestLostHandoffOfACompletedAnswerIsSettledAsLostBecauseNothingRecordedIt(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	invocation := h.lostHandoffCandidate(t, 1, "Builder complete.")
+
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("settle lost handoff: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeFailed || settlement.FailureReasonCode != "provider_terminal_handoff_lost" {
+		t.Fatalf("a completed answer whose handoff never became durable must settle as lost: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+}
+
+func TestOrphanedRequestWithAnUnreceiptedWriteStaysBlockedWithoutStoppingOtherRecoveries(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	blocked := h.addInvocation(t, 1)
+	binding := h.requests.issueDispatch(t, blocked.ProviderInvocationID)
+	if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+		Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_blocked", AttemptID: blocked.AttemptID, RunID: blocked.RunID, NodeRunID: blocked.NodeRunID,
+		SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	recoverable := h.lostHandoffCandidate(t, 2, "")
+
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("a blocked request must not abort recovery: %v", err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), blocked.ProviderInvocationID); err != nil || found {
+		t.Fatalf("a request with an unreceipted write was settled: found=%t err=%v", found, err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), recoverable.ProviderInvocationID); err != nil || !found {
+		t.Fatalf("an unrelated lost handoff was not recovered: found=%t err=%v", found, err)
+	}
+	// The operator is told why, once, however often recovery looks again.
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("second recovery pass: %v", err)
+	}
+	if count := countTestRows(t, h.db, `SELECT COUNT(1) FROM events WHERE attempt_id = ? AND event_type = 'attempt.recovery_blocked'`, blocked.AttemptID); count != 1 {
+		t.Fatalf("recovery_blocked events=%d, want exactly 1", count)
+	}
+}
+
+func TestCancelledAttemptWhoseWorkerIsGoneIsSettledCancelledAfterRestart(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	invocation := h.addInvocation(t, 1)
+	h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_orphan", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatalf("queue cancellation: %v", err)
+	}
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), invocation.AttemptID); err != nil || quiescent {
+		t.Fatalf("a request nobody settled must not be quiescent: %t %v", quiescent, err)
+	}
+
+	if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+		t.Fatalf("settle orphaned cancellation: %v", err)
+	}
+	settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+	if err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
+		t.Fatalf("orphaned cancellation was not settled as cancelled: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	if quiescent, err := h.store.AttemptCommandGuardiansQuiescent(context.Background(), invocation.AttemptID); err != nil || !quiescent {
+		t.Fatalf("a settled cancellation must release the attempt: %t %v", quiescent, err)
+	}
+}
+
+func TestStoppedServerReleasesItsOrphanedAttemptAtStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		stopped bool
+	}{{"server proven stopped", true}, {"server still running", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newTerminalHandoffHarness(t)
+			invocation := h.addInvocation(t, 1)
+			binding := h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+			if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+				Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.requests.claimCommand(t, invocation.ProviderInvocationID)
+			if err := h.requests.authority.RegisterServerInstance(context.Background(), providerrequest.ServerInstance{ID: binding.Identity.InstanceID, GuardID: "guard-server", OwnershipJSON: `{"ChildPID":1,"TreeID":1}`}); err != nil {
+				t.Fatal(err)
+			}
+			if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+				CancelOutboxID: "cancel_server", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+				SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			h.loop.guardianRuntimeRoot = h.runtimeDir
+			h.loop.serverAbsent = func(int, int, string, string) bool { return tc.stopped }
+
+			unproven, err := h.loop.recoverServerInstances(context.Background())
+			if err != nil || (len(unproven) == 1) == tc.stopped {
+				t.Fatalf("recover server instances: unproven=%v err=%v", unproven, err)
+			}
+			if err := h.loop.settleLostProviderTerminalHandoffs(context.Background(), false); err != nil {
+				t.Fatalf("settle orphaned attempt: %v", err)
+			}
+			settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(context.Background(), invocation.ProviderInvocationID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if found != tc.stopped {
+				t.Fatalf("settled=%t with the server stopped=%t: %#v", found, tc.stopped, settlement)
+			}
+			if tc.stopped && settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
+				t.Fatalf("the orphaned cancellation must settle as cancelled: %#v", settlement)
+			}
+		})
+	}
+}
+
+// serverEvidenceFixture is an attempt orphaned with an unreceipted write by a
+// server that is registered but not yet proven stopped.
+func (h terminalHandoffHarness) serverEvidenceFixture(t *testing.T) (executionstore.ProviderInvocation, providerrequest.ServerInstance) {
+	t.Helper()
+	invocation := h.addInvocation(t, 1)
+	binding := h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+	if _, err := h.requests.authority.AdmitNative(context.Background(), providerrequest.NativeCall{
+		Identity: binding.Identity, MessageID: "msg_fixture_write", CallID: "call_fixture_write", Tool: "write", Input: []byte(`{"path":"a.txt"}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	instance := providerrequest.ServerInstance{ID: binding.Identity.InstanceID, GuardID: "guard-server", OwnershipJSON: `{"ChildPID":1,"TreeID":1}`}
+	if err := h.requests.authority.RegisterServerInstance(context.Background(), instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_server", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		SessionID: "session_terminal_handoff_001", ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h.loop.guardianRuntimeRoot = h.runtimeDir
+	h.loop.serverAbsent = func(int, int, string, string) bool { return false }
+	return invocation, instance
+}
+
+func TestServerStillBeingTornDownIsProvenOnALaterPass(t *testing.T) {
+	t.Parallel()
+	h := newTerminalHandoffHarness(t)
+	invocation, instance := h.serverEvidenceFixture(t)
+	ctx := context.Background()
+	if unproven, err := h.loop.recoverServerInstances(ctx); err != nil || len(unproven) != 1 {
+		t.Fatalf("a server that is not yet gone must stay unproven: %v %v", unproven, err)
+	}
+	if err := h.loop.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, invocation.ProviderInvocationID); err != nil || found {
+		t.Fatalf("an attempt of an unproven server was settled: found=%t err=%v", found, err)
+	}
+	// The guardian publishes its stop evidence after the first pass.
+	evidence := processguardian.Result{Ownership: processguardian.Ownership{GuardID: instance.GuardID}, Quiescent: true}
+	writeServerStopEvidence(t, h.runtimeDir, evidence)
+	if unproven, err := h.loop.recoverServerInstances(ctx); err != nil || len(unproven) != 0 {
+		t.Fatalf("the later pass must prove the server from its evidence: %v %v", unproven, err)
+	}
+	if err := h.loop.settleLostProviderTerminalHandoffs(ctx, false); err != nil {
+		t.Fatal(err)
+	}
+	if settlement, found, err := h.store.GetProviderCompletionSettlementByInvocation(ctx, invocation.ProviderInvocationID); err != nil || !found || settlement.Outcome != executionstore.ProviderCompletionOutcomeCancelled {
+		t.Fatalf("a proven server must release its attempt: found=%t settlement=%#v err=%v", found, settlement, err)
+	}
+	var basis string
+	if err := h.db.QueryRow(`SELECT quiescence_basis FROM provider_server_instances WHERE instance_id=?`, instance.ID).Scan(&basis); err != nil || basis != string(providerrequest.ClosedByGuardian) {
+		t.Fatalf("closure basis %q %v", basis, err)
+	}
+	if _, err := os.Stat(filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence")); err == nil {
+		entries, _ := os.ReadDir(filepath.Join(h.runtimeDir, "provider-process-guards", "quiescence"))
+		if len(entries) != 0 {
+			t.Fatalf("the evidence that proved the stop must be removed once recorded: %d files", len(entries))
+		}
+	}
+}
+
+// writeServerStopEvidence writes a guardian's durable record where recovery
+// reads it: a file named by the hash of the guard ID.
+func writeServerStopEvidence(t *testing.T, runtimeRoot string, result processguardian.Result) {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"type": "result", "result": result})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := filepath.Join(runtimeRoot, "provider-process-guards", "quiescence")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	name := sha256.Sum256([]byte(result.GuardID))
+	if err := os.WriteFile(filepath.Join(directory, fmt.Sprintf("%x.json", name[:])), raw, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

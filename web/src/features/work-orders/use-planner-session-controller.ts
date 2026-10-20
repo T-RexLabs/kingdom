@@ -42,7 +42,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
     const entry = store.getOperations().find((item) => item.operationId === canonicalOperation.operationId) ?? {
       workspace, sessionId, operationId: canonicalOperation.operationId, kind: canonicalOperation.kind, sessionTitle: session.title,
     };
-    if (!isPlannerOperationTerminal(canonicalOperation.status) || (canonicalOperation.status === "done" && !canonicalOperation.activityReconciled)) store.trackOperation(entry);
+    if (!isPlannerOperationTerminal(canonicalOperation.status)) store.trackOperation(entry);
     store.observeOperation(entry, canonicalOperation);
     if (canonicalOperation.status === "error" || canonicalOperation.status === "cancelled") setActiveOperationId(canonicalOperation.operationId);
   }, [canonicalOperation, session, store, workspace, sessionId, setActiveOperationId]);
@@ -63,7 +63,7 @@ export function usePlannerSessionController(session: PlanningSessionDetail | und
     const pending: PlannerOperationState = {
       kind, operationId: `pending-${kind}-${sequence}`, status: "pending", lastEventSeq: 0,
       pendingReply: kind === "reply" && requestBody.reply ? { contentMarkdown: requestBody.reply.content_markdown, answer: requestBody.reply.answer_payload } : null,
-      replyText: "", formalizeText: "", error: null, activityReconciled: false, events: [], activityItems: [],
+      replyText: "", formalizeText: "", error: null, events: [], activityItems: [],
       ...(kind === "reply" ? { userMessageId: `pending-user-${sequence}`, userCreatedAt: now } : {}),
       ...(kind !== "formalize" ? { assistantMessageId: `pending-assistant-${sequence}`, assistantCreatedAt: now } : {}),
       ...optimistic,

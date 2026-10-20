@@ -542,10 +542,8 @@ CREATE TABLE provider_invocations (
   updated_at TEXT NOT NULL,
   terminal_handoff_pending_lease_owner TEXT NOT NULL DEFAULT '',
   terminal_handoff_pending_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_lease_version >= 0),
-  terminal_handoff_pending_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_handoff_pending_process_quiescent IN (0, 1)),
   terminal_recovery_required_lease_owner TEXT NOT NULL DEFAULT '',
   terminal_recovery_required_lease_version INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_lease_version >= 0),
-  terminal_recovery_required_process_quiescent INTEGER NOT NULL DEFAULT 0 CHECK (terminal_recovery_required_process_quiescent IN (0, 1)),
   FOREIGN KEY (attempt_id) REFERENCES attempt_executions(attempt_id),
   FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id),
   FOREIGN KEY (node_run_id) REFERENCES node_runs(node_run_id),
@@ -565,14 +563,10 @@ ON provider_invocations (run_id, node_run_id, created_at DESC, provider_invocati
 
 CREATE TABLE provider_process_guards (
   guard_id TEXT PRIMARY KEY CHECK (TRIM(guard_id) <> ''),
-  owner_kind TEXT NOT NULL CHECK (owner_kind IN ('work_order_attempt', 'planning_operation')),
-  owner_id TEXT NOT NULL CHECK (TRIM(owner_id) <> ''),
   provider_invocation_id TEXT NOT NULL,
   attempt_id TEXT NOT NULL DEFAULT '',
   run_id TEXT NOT NULL DEFAULT '',
   node_run_id TEXT NOT NULL DEFAULT '',
-  planning_operation_id TEXT NOT NULL DEFAULT '',
-  planning_session_id TEXT NOT NULL DEFAULT '',
   command_ordinal INTEGER NOT NULL CHECK (command_ordinal >= 1),
   lifecycle TEXT NOT NULL CHECK (lifecycle IN ('acknowledged', 'quiescent')),
   platform TEXT NOT NULL CHECK (platform IN ('unix_process_group', 'windows_job_object')),
@@ -601,11 +595,7 @@ CREATE TABLE provider_process_guards (
   evidence_cleaned_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  CHECK (
-    (owner_kind = 'work_order_attempt' AND owner_id = attempt_id AND attempt_id <> '' AND run_id <> '' AND node_run_id <> '' AND planning_operation_id = '' AND planning_session_id = '')
-    OR
-    (owner_kind = 'planning_operation' AND owner_id = planning_operation_id AND planning_operation_id <> '' AND planning_session_id <> '' AND attempt_id = '' AND run_id = '' AND node_run_id = '')
-  ),
+  CHECK (attempt_id <> '' AND run_id <> '' AND node_run_id <> ''),
   CHECK (
     (lifecycle = 'acknowledged' AND quiescent_at IS NULL AND quiescence_evidence_sha256 = '')
     OR
@@ -1269,23 +1259,6 @@ ON planning_operations (canonical_settlement_id);
 CREATE INDEX idx_planning_operations_context_snapshot
 ON planning_operations (planning_context_snapshot_id);
 
-CREATE TABLE planning_activity_reconciliations (
-  planning_operation_id TEXT PRIMARY KEY,
-  planning_provider_invocation_id TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('pending', 'completed')),
-  lease_owner TEXT NOT NULL DEFAULT '',
-  lease_expires_at TEXT,
-  lease_version INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  completed_at TEXT,
-  delivered_activity_count INTEGER NOT NULL DEFAULT 0 CHECK(delivered_activity_count >= 0),
-  FOREIGN KEY (planning_operation_id) REFERENCES planning_operations(operation_id) ON DELETE CASCADE,
-  FOREIGN KEY (planning_provider_invocation_id) REFERENCES planning_provider_invocations(planning_provider_invocation_id)
-);
-
-CREATE INDEX idx_planning_activity_reconciliations_claim
-ON planning_activity_reconciliations (status, lease_expires_at, planning_operation_id);
-
 CREATE TRIGGER planning_operation_context_binding_immutable
 BEFORE UPDATE OF planning_context_snapshot_id ON planning_operations
 WHEN NEW.planning_context_snapshot_id IS NOT OLD.planning_context_snapshot_id
@@ -1307,7 +1280,6 @@ CREATE TABLE planning_provider_invocations (
   provider_session_id TEXT NOT NULL DEFAULT '',
   invocation_state TEXT NOT NULL CHECK (invocation_state IN ('issued', 'open', 'settled_success', 'settled_failed', 'settled_cancelled', 'superseded')),
   completion_mode TEXT NOT NULL CHECK (completion_mode = 'server_response'),
-  process_guard_required INTEGER NOT NULL DEFAULT 0 CHECK (process_guard_required IN (0, 1)),
   opened_at TEXT,
   settled_at TEXT,
   failure_reason_code TEXT NOT NULL DEFAULT '',
@@ -1344,7 +1316,6 @@ CREATE TABLE retry_decisions (
   retry_index INTEGER NOT NULL CHECK (retry_index >= 0),
   max_retries INTEGER NOT NULL CHECK (max_retries >= 0),
   policy_delay_ns INTEGER NOT NULL CHECK (policy_delay_ns >= 0),
-  provider_retry_at TEXT,
   due_at TEXT NOT NULL,
   dispatch_state TEXT NOT NULL CHECK (dispatch_state IN ('pending', 'dispatched', 'not_applicable')),
   dispatched_at TEXT,

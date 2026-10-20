@@ -16,6 +16,7 @@ import (
 	"kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/idempotency"
 	kingdom "kingdom/internal/orchestration"
 	"kingdom/internal/providers/opencode"
@@ -319,7 +320,7 @@ func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithIsolatedResponse
 	rt, err := kingdom.NewRuntime(kingdom.Config{
 		DB:               db,
 		Paths:            kingdom.DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          opencode.NewMemoryAdapter(),
+		Provider:         opencode.NewMemoryAdapter(providerrequest.NewAuthority(db, nil)),
 		ProviderEngine:   "opencode",
 		DispatchInterval: 20 * time.Millisecond,
 		WorkspaceRoot:    t.TempDir(),

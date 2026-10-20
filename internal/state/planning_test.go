@@ -275,43 +275,6 @@ func TestPlanningContentBundleRollsBackAndSealsCompleteEntries(t *testing.T) {
 	}
 }
 
-func TestPlanningActivityContinuationBatchesPreserveLargePayloadAndLeaseFence(t *testing.T) {
-	store, operation := newPlanningActivityReconciliationTestStore(t)
-	ctx := context.Background()
-	now, expiry := "2026-04-21T16:00:00Z", "2026-04-21T16:01:00Z"
-	claimed, ok, err := store.ClaimPlanningActivityReconciliation(ctx, operation.OperationID, "worker", expiry, now)
-	if err != nil || !ok {
-		t.Fatalf("claim: %v", err)
-	}
-	payload := `{"detail":"` + strings.Repeat("x", 300<<10) + `tail"}`
-	for batch := 0; batch < 3; batch++ {
-		events := make([]AppendPlanningOperationEventRequest, 100)
-		for i := range events {
-			events[i] = AppendPlanningOperationEventRequest{EventID: fmt.Sprintf("event-%d-%d", batch, i), OperationID: operation.OperationID, Seq: i + 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now}
-		}
-		if batch == 0 {
-			events[0].PayloadJSON = payload
-		}
-		if err := store.AppendPlanningActivityReconciliationBatch(ctx, claimed, events, now, expiry); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := store.CompletePlanningActivityReconciliation(ctx, reconciliationCompletion(operation.OperationID, claimed.LeaseOwner, claimed.LeaseVersion, now, nil)); err != nil {
-		t.Fatal(err)
-	}
-	if count, err := store.PlanningActivityDeliveredCount(ctx, operation.OperationID); err != nil || count != 300 {
-		t.Fatalf("durable continuation count=%d err=%v", count, err)
-	}
-	events, err := store.ListOperationEventsAfterSeqPage(ctx, operation.OperationID, 0, 400)
-	if err != nil || len(events) != 301 || events[0].PayloadJSON != payload || events[300].EventType != "run.activity.reconciled" {
-		t.Fatalf("batched diagnostic replay: count=%d err=%v", len(events), err)
-	}
-	late := AppendPlanningOperationEventRequest{EventID: "late", OperationID: operation.OperationID, Seq: 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now}
-	if err := store.AppendPlanningActivityReconciliationBatch(ctx, claimed, []AppendPlanningOperationEventRequest{late}, now, expiry); !errors.Is(err, ErrPlanningLeaseConflict) {
-		t.Fatalf("completed reconciliation accepted stale writer: %v", err)
-	}
-}
-
 func TestListRecentCompletedOperationTelemetryUsesCurrentACPEvents(t *testing.T) {
 	t.Parallel()
 
@@ -676,7 +639,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 
 	startedAt := "2026-04-21T16:31:10Z"
 	statusRunning := PlanningOperationStatusRunning
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID: operation.OperationID,
 		Status:      &statusRunning,
 		StartedAt:   &startedAt,
@@ -710,7 +673,7 @@ func TestPlanningStoreOperationsAndEvents(t *testing.T) {
 	resultRef := "pm_2"
 	finishedAt := "2026-04-21T16:31:13Z"
 	statusSucceeded := PlanningOperationStatusSucceeded
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID: operation.OperationID,
 		Status:      &statusSucceeded,
 		ResultRef:   &resultRef,
@@ -1135,7 +1098,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 		t.Fatalf("create operation: %v", err)
 	}
 
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{OperationID: "po_optional"}); err != nil {
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{OperationID: "po_optional"}); err != nil {
 		t.Fatalf("update operation without optional changes: %v", err)
 	}
 
@@ -1150,7 +1113,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 		t.Fatalf("expected unchanged optional fields to remain set, got %+v", operation)
 	}
 
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID:     "po_optional",
 		LeaseOwner:      refString(""),
 		LeaseExpiresAt:  refString(""),
@@ -1179,7 +1142,7 @@ func TestPlanningStoreUpdateOperationOptionalFields(t *testing.T) {
 
 	leaseVersion := 2
 	statusSucceeded := PlanningOperationStatusSucceeded
-	if err := store.UpdateOperation(context.Background(), UpdatePlanningOperationRequest{
+	if err := updatePlanningOperationFixture(context.Background(), store, UpdatePlanningOperationRequest{
 		OperationID:     "po_optional",
 		Status:          &statusSucceeded,
 		LeaseOwner:      refString("worker-b"),

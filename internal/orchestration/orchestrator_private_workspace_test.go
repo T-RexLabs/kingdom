@@ -114,7 +114,7 @@ func TestPrivateInspectionCompletionNeverCapturesOrRestoresWorkspace(t *testing.
 			if err := os.WriteFile(filepath.Join(job.workspacePath, "implementation.txt"), []byte("private test output"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			configureSuccessfulHandoff(&job, "VERDICT: PASS\nVerified pinned implementation.")
+			h.configureSuccessfulHandoff(t, &job, "VERDICT: PASS\nVerified pinned implementation.")
 			h.loop.mailbox = state.NewMailboxStore(h.db, h.loop.schemas)
 			h.loop.events = state.NewAttemptEventIngestor(h.db, h.loop.schemas)
 			if err := h.fsStore.UpdateExecutionTargetState(context.Background(), invocation.RunID, "attempt_dirty", h.baselineSnapshotID, "", terminalHandoffFixtureNow); err != nil {

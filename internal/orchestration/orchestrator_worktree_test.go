@@ -17,6 +17,7 @@ import (
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
+	"kingdom/internal/testutil/providerledger"
 	"kingdom/internal/workspace"
 )
 
@@ -783,10 +784,11 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 		t.Fatalf("claim pending provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 	mustExec(t, db, fmt.Sprintf(`UPDATE attempt_executions SET state = 'running', started_at = '%s' WHERE attempt_id = '%s'`, quarantinedAt.Format(time.RFC3339Nano), pendingAttemptID))
-	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", LogicalSessionID: "session_worktree_quiescence", ProviderSessionID: "ses_worktree_quiescence", CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: quarantinedAt.Format(time.RFC3339Nano), CreatedAt: quarantinedAt.Format(time.RFC3339Nano), OpenedAt: quarantinedAt.Format(time.RFC3339Nano), ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
+	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{RequestIdentity: providerledger.Prepared("pinv_worktree_quiescence", "ses_worktree_quiescence").Identity, ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", LogicalSessionID: "session_worktree_quiescence", ProviderSessionID: "ses_worktree_quiescence", CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: quarantinedAt.Format(time.RFC3339Nano), CreatedAt: quarantinedAt.Format(time.RFC3339Nano), OpenedAt: quarantinedAt.Format(time.RFC3339Nano), ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate pending provider invocation: %v", err)
 	}
-	if _, err := execStore.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{GuardID: "guard_worktree_quiescence", ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "guardian", ChildPID: 2, ChildIdentityToken: "child", TreeID: "2", TreeIdentityToken: "child", QuiescenceCapability: "capability", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, StartedAt: quarantinedAt.Format(time.RFC3339Nano), AcknowledgedAt: quarantinedAt.Format(time.RFC3339Nano)}); err != nil {
+	newRequestFixture(db, nil).claimCommand(t, "pinv_worktree_quiescence")
+	if _, err := execStore.AcknowledgeProviderCommandGuardian(context.Background(), executionstore.AcknowledgeProviderCommandGuardianRequest{GuardID: "guard_worktree_quiescence", ProviderInvocationID: "pinv_worktree_quiescence", AttemptID: pendingAttemptID, RunID: runID, NodeRunID: "nr_1", CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "guardian", ChildPID: 2, ChildIdentityToken: "child", TreeID: "2", TreeIdentityToken: "child", QuiescenceCapability: "capability", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion, StartedAt: quarantinedAt.Format(time.RFC3339Nano), AcknowledgedAt: quarantinedAt.Format(time.RFC3339Nano)}); err != nil {
 		t.Fatalf("acknowledge pending provider guard: %v", err)
 	}
 
@@ -815,6 +817,13 @@ func TestAuthorizedManualReplayRecoversResourceLimitQuarantinedManagedWorktreeAf
 		t.Fatalf("pre-quiescence recovery touched managed worktree: prunes=%d adds=%d", prunes, adds)
 	}
 	mustExec(t, db, `UPDATE provider_process_guards SET lifecycle='quiescent', quiescent_at='`+quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)+`', quiescence_evidence_sha256='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', quiescence_evidence_json='{}' WHERE guard_id='guard_worktree_quiescence'`)
+	// The guardian's proof releases its command, and the request then ends
+	// without further work.
+	mustExec(t, db, `UPDATE provider_command_calls SET guard_id = 'guard_worktree_quiescence', completed_at = '`+quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano)+`'`)
+	if _, err := execStore.AbandonProviderRequest(context.Background(), "pinv_worktree_quiescence"); err != nil {
+		t.Fatalf("abandon pending provider request: %v", err)
+	}
+	mustExec(t, db, `UPDATE provider_invocations SET invocation_state = 'superseded' WHERE provider_invocation_id = 'pinv_worktree_quiescence'`)
 	recovered, recoveryErr := loop.recoverQuarantinedExecutionTargetForManualReplay(context.Background(), runID, "nr_1", target, quarantinedAt.Add(2*time.Second).Format(time.RFC3339Nano))
 	if !errors.Is(recoveryErr, errExecutionTargetRecoveryInProgress) {
 		t.Fatalf("first bounded recovery error=%v, want recovery-in-progress", recoveryErr)

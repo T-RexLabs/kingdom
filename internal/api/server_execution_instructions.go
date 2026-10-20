@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"kingdom/internal/core/errorcatalog"
-	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -50,8 +49,9 @@ func (s *Server) prepareExecutionInstructions(ctx context.Context, runID, attemp
 		return nil, 0, err
 	}
 	defer system.Close()
-	invocationID, err := state.InitialExecutionInvocation(ctx, s.db, runID, attemptID)
-	if err != nil {
+	// The captured input is shown only once a provider invocation exists, because
+	// until then it has not been issued to any provider.
+	if _, err := state.InitialExecutionInvocation(ctx, s.db, runID, attemptID); err != nil {
 		return nil, 0, err
 	}
 	file, err := os.CreateTemp("", "kingdom-instructions-*")
@@ -74,11 +74,12 @@ func (s *Server) prepareExecutionInstructions(ctx context.Context, runID, attemp
 	if _, err = io.WriteString(file, "\n\n# User Instructions\n\n"); err != nil {
 		return nil, 0, err
 	}
-	err = opencode.WriteInvocationPrompt(ctx, func(ctx context.Context) (io.ReadCloser, error) {
-		reader, _, err := state.OpenRunExecutionPrompt(ctx, s.db, runID, attemptID)
-		return reader, err
-	}, attemptID, invocationID, file)
+	user, _, err := state.OpenRunExecutionPrompt(ctx, s.db, runID, attemptID)
 	if err != nil {
+		return nil, 0, err
+	}
+	_, err = io.Copy(file, user)
+	if err = errors.Join(err, user.Close()); err != nil {
 		return nil, 0, err
 	}
 	size, err := file.Seek(0, io.SeekCurrent)

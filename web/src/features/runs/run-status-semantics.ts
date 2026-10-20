@@ -178,6 +178,7 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 		case "attempt.final_rework_queued":
 			return "rotate";
 			case "attempt.timeout_warning":
+			case "attempt.recovery_blocked":
 				return "alert";
 			case "attempt.progress":
 				return isPreLaunchProgressReasonCode(event.reason_code) ? "play" : "activity";
@@ -217,6 +218,8 @@ export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type
 			return liveLabel ?? "execution update";
 		case "attempt.timeout_warning":
 			return "approaching timeout";
+		case "attempt.recovery_blocked":
+			return "recovery blocked";
 		default:
 			return undefined;
 	}

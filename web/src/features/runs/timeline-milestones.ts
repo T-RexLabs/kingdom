@@ -184,6 +184,11 @@ export function buildRawEventLabel(
     return { label: "Node Failed", detail: detail || undefined };
   }
 
+  if (event.event_type === "attempt.recovery_blocked") {
+    const operatorText = typeof payload.operator_text === "string" ? payload.operator_text : "";
+    return { label: `${name || "Node"} Recovery Blocked`, detail: operatorText || undefined };
+  }
+
   if (event.event_type === "attempt.timeout_warning") {
     const elapsedMs = typeof payload.elapsed_ms === "number" ? payload.elapsed_ms : 0;
     const timeoutMs = typeof payload.timeout_ms === "number" ? payload.timeout_ms : 0;

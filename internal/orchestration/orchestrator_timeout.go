@@ -2,7 +2,6 @@ package orchestration
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -194,7 +193,7 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 	}
 	defer o.releaseExecutionSettlement(attemptID, "timeout")
 
-	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID, now)
+	cancelDiagnostics, err := o.cancelTimedOutAttempt(ctx, attemptID)
 	if err != nil {
 		return err
 	}
@@ -209,14 +208,6 @@ func (o *orchestrationLoop) failTimedOutAttempt(ctx context.Context, run runSnap
 	reasonCode := "timeout"
 	reasonText := "node attempt exceeded node wall-clock timeout"
 	errorText := "node timeout exceeded"
-	if executionNeverStarted(executionDiagnostics, cancelDiagnostics) {
-		reasonText = "node execution never started before wall-clock timeout"
-		errorText = (&executionNotStartedError{
-			AttemptID: attemptID,
-			NodeID:    attempt.NodeID,
-			Reason:    "provider execution never became observable before timeout",
-		}).Error()
-	}
 
 	diagnosticsRaw, err := json.Marshal(map[string]any{
 		"reason_code":           reasonCode,
@@ -282,42 +273,26 @@ func timeoutEnforcementSkipsDurableState(state string) bool {
 	}
 }
 
-func executionNeverStarted(executionDiagnostics, cancelDiagnostics map[string]any) bool {
-	if eventCount, ok := executionDiagnostics["event_count"].(int); ok && eventCount > 0 {
-		return false
-	}
-	if eventCount, ok := executionDiagnostics["event_count"].(int64); ok && eventCount > 0 {
-		return false
-	}
-	if eventCount, ok := executionDiagnostics["event_count"].(float64); ok && eventCount > 0 {
-		return false
-	}
-	if strings.TrimSpace(fmt.Sprint(cancelDiagnostics["result"])) == "attempt_not_found" {
-		return true
-	}
-	return strings.Contains(strings.ToLower(strings.TrimSpace(fmt.Sprint(executionDiagnostics["stream_error"]))), "attempt not found")
-}
-
-func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID, occurredAt string) (map[string]any, error) {
-	request := opencode.CancelRequest{
-		SessionID:  o.preferredAttemptSessionID(ctx, attemptID),
-		AttemptID:  attemptID,
-		Reason:     "node wall-clock timeout exceeded",
-		OccurredAt: occurredAt,
-	}
-
+func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID string) (map[string]any, error) {
 	diagnostics := map[string]any{
 		"attempt_id":      attemptID,
-		"session_id":      request.SessionID,
+		"session_id":      o.preferredAttemptSessionID(ctx, attemptID),
 		"cancel_grace_ms": o.cancelGrace.Milliseconds(),
 		"cancel_force_ms": o.cancelForce.Milliseconds(),
 	}
 
 	graceCtx, cancelGrace := context.WithTimeout(ctx, o.cancelGrace)
 	defer cancelGrace()
-	err := o.adapter.Cancel(graceCtx, request)
+	err := o.provider.Cancel(graceCtx, attemptID)
 	if err == nil {
 		diagnostics["result"] = "grace_success"
+		return diagnostics, nil
+	}
+	var notFound *opencode.AttemptNotFoundError
+	if errors.As(err, &notFound) {
+		// The request has left the provider: its worker has returned and is
+		// settling it, so there is nothing left to interrupt.
+		diagnostics["result"] = "no_live_request"
 		return diagnostics, nil
 	}
 
@@ -329,7 +304,7 @@ func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID
 		}
 		forceCtx, cancelForce := context.WithTimeout(context.WithoutCancel(ctx), o.cancelForce)
 		defer cancelForce()
-		if forceErr := o.adapter.Cancel(forceCtx, request); forceErr == nil {
+		if forceErr := o.provider.Cancel(forceCtx, attemptID); forceErr == nil {
 			diagnostics["result"] = "force_success"
 			return diagnostics, nil
 		} else {
@@ -342,132 +317,29 @@ func (o *orchestrationLoop) cancelTimedOutAttempt(ctx context.Context, attemptID
 	return diagnostics, fmt.Errorf("cancel timed-out attempt %s: %w", attemptID, err)
 }
 
+// collectAttemptExecutionDiagnostics reports what the durable record shows
+// about the attempt's provider request, which is all a shared server lets
+// Kingdom observe without a stream of its own.
 func (o *orchestrationLoop) collectAttemptExecutionDiagnostics(ctx context.Context, attemptID, sessionID, observedAt string) map[string]any {
 	diagnostics := map[string]any{
 		"attempt_id":  strings.TrimSpace(attemptID),
 		"session_id":  strings.TrimSpace(sessionID),
 		"observed_at": strings.TrimSpace(observedAt),
 	}
-	if strings.TrimSpace(attemptID) == "" {
+	if strings.TrimSpace(attemptID) == "" || o == nil || o.db == nil {
 		return diagnostics
 	}
-	if strings.TrimSpace(sessionID) == "" {
-		diagnostics["stream_error"] = "missing durable attempt session id"
-		return diagnostics
-	}
-	if o == nil || o.adapter == nil {
-		diagnostics["stream_error"] = "execution adapter unavailable"
-		return diagnostics
-	}
-
-	streamCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer cancel()
-	eventCh, errCh, err := o.adapter.Stream(streamCtx, opencode.StreamRequest{SessionID: sessionID, AttemptID: attemptID})
-	if err != nil {
-		diagnostics["stream_error"] = err.Error()
-		return diagnostics
-	}
-
-	var firstEventAt string
-	var lastEventAt string
-	eventCount := 0
-	eventTypeCounts := map[string]int{}
-	lastProgressTextLen := 0
-	lastProgressTextSHA := ""
-	lastProgressTextExcerpt := ""
-	terminalEventSeen := false
-	stepFinishSeen := false
-	succeededEventSeen := false
-	failedEventSeen := false
-	cancelledEventSeen := false
-	for event := range eventCh {
-		eventCount++
-		eventType := strings.TrimSpace(event.EventType)
-		eventTypeCounts[eventType]++
-		if eventType == opencode.AttemptEventTypeSucceeded || eventType == opencode.AttemptEventTypeFailed || eventType == opencode.AttemptEventTypeCancelled {
-			terminalEventSeen = true
-		}
-		if eventType == opencode.AttemptEventTypeSucceeded {
-			succeededEventSeen = true
-		}
-		if eventType == opencode.AttemptEventTypeFailed {
-			failedEventSeen = true
-		}
-		if eventType == opencode.AttemptEventTypeCancelled {
-			cancelledEventSeen = true
-		}
-		if firstEventAt == "" {
-			firstEventAt = strings.TrimSpace(event.OccurredAt)
-		}
-		lastEventAt = strings.TrimSpace(event.OccurredAt)
-		if strings.TrimSpace(event.PayloadJSON) != "" {
-			var payload map[string]any
-			if decodeErr := json.Unmarshal([]byte(event.PayloadJSON), &payload); decodeErr == nil {
-				if text, ok := payload["text"].(string); ok && strings.TrimSpace(text) != "" {
-					lastProgressTextLen = len(text)
-					trimmed := strings.TrimSpace(text)
-					if len(trimmed) > 600 {
-						trimmed = trimmed[:600]
-					}
-					lastProgressTextExcerpt = trimmed
-					sum := sha256.Sum256([]byte(text))
-					lastProgressTextSHA = fmt.Sprintf("%x", sum[:])
-				}
-				if streamDiag, ok := payload["stream_diagnostics"]; ok {
-					diagnostics["stream_diagnostics"] = streamDiag
-				}
-				if executionPathDiag, ok := payload["execution_path_diagnostics"]; ok {
-					diagnostics["execution_path_diagnostics"] = executionPathDiag
-					if diagMap, ok := executionPathDiag.(map[string]any); ok {
-						if seen, ok := diagMap["step_finish_seen"].(bool); ok && seen {
-							stepFinishSeen = true
-						}
-					}
-				}
-				if snapshot, ok := payload["execution_path_diagnostics_snapshot"]; ok {
-					diagnostics["execution_path_diagnostics_snapshot"] = snapshot
-					if snapshotMap, ok := snapshot.(map[string]any); ok {
-						if seen, ok := snapshotMap["step_finish_seen"].(bool); ok && seen {
-							stepFinishSeen = true
-						}
-					}
-				}
-				if timeoutType, ok := payload["timeout_type"]; ok {
-					diagnostics["timeout_type"] = timeoutType
-				}
-			}
-		}
-	}
-
-	if errCh != nil {
-		select {
-		case streamErr := <-errCh:
-			if streamErr != nil && !errors.Is(streamErr, context.DeadlineExceeded) && !errors.Is(streamErr, context.Canceled) {
-				diagnostics["stream_error"] = streamErr.Error()
-			}
-		default:
-		}
-	}
-
-	diagnostics["event_count"] = eventCount
-	diagnostics["event_types"] = eventTypeCounts
-	diagnostics["terminal_event_seen"] = terminalEventSeen
-	diagnostics["succeeded_event_seen"] = succeededEventSeen
-	diagnostics["failed_event_seen"] = failedEventSeen
-	diagnostics["cancelled_event_seen"] = cancelledEventSeen
-	diagnostics["step_finish_seen"] = stepFinishSeen
-	diagnostics["last_progress_text_len"] = lastProgressTextLen
-	if strings.TrimSpace(lastProgressTextSHA) != "" {
-		diagnostics["last_progress_text_sha"] = lastProgressTextSHA
-	}
-	if strings.TrimSpace(lastProgressTextExcerpt) != "" {
-		diagnostics["last_progress_text_excerpt"] = lastProgressTextExcerpt
-	}
-	if firstEventAt != "" {
-		diagnostics["first_event_at"] = firstEventAt
-	}
-	if lastEventAt != "" {
-		diagnostics["last_event_at"] = lastEventAt
+	var dispatched, admissionClosed sql.NullBool
+	err := o.db.QueryRowContext(ctx, `SELECT pr.dispatch_issued_at IS NOT NULL, pr.admission_closed_at IS NOT NULL
+		FROM attempt_executions ae JOIN provider_requests pr ON pr.run_invocation_id = ae.active_provider_invocation_id
+		WHERE ae.attempt_id = ?`, attemptID).Scan(&dispatched, &admissionClosed)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		diagnostics["request_error"] = err.Error()
+	default:
+		diagnostics["request_dispatched"] = dispatched.Bool
+		diagnostics["request_admission_closed"] = admissionClosed.Bool
 	}
 	return diagnostics
 }

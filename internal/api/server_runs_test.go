@@ -14,8 +14,10 @@ import (
 	gen "kingdom/internal/apigen"
 	"kingdom/internal/core/providerexecution"
 	coreverdict "kingdom/internal/core/verdict"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestCanonicalFailedNodeReasonUsesGenericIncompleteTurnCopy(t *testing.T) {
@@ -3055,7 +3057,14 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 		t.Fatalf("claim attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 	mustExecSQL(t, db, `UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, now, attemptID)
+	// A request is admitted only while its run is running.
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatal(err)
+	}
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = ?`, runID)
 	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity:      providerledger.Prepared("inv-review-detail", "ses-review-detail").Identity,
 		ProviderInvocationID: "inv-review-detail",
 		AttemptID:            attemptID,
 		RunID:                runID,
@@ -3071,21 +3080,9 @@ func TestServerGetRunExecutionReturnsObservedOutputDetail(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	exitCode := 0
-	observation := providerexecution.InvocationStreamObservation{
-		ProviderSessionID:      "ses-review-detail",
-		FinalTurnID:            "turn-review-detail",
-		FinalStepID:            "step-review-detail",
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  "VERDICT: REWORK\n\nCanonical reviewer response.",
-		ProcessExited:          true,
-		ProcessExitCode:        &exitCode,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-		ProcessQuiescent:       true,
-	}
+	observation := providerledger.Success(providerledger.Prepared("inv-review-detail", "ses-review-detail"), "inv-review-detail", "VERDICT: REWORK\n\nCanonical reviewer response.").StreamObservation
+	recordRequestTerminal(t, db, "inv-review-detail", observation.Request.Terminal)
+	mustExecSQL(t, db, `UPDATE workflow_runs SET run_status = ? WHERE run_id = ?`, runStatus, runID)
 	handoff, err := execStore.PersistProviderTerminalHandoff(context.Background(), executionstore.PersistProviderTerminalHandoffRequest{
 		ProviderInvocationID: "inv-review-detail",
 		AttemptID:            attemptID,
@@ -3366,27 +3363,8 @@ func TestServerGetRunExecutionTreatsCommittedProviderFailuresWithInvocationAsTer
 		mustExecSQL(t, db, `INSERT INTO agents (agent_id, role_id, display_name, status, parent_agent_id, spawn_depth, created_at, updated_at) VALUES (?, 'reviewer', 'Reviewer', 'idle', NULL, 0, ?, ?)`, agentID, now, now)
 		mustExecSQL(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES (?, ?, 'execution_review', ?, 1, ?, 'reviewer', ?, 1, ?, ?)`, nodeRunID, runID, idx+1, tt.expectedNodeState, agentID, now, now)
 		mustExecSQL(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES (?, ?, ?, ?, 'provider_backed', 'server_response', '', NULL, 1, ?, ?, ?, ?, ?, 'provider_incomplete_turn', 'terminalized before settlement linked', ?, ?)`, attemptID, runID, nodeRunID, tt.state, fmt.Sprintf("session-%d", idx+1), fmt.Sprintf("ses-%d", idx+1), now, now, now, now, now)
-		execStore := executionstore.New(db)
-		if _, err := execStore.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
-			ProviderInvocationID: fmt.Sprintf("inv-%d", idx+1),
-			AttemptID:            attemptID,
-			RunID:                runID,
-			NodeRunID:            nodeRunID,
-			LogicalSessionID:     fmt.Sprintf("session-%d", idx+1),
-			CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
-			IssuedAt:             now,
-			CreatedAt:            now,
-		}); err != nil {
-			t.Fatalf("%s: create provider invocation: %v", tt.name, err)
-		}
-		if _, err := execStore.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{
-			ProviderInvocationID: fmt.Sprintf("inv-%d", idx+1),
-			AttemptID:            attemptID,
-			ProviderSessionID:    fmt.Sprintf("ses-%d", idx+1),
-			OpenedAt:             now,
-		}); err != nil {
-			t.Fatalf("%s: mark provider invocation open: %v", tt.name, err)
-		}
+		mustExecSQL(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, opened_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'open', 'server_response', ?, ?, ?)`, fmt.Sprintf("inv-%d", idx+1), attemptID, runID, nodeRunID, fmt.Sprintf("session-%d", idx+1), fmt.Sprintf("ses-%d", idx+1), now, now, now)
+		mustExecSQL(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = ? WHERE attempt_id = ?`, fmt.Sprintf("inv-%d", idx+1), attemptID)
 
 		res := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/executions/" + attemptID})
 		if res.Code != http.StatusOK {
@@ -3719,4 +3697,34 @@ func TestServerRunExecutionActivityReturnsNotFoundForMismatchedRunAttempt(t *tes
 		t.Fatalf("expected 404, got %d: %s", res.Code, res.Body.String())
 	}
 	assertErrorCode(t, res.Body.Bytes(), "dependency_blocked")
+}
+
+// recordRequestTerminal does what the shared server does around an activated
+// request: it issues dispatch, closes admission, and stores the terminal
+// evidence that canonical settlement requires.
+func recordRequestTerminal(t *testing.T, db *sql.DB, invocationID string, terminal providerexecution.RequestTerminal) {
+	t.Helper()
+	ctx := context.Background()
+	binding, err := providerrequest.Get(ctx, db, invocationID)
+	if err != nil {
+		t.Fatalf("load request binding for %s: %v", invocationID, err)
+	}
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	now := time.Now()
+	if err := providerrequest.IssueDispatchTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
+		t.Fatalf("issue dispatch for %s: %v", invocationID, err)
+	}
+	if err := providerrequest.CloseAdmissionTx(ctx, tx, binding.ID, binding.Identity, binding.Lease, now); err != nil {
+		t.Fatalf("close admission for %s: %v", invocationID, err)
+	}
+	if err := providerrequest.RecordTerminalTx(ctx, tx, binding.ID, binding.Lease, terminal); err != nil {
+		t.Fatalf("record terminal for %s: %v", invocationID, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }

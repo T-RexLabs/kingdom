@@ -958,7 +958,7 @@ func TestExecuteSummonRunsUntilContextCanceled(t *testing.T) {
 	configPath := filepath.Join(root, ".kingdom", "config.yaml")
 	configPort := reserveFreePort(t)
 	rewriteConfigListen(t, configPath, "127.0.0.1:"+configPort)
-	rewriteConfigProviderSettings(t, configPath, "opencode", false, "/bin/sh")
+	rewriteConfigProviderSettings(t, configPath, "opencode", "/bin/sh")
 	overridePort := reserveFreePort(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
@@ -992,7 +992,7 @@ func TestExecuteSummonRejectsExplicitZeroPort(t *testing.T) {
 	configPath := filepath.Join(root, ".kingdom", "config.yaml")
 	configPort := reserveFreePort(t)
 	rewriteConfigListen(t, configPath, "127.0.0.1:"+configPort)
-	rewriteConfigProviderSettings(t, configPath, "opencode", false, "/bin/sh")
+	rewriteConfigProviderSettings(t, configPath, "opencode", "/bin/sh")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
 	defer cancel()
@@ -1496,14 +1496,13 @@ func rewriteConfigListen(t *testing.T, configPath string, listen string) {
 	}
 }
 
-func rewriteConfigProviderSettings(t *testing.T, configPath string, engine string, strict bool, binaryPath string) {
+func rewriteConfigProviderSettings(t *testing.T, configPath string, engine string, binaryPath string) {
 	t.Helper()
 	cfg, err := readInstallConfig(configPath)
 	if err != nil {
 		t.Fatalf("read config: %v", err)
 	}
 	cfg.Provider.Engine = engine
-	cfg.Provider.Strict = strict
 	cfg.Provider.BinaryPath = strings.TrimSpace(binaryPath)
 	if err := writeInstallConfig(configPath, cfg, true); err != nil {
 		t.Fatalf("write config: %v", err)

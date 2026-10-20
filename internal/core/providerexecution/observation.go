@@ -2,13 +2,9 @@ package providerexecution
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
-	"math/big"
 	"strings"
-	"time"
 
 	"kingdom/internal/core/errorcatalog"
 )
@@ -23,16 +19,15 @@ type TokenUsage struct {
 }
 
 type InvocationStreamObservation struct {
-	ProviderSessionID        string            `json:"provider_session_id,omitempty"`
-	FinalTurnID              string            `json:"final_turn_id,omitempty"`
-	FinalStepID              string            `json:"final_step_id,omitempty"`
-	FinalSequence            int               `json:"final_sequence"`
-	RawFinishReason          string            `json:"raw_finish_reason,omitempty"`
-	NormalizedFinishReason   string            `json:"normalized_finish_reason,omitempty"`
-	CanonicalTerminalText    string            `json:"canonical_terminal_text,omitempty"`
-	CanonicalTerminalTextRef *ContentReference `json:"canonical_terminal_text_ref,omitempty"`
-	StagedTerminalContent    *StagedContent    `json:"-"`
-	TerminalTextOpener       ContentOpener     `json:"-"`
+	Request                  *RequestObservation `json:"request,omitempty"`
+	ProviderSessionID        string              `json:"provider_session_id,omitempty"`
+	FinalTurnID              string              `json:"final_turn_id,omitempty"`
+	RawFinishReason          string              `json:"raw_finish_reason,omitempty"`
+	NormalizedFinishReason   string              `json:"normalized_finish_reason,omitempty"`
+	CanonicalTerminalText    string              `json:"canonical_terminal_text,omitempty"`
+	CanonicalTerminalTextRef *ContentReference   `json:"canonical_terminal_text_ref,omitempty"`
+	StagedTerminalContent    *StagedContent      `json:"-"`
+	TerminalTextOpener       ContentOpener       `json:"-"`
 	// ReleaseContent acknowledges durable ingestion of the complete terminal
 	// and diagnostic content. It retires adapter staging/replay storage.
 	ReleaseContent func() error `json:"-"`
@@ -44,13 +39,6 @@ type InvocationStreamObservation struct {
 	ToolCalls                   []InvocationToolObservation `json:"tool_calls,omitempty"`
 	PendingToolCount            int                         `json:"pending_tool_count"`
 	Tokens                      TokenUsage                  `json:"tokens"`
-	ProcessExited               bool                        `json:"process_exited"`
-	ProcessExitCode             *int                        `json:"process_exit_code,omitempty"`
-	ProcessExitSignal           *int                        `json:"process_exit_signal,omitempty"`
-	StdoutDrained               bool                        `json:"stdout_drained"`
-	StderrDrained               bool                        `json:"stderr_drained"`
-	ProcessQuiescent            bool                        `json:"process_quiescent"`
-	ProcessGuards               []ProcessGuardObservation   `json:"process_guards,omitempty"`
 	TimedOut                    bool                        `json:"timed_out"`
 	Cancelled                   bool                        `json:"cancelled"`
 	ProviderErrorPresent        bool                        `json:"provider_error_present"`
@@ -122,73 +110,10 @@ func providerErrorFieldContains(value string, terms ...string) bool {
 	return false
 }
 
-// ProcessGuardObservation intentionally excludes the guardian's raw
-// quiescence capability. It is persisted only through orchestration callbacks.
-type ProcessGuardObservation struct {
-	CommandOrdinal int    `json:"command_ordinal"`
-	GuardID        string `json:"guard_id,omitempty"`
-	GuardianPID    int    `json:"guardian_pid,omitempty"`
-	ChildPID       int    `json:"child_pid,omitempty"`
-	TreeID         int    `json:"tree_id,omitempty"`
-	Platform       string `json:"platform,omitempty"`
-	Quiescent      bool   `json:"quiescent"`
-	Forced         bool   `json:"forced"`
-	EvidenceSHA256 string `json:"evidence_sha256,omitempty"`
-	FailureCode    string `json:"failure_code,omitempty"`
-	FailureText    string `json:"failure_text,omitempty"`
-}
-
 type InvocationToolObservation struct {
 	ID     string `json:"id"`
 	Name   string `json:"name,omitempty"`
 	Status string `json:"status,omitempty"`
-}
-
-// RetryAtFromDiagnostics resolves the durable provider retry contract. An
-// absolute retry_at is authoritative when both forms are present.
-func RetryAtFromDiagnostics(raw string, occurredAt time.Time) *time.Time {
-	var diagnostics map[string]any
-	if json.Unmarshal([]byte(raw), &diagnostics) != nil {
-		return nil
-	}
-	if value, ok := diagnostics["retry_at"].(string); ok {
-		if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(value)); err == nil {
-			parsed = parsed.UTC()
-			return &parsed
-		}
-	}
-	if value, ok := diagnostics["retry_after_ms"].(float64); ok {
-		delay, valid := RetryAfterDurationFromMilliseconds(value)
-		if !valid {
-			return nil
-		}
-		parsed := occurredAt.UTC().Add(delay)
-		return &parsed
-	}
-	return nil
-}
-
-// RetryAfterDurationFromMilliseconds converts an untrusted provider delay
-// without rounding it down or overflowing time.Duration.
-func RetryAfterDurationFromMilliseconds(value float64) (time.Duration, bool) {
-	if value < 0 || math.IsInf(value, 0) || math.IsNaN(value) {
-		return 0, false
-	}
-
-	// Float multiplication loses precision near MaxInt64. Convert the exact
-	// float representation to nanoseconds and round up, preserving a provider
-	// minimum delay even at the duration boundary.
-	milliseconds := new(big.Rat).SetFloat64(value)
-	nanoseconds := new(big.Rat).Mul(milliseconds, big.NewRat(int64(time.Millisecond), 1))
-	durationNS, remainder := new(big.Int), new(big.Int)
-	durationNS.QuoRem(nanoseconds.Num(), nanoseconds.Denom(), remainder)
-	if remainder.Sign() != 0 {
-		durationNS.Add(durationNS, big.NewInt(1))
-	}
-	if durationNS.Sign() < 0 || !durationNS.IsInt64() {
-		return 0, false
-	}
-	return time.Duration(durationNS.Int64()), true
 }
 
 type InvalidServerResponseObservationError struct {
@@ -215,12 +140,6 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	}
 	if strings.TrimSpace(observation.FinalTurnID) == "" {
 		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final turn identity")
-	}
-	if strings.TrimSpace(observation.FinalStepID) == "" {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal response is missing final step identity")
-	}
-	if observation.FinalSequence <= 0 {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_malformed_protocol"), "provider terminal step is missing a valid stream sequence")
 	}
 	reader, err := OpenTerminalText(context.Background(), observation)
 	if err != nil {
@@ -250,17 +169,11 @@ func ValidateServerResponseSuccess(observation InvocationStreamObservation) erro
 	if observation.LaterEventAfterTerminal {
 		return fail("provider_incomplete_turn", "provider stream remained active after the terminal response")
 	}
-	if !observation.ProcessExited || observation.ProcessExitCode == nil || *observation.ProcessExitCode != 0 || (observation.ProcessExitSignal != nil && *observation.ProcessExitSignal != 0) {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider process did not exit successfully")
-	}
-	if !observation.StdoutDrained || !observation.StderrDrained {
-		return fail(NormalizeAdapterTerminalFailureCode("provider_process_failed"), "provider output streams were not fully drained")
+	if err := validateRequestSuccess(observation); err != nil {
+		return fail("provider_incomplete_turn", err.Error())
 	}
 	if observation.TimedOut {
 		return fail("timeout", "provider execution timed out")
-	}
-	if observation.Cancelled {
-		return fail("provider_cancelled", "provider execution was cancelled")
 	}
 	if observation.ProviderErrorPresent || strings.TrimSpace(observation.ProviderError) != "" {
 		return fail(string(CanonicalProviderErrorCode(observation.ProviderErrorCode, observation.ProviderErrorCategory, observation.ProviderErrorStatus)), strings.TrimSpace(observation.ProviderError))

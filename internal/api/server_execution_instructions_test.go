@@ -45,15 +45,15 @@ func TestExecutionInstructionsExactScopedAndVerified(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	// Capture occurs before workspace preparation; do not publish a partial
-	// user channel that omits the invocation metadata sent at launch.
+	// Capture occurs before workspace preparation; do not publish input that
+	// has not been issued to a provider.
 	pending := performJSONRequest(t, handler, requestSpec{method: http.MethodGet, path: path})
 	if pending.Code != http.StatusNotFound || pending.Header().Get("Content-Disposition") != "" {
 		t.Fatalf("unissued input published: status=%d", pending.Code)
 	}
 
 	mustExecSQL(t, db, `INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES (?,?,?, ?,'settled_success','server_response','2026-09-30T10:00:00Z','2026-09-30T10:00:00Z')`, "instructions-invocation", attemptID, runID, nodeRunID)
-	expected := "# System Instructions\n\n" + system + "\n\n# User Instructions\n\n" + strings.TrimRight(text, "\n") + "\n\nRuntime Invocation Metadata:\nAttemptID: " + attemptID + "\nKingdomProviderInvocationID: instructions-invocation"
+	expected := "# System Instructions\n\n" + system + "\n\n# User Instructions\n\n" + text
 	// Later continuation authority must not rewrite the initial captured input.
 	mustExecSQL(t, db, `INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,invocation_state,completion_mode,created_at,updated_at) VALUES (?,?,?,?,'settled_success','server_response','2026-09-30T10:01:00Z','2026-09-30T10:01:00Z')`, "instructions-continuation", attemptID, runID, nodeRunID)
 

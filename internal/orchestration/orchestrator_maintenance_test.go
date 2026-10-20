@@ -12,60 +12,6 @@ import (
 	executionstore "kingdom/internal/execution/store"
 )
 
-func TestMaintenanceLostFileScanCompletesAcrossCapacityBoundaries(t *testing.T) {
-	h := newTerminalHandoffHarness(t)
-	h.loop.maintenance.limit = 1
-	const attempts = providerTerminalHandoffPassLimit + 1
-	invocations := make([]executionstore.ProviderInvocation, 0, attempts)
-	for i := 1; i <= attempts; i++ {
-		invocation := h.addInvocation(t, i)
-		h.runningHandoffJob(t, invocation, i) // Durable quiescence, deliberately no handoff file.
-		invocations = append(invocations, invocation)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-	runtime := &Runtime{orchestrator: h.loop}
-	runtime.setStartupRecoveryPending(false, true, true)
-	for pass := 0; pass < attempts*2 && runtime.pendingStartupRecoveryStage() == startupRecoveryStageHandoffs; pass++ {
-		// Make admission deterministic: a replay cannot finish and free its sole
-		// slot until the scan has returned. No host-speed assumptions are needed.
-		unlocks := make([]func(), 0, len(invocations))
-		for _, invocation := range invocations {
-			unlocks = append(unlocks, h.loop.lockProviderTerminalHandoffFile(invocation.ProviderInvocationID))
-		}
-		_, err := runtime.replayPendingStartupRecovery(ctx)
-		for _, unlock := range unlocks {
-			unlock()
-		}
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := h.loop.waitForMaintenance(ctx); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := runtime.pendingStartupRecoveryStage(); got != startupRecoveryStageLostHandoffs {
-		t.Fatalf("completed missing-file replay must release lost-handoff recovery after %d candidates; stage=%v", attempts, got)
-	}
-	for {
-		visited, err := runtime.replayPendingLostProviderTerminalHandoffsWithLimit(ctx, 16)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if visited < 16 {
-			break
-		}
-	}
-	var failed int
-	if err := h.db.QueryRow(`SELECT COUNT(*) FROM attempt_executions
-		WHERE failure_code = 'provider_terminal_handoff_lost' AND state = 'committed_failure'`).Scan(&failed); err != nil {
-		t.Fatal(err)
-	}
-	if failed != attempts {
-		t.Fatalf("genuinely lost handoffs must settle after file authority scan: failed=%d want=%d", failed, attempts)
-	}
-}
-
 func TestMaintenanceOutboxScanAdvancesPastBusyBatch(t *testing.T) {
 	loop, first := completionTimestampFixture(t)
 	loop.now = func() time.Time { return time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC) }
@@ -129,7 +75,7 @@ func TestProviderWorkerEndsAtDurableHandoffBeforeSnapshotFinalization(t *testing
 	job.baseSnapshotID = h.baselineSnapshotID
 	job.sessionID = invocation.LogicalSessionID
 	job.expectedLeaseExpiresAt = "2099-03-01T12:10:00Z"
-	h.loop.adapter = newScriptedExecutionAdapter(nil)
+	h.requests.respondWith(newScriptedExecutionAdapter(nil))
 	h.loop.asyncDrain = newExecutionDrainTracker()
 	h.loop.now = func() time.Time { return time.Date(2026, 3, 1, 12, 0, 2, 0, time.UTC) }
 	unlock := h.loop.lockRunWorkspace(invocation.RunID)
@@ -181,8 +127,16 @@ func TestProviderWorkerEndsAtDurableHandoffBeforeSnapshotFinalization(t *testing
 	}
 }
 
-func TestCancellationStopDoesNotRestoreUntilOrdinaryMaintenanceAdmission(t *testing.T) {
-	h, invocation, _ := staleCancellationFixture(t)
+func TestCancellationStopRunsInItsOwnSlotAndNeverRestoresTheWorkspace(t *testing.T) {
+	h := newTerminalHandoffHarness(t)
+	invocation := h.addInvocation(t, 1)
+	h.requests.issueDispatch(t, invocation.ProviderInvocationID)
+	if err := h.store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
+		CancelOutboxID: "cancel_stop_slot", AttemptID: invocation.AttemptID, RunID: invocation.RunID, NodeRunID: invocation.NodeRunID,
+		SessionID: invocation.LogicalSessionID, ReasonCode: "run_terminalized", RequestedAt: terminalHandoffFixtureNow, CreatedAt: terminalHandoffFixtureNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	target, err := h.fsStore.GetExecutionTarget(ctx, invocation.RunID)
@@ -203,7 +157,6 @@ func TestCancellationStopDoesNotRestoreUntilOrdinaryMaintenanceAdmission(t *test
 		default:
 			close(release)
 		}
-		h.loop.clearExecutionInflight(invocation.AttemptID)
 		_ = h.loop.waitForMaintenance(ctx)
 	}()
 	for i := 0; i < defaultMaintenanceLimit; i++ {
@@ -218,7 +171,8 @@ func TestCancellationStopDoesNotRestoreUntilOrdinaryMaintenanceAdmission(t *test
 			t.Fatal("could not saturate filesystem capacity")
 		}
 	}
-	h.loop.adapter = &timeoutCancelObserverAdapter{onCancel: func() error { return h.loop.ingestPendingProviderProcessGuards(ctx) }}
+	adapter := &timeoutCancelObserverAdapter{}
+	h.requests.respondWith(adapter)
 	if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 1 {
 		t.Fatalf("bounded stop blocked by filesystem workers: admitted=%d err=%v", admitted, err)
 	}
@@ -241,27 +195,14 @@ func TestCancellationStopDoesNotRestoreUntilOrdinaryMaintenanceAdmission(t *test
 			t.Fatal(ctx.Err())
 		}
 	}
-	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_workspace_quiescence")
+	if got := adapter.cancelCalls(); got != 1 {
+		t.Fatalf("provider stops=%d, want the one the stop slot sent", got)
+	}
+	// The request's resources are not closed until its worker settles it, so the
+	// handoff waits for that proof instead of restoring the workspace.
+	assertCancellationHandoff(t, h, invocation.AttemptID, "pending", "awaiting_quiescence")
 	if content, err := os.ReadFile(path); err != nil || string(content) != "unfinished provider changes\n" {
 		t.Fatalf("stop slot performed filesystem restoration: content=%q err=%v", content, err)
-	}
-	h.loop.clearExecutionInflight(invocation.AttemptID)
-	if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 0 {
-		t.Fatalf("restore bypassed ordinary worker limit: admitted=%d err=%v", admitted, err)
-	}
-	close(release)
-	if err := h.loop.waitForMaintenance(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if admitted, err := h.loop.scheduleAttemptCancellations(ctx); err != nil || admitted != 1 {
-		t.Fatalf("admit cancellation finish: admitted=%d err=%v", admitted, err)
-	}
-	if err := h.loop.waitForMaintenance(ctx); err != nil {
-		t.Fatal(err)
-	}
-	assertCancellationHandoff(t, h, invocation.AttemptID, "published", "released")
-	if content, err := os.ReadFile(path); err != nil || string(content) != "trusted baseline\n" {
-		t.Fatalf("cancellation finalizer did not restore: content=%q err=%v", content, err)
 	}
 }
 

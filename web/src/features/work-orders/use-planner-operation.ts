@@ -198,7 +198,7 @@ function useOwnedPlannerOperation(operation?: AcpRun | null): UsePlannerOperatio
     void subscribeSSE({
       url: `${API_BASE}/acp/runs/${initialOperation.run_id}/events`,
       buildHeaders: (lastId) => buildAuthHeaders(lastId ? { "Last-Event-ID": lastId } : undefined),
-      isTerminalEventType: (type) => type === "run.activity.reconciled" || type === "run.failed" || type === "run.cancelled",
+      isTerminalEventType: (type) => type === "run.completed" || type === "run.failed" || type === "run.cancelled",
       signal: controller.signal,
       onConnectionChange: (next) => {
         if (!isCurrentOwner()) return;
@@ -324,7 +324,6 @@ function isAcpEventType(eventType: string): eventType is AcpRunEvent["type"] {
     "message.part",
     "message.completed",
     "run.completed",
-    "run.activity.reconciled",
     "run.failed",
     "run.cancelled",
     "error",
@@ -345,10 +344,6 @@ export function patchPlannerTerminalCaches(
   operation: AcpRun,
   event: AcpRunEvent,
 ) {
-  if (event.type === "run.activity.reconciled") {
-    void queryClient.invalidateQueries({ queryKey: plannerKeys.activity(operation.run_id) });
-    return;
-  }
   if (event.type !== "run.completed" && event.type !== "run.failed" && event.type !== "run.cancelled") return;
   const fields: Partial<PlanningSessionDetail> =
     operation.agent_name === "planner-generate-title"

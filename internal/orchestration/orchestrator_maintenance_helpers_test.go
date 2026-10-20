@@ -177,7 +177,7 @@ func (o *orchestrationLoop) recoverResponseOnlyWorkspaceCleanupsWithLimit(ctx co
 				visited++
 				return
 			}
-			quiescent, quiescenceErr := o.executionStore.AttemptProcessGuardsQuiescent(ctx, candidate.AttemptID)
+			quiescent, quiescenceErr := o.executionStore.AttemptCommandGuardiansQuiescent(ctx, candidate.AttemptID)
 			if quiescenceErr != nil {
 				slog.Warn("response-only workspace cleanup replay deferred because process quiescence is unknown", "attempt_id", candidate.AttemptID, "error", quiescenceErr)
 				o.responseOnlyWorkspaceCleanupCursor = candidate.AttemptID

@@ -14,7 +14,6 @@ type initCommandOptions struct {
 	publishMode            string
 	autonomousApprovalsRaw string
 	providerEngine         string
-	providerStrictRaw      string
 	listen                 string
 	basePath               string
 }
@@ -115,7 +114,6 @@ func bindInitFlags(flags *flag.FlagSet, opts *initCommandOptions) {
 	flags.StringVar(&opts.publishMode, "publish-mode", kingdom.PublishModeDirect, "publish `mode`: direct or git_worktree")
 	flags.StringVar(&opts.autonomousApprovalsRaw, "autonomous-approvals", "true", "default autonomous approvals for new runs: `true` or `false`")
 	flags.StringVar(&opts.providerEngine, "provider-engine", "opencode", "provider `engine`: opencode")
-	flags.StringVar(&opts.providerStrictRaw, "provider-strict", "true", "enforce provider startup health checks: `true` or `false`")
 	flags.StringVar(&opts.listen, "listen", "127.0.0.1:8080", "summon API listen `address`")
 	flags.StringVar(&opts.basePath, "base-path", "/api/v1", "summon API base `path`")
 }

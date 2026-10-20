@@ -19,22 +19,22 @@ type Agent interface {
 	GenerateTitle(ctx context.Context, input AgentContext, onChunk func(text string)) (GeneratedTitle, error)
 }
 
-// ContextCloser is the optional planner resource lifecycle. Close must honor
-// the caller's deadline; consumers are drained before Service invokes it.
-type ContextCloser interface{ CloseContext(context.Context) error }
-
 type ProviderActivity = providerexecution.ActivityObservation
 
 type ProviderInvocationContext struct {
-	AttemptID                string
-	LogicalSessionID         string
-	ProviderSessionID        string
-	InvocationID             string
-	OnProviderSession        func(sessionID string) error
-	OnProviderSessionOpened  func(sessionID string)
-	OnActivity               func(activity ProviderActivity)
-	OnProcessGuardOwnership  func(context.Context, opencode.ProcessGuardOwnership) error
-	OnProcessGuardQuiescence func(context.Context, opencode.ProcessGuardQuiescence) error
+	AttemptID        string
+	LogicalSessionID string
+	InvocationID     string
+	// ReusableProviderSessionID is the settled provider session that this
+	// request may continue. Empty means the request starts a new session.
+	ReusableProviderSessionID string
+	// Activate binds the prepared provider request to this canonical invocation
+	// before any work is dispatched, and fails if the binding cannot be made.
+	Activate                func(context.Context, opencode.Prepared) error
+	OnProviderSessionOpened func(sessionID string)
+	OnActivity              func(activity ProviderActivity)
+
+	activated bool
 }
 
 type AgentContext struct {
@@ -52,14 +52,16 @@ type AgentContext struct {
 	Messages             []state.PlanningMessage
 	ModelSelection       PlannerModelSelection
 	ForceNewSession      bool
-	ProviderInvocation   *ProviderInvocationContext
+	// CurrentMessageID is the user message this request answers. A continued
+	// session already holds the earlier transcript, so only it is sent.
+	CurrentMessageID   string
+	ProviderInvocation *ProviderInvocationContext
 }
 
 type ProviderExecutionMetadata struct {
 	FinalText                       string
 	ProviderSessionID               string
 	CompletionStructuredPayloadJSON string
-	ProviderDiagnosticsJSON         string
 	OutcomeState                    string
 	FailureReasonCode               string
 	FailureReasonText               string

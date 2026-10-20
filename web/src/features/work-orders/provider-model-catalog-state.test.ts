@@ -56,7 +56,7 @@ describe("resolveProviderModelCatalogState", () => {
       {
         catalog_status: "stale",
         items: [cachedModel],
-        failure_reason: "command_failed",
+        failure_reason: "service_unavailable",
         failure_message: "Showing the models Kingdom already had.",
       },
       undefined,

@@ -217,7 +217,7 @@ func TestHasRecentTimeoutActivityScansPastSyntheticObservationOverflow(t *testin
 	}
 }
 
-func TestHasRecentExecutionLivenessTreatsRuntimeObservationWithLiveDiagnosticsAsRecent(t *testing.T) {
+func TestHasRecentExecutionLivenessIgnoresRuntimeObservation(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -236,32 +236,8 @@ func TestHasRecentExecutionLivenessTreatsRuntimeObservationWithLiveDiagnosticsAs
 	if err != nil {
 		t.Fatalf("has recent execution liveness: %v", err)
 	}
-	if !active {
-		t.Fatal("expected runtime observation with live diagnostics to count as execution liveness")
-	}
-}
-
-func TestHasRecentExecutionLivenessIgnoresRuntimeObservationWithoutLiveDiagnostics(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db, "0001_initial_schema.up.sql")
-	seedMinimumGraph(t, db)
-
-	insertExecutionActivityEvent(t, db, executionActivitySeed{
-		EventID:    "evt_liveness_runtime_observation_quiet",
-		EventType:  "attempt.progress",
-		ReasonCode: "runtime_observation",
-		Payload:    `{"execution_diagnostics":{"event_count":0,"stream_error":"attempt not found: \"run_1:work_intake:1\""}}`,
-		CreatedAt:  "2026-03-01T12:00:20Z",
-	})
-
-	active, err := HasRecentExecutionLiveness(context.Background(), db, "nr_1", mustParseRFC3339(t, "2026-03-01T12:00:30Z"), 15*time.Second)
-	if err != nil {
-		t.Fatalf("has recent execution liveness: %v", err)
-	}
 	if active {
-		t.Fatal("expected runtime observation without live diagnostics to be ignored for execution liveness")
+		t.Fatal("Kingdom's own telemetry snapshot must not count as provider liveness")
 	}
 }
 

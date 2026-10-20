@@ -15,7 +15,7 @@ func publishEvidence(spec wireSpec, result Result) (string, string, error) {
 		return "", "", nil
 	}
 	if spec.RuntimeRoot == "" {
-		return "", "", fmt.Errorf("runtime root is required for durable process guard")
+		return "", "", fmt.Errorf("runtime root is required for durable command guardian")
 	}
 	raw, err := json.Marshal(wireStatus{Type: "result", Result: result})
 	if err != nil {

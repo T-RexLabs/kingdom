@@ -220,7 +220,6 @@ describe("PlannerThread response cancellation", () => {
     replyText: "",
     formalizeText: "",
     error: null,
-    activityReconciled: false,
     activityItems: [],
   };
   const props = {

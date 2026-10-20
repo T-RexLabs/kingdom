@@ -59,7 +59,6 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "strict_startup_total_timeout",
         "first_event_timeout",
         "stream_inactivity_timeout",
         "cancel_grace_timeout",
@@ -67,7 +66,6 @@
         "node_wall_clock"
       ],
       "properties": {
-        "strict_startup_total_timeout": {"type": "string", "minLength": 2},
         "first_event_timeout": {"type": "string", "minLength": 2},
         "stream_inactivity_timeout": {"type": "string", "minLength": 2},
         "cancel_grace_timeout": {"type": "string", "minLength": 2},

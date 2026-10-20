@@ -1,0 +1,6 @@
+{
+  "name": "kingdom-runtime",
+  "private": true,
+  "type": "module",
+  "main": "index.js"
+}

@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strconv"
 	"strings"
 	"time"
 
@@ -137,49 +136,9 @@ func livenessProgressShowsRecentActivity(reasonCode, payloadRaw string) bool {
 	switch trimmedReason {
 	case "runtime_completion_observation":
 		return completionObservationShowsRecentExecutionActivity(payloadRaw)
-	case "runtime_observation":
-		return runtimeObservationShowsExecutionLiveness(payloadRaw)
 	default:
 		return false
 	}
-}
-
-func runtimeObservationShowsExecutionLiveness(payloadRaw string) bool {
-	trimmed := strings.TrimSpace(payloadRaw)
-	if trimmed == "" {
-		return false
-	}
-
-	var payload map[string]any
-	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
-		return false
-	}
-
-	diagnostics, ok := payload["execution_diagnostics"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if strings.TrimSpace(stringValue(diagnostics["stream_error"])) == "" {
-		return true
-	}
-	if eventCount, ok := intValue(diagnostics["event_count"]); ok && eventCount > 1 {
-		return true
-	}
-
-	snapshot, ok := diagnostics["execution_path_diagnostics_snapshot"].(map[string]any)
-	if !ok {
-		return false
-	}
-	if stdoutCount, ok := intValue(snapshot["stdout_event_count"]); ok && stdoutCount > 0 {
-		return true
-	}
-	if seen, ok := snapshot["step_finish_seen"].(bool); ok && seen {
-		return true
-	}
-	if strings.TrimSpace(stringValue(snapshot["last_stdout_event_at"])) != "" {
-		return true
-	}
-	return false
 }
 
 func completionObservationShowsRecentExecutionActivity(payloadRaw string) bool {
@@ -199,23 +158,4 @@ func stringValue(value any) string {
 		return typed
 	}
 	return ""
-}
-
-func intValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int64:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
-		if err != nil {
-			return 0, false
-		}
-		return parsed, true
-	default:
-		return 0, false
-	}
 }

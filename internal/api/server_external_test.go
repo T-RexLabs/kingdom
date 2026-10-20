@@ -757,7 +757,7 @@ func TestStartupRemovalReconciliationRequiresMatchingCredentialStore(t *testing.
 	}
 
 	_, err = NewHandler(ServerConfig{
-		DB: db, GitHubKeyStore: keys, ExternalAdapter: &externalAPITestAdapter{},
+		DB: db, GitHubKeyStore: keys, ExternalAdapter: &externalAPITestAdapter{}, ProviderModelCatalog: staticProviderModelCatalog{},
 		OperatorCredential: []byte(apiTestOperatorCredential), PlannerAgent: &testPlannerAgent{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "github user-token lifecycle store is not configured") {

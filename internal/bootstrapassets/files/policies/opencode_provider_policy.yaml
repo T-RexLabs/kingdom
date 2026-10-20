@@ -23,7 +23,6 @@ agent_policy:
     reviewer: reviewer
 
 timeouts:
-  strict_startup_total_timeout: 90s
   first_event_timeout: 60s
   stream_inactivity_timeout: 10m
   cancel_grace_timeout: 5s

@@ -12,7 +12,6 @@ function buildOperation(overrides: Partial<PlannerOperationState>): PlannerOpera
     replyText: "",
     formalizeText: "",
     error: null,
-    activityReconciled: false,
     events: [],
     activityItems: [],
     ...overrides,

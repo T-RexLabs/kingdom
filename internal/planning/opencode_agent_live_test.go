@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"kingdom/internal/bootstrapassets"
-	"kingdom/internal/processguardian"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
@@ -42,7 +42,7 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 		t.Skip("live planner containment unavailable: opencode is not installed")
 	}
 	projectRoot := t.TempDir()
-	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
+	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), false); err != nil {
 		t.Fatal(err)
 	}
 	secretMarker := "LIVE_EXTERNAL_TOOL_SECRET_MARKER_15bf"
@@ -53,7 +53,7 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 	var egressCalls atomic.Int32
 	canary := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { egressCalls.Add(1) }))
 	defer canary.Close()
-	agent, invocation := newLiveGuardedPlannerAgent(t, binary, projectRoot, "live-security-attempt")
+	agent, invocation := newLivePlannerAgent(t, binary, projectRoot, "live-security-attempt")
 	var toolActivities atomic.Int32
 	invocation.OnActivity = func(activity ProviderActivity) {
 		if activity.Kind == "tool" {
@@ -104,7 +104,7 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 		t.Skip("live planner capability unavailable: opencode is not installed")
 	}
 	projectRoot := t.TempDir()
-	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), projectRoot, false); err != nil {
+	if err = bootstrapassets.WriteScaffold(filepath.Join(projectRoot, ".kingdom"), false); err != nil {
 		t.Fatal(err)
 	}
 	// Neither value appears in the prompt, so returning both proves that the
@@ -115,7 +115,7 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	agent, invocation := newLiveGuardedPlannerAgent(t, binary, projectRoot, "live-capability-attempt")
+	agent, invocation := newLivePlannerAgent(t, binary, projectRoot, "live-capability-attempt")
 	var toolActivities livePlannerToolActivities
 	invocation.OnActivity = func(activity ProviderActivity) {
 		toolActivities.Add(activity)
@@ -151,29 +151,28 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 	}
 }
 
-// newLiveGuardedPlannerAgent keeps the direct agent smoke on the same durable
-// guard callback path used by operationRunner in production.
-func newLiveGuardedPlannerAgent(t *testing.T, binary, projectRoot, operationID string) (*OpenCodeAgent, *ProviderInvocationContext) {
+// newLivePlannerAgent keeps the direct agent smoke on the same durable
+// activation path used by operationRunner in production.
+func newLivePlannerAgent(t *testing.T, binary, projectRoot, operationID string) (*OpenCodeAgent, *ProviderInvocationContext) {
 	t.Helper()
 	runtimeRoot := filepath.Join(projectRoot, ".kingdom", "runtime")
-	plannerInlineConfig, err := opencode.PlannerSessionInlineConfig()
-	if err != nil {
-		t.Fatalf("build planner inline config: %v", err)
-	}
-	runner, err := processguardian.NewRunner(processguardian.Config{RuntimeRoot: runtimeRoot})
-	if err != nil {
-		t.Fatalf("create planner process guardian: %v", err)
-	}
-	adapter, err := opencode.NewSessionAdapter(opencode.SessionAdapterConfig{
-		BinaryPath: binary, WorkDir: projectRoot, ConfigDir: bootstrapassets.ManagedOpenCodeRoot(projectRoot), DatabasePath: bootstrapassets.ManagedOpenCodeDatabasePath(projectRoot),
-		InlineConfigContent: plannerInlineConfig, Agent: "planning-assistant", SkipPermissions: true, FirstEventTimeout: 90 * time.Second, StreamInactivityTimeout: 90 * time.Second, Runner: runner,
+	db := stateTestDB(t)
+	provider, err := opencode.NewService(opencode.ServiceConfig{
+		BinaryPath: binary, WorkDir: projectRoot, RuntimeRoot: runtimeRoot,
+		Requests: providerrequest.NewAuthority(db, func() time.Time { return time.Now().UTC() }),
 	})
 	if err != nil {
-		t.Fatalf("create planner adapter: %v", err)
+		t.Fatalf("create planner provider service: %v", err)
 	}
-	agent := NewOpenCodeAgent(adapter, func(string) string { return operationID })
-	store := state.NewPlanningStore(stateTestDB(t))
-	store.SetProcessGuardRuntimeRoot(runtimeRoot)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := provider.CloseContext(ctx); err != nil {
+			t.Errorf("close planner provider service: %v", err)
+		}
+	})
+	agent := NewOpenCodeAgent(provider, func(string) string { return operationID }, WithRequestLimits(90*time.Second, 90*time.Second))
+	store := state.NewPlanningStore(db)
 	service := NewService(store, nil, projectRoot, func() string { return time.Now().UTC().Format(time.RFC3339Nano) }, func(prefix string) string { return prefix + "-" + operationID })
 	t.Cleanup(func() { _ = service.Close(context.Background()) })
 	session, err := service.CreateSession(context.Background(), "Live planner guard", `{"model":"openai/gpt-5.6-luna","thinking_effort":"none"}`)

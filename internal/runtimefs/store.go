@@ -427,7 +427,7 @@ func (s *Store) RecoverQuarantinedExecutionTarget(ctx context.Context, runID, re
 	if strings.TrimSpace(record.TrustedSnapshotID) == "" {
 		return RunExecutionTarget{}, fmt.Errorf("quarantined execution target has no trusted snapshot")
 	}
-	quiescent, err := s.runProviderProcessGuardsQuiescent(ctx, record.RunID)
+	quiescent, err := s.runProviderCommandGuardiansQuiescent(ctx, record.RunID)
 	if err != nil {
 		return RunExecutionTarget{}, err
 	}
@@ -471,15 +471,15 @@ func (s *Store) RecoverQuarantinedExecutionTarget(ctx context.Context, runID, re
 	return record, nil
 }
 
-func (s *Store) runProviderProcessGuardsQuiescent(ctx context.Context, runID string) (bool, error) {
+func (s *Store) runProviderCommandGuardiansQuiescent(ctx context.Context, runID string) (bool, error) {
 	var pending int
 	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(
 		SELECT 1
 		FROM provider_process_guards ppg
 		JOIN attempt_executions ae ON ae.attempt_id = ppg.attempt_id
-		WHERE ae.run_id = ? AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle <> 'quiescent'
+		WHERE ae.run_id = ? AND ppg.lifecycle <> 'quiescent'
 	)`, strings.TrimSpace(runID)).Scan(&pending); err != nil {
-		return false, fmt.Errorf("load direct target provider process guard quiescence: %w", err)
+		return false, fmt.Errorf("load direct target provider command guardian quiescence: %w", err)
 	}
 	return pending == 0, nil
 }

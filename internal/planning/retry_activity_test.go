@@ -10,8 +10,10 @@ import (
 	"time"
 
 	"kingdom/internal/acp"
+	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestPlanningRetryUsesDurableProviderProgressActivity(t *testing.T) {
@@ -104,14 +106,24 @@ func TestPlanningRetryUsesDurableProviderProgressActivity(t *testing.T) {
 }
 
 type progressActivityFailureAdapter struct {
+	preparer
 	calls      atomic.Int32
 	occurredAt string
 }
 
-func (a *progressActivityFailureAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+func (a *progressActivityFailureAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	a.calls.Add(1)
+	a.mu.Lock()
+	prepared := a.prepared
+	a.mu.Unlock()
+	observation, err := providerledger.TerminalObservation(ctx, prepared, req.InvocationID, providerexecution.RequestOutcomeFailed)
 	response := opencode.ExecuteResponse{
-		Outcome: opencode.ExecutionOutcome{State: "failed", ReasonCode: "timeout", FailureText: "provider timed out"},
+		ProviderSessionID: prepared.ProviderSessionID,
+		Outcome:           opencode.ExecutionOutcome{State: "failed", ReasonCode: "timeout", FailureText: "provider timed out"},
+		StreamObservation: observation,
+	}
+	if err != nil {
+		return response, err
 	}
 	if req.OnActivity == nil {
 		return response, errors.New("provider activity callback is missing")

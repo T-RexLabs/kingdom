@@ -19,11 +19,11 @@ import (
 	"testing"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/core/retryengine"
 	coreschemas "kingdom/internal/core/schemas"
 	"kingdom/internal/core/workflow"
 	"kingdom/internal/dbmigrations"
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/processguardian"
 	"kingdom/internal/providerlimits"
@@ -31,7 +31,6 @@ import (
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/state"
 	"kingdom/internal/testutil"
-	"kingdom/internal/testutil/guardianfixture"
 
 	_ "modernc.org/sqlite"
 )
@@ -43,7 +42,7 @@ func TestNewRuntimeLoadsPoliciesAndCoreServices(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 
-	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
+	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db)})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -186,90 +185,19 @@ func TestNewRuntimeFailsWhenAttemptExecutionsProviderSessionIDColumnMissing(t *t
 	}
 }
 
-func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfilesMissingForConfiguredWorkDir(t *testing.T) {
+func TestNewRuntimeRequiresProvider(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 
-	workDir := t.TempDir()
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: false,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: filepath.Join(workDir, "missing-opencode"),
-			WorkDir:    workDir,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail when managed agent profiles are missing")
-	}
-	if !strings.Contains(err.Error(), "validate managed opencode agent profiles") || !strings.Contains(err.Error(), "kd init --force") {
-		t.Fatalf("expected actionable managed agent profile validation error, got %v", err)
-	}
-}
-
-func TestNewRuntimeFailsWhenManagedOpenCodeAgentProfileDriftsEvenWhenNonStrict(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	workDir := t.TempDir()
-	if err := bootstrapassets.WriteScaffold(filepath.Join(workDir, ".kingdom"), workDir, false); err != nil {
-		t.Fatalf("write scaffold: %v", err)
-	}
-	staleAgentPath := filepath.Join(workDir, ".kingdom", "opencode", "agents", "advisor.md")
-	if err := os.WriteFile(staleAgentPath, []byte("stale"), 0o644); err != nil {
-		t.Fatalf("overwrite managed advisor profile: %v", err)
-	}
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: false,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: filepath.Join(workDir, "missing-opencode"),
-			WorkDir:    workDir,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail when managed agent profiles drift")
-	}
-	if !strings.Contains(err.Error(), "validate managed opencode agent profiles") || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("expected stale managed agent profile validation error, got %v", err)
-	}
-}
-
-func TestNewRuntimeOpencodeProviderStillRequiresSessionAdapterWhenNonStrict(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	rt, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: false,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: filepath.Join(t.TempDir(), "missing-opencode"),
-		},
-	})
-	if err == nil {
-		t.Fatal("expected non-strict opencode provider initialization to still fail without a session adapter")
+	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), ProviderEngine: "opencode"})
+	if err == nil || !strings.Contains(err.Error(), "provider is required") {
+		t.Fatalf("runtime without a provider: err=%v", err)
 	}
 	if rt != nil {
-		t.Fatal("expected runtime to be nil when opencode adapter initialization fails")
-	}
-	if !strings.Contains(err.Error(), "initialize opencode session adapter") {
-		t.Fatalf("expected session adapter initialization error, got %v", err)
+		t.Fatal("expected no runtime without a provider")
 	}
 }
 
@@ -280,62 +208,12 @@ func TestNewRuntimeRejectsUnsupportedMockProviderEngine(t *testing.T) {
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 
-	_, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), ProviderEngine: "mock_engine"})
+	_, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db), ProviderEngine: "mock_engine"})
 	if err == nil {
 		t.Fatal("expected runtime bootstrap to reject unsupported mock_engine provider")
 	}
 	if !strings.Contains(err.Error(), "unsupported provider engine") {
 		t.Fatalf("expected unsupported provider engine error, got %v", err)
-	}
-}
-
-func TestNewRuntimeOpencodeProviderFailsWhenStrict(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: filepath.Join(t.TempDir(), "missing-opencode"),
-		},
-	})
-	if err == nil {
-		t.Fatal("expected strict opencode provider initialization to fail")
-	}
-}
-
-func TestNewRuntimeStrictAgentValidationFailsWhenBinaryUnusable(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	if err := os.WriteFile(binaryPath, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected strict runtime bootstrap to fail when agent validation command exits")
-	}
-	if !strings.Contains(err.Error(), "provider agent") {
-		t.Fatalf("expected strict agent validation error, got %v", err)
 	}
 }
 
@@ -353,7 +231,7 @@ func TestNewRuntimeRespectsStartupContextCancellation(t *testing.T) {
 		DB:             db,
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		ProviderEngine: "opencode",
-		Adapter:        opencode.NewMemoryAdapter(),
+		Provider:       memoryProvider(db),
 		StartupContext: startupCtx,
 	})
 	if err == nil {
@@ -364,408 +242,14 @@ func TestNewRuntimeRespectsStartupContextCancellation(t *testing.T) {
 	}
 }
 
-func TestNewRuntimeFailsWhenRoleAgentCannotBeResolved(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  case "$3" in
-    advisor|builder|coordinator|council|governance|reviewer|tester)
-      echo "{}"
-      exit 0
-      ;;
-    *)
-      echo "agent not found" >&2
-      exit 1
-      ;;
-  esac
-fi
-
-if [ "$1" = "run" ]; then
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	policyPath := filepath.Join(t.TempDir(), "provider_policy.yaml")
-	policyRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "policies", "opencode_provider_policy.yaml"))
-	if err != nil {
-		t.Fatalf("read provider policy fixture: %v", err)
-	}
-	updated := strings.Replace(string(policyRaw), "builder: builder", "builder: ghost-builder", 1)
-	if err := os.WriteFile(policyPath, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write provider policy fixture: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.ProviderPolicyPath = policyPath
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          paths,
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail when role agent cannot be resolved")
-	}
-	if !strings.Contains(err.Error(), "agent") {
-		t.Fatalf("expected unresolved agent error, got %v", err)
-	}
-}
-
-func TestNewRuntimeStrictAgentResolutionRunsInConfiguredWorkDir(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	workspaceRoot := t.TempDir()
-	if err := bootstrapassets.WriteScaffold(filepath.Join(workspaceRoot, ".kingdom"), workspaceRoot, false); err != nil {
-		t.Fatalf("write managed opencode scaffold: %v", err)
-	}
-	managedOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(workspaceRoot)
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  REAL_WORKDIR="$(pwd -P)"
-  if [ "$REAL_WORKDIR" != "$EXPECTED_WORKDIR_REAL" ]; then
-    echo "unexpected workdir: $REAL_WORKDIR" >&2
-    exit 1
-  fi
-  REAL_CONFIG_DIR="$(cd "$(dirname "$OPENCODE_CONFIG_DIR")" && pwd -P)/$(basename "$OPENCODE_CONFIG_DIR")"
-  if [ "$REAL_CONFIG_DIR" != "$EXPECTED_CONFIG_DIR_REAL" ]; then
-    echo "unexpected config dir: $REAL_CONFIG_DIR" >&2
-    exit 1
-  fi
-  if [ -z "$OPENCODE_DB" ]; then
-    echo "missing db path" >&2
-    exit 1
-  fi
-  REAL_DB_PATH="$(cd "$(dirname "$OPENCODE_DB")" && pwd -P)/$(basename "$OPENCODE_DB")"
-  if [ "$REAL_DB_PATH" = "$EXPECTED_MANAGED_DB_PATH_REAL" ]; then
-    echo "unexpected shared managed db path: $REAL_DB_PATH" >&2
-    exit 1
-  fi
-  if [ "$(basename "$REAL_DB_PATH")" != "opencode.db" ]; then
-    echo "unexpected db basename: $REAL_DB_PATH" >&2
-    exit 1
-  fi
-  case "$(basename "$(dirname "$REAL_DB_PATH")")" in
-    kingdom-opencode-validate-*) ;;
-    *)
-      echo "unexpected isolated db dir: $REAL_DB_PATH" >&2
-      exit 1
-      ;;
-  esac
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-	realWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
-	if err != nil {
-		t.Fatalf("resolve workspace root symlinks: %v", err)
-	}
-	t.Setenv("EXPECTED_WORKDIR_REAL", realWorkspaceRoot)
-	realManagedConfigDir, err := filepath.EvalSymlinks(managedOpenCode.ConfigDir)
-	if err != nil {
-		t.Fatalf("resolve managed config dir symlinks: %v", err)
-	}
-	realManagedDBDir, err := filepath.EvalSymlinks(filepath.Dir(managedOpenCode.DatabasePath))
-	if err != nil {
-		t.Fatalf("resolve managed db dir symlinks: %v", err)
-	}
-	t.Setenv("EXPECTED_CONFIG_DIR_REAL", realManagedConfigDir)
-	t.Setenv("EXPECTED_MANAGED_DB_PATH_REAL", filepath.Join(realManagedDBDir, filepath.Base(managedOpenCode.DatabasePath)))
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-			WorkDir:    workspaceRoot,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected strict runtime bootstrap to resolve agents in configured workdir: %v", err)
-	}
-}
-
-func TestNewRuntimeStrictAgentValidationUsesIsolatedDatabasesToAvoidSQLiteLockContention(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	workspaceRoot := t.TempDir()
-	if err := bootstrapassets.WriteScaffold(filepath.Join(workspaceRoot, ".kingdom"), workspaceRoot, false); err != nil {
-		t.Fatalf("write managed opencode scaffold: %v", err)
-	}
-	managedOpenCode := bootstrapassets.ManagedOpenCodePathsForProjectRoot(workspaceRoot)
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  if [ -z "$OPENCODE_DB" ]; then
-    echo "missing db path" >&2
-    exit 1
-  fi
-  if [ "$OPENCODE_DB" = "$MANAGED_DB_PATH" ]; then
-    LOCK_DIR="$LOCK_ROOT/shared"
-  else
-    LOCK_DIR="$LOCK_ROOT/$3"
-  fi
-  if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-    echo "database is locked" >&2
-    exit 1
-  fi
-  sleep 0.1
-  rmdir "$LOCK_DIR"
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-	lockRoot := filepath.Join(t.TempDir(), "locks")
-	if err := os.MkdirAll(lockRoot, 0o755); err != nil {
-		t.Fatalf("create lock root: %v", err)
-	}
-	t.Setenv("LOCK_ROOT", lockRoot)
-	t.Setenv("MANAGED_DB_PATH", managedOpenCode.DatabasePath)
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-			WorkDir:    workspaceRoot,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected strict runtime bootstrap to avoid shared SQLite validation lock contention: %v", err)
-	}
-}
-
-func TestNewRuntimeStrictAgentResolutionRunsConcurrently(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	counterDir := t.TempDir()
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  COUNTER_DIR="$COUNTER_DIR"
-  LOCK_DIR="$COUNTER_DIR/lock"
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    sleep 0.01
-  done
-
-  ACTIVE_FILE="$COUNTER_DIR/active"
-  MAX_FILE="$COUNTER_DIR/max"
-  ACTIVE=0
-  if [ -f "$ACTIVE_FILE" ]; then
-    ACTIVE="$(cat "$ACTIVE_FILE")"
-  fi
-  ACTIVE=$((ACTIVE + 1))
-  printf '%s' "$ACTIVE" > "$ACTIVE_FILE"
-
-  MAX="$ACTIVE"
-  if [ -f "$MAX_FILE" ]; then
-    MAX="$(cat "$MAX_FILE")"
-    if [ "$ACTIVE" -gt "$MAX" ]; then
-      MAX="$ACTIVE"
-    fi
-  fi
-  printf '%s' "$MAX" > "$MAX_FILE"
-  rmdir "$LOCK_DIR"
-
-  sleep 0.2
-
-  while ! mkdir "$LOCK_DIR" 2>/dev/null; do
-    sleep 0.01
-  done
-  ACTIVE="$(cat "$ACTIVE_FILE")"
-  ACTIVE=$((ACTIVE - 1))
-  printf '%s' "$ACTIVE" > "$ACTIVE_FILE"
-  rmdir "$LOCK_DIR"
-
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-	t.Setenv("COUNTER_DIR", counterDir)
-
-	_, err := NewRuntime(Config{
-		DB:             db,
-		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err != nil {
-		t.Fatalf("expected strict runtime bootstrap to succeed, got %v", err)
-	}
-
-	if got := readIntegerFile(t, filepath.Join(counterDir, "max")); got < 2 {
-		t.Fatalf("expected strict agent validation to run concurrently, got max concurrency %d", got)
-	}
-}
-
-func TestNewRuntimeStrictAgentResolutionHonorsStartupTimeout(t *testing.T) {
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	binaryPath := filepath.Join(t.TempDir(), "opencode")
-	script := `#!/bin/sh
-if [ "$1" = "debug" ] && [ "$2" = "agent" ]; then
-  sleep 2
-  echo "{}"
-  exit 0
-fi
-
-if [ "$1" = "run" ]; then
-  echo "{\"type\":\"step_start\",\"sessionID\":\"ses_probe\"}"
-  echo "{\"type\":\"text\",\"sessionID\":\"ses_probe\",\"part\":{\"text\":\"READY\"}}"
-  echo "{\"type\":\"step_finish\",\"sessionID\":\"ses_probe\",\"part\":{\"reason\":\"stop\"}}"
-  exit 0
-fi
-
-exit 2
-`
-	if err := os.WriteFile(binaryPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake opencode binary: %v", err)
-	}
-
-	policyPath := filepath.Join(t.TempDir(), "provider_policy.yaml")
-	policyRaw, err := os.ReadFile(filepath.Join(repoRoot(t), "policies", "opencode_provider_policy.yaml"))
-	if err != nil {
-		t.Fatalf("read provider policy fixture: %v", err)
-	}
-	updated := strings.Replace(string(policyRaw), "strict_startup_total_timeout: 90s", "strict_startup_total_timeout: 100ms", 1)
-	if err := os.WriteFile(policyPath, []byte(updated), 0o600); err != nil {
-		t.Fatalf("write provider policy fixture: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.ProviderPolicyPath = policyPath
-
-	_, err = NewRuntime(Config{
-		DB:             db,
-		Paths:          paths,
-		ProviderEngine: "opencode",
-		ProviderStrict: true,
-		ProviderSession: opencode.SessionAdapterConfig{
-			BinaryPath: binaryPath,
-		},
-	})
-	if err == nil {
-		t.Fatal("expected strict runtime bootstrap to fail when agent resolution exceeds startup timeout")
-	}
-	if !strings.Contains(err.Error(), "deadline") && !strings.Contains(err.Error(), "timeout") {
-		t.Fatalf("expected startup timeout error, got %v", err)
-	}
-}
-
-func TestRunGuardedValidationCommandAllowsLargeStreams(t *testing.T) {
-	const fixtureBytes = 2 * 1024 * 1024
-	runner := guardianfixture.NewOutputRunner([]byte(strings.Repeat("x", fixtureBytes)), []byte(strings.Repeat("y", fixtureBytes)))
-	output, err := runGuardedValidationCommand(context.Background(), runner, processguardian.Command{Path: "fixture"})
-	if err != nil {
-		t.Fatalf("large guarded validation command rejected: %v", err)
-	}
-	defer output.Close()
-	for _, open := range []func() (io.ReadCloser, error){output.OpenStdout, output.OpenStderr} {
-		reader, err := open()
-		if err != nil {
-			t.Fatal(err)
-		}
-		size, err := io.Copy(io.Discard, reader)
-		_ = reader.Close()
-		if err != nil || size != fixtureBytes {
-			t.Fatalf("guarded validation stream bytes=%d, want %d, err=%v", size, fixtureBytes, err)
-		}
-	}
-	if runner.Cancels() != 0 {
-		t.Fatalf("large guarded validation cancellations=%d, want 0", runner.Cancels())
-	}
-}
-
-func readIntegerFile(t *testing.T, path string) int {
-	t.Helper()
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read integer file %s: %v", path, err)
-	}
-	value, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil {
-		t.Fatalf("parse integer file %s: %v", path, err)
-	}
-	return value
-}
-
 func newMemoryRuntime(t *testing.T, cfg Config) (*Runtime, error) {
 	t.Helper()
 
 	if strings.TrimSpace(cfg.WorkspaceRoot) == "" {
 		cfg.WorkspaceRoot = t.TempDir()
 	}
-	if cfg.Adapter == nil {
-		cfg.Adapter = opencode.NewMemoryAdapter()
+	if cfg.Provider == nil {
+		cfg.Provider = memoryProvider(cfg.DB)
 	}
 	if strings.TrimSpace(cfg.ProviderEngine) == "" {
 		cfg.ProviderEngine = "opencode"
@@ -846,7 +330,6 @@ model_policy:
   fallback_enabled: true
   fallback_strategy: disabled_for_mvp
 timeouts:
-  strict_startup_total_timeout: 60s
   first_event_timeout: 20s
   stream_inactivity_timeout: 45s
   cancel_grace_timeout: 5s
@@ -865,8 +348,8 @@ escalation:
 	paths.ProviderPolicyPath = invalidProviderPolicy
 
 	_, err := NewRuntime(Config{DB: db, Paths: paths})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail with invalid provider policy")
+	if err == nil || !strings.Contains(err.Error(), "fallback_enabled") {
+		t.Fatalf("expected runtime bootstrap to reject the fallback policy, got %v", err)
 	}
 }
 
@@ -905,10 +388,10 @@ func TestRuntimeForceCloseReturnsPromptlyAndCancelsInflightAttempts(t *testing.T
 	closeMode := newRuntimeCloseMode()
 	periodicCanceled := make(chan struct{}, 1)
 	dispatchCanceled := make(chan struct{}, 1)
+	db := openTestDB(t)
 	rt := &Runtime{
-		adapter: adapter,
 		orchestrator: &orchestrationLoop{
-			adapter:      adapter,
+			provider:     fixtureProvider(db, adapter),
 			inflightExec: map[string]struct{}{"run_1:work_intake:1": {}},
 			closeMode:    closeMode,
 		},
@@ -961,84 +444,11 @@ func TestRuntimeForceCloseReturnsPromptlyAndCancelsInflightAttempts(t *testing.T
 	if len(requests) != 1 {
 		t.Fatalf("expected one cancel request, got %d", len(requests))
 	}
-	if requests[0].AttemptID != "run_1:work_intake:1" {
-		t.Fatalf("expected cancel attempt id run_1:work_intake:1, got %q", requests[0].AttemptID)
-	}
-	if requests[0].SessionID != sessionIDForAttempt("run_1:work_intake:1") {
-		t.Fatalf("expected cancel session id %q, got %q", sessionIDForAttempt("run_1:work_intake:1"), requests[0].SessionID)
+	if requests[0] != "run_1:work_intake:1" {
+		t.Fatalf("expected cancel attempt id run_1:work_intake:1, got %q", requests[0])
 	}
 	if err := rt.Close(); err != nil {
 		t.Fatalf("graceful close after force should be a no-op, got %v", err)
-	}
-}
-
-func TestRuntimeForceClosePrefersPersistedProviderSessionID(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	store := executionstore.New(db)
-	attemptID := "run_1:work_intake:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionRef:     sessionIDForAttempt(attemptID),
-		CreatedAt:      "2026-03-01T12:00:01Z",
-		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	if err := store.UpdateProviderSessionID(context.Background(), executionstore.UpdateProviderSessionIDRequest{
-		AttemptID:         attemptID,
-		ProviderSessionID: "ses_force_close_real",
-		UpdatedAt:         "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("update provider session id: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	closeMode := newRuntimeCloseMode()
-	periodicCanceled := make(chan struct{}, 1)
-	dispatchCanceled := make(chan struct{}, 1)
-	loop := &orchestrationLoop{
-		adapter:        adapter,
-		executionStore: store,
-		inflightExec:   map[string]struct{}{attemptID: {}},
-		closeMode:      closeMode,
-	}
-	rt := &Runtime{
-		adapter:      adapter,
-		orchestrator: loop,
-		closeMode:    closeMode,
-		started:      true,
-		periodicDone: make(chan error),
-		dispatchDone: make(chan error),
-		cancelPeriodic: func() {
-			select {
-			case periodicCanceled <- struct{}{}:
-			default:
-			}
-		},
-		cancelDispatch: func() {
-			select {
-			case dispatchCanceled <- struct{}{}:
-			default:
-			}
-		},
-	}
-
-	if err := rt.ForceClose(); err != nil {
-		t.Fatalf("force close runtime: %v", err)
-	}
-	requests := adapter.cancelRequestsSnapshot()
-	if len(requests) != 1 {
-		t.Fatalf("expected one cancel request, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_force_close_real" {
-		t.Fatalf("expected persisted provider session id ses_force_close_real, got %q", requests[0].SessionID)
 	}
 }
 
@@ -1072,8 +482,9 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 		t.Fatalf("claim durable attempt execution: acquired=%t err=%v", acquired, err)
 	}
 	providerInvocationID := "pinv_graceful_close"
-	providerSessionID := "ses_test_" + sanitizeFileToken(providerInvocationID)
-	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerSessionID, providerInvocationID, "2026-03-01T12:00:01Z")
+	requests := newRequestFixture(db, nil)
+	requests.respondWith(adapter)
+	seedOpenProviderInvocationForAttempt(t, execStore, requests, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerInvocationID, "2026-03-01T12:00:01Z")
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running' WHERE attempt_id = 'run_1:work_intake:1'`)
 
 	periodicDone := make(chan error)
@@ -1087,7 +498,7 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 	}
 	loop := &orchestrationLoop{
 		db:             db,
-		adapter:        adapter,
+		provider:       requests.provider,
 		executionStore: execStore,
 		fsStore:        fsStore,
 		inflightExec:   make(map[string]struct{}),
@@ -1097,7 +508,6 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 		},
 	}
 	rt := &Runtime{
-		adapter:        adapter,
 		orchestrator:   loop,
 		closeMode:      newRuntimeCloseMode(),
 		started:        true,
@@ -1124,6 +534,11 @@ func TestRuntimeGracefulCloseWaitsForAsyncExecutionDrain(t *testing.T) {
 		occurredAt:           "2026-03-01T12:00:02Z",
 	})
 
+	select {
+	case <-adapter.firstExecuteStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider request did not start")
+	}
 	closeCtx, cancelClose := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancelClose()
 	if err := rt.GracefulClose(closeCtx); err != nil {
@@ -1151,10 +566,10 @@ func TestStartAsyncExecutionPreservesErrorResponseMetadataInDurableHandoff(t *te
 	job.sessionID = invocation.LogicalSessionID
 	job.expectedLeaseExpiresAt = "2099-03-01T12:10:00Z"
 	h.loop.asyncDrain = newExecutionDrainTracker()
-	h.loop.adapter = &errorMetadataExecutionAdapter{
-		response: opencode.ExecuteResponse{OutputText: "partial executor output", ProviderSessionID: "ses_reconcile_error", StreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: "ses_reconcile_error"}, Tokens: opencode.TokenUsage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}},
-		err:      errors.New("decode opencode export: unexpected EOF"),
-	}
+	h.requests.respondWith(&errorMetadataExecutionAdapter{
+		response: opencode.ExecuteResponse{OutputText: "partial executor output", Tokens: opencode.TokenUsage{InputTokens: 11, OutputTokens: 7, TotalTokens: 18}},
+		err:      errors.New("provider response ended unexpectedly"),
+	})
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	h.loop.startAsyncExecution(ctx, job)
@@ -1169,8 +584,8 @@ func TestStartAsyncExecutionPreservesErrorResponseMetadataInDurableHandoff(t *te
 	if err := json.Unmarshal([]byte(handoffs[0].PayloadJSON), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.ProviderSessionID != "ses_reconcile_error" || payload.OutputText != "partial executor output" {
-		t.Fatalf("response metadata was lost: session=%q output=%q", payload.ProviderSessionID, payload.OutputText)
+	if payload.ProviderSessionID != invocation.ProviderSessionID || payload.OutputPreview != "partial executor output" {
+		t.Fatalf("response metadata was lost: session=%q output preview=%q", payload.ProviderSessionID, payload.OutputPreview)
 	}
 	if payload.Tokens.InputTokens != 11 || payload.Tokens.OutputTokens != 7 || payload.Tokens.TotalTokens != 18 {
 		t.Fatalf("response tokens=%#v", payload.Tokens)
@@ -1206,7 +621,7 @@ func TestRuntimeStartRecoversDurableExecutionBeforeStartupReconcile(t *testing.T
 		agent:         "governance",
 	}, "committed_success", now)
 
-	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: opencode.NewMemoryAdapter()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db)})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -1256,7 +671,7 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 	rt, err := newMemoryRuntime(t, Config{
 		DB:            h.db,
 		Paths:         DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:       opencode.NewMemoryAdapter(),
+		Provider:      memoryProvider(h.db),
 		WorkspaceRoot: h.runtimeDir,
 	})
 	if err != nil {
@@ -1339,13 +754,14 @@ func TestRuntimeStartDefersStaleRecoveryUntilHandoffReplayCatchesUp(t *testing.T
 
 func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
-	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
-	if err != nil || !found {
-		t.Fatalf("load first guarded invocation: found=%t err=%v", found, err)
-	}
-	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 1, "2026-03-01T12:00:04Z")
+	// A request that is still running a command cannot also have a terminal, so
+	// the completed handoff belongs to another request. The guarded attempt is
+	// already terminal, so only guardian and handoff replay are under test.
+	mustExec(t, h.db, `UPDATE attempt_executions SET state = 'committed_failure' WHERE attempt_id = 'run_terminal_handoff:implementation:1'`)
+	invocation := h.addInvocation(t, 2)
+	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 2, "2026-03-01T12:00:04Z")
 
 	rt := &Runtime{orchestrator: h.loop}
 	rt.beginStartupRecovery()
@@ -1413,21 +829,18 @@ func TestDeferredStartupRecoveryReplaysGuardThenHandoffThenLostStage(t *testing.
 
 func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T) {
 	h := newTerminalHandoffHarness(t)
-	h.loop.processGuardRuntimeRoot = h.runtimeDir
+	h.loop.guardianRuntimeRoot = h.runtimeDir
 	h.addPendingGuardEvidence(t, 1)
 	h.addPendingGuardEvidence(t, 2)
 	const blockedGuardID = "guard_terminal_handoff_002"
 	if err := os.Remove(providerGuardEvidencePath(h.runtimeDir, blockedGuardID)); err != nil {
 		t.Fatalf("remove blocked guard evidence: %v", err)
 	}
-	invocation, found, err := h.store.GetProviderInvocation(context.Background(), "pinv_terminal_handoff_001")
-	if err != nil || !found {
-		t.Fatalf("load first guarded invocation: found=%t err=%v", found, err)
-	}
-	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 1, "2026-03-01T12:00:04Z")
+	invocation := h.addInvocation(t, 3)
+	persistFileOnlyHandoffForRuntimeTest(t, h, invocation, 3, "2026-03-01T12:00:04Z")
 
 	rt := &Runtime{orchestrator: h.loop}
-	rt.orchestrator.processGuardAbsent = func(guard executionstore.ProviderProcessGuard) bool {
+	rt.orchestrator.commandGuardianAbsent = func(guard executionstore.ProviderCommandGuardian) bool {
 		return guard.GuardID != blockedGuardID
 	}
 	rt.beginStartupRecovery()
@@ -1465,29 +878,11 @@ func TestStartupRecoveryLiveGuardWithoutEvidenceBlocksHandoffReplay(t *testing.T
 func persistFileOnlyHandoffForRuntimeTest(t *testing.T, h terminalHandoffHarness, invocation executionstore.ProviderInvocation, index int, createdAt string) {
 	t.Helper()
 	job := h.baseHandoffJob(invocation, index)
-	configureSuccessfulHandoff(&job, "Builder complete.")
-	payloadJSON, err := marshalExecutionOutboxPayload(job)
-	if err != nil {
-		t.Fatalf("marshal runtime test handoff payload: %v", err)
+	h.configureSuccessfulHandoff(t, &job, "Builder complete.")
+	if err := h.loop.markProviderTerminalHandoffPending(context.Background(), job); err != nil {
+		t.Fatalf("mark runtime test handoff pending: %v", err)
 	}
-	wire, err := json.Marshal(providerTerminalHandoffWire{
-		Version:              providerTerminalHandoffWireVersion,
-		ProviderInvocationID: invocation.ProviderInvocationID,
-		AttemptID:            invocation.AttemptID,
-		RunID:                invocation.RunID,
-		NodeRunID:            invocation.NodeRunID,
-		ExpectedLeaseOwner:   job.expectedLeaseOwner,
-		ExpectedLeaseVersion: job.expectedLeaseVersion,
-		StreamObservation:    job.providerStreamObservation,
-		ExecutionPayloadJSON: payloadJSON,
-		CreatedAt:            createdAt,
-	})
-	if err != nil {
-		t.Fatalf("marshal runtime test handoff file: %v", err)
-	}
-	if _, err := h.fsStore.PersistProviderTerminalHandoff(invocation.ProviderInvocationID, wire); err != nil {
-		t.Fatalf("persist runtime test handoff file: %v", err)
-	}
+	persistHandoffFileOnlyFromJob(t, h, job, createdAt)
 }
 
 func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
@@ -1495,15 +890,15 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 		name                string
 		seed                func(*testing.T, terminalHandoffHarness, int)
 		count               func(*testing.T, terminalHandoffHarness) int
-		processGuardRoot    bool
+		commandGuardianRoot bool
 		wantAfterInitial    int
 		wantAfterFirstCycle int
 	}{
 		{
-			name:             "provider process guards",
-			processGuardRoot: true,
+			name:                "provider command guardians",
+			commandGuardianRoot: true,
 			seed: func(t *testing.T, h terminalHandoffHarness, items int) {
-				h.loop.processGuardRuntimeRoot = h.runtimeDir
+				h.loop.guardianRuntimeRoot = h.runtimeDir
 				for index := 1; index <= items; index++ {
 					h.addPendingGuardEvidence(t, index)
 				}
@@ -1511,7 +906,7 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 			count: func(t *testing.T, h terminalHandoffHarness) int {
 				var count int
 				if err := h.db.QueryRow(`SELECT COUNT(1) FROM provider_process_guards WHERE lifecycle = 'quiescent'`).Scan(&count); err != nil {
-					t.Fatalf("count quiescent process guards: %v", err)
+					t.Fatalf("count quiescent command guardians: %v", err)
 				}
 				return count
 			},
@@ -1524,20 +919,22 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 			items := providerlimits.StartupReplayMaxItems + extraBatches*providerlimits.StartupReplayBatchItems + 1
 			h := newTerminalHandoffHarness(t)
 			tc.seed(t, h, items)
+			// These attempts are already terminal, so only guardian replay is under test.
+			mustExec(t, h.db, `UPDATE attempt_executions SET state = 'committed_failure'`)
 
 			rt, err := NewRuntime(Config{
 				DB:            h.db,
 				Paths:         DefaultBootstrapPaths(repoRoot(t)),
-				Adapter:       opencode.NewMemoryAdapter(),
+				Provider:      memoryProvider(h.db),
 				WorkspaceRoot: h.runtimeDir,
 			})
 			if err != nil {
 				t.Fatalf("new runtime: %v", err)
 			}
-			if tc.processGuardRoot {
-				rt.orchestrator.processGuardRuntimeRoot = h.runtimeDir
+			if tc.commandGuardianRoot {
+				rt.orchestrator.guardianRuntimeRoot = h.runtimeDir
 			} else {
-				rt.orchestrator.processGuardRuntimeRoot = ""
+				rt.orchestrator.guardianRuntimeRoot = ""
 			}
 			rt.beginStartupRecovery()
 			if err := rt.recoverDurableExecutionState(context.Background()); err != nil {
@@ -1591,114 +988,6 @@ func TestDeferredStartupRecoveryUsesBoundedGuardianAndLostPasses(t *testing.T) {
 	}
 }
 
-func TestRecoverDurableExecutionStateSettlesLostGuardianHandoffBeforeProjection(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-	store := executionstore.New(db)
-	const (
-		attemptID    = "run_1:work_intake:1"
-		invocationID = "invocation_lost_handoff"
-	)
-	ctx := context.Background()
-	if err := store.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
-		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
-		SessionRef:     "session_lost_handoff",
-		CreatedAt:      "2026-03-01T12:00:00Z",
-	}); err != nil {
-		t.Fatalf("enqueue provider attempt: %v", err)
-	}
-	claim, acquired, err := store.ClaimQueuedProviderAttempt(ctx, executionstore.ClaimQueuedProviderAttemptRequest{
-		AttemptID:  attemptID,
-		LeaseOwner: "runtime_orchestrator",
-		LeaseUntil: "2099-03-01T12:10:00Z",
-		ClaimedAt:  "2026-03-01T12:00:01Z",
-	})
-	if err != nil || !acquired {
-		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
-	}
-	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
-	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
-		ProviderInvocationID: invocationID,
-		AttemptID:            attemptID,
-		RunID:                "run_1",
-		NodeRunID:            "nr_1",
-		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
-		ProviderSessionID:    "ses_lost_handoff",
-		CreatedAt:            "2026-03-01T12:00:02Z",
-		OpenedAt:             "2026-03-01T12:00:02Z",
-		ExpectedLeaseOwner:   claim.LeaseOwner,
-		ExpectedLeaseVersion: claim.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("activate provider invocation: %v", err)
-	}
-	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
-	fsStore, err := runtimefs.NewStore(db, t.TempDir())
-	if err != nil {
-		t.Fatalf("new runtime fs store: %v", err)
-	}
-
-	loop := &orchestrationLoop{
-		db:             db,
-		transition:     state.NewTransitionService(db, nil),
-		executionStore: store,
-		fsStore:        fsStore,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 4, 0, time.UTC)
-		},
-	}
-	rt := &Runtime{orchestrator: loop}
-	unlockFile := loop.lockProviderTerminalHandoffFile(invocationID)
-	var releaseFile sync.Once
-	defer releaseFile.Do(unlockFile)
-	if err := rt.recoverDurableExecutionState(ctx); err != nil {
-		t.Fatalf("recover durable execution state: %v", err)
-	}
-	if attempt, found, err := store.GetAttempt(ctx, attemptID); err != nil || !found || attempt.State != "running" {
-		t.Fatalf("lost-handoff recovery ran before the authority scan drained: found=%t attempt=%#v err=%v", found, attempt, err)
-	}
-	releaseFile.Do(unlockFile)
-	drainCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	for rt.startupRecoveryPending() {
-		if err := drainCtx.Err(); err != nil {
-			t.Fatal(err)
-		}
-		if err := loop.waitForMaintenance(drainCtx); err != nil {
-			t.Fatal(err)
-		}
-		if caughtUp, err := rt.replayPendingStartupRecovery(drainCtx); err != nil {
-			t.Fatal(err)
-		} else if caughtUp {
-			break
-		}
-	}
-	if _, err := loop.scheduleExecutionOutbox(drainCtx); err != nil {
-		t.Fatal(err)
-	}
-	if err := loop.waitForMaintenance(drainCtx); err != nil {
-		t.Fatal(err)
-	}
-
-	attempt, found, err := store.GetAttempt(ctx, attemptID)
-	if err != nil || !found || attempt.State != "committed_failure" || attempt.FailureCode != "provider_terminal_handoff_lost" {
-		t.Fatalf("expected lost handoff to settle as terminal failure: found=%t attempt=%#v err=%v", found, attempt, err)
-	}
-	var outboxStatus string
-	if err := db.QueryRow(`SELECT status FROM attempt_outbox WHERE attempt_id = ?`, attemptID).Scan(&outboxStatus); err != nil {
-		t.Fatalf("query recovered terminal outbox: %v", err)
-	}
-	if outboxStatus != "published" {
-		t.Fatalf("expected lost handoff projection during startup recovery, got %q", outboxStatus)
-	}
-}
-
 func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 	t.Parallel()
 
@@ -1735,7 +1024,7 @@ func TestRuntimeStartContinuesWithRetryablePendingOutbox(t *testing.T) {
 		occurredAt:    "2026-03-01T12:00:02Z",
 	}, "committed_success", now)
 
-	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: opencode.NewMemoryAdapter()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db)})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -1858,7 +1147,7 @@ func TestRuntimeStartRepairsFailedRunAfterDurableSuccessProjection(t *testing.T)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_runtime_repair_validation_cancelled', 'run_runtime_repair', 'nr_runtime_repair_validation_1', 'node', 'running', 'cancelled', 'runtime_orchestrator', 'qa-validator', 'state.run_terminalization', 'run_terminalized', 'run moved to failed; live child attempt quiesced', 'corr_runtime_repair_validation', 'caus_runtime_repair_validation', 'prev_runtime_repair_validation', 'entry_runtime_repair_validation', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO transitions (transition_id, run_id, node_run_id, entity_type, from_state, to_state, actor_id, role_id, authority_source, reason_code, reason_text, correlation_id, causation_id, prev_hash, entry_hash, created_at) VALUES ('tr_runtime_repair_closure_cancelled', 'run_runtime_repair', 'nr_runtime_repair_closure_1', 'node', 'running', 'cancelled', 'runtime_orchestrator', 'governance', 'state.run_terminalization', 'run_terminalized', 'run moved to failed; live child attempt quiesced', 'corr_runtime_repair_closure', 'caus_runtime_repair_closure', 'prev_runtime_repair_closure', 'entry_runtime_repair_closure', '`+now+`')`)
 
-	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: opencode.NewMemoryAdapter()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db)})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -1939,7 +1228,7 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(
 	adapter := &timeoutCancelObserverAdapter{}
 	loop := orchestrationLoop{
 		db:             db,
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		executionStore: store,
 		cancelGrace:    time.Second,
 		now: func() time.Time {
@@ -1960,69 +1249,6 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptWithoutProviderCancel(
 	}
 	if status != "published" {
 		t.Fatalf("expected published attempt cancel outbox status, got %q", status)
-	}
-}
-
-func TestDrainAttemptCancelOutboxPrefersPersistedProviderSessionID(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	store := executionstore.New(db)
-	attemptID := "run_1:work_intake:1"
-	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionRef:     sessionIDForAttempt(attemptID),
-		CreatedAt:      "2026-03-01T12:00:01Z",
-		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
-	}); err != nil {
-		t.Fatalf("enqueue attempt: %v", err)
-	}
-	if err := store.UpdateProviderSessionID(context.Background(), executionstore.UpdateProviderSessionIDRequest{
-		AttemptID:         attemptID,
-		ProviderSessionID: "ses_cancel_outbox_real",
-		UpdatedAt:         "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("update provider session id: %v", err)
-	}
-	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
-		CancelOutboxID: "cancel_outbox_1",
-		AttemptID:      attemptID,
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		SessionID:      sessionIDForAttempt(attemptID),
-		ReasonCode:     "run_cancelled_by_user",
-		ReasonText:     "operator cancel",
-		RequestedAt:    "2026-03-01T12:00:02Z",
-		CreatedAt:      "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("queue attempt cancel: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	loop := orchestrationLoop{
-		db:             db,
-		adapter:        adapter,
-		executionStore: store,
-		cancelGrace:    time.Second,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 5, 0, time.UTC)
-		},
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain attempt cancel outbox: %v", err)
-	}
-
-	requests := adapter.cancelRequestsSnapshot()
-	if len(requests) != 1 {
-		t.Fatalf("expected one cancel request snapshot, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_cancel_outbox_real" {
-		t.Fatalf("expected provider session id ses_cancel_outbox_real, got %q", requests[0].SessionID)
 	}
 }
 
@@ -2061,7 +1287,7 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T)
 
 	adapter := &attemptNotFoundTimeoutAdapter{}
 	loop := orchestrationLoop{
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		executionStore: store,
 		cancelGrace:    time.Second,
 		now: func() time.Time {
@@ -2081,84 +1307,6 @@ func TestDrainAttemptCancelOutboxPublishesPrelaunchAttemptNotFound(t *testing.T)
 	}
 }
 
-func TestDrainAttemptCancelOutboxKeepsLaunchedRetryBlockedWithoutGuardProof(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-	seedMinimumGraph(t, db)
-
-	now := "2026-03-01T12:00:05Z"
-	mustExec(t, db, `UPDATE agents SET status = 'busy', updated_at = '`+now+`' WHERE agent_id = 'agent_governance'`)
-	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at, superseded_at) VALUES ('nr_retry_provider_blocked', 'run_1', 'work_intake', 2, 2, 'blocked', 'governance', 'agent_governance', 1, '`+now+`', '`+now+`', '`+now+`')`)
-	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:work_intake:2', 'run_1', 'nr_retry_provider_blocked', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 0, 'session_retry_provider_blocked', 'ses_retry_provider_blocked', '2026-03-01T12:00:00Z', NULL, '`+now+`', '`+now+`', 'superseded_after_launch_handoff', 'retry attempt superseded after launch handoff by an earlier successful attempt', '`+now+`', '`+now+`')`)
-
-	store := executionstore.New(db)
-	if err := store.QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{
-		CancelOutboxID: "cancel_outbox_blocked_retry",
-		AttemptID:      "run_1:work_intake:2",
-		RunID:          "run_1",
-		NodeRunID:      "nr_retry_provider_blocked",
-		SessionID:      "session_retry_provider_blocked",
-		ReasonCode:     "superseded_after_launch_handoff",
-		ReasonText:     "retry attempt superseded after launch handoff by an earlier successful attempt",
-		RequestedAt:    now,
-		CreatedAt:      now,
-	}); err != nil {
-		t.Fatalf("queue attempt cancel: %v", err)
-	}
-
-	adapter := &timeoutCancelObserverAdapter{}
-	loop := orchestrationLoop{
-		db:             db,
-		adapter:        adapter,
-		executionStore: store,
-		cancelGrace:    time.Second,
-		now: func() time.Time {
-			return time.Date(2026, 3, 1, 12, 0, 6, 0, time.UTC)
-		},
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain attempt cancel outbox: %v", err)
-	}
-
-	var nodeStatus string
-	if err := db.QueryRow(`SELECT node_status FROM node_runs WHERE node_run_id = 'nr_retry_provider_blocked'`).Scan(&nodeStatus); err != nil {
-		t.Fatalf("query blocked retry node status after cancel drain: %v", err)
-	}
-	if nodeStatus != "blocked" {
-		t.Fatalf("expected unproven launched retry to remain blocked, got %q", nodeStatus)
-	}
-
-	var outboxStatus string
-	if err := db.QueryRow(`SELECT status FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&outboxStatus); err != nil {
-		t.Fatalf("query blocked retry cancel outbox status: %v", err)
-	}
-	if outboxStatus != "pending" {
-		t.Fatalf("expected unproven launched retry cancel outbox to remain pending, got %q", outboxStatus)
-	}
-	var handoffState string
-	if err := db.QueryRow(`SELECT handoff_state FROM attempt_cancel_outbox WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`).Scan(&handoffState); err != nil {
-		t.Fatalf("query blocked retry cancellation handoff state: %v", err)
-	}
-	if handoffState != "awaiting_quiescence" {
-		t.Fatalf("expected unproven launched retry to pause, got %q", handoffState)
-	}
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain paused attempt cancel outbox: %v", err)
-	}
-	if got := adapter.cancelCalls(); got != 1 {
-		t.Fatalf("expected paused handoff to avoid automatic cancellation retry, got %d calls", got)
-	}
-	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_requested', last_error = '', updated_at = '2026-03-01T12:00:07Z' WHERE cancel_outbox_id = 'cancel_outbox_blocked_retry'`)
-	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
-		t.Fatalf("drain explicitly retried attempt cancel outbox: %v", err)
-	}
-	if got := adapter.cancelCalls(); got != 2 {
-		t.Fatalf("expected exactly one further provider cancellation after explicit retry, got %d calls", got)
-	}
-}
-
 func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOperatorRecovery(t *testing.T) {
 	t.Parallel()
 
@@ -2172,11 +1320,11 @@ func TestDrainAttemptCancelOutboxReleasesGuardianEvidenceQuarantineOnlyAfterOper
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_version, session_ref, provider_session_id, launch_started_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_1', 'nr_1', 'committed_cancelled', 'provider_backed', 'server_response', '', 1, 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', '`+now+`', '`+now+`', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO provider_invocations (provider_invocation_id, attempt_id, run_id, node_run_id, logical_session_id, provider_session_id, invocation_state, completion_mode, created_at, updated_at) VALUES ('inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'session_guardian_evidence_lost', 'ses_guardian_evidence_lost', 'superseded', 'server_response', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `UPDATE attempt_executions SET active_provider_invocation_id = 'inv_guardian_evidence_lost' WHERE attempt_id = '`+attemptID+`'`)
-	mustExec(t, db, `INSERT INTO provider_process_guards (guard_id, owner_kind, owner_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard_guardian_evidence_lost', 'work_order_attempt', '`+attemptID+`', 'inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_guardian_evidence_lost', 1, '`+now+`', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
+	mustExec(t, db, `INSERT INTO provider_process_guards (guard_id, provider_invocation_id, attempt_id, run_id, node_run_id, command_ordinal, lifecycle, platform, guardian_pid, child_pid, tree_id, quiescence_capability_hash, lease_owner, lease_version, started_at, acknowledged_at, quiescence_evidence_lost_at, created_at, updated_at) VALUES ('guard_guardian_evidence_lost', 'inv_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 1, 'acknowledged', 'unix_process_group', 101, 102, 'pg_102', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'worker_guardian_evidence_lost', 1, '`+now+`', '`+now+`', '`+now+`', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at) VALUES ('cancel_guardian_evidence_lost', '`+attemptID+`', 'run_1', 'nr_1', 'ses_guardian_evidence_lost', 'agent_unresponsive', 'provider stopped responding', '`+now+`', 'pending', 'guardian_evidence_lost', 1, 'guardian evidence missing', '`+now+`', '`+now+`')`)
 
 	adapter := &timeoutCancelObserverAdapter{}
-	loop := orchestrationLoop{db: db, adapter: adapter, executionStore: executionstore.New(db), cancelGrace: time.Second, now: func() time.Time {
+	loop := orchestrationLoop{db: db, provider: fixtureProvider(db, adapter), executionStore: executionstore.New(db), cancelGrace: time.Second, now: func() time.Time {
 		return time.Date(2026, 3, 1, 12, 0, 6, 0, time.UTC)
 	}}
 	if _, err := loop.drainAttemptCancelOutbox(context.Background()); err != nil {
@@ -2225,6 +1373,7 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_builder_peer_restore', 'run_1', 'delegated_execution_artisan', 1, 1, 'running', 'builder-artisan', 'agent_builder_peer_restore', 1, '`+now+`', NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, base_snapshot_id, failure_code, failure_text, created_at, updated_at) VALUES ('run_1:implementation:1', 'run_1', 'nr_builder_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_restore', 'snap_attempt_base', 'agent_unresponsive', 'provider stopped responding', '`+now+`', '`+now+`')`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, provider_session_id, launch_started_at, created_at, updated_at) VALUES ('run_1:delegated_execution_artisan:1', 'run_1', 'nr_builder_peer_restore', 'committed_cancelled', 'provider_backed', 'server_response', '', NULL, 1, 'session_builder_peer_restore', 'ses_builder_peer_restore', '`+now+`', '`+now+`', '`+now+`')`)
+	openBoundRequest(t, db, executionstore.New(db), "run_1:delegated_execution_artisan:1", "run_1", "nr_builder_peer_restore", "pinv_builder_peer_restore", "ses_builder_peer_restore")
 	if err := executionstore.New(db).QueueAttemptCancel(context.Background(), executionstore.QueueAttemptCancelRequest{CancelOutboxID: "cancel_builder_peer_restore", AttemptID: "run_1:delegated_execution_artisan:1", RunID: "run_1", NodeRunID: "nr_builder_peer_restore", SessionID: "session_builder_peer_restore", ReasonCode: "agent_unresponsive", RequestedAt: now, CreatedAt: now}); err != nil {
 		t.Fatalf("queue active builder_peer cancellation: %v", err)
 	}
@@ -2268,6 +1417,14 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 	if string(content) != "dirty workspace\n" {
 		t.Fatalf("active workspace sibling allowed restore: %q", content)
 	}
+	// The peer's request ends without ever admitting work, so its cancellation
+	// can be published.
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', lease_owner = 'bound-request-holder' WHERE attempt_id = 'run_1:delegated_execution_artisan:1'`)
+	if _, err := executionstore.New(db).AbandonProviderRequest(context.Background(), "pinv_builder_peer_restore"); err != nil {
+		t.Fatalf("abandon builder_peer request: %v", err)
+	}
+	mustExec(t, db, `UPDATE attempt_executions SET state = 'committed_cancelled', lease_owner = '' WHERE attempt_id = 'run_1:delegated_execution_artisan:1'`)
+	mustExec(t, db, `UPDATE provider_invocations SET invocation_state = 'superseded' WHERE provider_invocation_id = 'pinv_builder_peer_restore'`)
 	if err := executionstore.New(db).MarkAttemptCancelPublished(context.Background(), "cancel_builder_peer_restore", now); err != nil {
 		t.Fatalf("publish builder_peer cancellation: %v", err)
 	}
@@ -2355,7 +1512,7 @@ func TestDrainAttemptCancelOutboxSkipsRuntimeOwnedAttempts(t *testing.T) {
 
 	adapter := &timeoutCancelObserverAdapter{}
 	loop := orchestrationLoop{
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		executionStore: store,
 		cancelGrace:    time.Second,
 		now: func() time.Time {
@@ -2398,68 +1555,16 @@ func TestRuntimeStartFailsWithoutDeadlockWhenStartupReconcileErrors(t *testing.T
 	return
 }
 
-func TestRuntimeIngestAttemptStreamAndValidateOutput(t *testing.T) {
+func TestRuntimeValidateAndPersistWorkerOutput(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
 	applyMigration(t, db)
 	seedMinimumGraph(t, db)
 
-	adapter := opencode.NewMemoryAdapter()
-
-	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: adapter})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t))})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
-	}
-
-	_, err = adapter.Execute(context.Background(), opencode.ExecuteRequest{
-		SessionID:      "sess_1",
-		AttemptID:      "att_stream",
-		RunID:          "run_1",
-		NodeRunID:      "nr_1",
-		WorkspacePath:  t.TempDir(),
-		Prompt:         "hello",
-		OccurredAt:     "2026-03-01T12:00:00Z",
-		CompletionMode: opencode.CompletionModeServerResponse,
-	})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-
-	if err := adapter.PublishEvent(opencode.AttemptStreamEvent{
-		AttemptID:   "att_stream",
-		Seq:         2,
-		EventType:   opencode.AttemptEventTypeSucceeded,
-		PayloadJSON: `{}`,
-		OccurredAt:  "2026-03-01T12:00:01Z",
-	}); err != nil {
-		t.Fatalf("publish terminal event: %v", err)
-	}
-
-	if err := rt.IngestAttemptStream(context.Background(), StreamIngestionRequest{
-		SessionID:       "sess_1",
-		AttemptID:       "att_stream",
-		RunID:           "run_1",
-		NodeRunID:       "nr_1",
-		ActorID:         "runtime",
-		RoleID:          "governance",
-		AuthoritySource: "runtime.event_bridge",
-		ReasonCode:      "internal_error",
-		ReasonText:      "stream ingest",
-		CorrelationID:   "corr_stream",
-		CausationID:     "caus_stream",
-		SchemaVersion:   "v1",
-		CreatedAt:       "2026-03-01T12:00:02Z",
-	}); err != nil {
-		t.Fatalf("ingest stream: %v", err)
-	}
-
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM events WHERE attempt_id = 'att_stream'`).Scan(&count); err != nil {
-		t.Fatalf("query ingested events: %v", err)
-	}
-	if count != 2 {
-		t.Fatalf("expected two ingested events, got %d", count)
 	}
 
 	workspaceDir := t.TempDir()
@@ -2669,7 +1774,7 @@ func TestRuntimeDispatchLoopProgressesSimpleRunLifecycle(t *testing.T) {
 		}
 
 		var responseText string
-		if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = 'run_dispatch' AND json_extract(payload_json, '$.communication_type') = 'response_received' LIMIT 1`).Scan(&responseText); err != nil {
+		if err := db.QueryRow(`SELECT COALESCE(json_extract(payload_json, '$.response_full'), json_extract(payload_json, '$.response_preview')) FROM mailbox_messages WHERE run_id = 'run_dispatch' AND json_extract(payload_json, '$.communication_type') = 'response_received' LIMIT 1`).Scan(&responseText); err != nil {
 			return fmt.Errorf("read response_full payload: %w", err)
 		}
 		if strings.TrimSpace(responseText) == "" {
@@ -2887,7 +1992,7 @@ func TestDrainExecutionOutboxPreservesProviderFailureReasonCode(t *testing.T) {
 			FailureText:    "upstream exploded",
 			EvidenceSource: "stream",
 		},
-		err: errors.New("opencode run failed: upstream exploded"),
+		err: errors.New("provider request failed: upstream exploded"),
 	}, "committed_failure", "2026-03-01T12:00:02Z")
 	if _, err := loop.drainExecutionOutbox(context.Background()); err != nil {
 		t.Fatalf("drain execution outbox: %v", err)
@@ -2972,11 +2077,13 @@ func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTar
 		t.Fatalf("mark attempt running: %v", err)
 	}
 	providerInvocationID := "pinv_workspace_limit"
-	providerSessionID := "ses_workspace_limit"
-	if _, err := execStore.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", LogicalSessionID: sessionIDForAttempt(attemptID), ProviderSessionID: providerSessionID, CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: now, CreatedAt: now, OpenedAt: now, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
-		t.Fatalf("activate provider invocation: %v", err)
-	}
-	attachQuiescentProviderProcessGuard(t, execStore, providerInvocationID, attemptID, "run_workspace_limit", "nr_workspace_limit_1", claim.LeaseOwner, claim.LeaseVersion, now)
+	requests := newRequestFixture(db, nil)
+	requests.activate(t, execStore, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: providerInvocationID, AttemptID: attemptID, RunID: "run_workspace_limit", NodeRunID: "nr_workspace_limit_1", LogicalSessionID: sessionIDForAttempt(attemptID), CompletionMode: executionstore.ProviderCompletionModeServerResponse, IssuedAt: now, CreatedAt: now, OpenedAt: now, ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion})
+	providerErr := errors.New("provider transport failed")
+	providerResponse := requests.run(t, attemptID, providerInvocationID, opencode.ExecuteResponse{
+		OutputText: "Provider transport failed after modifying the workspace.",
+		Outcome:    opencode.ExecutionOutcome{State: "failed", ReasonCode: "transient_transport", FailureText: "provider transport failed", EvidenceSource: "stream"},
+	}, providerErr)
 
 	policy, err := retryengine.LoadPolicyFromFile(filepath.Join(repoRoot(t), "policies", "retry_policy.yaml"), filepath.Join(repoRoot(t), "contracts", "schemas", "retry_policy.schema.json"))
 	if err != nil {
@@ -2997,14 +2104,13 @@ func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTar
 			return time.Date(2026, 3, 1, 12, 0, 1, 0, time.UTC)
 		},
 	}
-	zero := 0
 	result := asyncExecutionResult{
 		run:                       runSnapshot{RunID: "run_workspace_limit", RunStatus: "running", PlanState: "approved"},
 		node:                      nodeDefinition{NodeID: "implementation", RequiredRole: "builder", NodeClass: "delegated_execution"},
 		attempt:                   nodeAttempt{NodeRunID: "nr_workspace_limit_1", NodeID: "implementation", Attempt: 1, AgentID: "agent_workspace_limit_builder", RequiredRole: "builder", ExecutionMode: executionstore.ExecutionModeProviderBacked},
 		attemptID:                 attemptID,
 		sessionID:                 sessionIDForAttempt(attemptID),
-		providerSessionID:         providerSessionID,
+		providerSessionID:         providerResponse.ProviderSessionID,
 		providerInvocationID:      providerInvocationID,
 		expectedLeaseOwner:        claim.LeaseOwner,
 		expectedLeaseVersion:      claim.LeaseVersion,
@@ -3014,9 +2120,9 @@ func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTar
 		delegator:                 "agent_workspace_limit_council",
 		occurredAt:                now,
 		outputText:                "Provider transport failed after modifying the workspace.",
-		outcome:                   opencode.ExecutionOutcome{State: "failed", ReasonCode: "transient_transport", FailureText: "provider transport failed", EvidenceSource: "stream"},
-		err:                       errors.New("provider transport failed"),
-		providerStreamObservation: opencode.InvocationStreamObservation{ProviderSessionID: providerSessionID, FinalTurnID: "turn_workspace_limit", FinalStepID: "step_workspace_limit", FinalSequence: 1, RawFinishReason: "error", NormalizedFinishReason: "error", CanonicalTerminalText: "Provider transport failed after modifying the workspace.", ProcessExited: true, ProcessExitCode: &zero, StdoutDrained: true, StderrDrained: true, ProcessQuiescent: true, ProcessGuards: []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_workspace_limit", GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}}},
+		outcome:                   providerResponse.Outcome,
+		err:                       providerErr,
+		providerStreamObservation: providerResponse.StreamObservation,
 	}
 	persistProviderTerminalHandoffForTest(t, &loop, &result)
 	if err := loop.commitExecutionCompletion(context.Background(), result); err != nil {
@@ -3069,7 +2175,7 @@ func TestProviderFailureBeyondFormerWorkspaceLimitPreservesFailureAndRestoresTar
 		t.Fatalf("large restored execution target was not reusable: %v", err)
 	}
 	var response string
-	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = 'run_workspace_limit' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&response); err != nil {
+	if err := db.QueryRow(`SELECT COALESCE(json_extract(payload_json, '$.response_full'), json_extract(payload_json, '$.response_preview')) FROM mailbox_messages WHERE run_id = 'run_workspace_limit' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&response); err != nil {
 		t.Fatalf("query safe terminal response: %v", err)
 	}
 	if strings.Contains(response, "resource limit") {
@@ -3104,7 +2210,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 				t.Fatalf("write baseline: %v", err)
 			}
 			adapter := &sequenceExecutionAdapter{outputs: []string{"manual recovery completed"}}
-			rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), WorkspaceRoot: t.TempDir(), YoloOutputRoot: projectRoot})
+			rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), WorkspaceRoot: t.TempDir(), YoloOutputRoot: projectRoot})
 			if err != nil {
 				t.Fatalf("new runtime: %v", err)
 			}
@@ -3747,7 +2853,7 @@ func TestPrepareExecutionWorkspaceRestoresTrustedSnapshotAndSkipsSymlinkedEntrie
 	}
 }
 
-func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *testing.T) {
+func TestPrepareExecutionWorkspaceInstallsNoOpenCodeAssets(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -3763,32 +2869,14 @@ func TestPrepareExecutionWorkspaceInstallsManagedProfilesWithoutRetiredTool(t *t
 		t.Fatalf("prepare execution workspace: %v", err)
 	}
 
-	profilesRoot := filepath.Join(workspaceRoot, ".kingdom", "opencode", "agents")
-	for _, profile := range []string{
-		"advisor.md",
-		"builder.md",
-		"coordinator.md",
-		"plan-author.md",
-		"governance.md",
-		"security-validator.md",
-		"planning-assistant.md",
-		"qa-validator.md",
-		"reviewer.md",
-		"resilience-validator.md",
-	} {
-		if _, err := os.Stat(filepath.Join(profilesRoot, profile)); err != nil {
-			t.Fatalf("expected managed profile %q to be installed: %v", profile, err)
-		}
-	}
-	retiredTool := filepath.Join(workspaceRoot, ".kingdom", "opencode", "tools", "kingdom_complete_attempt.ts")
-	if _, err := os.Stat(retiredTool); err == nil {
-		t.Fatalf("retired completion tool was installed at %q", retiredTool)
-	} else if !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("stat retired completion tool: %v", err)
+	// Requests pin their instructions in the server's managed profile, so no
+	// profile or tool files are written into the workspace.
+	if _, err := os.Stat(filepath.Join(workspaceRoot, ".kingdom", "opencode")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace preparation installed OpenCode assets: %v", err)
 	}
 }
 
-func TestActivateProviderInvocationForExecutionPersistsOpenServerResponseInvocation(t *testing.T) {
+func TestActivateProviderInvocationForExecutionBindsPreparedRequestToOpenInvocation(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -3818,22 +2906,30 @@ func TestActivateProviderInvocationForExecutionPersistsOpenServerResponseInvocat
 	claim, acquired, err := store.ClaimQueuedProviderAttempt(context.Background(), executionstore.ClaimQueuedProviderAttemptRequest{
 		AttemptID:  attemptID,
 		LeaseOwner: "server-response-setup-worker",
-		LeaseUntil: "2026-03-01T12:01:00Z",
+		LeaseUntil: "2099-03-01T12:01:00Z",
 		ClaimedAt:  now,
 	})
 	if err != nil || !acquired {
 		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 	loop := orchestrationLoop{executionStore: store, now: func() time.Time { return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC) }}
-	providerInvocationID, providerInvocationAt, err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_server_response_setup"}, nodeAttempt{NodeRunID: "nr_server_response_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_server_response_setup", executionstore.ProviderCompletionModeServerResponse, "2026-03-01T12:00:00Z", "")
+	const providerInvocationID = "pinv_server_response_setup"
+	prepared, err := memoryProvider(db).Prepare(context.Background(), opencode.ExecuteRequest{AttemptID: attemptID, InvocationID: providerInvocationID, WorkspacePath: t.TempDir(), OpenPrompt: fixturePrompt})
 	if err != nil {
+		t.Fatalf("prepare provider request: %v", err)
+	}
+	if err := loop.activateProviderInvocationForExecution(context.Background(), runSnapshot{RunID: "run_server_response_setup"}, nodeAttempt{NodeRunID: "nr_server_response_setup_1", LeaseOwner: claim.LeaseOwner, LeaseVersion: claim.LeaseVersion}, attemptID, "session_server_response_setup", providerInvocationID, prepared, executionstore.ProviderCompletionModeServerResponse, "2026-03-01T12:00:00Z"); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	if strings.TrimSpace(providerInvocationID) == "" {
-		t.Fatal("expected provider invocation id")
+	binding, bound, err := providerrequest.ForOwner(context.Background(), db, providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: providerInvocationID})
+	if err != nil || !bound {
+		t.Fatalf("provider request binding: bound=%t err=%v", bound, err)
 	}
-	if providerInvocationAt != "2026-03-01T12:00:00Z" {
-		t.Fatalf("expected provider invocation timestamp to round-trip, got %q", providerInvocationAt)
+	if binding.Identity != prepared.Identity || binding.Lease != (providerrequest.Lease{Owner: claim.LeaseOwner, Version: claim.LeaseVersion}) || binding.LogicalSessionID != "session_server_response_setup" {
+		t.Fatalf("binding=%+v, want prepared identity %+v under the claimed lease", binding, prepared.Identity)
+	}
+	if binding.DispatchIssuedAt != "" {
+		t.Fatalf("activation issued dispatch at %q before the request ran", binding.DispatchIssuedAt)
 	}
 	invocation, found, err := store.GetProviderInvocation(context.Background(), providerInvocationID)
 	if err != nil {
@@ -4072,7 +3168,7 @@ func TestOrchestratorTickDoesNotBlockOnSingleLongExecution(t *testing.T) {
 	rt, err := NewRuntime(Config{
 		DB:             db,
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		GovernanceMode: "autonomous",
 	})
 	if err != nil {
@@ -4774,7 +3870,7 @@ func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *test
 		attempt:   nodeAttempt{NodeRunID: "nr_raw_error_fallback_1", NodeID: "implementation", Attempt: 1, AgentID: "agent_builder", RequiredRole: "builder"},
 		attemptID: "run_raw_error_fallback:implementation:1",
 		delegator: "agent_council",
-		err:       errors.New("opencode run failed: signal: killed"),
+		err:       errors.New("provider request failed: signal: killed"),
 	}
 
 	if err := loop.completeExecution(context.Background(), result); err != nil {
@@ -4785,10 +3881,10 @@ func TestCompleteExecutionResponseRawFallsBackToErrorTextWhenOutputEmpty(t *test
 	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full'), json_extract(payload_json, '$.response_raw') FROM mailbox_messages WHERE run_id = 'run_raw_error_fallback' AND json_extract(payload_json, '$.communication_type') = 'response_received' LIMIT 1`).Scan(&responseFull, &responseRaw); err != nil {
 		t.Fatalf("query response message: %v", err)
 	}
-	if responseRaw != "opencode run failed: signal: killed" {
+	if responseRaw != "provider request failed: signal: killed" {
 		t.Fatalf("expected response_raw fallback to error text, got %q", responseRaw)
 	}
-	if responseFull != "opencode run failed: signal: killed" {
+	if responseFull != "provider request failed: signal: killed" {
 		t.Fatalf("expected response_full error text, got %q", responseFull)
 	}
 }
@@ -5050,7 +4146,7 @@ func TestCompleteExecutionProjectionRetryUsesCanonicalSettlementOutput(t *testin
 	}
 
 	var responseFull string
-	if err := db.QueryRow(`SELECT json_extract(payload_json, '$.response_full') FROM mailbox_messages WHERE run_id = 'run_canonical_retry' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&responseFull); err != nil {
+	if err := db.QueryRow(`SELECT COALESCE(json_extract(payload_json, '$.response_full'), json_extract(payload_json, '$.response_preview')) FROM mailbox_messages WHERE run_id = 'run_canonical_retry' AND json_extract(payload_json, '$.communication_type') = 'response_received'`).Scan(&responseFull); err != nil {
 		t.Fatalf("query canonical retry mailbox response: %v", err)
 	}
 	if responseFull != "Canonical settlement response." {
@@ -5577,10 +4673,18 @@ func TestStartAsyncExecutionPersistsTerminalHandoffAfterDispatchContextCancellat
 	job.sessionID = invocation.LogicalSessionID
 	job.expectedLeaseExpiresAt = "2099-03-01T12:10:00Z"
 	h.loop.asyncDrain = newExecutionDrainTracker()
-	h.loop.adapter = &sequenceExecutionAdapter{outputs: []string{`{"summary":"ok"}`}}
+	// The server completes the request even though the dispatch context ends
+	// while it is running.
+	running := make(chan struct{})
+	h.requests.respondWith(responderFunc(func(ctx context.Context, _ opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+		close(running)
+		<-ctx.Done()
+		return opencode.ExecuteResponse{OutputText: `{"summary":"ok"}`}, nil
+	}))
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
 	h.loop.startAsyncExecution(ctx, job)
+	<-running
+	cancel()
 	drainCtx, stopDrain := context.WithTimeout(context.Background(), 5*time.Second)
 	defer stopDrain()
 	if err := h.loop.waitForAsyncDrain(drainCtx); err != nil {
@@ -5851,11 +4955,12 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 		t.Fatalf("claim provider attempt: claim=%#v acquired=%t err=%v", claim, acquired, err)
 	}
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', started_at = '2026-03-01T12:00:01Z' WHERE attempt_id = '`+attemptID+`'`)
-	providerSessionID := "ses_test_" + sanitizeFileToken(invocationID)
-	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: providerSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
+	requests := newRequestFixture(db, nil)
+	prepared := requests.prepare(t, attemptID, invocationID)
+	if _, err := store.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{RequestIdentity: prepared.Identity, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: "run_1", NodeRunID: "nr_1", LogicalSessionID: "session_provider_replay", CompletionMode: executionstore.ProviderCompletionModeServerResponse, ProviderSessionID: prepared.ProviderSessionID, CreatedAt: "2026-03-01T12:00:02Z", OpenedAt: "2026-03-01T12:00:02Z", ExpectedLeaseOwner: claim.LeaseOwner, ExpectedLeaseVersion: claim.LeaseVersion}); err != nil {
 		t.Fatalf("activate provider invocation: %v", err)
 	}
-	attachQuiescentProviderProcessGuard(t, store, invocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:03Z")
+	response := requests.run(t, attemptID, invocationID, opencode.ExecuteResponse{OutputText: `{"summary":"first canonical response"}`}, nil)
 	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
 		t.Fatalf("new runtime fs store: %v", err)
@@ -5882,7 +4987,8 @@ func TestCommitProviderExecutionCompletionReplaysAcrossAdvancingClockAndRejectsC
 		expectedLeaseOwner:        "runtime_orchestrator",
 		expectedLeaseVersion:      claim.LeaseVersion,
 		outputText:                `{"summary":"first canonical response"}`,
-		providerStreamObservation: testSuccessfulExecuteObservation(opencode.ExecuteRequest{InvocationID: invocationID}, `{"summary":"first canonical response"}`),
+		providerSessionID:         response.ProviderSessionID,
+		providerStreamObservation: response.StreamObservation,
 		outcome:                   opencode.ExecutionOutcome{State: "success", ReasonCode: "execution_completed", EvidenceSource: "stream"},
 	}
 	if err := loop.persistProviderTerminalHandoff(ctx, &result); err != nil {
@@ -6036,15 +5142,6 @@ func TestExecutionOutboxPayloadRoundTripsProviderDiagnostics(t *testing.T) {
 	}
 	if decoded.providerDiagnosticsJSON != result.providerDiagnosticsJSON {
 		t.Fatalf("expected provider diagnostics json %s, got %s", result.providerDiagnosticsJSON, decoded.providerDiagnosticsJSON)
-	}
-}
-
-func TestClassifyExecutionReasonCodeMapsProviderIncompleteTurn(t *testing.T) {
-	t.Parallel()
-
-	err := fmt.Errorf("wrapped: %w", &opencode.IncompleteTerminalStateError{Reason: "tool-calls"})
-	if got := classifyExecutionReasonCode(err); got != "provider_incomplete_turn" {
-		t.Fatalf("expected provider_incomplete_turn, got %q", got)
 	}
 }
 
@@ -7882,7 +6979,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCap(t *testing.T) 
 		mailbox:        state.NewMailboxStore(db, nil),
 		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
 		executionStore: executionstore.New(db),
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -8242,7 +7339,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyExecutionReviewAtCapAfterMixedHisto
 		mailbox:        state.NewMailboxStore(db, nil),
 		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
 		executionStore: executionstore.New(db),
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -8302,7 +7399,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationAtCap(t *testing.T) {
 		mailbox:        state.NewMailboxStore(db, nil),
 		validator:      state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
 		executionStore: executionstore.New(db),
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -8403,7 +7500,7 @@ func TestDispatchNodeAttemptAutoSucceedsReadyValidationImmediatelyWhenCapIsZero(
 		transition: state.NewTransitionService(db, nil),
 		mailbox:    state.NewMailboxStore(db, nil),
 		validator:  state.NewWorkerOutputValidator(db, loadOrchestrationSchemaSet(t)),
-		adapter:    adapter,
+		provider:   fixtureProvider(db, adapter),
 		now: func() time.Time {
 			return time.Date(2026, 3, 1, 12, 0, 10, 0, time.UTC)
 		},
@@ -9481,13 +8578,10 @@ func TestShouldUseErrorAsResponseFallbackExcludesOwnerFailureClasses(t *testing.
 	if shouldUseErrorAsResponseFallback("quality_validation", &providerEmptyOutputError{NodeID: "quality_validation", AttemptID: "run:x:1"}, "") {
 		t.Fatal("expected provider empty output errors to skip error-text fallback")
 	}
-	if shouldUseErrorAsResponseFallback("execution_review", &opencode.IncompleteTerminalStateError{Reason: "missing_reason"}, "") {
-		t.Fatal("expected owner incomplete-turn errors to skip error-text fallback")
-	}
-	if shouldUseErrorAsResponseFallback("execution_review", errors.New("opencode run failed: incomplete"), "provider_incomplete_turn") {
+	if shouldUseErrorAsResponseFallback("execution_review", errors.New("provider request failed: incomplete"), "provider_incomplete_turn") {
 		t.Fatal("expected durable provider_incomplete_turn reason code to skip owner error-text fallback")
 	}
-	if !shouldUseErrorAsResponseFallback("implementation", &opencode.IncompleteTerminalStateError{Reason: "missing_reason"}, "") {
+	if !shouldUseErrorAsResponseFallback("implementation", errors.New("provider response is incomplete"), "provider_incomplete_turn") {
 		t.Fatal("expected non-owner incomplete-turn errors to retain error-text fallback")
 	}
 	if !shouldUseErrorAsResponseFallback("implementation", errors.New("dial tcp timeout"), "") {
@@ -9591,10 +8685,10 @@ func TestEmitRunningAttemptObservationIfNeededPersistsRuntimeSnapshot(t *testing
 	mustExec(t, db, fmt.Sprintf(`UPDATE node_runs SET node_status = 'running', started_at = '%s', finished_at = NULL WHERE node_run_id = 'nr_1'`, now))
 
 	loop := orchestrationLoop{
-		db:      db,
-		adapter: opencode.NewMemoryAdapter(),
-		events:  state.NewAttemptEventIngestor(db, nil),
-		now:     func() time.Time { return nowTime },
+		db:       db,
+		provider: memoryProvider(db),
+		events:   state.NewAttemptEventIngestor(db, nil),
+		now:      func() time.Time { return nowTime },
 	}
 	run := runSnapshot{RunID: "run_1"}
 	attempt := nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, NodeStatus: "running", RequiredRole: "governance"}
@@ -9719,7 +8813,7 @@ func TestDispatchNodeAttemptRuntimeOwnedWorkIntakeSkipsProviderExecutionAndSessi
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		YoloOutputRoot: t.TempDir(),
 	})
 	if err != nil {
@@ -9951,7 +9045,7 @@ func TestDispatchNodeAttemptResponseFirstPlanDraftingUsesIsolatedWorkspaceWithou
 
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10102,7 +9196,7 @@ func TestDispatchNodeAttemptLosingProviderClaimHasNoProviderSideEffects(t *testi
 		}},
 	})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -10153,7 +9247,7 @@ func TestDispatchNodeAttemptSetupFailureAfterProviderClaimClearsLeaseWithoutLaun
 		}},
 	})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -10226,7 +9320,7 @@ func TestDispatchNodeAttemptStartPersistenceFailureInvalidatesUnlaunchedInvocati
 		}},
 	})
 	adapter := &sequenceExecutionAdapter{outputs: []string{"must not execute"}}
-	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
+	rt, err := newMemoryRuntime(t, Config{DB: db, Provider: fixtureProvider(db, adapter), Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
@@ -10293,7 +9387,7 @@ func TestDispatchNodeAttemptAcceptsFileBeyondFormerWorkspaceLimit(t *testing.T) 
 	adapter := &sequenceExecutionAdapter{outputs: []string{"Inspected the complete workspace"}}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10367,7 +9461,7 @@ func TestDispatchNodeAttemptDelegatedExecutionStillPreparesWorkspaceAndSnapshots
 	adapter := &sequenceExecutionAdapter{outputs: []string{"Implemented builder changes"}}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10455,7 +9549,7 @@ func TestDispatchNodeAttemptPersistsDurableStreamProgressEvents(t *testing.T) {
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10540,7 +9634,7 @@ func TestDispatchNodeAttemptDoesNotFailSuccessfulExecutionWhenDurableProgressFlu
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10619,7 +9713,7 @@ func TestDispatchNodeAttemptDelegatedExecutionPublishesBuilderDeliverablesFromWo
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       fixtureProvider(db, adapter),
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot: projectRoot,
 	})
@@ -10701,10 +9795,10 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 	applyMigration(t, db)
 	seedSimpleDispatchRun(t, db)
 
-	adapter := newDelayedProcessStartExecutionAdapter()
+	provider := newDelayedLaunchProvider(memoryProvider(db))
 	rt, err := NewRuntime(Config{
 		DB:             db,
-		Adapter:        adapter,
+		Provider:       provider,
 		Paths:          DefaultBootstrapPaths(repoRoot(t)),
 		GovernanceMode: "autonomous",
 		YoloOutputRoot: t.TempDir(),
@@ -10713,7 +9807,7 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 		t.Fatalf("new runtime: %v", err)
 	}
 	t.Cleanup(func() {
-		adapter.releaseProcessStart()
+		provider.releaseLaunch()
 		drainCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := rt.orchestrator.waitForAsyncDrain(drainCtx); err != nil {
@@ -10769,7 +9863,7 @@ func TestDispatchNodeAttemptProviderBackedLaunchEmitsAttemptStartedOnlyAfterObse
 		t.Fatalf("expected no attempt.started event before process start is observed, got %d", startedCount)
 	}
 
-	adapter.releaseProcessStart()
+	provider.releaseLaunch()
 
 	testutil.Eventually(t, 2*time.Second, 10*time.Millisecond, func() error {
 		var startedEvents int
@@ -10899,10 +9993,11 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 		t.Fatalf("claim attempt: acquired=%t err=%v", acquired, err)
 	}
 	providerInvocationID := "pinv_provider_invoked_backfill"
-	providerSessionID := "ses_test_" + sanitizeFileToken(providerInvocationID)
-	seedOpenProviderInvocationForAttempt(t, execStore, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerSessionID, providerInvocationID, "2026-03-01T12:00:00Z")
+	requests := newRequestFixture(db, nil)
+	seedOpenProviderInvocationForAttempt(t, execStore, requests, attemptID, "run_1", "nr_1", sessionIDForAttempt(attemptID), providerInvocationID, "2026-03-01T12:00:00Z")
 	mustExec(t, db, `UPDATE attempt_executions SET state = 'running', launch_started_at = '2026-03-01T12:00:03Z', started_at = '2026-03-01T12:00:04Z' WHERE attempt_id = 'run_1:work_intake:1'`)
-	attachQuiescentProviderProcessGuard(t, execStore, providerInvocationID, attemptID, "run_1", "nr_1", claim.LeaseOwner, claim.LeaseVersion, "2026-03-01T12:00:04Z")
+	const outputText = "WorkOrder intake completed despite telemetry failure."
+	response := requests.run(t, attemptID, providerInvocationID, opencode.ExecuteResponse{OutputText: outputText}, nil)
 
 	closedEventsDB := openTestDB(t)
 	if err := closedEventsDB.Close(); err != nil {
@@ -10923,25 +10018,24 @@ func TestCommitExecutionCompletionContinuesWhenProviderInvokedBackfillFails(t *t
 		},
 	}
 	job := asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
-		node:                 nodeDefinition{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
-		attempt:              nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
-		attemptID:            attemptID,
-		providerInvocationID: providerInvocationID,
-		providerInvocationAt: "2026-03-01T12:00:00Z",
-		completionMode:       executionstore.ProviderCompletionModeServerResponse,
-		expectedLeaseOwner:   claim.LeaseOwner,
-		expectedLeaseVersion: claim.LeaseVersion,
-		launchObserved:       true,
-		launchObservedAt:     "2026-03-01T12:00:04Z",
-		model:                "github-copilot/gpt-5.4-mini",
-		variant:              "low",
-		agent:                "governance",
-		occurredAt:           "2026-03-01T12:00:05Z",
-		outputText:           "WorkOrder intake completed despite telemetry failure.",
-		providerStreamObservation: testSuccessfulExecuteObservation(opencode.ExecuteRequest{
-			InvocationID: providerInvocationID,
-		}, "WorkOrder intake completed despite telemetry failure."),
+		run:                       runSnapshot{RunID: "run_1", RunStatus: "running", PlanState: "approved"},
+		node:                      nodeDefinition{NodeID: "work_intake", RequiredRole: "governance", NodeClass: "work_intake"},
+		attempt:                   nodeAttempt{NodeRunID: "nr_1", NodeID: "work_intake", Attempt: 1, RequiredRole: "governance", ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
+		attemptID:                 attemptID,
+		providerInvocationID:      providerInvocationID,
+		providerInvocationAt:      "2026-03-01T12:00:00Z",
+		completionMode:            executionstore.ProviderCompletionModeServerResponse,
+		expectedLeaseOwner:        claim.LeaseOwner,
+		expectedLeaseVersion:      claim.LeaseVersion,
+		launchObserved:            true,
+		launchObservedAt:          "2026-03-01T12:00:04Z",
+		model:                     "github-copilot/gpt-5.4-mini",
+		variant:                   "low",
+		agent:                     "governance",
+		occurredAt:                "2026-03-01T12:00:05Z",
+		outputText:                outputText,
+		providerSessionID:         response.ProviderSessionID,
+		providerStreamObservation: response.StreamObservation,
 	}
 	persistProviderTerminalHandoffForTest(t, &loop, &job)
 
@@ -11603,16 +10697,14 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	t.Helper()
 	store := executionstore.New(db)
 	providerInvocationID := fmt.Sprintf("pinv_%s", sanitizeFileToken(attemptID))
-	providerSessionID := fmt.Sprintf("ses_%s", sanitizeFileToken(attemptID))
 	if err := store.EnqueueAttempt(context.Background(), executionstore.EnqueueAttemptRequest{
-		AttemptID:         attemptID,
-		RunID:             runID,
-		NodeRunID:         nodeRunID,
-		ExecutionMode:     executionstore.ExecutionModeProviderBacked,
-		CompletionMode:    executionstore.ProviderCompletionModeServerResponse,
-		SessionRef:        sessionIDForAttempt(attemptID),
-		ProviderSessionID: providerSessionID,
-		CreatedAt:         createdAt,
+		AttemptID:      attemptID,
+		RunID:          runID,
+		NodeRunID:      nodeRunID,
+		ExecutionMode:  executionstore.ExecutionModeProviderBacked,
+		CompletionMode: executionstore.ProviderCompletionModeServerResponse,
+		SessionRef:     sessionIDForAttempt(attemptID),
+		CreatedAt:      createdAt,
 	}); err != nil {
 		t.Fatalf("enqueue canonical execution output %q: %v", attemptID, err)
 	}
@@ -11628,65 +10720,66 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	if _, err := db.Exec(`UPDATE attempt_executions SET state = 'running', started_at = ? WHERE attempt_id = ?`, createdAt, attemptID); err != nil {
 		t.Fatalf("mark canonical execution output %q running: %v", attemptID, err)
 	}
-	if _, err := store.ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+	requests := newRequestFixture(db, nil)
+	requests.activate(t, store, executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     sessionIDForAttempt(attemptID),
-		ProviderSessionID:    providerSessionID,
 		IssuedAt:             createdAt,
 		CreatedAt:            createdAt,
 		CompletionMode:       executionstore.ProviderCompletionModeServerResponse,
 		OpenedAt:             createdAt,
 		ExpectedLeaseOwner:   claim.LeaseOwner,
 		ExpectedLeaseVersion: claim.LeaseVersion,
-	}); err != nil {
-		t.Fatalf("activate canonical provider invocation %q: %v", attemptID, err)
-	}
-	attachQuiescentProviderProcessGuard(t, store, providerInvocationID, attemptID, runID, nodeRunID, claim.LeaseOwner, claim.LeaseVersion, createdAt)
+	})
 	structuredPayloadJSON := canonicalStructuredPayloadForExecutionOutput(outputText)
 	var requiredRole string
 	if err := db.QueryRow(`SELECT required_role FROM node_runs WHERE node_run_id = ?`, nodeRunID).Scan(&requiredRole); err != nil {
 		t.Fatalf("load canonical execution role %q: %v", attemptID, err)
 	}
 	settlementOutcome := executionstore.ProviderCompletionOutcomeSuccess
+	answer, answerErr := opencode.ExecuteResponse{OutputText: outputText}, error(nil)
 	switch strings.TrimSpace(stateValue) {
 	case "committed_failure":
 		settlementOutcome = executionstore.ProviderCompletionOutcomeFailed
 	case "committed_cancelled":
 		settlementOutcome = executionstore.ProviderCompletionOutcomeCancelled
+		answer, answerErr = interruptedResponse(), context.Canceled
 	}
-	zero := 0
-	observation := opencode.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_" + sanitizeFileToken(attemptID),
-		FinalStepID:            "step_" + sanitizeFileToken(attemptID),
-		FinalSequence:          1,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  outputText,
-		ProcessExited:          true,
-		ProcessExitCode:        &zero,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-		ProcessQuiescent:       true,
-		ProcessGuards:          []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "fixture_guard_" + sanitizeFileToken(providerInvocationID), GuardianPID: 1, ChildPID: 2, TreeID: 2, Platform: "unix_process_group", Quiescent: true}},
+	// The recorded run history may already be terminal, but the request ran while
+	// its run was live.
+	var runStatus string
+	if err := db.QueryRow(`SELECT run_status FROM workflow_runs WHERE run_id = ?`, runID).Scan(&runStatus); err != nil {
+		t.Fatalf("load canonical execution run %q: %v", attemptID, err)
 	}
-	handoff, err := store.PersistProviderTerminalHandoff(context.Background(), executionstore.PersistProviderTerminalHandoffRequest{
-		ProviderInvocationID: providerInvocationID,
-		AttemptID:            attemptID,
-		RunID:                runID,
-		NodeRunID:            nodeRunID,
-		ExpectedLeaseOwner:   claim.LeaseOwner,
-		ExpectedLeaseVersion: claim.LeaseVersion,
-		StreamObservation:    observation,
-		PayloadJSON:          `{}`,
-		CreatedAt:            createdAt,
-	})
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = 'running' WHERE run_id = '`+runID+`'`)
+	response := requests.run(t, attemptID, providerInvocationID, answer, answerErr)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status = '`+runStatus+`' WHERE run_id = '`+runID+`'`)
+	fsStore, err := runtimefs.NewStore(db, t.TempDir())
 	if err != nil {
+		t.Fatalf("new runtime fs store: %v", err)
+	}
+	settledAt, err := time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		t.Fatalf("parse canonical execution time %q: %v", createdAt, err)
+	}
+	loop := &orchestrationLoop{db: db, executionStore: store, fsStore: fsStore, now: func() time.Time { return settledAt }}
+	job := asyncExecutionResult{
+		run:                  runSnapshot{RunID: runID},
+		attempt:              nodeAttempt{NodeRunID: nodeRunID, ExecutionMode: executionstore.ExecutionModeProviderBacked, CompletionMode: executionstore.ProviderCompletionModeServerResponse},
+		attemptID:            attemptID,
+		providerInvocationID: providerInvocationID,
+		completionMode:       executionstore.ProviderCompletionModeServerResponse,
+		expectedLeaseOwner:   claim.LeaseOwner,
+		expectedLeaseVersion: claim.LeaseVersion,
+	}
+	applyExecuteResponseToAsyncResult(&job, response, answerErr)
+	if err := loop.persistProviderTerminalHandoff(context.Background(), &job); err != nil {
 		t.Fatalf("persist canonical execution terminal handoff %q: %v", attemptID, err)
 	}
+	observation := job.providerStreamObservation
 	outboxID := fmt.Sprintf("outbox_exec_%s", sanitizeFileToken(attemptID))
 	if _, err := store.SettleProviderCompletionAndTerminal(context.Background(), executionstore.SettleProviderCompletionAndTerminalRequest{
 		Settlement: executionstore.FinalizeProviderCompletionSettlementRequest{
@@ -11705,7 +10798,7 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 		StreamObservation:    &observation,
 		ExpectedLeaseOwner:   claim.LeaseOwner,
 		ExpectedLeaseVersion: claim.LeaseVersion,
-		TerminalHandoffID:    handoff.Handoff.HandoffID,
+		TerminalHandoffID:    job.terminalHandoffID,
 		TokenUsage:           &executionstore.ProviderInvocationTokenUsage{RequiredRole: requiredRole},
 		Terminal: executionstore.CommitTerminalRequest{
 			OutboxID:           outboxID,
@@ -11717,7 +10810,7 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 			TerminalReasonCode: reasonCode,
 			FailureCode:        failureCode,
 			FailureText:        failureText,
-			ProviderSessionID:  providerSessionID,
+			ProviderSessionID:  response.ProviderSessionID,
 		},
 	}); err != nil {
 		t.Fatalf("settle canonical execution output %q: %v", attemptID, err)
@@ -11725,66 +10818,6 @@ func seedCanonicalExecutionOutput(t *testing.T, db *sql.DB, attemptID, runID, no
 	if err := store.MarkOutboxPublished(context.Background(), outboxID, createdAt); err != nil {
 		t.Fatalf("mark canonical execution output %q projected: %v", attemptID, err)
 	}
-}
-
-func attachQuiescentProviderProcessGuard(t *testing.T, store *executionstore.Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64, occurredAt string) {
-	t.Helper()
-	guardID := "fixture_guard_" + sanitizeFileToken(invocationID)
-	capability := "fixture-guardian-capability"
-	acknowledged, err := store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
-		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
-		CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child",
-		QuiescenceCapability: capability, ExpectedLeaseOwner: leaseOwner, ExpectedLeaseVersion: leaseVersion, StartedAt: occurredAt, AcknowledgedAt: occurredAt,
-	})
-	if err != nil || acknowledged.Idempotent {
-		t.Fatalf("acknowledge fixture process guard %q: result=%#v err=%v", invocationID, acknowledged, err)
-	}
-	result := processguardian.Result{Ownership: processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: 2, TreeIdentityToken: "fixture-child", Platform: "unix_process_group", QuiescenceCapability: capability}, ExitCode: 0, Quiescent: true}
-	evidence, err := json.Marshal(struct {
-		Type   string                 `json:"type"`
-		Result processguardian.Result `json:"result"`
-	}{Type: "result", Result: result})
-	if err != nil {
-		t.Fatal(err)
-	}
-	sum := sha256.Sum256(evidence)
-	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
-		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
-		Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child", QuiescenceCapability: capability,
-		ExitedAt: occurredAt, QuiescentAt: occurredAt, EvidenceSHA256: fmt.Sprintf("%x", sum[:]), EvidenceJSON: string(evidence),
-	}); err != nil {
-		t.Fatalf("ingest fixture process guard %q: %v", invocationID, err)
-	}
-}
-
-func recordTestQuiescentProviderProcessGuard(store *executionstore.Store, invocationID, attemptID, runID, nodeRunID, leaseOwner string, leaseVersion int64, occurredAt string) error {
-	guardID := "fixture_guard_" + sanitizeFileToken(invocationID)
-	capability := "fixture-guardian-capability"
-	acknowledged, err := store.AcknowledgeProviderProcessGuard(context.Background(), executionstore.AcknowledgeProviderProcessGuardRequest{
-		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
-		CommandOrdinal: 1, Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child",
-		QuiescenceCapability: capability, ExpectedLeaseOwner: leaseOwner, ExpectedLeaseVersion: leaseVersion, StartedAt: occurredAt, AcknowledgedAt: occurredAt,
-	})
-	if err != nil || acknowledged.Idempotent {
-		return fmt.Errorf("acknowledge fixture process guard %q: result=%#v err=%v", invocationID, acknowledged, err)
-	}
-	result := processguardian.Result{Ownership: processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: 2, TreeIdentityToken: "fixture-child", Platform: "unix_process_group", QuiescenceCapability: capability}, ExitCode: 0, Quiescent: true}
-	evidence, err := json.Marshal(struct {
-		Type   string                 `json:"type"`
-		Result processguardian.Result `json:"result"`
-	}{Type: "result", Result: result})
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(evidence)
-	if _, err := store.IngestProviderProcessGuardQuiescence(context.Background(), executionstore.IngestProviderProcessGuardQuiescenceRequest{
-		GuardID: guardID, ProviderInvocationID: invocationID, AttemptID: attemptID, RunID: runID, NodeRunID: nodeRunID,
-		Platform: "unix_process_group", GuardianPID: 1, GuardianIdentityToken: "fixture-guardian", ChildPID: 2, ChildIdentityToken: "fixture-child", TreeID: "2", TreeIdentityToken: "fixture-child", QuiescenceCapability: capability,
-		ExitedAt: occurredAt, QuiescentAt: occurredAt, EvidenceSHA256: fmt.Sprintf("%x", sum[:]), EvidenceJSON: string(evidence),
-	}); err != nil {
-		return fmt.Errorf("ingest fixture process guard %q: %w", invocationID, err)
-	}
-	return nil
 }
 
 func seedPendingCanonicalExecutionOutbox(t *testing.T, db *sql.DB, result asyncExecutionResult, terminalState, createdAt string) {
@@ -11817,11 +10850,10 @@ func seedPendingCanonicalExecutionOutbox(t *testing.T, db *sql.DB, result asyncE
 	}
 }
 
-func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.Store, attemptID, runID, nodeRunID, sessionID, providerSessionID, providerInvocationID, issuedAt string) {
+// seedOpenProviderInvocationForAttempt activates a bound invocation under the
+// attempt's current lease.
+func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.Store, requests *requestFixture, attemptID, runID, nodeRunID, sessionID, providerInvocationID, issuedAt string) executionstore.ProviderInvocation {
 	t.Helper()
-	if store == nil {
-		t.Fatal("execution store is required")
-	}
 	attempt, found, err := store.GetAttempt(context.Background(), attemptID)
 	if err != nil {
 		t.Fatalf("load attempt %q: %v", attemptID, err)
@@ -11829,27 +10861,19 @@ func seedOpenProviderInvocationForAttempt(t *testing.T, store *executionstore.St
 	if !found {
 		t.Fatalf("expected attempt %q before creating provider invocation", attemptID)
 	}
-	if _, err := store.CreateProviderInvocation(context.Background(), executionstore.CreateProviderInvocationRequest{
+	return requests.activate(t, store, executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID: providerInvocationID,
 		AttemptID:            attemptID,
 		RunID:                runID,
 		NodeRunID:            nodeRunID,
 		LogicalSessionID:     sessionID,
-		ProviderSessionID:    providerSessionID,
+		CompletionMode:       attempt.CompletionMode,
 		IssuedAt:             issuedAt,
 		CreatedAt:            issuedAt,
-		CompletionMode:       attempt.CompletionMode,
-	}); err != nil {
-		t.Fatalf("create provider invocation for %q: %v", attemptID, err)
-	}
-	if _, err := store.MarkProviderInvocationOpen(context.Background(), executionstore.MarkProviderInvocationOpenRequest{
-		ProviderInvocationID: providerInvocationID,
-		AttemptID:            attemptID,
-		ProviderSessionID:    providerSessionID,
 		OpenedAt:             issuedAt,
-	}); err != nil {
-		t.Fatalf("mark provider invocation open for %q: %v", attemptID, err)
-	}
+		ExpectedLeaseOwner:   attempt.LeaseOwner,
+		ExpectedLeaseVersion: attempt.LeaseVersion,
+	})
 }
 
 func canonicalStructuredPayloadForExecutionOutput(outputText string) string {
@@ -12091,7 +11115,7 @@ func TestRuntimeDispatchLoopKeepsGovernancePlanDecisionPendingUntilManualDecisio
 	rt, err := newMemoryRuntime(t, Config{
 		DB:                  db,
 		Paths:               DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:             adapter,
+		Provider:            fixtureProvider(db, adapter),
 		GovernanceMode:      "autonomous",
 		AutonomousApprovals: boolPtr(false),
 		DispatchInterval:    20 * time.Millisecond,
@@ -12133,7 +11157,7 @@ func TestRuntimeDispatchLoopAutoCompletesGovernancePlanDecisionWithoutProviderEx
 	rt, err := newMemoryRuntime(t, Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		GovernanceMode:   "autonomous",
 		DispatchInterval: 20 * time.Millisecond,
 	})
@@ -12208,7 +11232,7 @@ func TestRuntimeDispatchLoopCompletesCompletionWhenValidationNodeMissing(t *test
 	rt, err := newMemoryRuntime(t, Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		GovernanceMode:   "autonomous",
 		DispatchInterval: 20 * time.Millisecond,
 	})
@@ -12537,7 +11561,7 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileProviderActivityRemainsRecent(t *
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -12600,7 +11624,7 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileStreamProgressRemainsRecent(t *te
 	}
 	rt, err := newMemoryRuntime(t, Config{
 		DB:               db,
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
 		YoloOutputRoot:   projectRoot,
 		DispatchInterval: 25 * time.Millisecond,
@@ -12663,7 +11687,7 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -12700,15 +11724,15 @@ func TestRuntimeDoesNotFailTimedOutAttemptWhileSeededStreamProgressRemainsRecent
 func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedRunForTimeoutDiagnostics(t, db)
+	requests := seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.activity", "provider_activity", `{"kind":"kingdom.tool","label":"Processing"}`, time.Now().UTC().Format(time.RFC3339Nano))
 
-	adapter := &timeoutCancelObserverAdapter{}
-	attachTimeoutCancellationQuiescence(adapter, db)
+	adapter := &streamingTimeoutExecutionAdapter{}
+	requests.respondWith(adapter)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         requests.provider,
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -12723,6 +11747,7 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -12747,15 +11772,15 @@ func TestRuntimeFailsTimedOutAttemptAfterRecentActivityGoesInactive(t *testing.T
 func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedRunForTimeoutDiagnostics(t, db)
+	requests := seedRunForTimeoutDiagnostics(t, db)
 	seedTimeoutDiagnosticEvent(t, db, "attempt.progress", "runtime_observation", `{"execution_diagnostics":{"event_count":3,"execution_path_diagnostics_snapshot":{"stdout_event_count":7,"step_finish_seen":true,"last_stdout_event_at":"2026-03-01T12:00:00Z"}}}`, time.Now().UTC().Format(time.RFC3339Nano))
 
-	adapter := &timeoutCancelObserverAdapter{}
-	attachTimeoutCancellationQuiescence(adapter, db)
+	adapter := &streamingTimeoutExecutionAdapter{}
+	requests.respondWith(adapter)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         requests.provider,
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -12770,6 +11795,7 @@ func TestRuntimeIgnoresRuntimeObservationAsTimeoutKeepalive(t *testing.T) {
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -12795,9 +11821,9 @@ func TestRuntimeSkipsTimeoutForTerminalObservedDurableAttempt(t *testing.T) {
 
 	adapter := &timeoutCancelObserverAdapter{}
 	rt, err := NewRuntime(Config{
-		DB:      db,
-		Paths:   DefaultBootstrapPaths(repoRoot(t)),
-		Adapter: adapter,
+		DB:       db,
+		Paths:    DefaultBootstrapPaths(repoRoot(t)),
+		Provider: fixtureProvider(db, adapter),
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
@@ -12833,9 +11859,9 @@ func TestProviderActivityTimeoutRecencyUsesRuntimeObservationTime(t *testing.T) 
 	seedRunForTimeoutDiagnostics(t, db)
 
 	rt, err := NewRuntime(Config{
-		DB:      db,
-		Paths:   DefaultBootstrapPaths(repoRoot(t)),
-		Adapter: &timeoutCancelObserverAdapter{},
+		DB:       db,
+		Paths:    DefaultBootstrapPaths(repoRoot(t)),
+		Provider: fixtureProvider(db, &timeoutCancelObserverAdapter{}),
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
@@ -12887,9 +11913,9 @@ func TestTimeoutWarningSequencesAfterDurableStreamProgress(t *testing.T) {
 	seedRunForTimeoutDiagnostics(t, db)
 
 	rt, err := NewRuntime(Config{
-		DB:      db,
-		Paths:   DefaultBootstrapPaths(repoRoot(t)),
-		Adapter: &timeoutCancelObserverAdapter{},
+		DB:       db,
+		Paths:    DefaultBootstrapPaths(repoRoot(t)),
+		Provider: fixtureProvider(db, &timeoutCancelObserverAdapter{}),
 	})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
@@ -12971,14 +11997,14 @@ func TestRuntimeEnforcesPersistedProviderTimeoutWhenPolicyLookupMissing(t *testi
 func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedRunForTimeoutDiagnostics(t, db)
+	requests := seedRunForTimeoutDiagnostics(t, db)
 
-	adapter := &timeoutCancelObserverAdapter{}
-	attachTimeoutCancellationQuiescence(adapter, db)
+	adapter := &streamingTimeoutExecutionAdapter{}
+	requests.respondWith(adapter)
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         requests.provider,
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -12992,6 +12018,7 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	if err := rt.Start(ctx); err != nil {
 		t.Fatalf("start runtime: %v", err)
 	}
+	startTimeoutDiagnosticWorker(t, rt)
 	defer func() {
 		if err := rt.Close(); err != nil {
 			t.Fatalf("close runtime: %v", err)
@@ -13010,14 +12037,13 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 			return fmt.Errorf("expected cancel request payload to be captured")
 		}
 		last := requests[len(requests)-1]
-		if last.AttemptID != "run_timeout_diag:work_intake:1" {
-			return fmt.Errorf("expected cancel attempt id run_timeout_diag:work_intake:1, got %q", last.AttemptID)
+		if last != "run_timeout_diag:work_intake:1" {
+			return fmt.Errorf("expected cancel attempt id run_timeout_diag:work_intake:1, got %q", last)
 		}
-		expectedSessionID := sessionIDForAttempt(last.AttemptID)
-		if last.SessionID != expectedSessionID {
-			return fmt.Errorf("expected cancel session id %q, got %q", expectedSessionID, last.SessionID)
+		var expectedSessionID string
+		if err := db.QueryRow(`SELECT provider_session_id FROM provider_invocations WHERE provider_invocation_id = ?`, timeoutDiagnosticProviderInvocationID).Scan(&expectedSessionID); err != nil {
+			return err
 		}
-
 		payload := queryLatestEventPayload(t, db, "run_timeout_diag:work_intake:1", "attempt.failed")
 		providerDiag, ok := payload["provider_diagnostics"].(map[string]any)
 		if !ok {
@@ -13030,13 +12056,8 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 		if strings.TrimSpace(fmt.Sprint(execDiag["attempt_id"])) != "run_timeout_diag:work_intake:1" {
 			return fmt.Errorf("expected execution diagnostics attempt id, got %#v", execDiag["attempt_id"])
 		}
-		if _, ok := execDiag["last_progress_text_len"]; !ok {
-			return fmt.Errorf("expected last_progress_text_len in execution diagnostics, got %#v", execDiag)
-		}
-		if v, ok := execDiag["last_progress_text_len"]; ok && toInt64(v) > 0 {
-			if strings.TrimSpace(fmt.Sprint(execDiag["last_progress_text_excerpt"])) == "" {
-				return fmt.Errorf("expected non-empty excerpt when progress length > 0, got %#v", execDiag)
-			}
+		if execDiag["request_dispatched"] != true || execDiag["request_admission_closed"] != true {
+			return fmt.Errorf("expected durable request facts in execution diagnostics, got %#v", execDiag)
 		}
 		cancelDiag, ok := providerDiag["cancel_diagnostics"].(map[string]any)
 		if !ok {
@@ -13090,8 +12111,8 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 	if evidence.CompletionMode != executionstore.ProviderCompletionModeServerResponse || evidence.LeaseOwner != "runtime_orchestrator" || evidence.LeaseVersion != 1 {
 		t.Fatalf("unexpected durable timeout lineage: %#v", evidence)
 	}
-	if !evidence.Observation.TimedOut || evidence.Observation.ProcessExited || evidence.Observation.ProcessExitCode != nil || evidence.Observation.StdoutDrained || evidence.Observation.StderrDrained {
-		t.Fatalf("timeout observation fabricated provider process evidence: %#v", evidence.Observation)
+	if !evidence.Observation.TimedOut {
+		t.Fatalf("timeout observation was not recorded: %#v", evidence.Observation)
 	}
 
 	for table, condition := range map[string]string{
@@ -13114,34 +12135,19 @@ func TestRuntimeSettlesTimedOutAttemptAtomicallyAfterCancellation(t *testing.T) 
 func TestTimeoutCancellationRaceCommitsExactlyOneOutcome(t *testing.T) {
 	db := openTestDB(t)
 	applyMigration(t, db)
-	seedRunForTimeoutDiagnostics(t, db)
+	requests := seedRunForTimeoutDiagnostics(t, db)
 
 	adapter := &cancellationCompletionRaceAdapter{
 		started:   make(chan struct{}),
 		cancelled: make(chan struct{}),
 	}
-	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Adapter: adapter})
+	requests.respondWith(adapter)
+	rt, err := NewRuntime(Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: requests.provider})
 	if err != nil {
 		t.Fatalf("new runtime: %v", err)
 	}
-	latest, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_timeout_diag")
-	if err != nil {
-		t.Fatalf("load timeout race attempt: %v", err)
-	}
-	attempt := latest["work_intake"]
+	attempt := startTimeoutDiagnosticWorker(t, rt)
 	const attemptID = "run_timeout_diag:work_intake:1"
-	rt.orchestrator.startAsyncExecution(context.Background(), asyncExecutionResult{
-		run:                  runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"},
-		node:                 nodeDefinition{NodeID: "work_intake", NodeClass: "work_intake", RequiredRole: "governance"},
-		attempt:              attempt,
-		attemptID:            attemptID,
-		sessionID:            attempt.SessionRef,
-		providerInvocationID: attempt.ProviderInvocationID,
-		completionMode:       attempt.CompletionMode,
-		expectedLeaseOwner:   attempt.LeaseOwner,
-		expectedLeaseVersion: attempt.LeaseVersion,
-	})
-
 	select {
 	case <-adapter.started:
 	case <-time.After(2 * time.Second):
@@ -13188,7 +12194,7 @@ func TestTimeoutCancellationRaceCommitsExactlyOneOutcome(t *testing.T) {
 	}
 }
 
-func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
+func TestCancelTimedOutAttemptReportsPersistedProviderSessionID(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -13206,21 +12212,18 @@ func TestCancelTimedOutAttemptPrefersPersistedProviderSessionID(t *testing.T) {
 
 	adapter := &timeoutCancelObserverAdapter{}
 	loop := orchestrationLoop{
-		adapter:        adapter,
+		provider:       fixtureProvider(db, adapter),
 		executionStore: store,
 		cancelGrace:    50 * time.Millisecond,
 		cancelForce:    50 * time.Millisecond,
 	}
-	diagnostics, err := loop.cancelTimedOutAttempt(context.Background(), attemptID, time.Now().UTC().Format(time.RFC3339))
+	diagnostics, err := loop.cancelTimedOutAttempt(context.Background(), attemptID)
 	if err != nil {
 		t.Fatalf("cancel timed out attempt: %v", err)
 	}
 	requests := adapter.cancelRequestsSnapshot()
 	if len(requests) != 1 {
 		t.Fatalf("expected one cancel request, got %d", len(requests))
-	}
-	if requests[0].SessionID != "ses_timeout_real" {
-		t.Fatalf("expected provider session id ses_timeout_real, got %q", requests[0].SessionID)
 	}
 	if strings.TrimSpace(fmt.Sprint(diagnostics["session_id"])) != "ses_timeout_real" {
 		t.Fatalf("expected diagnostics session_id ses_timeout_real, got %#v", diagnostics["session_id"])
@@ -13236,7 +12239,7 @@ func TestRuntimeKeepsTimedOutAttemptPendingWhenAdapterCannotProveOwnership(t *te
 	rt, err := NewRuntime(Config{
 		DB:               db,
 		Paths:            DefaultBootstrapPaths(repoRoot(t)),
-		Adapter:          adapter,
+		Provider:         fixtureProvider(db, adapter),
 		DispatchInterval: 25 * time.Millisecond,
 	})
 	if err != nil {
@@ -13770,17 +12773,14 @@ type blockingFirstExecutionAdapter struct {
 	mu                   sync.Mutex
 	callCount            int
 	blockFirst           chan struct{}
+	firstExecuteStarted  chan struct{}
 	secondExecuteStarted chan struct{}
-}
-
-type delayedProcessStartExecutionAdapter struct {
-	processStart chan struct{}
 }
 
 type timeoutCancelObserverAdapter struct {
 	mu             sync.Mutex
 	cancelCount    int
-	cancelRequests []opencode.CancelRequest
+	cancelRequests []string
 	onCancel       func() error
 }
 
@@ -13823,84 +12823,19 @@ type workspaceWritingExecutionAdapter struct {
 	requests []opencode.ExecuteRequest
 }
 
-type outcomeSequenceExecutionAdapter struct {
-	mu        sync.Mutex
-	responses []opencode.ExecuteResponse
-	calls     int
-	requests  []opencode.ExecuteRequest
-}
-
 type errorMetadataExecutionAdapter struct {
 	response opencode.ExecuteResponse
 	err      error
 }
 
-func callOnProcessStarted(req opencode.ExecuteRequest) {
-	ownership, quiescence := testProcessGuardCallbacks(req)
-	if req.OnProcessGuardOwnership != nil {
-		_ = req.OnProcessGuardOwnership(context.Background(), ownership)
-	}
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
-	if req.OnProcessGuardQuiescence != nil {
-		_ = req.OnProcessGuardQuiescence(context.Background(), quiescence)
-	}
+func (a *timeoutCancelObserverAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	return opencode.ExecuteResponse{OutputText: `{"summary":"noop"}`}, nil
 }
 
-func testProcessGuardCallbacks(req opencode.ExecuteRequest) (opencode.ProcessGuardOwnership, opencode.ProcessGuardQuiescence) {
-	guardID := "test_guard_" + sanitizeFileToken(req.InvocationID)
-	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 101, GuardianIdentityToken: "test-guardian", ChildPID: 102, ChildIdentityToken: "test-child", TreeID: 102, TreeIdentityToken: "test-child", Platform: "unix_process_group", QuiescenceCapability: "test-guardian-capability"}
-	ownershipEvent := opencode.ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}
-	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
-	evidence, _ := json.Marshal(struct {
-		Type   string                 `json:"type"`
-		Result processguardian.Result `json:"result"`
-	}{Type: "result", Result: result})
-	sum := sha256.Sum256(evidence)
-	result.EvidenceJSON = string(evidence)
-	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
-	quiescenceEvent := opencode.ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}
-	return ownershipEvent, quiescenceEvent
-}
-
-func testSuccessfulExecuteObservation(req opencode.ExecuteRequest, outputText string) opencode.InvocationStreamObservation {
-	zero := 0
-	providerSessionID := "ses_test_" + sanitizeFileToken(req.InvocationID)
-	if req.OnProviderSession != nil {
-		req.OnProviderSession(providerSessionID)
-	}
-	return opencode.InvocationStreamObservation{
-		ProviderSessionID:      providerSessionID,
-		FinalTurnID:            "turn_test_" + sanitizeFileToken(req.InvocationID),
-		FinalStepID:            "step_test_" + sanitizeFileToken(req.InvocationID),
-		FinalSequence:          2,
-		RawFinishReason:        "stop",
-		NormalizedFinishReason: "stop",
-		CanonicalTerminalText:  strings.TrimSpace(outputText),
-		ProcessExited:          true,
-		ProcessExitCode:        &zero,
-		StdoutDrained:          true,
-		StderrDrained:          true,
-		ProcessQuiescent:       true,
-		ProcessGuards:          []opencode.ProcessGuardObservation{{CommandOrdinal: 1, GuardID: "test_guard_" + sanitizeFileToken(req.InvocationID), GuardianPID: 101, ChildPID: 102, TreeID: 102, Platform: "unix_process_group", Quiescent: true}},
-	}
-}
-
-func (a *timeoutCancelObserverAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
-	return opencode.ExecuteResponse{Accepted: true, OutputText: `{"summary":"noop"}`}, nil
-}
-
-func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.CancelRequest) error {
+func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, attemptID string) error {
 	a.mu.Lock()
 	a.cancelCount++
-	a.cancelRequests = append(a.cancelRequests, opencode.CancelRequest{
-		SessionID:  strings.TrimSpace(req.SessionID),
-		AttemptID:  strings.TrimSpace(req.AttemptID),
-		Reason:     strings.TrimSpace(req.Reason),
-		OccurredAt: strings.TrimSpace(req.OccurredAt),
-	})
+	a.cancelRequests = append(a.cancelRequests, attemptID)
 	onCancel := a.onCancel
 	a.mu.Unlock()
 	if onCancel != nil {
@@ -13909,43 +12844,24 @@ func (a *timeoutCancelObserverAdapter) Cancel(_ context.Context, req opencode.Ca
 	return nil
 }
 
-func (a *timeoutCancelObserverAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+func (a *attemptNotFoundTimeoutAdapter) Cancel(ctx context.Context, attemptID string) error {
+	_ = a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID)
+	return &opencode.AttemptNotFoundError{AttemptID: attemptID}
 }
 
-func (a *attemptNotFoundTimeoutAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	return nil, nil, &opencode.AttemptNotFoundError{AttemptID: "run_timeout_diag:work_intake:1"}
-}
-
-func (a *attemptNotFoundTimeoutAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	_ = a.timeoutCancelObserverAdapter.Cancel(ctx, req)
-	return &opencode.AttemptNotFoundError{AttemptID: strings.TrimSpace(req.AttemptID)}
-}
-
-func (a *cancellationCompletionRaceAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
+func (a *cancellationCompletionRaceAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	close(a.started)
 	<-a.cancelled
-	output := `{"summary":"provider completed while timeout cancellation returned"}`
 	usage := opencode.TokenUsage{InputTokens: 13, OutputTokens: 8, TotalTokens: 21, ReasoningTokens: 5}
-	observation := testSuccessfulExecuteObservation(req, output)
-	observation.Tokens = usage
 	return opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           output,
-		ProviderInvocationID: req.InvocationID,
-		ProviderInvocationAt: req.InvocationIssuedAt,
-		Tokens:               usage,
-		StreamObservation:    observation,
+		OutputText:        `{"summary":"provider completed while timeout cancellation returned"}`,
+		Tokens:            usage,
+		StreamObservation: opencode.InvocationStreamObservation{Tokens: usage},
 	}, nil
 }
 
-func (a *cancellationCompletionRaceAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	if err := a.timeoutCancelObserverAdapter.Cancel(ctx, req); err != nil {
+func (a *cancellationCompletionRaceAdapter) Cancel(ctx context.Context, attemptID string) error {
+	if err := a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID); err != nil {
 		return err
 	}
 	a.cancelOnce.Do(func() { close(a.cancelled) })
@@ -13958,16 +12874,15 @@ func (a *timeoutCancelObserverAdapter) cancelCalls() int {
 	return a.cancelCount
 }
 
-func (a *timeoutCancelObserverAdapter) cancelRequestsSnapshot() []opencode.CancelRequest {
+func (a *timeoutCancelObserverAdapter) cancelRequestsSnapshot() []string {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]opencode.CancelRequest, len(a.cancelRequests))
+	out := make([]string, len(a.cancelRequests))
 	copy(out, a.cancelRequests)
 	return out
 }
 
 func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.requests = append(a.requests, req)
@@ -13991,25 +12906,7 @@ func (a *sequenceExecutionAdapter) Execute(_ context.Context, req opencode.Execu
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	return opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           outputText,
-		ProviderInvocationID: firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
-	}, nil
-}
-
-func (a *sequenceExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *sequenceExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+	return opencode.ExecuteResponse{OutputText: outputText}, nil
 }
 
 func (a *sequenceExecutionAdapter) callsCount() int {
@@ -14027,7 +12924,6 @@ func (a *sequenceExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest 
 }
 
 func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	a.mu.Lock()
 	a.requests = append(a.requests, req)
 	progressTexts := append([]string(nil), a.progressTexts...)
@@ -14050,11 +12946,11 @@ func (a *streamingTimeoutExecutionAdapter) Execute(_ context.Context, req openco
 		}
 	}
 	<-a.cancelSignal()
-	return opencode.ExecuteResponse{}, context.Canceled
+	return interruptedResponse(), context.Canceled
 }
 
-func (a *streamingTimeoutExecutionAdapter) Cancel(ctx context.Context, req opencode.CancelRequest) error {
-	err := a.timeoutCancelObserverAdapter.Cancel(ctx, req)
+func (a *streamingTimeoutExecutionAdapter) Cancel(ctx context.Context, attemptID string) error {
+	err := a.timeoutCancelObserverAdapter.Cancel(ctx, attemptID)
 	a.cancelOnce.Do(func() {
 		close(a.cancelSignal())
 	})
@@ -14079,7 +12975,6 @@ func (a *streamingTimeoutExecutionAdapter) requestsSnapshot() []opencode.Execute
 }
 
 func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
 	for relativePath, content := range a.writes {
 		absolutePath := filepath.Join(req.WorkspacePath, relativePath)
 		if err := os.MkdirAll(filepath.Dir(absolutePath), 0o755); err != nil {
@@ -14099,25 +12994,7 @@ func (a *workspaceWritingExecutionAdapter) Execute(_ context.Context, req openco
 	if idx < len(a.outputs) {
 		outputText = a.outputs[idx]
 	}
-	return opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           outputText,
-		ProviderInvocationID: firstNonEmptyString(strings.TrimSpace(req.InvocationID), ""),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
-	}, nil
-}
-
-func (a *workspaceWritingExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *workspaceWritingExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+	return opencode.ExecuteResponse{OutputText: outputText}, nil
 }
 
 func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.ExecuteRequest {
@@ -14128,91 +13005,35 @@ func (a *workspaceWritingExecutionAdapter) requestsSnapshot() []opencode.Execute
 	return out
 }
 
-func (a *outcomeSequenceExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	a.requests = append(a.requests, req)
-	idx := a.calls
-	a.calls++
-	resp := opencode.ExecuteResponse{}
-	if idx < len(a.responses) {
-		resp = a.responses[idx]
-	}
-	if strings.TrimSpace(resp.ProviderInvocationID) == "" {
-		resp.ProviderInvocationID = strings.TrimSpace(req.InvocationID)
-	}
-	if strings.TrimSpace(resp.ProviderInvocationAt) == "" {
-		resp.ProviderInvocationAt = strings.TrimSpace(req.InvocationIssuedAt)
-	}
-	if strings.TrimSpace(resp.Outcome.State) == "" || strings.TrimSpace(resp.Outcome.State) == "success" {
-		resp.StreamObservation = testSuccessfulExecuteObservation(req, resp.OutputText)
-	}
-	return resp, nil
-}
-
-func (a *outcomeSequenceExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *outcomeSequenceExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
-}
-
-func (a *errorMetadataExecutionAdapter) Execute(_ context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	callOnProcessStarted(req)
+func (a *errorMetadataExecutionAdapter) Execute(context.Context, opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	return a.response, a.err
 }
 
-func (a *errorMetadataExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *errorMetadataExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+// interruptedResponse is what a request reports after it was interrupted.
+func interruptedResponse() opencode.ExecuteResponse {
+	return opencode.ExecuteResponse{StreamObservation: opencode.InvocationStreamObservation{Cancelled: true}}
 }
 
 func newBlockingFirstExecutionAdapter() *blockingFirstExecutionAdapter {
 	return &blockingFirstExecutionAdapter{
 		blockFirst:           make(chan struct{}),
+		firstExecuteStarted:  make(chan struct{}),
 		secondExecuteStarted: make(chan struct{}, 1),
 	}
 }
 
-func newDelayedProcessStartExecutionAdapter() *delayedProcessStartExecutionAdapter {
-	return &delayedProcessStartExecutionAdapter{processStart: make(chan struct{})}
-}
-
-func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	ownership, quiescence := testProcessGuardCallbacks(req)
-	if req.OnProcessGuardOwnership != nil {
-		_ = req.OnProcessGuardOwnership(context.Background(), ownership)
-	}
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
-	if req.OnProviderSession != nil {
-		req.OnProviderSession("ses_test_" + sanitizeFileToken(req.InvocationID))
-	}
+func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, _ opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
 	a.mu.Lock()
 	a.callCount++
 	call := a.callCount
 	a.mu.Unlock()
 
-	var executeErr error
 	if call == 1 {
+		close(a.firstExecuteStarted)
 		select {
 		case <-a.blockFirst:
 		case <-ctx.Done():
-			executeErr = ctx.Err()
+			return interruptedResponse(), ctx.Err()
 		}
 	} else if call == 2 {
 		select {
@@ -14220,62 +13041,7 @@ func (a *blockingFirstExecutionAdapter) Execute(ctx context.Context, req opencod
 		default:
 		}
 	}
-	if req.OnProcessGuardQuiescence != nil {
-		_ = req.OnProcessGuardQuiescence(context.Background(), quiescence)
-	}
-	if executeErr != nil {
-		return opencode.ExecuteResponse{}, executeErr
-	}
-
-	outputText := `{"summary":"ok"}`
-	return opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           outputText,
-		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
-	}, nil
-}
-
-func (a *delayedProcessStartExecutionAdapter) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
-	select {
-	case <-a.processStart:
-	case <-ctx.Done():
-		return opencode.ExecuteResponse{}, ctx.Err()
-	}
-	callOnProcessStarted(req)
-	outputText := `{"summary":"ok"}`
-	return opencode.ExecuteResponse{
-		Accepted:             true,
-		OutputText:           outputText,
-		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		StreamObservation:    testSuccessfulExecuteObservation(req, outputText),
-	}, nil
-}
-
-func (a *blockingFirstExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *delayedProcessStartExecutionAdapter) Cancel(context.Context, opencode.CancelRequest) error {
-	return nil
-}
-
-func (a *blockingFirstExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
-}
-
-func (a *delayedProcessStartExecutionAdapter) Stream(context.Context, opencode.StreamRequest) (<-chan opencode.AttemptStreamEvent, <-chan error, error) {
-	eventCh := make(chan opencode.AttemptStreamEvent)
-	errCh := make(chan error)
-	close(eventCh)
-	close(errCh)
-	return eventCh, errCh, nil
+	return opencode.ExecuteResponse{OutputText: `{"summary":"ok"}`}, nil
 }
 
 func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {
@@ -14287,12 +13053,37 @@ func (a *blockingFirstExecutionAdapter) releaseFirstExecution() {
 	}
 }
 
-func (a *delayedProcessStartExecutionAdapter) releaseProcessStart() {
+// delayedLaunchProvider holds back the provider's acceptance of a request, so
+// a test can observe the run before Kingdom learns the request has started.
+type delayedLaunchProvider struct {
+	opencode.Provider
+	release chan struct{}
+}
+
+func newDelayedLaunchProvider(provider opencode.Provider) *delayedLaunchProvider {
+	return &delayedLaunchProvider{Provider: provider, release: make(chan struct{})}
+}
+
+func (p *delayedLaunchProvider) Execute(ctx context.Context, req opencode.ExecuteRequest) (opencode.ExecuteResponse, error) {
+	started := req.OnInvocationStarted
+	req.OnInvocationStarted = func() {
+		select {
+		case <-p.release:
+		case <-ctx.Done():
+			return
+		}
+		if started != nil {
+			started()
+		}
+	}
+	return p.Provider.Execute(ctx, req)
+}
+
+func (p *delayedLaunchProvider) releaseLaunch() {
 	select {
-	case <-a.processStart:
-		return
+	case <-p.release:
 	default:
-		close(a.processStart)
+		close(p.release)
 	}
 }
 
@@ -14815,7 +13606,7 @@ func seedRunWithTerminallyUnreachablePendingNode(t *testing.T, db *sql.DB) {
 
 const timeoutDiagnosticProviderInvocationID = "pinv_timeout_diag_1"
 
-func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
+func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) *requestFixture {
 	t.Helper()
 
 	now := time.Now().UTC()
@@ -14832,7 +13623,8 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 	mustExec(t, db, `INSERT INTO workflow_runs (run_id, campaign_id, work_order_id, workflow_definition_id, run_status, plan_state, row_version, created_at, updated_at) VALUES ('run_timeout_diag', NULL, 'work_order_timeout_diag', 'wfdef_timeout_diag', 'running', 'approved', 1, '`+createdAt+`', '`+createdAt+`')`)
 	mustExec(t, db, `INSERT INTO node_runs (node_run_id, run_id, node_id, attempt, wave, node_status, required_role, agent_id, row_version, started_at, finished_at) VALUES ('nr_timeout_diag_1', 'run_timeout_diag', 'work_intake', 1,1, 'running', 'governance', 'agent_governance', 1, '`+startedAt+`', NULL)`)
 	mustExec(t, db, `INSERT INTO attempt_executions (attempt_id, run_id, node_run_id, state, execution_mode, completion_mode, lease_owner, lease_expires_at, lease_version, session_ref, started_at, terminal_observed_at, committed_at, failure_code, failure_text, created_at, updated_at) VALUES ('`+attemptID+`', 'run_timeout_diag', 'nr_timeout_diag_1', 'running', 'provider_backed', 'server_response', 'runtime_orchestrator', '`+now.Add(2*time.Minute).Format(time.RFC3339)+`', 1, '`+sessionID+`', '`+startedAt+`', NULL, NULL, '', '', '`+createdAt+`', '`+createdAt+`')`)
-	if _, err := executionstore.New(db).ActivateProviderInvocation(context.Background(), executionstore.ActivateProviderInvocationRequest{
+	requests := newRequestFixture(db, nil)
+	requests.activate(t, executionstore.New(db), executionstore.ActivateProviderInvocationRequest{
 		ProviderInvocationID: timeoutDiagnosticProviderInvocationID,
 		AttemptID:            attemptID,
 		RunID:                "run_timeout_diag",
@@ -14844,20 +13636,36 @@ func seedRunForTimeoutDiagnostics(t *testing.T, db *sql.DB) {
 		OpenedAt:             startedAt,
 		ExpectedLeaseOwner:   "runtime_orchestrator",
 		ExpectedLeaseVersion: 1,
-	}); err != nil {
-		t.Fatalf("activate timeout diagnostic provider invocation: %v", err)
-	}
+	})
+	return requests
 }
 
-func attachTimeoutCancellationQuiescence(adapter *timeoutCancelObserverAdapter, db *sql.DB) {
-	var once sync.Once
-	var quiescenceErr error
-	adapter.onCancel = func() error {
-		once.Do(func() {
-			quiescenceErr = recordTestQuiescentProviderProcessGuard(executionstore.New(db), timeoutDiagnosticProviderInvocationID, "run_timeout_diag:work_intake:1", "run_timeout_diag", "nr_timeout_diag_1", "runtime_orchestrator", 1, time.Now().UTC().Format(time.RFC3339Nano))
-		})
-		return quiescenceErr
+// startTimeoutDiagnosticWorker runs the seeded attempt's prepared request, as
+// the worker that owned the attempt before it timed out.
+func startTimeoutDiagnosticWorker(t *testing.T, rt *Runtime) nodeAttempt {
+	t.Helper()
+	latest, err := rt.orchestrator.loadLatestAttempts(context.Background(), "run_timeout_diag")
+	if err != nil {
+		t.Fatalf("load timeout diagnostic attempt: %v", err)
 	}
+	attempt := latest["work_intake"]
+	// A worker this runtime starts holds a live lease; startup expired the one
+	// the seeded attempt carried from "before" the runtime started.
+	if _, err := rt.orchestrator.db.Exec(`UPDATE attempt_executions SET lease_expires_at = ? WHERE attempt_id = ?`, time.Now().Add(time.Hour).UTC().Format(time.RFC3339Nano), "run_timeout_diag:work_intake:1"); err != nil {
+		t.Fatalf("renew timeout diagnostic lease: %v", err)
+	}
+	rt.orchestrator.startAsyncExecution(context.Background(), asyncExecutionResult{
+		run:                  runSnapshot{RunID: "run_timeout_diag", RunStatus: "running"},
+		node:                 nodeDefinition{NodeID: "work_intake", NodeClass: "work_intake", RequiredRole: "governance"},
+		attempt:              attempt,
+		attemptID:            "run_timeout_diag:work_intake:1",
+		sessionID:            attempt.SessionRef,
+		providerInvocationID: attempt.ProviderInvocationID,
+		completionMode:       attempt.CompletionMode,
+		expectedLeaseOwner:   attempt.LeaseOwner,
+		expectedLeaseVersion: attempt.LeaseVersion,
+	})
+	return attempt
 }
 
 func seedTimeoutDiagnosticEvent(t *testing.T, db *sql.DB, eventType, reasonCode, payloadJSON, createdAt string) {
@@ -14942,4 +13750,62 @@ func mustExec(t *testing.T, db *sql.DB, query string) {
 			t.Fatalf("commit test run prompt snapshot: %v", err)
 		}
 	}
+}
+
+func TestRuntimeStartProvesEarlierServersStoppedAndLeavesTheRunningOneOpen(t *testing.T) {
+	t.Parallel()
+
+	db := openTestDB(t)
+	applyMigration(t, db)
+	root := t.TempDir()
+	const ownership = `{"ChildPID":1,"TreeID":1}`
+	for _, instance := range []string{"svc_stopped", "svc_running"} {
+		if _, err := db.Exec(`INSERT INTO provider_server_instances(instance_id,guard_id,ownership_json,started_at) VALUES(?,?,?,'2026-03-01T12:00:00Z')`, instance, "guard-"+instance, ownership); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeServerStopEvidence(t, root, processguardian.Result{Ownership: processguardian.Ownership{GuardID: "guard-svc_stopped"}, Quiescent: true})
+
+	rt, err := newMemoryRuntime(t, Config{DB: db, Paths: DefaultBootstrapPaths(repoRoot(t)), Provider: memoryProvider(db), GuardianRuntimeRoot: root})
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	// svc_running is still alive.
+	rt.orchestrator.serverAbsent = func(pid, treeID int, childToken, treeToken string) bool { return false }
+	rt.orchestrator.guardianRuntimeRoot = root
+	closureOf := func(instance string) string {
+		var basis sql.NullString
+		if err := db.QueryRow(`SELECT quiescence_basis FROM provider_server_instances WHERE instance_id=?`, instance).Scan(&basis); err != nil {
+			t.Fatal(err)
+		}
+		return basis.String
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := rt.Start(ctx); err != nil {
+		cancel()
+		t.Fatalf("start runtime: %v", err)
+	}
+	defer func() {
+		cancel()
+		if err := rt.Close(); err != nil {
+			t.Fatalf("close runtime: %v", err)
+		}
+	}()
+	if got := closureOf("svc_stopped"); got != "guardian" {
+		t.Fatalf("a server with guardian stop evidence must be closed by it: %q", got)
+	}
+	if got := closureOf("svc_running"); got != "" {
+		t.Fatalf("a server that is still running must stay open: %q", got)
+	}
+	if entries, _ := os.ReadDir(filepath.Join(root, "provider-process-guards", "quiescence")); len(entries) != 0 {
+		t.Fatalf("the evidence must be removed once it is recorded: %d files", len(entries))
+	}
+	// A server that was still being torn down is proven on a later pass.
+	rt.orchestrator.serverAbsent = func(int, int, string, string) bool { return true }
+	testutil.Eventually(t, 10*time.Second, 10*time.Millisecond, func() error {
+		if got := closureOf("svc_running"); got != "absence" {
+			return fmt.Errorf("svc_running closure %q", got)
+		}
+		return nil
+	})
 }

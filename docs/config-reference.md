@@ -28,12 +28,8 @@ server:
 
 provider:
   engine: opencode
-  strict: true
   governance_mode: autonomous
   binary_path: ""
-  model: ""
-  agent: ""
-  skip_permissions: true
 
 github:
   shared_app:
@@ -67,15 +63,25 @@ github:
 
 `provider.engine` must be `opencode`. There is no other supported engine.
 
-`provider.strict` is set to `true` by `kd init`. At startup, this checks the managed OpenCode files, the binary, and role resolution before Kingdom reports ready. Set it to `false` only when debugging a local setup.
-
 `provider.governance_mode` must be `autonomous`. Manual provider governance is not implemented.
 
 `provider.binary_path` is optional. Set it when the `opencode` binary is not available on your `PATH`.
 
-`provider.model` and `provider.agent` are optional defaults for OpenCode. A run still needs an explicit global model choice.
+Kingdom requires OpenCode V2 (2.x). It runs one local OpenCode server on loopback and uses it to list models and to run every planning and execution request. Configure provider sign-ins, API keys, and custom model endpoints in OpenCode. Kingdom does not copy or refresh those credentials, and it writes no OpenCode agent profiles or configuration into your project. The model selector supports custom provider and model IDs; a listed model can still fail if its provider is unavailable or access has changed. Refreshing the model list reads the catalog without restarting active OpenCode locations.
 
-`provider.skip_permissions` defaults to `true` and keeps OpenCode runs from stopping for interactive permission prompts.
+Kingdom gives each request its own temporary agent profile and installs a small plugin in its own state directory so it can admit and record the file and shell tools a request uses. Shell commands run under Kingdom's process supervision. Requests that call other tools are refused.
+
+Kingdom disables automatic formatting in the server. If administrator configuration overrides this setting, Kingdom reports a configuration error and does not start work. It also reports an error when the Kingdom plugin does not load or when the server's event stream is interrupted, because it can no longer prove what a request did. Interrupted work is closed as abandoned once nothing it started can still run; until then it stays blocked, as described under [Restarts and Blocked Work](#restarts-and-blocked-work). Explicit formatter commands remain separate from automatic formatting.
+
+#### Unsupported OpenCode Changes
+
+Kingdom runs its own OpenCode server beside any OpenCode you use yourself, but both use your OpenCode data directory and database. Sessions Kingdom creates appear there. Do not edit, delete, or continue those sessions, and do not change Kingdom's temporary agent profiles, from OpenCode's own interface or API: Kingdom proves what each request did from the events of its own session, and an outside change makes that proof impossible. Your own OpenCode plugins and configuration load in Kingdom's server too. A plugin that changes tool behavior, or a configuration that enables automatic formatting, is unsupported.
+
+#### Restarts and Blocked Work
+
+Restarting Kingdom stops its OpenCode server. On startup Kingdom proves the old server has stopped, using its guardian's durable evidence or the absence of its exact process, and then settles every step that was running: it fails the step as unresponsive, applies the usual retry rules, and never sends the model request again. File changes the stopped server had not finished and commands that never started owe nothing, because they can no longer happen, and the workspace is restored or discarded like after any failed step. To continue the run, use Rerun from the failed step: Retry reruns only that step, and the steps after it stay cancelled.
+
+A step stays blocked only when Kingdom cannot prove what it left running: an older server that is not yet proven stopped, or a shell command whose process is not yet confirmed gone. The run timeline shows a "Recovery Blocked" entry with the reason, and Kingdom keeps checking. Command recovery uses the existing stop retry and guardian evidence recovery actions. Kingdom never guesses what an unfinished change or command did.
 
 ### GitHub App identifiers
 

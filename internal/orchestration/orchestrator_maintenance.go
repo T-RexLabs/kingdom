@@ -272,7 +272,7 @@ func (o *orchestrationLoop) schedulePrivateWorkspaceCleanups(ctx context.Context
 	admitted := 0
 	for _, candidate := range candidates {
 		if o.tryScheduleMaintenance(ctx, maintenanceRequest{kind: "private_cleanup", attemptID: candidate.AttemptID, runID: candidate.RunID}, func(ctx context.Context) error {
-			quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, candidate.AttemptID)
+			quiescent, err := o.executionStore.AttemptCommandGuardiansQuiescent(ctx, candidate.AttemptID)
 			if err != nil || !quiescent {
 				return err
 			}
@@ -338,7 +338,7 @@ func (o *orchestrationLoop) scheduleAttemptCancellations(ctx context.Context) (i
 	admitted := 0
 	for _, rec := range records {
 		o.cancelExecutionPreparation(rec.AttemptID)
-		quiescent, err := o.executionStore.AttemptProcessGuardsQuiescent(ctx, rec.AttemptID)
+		quiescent, err := o.executionStore.AttemptCommandGuardiansQuiescent(ctx, rec.AttemptID)
 		if err != nil {
 			return admitted, err
 		}
@@ -353,7 +353,7 @@ func (o *orchestrationLoop) scheduleAttemptCancellations(ctx context.Context) (i
 			now := o.now().UTC().Format(time.RFC3339Nano)
 			if ready {
 				if rec.HandoffState == "guardian_evidence_recovery_requested" && !quiescent {
-					quarantined, err := o.executionStore.AttemptProcessGuardEvidenceQuarantined(ctx, rec.AttemptID)
+					quarantined, err := o.executionStore.AttemptCommandGuardianEvidenceQuarantined(ctx, rec.AttemptID)
 					if err != nil {
 						return err
 					}

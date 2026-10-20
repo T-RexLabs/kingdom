@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kingdom/internal/testutil/providerledger"
 )
 
 func TestNextPendingPlanningRetryDuePreservesNanosecondOrdering(t *testing.T) {
@@ -46,11 +48,11 @@ func TestPlanningRetryDueClaimAndRecoveryAreDurable(t *testing.T) {
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_source", now)
 	partialOutput := "Partial failed plan"
-	if err := store.UpdateOperation(ctx, UpdatePlanningOperationRequest{OperationID: operation.OperationID, ObservedOutputText: &partialOutput}); err != nil {
+	if err := updatePlanningOperationFixture(ctx, store, UpdatePlanningOperationRequest{OperationID: operation.OperationID, ObservedOutputText: &partialOutput}); err != nil {
 		t.Fatalf("persist failed partial output: %v", err)
 	}
 	due := now.Add(time.Minute)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, claimed, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, claimed, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule planning retry: scheduled=%t err=%v", scheduled, err)
 	}
 	if requeued, found, err := store.GetOperation(ctx, operation.OperationID); err != nil || !found || requeued.ObservedOutputText != "" {
@@ -79,7 +81,7 @@ func TestPlanningRetryDueClaimAndRecoveryAreDurable(t *testing.T) {
 	if err := restarted.FinalizeOperation(ctx, FinalizeOperationRequest{
 		Kind: FinalizeFormalize, SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: retryClaim.LeaseOwner, LeaseVersion: retryClaim.LeaseVersion,
 		ConversationState: PlanningSessionConversationStateReady, UpdatedAt: due.Format(time.RFC3339), FinishedAt: due.Format(time.RFC3339), Draft: &draft, CurrentDraftID: draft.PlanningDraftID, ResultRef: draft.PlanningDraftID,
-		ProviderSettlement: planningRetrySuccessSettlement(secondInvocation, due), TerminalEvent: &AppendPlanningOperationEventRequest{EventID: "retry-success", OperationID: operation.OperationID, Seq: 2, EventType: "run.completed", PayloadJSON: `{}`, CreatedAt: due.Format(time.RFC3339)},
+		ProviderSettlement: planningRetrySuccessSettlement(t, store, secondInvocation, due), TerminalEvent: &AppendPlanningOperationEventRequest{EventID: "retry-success", OperationID: operation.OperationID, Seq: 2, EventType: "run.completed", PayloadJSON: `{}`, CreatedAt: due.Format(time.RFC3339)},
 	}); err != nil {
 		t.Fatalf("finalize recovered retry: %v", err)
 	}
@@ -120,7 +122,7 @@ func TestFailQueuedOperationCancelsFutureRetryForUnsupportedExternalContext(t *t
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_legacy_context", now)
 	dueAt := now.Add(time.Hour)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(fixture.ctx, planningRetryFailureRequest(operation, claimed, invocation, now, dueAt, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(fixture.ctx, planningRetryFailureRequest(t, store, operation, claimed, invocation, now, dueAt, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule future retry: scheduled=%v err=%v", scheduled, err)
 	}
 	snapshot := fixture.capture(t, "source-legacy-retry", "snapshot-legacy-retry", "100", "Issue", "full body", nil, fixture.at)
@@ -166,7 +168,7 @@ func TestPlanningRetryExhaustionIsPersistedOnce(t *testing.T) {
 		t.Fatalf("claim source: ok=%t err=%v", ok, err)
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_exhausted", now)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(context.Background(), planningRetryFailureRequest(operation, claimed, invocation, now, now.Add(time.Minute), RetryDecisionExhausted, 3)); err != nil || scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(context.Background(), planningRetryFailureRequest(t, store, operation, claimed, invocation, now, now.Add(time.Minute), RetryDecisionExhausted, 3)); err != nil || scheduled {
 		t.Fatalf("persist exhausted decision: scheduled=%t err=%v", scheduled, err)
 	}
 	var decisions, escalated int
@@ -195,7 +197,7 @@ func TestPlanningRetryResolvesEachFailedRetryInvocationBeforeItsSuccessor(t *tes
 	}
 	firstInvocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_chain_source", now)
 	firstDue := now.Add(time.Minute)
-	firstRequest := planningRetryFailureRequest(operation, source, firstInvocation, now, firstDue, RetryDecisionRetry, 1)
+	firstRequest := planningRetryFailureRequest(t, store, operation, source, firstInvocation, now, firstDue, RetryDecisionRetry, 1)
 	firstRequest.RetryDecision.MaxRetries = 2
 	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, firstRequest); err != nil || !scheduled {
 		t.Fatalf("schedule first retry: scheduled=%t err=%v", scheduled, err)
@@ -208,7 +210,7 @@ func TestPlanningRetryResolvesEachFailedRetryInvocationBeforeItsSuccessor(t *tes
 	secondInvocation := createPlanningRetryInvocation(t, store, operation, firstRetry, "ppinv_chain_retry_1", firstDue)
 	secondAt := firstDue.Add(time.Second)
 	secondDue := secondAt.Add(time.Minute)
-	secondRequest := planningRetryFailureRequest(operation, firstRetry, secondInvocation, secondAt, secondDue, RetryDecisionRetry, 2)
+	secondRequest := planningRetryFailureRequest(t, store, operation, firstRetry, secondInvocation, secondAt, secondDue, RetryDecisionRetry, 2)
 	secondRequest.RetryDecision.MaxRetries = 2
 	secondRequest.Event.Seq = 2
 	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, secondRequest); err != nil || !scheduled {
@@ -222,7 +224,7 @@ func TestPlanningRetryResolvesEachFailedRetryInvocationBeforeItsSuccessor(t *tes
 	}
 	thirdInvocation := createPlanningRetryInvocation(t, store, operation, secondRetry, "ppinv_chain_retry_2", secondDue)
 	exhaustedAt := secondDue.Add(time.Second)
-	exhaustedRequest := planningRetryFailureRequest(operation, secondRetry, thirdInvocation, exhaustedAt, exhaustedAt.Add(time.Minute), RetryDecisionExhausted, 2)
+	exhaustedRequest := planningRetryFailureRequest(t, store, operation, secondRetry, thirdInvocation, exhaustedAt, exhaustedAt.Add(time.Minute), RetryDecisionExhausted, 2)
 	exhaustedRequest.RetryDecision.MaxRetries = 2
 	exhaustedRequest.Event.Seq = 3
 	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, exhaustedRequest); err != nil || scheduled {
@@ -265,7 +267,7 @@ func TestCancelQueuedPlanningRetryResolvesDecision(t *testing.T) {
 		t.Fatalf("claim source: ok=%t err=%v", ok, err)
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_cancelled", now)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, claimed, invocation, now, now.Add(time.Minute), RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, claimed, invocation, now, now.Add(time.Minute), RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule planning retry: scheduled=%t err=%v", scheduled, err)
 	}
 	if err := store.CancelQueuedOperation(ctx, CancelQueuedPlanningOperationRequest{OperationID: operation.OperationID, ErrorMessage: "cancelled", UpdatedAt: now.Add(time.Second).Format(time.RFC3339Nano), FinishedAt: now.Add(time.Second).Format(time.RFC3339Nano)}); err != nil {
@@ -292,7 +294,7 @@ func TestCancelDispatchedPlanningRetryResolvesDecisionAtomically(t *testing.T) {
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_cancelled_source", now)
 	due := now.Add(time.Minute)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule planning retry: scheduled=%t err=%v", scheduled, err)
 	}
 	retry, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-b", due.Add(time.Minute).Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
@@ -311,7 +313,7 @@ func TestCancelDispatchedPlanningRetryResolvesDecisionAtomically(t *testing.T) {
 		UpdatedAt:          cancelledAt.Format(time.RFC3339Nano),
 		FinishedAt:         cancelledAt.Format(time.RFC3339Nano),
 		ErrorMessage:       "cancelled by operator",
-		ProviderSettlement: planningRetryCancelledSettlement(retryInvocation, cancelledAt),
+		ProviderSettlement: planningRetryCancelledSettlement(t, store, retryInvocation, cancelledAt),
 		TerminalEvent:      &AppendPlanningOperationEventRequest{EventID: "retry-cancelled", OperationID: operation.OperationID, Seq: 2, EventType: "run.cancelled", PayloadJSON: `{}`, CreatedAt: cancelledAt.Format(time.RFC3339Nano)},
 	}); err != nil {
 		t.Fatalf("cancel dispatched retry: %v", err)
@@ -336,7 +338,7 @@ func TestFailedDispatchedPlanningRetryBeforeInvocationResolvesPredecessor(t *tes
 	}
 	sourceInvocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_preinvoke_source", now)
 	due := now.Add(time.Minute)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule planning retry: scheduled=%t err=%v", scheduled, err)
 	}
 
@@ -394,7 +396,7 @@ func TestCancelDispatchedGeneratedTitleRetryResolvesDecisionAtomically(t *testin
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_title_cancelled_source", now)
 	due := now.Add(time.Minute)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule title retry: scheduled=%t err=%v", scheduled, err)
 	}
 	retry, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-b", due.Add(time.Minute).Format(time.RFC3339Nano), due.Format(time.RFC3339Nano))
@@ -412,7 +414,7 @@ func TestCancelDispatchedGeneratedTitleRetryResolvesDecisionAtomically(t *testin
 		UpdatedAt:          cancelledAt.Format(time.RFC3339Nano),
 		FinishedAt:         cancelledAt.Format(time.RFC3339Nano),
 		ErrorMessage:       "cancelled by operator",
-		ProviderSettlement: planningRetryCancelledSettlement(retryInvocation, cancelledAt),
+		ProviderSettlement: planningRetryCancelledSettlement(t, store, retryInvocation, cancelledAt),
 		TerminalEvent:      &AppendPlanningOperationEventRequest{EventID: "title-retry-cancelled", OperationID: operation.OperationID, Seq: 2, EventType: "run.cancelled", PayloadJSON: `{}`, CreatedAt: cancelledAt.Format(time.RFC3339Nano)},
 	}); err != nil {
 		t.Fatalf("cancel dispatched title retry: %v", err)
@@ -437,7 +439,7 @@ func TestPlanningRetryReclaimsExpiredUnlaunchedClaimWithoutSecondLaunch(t *testi
 	}
 	invocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_reclaim_source", now)
 	due := now.Add(time.Minute)
-	if _, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil {
+	if _, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, source, invocation, now, due, RetryDecisionRetry, 1)); err != nil {
 		t.Fatal(err)
 	}
 	claimed, ok, err := store.ClaimOperation(ctx, operation.OperationID, "worker-b", due.Add(time.Minute).Format(time.RFC3339), due.Format(time.RFC3339Nano))
@@ -447,7 +449,8 @@ func TestPlanningRetryReclaimsExpiredUnlaunchedClaimWithoutSecondLaunch(t *testi
 	if reclaimed, err := store.RequeueUnlaunchedPlanningOperation(ctx, claimed); err != nil || !reclaimed {
 		t.Fatalf("reclaim unlaunched retry: reclaimed=%t err=%v", reclaimed, err)
 	}
-	if _, err := store.CreatePlanningProviderInvocation(ctx, CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: "ppinv_stale_worker", PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: due.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion}); err == nil {
+	staleSession := providerledger.SessionFor("ppinv_stale_worker", "")
+	if _, err := store.ActivatePlanningProviderInvocation(ctx, ActivatePlanningProviderInvocationRequest{RequestIdentity: providerledger.Prepared("ppinv_stale_worker", staleSession).Identity, PlanningProviderInvocationID: "ppinv_stale_worker", PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, ProviderSessionID: staleSession, CreatedAt: due.Format(time.RFC3339), OpenedAt: due.Format(time.RFC3339), LeaseOwner: "worker-a", LeaseVersion: 1}); err == nil {
 		t.Fatal("stale worker created an invocation after its claim was reclaimed")
 	}
 	var status, dispatch string
@@ -483,7 +486,7 @@ func TestFailedDispatchedGeneratedTitleRetryBeforeInvocationResolvesPredecessor(
 	}
 	sourceInvocation := createPlanningRetryInvocation(t, store, operation, source, "ppinv_title_preinvoke_source", now)
 	due := now.Add(time.Minute)
-	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
+	if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, source, sourceInvocation, now, due, RetryDecisionRetry, 1)); err != nil || !scheduled {
 		t.Fatalf("schedule title retry: scheduled=%t err=%v", scheduled, err)
 	}
 
@@ -534,7 +537,7 @@ func TestDeletePlanningSessionCascadesPlanningRetryDecisions(t *testing.T) {
 			}
 			invocation := createPlanningRetryInvocation(t, store, operation, claimed, "ppinv_delete_"+tt.name, now)
 			due := now.Add(time.Minute)
-			if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(operation, claimed, invocation, now, due, tt.decision, 1)); err != nil || scheduled != (tt.decision == RetryDecisionRetry) {
+			if scheduled, err := store.FinalizePlanningFailureWithRetry(ctx, planningRetryFailureRequest(t, store, operation, claimed, invocation, now, due, tt.decision, 1)); err != nil || scheduled != (tt.decision == RetryDecisionRetry) {
 				t.Fatalf("record retry decision: scheduled=%t err=%v", scheduled, err)
 			}
 			if tt.recover {
@@ -544,7 +547,7 @@ func TestDeletePlanningSessionCascadesPlanningRetryDecisions(t *testing.T) {
 				}
 				retryInvocation := createPlanningRetryInvocation(t, store, operation, retry, "ppinv_delete_recovered_retry", due)
 				draft := CreatePlanningDraftRequest{PlanningDraftID: "draft_delete_recovered", PlanningSessionID: operation.PlanningSessionID, WorkOrderTitle: "Recovered", WorkOrderText: "Recovered plan", SummaryJSON: `{}`, CreatedAt: due.Format(time.RFC3339Nano)}
-				if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{Kind: FinalizeFormalize, SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: retry.LeaseOwner, LeaseVersion: retry.LeaseVersion, ConversationState: PlanningSessionConversationStateReady, UpdatedAt: due.Format(time.RFC3339Nano), FinishedAt: due.Format(time.RFC3339Nano), Draft: &draft, CurrentDraftID: draft.PlanningDraftID, ResultRef: draft.PlanningDraftID, ProviderSettlement: planningRetrySuccessSettlement(retryInvocation, due), TerminalEvent: &AppendPlanningOperationEventRequest{EventID: "delete-recovered", OperationID: operation.OperationID, Seq: 2, EventType: "run.completed", PayloadJSON: `{}`, CreatedAt: due.Format(time.RFC3339Nano)}}); err != nil {
+				if err := store.FinalizeOperation(ctx, FinalizeOperationRequest{Kind: FinalizeFormalize, SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: retry.LeaseOwner, LeaseVersion: retry.LeaseVersion, ConversationState: PlanningSessionConversationStateReady, UpdatedAt: due.Format(time.RFC3339Nano), FinishedAt: due.Format(time.RFC3339Nano), Draft: &draft, CurrentDraftID: draft.PlanningDraftID, ResultRef: draft.PlanningDraftID, ProviderSettlement: planningRetrySuccessSettlement(t, store, retryInvocation, due), TerminalEvent: &AppendPlanningOperationEventRequest{EventID: "delete-recovered", OperationID: operation.OperationID, Seq: 2, EventType: "run.completed", PayloadJSON: `{}`, CreatedAt: due.Format(time.RFC3339Nano)}}); err != nil {
 					t.Fatalf("finalize recovered retry: %v", err)
 				}
 			}
@@ -584,23 +587,33 @@ func newPlanningRetryStore(t *testing.T) (*PlanningStore, PlanningOperation, tim
 
 func createPlanningRetryInvocation(t *testing.T, store *PlanningStore, operation, claimed PlanningOperation, id string, now time.Time) string {
 	t.Helper()
-	if _, err := store.CreatePlanningProviderInvocation(context.Background(), CreatePlanningProviderInvocationRequest{PlanningProviderInvocationID: id, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, CreatedAt: now.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion}); err != nil {
-		t.Fatalf("create invocation %s: %v", id, err)
-	}
-	if _, err := store.MarkPlanningProviderInvocationOpen(context.Background(), MarkPlanningProviderInvocationOpenRequest{PlanningProviderInvocationID: id, PlanningOperationID: operation.OperationID, ProviderSessionID: "session_" + id, OpenedAt: now.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion}); err != nil {
-		t.Fatalf("open invocation %s: %v", id, err)
-	}
+	activatePlanningBoundInvocation(t, store, ActivatePlanningProviderInvocationRequest{PlanningProviderInvocationID: id, PlanningOperationID: operation.OperationID, PlanningSessionID: operation.PlanningSessionID, LogicalSessionID: "planner-" + operation.PlanningSessionID, ProviderSessionID: "session_" + id, CreatedAt: now.Format(time.RFC3339), OpenedAt: now.Format(time.RFC3339), LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion})
 	return id
 }
 
-func planningRetryFailureRequest(operation, claimed PlanningOperation, invocation string, now, due time.Time, decision RetryDecisionKind, retryIndex int) FinalizePlanningFailureWithRetryRequest {
-	return FinalizePlanningFailureWithRetryRequest{SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion, UpdatedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), ErrorMessage: "timed out", ProviderSettlement: &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"failed"}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeFailed, StructuredPayloadJSON: `{}`, FailureReasonCode: "timeout", FailureReasonText: "timed out", SettledAt: now.Format(time.RFC3339)}, RetryDecision: RetryDecisionCreateRequest{DecisionID: "retry_" + invocation, SubjectKind: RetrySubjectKindPlanningInvocation, PlanningOperationID: operation.OperationID, SourcePlanningInvocationID: invocation, PolicyID: "retry-policy", RetryClass: "transient_transport", ErrorCode: "timeout", OperatorText: "retry", Decision: decision, RetryIndex: retryIndex, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: due, CreatedAt: now, EscalationTarget: "coordinator"}, Event: &AppendPlanningOperationEventRequest{EventID: "event_" + invocation, OperationID: operation.OperationID, Seq: 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now.Format(time.RFC3339)}}
+// planningRetryFailureRequest is a retry-scheduling failure of an activated
+// request, together with the terminal evidence the server stored for it.
+func planningRetryFailureRequest(t *testing.T, store *PlanningStore, operation, claimed PlanningOperation, invocation string, now, due time.Time, decision RetryDecisionKind, retryIndex int) FinalizePlanningFailureWithRetryRequest {
+	request := unclosedPlanningRetryFailureRequest(operation, claimed, invocation, now, due, decision, retryIndex)
+	bindPlanningSettlement(t, store, request.ProviderSettlement)
+	return request
 }
 
-func planningRetrySuccessSettlement(invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {
-	return &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"success","stream_observation":{"final_turn_id":"turn_test","final_step_id":"step_test","final_sequence":1,"raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"Recovered plan","process_exited":true,"process_exit_code":0,"stdout_drained":true,"stderr_drained":true}}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeSuccess, FinalText: "Recovered plan", StructuredPayloadJSON: `{}`, SettledAt: now.Format(time.RFC3339)}
+// unclosedPlanningRetryFailureRequest carries a settlement whose request the
+// server has not closed.
+func unclosedPlanningRetryFailureRequest(operation, claimed PlanningOperation, invocation string, now, due time.Time, decision RetryDecisionKind, retryIndex int) FinalizePlanningFailureWithRetryRequest {
+	request := FinalizePlanningFailureWithRetryRequest{SessionID: operation.PlanningSessionID, OperationID: operation.OperationID, LeaseOwner: claimed.LeaseOwner, LeaseVersion: claimed.LeaseVersion, UpdatedAt: now.Format(time.RFC3339), FinishedAt: now.Format(time.RFC3339), ErrorMessage: "timed out", ProviderSettlement: &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"failed"}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeFailed, StructuredPayloadJSON: `{}`, FailureReasonCode: "timeout", FailureReasonText: "timed out", SettledAt: now.Format(time.RFC3339)}, RetryDecision: RetryDecisionCreateRequest{DecisionID: "retry_" + invocation, SubjectKind: RetrySubjectKindPlanningInvocation, PlanningOperationID: operation.OperationID, SourcePlanningInvocationID: invocation, PolicyID: "retry-policy", RetryClass: "transient_transport", ErrorCode: "timeout", OperatorText: "retry", Decision: decision, RetryIndex: retryIndex, MaxRetries: 3, PolicyDelay: time.Minute, DueAt: due, CreatedAt: now, EscalationTarget: "coordinator"}, Event: &AppendPlanningOperationEventRequest{EventID: "event_" + invocation, OperationID: operation.OperationID, Seq: 1, EventType: "generic", PayloadJSON: `{}`, CreatedAt: now.Format(time.RFC3339)}}
+	return request
 }
 
-func planningRetryCancelledSettlement(invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {
-	return &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"cancelled"}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339Nano), Outcome: PlanningProviderCompletionOutcomeCancelled, StructuredPayloadJSON: `{}`, FailureReasonCode: "provider_cancelled", FailureReasonText: "cancelled by operator", SettledAt: now.Format(time.RFC3339Nano)}
+func planningRetrySuccessSettlement(t *testing.T, store *PlanningStore, invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {
+	request := &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"success","stream_observation":{"final_turn_id":"turn_test","raw_finish_reason":"stop","normalized_finish_reason":"stop","canonical_terminal_text":"Recovered plan"}}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339), Outcome: PlanningProviderCompletionOutcomeSuccess, FinalText: "Recovered plan", StructuredPayloadJSON: `{}`, SettledAt: now.Format(time.RFC3339)}
+	bindPlanningSettlement(t, store, request)
+	return request
+}
+
+func planningRetryCancelledSettlement(t *testing.T, store *PlanningStore, invocation string, now time.Time) *FinalizePlanningProviderSettlementRequest {
+	request := &FinalizePlanningProviderSettlementRequest{SettlementID: "settlement_" + invocation, PlanningProviderInvocationID: invocation, PrimaryEvidenceID: "evidence_" + invocation, PrimaryEvidenceKind: PlanningProviderCompletionEvidenceKindStreamObservation, PrimaryEvidencePayloadJSON: `{"state":"cancelled"}`, PrimaryEvidenceCreatedAt: now.Format(time.RFC3339Nano), Outcome: PlanningProviderCompletionOutcomeCancelled, StructuredPayloadJSON: `{}`, FailureReasonCode: "provider_cancelled", FailureReasonText: "cancelled by operator", SettledAt: now.Format(time.RFC3339Nano)}
+	bindPlanningSettlement(t, store, request)
+	return request
 }

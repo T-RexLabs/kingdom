@@ -42,37 +42,29 @@ func generateRunWorktreeCleanupOwner() (string, error) {
 	return "cleanup_" + base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID string, completionMode executionstore.ProviderCompletionMode, issuedAt, replacesInvocationID string) (string, string, error) {
+// activateProviderInvocationForExecution creates the canonical invocation for a
+// prepared provider request and binds the request's identity to it in the same
+// transaction, so nothing is dispatched before that binding exists.
+func (o *orchestrationLoop) activateProviderInvocationForExecution(ctx context.Context, run runSnapshot, attempt nodeAttempt, attemptID, sessionID, providerInvocationID string, prepared opencode.Prepared, completionMode executionstore.ProviderCompletionMode, issuedAt string) error {
 	if o == nil || o.executionStore == nil {
-		return "", "", fmt.Errorf("execution store is required for provider invocation activation")
+		return fmt.Errorf("execution store is required for provider invocation activation")
 	}
-	now, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(issuedAt))
-	if err != nil {
-		now = o.now().UTC()
-		issuedAt = now.Format(time.RFC3339Nano)
-	}
-	providerInvocationID := newProviderInvocationID(attemptID, now)
-	if _, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
-		ProviderInvocationID:         providerInvocationID,
-		AttemptID:                    attemptID,
-		RunID:                        run.RunID,
-		NodeRunID:                    attempt.NodeRunID,
-		LogicalSessionID:             sessionID,
-		CompletionMode:               completionMode,
-		IssuedAt:                     issuedAt,
-		CreatedAt:                    issuedAt,
-		OpenedAt:                     issuedAt,
-		ReplacesProviderInvocationID: strings.TrimSpace(replacesInvocationID),
-		ExpectedLeaseOwner:           attempt.LeaseOwner,
-		ExpectedLeaseVersion:         attempt.LeaseVersion,
-	}); err != nil {
-		var outcomeUnknown *executionstore.ProviderInvocationActivationOutcomeUnknownError
-		if errors.As(err, &outcomeUnknown) {
-			return providerInvocationID, issuedAt, err
-		}
-		return "", "", err
-	}
-	return providerInvocationID, issuedAt, nil
+	_, err := o.executionStore.ActivateProviderInvocation(ctx, executionstore.ActivateProviderInvocationRequest{
+		RequestIdentity:      prepared.Identity,
+		ProviderInvocationID: providerInvocationID,
+		AttemptID:            attemptID,
+		RunID:                run.RunID,
+		NodeRunID:            attempt.NodeRunID,
+		LogicalSessionID:     sessionID,
+		ProviderSessionID:    prepared.ProviderSessionID,
+		CompletionMode:       completionMode,
+		IssuedAt:             issuedAt,
+		CreatedAt:            issuedAt,
+		OpenedAt:             issuedAt,
+		ExpectedLeaseOwner:   attempt.LeaseOwner,
+		ExpectedLeaseVersion: attempt.LeaseVersion,
+	})
+	return err
 }
 
 func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func(context.Context) error) error {
@@ -82,39 +74,15 @@ func (o *orchestrationLoop) retrySQLiteBusyWrite(ctx context.Context, write func
 	return err
 }
 
-func (o *orchestrationLoop) observeProviderSessionForInvocation(ctx context.Context, attemptID, providerInvocationID, providerSessionID string) {
-	trimmedAttemptID := strings.TrimSpace(attemptID)
-	trimmedInvocationID := strings.TrimSpace(providerInvocationID)
-	trimmedProviderSessionID := strings.TrimSpace(providerSessionID)
-	if trimmedAttemptID == "" || trimmedProviderSessionID == "" {
-		return
-	}
-	if o == nil || o.executionStore == nil || trimmedInvocationID == "" {
-		return
-	}
-	markCtx, cancel := detachedTimeoutContext(ctx, 5*time.Second)
-	defer cancel()
-	if _, err := o.executionStore.MarkProviderInvocationOpen(markCtx, executionstore.MarkProviderInvocationOpenRequest{
-		ProviderInvocationID: trimmedInvocationID,
-		AttemptID:            trimmedAttemptID,
-		ProviderSessionID:    trimmedProviderSessionID,
-		OpenedAt:             o.now().UTC().Format(time.RFC3339Nano),
-	}); err != nil {
-		// The durable attempt path should continue even if a late provider-session
-		// observation races with a retry or superseded invocation.
-		_ = err
-	}
-}
-
 func (o *orchestrationLoop) commitProviderExecutionCompletion(ctx context.Context, result asyncExecutionResult) error {
 	return o.commitProviderExecutionCompletionWithRecovery(ctx, result, false)
 }
 
-func (o *orchestrationLoop) commitRecoveredGuardFailure(ctx context.Context, result asyncExecutionResult) error {
+func (o *orchestrationLoop) commitLostHandoffFailure(ctx context.Context, result asyncExecutionResult) error {
 	return o.commitProviderExecutionCompletionWithRecovery(ctx, result, true)
 }
 
-func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx context.Context, result asyncExecutionResult, recoveredGuardQuiescence bool) error {
+func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx context.Context, result asyncExecutionResult, lostHandoff bool) error {
 	if o == nil || o.executionStore == nil || strings.TrimSpace(result.providerInvocationID) == "" {
 		return fmt.Errorf("provider invocation identity is required for completion settlement")
 	}
@@ -130,7 +98,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 			return err
 		}
 	}
-	if recoveredGuardQuiescence {
+	if lostHandoff {
 		unlock := o.lockProviderTerminalHandoffFile(result.providerInvocationID)
 		defer unlock()
 		_, found, err := o.executionStore.GetProviderTerminalHandoff(ctx, executionstore.ProviderTerminalHandoffID(result.providerInvocationID))
@@ -150,7 +118,7 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 			}
 		}
 	}
-	if !alreadySettled && !recoveredGuardQuiescence && strings.TrimSpace(result.terminalHandoffID) == "" {
+	if !alreadySettled && !lostHandoff && strings.TrimSpace(result.terminalHandoffID) == "" {
 		handoffCtx, cancelHandoff := detachedTimeoutContext(ctx, 5*time.Second)
 		err := o.markProviderTerminalHandoffPending(handoffCtx, result)
 		cancelHandoff()
@@ -254,12 +222,12 @@ func (o *orchestrationLoop) commitProviderExecutionCompletionWithRecovery(ctx co
 	// its bounded retry policy, and guardian/lease fences remain transactional.
 	settleCtx := ctx
 	committed, err := o.transitionService().SettleProviderExecution(settleCtx, executionstore.SettleProviderCompletionAndTerminalRequest{
-		Settlement:               settlement,
-		StreamObservation:        &result.providerStreamObservation,
-		ExpectedLeaseOwner:       result.expectedLeaseOwner,
-		ExpectedLeaseVersion:     result.expectedLeaseVersion,
-		TerminalHandoffID:        strings.TrimSpace(result.terminalHandoffID),
-		RecoveredGuardQuiescence: recoveredGuardQuiescence,
+		Settlement:           settlement,
+		StreamObservation:    &result.providerStreamObservation,
+		ExpectedLeaseOwner:   result.expectedLeaseOwner,
+		ExpectedLeaseVersion: result.expectedLeaseVersion,
+		TerminalHandoffID:    strings.TrimSpace(result.terminalHandoffID),
+		LostHandoff:          lostHandoff,
 		TokenUsage: &executionstore.ProviderInvocationTokenUsage{
 			RequiredRole: result.node.RequiredRole,
 			Model:        result.model,

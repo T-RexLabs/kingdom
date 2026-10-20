@@ -1,93 +1,93 @@
-// Package opencode provides the OpenCode execution adapter surface.
+// Package opencode runs Kingdom's provider work on one shared stock OpenCode V2
+// server.
 //
-// It defines the request and stream contract the runtime uses to dispatch work,
-// includes the session-backed adapter that speaks to the OpenCode binary, and
-// keeps a small in-memory implementation for tests that need provider behavior
-// without an external process.
+// Provider is the contract the runtime dispatches through: a request is
+// prepared, bound to its canonical invocation, executed, and settled from the
+// evidence the server returns. Service is the Provider that owns the shared V2
+// server and serves every workspace through it. FixtureProvider is the
+// deterministic in-memory Provider for tests that need provider behavior
+// without a server.
 package opencode
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
+	"time"
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/processguardian"
 )
 
-const (
-	AttemptEventTypeStarted   = "attempt.started"
-	AttemptEventTypeProgress  = "attempt.progress"
-	AttemptEventTypeSucceeded = "attempt.succeeded"
-	AttemptEventTypeFailed    = "attempt.failed"
-	AttemptEventTypeCancelled = "attempt.cancelled"
-)
+const AttemptEventTypeProgress = "attempt.progress"
 
-type Adapter interface {
+// Provider runs requests on a shared model server. Prepare fixes a request's
+// provider identity without sending work; the caller binds that identity to its
+// canonical invocation, and only then Execute sends the work. Cancel interrupts
+// one attempt's request, and Discard releases a prepared request that will not
+// run.
+type Provider interface {
+	Prepare(ctx context.Context, req ExecuteRequest) (Prepared, error)
 	Execute(ctx context.Context, req ExecuteRequest) (ExecuteResponse, error)
-	Cancel(ctx context.Context, req CancelRequest) error
-	Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error)
+	Cancel(ctx context.Context, attemptID string) error
+	Discard(ctx context.Context, invocationID string) error
 }
 
 type ExecuteRequest struct {
-	CompletionMode      CompletionMode `json:"completion_mode"`
-	SessionID           string         `json:"session_id"`
-	ProviderSessionID   string         `json:"provider_session_id,omitempty"`
-	AttemptID           string         `json:"attempt_id"`
-	RunID               string         `json:"run_id"`
-	NodeRunID           string         `json:"node_run_id"`
-	Model               string         `json:"model,omitempty"`
-	Variant             string         `json:"variant,omitempty"`
-	Agent               string         `json:"agent,omitempty"`
-	ForceNewSession     bool           `json:"force_new_session,omitempty"`
-	WorkspacePath       string         `json:"workspace_path"`
-	ProjectRootBoundary string         `json:"-"`
-	ConfigDir           string         `json:"config_dir,omitempty"`
-	DatabasePath        string         `json:"database_path,omitempty"`
-	InlineConfigContent string         `json:"-"`
-	Prompt              string         `json:"prompt"`
-	// OpenPrompt and WritePrompt are replayable sources: each Execute opens or
-	// invokes its source once, closes opened readers, and streams to stdin. Set
-	// exactly one of Prompt, OpenPrompt, or WritePrompt. Writers must honor ctx.
-	OpenPrompt         func(context.Context) (io.ReadCloser, error) `json:"-"`
-	WritePrompt        func(context.Context, io.Writer) error       `json:"-"`
-	OccurredAt         string                                       `json:"occurred_at"`
-	InvocationID       string                                       `json:"invocation_id,omitempty"`
-	InvocationIssuedAt string                                       `json:"invocation_issued_at,omitempty"`
+	AttemptID    string
+	InvocationID string
+	// ProviderSessionID names a session to continue; ForceNewSession starts a
+	// new one instead.
+	ProviderSessionID string
+	ForceNewSession   bool
+	Model             string
+	Variant           string
+	Agent             string
+	WorkspacePath     string
+	// System is the exact instruction pinned into the request's managed
+	// profile. It is the only instruction channel Kingdom authors.
+	System string
+	// KeepSession retains the provider session's captured history after the
+	// request, because a later request will continue it.
+	KeepSession bool
+	// FirstEventTimeout and StreamInactivityTimeout bound how long a request
+	// may stay silent before it is interrupted.
+	FirstEventTimeout       time.Duration
+	StreamInactivityTimeout time.Duration
+	// OpenPrompt is the replayable prompt source: each Execute opens it once,
+	// sends the text and closes the reader.
+	OpenPrompt func(context.Context) (io.ReadCloser, error)
+	// OpenContinuationPrompt supplies only the new input for a request that
+	// continues a reused provider session, whose history already holds the rest.
+	OpenContinuationPrompt func(context.Context) (io.ReadCloser, error)
 
 	// OnProgress is called with each text chunk as the LLM streams output.
 	// Optional — if nil, progress events are still stored internally but not forwarded.
-	OnProgress func(text string) `json:"-"`
+	OnProgress func(text string)
 
-	// OnProviderSession is called when OpenCode emits a provider-native session id.
-	// It may be called more than once if the provider session rotates during retries.
-	OnProviderSession func(sessionID string) `json:"-"`
+	// OnInvocationStarted is called once the provider has durably accepted the
+	// request, which is when the shared server begins working on it.
+	OnInvocationStarted func()
 
-	// OnProcessStarted is called after the provider command successfully starts
-	// but before stream decoding begins.
-	OnProcessStarted func() `json:"-"`
-
-	// OnProcessGuardOwnership durably records guardian ownership before the
+	// OnCommandGuardianOwnership durably records guardian ownership before the
 	// provider launch gate is released. The raw quiescence capability is limited
 	// to this orchestration callback and is never included in diagnostics.
-	OnProcessGuardOwnership func(context.Context, ProcessGuardOwnership) error `json:"-"`
+	// Both guardian callbacks are set together, and only for requests whose
+	// profile may run commands; a request without them refuses every command.
+	OnCommandGuardianOwnership func(context.Context, CommandGuardianOwnership) error
 
-	// OnProcessGuardQuiescence records the guardian's terminal proof after the
+	// OnCommandGuardianQuiescence records the guardian's terminal proof after the
 	// command tree is quiescent and its streams have been drained.
-	OnProcessGuardQuiescence func(context.Context, ProcessGuardQuiescence) error `json:"-"`
+	OnCommandGuardianQuiescence func(context.Context, CommandGuardianQuiescence) error
 
 	// OnActivity is called for real provider-emitted activity such as tool use
 	// or reasoning observations. Callers must not fabricate additional detail.
 	// Content sources are valid only through this synchronous callback; persist
 	// their bytes before returning rather than retaining the process-local opener.
-	OnActivity func(observation ExecuteActivityObservation) `json:"-"`
+	OnActivity func(observation ExecuteActivityObservation)
 }
 
 // GuardianRunner starts provider command trees behind a durable launch gate.
@@ -96,29 +96,19 @@ type GuardianRunner interface {
 	Start(context.Context, processguardian.Command, processguardian.PersistOwnership) (processguardian.Handle, error)
 }
 
-type ProcessGuardOwnership struct {
+type CommandGuardianOwnership struct {
 	CommandOrdinal int
 	StartedAt      string
 	AcknowledgedAt string
 	Ownership      processguardian.Ownership
 }
 
-type ProcessGuardQuiescence struct {
+type CommandGuardianQuiescence struct {
 	CommandOrdinal int
 	ExitedAt       string
 	QuiescentAt    string
 	Result         processguardian.Result
 }
-
-// CompletionMode defines the single, server-owned authority a provider
-// invocation uses to settle an attempt.
-type CompletionMode string
-
-const (
-	CompletionModeServerResponse CompletionMode = "server_response"
-)
-
-type ExecuteActivityKind = string
 
 const (
 	ExecuteActivityKindMessage   = "message"
@@ -145,8 +135,6 @@ type InvocationStreamObservation = providerexecution.InvocationStreamObservation
 
 type InvocationToolObservation = providerexecution.InvocationToolObservation
 
-type ProcessGuardObservation = providerexecution.ProcessGuardObservation
-
 // ExecutionOutcome carries the canonical provider terminal outcome.
 // Callers must persist this instead of re-deriving reason codes from error text.
 type ExecutionOutcome struct {
@@ -157,38 +145,16 @@ type ExecutionOutcome struct {
 }
 
 type ExecuteResponse struct {
-	Accepted   bool   `json:"accepted"`
 	OutputText string `json:"output_text,omitempty"`
 	// Referenced answers are opened with providerexecution.OpenTerminalText.
 	// OutputPreview is bounded display data, never terminal authority.
-	OutputPreview           string                      `json:"output_preview,omitempty"`
-	Tokens                  TokenUsage                  `json:"tokens"`
-	ProviderSessionID       string                      `json:"provider_session_id,omitempty"`
-	ProviderInvocationID    string                      `json:"provider_invocation_id,omitempty"`
-	ProviderInvocationAt    string                      `json:"provider_invocation_at,omitempty"`
-	Outcome                 ExecutionOutcome            `json:"outcome,omitempty"`
-	ProviderDiagnosticsJSON string                      `json:"provider_diagnostics_json,omitempty"`
-	StreamObservation       InvocationStreamObservation `json:"stream_observation"`
-}
-
-type CancelRequest struct {
-	SessionID  string `json:"session_id"`
-	AttemptID  string `json:"attempt_id"`
-	Reason     string `json:"reason"`
-	OccurredAt string `json:"occurred_at"`
-}
-
-type StreamRequest struct {
-	SessionID string
-	AttemptID string
-}
-
-type AttemptStreamEvent struct {
-	AttemptID   string `json:"attempt_id"`
-	Seq         int    `json:"seq"`
-	EventType   string `json:"event_type"`
-	PayloadJSON string `json:"payload_json"`
-	OccurredAt  string `json:"occurred_at"`
+	OutputPreview        string                      `json:"output_preview,omitempty"`
+	Tokens               TokenUsage                  `json:"tokens"`
+	ProviderSessionID    string                      `json:"provider_session_id,omitempty"`
+	ProviderInvocationID string                      `json:"provider_invocation_id,omitempty"`
+	ProviderInvocationAt string                      `json:"provider_invocation_at,omitempty"`
+	Outcome              ExecutionOutcome            `json:"outcome,omitempty"`
+	StreamObservation    InvocationStreamObservation `json:"stream_observation"`
 }
 
 type AttemptNotFoundError struct {
@@ -199,258 +165,12 @@ func (e *AttemptNotFoundError) Error() string {
 	return fmt.Sprintf("attempt not found: %q", e.AttemptID)
 }
 
-type MemoryAdapter struct {
-	mu     sync.Mutex
-	events map[string][]AttemptStreamEvent
-}
-
-func NewMemoryAdapter() *MemoryAdapter {
-	return &MemoryAdapter{events: make(map[string][]AttemptStreamEvent)}
-}
-
-func (a *MemoryAdapter) Execute(_ context.Context, req ExecuteRequest) (ExecuteResponse, error) {
-	if err := validateExecuteRequest(req); err != nil {
-		return ExecuteResponse{}, err
-	}
-	// This adapter is a string-based fixture, not a production provider. Its
-	// canned output builder may materialize the replay source for assertions.
-	if req.OpenPrompt != nil || req.WritePrompt != nil {
-		var prompt strings.Builder
-		if err := writeRequestPrompt(context.Background(), req, "", &prompt); err != nil {
-			return ExecuteResponse{}, err
-		}
-		req.Prompt = prompt.String()
-	}
-	if strings.TrimSpace(req.WorkspacePath) == "" {
-		return ExecuteResponse{}, fmt.Errorf("workspace path is required")
-	}
-	if err := invokeSyntheticGuardCallbacks(req); err != nil {
-		return ExecuteResponse{}, err
-	}
-	if req.OnProcessStarted != nil {
-		req.OnProcessStarted()
-	}
-	providerSessionID := "memory_" + strings.TrimSpace(req.InvocationID)
-	if req.OnProviderSession != nil {
-		req.OnProviderSession(providerSessionID)
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	if _, exists := a.events[req.AttemptID]; !exists {
-		a.events[req.AttemptID] = []AttemptStreamEvent{
-			{
-				AttemptID:   req.AttemptID,
-				Seq:         1,
-				EventType:   AttemptEventTypeStarted,
-				PayloadJSON: `{}`,
-				OccurredAt:  req.OccurredAt,
-			},
-		}
-	}
-
-	summary, err := buildMemoryOutput(req)
-	if err != nil {
-		return ExecuteResponse{}, err
-	}
-
-	zero := 0
-	return ExecuteResponse{
-		Accepted:             true,
-		OutputText:           summary,
-		ProviderSessionID:    providerSessionID,
-		ProviderInvocationID: strings.TrimSpace(req.InvocationID),
-		ProviderInvocationAt: strings.TrimSpace(req.InvocationIssuedAt),
-		Outcome: ExecutionOutcome{
-			State:          string(attemptCompletionStateSuccess),
-			ReasonCode:     "execution_completed",
-			EvidenceSource: string(completionEvidenceSourceStream),
-		},
-		StreamObservation: InvocationStreamObservation{
-			ProviderSessionID:      providerSessionID,
-			FinalTurnID:            "turn_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
-			FinalStepID:            "step_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)),
-			FinalSequence:          2,
-			RawFinishReason:        "stop",
-			NormalizedFinishReason: "stop",
-			CanonicalTerminalText:  summary,
-			ProcessExited:          true,
-			ProcessExitCode:        &zero,
-			StdoutDrained:          true,
-			StderrDrained:          true,
-			ProcessQuiescent:       true,
-			ProcessGuards:          []ProcessGuardObservation{syntheticProcessGuardObservation(req)},
-		},
-	}, nil
-}
-
-// invokeSyntheticGuardCallbacks keeps the in-memory test double compatible
-// with the durable guard contract without pretending that it launches a host
-// provider process. Production OpenCode commands always use SessionAdapter.
-func invokeSyntheticGuardCallbacks(req ExecuteRequest) error {
-	guardID := "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID))
-	ownership := processguardian.Ownership{GuardID: guardID, GuardianPID: 1, GuardianIdentityToken: "memory-guardian", ChildPID: 1, ChildIdentityToken: "memory-child", TreeID: 1, TreeIdentityToken: "memory-child", Platform: "unix_process_group", QuiescenceCapability: "memory-guardian-capability"}
-	if req.OnProcessGuardOwnership != nil {
-		if err := req.OnProcessGuardOwnership(context.Background(), ProcessGuardOwnership{CommandOrdinal: 1, StartedAt: req.OccurredAt, AcknowledgedAt: req.OccurredAt, Ownership: ownership}); err != nil {
-			return err
-		}
-	}
-	result := processguardian.Result{Ownership: ownership, ExitCode: 0, Quiescent: true}
-	evidence, err := json.Marshal(struct {
-		Type   string                 `json:"type"`
-		Result processguardian.Result `json:"result"`
-	}{Type: "result", Result: result})
-	if err != nil {
-		return err
-	}
-	sum := sha256.Sum256(evidence)
-	result.EvidenceJSON = string(evidence)
-	result.EvidenceSHA256 = fmt.Sprintf("%x", sum[:])
-	if req.OnProcessGuardQuiescence != nil {
-		if err := req.OnProcessGuardQuiescence(context.Background(), ProcessGuardQuiescence{CommandOrdinal: 1, ExitedAt: req.OccurredAt, QuiescentAt: req.OccurredAt, Result: result}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func syntheticProcessGuardObservation(req ExecuteRequest) ProcessGuardObservation {
-	return ProcessGuardObservation{CommandOrdinal: 1, GuardID: "memory_guard_" + firstNonEmpty(strings.TrimSpace(req.InvocationID), strings.TrimSpace(req.AttemptID)), GuardianPID: 1, ChildPID: 1, TreeID: 1, Platform: "unix_process_group", Quiescent: true}
-}
-
-func (a *MemoryAdapter) Cancel(_ context.Context, req CancelRequest) error {
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.OccurredAt == "" {
-		return fmt.Errorf("occurred_at is required")
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	nextSeq := len(events) + 1
-	a.events[req.AttemptID] = append(events, AttemptStreamEvent{
-		AttemptID:   req.AttemptID,
-		Seq:         nextSeq,
-		EventType:   AttemptEventTypeCancelled,
-		PayloadJSON: `{"reason":"` + req.Reason + `"}`,
-		OccurredAt:  req.OccurredAt,
-	})
-
-	return nil
-}
-
-func (a *MemoryAdapter) Stream(ctx context.Context, req StreamRequest) (<-chan AttemptStreamEvent, <-chan error, error) {
-	if req.AttemptID == "" {
-		return nil, nil, fmt.Errorf("attempt id is required")
-	}
-
-	a.mu.Lock()
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		a.mu.Unlock()
-		return nil, nil, &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	snapshot := make([]AttemptStreamEvent, len(events))
-	copy(snapshot, events)
-	a.mu.Unlock()
-
-	sort.Slice(snapshot, func(i, j int) bool {
-		return snapshot[i].Seq < snapshot[j].Seq
-	})
-
-	eventCh := make(chan AttemptStreamEvent)
-	errCh := make(chan error, 1)
-
-	go func() {
-		defer close(eventCh)
-		defer close(errCh)
-
-		for _, event := range snapshot {
-			select {
-			case <-ctx.Done():
-				errCh <- ctx.Err()
-				return
-			case eventCh <- event:
-			}
-		}
-	}()
-
-	return eventCh, errCh, nil
-}
-
-func (a *MemoryAdapter) PublishEvent(req AttemptStreamEvent) error {
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.Seq <= 0 {
-		return fmt.Errorf("seq must be positive")
-	}
-	if req.EventType == "" {
-		return fmt.Errorf("event type is required")
-	}
-
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
-	events, ok := a.events[req.AttemptID]
-	if !ok {
-		return &AttemptNotFoundError{AttemptID: req.AttemptID}
-	}
-
-	a.events[req.AttemptID] = append(events, req)
-	return nil
-}
-
-func validateExecuteRequest(req ExecuteRequest) error {
-	if req.CompletionMode != CompletionModeServerResponse {
-		return fmt.Errorf("completion mode must be %q", CompletionModeServerResponse)
-	}
-	if req.SessionID == "" {
-		return fmt.Errorf("session id is required")
-	}
-	if req.AttemptID == "" {
-		return fmt.Errorf("attempt id is required")
-	}
-	if req.RunID == "" {
-		return fmt.Errorf("run id is required")
-	}
-	if req.NodeRunID == "" {
-		return fmt.Errorf("node run id is required")
-	}
-	sources := 0
-	if req.Prompt != "" {
-		sources++
-	}
-	if req.OpenPrompt != nil {
-		sources++
-	}
-	if req.WritePrompt != nil {
-		sources++
-	}
-	if sources != 1 {
-		return fmt.Errorf("exactly one prompt source is required")
-	}
-	if req.OccurredAt == "" {
-		return fmt.Errorf("occurred_at is required")
-	}
-
-	return nil
-}
-
-func buildMemoryOutput(req ExecuteRequest) (string, error) {
-	prompt := strings.ToLower(req.Prompt)
+// buildMemoryOutput is the canned answer of the in-memory fixture provider.
+func buildMemoryOutput(req ExecuteRequest, prompt string) (string, error) {
+	prompt = strings.ToLower(prompt)
 	implementationAuthorized := strings.Contains(prompt, "roleid: builder")
 
-	summary := fmt.Sprintf("mock engine completed %s", req.NodeRunID)
+	summary := fmt.Sprintf("mock engine completed %s", req.AttemptID)
 	if !implementationAuthorized {
 		if strings.Contains(prompt, "nodeclass: execution_review") {
 			return "VERDICT: PASS\nExecution review completed with no blocking gaps.", nil
@@ -464,7 +184,7 @@ func buildMemoryOutput(req ExecuteRequest) (string, error) {
 		return summary, nil
 	}
 
-	artifactPath := fmt.Sprintf("deliverables/%s.txt", req.NodeRunID)
+	artifactPath := fmt.Sprintf("deliverables/%s.txt", req.AttemptID)
 	if implementationAuthorized && (strings.Contains(prompt, "homepage") || strings.Contains(prompt, "index.html")) {
 		artifactPath = "deliverables/index.html"
 		summary = "mock engine generated homepage"
@@ -481,7 +201,7 @@ func buildMemoryOutput(req ExecuteRequest) (string, error) {
 		Path: artifactPath,
 		Name: filepath.Base(artifactPath),
 		MIME: inferMockMIME(artifactPath),
-		Body: fmt.Sprintf("completed %s", req.NodeRunID),
+		Body: fmt.Sprintf("completed %s", req.AttemptID),
 	}}
 	return summary, writeMockArtifacts(req.WorkspacePath, artifacts)
 }

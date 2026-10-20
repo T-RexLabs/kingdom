@@ -4780,7 +4780,7 @@ components:
         type:
           type: string
           enum:
-            [run.created, run.in-progress, message.part, message.completed, run.completed, run.activity.reconciled, run.failed, run.cancelled, error, generic]
+            [run.created, run.in-progress, message.part, message.completed, run.completed, run.failed, run.cancelled, error, generic]
         payload:
           type: object
           additionalProperties: true
@@ -5519,7 +5519,7 @@ components:
           format: date-time
         failure_reason:
           type: string
-          enum: [timeout, binary_missing, command_failed, parse_failed]
+          enum: [timeout, binary_missing, service_unavailable, parse_failed, configuration_invalid]
         failure_message:
           type: string
 

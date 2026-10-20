@@ -156,7 +156,7 @@ export function PlanningSessionPage() {
 	}
 	const titleOperationQuery = usePlanningOperation(titleStreamRunID);
 	const { operation: titleStreamOperation } = usePlannerOperation(titleOperationQuery.data ?? null);
-	if (titleStreamRunID && !session?.current_title_run_id && titleStreamOperation && (titleStreamOperation.status === "error" || titleStreamOperation.status === "cancelled" || (titleStreamOperation.status === "done" && titleStreamOperation.activityReconciled))) {
+	if (titleStreamRunID && !session?.current_title_run_id && titleStreamOperation && isPlannerOperationTerminal(titleStreamOperation.status)) {
 		setTitleStreamRunID(undefined);
 	}
   usePlanningSessionAutoTitleCatchup(sessionId, session);

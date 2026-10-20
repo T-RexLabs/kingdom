@@ -20,7 +20,7 @@ These files define Kingdom's canonical runtime policy. Execution starts with no 
 - Edit `role_policy.yaml` when a role's allowed tool classes, command classes, path scopes, execution authority, or forbidden command classes change.
 - Edit `network_policy.yaml` when a role or node class needs outbound access to a specific domain.
 - Edit `retry_policy.yaml` when an error code needs a different retry class, backoff, or escalation path.
-- Edit `opencode_provider_policy.yaml` when startup validation, dispatch timeouts, stream inactivity windows, or role to agent mappings change.
+- Edit `opencode_provider_policy.yaml` when dispatch timeouts, stream inactivity windows, or role to agent mappings change.
 - Edit `internal/prompts/catalog/` when shipped role instructions, default guidance, planning contracts, node contracts, communication styles, or mailbox templates change.
 
 ## Timeout Behavior

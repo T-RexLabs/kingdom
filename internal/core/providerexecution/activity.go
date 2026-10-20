@@ -2,12 +2,8 @@ package providerexecution
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"unicode/utf8"
 )
@@ -105,47 +101,4 @@ func activityPreview(text string) string {
 		end--
 	}
 	return text[:end]
-}
-
-// StageActivityContent consumes a complete observed value with bounded memory.
-// The owner must retain its cleanup until every synchronous consumer returns.
-func StageActivityContent(ctx context.Context, source io.Reader) (ActivityContent, func() error, error) {
-	file, err := os.CreateTemp("", "kingdom-activity-content-*")
-	if err != nil {
-		return ActivityContent{}, nil, err
-	}
-	cleanup := func() error { return errors.Join(file.Close(), os.Remove(file.Name())) }
-	hash := sha256.New()
-	var preview strings.Builder
-	buffer := make([]byte, ContentChunkBytes)
-	var size int64
-	for {
-		if err := ctx.Err(); err != nil {
-			_ = cleanup()
-			return ActivityContent{}, nil, err
-		}
-		n, readErr := source.Read(buffer)
-		if n > 0 {
-			if _, err := io.MultiWriter(file, hash).Write(buffer[:n]); err != nil {
-				_ = cleanup()
-				return ActivityContent{}, nil, err
-			}
-			size += int64(n)
-			if preview.Len() < ActivityPreviewBytes+utf8.UTFMax {
-				preview.Write(buffer[:min(n, ActivityPreviewBytes+utf8.UTFMax-preview.Len())])
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			_ = cleanup()
-			return ActivityContent{}, nil, readErr
-		}
-	}
-	ref := ContentReference{InvocationID: "activity", SHA256: hex.EncodeToString(hash.Sum(nil)), SizeBytes: size}
-	staged := StagedContent{Reference: ref, Path: file.Name()}
-	text := activityPreview(preview.String())
-	content := ActivityContent{Availability: "available", Preview: &text, ByteLength: &size, SHA256: ref.SHA256, Open: staged.Open}
-	return content, cleanup, nil
 }

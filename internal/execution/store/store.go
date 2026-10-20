@@ -17,6 +17,7 @@ import (
 
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/core/verdict"
+	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/sqlitex"
 	"kingdom/internal/timestamporder"
 )
@@ -283,8 +284,6 @@ type AttemptCancelRecord struct {
 	SessionID      string
 	ExecutionMode  ExecutionMode
 	ReasonCode     string
-	ReasonText     string
-	RequestedAt    string
 	Status         string
 	PublishCount   int
 	LastError      string
@@ -615,7 +614,7 @@ func (s *Store) GetRunExecutionDetail(ctx context.Context, runID, attemptID stri
 	       (SELECT NULLIF(TRIM(aco.handoff_state), '') FROM attempt_cancel_outbox aco WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending') AS cancellation_handoff_state,
 	       CASE WHEN nr.node_status = 'blocked' AND ae.state = 'committed_cancelled' AND EXISTS(
 	           SELECT 1 FROM attempt_cancel_outbox aco
-	           JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.owner_kind = 'work_order_attempt' AND ppg.lifecycle = 'acknowledged'
+	           JOIN provider_process_guards ppg ON ppg.attempt_id = aco.attempt_id AND ppg.lifecycle = 'acknowledged'
 	           WHERE aco.attempt_id = ae.attempt_id AND aco.status = 'pending'
 	             AND aco.reason_code = 'agent_unresponsive'
 	             AND aco.handoff_state IN ('awaiting_quiescence', 'cancellation_dispatched', 'stop_retry_dispatched')
@@ -1128,6 +1127,12 @@ func (s *Store) ClaimQueuedProviderAttempt(ctx context.Context, req ClaimQueuedP
 				return nil
 			}
 		}
+		if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+			if errors.Is(err, providerrequest.ErrResourcesOpen) {
+				return nil
+			}
+			return err
+		}
 		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
 		SET lease_owner = ?,
 		    lease_expires_at = ?,
@@ -1399,6 +1404,10 @@ func (s *Store) observeTerminalOnce(ctx context.Context, req ObserveTerminalRequ
 			_ = tx.Rollback()
 		}
 	}()
+
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return err
+	}
 
 	res, err := tx.ExecContext(ctx,
 		`UPDATE attempt_executions
@@ -1676,6 +1685,10 @@ func (s *Store) commitRecoveredTerminalOnce(ctx context.Context, req CommitRecov
 		return result, err
 	}
 
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return result, err
+	}
+
 	var terminalSeq int
 	if err := tx.QueryRowContext(ctx,
 		`SELECT COALESCE(MAX(seq), 0) + 1 FROM attempt_event_log WHERE attempt_id = ?`,
@@ -1861,6 +1874,10 @@ func (s *Store) finalizeTerminalOnce(ctx context.Context, req FinalizeTerminalRe
 			_ = tx.Rollback()
 		}
 	}()
+
+	if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+		return result, err
+	}
 
 	var terminalSeq int
 	err = tx.QueryRowContext(ctx,
@@ -2141,7 +2158,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through At
 		`SELECT aco.cancel_outbox_id, aco.attempt_id, aco.run_id, aco.node_run_id,
 		        COALESCE(NULLIF(TRIM(ae.provider_session_id), ''), aco.session_id) AS session_id,
 		        COALESCE(ae.execution_mode, 'provider_backed') AS execution_mode,
-		        aco.reason_code, aco.reason_text, aco.requested_at, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
+		        aco.reason_code, aco.status, aco.publish_attempts, aco.last_error, aco.handoff_state,
 		        COALESCE(nr.node_id, ''), COALESCE(wn.node_class, ''), COALESCE(ae.base_snapshot_id, ''), aco.created_at
 		 FROM attempt_cancel_outbox aco
 		 LEFT JOIN attempt_executions ae ON ae.attempt_id = aco.attempt_id
@@ -2165,7 +2182,7 @@ func (s *Store) ListPendingAttemptCancels(ctx context.Context, after, through At
 	for rows.Next() {
 		var rec AttemptCancelRecord
 		var executionMode string
-		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.ReasonText, &rec.RequestedAt, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
+		if err := rows.Scan(&rec.CancelOutboxID, &rec.AttemptID, &rec.RunID, &rec.NodeRunID, &rec.SessionID, &executionMode, &rec.ReasonCode, &rec.Status, &rec.PublishCount, &rec.LastError, &rec.HandoffState, &rec.NodeID, &rec.NodeClass, &rec.BaseSnapshotID, &rec.CreatedAt); err != nil {
 			return nil, fmt.Errorf("scan pending attempt cancel: %w", err)
 		}
 		rec.ExecutionMode = NormalizeExecutionMode(executionMode)
@@ -2397,30 +2414,40 @@ func (s *Store) MarkAttemptCancelPublished(ctx context.Context, cancelOutboxID, 
 		publishedAt = time.Now().UTC().Format(time.RFC3339)
 	}
 
-	res, err := s.db.ExecContext(ctx,
-		`UPDATE attempt_cancel_outbox
-		 SET status = 'published',
-		     handoff_state = 'released',
-		     publish_attempts = publish_attempts + 1,
-		     last_error = '',
-		     updated_at = ?,
-		     published_at = ?
-		 WHERE cancel_outbox_id = ? AND status = 'pending'`,
-		publishedAt,
-		publishedAt,
-		cancelOutboxID,
-	)
-	if err != nil {
-		return fmt.Errorf("mark attempt cancel outbox %q published: %w", cancelOutboxID, err)
-	}
-	rows, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("read attempt cancel publish rows affected: %w", err)
-	}
-	if rows == 0 {
-		return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
-	}
-	return nil
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var attemptID string
+		if err := tx.QueryRowContext(ctx, `SELECT attempt_id FROM attempt_cancel_outbox WHERE cancel_outbox_id=?`, cancelOutboxID).Scan(&attemptID); err != nil {
+			return err
+		}
+		if err := providerrequest.RequireAttemptDisposedTx(ctx, tx, attemptID); err != nil {
+			return err
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE attempt_cancel_outbox
+			 SET status = 'published',
+			     handoff_state = 'released',
+			     publish_attempts = publish_attempts + 1,
+			     last_error = '',
+			     updated_at = ?,
+			     published_at = ?
+			 WHERE cancel_outbox_id = ? AND status = 'pending'`,
+			publishedAt,
+			publishedAt,
+			cancelOutboxID,
+		)
+		if err != nil {
+			return fmt.Errorf("mark attempt cancel outbox %q published: %w", cancelOutboxID, err)
+		}
+		rows, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read attempt cancel publish rows affected: %w", err)
+		}
+		if rows == 0 {
+			return fmt.Errorf("attempt cancel outbox %q not pending", cancelOutboxID)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
 }
 
 // RecordAttemptCancelFailure only updates the phase observed by the caller.
@@ -2542,22 +2569,62 @@ func (s *Store) QueueAttemptCancel(ctx context.Context, req QueueAttemptCancelRe
 		createdAt = requestedAt
 	}
 
-	_, err := s.db.ExecContext(ctx,
-		`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
-		cancelOutboxID,
-		attemptID,
-		runID,
-		nodeRunID,
-		sessionID,
-		reasonCode,
-		reasonText,
-		requestedAt,
-		createdAt,
-		createdAt,
-	)
-	if err != nil {
-		return fmt.Errorf("queue attempt cancel outbox %q: %w", cancelOutboxID, err)
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		var canonicalRun, canonicalNode string
+		if err := tx.QueryRowContext(ctx, `SELECT run_id,node_run_id FROM attempt_executions WHERE attempt_id=?`, attemptID).Scan(&canonicalRun, &canonicalNode); err != nil {
+			return err
+		}
+		if canonicalRun != runID || canonicalNode != nodeRunID {
+			return fmt.Errorf("attempt cancellation lineage mismatch")
+		}
+		if err := providerrequest.CloseAttemptAdmissionTx(ctx, tx, attemptID, requestedAt); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO attempt_cancel_outbox (cancel_outbox_id, attempt_id, run_id, node_run_id, session_id, reason_code, reason_text, requested_at, status, handoff_state, publish_attempts, last_error, created_at, updated_at, published_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', 'cancellation_requested', 0, '', ?, ?, NULL)`,
+			cancelOutboxID,
+			attemptID,
+			runID,
+			nodeRunID,
+			sessionID,
+			reasonCode,
+			reasonText,
+			requestedAt,
+			createdAt,
+			createdAt,
+		)
+		if err != nil {
+			return fmt.Errorf("queue attempt cancel outbox %q: %w", cancelOutboxID, err)
+		}
+		return nil
+	}, sqlitex.Options{})
+	return err
+}
+
+// ExpireProviderExecutionLeases ends the execution leases that earlier
+// processes still hold. Only a live worker renews a lease, and a process that
+// has just started has none, so waiting out the lease would only delay the
+// stale-attempt recovery that settles the orphaned work.
+func (s *Store) ExpireProviderExecutionLeases(ctx context.Context, expiredAt string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, fmt.Errorf("store database is required")
 	}
-	return nil
+	expiredAt = strings.TrimSpace(expiredAt)
+	if _, err := time.Parse(time.RFC3339Nano, expiredAt); err != nil {
+		return 0, fmt.Errorf("lease expiry time is required: %w", err)
+	}
+	var expired int64
+	_, err := sqlitex.Transaction(ctx, s.db, func(ctx context.Context, tx *sql.Tx) error {
+		result, err := tx.ExecContext(ctx, `UPDATE attempt_executions
+			SET lease_expires_at = ?, updated_at = ?
+			WHERE execution_mode = 'provider_backed' AND state IN ('starting', 'running')
+			  AND lease_owner <> '' AND julianday(lease_expires_at) > julianday(?)`, expiredAt, expiredAt, expiredAt)
+		if err != nil {
+			return err
+		}
+		expired, err = result.RowsAffected()
+		return err
+	}, sqlitex.Options{})
+	return expired, err
 }

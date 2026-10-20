@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"kingdom/internal/bootstrapassets"
 	"kingdom/internal/runtimefs"
 	"kingdom/internal/securefs"
 	"kingdom/internal/trackedfs"
@@ -199,7 +198,7 @@ func (o *orchestrationLoop) recoverQuarantinedExecutionTargetForManualReplay(ctx
 	if !o.manualTargetRecoveryAuthorized(ctx, runID, nodeRunID, record.UpdatedAt) {
 		return runtimefs.RunExecutionTarget{}, fmt.Errorf("execution target is quarantined and requires an explicit retry or rerun")
 	}
-	quiescent, err := o.executionStore.RunProviderProcessGuardsQuiescent(ctx, runID)
+	quiescent, err := o.executionStore.RunProviderCommandGuardiansQuiescent(ctx, runID)
 	if err != nil {
 		return runtimefs.RunExecutionTarget{}, err
 	}
@@ -374,9 +373,6 @@ func (o *orchestrationLoop) prepareExecutionWorkspaceContext(ctx context.Context
 	}
 	if err := o.ensureOpenCodeProjectBoundary(ctx, resolvedWorkspace, workspaceCtx.UseGitWorktree); err != nil {
 		return fmt.Errorf("prepare OpenCode project boundary: %w", err)
-	}
-	if err := bootstrapassets.WriteManagedOpenCodeAssets(bootstrapassets.ManagedOpenCodeRoot(resolvedWorkspace), true); err != nil {
-		return fmt.Errorf("install managed opencode overlay into execution workspace: %w", err)
 	}
 	return nil
 }

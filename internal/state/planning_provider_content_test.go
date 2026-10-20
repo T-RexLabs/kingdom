@@ -41,6 +41,7 @@ func TestPlanningProviderContentAtomicIntegrityAndReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.PrimaryEvidencePayloadJSON = string(raw)
+	bindPlanningSettlement(t, store, request)
 	bad := request.StagedContent[2]
 	if err := os.WriteFile(bad.Path, []byte("corrupted"), 0600); err != nil {
 		t.Fatal(err)
