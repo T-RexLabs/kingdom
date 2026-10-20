@@ -23,6 +23,8 @@ export type ActivityHistoryControls = {
 type HistoryProps = {
   scopeKey: string;
   items: ActivityItem[];
+  /** Fill the parent's height instead of sizing to content. */
+  fill?: boolean;
 } & ActivityHistoryControls;
 type HistoryRow = {
   key: string;
@@ -46,6 +48,7 @@ function VirtualActivityHistory({
   isLoadingMore,
   loadError,
   loadMore,
+  fill = false,
 }: HistoryProps) {
   const rows = useMemo<HistoryRow[]>(
     () =>
@@ -98,7 +101,7 @@ function VirtualActivityHistory({
   };
   return (
     <div
-      className="space-y-2"
+      className={fill ? "flex h-full min-h-0 flex-col gap-2" : "space-y-2"}
       role="region"
       aria-label="Provider activity history"
     >
@@ -129,10 +132,14 @@ function VirtualActivityHistory({
       {rows.length > 0 ? (
         <Virtuoso
           ref={list}
-          style={{
-            height: Math.min(520, Math.max(52, contentHeight ?? rows.length * 52)),
-            maxHeight: "65vh",
-          }}
+          style={
+            fill
+              ? { flex: "1 1 0", minHeight: 0 }
+              : {
+                  height: Math.min(520, Math.max(52, contentHeight ?? rows.length * 52)),
+                  maxHeight: "65vh",
+                }
+          }
           totalListHeightChanged={setContentHeight}
           aria-label="Scrollable provider activity"
           data={rows}

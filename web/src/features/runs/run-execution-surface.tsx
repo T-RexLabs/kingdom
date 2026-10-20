@@ -125,7 +125,7 @@ export function RunExecutionSurface({
 
   return (
     <section
-      className="mx-auto max-w-3xl space-y-3"
+      className="mx-auto flex h-full min-h-0 w-full max-w-3xl flex-col gap-3"
       aria-label="Agent activity"
     >
       <RunExecutionPicker
@@ -277,6 +277,7 @@ export function RunExecutionSurface({
         role="tabpanel"
         aria-labelledby={`${viewsId}-instructions`}
         hidden={view !== "instructions"}
+        className="min-h-0 flex-1 overflow-y-auto"
       >
         {view === "instructions" && (
           <RunInstructions
@@ -293,6 +294,7 @@ export function RunExecutionSurface({
           role="tabpanel"
           aria-labelledby={`${viewsId}-response`}
           hidden={view !== "response"}
+          className="min-h-0 flex-1 overflow-y-auto"
         >
           <RunFinalResponse key={selectedID} detail={selectedDetail} />
         </div>
@@ -302,9 +304,10 @@ export function RunExecutionSurface({
         role="tabpanel"
         aria-labelledby={`${viewsId}-conversation`}
         hidden={view !== "conversation"}
+        className="flex min-h-0 flex-1 flex-col"
       >
         {node?.execution_ownership === "provider_backed" && (
-          <div className="space-y-1 pt-4">
+          <div className="space-y-1 pt-1">
             <div className="text-sm font-medium">
               <RoleIdentity
                 role={node.required_role}
@@ -321,20 +324,24 @@ export function RunExecutionSurface({
         )}
         {node?.execution_ownership === "provider_backed" &&
           (selectedID || !isHistoryLoading) && (
-            <RunExecutionActivity
-              key={selectedID}
-              runId={run.run_id}
-              attemptId={selectedID ?? null}
-              status={execution?.status}
-              detail={selectedDetail}
-              isVisible={view === "conversation"}
-              isDetailLoading={isDetailLoading}
-            />
+            <div className="min-h-0 flex-1">
+              <RunExecutionActivity
+                key={selectedID}
+                runId={run.run_id}
+                attemptId={selectedID ?? null}
+                status={execution?.status}
+                detail={selectedDetail}
+                isVisible={view === "conversation"}
+                isDetailLoading={isDetailLoading}
+              />
+            </div>
           )}
         {node?.execution_ownership === "runtime_owned" &&
           (selectedDetail?.output_status === "observed" &&
           selectedDetail.output_text ? (
-            <RunRuntimeResponse key={selectedID} detail={selectedDetail} />
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <RunRuntimeResponse key={selectedID} detail={selectedDetail} />
+            </div>
           ) : (
             <p className="py-5 text-sm text-foreground-muted">
               Kingdom handles this step. Its transitions appear in Audit.

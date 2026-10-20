@@ -95,7 +95,7 @@ function RunAttemptActivity({
       </p>
     );
   return (
-    <section ref={activityRef} className="space-y-2" aria-label="Provider activity">
+    <section ref={activityRef} className="flex h-full min-h-0 flex-col gap-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
       {showPhase && (
         <p role="status" className="py-2 text-sm text-foreground-muted">
@@ -145,8 +145,29 @@ function RunAttemptActivity({
           New live activity is awaiting durable reconciliation.
         </p>
       )}
-      {hasHistory &&
-        (folded ? (
+      {hasHistory && !folded && (
+        <div className="min-h-0 flex-1">
+          <ActivityHistory
+            fill
+            scopeKey={JSON.stringify([runId, attemptId])}
+            items={conversationItems}
+            gaps={durable.gaps}
+            isLoadingMore={durable.isLoadingMore}
+            loadError={durable.loadError}
+            loadMore={durable.loadMore}
+          />
+        </div>
+      )}
+      {/* While the history streams it owns the space; once folded, the work,
+          response and sources scroll together. */}
+      <div
+        className={
+          hasHistory && !folded
+            ? "max-h-[45%] shrink-0 overflow-y-auto"
+            : "min-h-0 flex-1 space-y-2 overflow-y-auto"
+        }
+      >
+        {hasHistory && folded && (
           <ActivityDisclosure
             scopeKey={JSON.stringify([runId, attemptId])}
             items={conversationItems}
@@ -156,18 +177,10 @@ function RunAttemptActivity({
             loadMore={durable.loadMore}
             isLive={false}
           />
-        ) : (
-          <ActivityHistory
-            scopeKey={JSON.stringify([runId, attemptId])}
-            items={conversationItems}
-            gaps={durable.gaps}
-            isLoadingMore={durable.isLoadingMore}
-            loadError={durable.loadError}
-            loadMore={durable.loadMore}
-          />
-        ))}
-      <RunFinalResponse key={attemptId} detail={detail} />
-      <ActivitySources sources={state.sources} />
+        )}
+        <RunFinalResponse key={attemptId} detail={detail} />
+        <ActivitySources sources={state.sources} />
+      </div>
     </section>
   );
 }
