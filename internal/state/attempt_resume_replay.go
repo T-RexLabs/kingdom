@@ -208,18 +208,56 @@ func LoadRunResumePlan(ctx context.Context, db *sql.DB, runID string) (RunResume
 	return plan, nil
 }
 
-func resumeStepEligibilityTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, string, string, error) {
-	sourceID, err := latestPhysicalAttemptIDForRunNodeTx(ctx, tx, runID, nodeID)
-	if err != nil || sourceID == "" {
-		return "", "", "This step stopped before Kingdom started an attempt.", err
+// resumeSourceAttemptTx returns the attempt whose checkpoint the step would
+// continue. A Resume attempt that ended without reaching the provider changed
+// neither the conversation nor the files, so it hands back the checkpoint it
+// pinned; any provider invocation consumes the checkpoint.
+func resumeSourceAttemptTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, error) {
+	latestID, err := latestPhysicalAttemptIDForRunNodeTx(ctx, tx, runID, nodeID)
+	if err != nil || latestID == "" {
+		return "", err
 	}
-	var mode string
 	var latest bool
-	if err := tx.QueryRowContext(ctx, `SELECT ae.execution_mode, ae.node_run_id=(SELECT node_run_id FROM node_runs WHERE run_id=? AND node_id=? ORDER BY attempt DESC,node_run_id DESC LIMIT 1) FROM attempt_executions ae WHERE ae.attempt_id=?`, runID, nodeID, sourceID).Scan(&mode, &latest); err != nil {
-		return "", "", "", err
+	if err := tx.QueryRowContext(ctx, `SELECT ae.node_run_id=(SELECT node_run_id FROM node_runs WHERE run_id=? AND node_id=? ORDER BY attempt DESC,node_run_id DESC LIMIT 1) FROM attempt_executions ae WHERE ae.attempt_id=?`, runID, nodeID, latestID).Scan(&latest); err != nil {
+		return "", err
 	}
 	if !latest {
-		return sourceID, "", "This step stopped before Kingdom started its latest attempt.", nil
+		return "", nil
+	}
+	sourceID := latestID
+	for seen := map[string]bool{}; !seen[sourceID]; {
+		seen[sourceID] = true
+		var pinned string
+		err := tx.QueryRowContext(ctx, `SELECT r.checkpoint_source_attempt_id FROM attempt_executions ae
+			JOIN node_attempt_recoveries r ON r.target_node_run_id=ae.node_run_id AND r.run_id=ae.run_id AND r.trigger='operator_resume'
+			WHERE ae.attempt_id=? AND ae.state IN ('committed_failure','committed_cancelled')
+			AND NOT EXISTS(SELECT 1 FROM provider_invocations pi WHERE pi.attempt_id=ae.attempt_id)`, sourceID).Scan(&pinned)
+		if errors.Is(err, sql.ErrNoRows) {
+			return sourceID, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		sourceID = pinned
+	}
+	return "", fmt.Errorf("resume recovery lineage contains a cycle")
+}
+
+func resumeStepEligibilityTx(ctx context.Context, tx *sql.Tx, runID, nodeID string) (string, string, string, error) {
+	latestID, err := latestPhysicalAttemptIDForRunNodeTx(ctx, tx, runID, nodeID)
+	if err != nil || latestID == "" {
+		return "", "", "This step stopped before Kingdom started an attempt.", err
+	}
+	sourceID, err := resumeSourceAttemptTx(ctx, tx, runID, nodeID)
+	if err != nil {
+		return "", "", "", err
+	}
+	if sourceID == "" {
+		return latestID, "", "This step stopped before Kingdom started its latest attempt.", nil
+	}
+	var mode string
+	if err := tx.QueryRowContext(ctx, `SELECT execution_mode FROM attempt_executions WHERE attempt_id=?`, sourceID).Scan(&mode); err != nil {
+		return "", "", "", err
 	}
 	if mode != "provider_backed" {
 		return sourceID, "", "This step runs inside Kingdom and has no conversation to resume.", nil
@@ -365,20 +403,24 @@ func validateResumeReplayTx(ctx context.Context, tx *sql.Tx, req ReplayTerminalR
 		if frontier.hasInterruptedAncestor(nodeID) {
 			return fmt.Errorf("resume source %q is behind an interrupted ancestor", nodeID)
 		}
-		latestID, err := latestNodeRunIDForRunNodeTx(ctx, tx, req.RunID, nodeID)
+		expected, err := resumeSourceAttemptTx(ctx, tx, req.RunID, nodeID)
 		if err != nil {
 			return err
 		}
-		latestPhysicalID, err := latestPhysicalAttemptIDForRunNodeTx(ctx, tx, req.RunID, nodeID)
-		if err != nil {
-			return err
-		}
-		var sourceNodeRunID string
-		if err := tx.QueryRowContext(ctx, `SELECT node_run_id FROM attempt_executions WHERE attempt_id=? AND run_id=?`, sourceID, req.RunID).Scan(&sourceNodeRunID); err != nil {
-			return err
-		}
-		if sourceID != latestPhysicalID || latestID != sourceNodeRunID {
+		if expected == "" || sourceID != expected {
 			return fmt.Errorf("resume source %q is stale", nodeID)
+		}
+		// Every earlier pin of this checkpoint must have ended before reaching
+		// the provider; otherwise the conversation has moved on from it.
+		var consumed bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM node_attempt_recoveries r
+			LEFT JOIN attempt_executions ae ON ae.node_run_id=r.target_node_run_id AND ae.run_id=r.run_id
+			WHERE r.checkpoint_source_attempt_id=? AND (ae.attempt_id IS NULL OR ae.state NOT IN ('committed_failure','committed_cancelled')
+				OR EXISTS(SELECT 1 FROM provider_invocations pi WHERE pi.attempt_id=ae.attempt_id)))`, sourceID).Scan(&consumed); err != nil {
+			return err
+		}
+		if consumed {
+			return fmt.Errorf("resume checkpoint for %q was already used", nodeID)
 		}
 		if _, err := loadResumeSourceInput(ctx, tx, sourceID); err != nil {
 			return fmt.Errorf("validate resume source %q: %w", nodeID, err)

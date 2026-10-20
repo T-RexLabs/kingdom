@@ -1125,7 +1125,10 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 		checkpointSourceID := ""
 		if resume {
 			if selected, ok := req.ResumeSources[nodeID]; ok {
+				// The validated checkpoint attempt is the recovery source, even
+				// when later Resume attempts ended before reaching the provider.
 				checkpointSourceID = selected
+				sourceAttemptID = selected
 			} else {
 				nodeTrigger = "operator_rerun"
 			}

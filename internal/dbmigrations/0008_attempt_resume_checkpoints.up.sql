@@ -36,7 +36,7 @@ CREATE TABLE node_attempt_recoveries (
   trigger TEXT NOT NULL CHECK (trigger IN ('operator_retry', 'operator_rerun', 'operator_resume')),
   reason_code TEXT NOT NULL,
   scheduled_at TEXT NOT NULL,
-  checkpoint_source_attempt_id TEXT UNIQUE REFERENCES attempt_resume_checkpoints(source_attempt_id),
+  checkpoint_source_attempt_id TEXT REFERENCES attempt_resume_checkpoints(source_attempt_id),
   CHECK ((trigger = 'operator_resume' AND checkpoint_source_attempt_id IS NOT NULL AND checkpoint_source_attempt_id = source_attempt_id)
     OR (trigger <> 'operator_resume' AND checkpoint_source_attempt_id IS NULL)),
   FOREIGN KEY (target_node_run_id, run_id) REFERENCES node_runs(node_run_id, run_id),
@@ -45,6 +45,10 @@ CREATE TABLE node_attempt_recoveries (
 INSERT INTO node_attempt_recoveries(target_node_run_id,run_id,node_id,source_attempt_id,source_node_run_id,trigger,reason_code,scheduled_at)
 SELECT target_node_run_id,run_id,node_id,source_attempt_id,source_node_run_id,trigger,reason_code,scheduled_at FROM node_attempt_recoveries_previous;
 DROP TABLE node_attempt_recoveries_previous;
+-- A checkpoint is pinned again only when every earlier pin never reached the
+-- provider; the replay transaction enforces that rule.
+CREATE INDEX idx_node_attempt_recoveries_checkpoint
+ON node_attempt_recoveries(checkpoint_source_attempt_id) WHERE checkpoint_source_attempt_id IS NOT NULL;
 CREATE INDEX idx_node_attempt_recoveries_run_node_scheduled
 ON node_attempt_recoveries(run_id,node_id,scheduled_at DESC,target_node_run_id DESC);
 CREATE TRIGGER node_attempt_recoveries_immutable BEFORE UPDATE ON node_attempt_recoveries

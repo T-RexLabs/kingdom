@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func resumeReplayFixture(t *testing.T) (*sql.DB, ReplayTerminalRunRequest, AttemptResumeCheckpoint) {
@@ -208,5 +209,70 @@ func TestRunResumePlanIgnoresSettledHistoricalHandoffMarker(t *testing.T) {
 	}
 	if !plan.Available() {
 		t.Fatalf("settled handoff history blocked resume: %+v", plan)
+	}
+}
+
+// failQueuedResumeAttempt records the resumed attempt failing during setup,
+// before it ever reached the provider, as a workspace conflict does.
+func failQueuedResumeAttempt(t *testing.T, db *sql.DB, target QueuedNodeAttempt, withInvocation bool) {
+	t.Helper()
+	attemptID := fmt.Sprintf("run_1:work_intake:%d", target.Attempt)
+	mustExec(t, db, `INSERT INTO attempt_executions(attempt_id,run_id,node_run_id,state,execution_mode,completion_mode,failure_code,failure_text,created_at,updated_at) VALUES ('`+attemptID+`','run_1','`+target.NodeRunID+`','committed_failure','provider_backed','server_response','execution_setup_failed','workspace changed','2026-03-01T13:00:00Z','2026-03-01T13:00:00Z')`)
+	if withInvocation {
+		mustExec(t, db, `INSERT INTO provider_invocations(provider_invocation_id,attempt_id,run_id,node_run_id,logical_session_id,provider_session_id,invocation_state,completion_mode,created_at,updated_at) VALUES ('inv_started','`+attemptID+`','run_1','`+target.NodeRunID+`','conversation','shared-session','settled_failed','server_response','2026-03-01T13:00:00Z','2026-03-01T13:00:00Z')`)
+	}
+	mustExec(t, db, `UPDATE node_runs SET node_status='failed' WHERE node_run_id='`+target.NodeRunID+`'`)
+	mustExec(t, db, `UPDATE workflow_runs SET run_status='failed'`)
+}
+
+func TestResumeThatNeverStartedHandsItsCheckpointBack(t *testing.T) {
+	ctx := context.Background()
+	db, req, saved := resumeReplayFixture(t)
+	pinResumeRunConfiguration(t, db)
+	queued, err := NewTransitionService(db, nil).ReplayTerminalRun(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failQueuedResumeAttempt(t, db, queued[0], false)
+
+	plan, err := LoadRunResumePlan(ctx, db, "run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Available() || plan.Steps[0].SourceAttemptID != saved.SourceAttemptID || plan.Steps[0].CheckpointCapturedAt != saved.CapturedAt {
+		t.Fatalf("checkpoint of a resume that never started was not offered again: %+v", plan)
+	}
+	req.ResumeSources = plan.Sources()
+	req.GenerateID = func(prefix string) string { return prefix + "_retry_resume_" + fmt.Sprint(time.Now().UnixNano()) }
+	again, err := NewTransitionService(db, nil).ReplayTerminalRun(ctx, req)
+	if err != nil {
+		t.Fatalf("resume could not retry its unconsumed checkpoint: %v", err)
+	}
+	input, err := LoadAttemptResumeInput(ctx, db, again[0].NodeRunID)
+	if err != nil || input.Checkpoint.SourceAttemptID != saved.SourceAttemptID {
+		t.Fatalf("retried resume lost its checkpoint: %+v %v", input, err)
+	}
+}
+
+func TestResumeThatReachedTheProviderConsumesItsCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	db, req, saved := resumeReplayFixture(t)
+	pinResumeRunConfiguration(t, db)
+	queued, err := NewTransitionService(db, nil).ReplayTerminalRun(ctx, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failQueuedResumeAttempt(t, db, queued[0], true)
+
+	plan, err := LoadRunResumePlan(ctx, db, "run_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Available() || plan.Steps[0].SourceAttemptID == saved.SourceAttemptID {
+		t.Fatalf("consumed checkpoint was offered again: %+v", plan)
+	}
+	req.GenerateID = func(prefix string) string { return prefix + "_reuse_" + fmt.Sprint(time.Now().UnixNano()) }
+	if _, err := NewTransitionService(db, nil).ReplayTerminalRun(ctx, req); err == nil {
+		t.Fatal("checkpoint consumed by provider work was pinned again")
 	}
 }
