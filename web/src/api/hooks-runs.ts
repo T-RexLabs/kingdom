@@ -270,6 +270,8 @@ export function useRunPlan(runId: string, options?: RunDetailQueryOptions) {
     enabled: !!runId && (options?.enabled ?? true),
     retry: retryRunDetailQuery,
     ...manualRefetchQueryOptions,
+    // Plan Review unmounts when closed; reconcile changes invalidated while hidden.
+    refetchOnMount: true,
   });
 }
 

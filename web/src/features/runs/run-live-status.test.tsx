@@ -66,6 +66,21 @@ function renderStatus(
 
 describe("compact run live bar", () => {
   beforeEach(() => vi.mocked(apiFetch).mockResolvedValue({ items: [] }));
+  it("omits the redundant live label while keeping active agent details", () => {
+    renderStatus(
+      [
+        execution({
+          node: "implementation",
+          attemptId: "a",
+          requiredRole: "builder",
+        }),
+      ],
+      { connected: true },
+    );
+
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Builder/ })).toBeVisible();
+  });
   it("shows two agents inline and expands the remaining active agents on request", async () => {
     const onSelect = vi.fn();
     renderStatus(
@@ -136,6 +151,17 @@ describe("compact run live bar", () => {
     expect(label.closest("button")?.title).toContain("2026-06-15");
     expect(container.querySelector("time")).toBeNull();
     expect(screen.getByText("Reconnecting")).toBeVisible();
+  });
+  it("shows queued workspace preparation after reload without implying provider execution", () => {
+    const queued = execution({ node: "implementation", attemptId: "prep", requiredRole: "builder", status: "queued" });
+    queued.progress_reason_code = "workspace_preparing";
+    renderStatus([queued], { connected: true });
+    expect(screen.getByText("Preparing Workspace")).toBeInTheDocument();
+    expect(screen.getByText("Preparing Workspace").closest("button")?.querySelector(".animate-pulse")).toBeNull();
+  });
+  it("omits queued attempts without preparation evidence", () => {
+    const { container } = renderStatus([execution({ node: "implementation", attemptId: "future", requiredRole: "builder", status: "queued" })]);
+    expect(container).toBeEmptyDOMElement();
   });
   it("omits settled and runtime-owned attempts", () => {
     const { container } = renderStatus([

@@ -304,6 +304,17 @@ func TestIntegrationRuntimeDispatchPersistsResponseArtifactsWithIsolatedResponse
 	db := openDB(t)
 	applyMigration(t, db, "0001_initial_schema.up.sql")
 	seedDispatchGraph(t, db)
+	snapshotTx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("begin prompt configuration snapshot transaction: %v", err)
+	}
+	if err := state.CaptureRunAgentConfigurationSnapshotTx(context.Background(), snapshotTx, "run_dispatch", "2026-03-01T12:00:00Z"); err != nil {
+		_ = snapshotTx.Rollback()
+		t.Fatalf("capture prompt configuration for seeded run: %v", err)
+	}
+	if err := snapshotTx.Commit(); err != nil {
+		t.Fatalf("commit prompt configuration snapshot: %v", err)
+	}
 
 	rt, err := kingdom.NewRuntime(kingdom.Config{
 		DB:               db,

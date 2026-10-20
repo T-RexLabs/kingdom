@@ -447,14 +447,27 @@ func (r promptContextReader) Read(p []byte) (int, error) {
 	return r.Reader.Read(p)
 }
 
-func (o *orchestrationLoop) buildNodePromptDocument(ctx context.Context, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRole string, workOrder, plan, guidance promptDocument) promptDocument {
-	frame := o.buildNodePromptFrame(ctx, runID, nodeID, nodeRunID, roleID, nodeClass, delegatorRole)
+func (o *orchestrationLoop) buildNodeContextDocument(ctx context.Context, runID, nodeID, nodeClass, delegatorRole, finalChecks string, workOrder, plan, guidance promptDocument) promptDocument {
+	classID := resolvedNodeClass(nodeID, nodeClass)
 	workOrder = promptFiltered(workOrder)
 	workOrder.fallback = "No work order text was provided."
-	blocks := []promptDocument{promptSection("Current Assignment", promptLiteral(frame.Assignment)), promptSection("Current Work Order", workOrder)}
-	if resolvedNodeClass(nodeID, nodeClass) != workflow.NodeClassDelegatedExecution {
+	blocks := []promptDocument{
+		promptSection("Current Assignment", promptLiteral(currentAssignmentForNodeClass(classID, delegatorRole))),
+		promptSection("Current Work Order", workOrder),
+	}
+	if classID != workflow.NodeClassDelegatedExecution {
 		blocks = append(blocks, promptSection("Approved Plan", promptFiltered(plan)))
 	}
-	blocks = append(blocks, promptSection("Upstream Guidance", promptFiltered(guidance)), promptSection("Builder Evidence Summary", promptLiteral(frame.Evidence)))
-	return promptInstructions(promptSection("System Role", promptLiteral(frame.System)), promptSection("Kingdom Rules", promptLiteral(frame.Rules)), promptSection("Run Context", promptJoin("\n\n", blocks...)), promptSection("Final Checks", promptLiteral(frame.Checks)))
+	builderEvidence := ""
+	if classID == workflow.NodeClassExecutionReview || classID == workflow.NodeClassValidationGates {
+		builderEvidence = o.builderEvidenceManifestForRun(ctx, runID)
+	}
+	blocks = append(blocks,
+		promptSection("Upstream Guidance", promptFiltered(guidance)),
+		promptSection("Builder Evidence Summary", promptLiteral(builderEvidence)),
+	)
+	return promptInstructions(
+		promptSection("Run Context", promptJoin("\n\n", blocks...)),
+		promptLiteral(finalChecks),
+	)
 }

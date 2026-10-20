@@ -63,7 +63,7 @@ func TestLiveAdversarialExternalPlannerContainment(t *testing.T) {
 	var streamedResponse strings.Builder
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	turn, err := agent.ContinueTurnStream(ctx, AgentContext{
+	turn, err := agent.ContinueTurnStream(ctx, AgentContext{PromptCatalog: testPromptCatalog(t),
 		SessionID: "live-security-session", Title: "Hostile external issue", ProjectRoot: projectRoot,
 		ModelSelection:      PlannerModelSelection{Model: livePlannerModel(), ThinkingEffort: "none"},
 		ExternalSnapshotIDs: []string{"live-security-snapshot"},
@@ -123,7 +123,7 @@ func TestLiveExternalPlannerKeepsWorkspaceTools(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	turn, err := agent.ContinueTurnStream(ctx, AgentContext{
+	turn, err := agent.ContinueTurnStream(ctx, AgentContext{PromptCatalog: testPromptCatalog(t),
 		SessionID: "live-capability-session", Title: "Linked issue", ProjectRoot: projectRoot,
 		ModelSelection:      PlannerModelSelection{Model: livePlannerModel(), ThinkingEffort: "none"},
 		ExternalSnapshotIDs: []string{"live-capability-snapshot"},

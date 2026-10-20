@@ -68,8 +68,6 @@ type ServerConfig struct {
 	ProviderPolicyPath         string
 	ProviderPolicySchemaPath   string
 	SchemaDir                  string
-	RoleCommPolicyPath         string
-	RoleCommSchemaPath         string
 	ProjectRoot                string
 	RuntimeRoot                string
 	DefaultPublishMode         string
@@ -314,17 +312,11 @@ func NewHandler(cfg ServerConfig) (*Server, error) {
 		return nil, fmt.Errorf("load workflow schemas: %w", err)
 	}
 
-	roleCommPolicy := rolecomm.Policy{}
-	if strings.TrimSpace(cfg.RoleCommPolicyPath) != "" || strings.TrimSpace(cfg.RoleCommSchemaPath) != "" {
-		if strings.TrimSpace(cfg.RoleCommPolicyPath) == "" || strings.TrimSpace(cfg.RoleCommSchemaPath) == "" {
-			return nil, fmt.Errorf("role communication policy and schema paths must both be set")
-		}
-		loadedPolicy, loadErr := rolecomm.LoadPolicyFromFile(cfg.RoleCommPolicyPath, cfg.RoleCommSchemaPath, state.CanonicalRoleIDs())
-		if loadErr != nil {
-			return nil, loadErr
-		}
-		roleCommPolicy = loadedPolicy
+	promptCatalog, err := state.CanonicalPromptCatalog()
+	if err != nil {
+		return nil, fmt.Errorf("load canonical prompt catalog: %w", err)
 	}
+	roleCommPolicy := rolecomm.FromCatalog(promptCatalog)
 
 	workflowParser := workflow.NewParser(state.CanonicalRoleIDs())
 	workflowCompiler := workflow.NewCompiler(schemaSet, workflowParser)
@@ -623,6 +615,10 @@ func (s *Server) registerRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /health", s.handleGetHealth)
 	mux.HandleFunc("GET /roles", s.handleListRoles)
 	mux.HandleFunc("GET /agents", s.handleListAgents)
+	mux.HandleFunc("GET /agent-configuration", s.handleGetAgentConfiguration)
+	mux.HandleFunc("PUT /agent-configuration/workspace-voice", s.handleUpdateWorkspaceAgentVoice)
+	mux.HandleFunc("PUT /agent-configuration/roles/{roleId}", s.handleUpdateAgentRoleConfiguration)
+	mux.HandleFunc("POST /agent-configuration/roles/{roleId}/guidance/reset", s.handleResetAgentRoleGuidance)
 	mux.HandleFunc("GET /provider/models", s.handleListProviderModels)
 	mux.HandleFunc("GET /workspace-capabilities", s.handleGetWorkspaceCapabilities)
 	mux.HandleFunc("GET /connections", s.handleListConnections)

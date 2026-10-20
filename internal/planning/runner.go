@@ -1457,7 +1457,7 @@ func sanitizeObservedPlannerOutput(operationType state.PlanningOperationType, ou
 	case state.PlanningOperationTypeReply, state.PlanningOperationTypeRegenerate:
 		// Inline diagnostic observations retain their complete value on a local
 		// staging failure. Referenced provider output bypasses this scalar path.
-		parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: trimmed}, false)
+		parsed, err := parsePlannerTerminal(context.Background(), ProviderExecutionMetadata{FinalText: trimmed}, false, nil)
 		if err != nil {
 			return trimmed
 		}

@@ -41,8 +41,6 @@ type BootstrapPaths struct {
 	ProviderPolicySchemaPath string
 	RolePolicyPath           string
 	NetworkPolicyPath        string
-	RoleCommPolicyPath       string
-	RoleCommPolicySchemaPath string
 }
 
 func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
@@ -56,8 +54,6 @@ func DefaultBootstrapPaths(repoRoot string) BootstrapPaths {
 		ProviderPolicySchemaPath: filepath.Join(cleanRoot, "contracts", "schemas", "opencode_provider_policy.schema.json"),
 		RolePolicyPath:           filepath.Join(cleanRoot, "policies", "role_policy.yaml"),
 		NetworkPolicyPath:        filepath.Join(cleanRoot, "policies", "network_policy.yaml"),
-		RoleCommPolicyPath:       filepath.Join(cleanRoot, "policies", "role_communication_policy.yaml"),
-		RoleCommPolicySchemaPath: filepath.Join(cleanRoot, "contracts", "schemas", "role_communication_policy.schema.json"),
 	}
 }
 
@@ -247,10 +243,11 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 		return nil, err
 	}
 
-	roleCommPolicy, err := rolecomm.LoadPolicyFromFile(cfg.Paths.RoleCommPolicyPath, cfg.Paths.RoleCommPolicySchemaPath, state.CanonicalRoleIDs())
+	promptCatalog, err := state.CanonicalPromptCatalog()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load canonical prompt catalog: %w", err)
 	}
+	roleCommPolicy := rolecomm.FromCatalog(promptCatalog)
 
 	if err := state.EnsureCanonicalRoles(startupCtx, cfg.DB, time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("seed canonical roles: %w", err)
@@ -1501,12 +1498,6 @@ func validatePaths(paths BootstrapPaths) error {
 	}
 	if strings.TrimSpace(paths.NetworkPolicyPath) == "" {
 		return fmt.Errorf("network policy path is required")
-	}
-	if strings.TrimSpace(paths.RoleCommPolicyPath) == "" {
-		return fmt.Errorf("role communication policy path is required")
-	}
-	if strings.TrimSpace(paths.RoleCommPolicySchemaPath) == "" {
-		return fmt.Errorf("role communication policy schema path is required")
 	}
 	return nil
 }

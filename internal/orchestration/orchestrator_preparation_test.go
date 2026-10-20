@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"kingdom/internal/core/workflow"
+	"kingdom/internal/state"
 	"kingdom/internal/testutil"
 )
 
@@ -94,6 +96,22 @@ func TestDispatchPreparationRenewsQueuedLeaseAndUsesFreshLaunchTime(t *testing.T
 	if preparingEvents != 2 || preparedEvents != 0 {
 		t.Fatalf("in-progress telemetry=%d/%d", preparingEvents, preparedEvents)
 	}
+
+	var phase string
+	if err := rt.orchestrator.db.QueryRow(`SELECT progress_reason_code FROM attempt_executions WHERE attempt_id = ?`, attemptID).Scan(&phase); err != nil {
+		t.Fatal(err)
+	}
+	if phase != "workspace_preparing" {
+		t.Fatalf("durable preparation phase=%q", phase)
+	}
+	activity, err := state.ListActivityEventPage(context.Background(), rt.orchestrator.db, state.ActivityScope{RunID: run.RunID, AttemptID: attemptID}, nil, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(activity.Items) != 2 || !strings.Contains(activity.Items[1].PayloadJSON, "Preparing workspace") {
+		t.Fatalf("preparation activity=%#v", activity.Items)
+	}
+
 	launchAt := base.Add(20 * time.Second)
 	clock.Store(launchAt.UnixNano())
 	ticker := <-tickers

@@ -86,7 +86,7 @@ func planningContentID(ref *RequestContentReference) any {
 	return ref.ContentID
 }
 
-func persistPlanningText(ctx context.Context, exec sqlExecutor, id string, source *PlanningTextSource, at string) (*RequestContentReference, error) {
+func persistPlanningText(ctx context.Context, exec sqlExecutor, planningSessionID, id string, source *PlanningTextSource, at string) (*RequestContentReference, error) {
 	if source == nil {
 		return nil, nil
 	}
@@ -101,7 +101,7 @@ func persistPlanningText(ctx context.Context, exec sqlExecutor, id string, sourc
 	if err != nil {
 		return nil, err
 	}
-	ref, writeErr := WriteRequestContentTx(ctx, tx, id, RequestContentSource{Reader: reader, SHA256: source.SHA256, SizeBytes: source.SizeBytes}, at)
+	ref, writeErr := WritePlanningRequestContentTx(ctx, tx, planningSessionID, id, RequestContentSource{Reader: reader, SHA256: source.SHA256, SizeBytes: source.SizeBytes}, at)
 	if err := errors.Join(writeErr, reader.Close()); err != nil {
 		return nil, err
 	}

@@ -283,6 +283,7 @@ type asyncExecutionResult struct {
 	delegator                            string
 	prompt                               string
 	openPrompt                           opencodePromptOpener
+	inlineConfigContent                 string
 	model                                string
 	variant                              string
 	agent                                string
@@ -1004,17 +1005,12 @@ func (o *orchestrationLoop) emitCommunicationMessage(ctx context.Context, req co
 	if strings.TrimSpace(senderRoleID) == "" {
 		senderRoleID = "coordinator"
 	}
-	body := renderRoleTemplateOrFallback(
-		o.roleComm,
-		senderRoleID,
-		func(cfg rolecomm.RoleTemplate) string { return cfg.MailboxTemplate.BodyTemplate },
-		map[string]string{
+	mailboxTemplate := o.roleComm.MailboxTemplateForRole(senderRoleID)
+	body := rolecomm.RenderTemplate(mailboxTemplate.BodyTemplate, map[string]string{
 			"RunID":      strings.TrimSpace(req.RunID),
 			"EventType":  firstNonEmptyString(strings.TrimSpace(req.CommunicationType), "communication.recorded"),
 			"ReasonText": firstNonEmptyString(strings.TrimSpace(req.ReasonText), fmt.Sprintf("communication type=%s node=%s", strings.TrimSpace(req.CommunicationType), strings.TrimSpace(req.NodeID))),
-		},
-		"Communication record updated.",
-	)
+		}, "Communication record updated.")
 	payload["body_markdown"] = body
 
 	raw, err := json.Marshal(payload)

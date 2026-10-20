@@ -1,7 +1,7 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { Menu, PanelLeftClose, PanelLeftOpen, X } from "lucide-react";
 import { type ReactNode, useRef, useState } from "react";
-import { useHealth, useWorkspaceCapabilities } from "@/api/hooks";
+import { useWorkspaceCapabilities } from "@/api/hooks";
 import { cn } from "@/lib/utils";
 import { useKeyboardShortcuts } from "@/hooks/use-keyboard-shortcuts";
 import { ShortcutsHelp } from "@/components/shortcuts-help";
@@ -146,7 +146,6 @@ export function AppShell({ children }: { children: ReactNode }) {
 function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; onToggle?: () => void }) {
   const { location } = useRouterState();
   const { theme } = useTheme();
-  const health = useHealth();
   const workspace = useWorkspaceCapabilities();
   const projectPath = workspace.data?.project_root;
   const name =
@@ -211,24 +210,6 @@ function SidebarContent({ collapsed = false, onToggle }: { collapsed?: boolean; 
         {links(secondaryNavigation)}
       </nav>
       <footer className={cn("space-y-4 pb-6 pt-6", collapsed ? "px-2" : "px-7")}>
-        <div className={cn("flex items-center gap-2.5 text-xs text-foreground-muted", collapsed && "justify-center")} title={collapsed ? (health.isError ? "Runtime Unavailable" : health.data?.status === "ok" ? "Local Runtime" : "Connecting…") : undefined}>
-          <span
-            aria-hidden="true"
-            className={cn(
-              "h-1.5 w-1.5 rounded-full",
-              health.isError
-                ? "bg-status-failed"
-                : health.data?.status === "ok"
-                  ? "bg-status-succeeded"
-                  : "bg-foreground-subtle",
-            )}
-          />
-          <span className={collapsed ? "sr-only" : undefined}>{health.isError
-            ? "Runtime Unavailable"
-            : health.data?.status === "ok"
-              ? "Local Runtime"
-              : "Connecting…"}</span>
-        </div>
         {!collapsed && <p className="text-xs leading-relaxed text-foreground-subtle">
           {theme.copy["brand.tagline"]}
         </p>}

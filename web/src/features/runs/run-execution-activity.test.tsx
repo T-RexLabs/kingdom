@@ -1,5 +1,5 @@
+import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "@/api/schema";
 import { RunExecutionActivity } from "./run-execution-activity";
@@ -7,6 +7,8 @@ import { RunExecutionActivity } from "./run-execution-activity";
 const state = vi.hoisted(() => ({
   items: [] as components["schemas"]["AcpRunActivityItem"][],
   pending: false,
+  error: false,
+  retry: vi.fn(),
   gaps: [] as Array<{
     after: number;
     through: number;
@@ -21,6 +23,8 @@ vi.mock("@/api/hooks-runs", () => ({
     data: { items: state.items, snapshotThrough: 1 },
     gaps: state.gaps,
     isLoading: state.pending,
+    isError: state.error,
+    refetch: state.retry,
     loadMore: vi.fn(),
   }),
 }));
@@ -90,6 +94,8 @@ describe("focused provider activity", () => {
     state.items = [];
     state.gaps = [];
     state.pending = false;
+    state.error = false;
+    state.retry.mockClear();
     state.historyProps.mockClear();
   });
   it("explains a finished attempt with only hidden message observations and no settled reply", () => {
@@ -141,148 +147,31 @@ describe("focused provider activity", () => {
     expect(screen.queryByText("Processing")).not.toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Final answer" })).toBeVisible();
   });
-  it("shows completed-attempt reasoning while exact history waits for an explicit request", async () => {
-    const absent = { availability: "not_provided" as const };
-    state.items = [
-      {
-        id: "part",
-        event_id: "event",
-        sequence: 1,
-        kind: "thinking",
-        label: "Thinking",
-        occurred_at: "2026-09-29T10:00:00Z",
-        recorded_at: "2026-09-29T10:00:01Z",
-        input: absent,
-        output: absent,
-        message: absent,
-        reasoning: {
-          availability: "available",
-          preview: "Exact thoughts",
-          byte_length: 14,
-          sha256: "hash",
-          content_url: "/acp/runs/r/activity/e/content/reasoning",
-        },
-      },
-    ];
-    render(
-      <RunExecutionActivity runId="run" attemptId="a" status="succeeded" />,
-    );
-    expect(
-      screen.getByRole("heading", { name: "Provider Activity" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Exact thoughts")).toBeVisible();
-    expect(state.historyProps).not.toHaveBeenCalled();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Show Activity" }),
-    );
-    expect(state.historyProps).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        items: [
-          expect.objectContaining({
-            reasoningContent: state.items[0].reasoning,
-          }),
-        ],
-      }),
-    );
-  });
-  it("keeps the compact reasoning and tool preview visible after settlement without mounting history", () => {
+  it("shows completed-attempt reasoning in history immediately", () => {
     state.items = observedThoughtAndTool();
-    const view = render(
-      <RunExecutionActivity runId="run" attemptId="a" status="running" />,
-    );
-    const preview = screen.getByRole("region", {
-      name: "Provider activity preview",
-    });
-    expect(
-      within(preview).getByText("Inspecting the existing tests"),
-    ).toBeVisible();
-    expect(within(preview).getByText("Read tests.ts")).toBeVisible();
-    expect(
-      screen.queryByText("Read /workspace/src/tests.ts"),
-    ).not.toBeInTheDocument();
-    expect(state.historyProps).not.toHaveBeenCalled();
-    view.rerender(
-      <RunExecutionActivity
-        runId="run"
-        attemptId="a"
-        status="succeeded"
-        detail={
-          {
-            attempt_id: "a",
-            output_status: "settled",
-            settlement_status: "succeeded",
-            output_text: "## Complete result",
-          } as import("@/api/hooks").RunExecutionDetail
-        }
-      />,
-    );
+    render(<RunExecutionActivity runId="run" attemptId="a" status="succeeded" />);
+    expect(screen.getByRole("region", { name: "Provider activity history" })).toBeVisible();
+    expect(state.historyProps).toHaveBeenLastCalledWith(expect.objectContaining({
+      items: [expect.objectContaining({ reasoningContent: state.items[0].reasoning }), expect.objectContaining({ label: "Read /workspace/src/tests.ts" })],
+    }));
+    expect(screen.queryByRole("button", { name: "Show Activity" })).not.toBeInTheDocument();
+  });
+  it("keeps the scrollable activity before the response after settlement and resets its scope on attempt change", () => {
+    state.items = observedThoughtAndTool();
+    const view = render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
+    const history = screen.getByRole("region", { name: "Provider activity history" });
+    expect(screen.queryByRole("region", { name: "Provider activity preview" })).not.toBeInTheDocument();
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="succeeded" detail={{
+      attempt_id: "a", output_status: "settled", settlement_status: "succeeded", output_text: "## Complete result",
+    } as import("@/api/hooks").RunExecutionDetail} />);
     const response = screen.getByRole("region", { name: "Final response" });
-    expect(
-      within(response).getByRole("heading", { name: "Complete result" }),
-    ).toBeVisible();
-    expect(
-      screen.getByRole("region", { name: "Provider activity preview" }),
-    ).toBe(preview);
-    expect(
-      within(preview).getByText("Inspecting the existing tests"),
-    ).toBeVisible();
-    expect(within(preview).getByText("Read tests.ts")).toBeVisible();
-    expect(
-      preview.compareDocumentPosition(response) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(state.historyProps).not.toHaveBeenCalled();
-    expect(
-      screen.getByRole("button", { name: "Show Activity" }),
-    ).toHaveAttribute("aria-expanded", "false");
-  });
-
-  it("preserves manually opened history through settlement and resets it when the selected attempt changes", async () => {
-    state.items = observedThoughtAndTool();
-    const view = render(
-      <RunExecutionActivity runId="run" attemptId="a" status="running" />,
-    );
-    expect(
-      screen.queryByRole("region", { name: "Provider activity history" }),
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Show Activity" }),
-    );
-    const history = screen.getByRole("region", {
-      name: "Provider activity history",
-    });
-    view.rerender(
-      <RunExecutionActivity
-        runId="run"
-        attemptId="a"
-        status="succeeded"
-        detail={
-          {
-            attempt_id: "a",
-            output_status: "settled",
-            settlement_status: "succeeded",
-            output_text: "Final result",
-          } as import("@/api/hooks").RunExecutionDetail
-        }
-      />,
-    );
-    expect(
-      screen.getByRole("region", { name: "Provider activity history" }),
-    ).toBe(history);
-    expect(history).toBeVisible();
-    expect(
-      screen.getByRole("button", { name: "Hide Activity" }),
-    ).toHaveAttribute("aria-expanded", "true");
-    const previousCalls = state.historyProps.mock.calls.length;
-    view.rerender(
-      <RunExecutionActivity runId="run" attemptId="b" status="running" />,
-    );
+    expect(screen.getByRole("region", { name: "Provider activity history" })).toBe(history);
+    expect(history.compareDocumentPosition(response) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(state.historyProps).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKey: JSON.stringify(["run", "a"]) }));
+    view.rerender(<RunExecutionActivity runId="run" attemptId="b" status="running" />);
     expect(history).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "Show Activity" }),
-    ).toHaveAttribute("aria-expanded", "false");
-    expect(state.historyProps).toHaveBeenCalledTimes(previousCalls);
-    expect(screen.getByText("Inspecting the existing tests")).toBeVisible();
+    expect(screen.getByRole("region", { name: "Provider activity history" })).toBeVisible();
+    expect(state.historyProps).toHaveBeenLastCalledWith(expect.objectContaining({ scopeKey: JSON.stringify(["run", "b"]) }));
   });
 
   it("shows actual observed source links below the canonical response and clears them on attempt change", () => {
@@ -356,6 +245,14 @@ describe("focused provider activity", () => {
       ),
     ).toBeInTheDocument();
   });
+  it("shows read failures with a retry and does not imply activity is still pending", async () => {
+    state.error = true;
+    render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Activity could not be loaded.");
+    expect(screen.queryByText("Waiting for provider activity.")).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "Retry Activity" }));
+    expect(state.retry).toHaveBeenCalledOnce();
+  });
   it("does not imply a complete empty conversation while earlier history remains unloaded", () => {
     state.items = [];
     state.gaps = [
@@ -372,7 +269,7 @@ describe("focused provider activity", () => {
     );
     expect(
       screen.getByText(
-        "No thinking or tool calls appear in this loaded window. Open activity to load earlier history.",
+        "No thinking or tool calls appear in this loaded window. Load earlier events below.",
       ),
     ).toBeInTheDocument();
     expect(
@@ -401,5 +298,21 @@ describe("focused provider activity", () => {
     expect(
       screen.getByText("No provider activity has been recorded yet."),
     ).toBeVisible();
+  });
+  it("shows queued workspace preparation from observed activity and the durable marker after reopening", () => {
+    state.items = [{
+      ...observedThoughtAndTool()[0],
+      kind: "progress",
+      label: "Preparing workspace",
+    }];
+    const view = render(<RunExecutionActivity runId="run" attemptId="a" status="queued" />);
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing workspace");
+    expect(screen.queryByText(/This attempt is queued/)).not.toBeInTheDocument();
+    state.items = [];
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="queued" detail={{
+      attempt_id: "a", progress_reason_code: "workspace_preparing", progress_event_type: "attempt.progress",
+    } as import("@/api/hooks").RunExecutionDetail} />);
+    expect(screen.getByRole("status")).toHaveTextContent("Preparing Workspace");
+    expect(screen.queryByText(/This attempt is queued/)).not.toBeInTheDocument();
   });
 });

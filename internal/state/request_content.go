@@ -33,6 +33,21 @@ type RequestContentSource struct {
 // Chunks precede their immutable manifest; foreign keys are deferred until the
 // same commit that publishes the parent resource and its provenance.
 func WriteRequestContentTx(ctx context.Context, tx *sql.Tx, id string, source RequestContentSource, createdAt string) (RequestContentReference, error) {
+	return writeRequestContentTx(ctx, tx, id, source, createdAt, "")
+}
+
+// WritePlanningRequestContentTx assigns canonical text to the planning
+// session that owns its lifecycle. The deferred owner foreign key allows a
+// new session title to be published in the same transaction as its session.
+func WritePlanningRequestContentTx(ctx context.Context, tx *sql.Tx, planningSessionID, id string, source RequestContentSource, createdAt string) (RequestContentReference, error) {
+	planningSessionID = strings.TrimSpace(planningSessionID)
+	if planningSessionID == "" {
+		return RequestContentReference{ContentID: id}, fmt.Errorf("planning session content owner is required")
+	}
+	return writeRequestContentTx(ctx, tx, id, source, createdAt, planningSessionID)
+}
+
+func writeRequestContentTx(ctx context.Context, tx *sql.Tx, id string, source RequestContentSource, createdAt, planningSessionID string) (RequestContentReference, error) {
 	ref := RequestContentReference{ContentID: id, SHA256: source.SHA256, SizeBytes: source.SizeBytes}
 	digest, err := hex.DecodeString(source.SHA256)
 	if id == "" || source.Reader == nil || source.SizeBytes < 0 || err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != source.SHA256 {
@@ -68,7 +83,11 @@ func WriteRequestContentTx(ctx context.Context, tx *sql.Tx, id string, source Re
 	if size != source.SizeBytes || hex.EncodeToString(hash.Sum(nil)) != source.SHA256 {
 		return ref, fmt.Errorf("request content checksum or size mismatch")
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO request_contents(content_id,sha256,size_bytes,chunk_count,created_at) VALUES (?,?,?,?,?)`, id, source.SHA256, size, count, createdAt)
+	if planningSessionID == "" {
+		_, err = tx.ExecContext(ctx, `INSERT INTO request_contents(content_id,sha256,size_bytes,chunk_count,created_at) VALUES (?,?,?,?,?)`, id, source.SHA256, size, count, createdAt)
+	} else {
+		_, err = tx.ExecContext(ctx, `INSERT INTO request_contents(content_id,sha256,size_bytes,chunk_count,created_at,planning_session_id) VALUES (?,?,?,?,?,?)`, id, source.SHA256, size, count, createdAt, planningSessionID)
+	}
 	return ref, err
 }
 

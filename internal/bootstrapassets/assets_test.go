@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
 	"kingdom/internal/core/providerpolicy"
 	"kingdom/internal/dbmigrations"
 )
@@ -90,35 +92,6 @@ func TestBootstrapCopiesStayInSyncWithCanonicalAssets(t *testing.T) {
 				})
 			}
 		})
-	}
-}
-
-func TestPlannerProfileKeepsOutputRulesScopedToTheirMode(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("files", "opencode", "agents", "planning-assistant.md"))
-	if err != nil {
-		t.Fatalf("read planner profile: %v", err)
-	}
-	profile := string(raw)
-	for _, forbidden := range []string{
-		"Every response must include exactly one `structured_question`",
-		"Your output is conversation only",
-		"Return conversational prose only",
-	} {
-		if strings.Contains(profile, forbidden) {
-			t.Fatalf("planner profile has unconditional output rule %q", forbidden)
-		}
-	}
-	for _, required := range []string{
-		"Interactive Reply / Regenerate (`reply` / `regenerate`)",
-		"Formalize (`formalize`)",
-		"Generate Title (`generate_title`)",
-		"Every interactive reply/regenerate response must include",
-		"Do not include conversational prose, ask a follow-up question, or emit a `structured_question` block.",
-		"Return exactly one concise title line.",
-	} {
-		if !strings.Contains(profile, required) {
-			t.Errorf("planner profile is missing mode-specific output rule %q", required)
-		}
 	}
 }
 
@@ -288,6 +261,78 @@ func TestManagedOpenCodeAgentProfilesOmitRetiredToolToggle(t *testing.T) {
 	}
 }
 
+func TestManagedOpenCodeAgentProfilesHaveValidFrontmatterAndPreserveCapabilities(t *testing.T) {
+	t.Parallel()
+
+	type profileMetadata struct {
+		Mode       string          `yaml:"mode"`
+		Tools      map[string]bool `yaml:"tools"`
+		Permission struct {
+			Edit map[string]string `yaml:"edit"`
+		} `yaml:"permission"`
+	}
+	type expectedProfile struct {
+		name      string
+		tools     map[string]bool
+		denyEdits bool
+	}
+	toolSet := func(bash, list, glob, grep, webfetch, todowrite, todoread bool) map[string]bool {
+		return map[string]bool{
+			"bash": bash, "write": false, "list": list, "glob": glob, "grep": grep,
+			"webfetch": webfetch, "task": false, "todowrite": todowrite, "todoread": todoread,
+		}
+	}
+	expected := []expectedProfile{
+		{name: "advisor.md", tools: toolSet(false, true, true, true, true, true, true), denyEdits: true},
+		{name: "builder.md"},
+		{name: "coordinator.md", tools: toolSet(false, false, false, false, false, true, true), denyEdits: true},
+		{name: "governance.md", tools: toolSet(false, false, false, false, false, true, true), denyEdits: true},
+		{name: "plan-author.md", tools: toolSet(false, true, true, true, true, true, true), denyEdits: true},
+		{name: "planning-assistant.md", tools: toolSet(false, true, true, true, true, false, false), denyEdits: true},
+		{name: "qa-validator.md", tools: toolSet(true, true, true, true, false, true, true), denyEdits: true},
+		{name: "resilience-validator.md", tools: toolSet(true, true, true, true, false, true, true), denyEdits: true},
+		{name: "reviewer.md", tools: toolSet(false, true, true, true, false, true, true), denyEdits: true},
+		{name: "security-validator.md", tools: toolSet(true, true, true, true, false, true, true), denyEdits: true},
+	}
+	profiles, err := ListManagedOpenCodeAgentProfiles()
+	if err != nil {
+		t.Fatalf("list managed profiles: %v", err)
+	}
+	if len(profiles) != len(expected) {
+		t.Fatalf("managed profile count = %d, want %d", len(profiles), len(expected))
+	}
+	for _, want := range expected {
+		t.Run(want.name, func(t *testing.T) {
+			raw, err := readAssetFile("files/opencode/agents", "", want.name)
+			if err != nil {
+				t.Fatalf("read embedded profile: %v", err)
+			}
+			lines := strings.Split(strings.TrimSuffix(string(raw), "\n"), "\n")
+			if len(lines) < 3 || lines[0] != "---" || lines[len(lines)-1] != "---" {
+				t.Fatalf("profile must have one standalone frontmatter block and no prompt body, got:\n%s", raw)
+			}
+			for _, line := range lines[1 : len(lines)-1] {
+				if line == "---" {
+					t.Fatalf("profile has more than one frontmatter closing delimiter")
+				}
+			}
+			var metadata profileMetadata
+			if err := yaml.Unmarshal([]byte(strings.Join(lines[1:len(lines)-1], "\n")), &metadata); err != nil {
+				t.Fatalf("decode profile frontmatter: %v", err)
+			}
+			if metadata.Mode != "primary" {
+				t.Errorf("mode = %q, want primary", metadata.Mode)
+			}
+			if !reflect.DeepEqual(metadata.Tools, want.tools) {
+				t.Errorf("tool capabilities = %#v, want baseline %#v", metadata.Tools, want.tools)
+			}
+			if want.denyEdits && metadata.Permission.Edit["*"] != "deny" {
+				t.Errorf("edit permission = %#v, want wildcard deny", metadata.Permission.Edit)
+			}
+		})
+	}
+}
+
 func TestValidateManagedOpenCodeAssetsSucceedsAfterScaffold(t *testing.T) {
 	t.Parallel()
 
@@ -438,13 +483,6 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 		"grep: true",
 		"webfetch: true",
 		"todowrite: true",
-		"Produce an execution-ready plan, not an approval memo.",
-		"authoritative external sources",
-	)
-	assertContains(
-		filepath.Join("opencode", "agents", "coordinator.md"),
-		"Advisor responses are counsel for synthesis, not decisions or approval authority.",
-		"Distinguish implementation work from genuine external dependencies.",
 	)
 	assertContains(
 		filepath.Join("opencode", "agents", "reviewer.md"),
@@ -456,12 +494,10 @@ func TestWriteScaffoldIncludesRoleToolCapabilityOverrides(t *testing.T) {
 	assertContains(
 		filepath.Join("opencode", "agents", "qa-validator.md"),
 		"bash: true",
-		"Validate implemented behavior against work order requirements",
 	)
 	assertContains(
 		filepath.Join("opencode", "agents", "security-validator.md"),
 		"bash: true",
-		"responsible for trust boundaries",
 	)
 	assertContains(
 		filepath.Join("opencode", "agents", "resilience-validator.md"),
@@ -507,35 +543,7 @@ func TestWriteScaffoldNonBuilderProfilesDenyMarkdownEdits(t *testing.T) {
 	}
 }
 
-func TestWriteScaffoldTesterProfileStaysValidationOnly(t *testing.T) {
-	t.Parallel()
-
-	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
-	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
-		t.Fatalf("scaffold write: %v", err)
-	}
-
-	raw, err := os.ReadFile(filepath.Join(kingdomHome, "opencode", "agents", "resilience-validator.md"))
-	if err != nil {
-		t.Fatalf("read tester profile: %v", err)
-	}
-
-	content := string(raw)
-	if strings.Contains(content, "Write comprehensive test suites") {
-		t.Fatalf("tester profile must not instruct a no-write role to author test suites")
-	}
-	for _, expected := range []string{
-		"Execute resilience-focused validation commands and drills",
-		"Report defects with clear reproduction steps",
-		"VERDICT: PASS",
-	} {
-		if !strings.Contains(content, expected) {
-			t.Fatalf("expected tester profile to include %q", expected)
-		}
-	}
-}
-
-func TestFreshScaffoldContainsFourCanonicalMigrations(t *testing.T) {
+func TestFreshScaffoldContainsCanonicalMigrations(t *testing.T) {
 	t.Parallel()
 	projectRoot, kingdomHome, _ := newScaffoldPaths(t)
 	if err := WriteScaffold(kingdomHome, projectRoot, false); err != nil {
@@ -550,6 +558,8 @@ func TestFreshScaffoldContainsFourCanonicalMigrations(t *testing.T) {
 		"0002_events_execution_activity_index.up.sql",
 		"0003_external_sources_and_idempotency_retention.up.sql",
 		"0004_resumable_workspace_tree_cleanup.up.sql",
+		"0005_agent_voice_and_guidance.up.sql",
+		"0006_planning_session_owned_cascades.up.sql",
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("fresh scaffold has %d migrations, want %d", len(entries), len(want))

@@ -1,6 +1,6 @@
 # Themes and Appearance
 
-Appearance lets you choose how Kingdom looks. A theme can change colors, fonts, icons, artwork, and some descriptive text. It cannot change what a role is allowed to do, what a status means, or what Kingdom sends to an LLM.
+Appearance lets you choose how Kingdom looks. A theme can change colors, fonts, icons, artwork, and some descriptive text. A theme may also define an optional communication style for agents, but it cannot change what a role is allowed to do, what a status means, or provider settings.
 
 Kingdom includes five themes: Obsidian Court, Nautilus, Astral Council, Software Lab, and Workstation 98. Obsidian Court is the default.
 
@@ -40,7 +40,7 @@ For an automated editor, use Kingdom's authenticated source API and pass the `ex
 
 Themes can set semantic colors, typography, surfaces, icons, artwork, role names and descriptions, lore, and a small set of fixed interface text. Role names can change, but canonical role IDs and responsibilities remain the same.
 
-Theme text is plain text. Themes cannot provide HTML, Markdown, CSS, scripts, prompts, provider settings, or generated reply voices. Assets must be declared in the package and served by Kingdom. Remote assets, links, and undeclared files are rejected. See the [theme package guide](../contracts/theme/README.md) for supported asset formats, safety checks, and size limits.
+Theme text is plain text. An optional Communication Style describes phrasing and tone only. It does not change agent responsibilities, Kingdom rules, evidence requirements, or output formats, and it has no effect until an operator selects that exact theme revision on the Agents page. Kingdom copies the resolved style into shared agent settings, so editing or unpublishing a theme does not change an already selected style. Visual theme selection remains local to each browser; agent communication settings are shared workspace state and affect only runs or planning sessions created after the change. Themes cannot provide HTML, Markdown, CSS, scripts, or provider settings. Assets must be declared in the package and served by Kingdom. Remote assets, links, and undeclared files are rejected. See the [theme package guide](../contracts/theme/README.md) for supported asset formats, safety checks, and size limits.
 
 The `surfaces.ornamentation` setting accepts `minimal`, `balanced`, `high`, or `ludicrous`. **Ludicrous Mode** adds the Rexie mountain scene and interaction flourishes. Reduced motion disables animation while keeping the decoration visible.
 

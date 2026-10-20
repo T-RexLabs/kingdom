@@ -18,9 +18,9 @@ The JSON Schema Draft 07 file is canonical. [`scripts/generate_theme_contract.mj
 
 ## Keep Themes in the Presentation Boundary
 
-A package may set semantic colors, typography, surfaces, fixed plain text slots, role display names and descriptions, lore, icons, and local artwork. A role icon has one source: `icons["role.<canonical-role-id>"]`. Render authored values as text. Never interpret them as HTML or Markdown.
+A package may set semantic colors, typography, surfaces, fixed plain text slots, role display names and descriptions, lore, icons, local artwork, and an optional bounded communication style preference (`agentVoice` in the manifest). A role icon has one source: `icons["role.<canonical-role-id>"]`. Render authored values as text. Never interpret them as HTML or Markdown.
 
-Themes do not control canonical role responsibilities, authorization, execution state, error meaning, or commands. They cannot supply CSS, JavaScript, remote assets, provider settings, prompt fragments, or generated reply voice settings. A future voice feature needs its own versioned execution configuration and an explicit run or session snapshot.
+Themes do not control canonical role responsibilities, authorization, execution state, error meaning, or commands. They cannot supply CSS, JavaScript, remote assets, provider settings, or role instructions. `agentVoice` is style-only guidance: an operator must explicitly choose the exact theme revision as a Communication Style in Agents settings before it affects new work. Visual theme selection does not update agent settings. Workspace and per-agent Communication Styles and Agent Guidance are stored separately from theme selection, and runs and planning sessions capture immutable configuration snapshots when created.
 
 `surfaces.chrome` selects the app's `flat` or `classic` control style. `surfaces.iconRendering` selects `mask`, which uses the foreground color, or `original`, which keeps the validated artwork colors. A missing value means `flat` or `mask` at presentation time. The resolver does not add these defaults to the resolved manifest, preserving existing revision identities. An inherited value from the selected base stays in effect unless the author overrides it. These are fixed app styles, not stylesheets supplied by a theme.
 

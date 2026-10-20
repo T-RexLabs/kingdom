@@ -20,6 +20,7 @@ export function useCreatePlanningSessionNavigation(workspace: string) {
   const queryClient = useQueryClient();
   const createPlanningSession = useCreatePlanningSession();
   const [resolution, setResolution] = useState<{ pending: boolean; error: Error | null }>({ pending: false, error: null });
+  const [isCheckingRecovery, setIsCheckingRecovery] = useState(false);
   const recoverableCreate = usePlanningMutationJournal(
     "planning-session",
     (body: CreatePlanningSessionRequest, key) => createPlanningSession.mutateAsync({ body, key }),
@@ -63,11 +64,19 @@ export function useCreatePlanningSessionNavigation(workspace: string) {
   }, [applyCreatedSession, createPlanningSession]);
 
   const mutateAsync = useCallback((body: CreatePlanningSessionRequest) => resolveCreate(() => recoverableCreate.mutateAsync(normalizeCreatePlanningSessionRequest(body))), [resolveCreate, recoverableCreate]);
-  const retryRecovery = useCallback(() => resolveCreate(recoverableCreate.retry), [resolveCreate, recoverableCreate.retry]);
+  const retryRecovery = useCallback(async () => {
+    setIsCheckingRecovery(true);
+    try {
+      return await resolveCreate(recoverableCreate.retry);
+    } finally {
+      setIsCheckingRecovery(false);
+    }
+  }, [resolveCreate, recoverableCreate.retry]);
 
   return {
     ...createPlanningSession,
     isPending: createPlanningSession.isPending || resolution.pending,
+    isCheckingRecovery,
     error: resolution.error ?? createPlanningSession.error,
     mutateAsync,
   recoveryRequest: recoverableCreate.pendingRequest,

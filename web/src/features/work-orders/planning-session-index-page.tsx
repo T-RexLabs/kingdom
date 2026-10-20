@@ -35,7 +35,9 @@ export function PlanningSessionIndexPage() {
   const normalizedThinkingEffort = model.trim()
     ? normalizeThinkingEffortSelection(selectedModel, thinkingEffort, { preserveWhenModelMissing: true })
     : thinkingEffort;
-  const recoveryPending = createPlanningSession.hasRecovery;
+  const recoveryPending = createPlanningSession.hasRecovery && (
+    !createPlanningSession.isPending || createPlanningSession.isCheckingRecovery
+  );
   const currentRequest = useMemo(
     () =>
       model.trim()
@@ -122,12 +124,12 @@ export function PlanningSessionIndexPage() {
 
             {createPlanningSession.error || recoveryPending ? (
               recoveryPending ? (
-                <div className="mt-3 rounded-md border border-status-failed/30 bg-status-failed/10 p-3 text-xs text-status-failed">
-                  <p>A previous request may already have created a session. Resolve its original outcome before starting another.</p>
-                  <p className="mt-1 text-status-failed/90">{createPlanningSession.error?.message}</p>
+                <div role="status" aria-label="Session Request Pending" className="mt-3 rounded-md border border-border bg-surface-raised p-3 text-sm text-foreground-muted">
+                  <p className="font-medium text-foreground">Session Request Pending</p>
+                  <p className="mt-1">The previous session request&apos;s outcome is still being confirmed. Check that request again to continue.</p>
                   <div className="mt-3 flex flex-wrap gap-2">
                     <Button type="button" size="sm" onClick={() => void startSession(() => createPlanningSession.retryRecovery())} disabled={createPlanningSession.isPending}>
-                      {createPlanningSession.isPending ? "Retrying..." : "Retry Planner Session"}
+                      {createPlanningSession.isPending ? "Checking..." : "Check Again"}
                     </Button>
                   </div>
                 </div>
@@ -145,7 +147,7 @@ export function PlanningSessionIndexPage() {
                 onClick={() => void startSession(() => createPlanningSession.mutateAsync(currentRequest))}
                 disabled={!workspace.data || createPlanningSession.isPending || recoveryPending}
               >
-                {createPlanningSession.isPending ? "Starting..." : "Start Planner Session"}
+                {createPlanningSession.isPending && !recoveryPending ? "Starting..." : "Start Planner Session"}
               </Button>
               <Link to="/work-orders/new" className={buttonVariants({ variant: "outline" })}>
                 Create {workName} Directly

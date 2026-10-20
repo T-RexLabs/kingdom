@@ -16,6 +16,9 @@ func TestToolActivityLabelUsesFriendlyVerbsAndTargets(t *testing.T) {
 
 func TestPhaseActivityLabelIncludesProviderLaunchLifecycle(t *testing.T) {
 	tests := map[string]string{
+		"preparation_admitted":  "Preparation queued",
+		"workspace_preparing":   "Preparing workspace",
+		"workspace_prepared":    "Workspace prepared",
 		"provider_launching":    "Launching provider",
 		"provider_session_open": "Opening provider session",
 		"finalizing":            "Finalizing response",

@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"kingdom/internal/state"
 )
 
 func TestServerCloseDrainsFollowStreamDuringHTTPShutdown(t *testing.T) {
@@ -413,8 +415,20 @@ func TestServerStreamRunCollectionEventsRejectsUnknownLastEventID(t *testing.T) 
 func TestServerCreateRunEmitsRunCollectionCreatedEvent(t *testing.T) {
 	t.Parallel()
 
-	handler, _ := newAPIServerForTest(t)
+	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
+	snapshot, err := state.LoadRunAgentConfigurationSnapshot(context.Background(), db, runID)
+	if err != nil {
+		t.Fatalf("load newly created run agent configuration snapshot: %v", err)
+	}
+	catalog, err := state.CanonicalPromptCatalog()
+	if err != nil {
+		t.Fatalf("load canonical prompt catalog: %v", err)
+	}
+	defaultPlanAuthorGuidance := catalog.RolePolicy.Roles["plan-author"].DefaultGuidance
+	if role := snapshot.ForRole("plan-author"); role.Voice.Source.Kind != state.AgentVoiceKindNeutral || role.GuidanceText != defaultPlanAuthorGuidance {
+		t.Fatalf("new run did not capture its initial Plan Author settings: %#v", role)
+	}
 
 	streamRes := performJSONRequest(t, handler, requestSpec{
 		method: http.MethodGet,

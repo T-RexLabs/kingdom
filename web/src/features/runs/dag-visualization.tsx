@@ -1,7 +1,7 @@
 import {
   useCallback,
-  useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -37,8 +37,10 @@ export function DAGVisualization({
   const svgRef = useRef<SVGSVGElement>(null);
   const zoomRef = useRef<d3.ZoomBehavior<SVGSVGElement, unknown> | null>(null);
   const viewportRef = useRef<HTMLDivElement>(null);
-  const [fitOverview, setFitOverview] = useState(false);
+  const [viewportSize, setViewportSize] = useState({ width: 0, height: 0 });
   const [transform, setTransform] = useState(d3.zoomIdentity);
+  const hasUserAdjustedView = useRef(false);
+  const lastAutoFit = useRef<string | null>(null);
   const markerId = useId().replaceAll(":", "");
   const activeNodes = new Set(
     nodes
@@ -47,18 +49,67 @@ export function DAGVisualization({
       )
       .map((node) => node.node_id),
   );
-  const selected = graph.nodes.find((node) => node.node_id === selectedNodeId);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+
+    const updateSize = (width: number, height: number) => {
+      const next = {
+        width: Math.max(0, Math.floor(width)),
+        height: Math.max(0, Math.floor(height)),
+      };
+      setViewportSize((current) =>
+        current.width === next.width && current.height === next.height
+          ? current
+          : next,
+      );
+    };
+    const measure = () => updateSize(viewport.clientWidth, viewport.clientHeight);
+    measure();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver((entries) => {
+        const entry = entries.find((item) => item.target === viewport);
+        if (entry) updateSize(entry.contentRect.width, entry.contentRect.height);
+        else measure();
+      });
+      observer.observe(viewport);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, []);
+
+  const fitTransform = useCallback(() => {
+    const width = viewportSize.width || layout.width;
+    const height = viewportSize.height || 0;
+    const scale = viewportSize.width
+      ? Math.min(1, Math.max(0.01, (width - 32) / layout.width))
+      : 1;
+    const x = (width - layout.width * scale) / 2;
+    const y = height > layout.height * scale
+      ? (height - layout.height * scale) / 2
+      : 0;
+    return d3.zoomIdentity.translate(x, y).scale(scale);
+  }, [layout.height, layout.width, viewportSize.height, viewportSize.width]);
+
+  useLayoutEffect(() => {
     if (!svgRef.current) return;
     const svg = d3.select(svgRef.current);
+    const width = viewportSize.width || layout.width;
+    const height = viewportSize.height || Math.min(610, layout.height);
+    const fitScale = viewportSize.width
+      ? Math.min(1, Math.max(0.01, (width - 32) / layout.width))
+      : 1;
     const zoom = d3
       .zoom<SVGSVGElement, unknown>()
       .extent([
         [0, 0],
-        [layout.width, layout.height],
+        [width, height],
       ])
-      .scaleExtent([0.5, 3])
+      .scaleExtent([Math.min(0.25, fitScale), 3])
       .filter(
         (event: Event) =>
           !(
@@ -68,30 +119,58 @@ export function DAGVisualization({
             (event as WheelEvent).ctrlKey ||
             (event as WheelEvent).metaKey),
       )
-      .on("zoom", (event: d3.D3ZoomEvent<SVGSVGElement, unknown>) =>
-        setTransform(event.transform),
-      );
+      .on("zoom", (event: d3.D3ZoomEvent<SVGSVGElement, unknown>) => {
+        setTransform(event.transform);
+        if (event.sourceEvent) {
+          hasUserAdjustedView.current = true;
+        }
+      });
     zoomRef.current = zoom;
     svg.call(zoom).on("dblclick.zoom", null);
-    return () => {
-      svg.on(".zoom", null);
-      zoomRef.current = null;
-    };
-  }, [layout.width, layout.height]);
 
-  const changeZoom = useCallback((factor?: number) => {
-    if (!svgRef.current || !zoomRef.current) return;
-    const svg = d3.select(svgRef.current);
-    if (factor) svg.call(zoomRef.current.scaleBy, factor);
-    else {
-      setFitOverview(true);
-      svg.call(zoomRef.current.transform, d3.zoomIdentity);
+    const fitKey = `${layout.width}:${layout.height}:${width}:${height}`;
+    if (
+      viewportSize.width > 0 &&
+      !hasUserAdjustedView.current &&
+      lastAutoFit.current !== fitKey
+    ) {
+      lastAutoFit.current = fitKey;
+      svg.call(zoom.transform, fitTransform());
       if (viewportRef.current) {
         viewportRef.current.scrollTop = 0;
         viewportRef.current.scrollLeft = 0;
       }
     }
-  }, []);
+
+    return () => {
+      svg.on(".zoom", null);
+      zoomRef.current = null;
+    };
+  }, [fitTransform, layout.width, layout.height, viewportSize.height, viewportSize.width]);
+
+  const changeZoom = useCallback((factor?: number) => {
+    if (!svgRef.current || !zoomRef.current) return;
+    const svg = d3.select(svgRef.current);
+    if (factor) {
+      hasUserAdjustedView.current = true;
+      svg.call(zoomRef.current.scaleBy, factor);
+    }
+    else {
+      hasUserAdjustedView.current = false;
+      lastAutoFit.current = `${layout.width}:${layout.height}:${viewportSize.width || layout.width}:${viewportSize.height || Math.min(610, layout.height)}`;
+      svg.call(zoomRef.current.transform, fitTransform());
+      if (viewportRef.current) {
+        viewportRef.current.scrollTop = 0;
+        viewportRef.current.scrollLeft = 0;
+      }
+    }
+  }, [fitTransform, layout.height, layout.width, viewportSize.height, viewportSize.width]);
+
+  const fittedTransform = fitTransform();
+  const isFitView =
+    Math.abs(transform.k - fittedTransform.k) < 0.0001 &&
+    Math.abs(transform.x - fittedTransform.x) < 0.01 &&
+    Math.abs(transform.y - fittedTransform.y) < 0.01;
 
   return (
     <section
@@ -156,46 +235,45 @@ export function DAGVisualization({
       ) : (
         <div
           ref={viewportRef}
-          className="mx-auto max-h-[610px] max-w-[800px] overflow-auto px-2 py-1"
+          className="ui-dag-viewport max-h-[610px] w-full overflow-auto py-1"
+          tabIndex={0}
+          aria-label="Workflow graph navigation"
+          aria-describedby={`${markerId}-help`}
+          onKeyDown={(event) => {
+            if (event.target !== event.currentTarget || !svgRef.current) return;
+            const pan = {
+              ArrowLeft: [30, 0],
+              ArrowRight: [-30, 0],
+              ArrowUp: [0, 30],
+              ArrowDown: [0, -30],
+            }[event.key];
+            if (pan && zoomRef.current) {
+              event.preventDefault();
+              hasUserAdjustedView.current = true;
+              d3.select(svgRef.current).call(
+                zoomRef.current.translateBy,
+                pan[0],
+                pan[1],
+              );
+            }
+            if (event.key === "+" || event.key === "=") changeZoom(1.3);
+            if (event.key === "-") changeZoom(1 / 1.3);
+            if (event.key === "0") changeZoom();
+          }}
         >
           <svg
             ref={svgRef}
-            viewBox={`0 0 ${layout.width} ${layout.height}`}
-            className="mx-auto block touch-pan-y"
-            data-view={fitOverview ? "overview" : "readable"}
-            style={
-              fitOverview
-                ? { width: "100%", height: Math.min(610, layout.height) }
-                : {
-                    width: layout.width,
-                    height: layout.height,
-                    maxWidth: "none",
-                  }
-            }
+            viewBox={`0 0 ${viewportSize.width || layout.width} ${layout.height}`}
+            className="block touch-pan-y"
+            data-view={isFitView ? "overview" : "readable"}
+            style={{
+              width: viewportSize.width || layout.width,
+              height: layout.height,
+              maxWidth: "none",
+            }}
             role="group"
             aria-label="Run execution DAG"
             aria-describedby={`${markerId}-help`}
-            onKeyDown={(event) => {
-              if (event.target !== event.currentTarget) return;
-              const pan = {
-                ArrowLeft: [30, 0],
-                ArrowRight: [-30, 0],
-                ArrowUp: [0, 30],
-                ArrowDown: [0, -30],
-              }[event.key];
-              if (pan && zoomRef.current) {
-                event.preventDefault();
-                d3.select(event.currentTarget).call(
-                  zoomRef.current.translateBy,
-                  pan[0],
-                  pan[1],
-                );
-              }
-              if (event.key === "+" || event.key === "=") changeZoom(1.3);
-              if (event.key === "-") changeZoom(1 / 1.3);
-              if (event.key === "0") changeZoom();
-            }}
-            tabIndex={0}
           >
             <defs>
               <marker
@@ -335,20 +413,6 @@ export function DAGVisualization({
         Scroll to explore. Drag or use arrow keys to pan. Ctrl/⌘ + wheel or +/−
         to zoom; 0 to fit.
       </p>
-      {selected && (
-        <div className="flex flex-wrap items-center justify-between gap-2 border-t border-border/70 px-5 py-2.5 text-xs">
-          <span>
-            {nodeLabel(selected.node_id)}{" "}
-            <span className="text-foreground-muted">
-              ·{" "}
-              {selected.execution_ownership === "runtime_owned"
-                ? "Runtime Step"
-                : roleIdentity(theme, selected.required_role).canonicalName}
-            </span>
-          </span>
-          <span>{statusLabel(selected.state)}</span>
-        </div>
-      )}
     </section>
   );
 }

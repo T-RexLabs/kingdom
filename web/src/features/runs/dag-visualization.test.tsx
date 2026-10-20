@@ -1,7 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RunGraphResponse, RunNodeExecution } from "@/api/hooks";
 import { DAGVisualization } from "./dag-visualization";
+import { layoutRunGraph } from "./run-graph-model";
 
 vi.mock("@/theme", async () => {
   const actual = await vi.importActual<typeof import("@/theme")>("@/theme");
@@ -33,6 +34,77 @@ const graph: RunGraphResponse = {
   edges: [{ from: "work_intake", to: "implementation", on: "success" }],
 };
 
+const wideGraph: RunGraphResponse = {
+  ...graph,
+  nodes: [
+    graph.nodes[0],
+    ...Array.from({ length: 5 }, (_, index) => ({
+      ...graph.nodes[1],
+      node_id: `parallel_${index}`,
+    })),
+  ],
+  edges: Array.from({ length: 5 }, (_, index) => ({
+    from: "work_intake",
+    to: `parallel_${index}`,
+  })),
+};
+
+function mockViewportResize(initialWidth: number, initialHeight: number) {
+  const resizeObservers: Array<(width: number, height: number) => void> = [];
+
+  class MockResizeObserver {
+    private readonly callback: ResizeObserverCallback;
+    private target: Element | null = null;
+
+    constructor(callback: ResizeObserverCallback) {
+      this.callback = callback;
+      resizeObservers.push((width, height) => this.resize(width, height));
+    }
+
+    observe(target: Element) {
+      this.target = target;
+      this.resize(initialWidth, initialHeight);
+    }
+
+    unobserve() {}
+
+    disconnect() {
+      this.target = null;
+    }
+
+    private resize(width: number, height: number) {
+      if (!this.target) return;
+      this.callback(
+        [
+          {
+            target: this.target,
+            contentRect: { width, height },
+          } as unknown as ResizeObserverEntry,
+        ],
+        this as unknown as ResizeObserver,
+      );
+    }
+  }
+
+  vi.stubGlobal("ResizeObserver", MockResizeObserver);
+  return {
+    resize(width: number, height: number) {
+      for (const resize of resizeObservers) resize(width, height);
+    },
+  };
+}
+
+function readGraphTransform(svg: Element) {
+  const transform = svg.querySelector("g")?.getAttribute("transform") ?? "";
+  const match = transform.match(/^translate\(([^,]+),([^)]+)\) scale\(([^)]+)\)$/);
+  if (!match) throw new Error(`Unexpected graph transform: ${transform}`);
+  return { x: Number(match[1]), y: Number(match[2]), scale: Number(match[3]) };
+}
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
+
 const running: RunNodeExecution = {
   node_id: "implementation",
   required_role: "builder",
@@ -57,12 +129,58 @@ const running: RunNodeExecution = {
 };
 
 describe("workflow DAG", () => {
-  it("starts at readable dimensions and fits the whole graph only on request", () => {
+  it("starts fitted and keeps the fit control available", () => {
     render(<DAGVisualization graph={graph} nodes={[]} />);
     const svg = screen.getByRole("group", { name: "Run execution DAG" });
-    expect(svg).toHaveAttribute("data-view", "readable");
+    expect(svg).toHaveAttribute("data-view", "overview");
     fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
     expect(svg).toHaveAttribute("data-view", "overview");
+  });
+  it("fits wide layers to the measured canvas width and recenters after resize", () => {
+    const viewport = mockViewportResize(700, 610);
+    render(<DAGVisualization graph={wideGraph} nodes={[]} />);
+    const svg = screen.getByRole("group", { name: "Run execution DAG" });
+    expect(svg).toHaveAttribute("viewBox", expect.stringMatching(/^0 0 700 /));
+
+    const lastNode = layoutRunGraph(wideGraph).nodes.reduce((rightmost, node) =>
+      Math.max(rightmost, node.x + node.width),
+    0);
+    let frame = readGraphTransform(svg);
+    expect(frame.scale).toBeLessThan(1);
+    expect(frame.x + lastNode * frame.scale).toBeLessThanOrEqual(700);
+
+    act(() => viewport.resize(1100, 610));
+    expect(svg).toHaveAttribute("viewBox", expect.stringMatching(/^0 0 1100 /));
+    frame = readGraphTransform(svg);
+    expect(frame.scale).toBe(1);
+    expect(frame.x).toBeGreaterThan(0);
+    expect(frame.x + lastNode * frame.scale).toBeLessThanOrEqual(1100);
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
+    expect(readGraphTransform(svg)).toEqual(frame);
+  });
+  it("preserves a manually adjusted view when node status updates", () => {
+    mockViewportResize(1100, 610);
+    const { rerender } = render(
+      <DAGVisualization graph={wideGraph} nodes={[]} />,
+    );
+    const svg = screen.getByRole("group", { name: "Run execution DAG" });
+    fireEvent.click(screen.getByRole("button", { name: "Zoom in" }));
+    const adjustedTransform = svg.querySelector("g")?.getAttribute("transform");
+
+    const updatedGraph: RunGraphResponse = {
+      ...wideGraph,
+      nodes: wideGraph.nodes.map((node, index) =>
+        index === 1 ? { ...node, state: "succeeded" } : node,
+      ),
+    };
+    rerender(<DAGVisualization graph={updatedGraph} nodes={[]} />);
+
+    expect(svg.querySelector("g")).toHaveAttribute(
+      "transform",
+      adjustedTransform,
+    );
   });
   it("leaves normal wheel scrolling alone and zooms only with Ctrl or Meta", () => {
     render(<DAGVisualization graph={graph} nodes={[]} />);
@@ -119,12 +237,14 @@ describe("workflow DAG", () => {
   it("supports keyboard zoom, pan, reset and visible zoom controls", () => {
     render(<DAGVisualization graph={graph} nodes={[]} />);
     const svg = screen.getByRole("group", { name: "Run execution DAG" });
-    fireEvent.keyDown(svg, { key: "+" });
+    const navigation = screen.getByLabelText("Workflow graph navigation");
+    expect(svg).not.toHaveAttribute("tabindex");
+    fireEvent.keyDown(navigation, { key: "+" });
     expect(svg.querySelector("g")).toHaveAttribute(
       "transform",
       expect.stringContaining("scale(1.3)"),
     );
-    fireEvent.keyDown(svg, { key: "ArrowRight" });
+    fireEvent.keyDown(navigation, { key: "ArrowRight" });
     fireEvent.click(screen.getByRole("button", { name: "Fit graph" }));
     expect(svg.querySelector("g")).toHaveAttribute(
       "transform",

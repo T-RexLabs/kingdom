@@ -2,10 +2,13 @@ package state
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"time"
 
 	"kingdom/internal/sqlitex"
@@ -14,15 +17,16 @@ import (
 type ExecutionPromptRequest struct {
 	AttemptID, RunID, NodeRunID, LeaseOwner, CreatedAt string
 	LeaseVersion                                       int64
+	SystemPrompt                                       string
 	// Source.Reader must be an immutable io.ReadSeeker. Publication may replay
 	// from its initial position after SQLite rolls back a contended transaction.
 	Source RequestContentSource
 }
 
-// PersistExecutionPrompt freezes the exact stdin body under the queued lease.
+// PersistExecutionPrompt freezes both Kingdom-owned prompt channels under the queued lease.
 // Mailbox records carry this reference rather than duplicating its text.
 func PersistExecutionPrompt(ctx context.Context, db *sql.DB, req ExecutionPromptRequest) (RequestContentReference, error) {
-	if req.Source.Reader == nil || req.Source.SizeBytes <= 0 {
+	if req.Source.Reader == nil || req.Source.SizeBytes <= 0 || strings.TrimSpace(req.SystemPrompt) == "" {
 		return RequestContentReference{}, fmt.Errorf("execution prompt content is required")
 	}
 	reader, ok := req.Source.Reader.(io.ReadSeeker)
@@ -69,10 +73,14 @@ func persistExecutionPromptOnce(ctx context.Context, db *sql.DB, req ExecutionPr
 	if runID != req.RunID || nodeID != req.NodeRunID || owner == "" || owner != req.LeaseOwner || version <= 0 || version != req.LeaseVersion || phase != "queued" || !at.Before(until) {
 		return RequestContentReference{}, fmt.Errorf("execution prompt lease or attempt lineage mismatch")
 	}
+	systemHash := sha256.Sum256([]byte(req.SystemPrompt))
+	systemSHA := hex.EncodeToString(systemHash[:])
 	var existing RequestContentReference
-	err = tx.QueryRowContext(ctx, `SELECT r.content_id,c.sha256,c.size_bytes FROM execution_prompt_refs r JOIN request_contents c ON c.content_id=r.content_id WHERE r.attempt_id=?`, req.AttemptID).Scan(&existing.ContentID, &existing.SHA256, &existing.SizeBytes)
+	var existingSystemSHA string
+	var existingSystemSize int64
+	err = tx.QueryRowContext(ctx, `SELECT r.content_id,c.sha256,c.size_bytes,s.sha256,s.size_bytes FROM execution_prompt_refs r JOIN request_contents c ON c.content_id=r.content_id JOIN request_contents s ON s.content_id=r.system_content_id WHERE r.attempt_id=?`, req.AttemptID).Scan(&existing.ContentID, &existing.SHA256, &existing.SizeBytes, &existingSystemSHA, &existingSystemSize)
 	if err == nil {
-		if existing.SHA256 != req.Source.SHA256 || existing.SizeBytes != req.Source.SizeBytes {
+		if existing.SHA256 != req.Source.SHA256 || existing.SizeBytes != req.Source.SizeBytes || existingSystemSHA != systemSHA || existingSystemSize != int64(len(req.SystemPrompt)) {
 			return existing, fmt.Errorf("execution prompt replay content conflicts")
 		}
 		return existing, tx.Commit()
@@ -84,7 +92,11 @@ func persistExecutionPromptOnce(ctx context.Context, db *sql.DB, req ExecutionPr
 	if err != nil {
 		return ref, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_prompt_refs(attempt_id,run_id,node_run_id,content_id,created_at) VALUES(?,?,?,?,?)`, req.AttemptID, req.RunID, req.NodeRunID, ref.ContentID, req.CreatedAt); err != nil {
+	systemRef, err := WriteRequestContentTx(ctx, tx, "execution-system:"+req.AttemptID, RequestContentSource{Reader: strings.NewReader(req.SystemPrompt), SHA256: systemSHA, SizeBytes: int64(len(req.SystemPrompt))}, req.CreatedAt)
+	if err != nil {
+		return ref, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO execution_prompt_refs(attempt_id,run_id,node_run_id,content_id,system_content_id,created_at) VALUES(?,?,?,?,?,?)`, req.AttemptID, req.RunID, req.NodeRunID, ref.ContentID, systemRef.ContentID, req.CreatedAt); err != nil {
 		return ref, err
 	}
 	return ref, tx.Commit()
@@ -98,12 +110,16 @@ func OpenExecutionPrompt(ctx context.Context, db *sql.DB, attemptID string, expe
 	if id != expected.ContentID {
 		return nil, fmt.Errorf("execution prompt reference lineage mismatch")
 	}
+	return openVerifiedExecutionContent(ctx, db, expected)
+}
+
+func openVerifiedExecutionContent(ctx context.Context, db *sql.DB, expected RequestContentReference) (io.ReadCloser, error) {
 	f, err := os.CreateTemp("", "kingdom-execution-prompt-*")
 	if err != nil {
 		return nil, err
 	}
 	reader := &requestContentFile{File: f}
-	actual, err := CopyRequestContent(ctx, db, id, f)
+	actual, err := CopyRequestContent(ctx, db, expected.ContentID, f)
 	if err == nil && actual != expected {
 		err = fmt.Errorf("execution prompt immutable reference changed")
 	}
@@ -132,4 +148,28 @@ func OpenRunExecutionPrompt(ctx context.Context, db *sql.DB, runID, attemptID st
 	}
 	reader, err := OpenExecutionPrompt(ctx, db, attemptID, ref)
 	return reader, ref.SizeBytes, err
+}
+
+// OpenRunExecutionSystemPrompt reads the invocation-scoped agent prompt captured
+// alongside context, never substituting a current role or configuration.
+func OpenRunExecutionSystemPrompt(ctx context.Context, db *sql.DB, runID, attemptID string) (io.ReadCloser, error) {
+	var ref RequestContentReference
+	err := db.QueryRowContext(ctx, `SELECT c.content_id,c.sha256,c.size_bytes
+ FROM execution_prompt_refs p
+ JOIN attempt_executions a ON a.attempt_id=p.attempt_id AND a.run_id=p.run_id AND a.node_run_id=p.node_run_id
+ JOIN request_contents c ON c.content_id=p.system_content_id
+ WHERE p.run_id=? AND p.attempt_id=?`, runID, attemptID).Scan(&ref.ContentID, &ref.SHA256, &ref.SizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	return openVerifiedExecutionContent(ctx, db, ref)
+}
+
+// InitialExecutionInvocation identifies the original provider input. Continuation
+// invocations resume the existing session rather than replay this initial body.
+// Before issuance, no complete user channel exists and sql.ErrNoRows is returned.
+func InitialExecutionInvocation(ctx context.Context, db *sql.DB, runID, attemptID string) (string, error) {
+	var id string
+	err := db.QueryRowContext(ctx, `SELECT provider_invocation_id FROM provider_invocations WHERE run_id=? AND attempt_id=? ORDER BY created_at, rowid LIMIT 1`, runID, attemptID).Scan(&id)
+	return id, err
 }

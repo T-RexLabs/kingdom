@@ -267,6 +267,7 @@ export function RunExecutionSurface({
             runId={run.run_id}
             attemptId={selectedID ?? null}
             executionMode={node?.execution_ownership}
+            status={execution?.status}
           />
         )}
       </div>

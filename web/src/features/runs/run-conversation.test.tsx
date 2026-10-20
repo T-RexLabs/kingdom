@@ -38,7 +38,8 @@ beforeEach(() => {
 });
 
 describe("run conversation", () => {
-  it("shows complete exact dispatched instructions for the selected attempt", () => {
+  it("renders dispatched instructions as Markdown and preserves their complete exact source", async () => {
+    instructionQuery.data = "  ## Captured Instructions\n\n**Follow the approved plan.**\n\tExact whitespace.\n";
     render(
       <RunInstructions
         runId="run"
@@ -50,7 +51,12 @@ describe("run conversation", () => {
       "run",
       "historical",
       true,
+      false,
     );
+    expect(screen.getByRole("heading", { name: "Captured Instructions" })).toBeVisible();
+    expect(screen.getByText("Follow the approved plan.").tagName).toBe("STRONG");
+    expect(document.querySelector("pre")).toBeNull();
+    await userEvent.click(screen.getByText("Instruction Details"));
     expect(
       screen.getByLabelText("Exact attempt instructions").textContent,
     ).toBe(instructionQuery.data);
@@ -64,7 +70,7 @@ describe("run conversation", () => {
         executionMode="runtime_owned"
       />,
     );
-    expect(instructionQuery.call).toHaveBeenCalledWith("run", "runtime", false);
+    expect(instructionQuery.call).toHaveBeenCalledWith("run", "runtime", false, false);
     expect(screen.getByText(/without a provider prompt/)).toBeVisible();
     expect(
       screen.queryByLabelText("Exact attempt instructions"),

@@ -208,6 +208,17 @@ const runtimeMetrics = {
   running_runs: 11,
   running_nodes: 17,
   stale_running_nodes: 0,
+  planner: {
+    queued_operations: 1,
+    running_operations: 2,
+    failed_operations: 3,
+    active_sessions: 4,
+    processing_sessions: 5,
+    planning_stream_replay_count: 6,
+    planning_stream_resume_count: 7,
+    planning_operation_recovery_count: 8,
+    planning_operation_failure_count: 9,
+  },
 };
 
 const aggregateSnapshot24h = {
@@ -420,6 +431,30 @@ afterEach(() => {
 });
 
 describe("AnalyticsPage", () => {
+  it("keeps planning reliability details available without a divider", async () => {
+    setDefaultResponse("/analytics/snapshot", aggregateSnapshot24h, {
+      window_minutes: 1440,
+    });
+    setDefaultResponse(
+      "/analytics/execution-detail",
+      aggregateExecutionDetailSnapshot,
+      { window_minutes: 1440 },
+    );
+    installApiFetchMock();
+    render(<AnalyticsPage />, { wrapper: makeWrapper(createQueryClient()) });
+
+    await screen.findByText("Windowed work order (24h)");
+    await userEvent.click(screen.getByRole("button", { name: "Reliability" }));
+
+    const summary = await screen.findByText("Planning Reliability");
+    const disclosure = summary.closest("details");
+    expect(disclosure).not.toHaveClass("border-t");
+    expect(disclosure).not.toHaveClass("pt-6");
+
+    await userEvent.click(summary);
+    expect(await screen.findByText("Queued Operations")).toBeInTheDocument();
+  });
+
   it("restores an exact calendar range from the URL and clears both dates when a preset is selected", async () => {
     const dateParams = { start_at: "2026-03-01T23:00:00.000Z", end_at: "2026-03-08T23:00:00.000Z" };
     routerState.search = { ...dateParams, view: "usage" };

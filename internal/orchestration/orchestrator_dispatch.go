@@ -150,20 +150,22 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 	modelSource := string(executionSpec.Mode)
 	var providerPromptOpen opencodePromptOpener
 	var providerPromptRef *state.RequestContentReference
+	var inlineConfigContent string
 	scopedDelegatorInstruction := ""
 	agentForRole := ""
 	if executionSpec.Mode == executionstore.ExecutionModeProviderBacked {
 		resolvedModel, resolvedVariant, modelSource = o.resolveModelForRole(run, node.RequiredRole)
-		prepared, scoped, promptErr := o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
+		prepared, scoped, invocationConfig, promptErr := o.prepareDispatchPrompt(ctx, run, node, attempt, delegatorID)
 		if promptErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "prepare provider prompt", promptErr)
 		}
-		ref, promptErr := state.PersistExecutionPrompt(ctx, o.db, state.ExecutionPromptRequest{AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LeaseOwner: attempt.LeaseOwner, LeaseVersion: attempt.LeaseVersion, CreatedAt: o.now().UTC().Format(time.RFC3339Nano), Source: state.RequestContentSource{Reader: io.NewSectionReader(prepared.File, 0, prepared.size), SizeBytes: prepared.size, SHA256: prepared.sha}})
+		ref, promptErr := state.PersistExecutionPrompt(ctx, o.db, state.ExecutionPromptRequest{AttemptID: attemptID, RunID: run.RunID, NodeRunID: attempt.NodeRunID, LeaseOwner: attempt.LeaseOwner, LeaseVersion: attempt.LeaseVersion, CreatedAt: o.now().UTC().Format(time.RFC3339Nano), SystemPrompt: invocationConfig.SystemPrompt, Source: state.RequestContentSource{Reader: io.NewSectionReader(prepared.File, 0, prepared.size), SizeBytes: prepared.size, SHA256: prepared.sha}})
 		closeErr := prepared.Close()
 		if promptErr = errors.Join(promptErr, closeErr); promptErr != nil {
 			return o.failNodeAttemptSetup(ctx, run, node, attempt, attemptID, "persist provider prompt", promptErr)
 		}
 		scopedDelegatorInstruction = scoped
+		inlineConfigContent = invocationConfig.InlineConfig
 		providerPromptRef = &ref
 		providerPromptOpen = func(ctx context.Context) (io.ReadCloser, error) {
 			return state.OpenExecutionPrompt(ctx, o.db, attemptID, ref)
@@ -339,6 +341,7 @@ func (o *orchestrationLoop) prepareNodeAttempt(ctx context.Context, run runSnaps
 		projectRootBoundary:                  projectRootBoundary,
 		delegator:                            delegatorID,
 		openPrompt:                           providerPromptOpen,
+		inlineConfigContent:                  inlineConfigContent,
 		model:                                resolvedModel,
 		variant:                              resolvedVariant,
 		agent:                                agentForRole,
@@ -757,6 +760,7 @@ func (o *orchestrationLoop) startOwnedAsyncExecution(ctx context.Context, job as
 			DatabasePath:        workspaceOpenCode.DatabasePath,
 			Prompt:              job.prompt,
 			OpenPrompt:          job.openPrompt,
+			InlineConfigContent: job.inlineConfigContent,
 			OccurredAt:          job.occurredAt,
 			InvocationID:        job.providerInvocationID,
 			InvocationIssuedAt:  job.providerInvocationAt,

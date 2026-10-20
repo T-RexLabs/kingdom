@@ -215,42 +215,30 @@ describe("focused execution inspector", () => {
     expect(screen.getByTestId("run-execution-activity")).toBe(conversation);
     expect(conversation).toBeVisible();
   });
-  it("exposes a single previous attempt when the new generation has not started and returns to current", async () => {
+  it("offers the attempt selector immediately while the next generation is queued", async () => {
     const props = renderSurface({
-      nodes: [
-        node({
-          status: "pending",
-          attempt_count: 1,
-          current_execution: undefined,
-        }),
-      ],
+      nodes: [node({ status: "pending", attempt_count: 1, current_execution: undefined })],
     });
-    expect(
-      screen.queryByRole("button", { name: "Select attempt" }),
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "View Previous Attempt" }),
-    );
+    const picker = screen.getByRole("button", { name: "Select attempt" });
+    expect(picker).toHaveTextContent("Current Step · Pending");
+    await userEvent.click(picker);
+    await userEvent.click(screen.getByRole("option", { name: "Attempt 1 · Failed" }));
     expect(props.onSelectAttempt).toHaveBeenCalledWith("attempt-old");
-    props.view.rerender(
-      <RunExecutionSurface {...props} selectedAttemptId="attempt-old" />,
-    );
-    expect(
-      screen.queryByRole("button", { name: "View Previous Attempt" }),
-    ).not.toBeInTheDocument();
-    await userEvent.click(
-      screen.getByRole("button", { name: "Return to Current Step" }),
-    );
+    props.view.rerender(<RunExecutionSurface {...props} selectedAttemptId="attempt-old" />);
+    expect(screen.getByRole("button", { name: "Select attempt" })).toHaveTextContent("Attempt 1 · Failed");
+    await userEvent.click(screen.getByRole("button", { name: "Return to Current Step" }));
     expect(props.onSelectCurrentAttempt).toHaveBeenCalledOnce();
-    props.view.rerender(
-      <RunExecutionSurface {...props} selectedAttemptId={null} />,
-    );
-    expect(
-      screen.getByRole("button", { name: "View Previous Attempt" }),
-    ).toBeVisible();
-    expect(
-      screen.queryByRole("button", { name: "Select attempt" }),
-    ).not.toBeInTheDocument();
+  });
+  it("labels review and validation verdicts as rework while genuine errors remain failed", async () => {
+    renderSurface({ attempts: [
+      historyAttempt({ failure_code: "execution_review_rework" }),
+      historyAttempt({ attempt_id: "validation-rework", attempt: 3, failure_code: "validation_gate_rework" }),
+      historyAttempt({ attempt_id: "provider-error", attempt: 4, failure_code: "llm_rate_limited" }),
+    ] });
+    await userEvent.click(screen.getByRole("button", { name: "Select attempt" }));
+    expect(screen.getByRole("option", { name: "Attempt 1 · Rework Requested" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Attempt 3 · Rework Requested" })).toBeVisible();
+    expect(screen.getByRole("option", { name: "Attempt 4 · Failed" })).toBeVisible();
   });
   it("keeps historical attempt selection keyboard accessible", async () => {
     const user = userEvent.setup();

@@ -24,7 +24,7 @@ import {
   type ThemePackage,
 } from "@/theme";
 import { newDraft, parseDraft, useThemeDraft } from "./draft-store";
-import { EditorColors, EditorIdentity, Field } from "./editor-fields";
+import { EditorAgentVoice, EditorColors, EditorIdentity, Field } from "./editor-fields";
 import { objectValue, setDraftField, stringAt } from "./editor-values";
 import { EditorAssets } from "./editor-assets";
 import {
@@ -40,7 +40,7 @@ import { ThemePreviewCard } from "./theme-preview-card";
 import { ThemeColorAdvice } from "./theme-color-advice";
 import "./appearance.css";
 
-type EditorTab = "colors" | "identity" | "file";
+type EditorTab = "colors" | "identity" | "voice" | "file";
 function sourceTarget(source?: string, revision?: string, base?: string) {
   return source
     ? `source:${source}:${revision ?? "editable"}`
@@ -587,6 +587,7 @@ export function CreateThemePage() {
                 [
                   ["colors", "Colors & Type"],
                   ["identity", "Identity & Lore"],
+                  ["voice", "Communication Style"],
                   ["file", "Theme File"],
                 ] as const
               ).map(([key, label]) => (
@@ -650,6 +651,13 @@ export function CreateThemePage() {
                   disabled={locked}
                   role={role}
                   setRole={setRole}
+                  change={change}
+                />
+              )}
+              {effectiveTab === "voice" && manifest && (
+                <EditorAgentVoice
+                  manifest={manifest}
+                  disabled={locked}
                   change={change}
                 />
               )}

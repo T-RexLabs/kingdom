@@ -39,7 +39,7 @@ export function CurrentPlanPanel({
       planApproval.mutateAsync({ body, key }),
     run.run_id,
   );
-  const { data: plan, isLoading, error } = useRunPlan(run.run_id);
+  const { data: plan, isLoading, isFetching, error } = useRunPlan(run.run_id);
   const latestGovernanceDecision = useRunLatestGovernanceDecision(run.run_id);
   const governanceHistory = useRunGovernanceDecisions(run.run_id, {
     enabled: historyOpen,
@@ -128,9 +128,15 @@ export function CurrentPlanPanel({
           <p className="text-sm text-status-failed">
             Current plan revision is unavailable right now.
           </p>
-        ) : isLoading || !content.trim() ? (
+        ) : (isLoading || isFetching) && !content.trim() ? (
+          <p role="status" className="text-sm text-foreground-subtle">
+            Loading the current plan…
+          </p>
+        ) : !content.trim() ? (
           <p className="text-sm text-foreground-subtle">
-            Plan has not yet been drafted.
+            {run.plan_state === "approved" || planRevisionStatus === "ready"
+              ? "Current plan revision is unavailable right now."
+              : "Plan has not yet been drafted."}
           </p>
         ) : (
           <MarkdownBlock

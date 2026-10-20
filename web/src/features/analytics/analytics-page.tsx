@@ -352,7 +352,7 @@ function RuntimeHealthSection() {
         </div>
       ) : null}
       {runtime?.planner && (
-        <details className="border-t border-border pt-6">
+        <details>
           <summary className="cursor-pointer text-sm font-medium">
             Planning Reliability
           </summary>

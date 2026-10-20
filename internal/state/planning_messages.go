@@ -35,11 +35,11 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 	if req.ContentSource != nil && req.ContentMarkdown != "" {
 		return PlanningMessage{}, fmt.Errorf("multiple planning message content sources")
 	}
-	content, err := persistPlanningText(ctx, exec, PlanningMessageContentID(req.PlanningMessageID), req.ContentSource, req.CreatedAt)
+	content, err := persistPlanningText(ctx, exec, req.PlanningSessionID, PlanningMessageContentID(req.PlanningMessageID), req.ContentSource, req.CreatedAt)
 	if err != nil {
 		return PlanningMessage{}, err
 	}
-	answer, err := persistPlanningText(ctx, exec, PlanningAnswerTextContentID(req.PlanningMessageID), req.AnswerTextSource, req.CreatedAt)
+	answer, err := persistPlanningText(ctx, exec, req.PlanningSessionID, PlanningAnswerTextContentID(req.PlanningMessageID), req.AnswerTextSource, req.CreatedAt)
 	if err != nil {
 		return PlanningMessage{}, err
 	}

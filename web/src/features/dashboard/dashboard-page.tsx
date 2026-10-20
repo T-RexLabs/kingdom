@@ -1,4 +1,4 @@
-import { useDeferredValue, useMemo, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Link } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
 import {
@@ -13,7 +13,6 @@ import { Button } from "@/components/ui/button";
 import { buttonVariants } from "@/components/ui/button-variants";
 import { Badge } from "@/components/ui/badge";
 import { RelativeTime } from "@/components/ui/relative-time";
-import { Sparkline } from "@/components/ui/sparkline";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ThemeArtwork, useThemeCopy } from "@/theme";
 import {
@@ -28,11 +27,6 @@ export function DashboardPage() {
   const snapshot = query.data;
   const title = useThemeCopy("overview.welcome");
   const workOrderName = useThemeCopy("workOrder.singular");
-  const trend = useMemo(
-    () => snapshot?.run_trend.map((point) => point.run_count) ?? [],
-    [snapshot?.run_trend],
-  );
-  const deferredTrend = useDeferredValue(trend);
   return (
     <WorkspacePage
       section="Overview"
@@ -147,12 +141,6 @@ export function DashboardPage() {
                     {snapshot.runtime.running_runs} Running ·{" "}
                     {snapshot.runtime.stale_running_nodes} Stale Nodes
                   </span>
-                  <Sparkline
-                    ariaLabel="Run trend over the last 24h"
-                    data={deferredTrend}
-                    width={180}
-                    height={32}
-                  />
                   <span>
                     Updated <RelativeTime iso={snapshot.snapshot_at} />
                   </span>

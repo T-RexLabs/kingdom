@@ -93,8 +93,27 @@ The Go runtime serves the embedded web app and the `kd` command. SQLite stores w
 * [System Architecture](docs/system%2Darchitecture.md): design boundaries and invariants
 * [OpenAPI Contract](contracts/openapi/openapi.yaml): HTTP API source of truth
 * [Runtime Policies](policies/): retry and provider behavior
+* [Prompt Authoring](docs/prompt-authoring.md): protected role duties and contracts, editable working guidance, and prompt snapshot rules
 * [Seeded Workflows](internal/bootstrapassets/files/workflows/): workflow definitions
 * [Local Setup and Verification](docs/local%2Dsetup%2Dand%2Dverification.md): development and verification steps
+
+### Canonical Roles
+
+| Role ID | Responsibility |
+| --- | --- |
+| `operator` | Human operator who issues work orders and makes plan and final approval decisions when manual approvals are enabled. |
+| `governance` | Supreme governance authority that approves plans, requests rework when needed, and closes work orders. |
+| `coordinator` | Chief coordinator that synthesizes advisor input, resolves ambiguity, preserves scope coherence, and delegates clear downstream direction. |
+| `plan-author` | Strategic planner that turns work order intent into an execution-ready plan, breaks work into implementation slices, and refines plan deltas during rework. |
+| `architecture-advisor` | Advisor that focuses on functional fit, architecture fit, contract fit, precedent, and long-term system coherence. |
+| `risk-advisor` | Advisor that focuses on security, trust boundaries, resilience, and blast-radius risk. |
+| `systems-advisor` | Advisor that focuses on performance, scalability, resource efficiency, and maintainability. |
+| `usability-advisor` | Advisor that focuses on usability, operability, support burden, and day-2 practicality. |
+| `builder` | Implementation specialist that turns approved plans into scoped, verified, maintainable code changes and deliverable outputs. |
+| `reviewer` | Reviews builder output against the work order and approved plan, checks scope and correctness before validation begins. |
+| `qa-validator` | Validates functional behavior, test evidence, and requirement coverage before completion. |
+| `security-validator` | Validates security posture, security findings, and risk concerns before completion. |
+| `resilience-validator` | Resilience validator for chaos, recovery, and failure-mode concerns. |
 
 ## Keep Exploring
 

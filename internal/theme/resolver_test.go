@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	themecontract "kingdom/contracts/theme"
@@ -61,6 +62,45 @@ func TestBuiltinsAndInheritedThemeAreComplete(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAgentVoiceIsOptionalNormalizedAndNeverInheritedFromVisualBase(t *testing.T) {
+	r := resolverForTest(t)
+	withVoice := draftForTest()
+	withVoice["agentVoice"] = "  Keep your language calm and concise.  "
+	pkg, err := r.Resolve(rawForTest(t, withVoice), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.Manifest.AgentVoice != "Keep your language calm and concise." {
+		t.Fatalf("expected normalized authored voice, got %q", pkg.Manifest.AgentVoice)
+	}
+	withoutVoice, err := r.Resolve(rawForTest(t, draftForTest()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pkg.ResolvedDigest == withoutVoice.ResolvedDigest {
+		t.Fatal("agent voice must be part of theme revision identity")
+	}
+
+	base := cloneManifest(r.builtins[DefaultID].Manifest)
+	base.AgentVoice = "base voice must not be inherited"
+	resolved := mergeManifest(base, Manifest{ID: "custom", Version: "1.0.0", Name: "Custom", AgentVoice: ""})
+	if resolved.AgentVoice != "" {
+		t.Fatalf("custom visual theme inherited base voice %q", resolved.AgentVoice)
+	}
+
+	whitespace := draftForTest()
+	whitespace["agentVoice"] = " \n\t "
+	if _, err := r.Resolve(rawForTest(t, whitespace), nil); err == nil {
+		t.Fatal("whitespace-only agent voice should be rejected")
+	}
+	tooLong := draftForTest()
+	tooLong["agentVoice"] = strings.Repeat("x", 2001)
+	if _, err := r.Resolve(rawForTest(t, tooLong), nil); err == nil {
+		t.Fatal("agent voice above the supported character limit should be rejected")
+	}
+}
+
 func TestThemeInputBoundaries(t *testing.T) {
 	r := resolverForTest(t)
 	tests := map[string]func(map[string]any){

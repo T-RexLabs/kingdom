@@ -695,6 +695,109 @@ paths:
         default:
           $ref: "#/components/responses/ErrorResponse"
 
+  /agent-configuration:
+    get:
+      tags: [agents]
+      operationId: getAgentConfiguration
+      summary: Read shared agent communication style and role guidance settings.
+      responses:
+        "200":
+          description: Current workspace and role-level agent configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentConfiguration"
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /agent-configuration/workspace-voice:
+    put:
+      tags: [agents]
+      operationId: updateWorkspaceAgentVoice
+      summary: Set the shared communication style used by agents by default.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateWorkspaceAgentVoiceRequest"
+      responses:
+        "200":
+          description: Updated shared voice configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentWorkspaceConfiguration"
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "404": { $ref: "#/components/responses/NotFoundError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /agent-configuration/roles/{roleId}:
+    put:
+      tags: [agents]
+      operationId: updateAgentRoleConfiguration
+      summary: Set working guidance and an optional communication style override for one role.
+      parameters:
+        - name: roleId
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateAgentRoleConfigurationRequest"
+      responses:
+        "200":
+          description: Updated role-specific agent configuration.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRoleConfiguration"
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
+  /agent-configuration/roles/{roleId}/guidance/reset:
+    post:
+      tags: [agents]
+      operationId: resetAgentRoleGuidance
+      summary: Reset role guidance to its canonical default.
+      parameters:
+        - name: roleId
+          in: path
+          required: true
+          schema: { type: string }
+        - $ref: "#/components/parameters/IdempotencyKey"
+        - $ref: "#/components/parameters/CSRFToken"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ResetAgentRoleGuidanceRequest"
+      responses:
+        "200":
+          description: Role guidance reset to its canonical default.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRoleConfiguration"
+        "400": { $ref: "#/components/responses/BadRequestError" }
+        "401": { $ref: "#/components/responses/UnauthorizedError" }
+        "409": { $ref: "#/components/responses/ConflictError" }
+        default: { $ref: "#/components/responses/ErrorResponse" }
+
   /work-orders:
     post:
       tags: [work-orders]
@@ -1809,16 +1912,16 @@ paths:
     get:
       tags: [runs]
       operationId: getExecutionInstructions
-      summary: Read the complete immutable prompt body prepared for this attempt.
-      description: Returns the exact stored body consumed by provider dispatch, with verified content and run/attempt lineage. Never reconstructs historical instructions from current settings or the work-order brief.
+      summary: Read the immutable Kingdom-owned provider instructions for this attempt.
+      description: Returns verified immutable system and user instructions with Markdown channel headings, including the initial invocation metadata. These are Kingdom-owned inputs; provider-added environment and tool prompts are outside Kingdom visibility. Historical instructions are never reconstructed from current settings.
       parameters:
         - $ref: "#/components/parameters/RunId"
         - $ref: "#/components/parameters/AttemptId"
       responses:
         "200":
-          description: Complete verified prompt text, preserving whitespace.
+          description: Verified Kingdom-owned instructions in a Markdown document with explicit system and user channel boundaries.
           content:
-            text/plain:
+            text/markdown:
               schema:
                 type: string
         "400":
@@ -3068,6 +3171,140 @@ components:
           type: string
         message:
           type: string
+    AgentVoiceSelection:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: Use neutral-v1 for the built-in default or theme for an exact theme revision.
+          enum: [neutral-v1, theme, custom]
+        theme_id:
+          type: string
+        theme_digest:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        instruction:
+          type: string
+          maxLength: 2000
+          description: Required for a custom communication style; forbidden for other styles.
+    AgentVoiceSource:
+      type: object
+      additionalProperties: false
+      required: [kind]
+      properties:
+        kind:
+          type: string
+          description: The selected built-in, theme, or custom communication style.
+          enum: [neutral-v1, theme, custom]
+        theme_id:
+          type: string
+        theme_digest:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+    AgentVoice:
+      type: object
+      additionalProperties: false
+      required: [source]
+      properties:
+        source:
+          $ref: "#/components/schemas/AgentVoiceSource"
+        instruction:
+          type: string
+          maxLength: 2000
+          description: Resolved instruction for theme and custom communication styles.
+    AgentWorkspaceConfiguration:
+      type: object
+      additionalProperties: false
+      required: [voice, row_version]
+      properties:
+        voice:
+          $ref: "#/components/schemas/AgentVoice"
+        row_version:
+          type: integer
+          minimum: 1
+    AgentRoleConfiguration:
+      type: object
+      additionalProperties: false
+      required: [role_id, default_guidance, guidance_override, effective_guidance, effective_voice, row_version]
+      properties:
+        role_id:
+          type: string
+        default_guidance:
+          type: string
+          maxLength: 8000
+        guidance_override:
+          type: string
+          nullable: true
+          maxLength: 8000
+          description: Explicit role override, or null when the role uses its default guidance.
+        effective_guidance:
+          type: string
+          maxLength: 8000
+        effective_voice:
+          $ref: "#/components/schemas/AgentVoice"
+        voice_override:
+          $ref: "#/components/schemas/AgentVoice"
+        row_version:
+          type: integer
+          minimum: 0
+    AgentConfiguration:
+      type: object
+      additionalProperties: false
+      required: [workspace, roles, prompt_catalog_digest]
+      properties:
+        workspace:
+          $ref: "#/components/schemas/AgentWorkspaceConfiguration"
+        roles:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRoleConfiguration"
+        prompt_catalog_digest:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+    UpdateWorkspaceAgentVoiceRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_row_version, voice]
+      properties:
+        expected_row_version:
+          type: integer
+          minimum: 1
+        voice:
+          $ref: "#/components/schemas/AgentVoiceSelection"
+    UpdateAgentRoleConfigurationRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_row_version, expected_prompt_catalog_digest, guidance_override, voice_override]
+      properties:
+        expected_row_version:
+          type: integer
+          minimum: 0
+        expected_prompt_catalog_digest:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
+        guidance_override:
+          type: string
+          nullable: true
+          maxLength: 8000
+          description: Null inherits the canonical role default; a string is an explicit override, including an empty string.
+        voice_override:
+          allOf:
+            - $ref: "#/components/schemas/AgentVoiceSelection"
+          nullable: true
+          description: Explicit role communication style, or null to inherit the workspace style.
+    ResetAgentRoleGuidanceRequest:
+      type: object
+      additionalProperties: false
+      required: [expected_row_version, expected_prompt_catalog_digest]
+      properties:
+        expected_row_version:
+          type: integer
+          minimum: 0
+        expected_prompt_catalog_digest:
+          type: string
+          pattern: "^[a-f0-9]{64}$"
     ThemeCatalog:
       type: object
       additionalProperties: false
@@ -3095,6 +3332,9 @@ components:
                 type: string
               description:
                 type: string
+              agentVoice:
+                type: string
+                maxLength: 2000
               resolvedDigest:
                 type: string
               builtin:
@@ -3384,22 +3624,10 @@ components:
           type: integer
           minimum: 0
 
-    DashboardTrendPoint:
-      type: object
-      additionalProperties: false
-      required: [bucket_start_at, run_count]
-      properties:
-        bucket_start_at:
-          type: string
-          format: date-time
-        run_count:
-          type: integer
-          minimum: 0
-
     DashboardSnapshot:
       type: object
       additionalProperties: false
-      required: [snapshot_at, window_minutes, all_time_run_count, runtime, overview, tokens, recent_runs, run_trend]
+      required: [snapshot_at, window_minutes, all_time_run_count, runtime, overview, tokens, recent_runs]
       properties:
         snapshot_at:
           type: string
@@ -3421,10 +3649,6 @@ components:
           description: Runs created within the dashboard window, ordered by most recent activity.
           items:
             $ref: "#/components/schemas/RunSummary"
-        run_trend:
-          type: array
-          items:
-            $ref: "#/components/schemas/DashboardTrendPoint"
 
     AnalyticsOutcomeBucket:
       type: object
@@ -6599,6 +6823,12 @@ components:
             "type": "string",
             "minLength": 1,
             "maxLength": 500
+          },
+          "agentVoice": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000,
+            "description": "Optional communication-style guidance for agents. Responsibilities, runtime rules, and required output formats remain controlled by Kingdom."
           },
           "base": {
             "type": "object",

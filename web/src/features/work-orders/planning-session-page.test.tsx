@@ -1010,6 +1010,31 @@ describe("PlanningSessionPage", () => {
     expect(screen.queryByRole("button", { name: /Review & Issue/ })).not.toBeInTheDocument();
   });
 
+  it("keeps the plan loading state visible while an empty cached plan refreshes", async () => {
+    mockUsePlanningSessionDraft.mockReturnValue({ data: null, isLoading: false, isFetching: true, error: null });
+    render(<PlanningSessionPage />);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Plan/ }));
+
+    expect(screen.getByText("Loading the saved plan...")).toBeInTheDocument();
+    expect(screen.queryByText("When the direction feels right, generate a plan from this conversation.")).not.toBeInTheDocument();
+  });
+
+  it("keeps a previously loaded plan visible during a refresh", async () => {
+    mockUsePlanningSessionDraft.mockReturnValue({
+      data: { planning_draft_id: "saved-draft", work_order_title: "Saved Plan", work_order_text: "Previously saved plan content." },
+      isLoading: false,
+      isFetching: true,
+      error: null,
+    });
+    render(<PlanningSessionPage />);
+
+    await userEvent.click(screen.getByRole("tab", { name: /Plan/ }));
+
+    expect(screen.getByText("Previously saved plan content.")).toBeInTheDocument();
+    expect(screen.queryByText("Loading the saved plan...")).not.toBeInTheDocument();
+  });
+
   it("re-enables Generate Plan when an active formalize operation finalises as cancelled", () => {
     // Regression guard for the cancelled-formalize gap: before the
     // isPlannerOperationTerminal helper landed, a cancelled formalize

@@ -6,6 +6,7 @@ export function useRunExecutionInstructions(
   runId: string,
   attemptId: string | null,
   enabled: boolean,
+  pollUntilRecorded = false,
 ) {
   return useQuery({
     queryKey: ["runs", runId, "executions", "instructions", attemptId],
@@ -19,6 +20,10 @@ export function useRunExecutionInstructions(
         : skipToken,
     staleTime: Infinity,
     gcTime: 0,
+    refetchInterval: (query) =>
+      pollUntilRecorded && query.state.data === undefined ? 1_500 : false,
+    refetchOnMount: (query) =>
+      query.state.data === undefined ? "always" : false,
     retry: (count, error) =>
       !(error instanceof ApiError && error.status === 404) &&
       shouldRetryApiQuery(count, error, 2),

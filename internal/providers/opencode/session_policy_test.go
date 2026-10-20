@@ -67,3 +67,39 @@ func TestExecutionSessionInlineConfig(t *testing.T) {
 		t.Fatalf("expected execution question deny, got %#v", permission["question"])
 	}
 }
+
+func TestInvocationInlineConfigsPinAgentPromptAndPreserveHardening(t *testing.T) {
+	for name, build := range map[string]func() (string, error){
+		"planner":   func() (string, error) { return PlannerAgentInlineConfig("pinned planner prompt") },
+		"execution": func() (string, error) { return ExecutionAgentInlineConfig("reviewer", "pinned reviewer prompt") },
+	} {
+		t.Run(name, func(t *testing.T) {
+			raw, err := build()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				t.Fatal(err)
+			}
+			assertCommonSessionInlineConfig(t, payload)
+			permission, ok := payload["permission"].(map[string]any)
+			if !ok || permission["external_directory"] != string(permissionActionDeny) {
+				t.Fatalf("invocation config lost external-directory denial: %#v", payload["permission"])
+			}
+			if name == "execution" && permission["question"] != string(permissionActionDeny) {
+				t.Fatalf("execution invocation lost question denial: %#v", permission)
+			}
+			agents, ok := payload["agent"].(map[string]any)
+			if !ok || len(agents) != 1 {
+				t.Fatalf("invocation agent prompt missing: %#v", payload["agent"])
+			}
+			for _, value := range agents {
+				agent, ok := value.(map[string]any)
+				if !ok || agent["prompt"] == "" {
+					t.Fatalf("invocation agent prompt is empty: %#v", value)
+				}
+			}
+		})
+	}
+}

@@ -47,8 +47,12 @@ func attemptExecutionProgressMarkerForEvent(eventType, reasonCode, nodeState str
 	switch trimmedEventType {
 	case "attempt.progress":
 		switch trimmedReasonCode {
+		case "preparation_admitted":
+			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 16}, true
+		case "workspace_preparing":
+			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 17}, true
 		case "workspace_prepared":
-			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 10}, true
+			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 18}, true
 		case "provider_invoked":
 			return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: trimmedReasonCode, Rank: 30}, true
 		case "runtime_completion_observation":

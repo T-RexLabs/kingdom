@@ -10,6 +10,7 @@ import (
 	"time"
 
 	executionstore "kingdom/internal/execution/store"
+	"kingdom/internal/providers/opencode"
 	"kingdom/internal/state"
 )
 
@@ -182,9 +183,17 @@ func (o *orchestrationLoop) emitPreparationProgress(ctx context.Context, run run
 		CausationID:     fmt.Sprintf("caus_orch_%s_%s_%s", run.RunID, attempt.NodeRunID, phase),
 		CreatedAt:       o.now().UTC().Format(time.RFC3339Nano),
 	})
-	if err != nil && ctx.Err() == nil {
-		slog.Warn("failed to record preparation progress", "attempt_id", attemptID, "phase", phase, "error", err)
+	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("failed to record preparation progress", "attempt_id", attemptID, "phase", phase, "error", err)
+		}
+		return
 	}
+	// Preparation happens before a provider invocation exists. Record it in the
+	// same durable activity stream so live and reopened conversations agree.
+	o.emitProviderActivityObservation(ctx, asyncExecutionResult{
+		run: run, node: node, attempt: attempt, attemptID: attemptID,
+	}, opencode.ExecuteActivityObservation{Kind: "phase", Label: phase})
 }
 
 // Admission persists only execution metadata. Prompt and filesystem work belong

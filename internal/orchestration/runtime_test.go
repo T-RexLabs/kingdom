@@ -6164,7 +6164,7 @@ func TestBuildNodePromptExecutionRolesIgnoreRuntimeManagedPaths(t *testing.T) {
 				"Protected Runtime Paths:",
 				"Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state",
 				"Ignore those paths when checking whether only the intended project files changed",
-				"Never delete, modify, or \"clean up\" those runtime-managed paths",
+				"Never delete, modify, or `clean up` those runtime-managed paths",
 			} {
 				if !strings.Contains(prompt, expected) {
 					t.Fatalf("expected prompt to include %q, got:\n%s", expected, prompt)
@@ -9066,26 +9066,6 @@ func TestDelegatorInstructionForDispatchAdvisorySynthesisPreservesScopedInstruct
 	}
 	if !strings.Contains(instruction, "Advisor Responses:") || !strings.Contains(instruction, "Noble keep: preserve ceremony and governance fit.") {
 		t.Fatalf("expected advisor packet appended to scoped synthesis instruction, got %q", instruction)
-	}
-}
-
-func TestDefaultDelegatorInstructionForDispatchAdvisorProvidesAdviceOnlyFallback(t *testing.T) {
-	t.Parallel()
-
-	fallback := defaultDelegatorInstructionForDispatch("usability_consultation", "usability-advisor")
-	if !strings.Contains(fallback, "usability-advisor lens") {
-		t.Fatalf("expected advisor fallback to include role lens, got %q", fallback)
-	}
-	if !strings.Contains(fallback, "Do not claim implementation work") {
-		t.Fatalf("expected advisor fallback to forbid implementation claims, got %q", fallback)
-	}
-	if strings.Contains(fallback, "Build a whimsical homepage") || !strings.Contains(fallback, "Use the complete work order in the current run context") {
-		t.Fatalf("expected advisor fallback to reference, not duplicate, the canonical work order context, got %q", fallback)
-	}
-
-	nonAdvisor := defaultDelegatorInstructionForDispatch("plan_drafting", "plan-author")
-	if nonAdvisor != "" {
-		t.Fatalf("expected non-advisor node fallback to stay empty, got %q", nonAdvisor)
 	}
 }
 
@@ -13528,26 +13508,6 @@ func TestNewRuntimeFailsOnInvalidNetworkPolicy(t *testing.T) {
 	}
 }
 
-func TestNewRuntimeFailsOnInvalidRoleCommunicationPolicy(t *testing.T) {
-	t.Parallel()
-
-	db := openTestDB(t)
-	applyMigration(t, db)
-
-	badRoleCommPolicy := filepath.Join(t.TempDir(), "role_communication_policy.yaml")
-	if err := os.WriteFile(badRoleCommPolicy, []byte("version: v1\npolicy_id"), 0o600); err != nil {
-		t.Fatalf("write invalid role communication policy: %v", err)
-	}
-
-	paths := DefaultBootstrapPaths(repoRoot(t))
-	paths.RoleCommPolicyPath = badRoleCommPolicy
-
-	_, err := NewRuntime(Config{DB: db, Paths: paths, ProviderEngine: "opencode"})
-	if err == nil {
-		t.Fatal("expected runtime bootstrap to fail with invalid role communication policy")
-	}
-}
-
 func TestProviderPolicyAccessorReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 
@@ -14937,5 +14897,49 @@ func mustExec(t *testing.T, db *sql.DB, query string) {
 
 	if _, err := db.Exec(query); err != nil {
 		t.Fatalf("exec failed: %v\nquery: %s", err, query)
+	}
+	if !strings.Contains(strings.ToLower(query), "insert into workflow_runs") {
+		return
+	}
+	var snapshotsTableExists bool
+	if err := db.QueryRow(`SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type='table' AND name='run_agent_configuration_snapshots')`).Scan(&snapshotsTableExists); err != nil {
+		t.Fatalf("check run configuration snapshot table: %v", err)
+	}
+	if !snapshotsTableExists {
+		return
+	}
+	rows, err := db.Query(`SELECT run_id, created_at FROM workflow_runs WHERE NOT EXISTS (SELECT 1 FROM run_agent_configuration_snapshots WHERE run_agent_configuration_snapshots.run_id = workflow_runs.run_id)`)
+	if err != nil {
+		t.Fatalf("list test runs without prompt snapshots: %v", err)
+	}
+	type runRef struct{ id, createdAt string }
+	var missing []runRef
+	for rows.Next() {
+		var run runRef
+		if err := rows.Scan(&run.id, &run.createdAt); err != nil {
+			_ = rows.Close()
+			t.Fatalf("read test run prompt snapshot reference: %v", err)
+		}
+		missing = append(missing, run)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		t.Fatalf("iterate test runs without prompt snapshots: %v", err)
+	}
+	if err := rows.Close(); err != nil {
+		t.Fatalf("close test run prompt snapshot rows: %v", err)
+	}
+	for _, run := range missing {
+		tx, err := db.BeginTx(context.Background(), nil)
+		if err != nil {
+			t.Fatalf("begin test run prompt snapshot: %v", err)
+		}
+		if err := state.CaptureRunAgentConfigurationSnapshotTx(context.Background(), tx, run.id, run.createdAt); err != nil {
+			_ = tx.Rollback()
+			t.Fatalf("capture test run prompt snapshot: %v", err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit test run prompt snapshot: %v", err)
+		}
 	}
 }

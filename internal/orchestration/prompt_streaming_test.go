@@ -19,27 +19,42 @@ import (
 
 	"kingdom/internal/api"
 	"kingdom/internal/core/providerexecution"
+	"kingdom/internal/core/providerpolicy"
+	"kingdom/internal/core/workflow"
 	"kingdom/internal/idempotency"
 	"kingdom/internal/planning"
 	"kingdom/internal/providers/opencode"
+	"kingdom/internal/state"
 )
 
 func TestPromptDocumentPreservesSectionAndStrippingSemantics(t *testing.T) {
 	o := &orchestrationLoop{}
+	catalog, err := state.CanonicalPromptCatalog()
+	if err != nil {
+		t.Fatal(err)
+	}
 	workOrder := "\u2003BEGIN\n VERDICT \t: remove this line\n" + strings.Repeat(" ", 70000) + "royal_verdict: remove the long line\nkept inline VERDICT: instruction text\n\u2003VERDICT: keep this interior unicode-prefixed line\nEND \u2003"
 	for _, class := range []string{"advisor_consultation", "advisory_synthesis", "plan_drafting", "delegated_execution", "execution_review", "validation_gates"} {
 		plan := " \nApproved plan\nVERDICT: removed\nLast plan line\n"
 		guidance := "Upstream text\nroyal_verdict : removed\nPreserved guidance"
 		want := o.buildNodePrompt(context.Background(), "run", "node", "nr", "plan-author", class, workOrder, "governance", plan, guidance, "")
-		doc := o.buildNodePromptDocument(context.Background(), "run", "node", "nr", "plan-author", class, "governance", promptSource(func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(workOrder)), nil }), promptLiteral(plan), promptLiteral(guidance))
+		behavior := workflow.BehaviorForNode("node", class)
+		finalChecks := catalog.FinalChecksSection(resolvedNodeClass("node", class), behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse)
+		doc := o.buildNodeContextDocument(context.Background(), "run", "node", class, "governance", finalChecks, promptSource(func(context.Context) (io.ReadCloser, error) { return io.NopCloser(strings.NewReader(workOrder)), nil }), promptLiteral(plan), promptLiteral(guidance))
 		file, err := preparePromptDocument(context.Background(), doc)
 		if err != nil {
 			t.Fatal(err)
 		}
 		raw, err := io.ReadAll(io.NewSectionReader(file.File, 0, file.size))
 		file.Close()
-		if err != nil || string(raw)+"\n" != want {
-			t.Fatalf("%s streaming prompt changed sections/stripping: %v", class, err)
+		marker := "\n\n" + instructionSectionSeparator + "\n\nRun Context:\n"
+		contextStart := strings.LastIndex(want, marker)
+		if contextStart < 0 {
+			t.Fatalf("%s expected provider prompt to include streamed run context:\n%s", class, want)
+		}
+		wantContext := strings.TrimSuffix(want[contextStart+len("\n\n"+instructionSectionSeparator+"\n\n"):], "\n")
+		if err != nil || string(raw) != wantContext {
+			t.Fatalf("%s streamed context changed sections/stripping: %v", class, err)
 		}
 	}
 	for _, text := range []string{"  VERDICT: remove\nretain VERDICT : REWORK and ROYAL_VERDICT:\nDONE ", "aVERDICT: keep\n界VERDICT \n : replace\nVERDICT VERDICT: next", strings.Repeat(" ", 70000) + "VERDICT: removed\nrest"} {
@@ -97,6 +112,7 @@ func (r promptRepeatReader) Read(p []byte) (int, error) {
 
 type verifiedPromptAdapter struct {
 	opencode.Adapter
+	db         *sql.DB
 	root       string
 	size       int64
 	beforeHeap uint64
@@ -108,6 +124,30 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 		if req.Prompt != "" || req.OpenPrompt == nil {
 			return fmt.Errorf("dispatch materialized an inline prompt")
 		}
+		systemReader, err := state.OpenRunExecutionSystemPrompt(ctx, a.db, req.RunID, req.AttemptID)
+		if err != nil {
+			return err
+		}
+		systemText, err := io.ReadAll(systemReader)
+		closeErr := systemReader.Close()
+		if err != nil {
+			return err
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		var config struct {
+			Agent map[string]struct {
+				Prompt string `json:"prompt"`
+			} `json:"agent"`
+		}
+		if err := json.Unmarshal([]byte(req.InlineConfigContent), &config); err != nil {
+			return err
+		}
+		if string(systemText) != config.Agent[req.Agent].Prompt || len(systemText) == 0 {
+			return fmt.Errorf("captured system instructions differ from dispatched agent configuration")
+		}
+
 		runtime.GC()
 		var memory runtime.MemStats
 		runtime.ReadMemStats(&memory)
@@ -125,7 +165,7 @@ func (a *verifiedPromptAdapter) Execute(ctx context.Context, req opencode.Execut
 		}
 		defer func() { file.Close(); os.Remove(file.Name()) }()
 		n, err := io.Copy(file, reader)
-		closeErr := reader.Close()
+		closeErr = reader.Close()
 		if err != nil {
 			return err
 		}
@@ -245,7 +285,7 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 	if _, err := db.Exec(`UPDATE workflow_runs SET work_order_id=? WHERE run_id='run_dispatch'`, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	adapter := &verifiedPromptAdapter{Adapter: opencode.NewMemoryAdapter(), root: root, size: size, results: make(chan error, 2)}
+	adapter := &verifiedPromptAdapter{Adapter: opencode.NewMemoryAdapter(), db: db, root: root, size: size, results: make(chan error, 2)}
 	rt, err := newMemoryRuntime(t, Config{DB: db, Adapter: adapter, Paths: DefaultBootstrapPaths(repoRoot(t)), YoloOutputRoot: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
@@ -325,5 +365,109 @@ func TestChunkedAPIWorkOrderDispatchAndAdvisoryPlanKeepCompleteContent(t *testin
 	}
 	if int64(len(plan.Content)) != size+int64(len("PLAN-BEGIN\n\nPLAN-END")) || !strings.HasSuffix(plan.Content, "PLAN-END") || len(plan.Components) != 1 || plan.Components[0].Content != plan.Content {
 		t.Fatal("plan API returned a preview or incomplete component")
+	}
+}
+
+func TestAdvisorDispatchDoesNotReintroduceDefaultGuidanceAsUpstreamContext(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyMigration(t, db)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('usability-advisor', 'Usability Advisor', 0, '2026-03-01T12:00:00Z')`)
+
+	const guidance = "Analyze only the requested interface with the supplied rubric."
+	guidanceOverride := guidance
+	config, err := state.GetAgentConfiguration(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.UpdateAgentRoleConfiguration(ctx, db, "usability-advisor", &guidanceOverride, nil, 0, config.PromptCatalogDigest, "2026-03-01T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID: "run_custom_advisor", WorkOrderID: "wo_custom_advisor", WorkflowID: "wf_custom_advisor", NodeRunID: "nr_custom_advisor", NodeID: "usability_consultation", NodeClass: "advisor_consultation", RequiredRole: "usability-advisor", AgentID: "agent_custom_advisor", RoleIDs: nil,
+	})
+	loop := orchestrationLoop{db: db, providerPolicy: providerpolicy.Policy{}}
+	loop.providerPolicy.AgentPolicy.DefaultAgent = "execution-advisor"
+	file, scoped, invocationConfig, err := loop.prepareDispatchPrompt(ctx, runSnapshot{RunID: "run_custom_advisor"}, nodeDefinition{NodeID: "usability_consultation", NodeClass: "advisor_consultation", RequiredRole: "usability-advisor"}, nodeAttempt{NodeRunID: "nr_custom_advisor", AgentID: "agent_custom_advisor", Attempt: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.NewSectionReader(file.File, 0, file.size))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(raw)
+	if scoped != "" || strings.Contains(prompt, "Upstream Guidance:") || strings.Contains(prompt, "day-2 friction") || strings.Contains(prompt, "Keep the response freeform") {
+		t.Fatalf("custom guidance was supplemented by fabricated upstream advice: scoped=%q context=%s", scoped, prompt)
+	}
+	if !strings.Contains(prompt, "Current Work Order:\ndispatch run") {
+		t.Fatal("complete canonical work order missing")
+	}
+	var configJSON struct {
+		Agent map[string]struct {
+			Prompt string `json:"prompt"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(invocationConfig.InlineConfig), &configJSON); err != nil {
+		t.Fatal(err)
+	}
+	system := configJSON.Agent["execution-advisor"].Prompt
+	for _, required := range []string{guidance, "You are the Usability Advisor", "Provide counsel only; you do not have implementation or approval authority.", "State material uncertainty and missing evidence."} {
+		if !strings.Contains(system, required) {
+			t.Errorf("system prompt missing protected/custom content %q", required)
+		}
+	}
+}
+
+func TestPlanDispatchUsesPinnedContractWithoutFabricatedUpstreamGuidance(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	applyMigration(t, db)
+	mustExec(t, db, `INSERT INTO roles (role_id, display_name, can_spawn, created_at) VALUES ('plan-author', 'Plan Author', 0, '2026-03-01T12:00:00Z')`)
+
+	const guidance = "Use the agreed planning rubric."
+	guidanceOverride := guidance
+	config, err := state.GetAgentConfiguration(ctx, db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := state.UpdateAgentRoleConfiguration(ctx, db, "plan-author", &guidanceOverride, nil, 0, config.PromptCatalogDigest, "2026-03-01T12:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	seedReadyDispatchNodeRun(t, db, readyDispatchNodeRunSeed{
+		RunID: "run_custom_plan", WorkOrderID: "wo_custom_plan", WorkflowID: "wf_custom_plan", NodeRunID: "nr_custom_plan", NodeID: "plan_drafting", NodeClass: "plan_drafting", RequiredRole: "plan-author", AgentID: "agent_custom_plan", RoleIDs: []string{"coordinator"}, ExtraAgents: []readyDispatchAgentSeed{{AgentID: "agent_coordinator", RoleID: "coordinator"}},
+	})
+	loop := orchestrationLoop{db: db, providerPolicy: providerpolicy.Policy{}}
+	loop.providerPolicy.AgentPolicy.DefaultAgent = "execution-planner"
+	file, scoped, invocationConfig, err := loop.prepareDispatchPrompt(ctx, runSnapshot{RunID: "run_custom_plan"}, nodeDefinition{NodeID: "plan_drafting", NodeClass: "plan_drafting", RequiredRole: "plan-author"}, nodeAttempt{NodeRunID: "nr_custom_plan", AgentID: "agent_custom_plan", Attempt: 1}, "agent_coordinator")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(io.NewSectionReader(file.File, 0, file.size))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompt := string(raw)
+	if scoped != "" || strings.Contains(prompt, "Upstream Guidance:") || strings.Contains(prompt, "Return a planning-only output:") {
+		t.Fatalf("custom plan guidance was supplemented by fabricated upstream instructions: scoped=%q context=%s", scoped, prompt)
+	}
+	if !strings.Contains(prompt, "Current Work Order:\ndispatch run") {
+		t.Fatal("complete canonical work order missing")
+	}
+	var configJSON struct {
+		Agent map[string]struct {
+			Prompt string `json:"prompt"`
+		} `json:"agent"`
+	}
+	if err := json.Unmarshal([]byte(invocationConfig.InlineConfig), &configJSON); err != nil {
+		t.Fatal(err)
+	}
+	system := configJSON.Agent["execution-planner"].Prompt
+	for _, required := range []string{guidance, "You are the Plan Author", "Produce execution-ready planning output, not an approval memo.", "State material uncertainty and missing evidence."} {
+		if !strings.Contains(system, required) {
+			t.Errorf("system prompt missing protected/custom content %q", required)
+		}
 	}
 }

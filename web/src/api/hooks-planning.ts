@@ -105,6 +105,10 @@ export function usePlanningSessionDraft(sessionId?: string) {
         }
       : skipToken,
     ...plannerQueryOptions,
+    // A planner can finish from the route-independent tracker while the
+    // session page is unmounted. Invalidation marks the cached plan stale,
+    // and this resource must read that completion when the page returns.
+    refetchOnMount: true,
   });
 }
 

@@ -5,6 +5,7 @@ import { SelectTriggerContent } from "./select-trigger";
 
 export type SelectOption = {
   label: string;
+  selectedLabel?: string;
   value: string;
   disabled?: boolean;
 };
@@ -62,7 +63,11 @@ export function SelectField({
           selected ? "text-foreground" : "text-foreground-subtle",
           triggerClassName,
         )}
-        triggerContent={<SelectTriggerContent>{selected?.label ?? placeholder}</SelectTriggerContent>}
+        triggerContent={
+          <SelectTriggerContent>
+            {selected?.selectedLabel ?? selected?.label ?? placeholder}
+          </SelectTriggerContent>
+        }
         items={items}
         selectedId={selected?.value ?? null}
         onSelect={onChange}
