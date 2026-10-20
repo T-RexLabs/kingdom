@@ -42,7 +42,11 @@ func (o *orchestrationLoop) requireResumeWorkspace(ctx context.Context, root, tr
 		return fmt.Errorf("verify workspace before resume: %w", err)
 	}
 	if seeded != 0 {
-		return fmt.Errorf("the workspace has %d unexpected changes since the checkpoint; Resume will not overwrite them", changes)
+		noun := "changes"
+		if changes == 1 {
+			noun = "change"
+		}
+		return fmt.Errorf("the workspace has %d unexpected %s since the checkpoint; Resume will not overwrite them", changes, noun)
 	}
 	return nil
 }
