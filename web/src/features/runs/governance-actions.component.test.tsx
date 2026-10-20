@@ -3,7 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError } from "@/api/client";
 import userEvent from "@testing-library/user-event";
 import { GovernanceActions } from "./governance-actions";
-import type { RunGraphNode, RunSummary } from "@/api/hooks";
+import type { RunGraphNode, RunResumePlan, RunSummary } from "@/api/hooks";
 
 const finalApprovalState = {
   mutateAsync: vi.fn().mockResolvedValue({ status: "succeeded" }),
@@ -12,13 +12,20 @@ const finalApprovalState = {
   error: null,
   data: null as null | { status: string },
 };
-const retryState = { mutateAsync: vi.fn(), isPending: false, error: null as Error | null };
+const resumeState = { mutateAsync: vi.fn(), isPending: false, error: null as Error | null };
+const availablePlan: RunResumePlan = {
+  run_id: "run-1",
+  available: true,
+  steps: [{ node_id: "execution_review", source_attempt_id: "run-1:execution_review:1", checkpoint_captured_at: "2026-03-06T10:05:00.000Z" }],
+};
+const resumePlanState = { data: availablePlan as RunResumePlan | undefined, isPending: false, error: null as Error | null, refetch: vi.fn() };
 const rerunState = { mutateAsync: vi.fn(), isPending: false, error: null as Error | null };
 
 vi.mock("@/api/hooks", () => ({
   newIdempotencyKey: () => "idem-final-approval-test",
   useCreateFinalApproval: () => finalApprovalState,
-  useRetryNode: () => retryState,
+  useResumeRun: () => resumeState,
+  useRunResumePlan: () => resumePlanState,
   useRerunFromNode: () => rerunState,
 }));
 
@@ -66,44 +73,90 @@ describe("governance actions visibility", () => {
 
   beforeEach(() => {
     finalApprovalState.mutateAsync.mockClear();
-    retryState.mutateAsync.mockReset();
-    retryState.error = null;
+    resumeState.mutateAsync.mockReset();
+    resumeState.error = null;
+    resumePlanState.data = availablePlan;
+    resumePlanState.refetch.mockReset();
     rerunState.mutateAsync.mockReset();
     rerunState.error = null;
   });
 
-  it("hides retry and rerun controls when run is not failed", () => {
+  it("hides resume and rerun controls when run is not failed", () => {
     render(
       <GovernanceActions
         run={runningRun}
-        failedNodes={[failedNode]}
+        recovery={{ nodes: [failedNode] }}
       />,
     );
 
     expect(screen.queryByText(/Nodes to Recover/i)).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Retry" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Resume" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Rerun" })).not.toBeInTheDocument();
+  });
+
+  it("offers recovery when a failed run has only cancelled steps", async () => {
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [{ ...failedNode, state: "cancelled" }] }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rerun from Step" }));
+    expect(rerunState.mutateAsync).toHaveBeenCalledWith({ value: "execution_review", key: expect.stringMatching(/^kd1\./) });
+  });
+
+  it("preselects the interrupted frontier instead of downstream cancelled steps", async () => {
+    const nodes = [{ ...failedNode, node_id: "advisory_synthesis", state: "cancelled" as const }, { ...failedNode, node_id: "plan_drafting", state: "cancelled" as const }];
+    render(<GovernanceActions run={failedRun} recovery={{ nodes, defaultNodeId: "advisory_synthesis" }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
+    expect(screen.getByRole("button", { name: "Step" })).toHaveTextContent("Advisory Synthesis");
+    await userEvent.click(screen.getByRole("button", { name: "Rerun from Step" }));
+    expect(rerunState.mutateAsync).toHaveBeenCalledWith({ value: "advisory_synthesis", key: expect.stringMatching(/^kd1\./) });
   });
 
   it("shows just one recovery pair for fourteen cancelled nodes", async () => {
     const nodes = Array.from({ length: 14 }, (_, index) => ({ ...failedNode, node_id: `node_${index}`, state: "cancelled" as const }));
-    render(<GovernanceActions run={cancelledRun} cancelledNodes={nodes} />);
-    expect(screen.getAllByRole("button", { name: "Retry" })).toHaveLength(1);
+    render(<GovernanceActions run={cancelledRun} recovery={{ nodes }} />);
+    expect(screen.getAllByRole("button", { name: "Resume" })).toHaveLength(1);
     expect(screen.getAllByRole("button", { name: "Rerun" })).toHaveLength(1);
     expect(screen.queryByText(/Cancelled Run Nodes/)).not.toBeInTheDocument();
     expect(screen.queryByText("node_0")).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    const dialog = within(screen.getByRole("dialog", { name: "Retry Step" }));
-    expect(dialog.getByRole("button", { name: "Retry Step" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Rerun from Step" }));
+    expect(dialog.getByRole("button", { name: "Rerun from Step" })).toBeDisabled();
     await userEvent.click(dialog.getByRole("button", { name: "Step" }));
     expect(screen.getAllByRole("option")).toHaveLength(14);
     await userEvent.click(screen.getByRole("option", { name: "Node 7 · Cancelled" }));
-    await userEvent.click(dialog.getByRole("button", { name: "Retry Step" }));
-    expect(retryState.mutateAsync).toHaveBeenCalledWith({ value: "node_7", key: expect.stringMatching(/^kd1\./) });
+    await userEvent.click(dialog.getByRole("button", { name: "Rerun from Step" }));
+    expect(rerunState.mutateAsync).toHaveBeenCalledWith({ value: "node_7", key: expect.stringMatching(/^kd1\./) });
+  });
+
+  it("resumes exactly the server-confirmed steps and shows their checkpoint", async () => {
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Resume Interrupted Work" }));
+    expect(resumePlanState.refetch).toHaveBeenCalled();
+    expect(dialog.getByRole("list", { name: "Interrupted steps" })).toHaveTextContent("Execution Review");
+    expect(dialog.getByText(/Checkpoint saved/)).toBeVisible();
+    await userEvent.click(dialog.getByRole("button", { name: "Resume" }));
+    expect(resumeState.mutateAsync).toHaveBeenCalledWith({
+      body: { reason: "manual resume from run detail", steps: [{ node_id: "execution_review", source_attempt_id: "run-1:execution_review:1" }] },
+      key: expect.stringMatching(/^kd1\./),
+    });
+  });
+
+  it("explains unavailable resume and offers Rerun without changing the action", async () => {
+    resumePlanState.data = { run_id: "run-1", available: false, steps: [{ node_id: "execution_review", unavailable_reason: "No checkpoint was saved when this step stopped." }] };
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
+    await userEvent.click(screen.getByRole("button", { name: "Resume" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Resume Interrupted Work" }));
+    expect(dialog.getByText("No checkpoint was saved when this step stopped.")).toBeVisible();
+    expect(dialog.getByText(/Rerun repeats a step from its trusted baseline/)).toBeVisible();
+    expect(dialog.getByRole("button", { name: "Resume" })).toBeDisabled();
+    await userEvent.click(dialog.getByRole("button", { name: "Rerun Instead" }));
+    expect(screen.getByRole("dialog", { name: "Rerun from Step" })).toBeVisible();
+    expect(resumeState.mutateAsync).not.toHaveBeenCalled();
+    expect(rerunState.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("explains completion rerun promotion before submission", async () => {
-    render(<GovernanceActions run={cancelledRun} cancelledNodes={[{ ...failedNode, node_id: "completion", state: "cancelled" }]} />);
+    render(<GovernanceActions run={cancelledRun} recovery={{ nodes: [{ ...failedNode, node_id: "completion", state: "cancelled" }] }} />);
     await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
     expect(screen.getByText(/Completion restarts at plan drafting/)).toBeVisible();
     expect(rerunState.mutateAsync).not.toHaveBeenCalled();
@@ -111,62 +164,78 @@ describe("governance actions visibility", () => {
     expect(rerunState.mutateAsync).toHaveBeenCalledWith({ value: "completion", key: expect.stringMatching(/^kd1\./) });
   });
 
-  it.each(["retry", "rerun"] as const)("keeps an uncertain %s locked to the same target and key after closing the dialog", async (action) => {
-    const state = action === "retry" ? retryState : rerunState;
-    state.mutateAsync.mockImplementationOnce(async () => {
+  it("keeps an uncertain rerun locked to the same target and key after closing the dialog", async () => {
+    rerunState.mutateAsync.mockImplementationOnce(async () => {
       const error = new TypeError("Response lost; original outcome remains unresolved.");
-      state.error = error;
+      rerunState.error = error;
       throw error;
-    }).mockImplementationOnce(async () => { state.error = null; });
+    }).mockImplementationOnce(async () => { rerunState.error = null; });
     const user = userEvent.setup();
-    render(<GovernanceActions run={failedRun} failedNodes={[failedNode, { ...failedNode, node_id: "second_node" }]} />);
-    const label = action === "retry" ? "Retry" : "Rerun";
-    await user.click(screen.getByRole("button", { name: label }));
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode, { ...failedNode, node_id: "second_node" }] }} />);
+    await user.click(screen.getByRole("button", { name: "Rerun" }));
     await user.click(screen.getByRole("button", { name: "Step" }));
     await user.click(screen.getByRole("option", { name: "Execution Review · Failed" }));
-    await user.click(screen.getByRole("button", { name: action === "retry" ? "Retry Step" : "Rerun from Step" }));
-    await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledOnce());
-    const original = state.mutateAsync.mock.calls[0][0];
+    await user.click(screen.getByRole("button", { name: "Rerun from Step" }));
+    await waitFor(() => expect(rerunState.mutateAsync).toHaveBeenCalledOnce());
+    const original = rerunState.mutateAsync.mock.calls[0][0];
     expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
     await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Response lost");
-    expect(screen.getByRole("button", { name: action === "retry" ? "Rerun" : "Retry" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" }));
+    expect(screen.getByRole("button", { name: "Resume" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry Rerun" }));
     expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
-    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: action === "retry" ? "Retry Again" : "Retry Rerun" }));
-    await waitFor(() => expect(state.mutateAsync).toHaveBeenCalledTimes(2));
-    expect(state.mutateAsync.mock.calls[1][0]).toEqual(original);
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Retry Rerun" }));
+    await waitFor(() => expect(rerunState.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(rerunState.mutateAsync.mock.calls[1][0]).toEqual(original);
+  });
+
+  it("keeps an uncertain resume on its confirmed steps and key even if the plan changes", async () => {
+    resumeState.mutateAsync.mockImplementationOnce(async () => {
+      throw new TypeError("Response lost; original outcome remains unresolved.");
+    }).mockResolvedValueOnce({});
+    const user = userEvent.setup();
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Resume" }));
+    await waitFor(() => expect(resumeState.mutateAsync).toHaveBeenCalledOnce());
+    const original = resumeState.mutateAsync.mock.calls[0][0];
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+    resumePlanState.data = { run_id: "run-1", available: false, unavailable_reason: "Only a failed or cancelled run can be resumed.", steps: [] };
+    expect(screen.getByRole("button", { name: "Rerun" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "Retry Resume" }));
+    await user.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Retry Resume" }));
+    await waitFor(() => expect(resumeState.mutateAsync).toHaveBeenCalledTimes(2));
+    expect(resumeState.mutateAsync.mock.calls[1][0]).toEqual(original);
   });
 
   it("does not duplicate pending submissions and closes after success", async () => {
     let resolve!: () => void;
-    retryState.mutateAsync.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
+    resumeState.mutateAsync.mockReturnValue(new Promise<void>((done) => { resolve = done; }));
     const user = userEvent.setup();
-    render(<GovernanceActions run={failedRun} failedNodes={[failedNode]} />);
-    await user.click(screen.getByRole("button", { name: "Retry" }));
-    await user.dblClick(screen.getByRole("button", { name: "Retry Step" }));
-    expect(retryState.mutateAsync).toHaveBeenCalledOnce();
-    expect(screen.getByRole("button", { name: "Step" })).toBeDisabled();
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
+    await user.click(screen.getByRole("button", { name: "Resume" }));
+    await user.dblClick(within(screen.getByRole("dialog")).getByRole("button", { name: "Resume" }));
+    expect(resumeState.mutateAsync).toHaveBeenCalledOnce();
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
     resolve();
     await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("leaves definitive cleanup conflicts available for a new explicit request", async () => {
-    retryState.mutateAsync.mockRejectedValueOnce(new ApiError(409, {
+    rerunState.mutateAsync.mockRejectedValueOnce(new ApiError(409, {
       message: "Worktree cleanup is still running.", code: "dependency_blocked",
-      retryable: false, category: "core", details: {}, correlationId: "api.retry_node",
+      retryable: false, category: "core", details: {}, correlationId: "api.rerun_from_node",
     })).mockResolvedValueOnce({});
     const user = userEvent.setup();
-    render(<GovernanceActions run={cancelledRun} cancelledNodes={[{ ...failedNode, node_id: "custom_step" }]} />);
-    await user.click(screen.getByRole("button", { name: "Retry" }));
-    await user.click(screen.getByRole("button", { name: "Retry Step" }));
+    render(<GovernanceActions run={cancelledRun} recovery={{ nodes: [{ ...failedNode, node_id: "custom_step" }] }} />);
+    await user.click(screen.getByRole("button", { name: "Rerun" }));
+    await user.click(screen.getByRole("button", { name: "Rerun from Step" }));
     expect(screen.getByRole("alert")).toHaveTextContent("Worktree cleanup is still running.");
     expect(screen.getByRole("button", { name: "Step" })).toBeEnabled();
-    expect(retryState.mutateAsync).toHaveBeenCalledOnce();
-    await user.click(screen.getByRole("button", { name: "Retry Step" }));
-    expect(retryState.mutateAsync).toHaveBeenCalledTimes(2);
-    const [first, second] = retryState.mutateAsync.mock.calls;
+    expect(rerunState.mutateAsync).toHaveBeenCalledOnce();
+    await user.click(screen.getByRole("button", { name: "Rerun from Step" }));
+    expect(rerunState.mutateAsync).toHaveBeenCalledTimes(2);
+    const [first, second] = rerunState.mutateAsync.mock.calls;
     expect(second[0].value).toBe("custom_step");
     expect(second[0].key).not.toBe(first[0].key);
   });
@@ -178,7 +247,7 @@ describe("governance actions visibility", () => {
     render(
       <GovernanceActions
         run={awaitingFinalApprovalRun}
-        failedNodes={[]}
+        recovery={{ nodes: [] }}
       />,
     );
 
@@ -196,7 +265,7 @@ describe("governance actions visibility", () => {
           ...awaitingFinalApprovalRun,
           autonomous_approvals: true,
         }}
-        failedNodes={[]}
+        recovery={{ nodes: [] }}
       />,
     );
 
@@ -209,7 +278,7 @@ describe("governance actions visibility", () => {
     render(
       <GovernanceActions
         run={awaitingFinalApprovalRun}
-        failedNodes={[]}
+        recovery={{ nodes: [] }}
       />,
     );
 
@@ -226,7 +295,7 @@ describe("governance actions visibility", () => {
     render(
       <GovernanceActions
         run={awaitingFinalApprovalRun}
-        failedNodes={[]}
+        recovery={{ nodes: [] }}
       />,
     );
 
@@ -237,9 +306,9 @@ describe("governance actions visibility", () => {
   });
 
   it("shows failure context only when choosing recovery", async () => {
-    render(<GovernanceActions run={failedRun} failedNodes={[failedNode]} />);
+    render(<GovernanceActions run={failedRun} recovery={{ nodes: [failedNode] }} />);
     expect(screen.queryByText(failedNode.failure_reason!)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await userEvent.click(screen.getByRole("button", { name: "Rerun" }));
     expect(screen.getByText(failedNode.failure_reason!)).toHaveClass("text-wrap-anywhere");
   });
 });

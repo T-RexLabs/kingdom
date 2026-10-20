@@ -134,9 +134,6 @@ func RequireRequestTerminalMatch(o InvocationStreamObservation) error {
 			return fmt.Errorf("provider request tool calls conflict with its verified record")
 		}
 	}
-	if o.Cancelled && terminal.Outcome != RequestOutcomeInterrupted && !terminal.Abandoned() {
-		return fmt.Errorf("provider request cancellation requires an interrupted or abandoned terminal")
-	}
 	return nil
 }
 

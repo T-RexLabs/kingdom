@@ -608,7 +608,7 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 		case FinalizeReply, FinalizeRegenerate:
 			sessionUpdate.Set("current_operation_id", nil)
 			sessionUpdate.Set("active_leaf_message_id", finalizeNullable(req.ActiveLeafMessageID))
-		case FinalizeFail, FinalizeCancel:
+		case FinalizeCancel:
 			if operation.Type == PlanningOperationTypeRegenerate {
 				previousLeafID, parseErr := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
 				if parseErr != nil {
@@ -665,11 +665,12 @@ func (s *PlanningStore) FinalizeOperation(ctx context.Context, req FinalizeOpera
 			}
 			// Idempotent re-finalize: draft already exists.
 		}
-	case FinalizeFail, FinalizeCancel:
-		// No domain insert. Cancel and Fail share the no-side-effects
-		// shape — the only difference is the terminal status the row
-		// gets and the column the reason is written to (both use
-		// `error` since neither produces a result_ref).
+	case FinalizeFail:
+		if err := settleFailedTurnTx(ctx, tx, operation, req.Failure); err != nil {
+			return rollbackPlanningTx(tx, "finalize planning operation", err)
+		}
+	case FinalizeCancel:
+		// A cancelled turn leaves no message; the session keeps its prior leaf.
 	}
 
 	if req.MessageCompletedEvent != nil {
@@ -755,7 +756,7 @@ func (s *PlanningStore) CancelQueuedOperation(ctx context.Context, req CancelQue
 		return rollbackPlanningTx(tx, "cancel queued planning operation", err)
 	}
 
-	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt); err != nil {
+	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt, true); err != nil {
 		return rollbackPlanningTx(tx, "cancel queued planning operation", fmt.Errorf("cancel queued planning session: %w", err))
 	}
 
@@ -820,8 +821,11 @@ func (s *PlanningStore) FailQueuedOperation(ctx context.Context, req FailQueuedP
 	if err := resolveCancelledPlanningRetryTx(ctx, tx, operation.OperationID, req.FinishedAt); err != nil {
 		return rollbackPlanningTx(tx, "fail queued planning operation", err)
 	}
-	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt); err != nil {
+	if err := restoreQueuedOperationSession(ctx, tx, operation, req.UpdatedAt, false); err != nil {
 		return rollbackPlanningTx(tx, "fail queued planning operation", fmt.Errorf("fail queued planning session: %w", err))
+	}
+	if err := settleFailedTurnTx(ctx, tx, operation, req.Failure); err != nil {
+		return rollbackPlanningTx(tx, "fail queued planning operation", err)
 	}
 	if _, err := insertPlanningOperationEvent(ctx, tx, req.TerminalEvent); err != nil {
 		return rollbackPlanningTx(tx, "fail queued planning operation", err)
@@ -832,13 +836,15 @@ func (s *PlanningStore) FailQueuedOperation(ctx context.Context, req FailQueuedP
 	return nil
 }
 
-func restoreQueuedOperationSession(ctx context.Context, tx *sql.Tx, operation PlanningOperation, updatedAt string) error {
+// restoreQueuedOperationSession releases the session from a queued operation
+// that will not run. A cancelled regenerate returns to the leaf it replaced.
+func restoreQueuedOperationSession(ctx context.Context, tx *sql.Tx, operation PlanningOperation, updatedAt string, cancelled bool) error {
 	sessionUpdate := newUpdateBuilder("planning_sessions").Set("updated_at", strings.TrimSpace(updatedAt))
 	sessionUpdate.Where("planning_session_id = ?", operation.PlanningSessionID)
 	switch operation.Type {
 	case PlanningOperationTypeReply, PlanningOperationTypeFormalize, PlanningOperationTypeRegenerate:
 		sessionUpdate.Set("conversation_state", string(PlanningSessionConversationStateReady))
-		if operation.Type == PlanningOperationTypeRegenerate {
+		if cancelled && operation.Type == PlanningOperationTypeRegenerate {
 			previousLeafID, err := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
 			if err != nil {
 				return err
@@ -858,6 +864,49 @@ func restoreQueuedOperationSession(ctx context.Context, tx *sql.Tx, operation Pl
 		return err
 	} else if changed != 1 {
 		return ErrPlanningLeaseConflict
+	}
+	return nil
+}
+
+// settleFailedTurnTx keeps a failed reply or regenerate in the conversation as
+// a failed assistant message where its answer would have been: the operation
+// produced it and the session's active leaf moves onto it, as on success.
+func settleFailedTurnTx(ctx context.Context, tx *sql.Tx, operation PlanningOperation, failure *PlanningTurnFailure) error {
+	if operation.Type != PlanningOperationTypeReply && operation.Type != PlanningOperationTypeRegenerate {
+		return nil
+	}
+	if failure == nil {
+		return fmt.Errorf("a failed planner turn requires its failure")
+	}
+	var request struct {
+		UserMessageID      string `json:"user_message_id"`
+		AssistantMessageID string `json:"assistant_message_id"`
+		AssistantCreatedAt string `json:"assistant_created_at"`
+		ParentMessageID    string `json:"parent_message_id"`
+	}
+	if err := json.Unmarshal([]byte(operation.RequestPayloadJSON), &request); err != nil {
+		return fmt.Errorf("decode planner turn request payload: %w", err)
+	}
+	parent := request.UserMessageID
+	if operation.Type == PlanningOperationTypeRegenerate {
+		parent = request.ParentMessageID
+	}
+	if strings.TrimSpace(request.AssistantMessageID) == "" || strings.TrimSpace(request.AssistantCreatedAt) == "" {
+		return fmt.Errorf("planner turn request payload has no assistant message identity")
+	}
+	message, err := insertPlanningMessage(ctx, tx, AppendPlanningMessageRequest{
+		PlanningMessageID: request.AssistantMessageID, PlanningSessionID: operation.PlanningSessionID,
+		ParentMessageID: parent, Role: PlanningMessageRoleAssistant,
+		QuestionPayloadJSON: "{}", AnswerPayloadJSON: "{}", CreatedAt: request.AssistantCreatedAt, Failure: failure,
+	})
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE planning_operations SET result_ref=? WHERE operation_id=?`, message.PlanningMessageID, operation.OperationID); err != nil {
+		return fmt.Errorf("link failed planner turn: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE planning_sessions SET active_leaf_message_id=? WHERE planning_session_id=?`, message.PlanningMessageID, operation.PlanningSessionID); err != nil {
+		return fmt.Errorf("select failed planner turn: %w", err)
 	}
 	return nil
 }

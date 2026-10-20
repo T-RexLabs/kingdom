@@ -1720,7 +1720,7 @@ func TestFinalizeOperationRegenerateCancelRestoresPreviousActiveLeaf(t *testing.
 	}
 }
 
-func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T) {
+func TestFinalizeOperationRegenerateFailKeepsTheFailedTurnAsTheActiveLeaf(t *testing.T) {
 	t.Parallel()
 
 	db := openTestDB(t)
@@ -1772,7 +1772,7 @@ func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T)
 		PlanningSessionID:  "ps_regen_fail_restore",
 		Type:               PlanningOperationTypeRegenerate,
 		Status:             PlanningOperationStatusQueued,
-		RequestPayloadJSON: `{"target_message_id":"pm_target_fail","parent_message_id":"","previous_active_leaf_message_id":"pm_followup_fail"}`,
+		RequestPayloadJSON: `{"target_message_id":"pm_target_fail","parent_message_id":"","previous_active_leaf_message_id":"pm_followup_fail","assistant_message_id":"pm_regen_failed","assistant_created_at":"2026-04-27T14:00:03Z"}`,
 		CreatedAt:          "2026-04-27T14:00:03Z",
 	}); err != nil {
 		t.Fatalf("create operation: %v", err)
@@ -1792,6 +1792,7 @@ func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T)
 		UpdatedAt:         "2026-04-27T14:01:00Z",
 		FinishedAt:        "2026-04-27T14:01:00Z",
 		ErrorMessage:      "planner failed",
+		Failure:           &PlanningTurnFailure{ReasonCode: "provider_unknown_failure", ProviderMessage: "Attempted to access resource from outside project geography EU"},
 		TerminalEvent: &AppendPlanningOperationEventRequest{
 			EventID:     "po_regen_fail_restore:1",
 			OperationID: "po_regen_fail_restore",
@@ -1808,8 +1809,28 @@ func TestFinalizeOperationRegenerateFailRestoresPreviousActiveLeaf(t *testing.T)
 	if err != nil || !found {
 		t.Fatalf("get session: ok=%v err=%v", found, err)
 	}
-	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_followup_fail" {
-		t.Fatalf("expected active leaf restored to previous transcript tip, got %+v", session.ActiveLeafMessageID)
+	if session.ActiveLeafMessageID == nil || *session.ActiveLeafMessageID != "pm_regen_failed" {
+		t.Fatalf("the failed turn must be the active leaf, got %+v", session.ActiveLeafMessageID)
+	}
+	failed, err := store.GetMessageInSession(ctx, "ps_regen_fail_restore", "pm_regen_failed")
+	if err != nil || failed.Failure == nil || failed.Failure.ReasonCode != "provider_unknown_failure" || failed.Failure.ProviderMessage == "" || failed.ContentMarkdown != "" {
+		t.Fatalf("failed turn=%+v err=%v", failed, err)
+	}
+	operation, _, err := store.GetOperation(ctx, "po_regen_fail_restore")
+	if err != nil || operation.ResultRef == nil || *operation.ResultRef != "pm_regen_failed" {
+		t.Fatalf("the operation must produce the failed turn: %+v %v", operation.ResultRef, err)
+	}
+	source, err := store.ActiveMessageSource(ctx, "ps_regen_fail_restore")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := source(ctx, func(message PlanningMessage) error {
+		if message.Failure != nil {
+			return fmt.Errorf("the planner must never see a failed turn: %s", message.PlanningMessageID)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 	if session.ConversationState != PlanningSessionConversationStateReady {
 		t.Fatalf("expected conversation_state=ready, got %q", session.ConversationState)

@@ -65,7 +65,9 @@ kd summon
 
 Open the local URL printed by Kingdom. In Planning, work through the task and shape a plan, then issue a Work Order. Or create a Work Order directly if you already know what needs doing. Choose a model before each run, even if OpenCode already has a default model set.
 
-Kingdom uses OpenCode to list models and run them. Your OpenCode setup can use local or hosted models.
+For failed or cancelled runs, use **Resume** to continue interrupted steps from their saved conversation and partial files, or **Rerun** to repeat a step and its downstream workflow from the trusted baseline. Both wait until earlier work has safely stopped. A lost browser connection does not stop the runtime; reconnect and inspect the run before restarting work.
+
+Kingdom uses OpenCode to list models and run them. Your OpenCode setup can use local or hosted models. If Kingdom cannot verify an OpenCode reply, it reports a protocol error and retains the rejected evidence for diagnosis. This failure does not retry automatically; see [failure and recovery guidance](docs/how-runs-work.md#when-a-run-stops).
 
 ## Make It Yours
 

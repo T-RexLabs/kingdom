@@ -207,6 +207,11 @@ func (o *orchestrationLoop) enqueueDispatchAttempt(ctx context.Context, run runS
 	attempt.ExecutionMode, attempt.CompletionMode = spec.Mode, spec.CompletionMode
 	if spec.Mode == executionstore.ExecutionModeProviderBacked {
 		attempt.SessionRef = sessionIDForAttempt(attemptID)
+		// An invalid checkpoint fails the attempt during preparation, where the
+		// reason is recorded; admission must not wedge the node in ready.
+		if resume, err := o.loadDispatchResume(ctx, attempt.NodeRunID); err == nil && resume != nil {
+			attempt.SessionRef = resume.Binding.LogicalSessionID
+		}
 		attempt.ProviderTimeoutMillis = o.providerTimeoutMillisForNode(node.NodeID, node.NodeClass)
 	}
 	err := o.executionStore.EnqueueAttempt(ctx, executionstore.EnqueueAttemptRequest{

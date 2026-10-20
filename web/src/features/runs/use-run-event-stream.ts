@@ -256,6 +256,7 @@ function applyRunStreamSideEffects(
 		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
+		case "attempt.resume_queued":
 		case "attempt.final_rework_queued":
 			case "attempt.failed":
 			case "attempt.succeeded":
@@ -266,6 +267,7 @@ function applyRunStreamSideEffects(
 				return;
 			case "run.retry_reopened":
 			case "run.rerun_reopened":
+			case "run.resume_reopened":
 				patchRunLastActivityTimestamp(queryClient, runId, event.createdAt);
 				invalidateSurfaces(RUN_STREAM_REOPEN_IMPACT_SURFACES);
 				return;
@@ -392,6 +394,7 @@ function patchExecutionLiveProjection(
 			}
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
+		case "attempt.resume_queued":
 		case "attempt.final_rework_queued":
 			return "queued";
 		case "attempt.succeeded":

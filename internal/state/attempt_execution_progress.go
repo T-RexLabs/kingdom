@@ -77,7 +77,7 @@ func attemptExecutionProgressMarkerForEvent(eventType, reasonCode, nodeState str
 		}
 	case "attempt.started":
 		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: "", Rank: 25}, true
-	case "attempt.retry_queued", "attempt.rerun_queued", "attempt.final_rework_queued":
+	case "attempt.retry_queued", "attempt.rerun_queued", "attempt.resume_queued", "attempt.final_rework_queued":
 		return attemptExecutionProgressMarker{EventType: trimmedEventType, ReasonCode: "", Rank: 15}, true
 	default:
 		return attemptExecutionProgressMarker{}, false

@@ -255,6 +255,18 @@ func TestFailureReasonCodeForPlannerFailureClassifiesFallbacks(t *testing.T) {
 			wantReason: "provider_cancelled",
 		},
 		{
+			name:       "cancellation wins a concurrent provider success",
+			metadata:   ProviderExecutionMetadata{OutcomeState: "success", FinalText: "Completed."},
+			cancelled:  true,
+			wantReason: "provider_cancelled",
+		},
+		{
+			name:       "cancellation wins a concurrent provider failure",
+			metadata:   ProviderExecutionMetadata{OutcomeState: "failed", FailureReasonCode: "timeout"},
+			cancelled:  true,
+			wantReason: "provider_cancelled",
+		},
+		{
 			name:       "deadline exceeded maps to provider timeout",
 			cause:      context.DeadlineExceeded,
 			wantReason: "timeout",

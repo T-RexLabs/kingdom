@@ -73,10 +73,11 @@ func SettleCompletionTx(ctx context.Context, tx *sql.Tx, owner Owner, lease Leas
 			return fmt.Errorf("successful completion requires the successful provider request")
 		}
 	case "cancelled":
-		// A request cancelled before anything was sent, or whose server is gone,
-		// was abandoned rather than interrupted.
-		if (request.Terminal.Outcome != providerexecution.RequestOutcomeInterrupted && !request.Terminal.Abandoned()) || !observation.Cancelled {
-			return fmt.Errorf("cancellation requires the interrupted or abandoned provider request")
+		// Kingdom's cancellation may race the provider's completion. Keep its
+		// verified terminal unchanged; exact ownership and closed resources still
+		// govern whether the cancellation can settle.
+		if !observation.Cancelled {
+			return fmt.Errorf("cancellation requires Kingdom's cancellation decision")
 		}
 	case "failed":
 		// Kingdom may derive failure from a successful raw response, for

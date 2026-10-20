@@ -48,6 +48,7 @@ import { RunLiveStatus } from "./run-live-status";
 import { RunReworkSummary } from "./run-rework-summary";
 import { isActiveProviderBackedExecution } from "./run-status-semantics";
 import { GovernanceActions } from "./governance-actions";
+import { selectRunRecovery } from "./run-recovery-selection";
 import { CurrentPlanPanel } from "./current-plan-panel";
 import { WorkOrderPanel } from "./work-order-panel";
 import {
@@ -227,7 +228,6 @@ export function RunDetailPage() {
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const planApprovalTargetRef = useRef<HTMLDivElement | null>(null);
   const finalApprovalTargetRef = useRef<HTMLDivElement | null>(null);
-  const activeTabPanelRef = useRef<HTMLDivElement | null>(null);
   const pendingGovernanceFocus = useRef(false);
 
   const baseTimelineItems = useMemo(
@@ -380,17 +380,6 @@ export function RunDetailPage() {
     runId,
     timelineVisible,
   ]);
-
-  useEffect(() => {
-    if (activeTab !== "execution") {
-      return;
-    }
-    const panel = activeTabPanelRef.current;
-    if (!panel) {
-      return;
-    }
-    panel.scrollTop = 0;
-  }, [activeTab, runId]);
 
   useEffect(() => {
     if (!runId || !graphVisible || !graphDirty || graphIsFetching) {
@@ -817,8 +806,7 @@ export function RunDetailPage() {
   }
 
   const governanceState = describeManualGovernanceState(run);
-  const failedNodeCount = run.failed_nodes.length;
-  const cancelledNodes = run.status === "cancelled" ? (graph?.nodes ?? []) : [];
+  const recovery = selectRunRecovery(run.status, graph?.nodes ?? run.failed_nodes, graph?.edges ?? []);
   const governanceJumpLabel = governanceState.isAwaitingPlanApproval
     ? "Review Plan"
     : governanceState.isAwaitingFinalApproval
@@ -1023,11 +1011,10 @@ export function RunDetailPage() {
               Failed to cancel run: {cancelRun.error.message}
             </p>
           )}
-          {(failedNodeCount > 0 || cancelledNodes.length > 0) && (
+          {recovery.nodes.length > 0 && (
             <GovernanceActions
               run={run}
-              failedNodes={run.failed_nodes}
-              cancelledNodes={cancelledNodes}
+              recovery={recovery}
               showFinalApproval={false}
             />
           )}
@@ -1088,7 +1075,6 @@ export function RunDetailPage() {
               </nav>
             </div>
             <div
-              ref={activeTabPanelRef}
               id={`run-tabpanel-${activeTab}`}
               role="tabpanel"
               aria-label={tabs.find((tab) => tab.id === activeTab)?.label}
@@ -1261,7 +1247,6 @@ export function RunDetailPage() {
               {governanceState.isAwaitingFinalApproval && (
                 <GovernanceActions
                   run={run}
-                  failedNodes={run.failed_nodes}
                   showNodeActions={false}
                   finalApprovalCardRef={finalApprovalTargetRef}
                 />

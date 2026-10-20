@@ -42,13 +42,15 @@ func (s *PlanningStore) NextPendingPlanningRetryDue(ctx context.Context) (*time.
 // for a provider-backed planner failure and its policy decision. A retry keeps
 // the operation/ACP run alive but always settles the failed invocation first.
 type FinalizePlanningFailureWithRetryRequest struct {
-	SessionID         string
-	OperationID       string
-	LeaseOwner        string
-	LeaseVersion      int
-	UpdatedAt         string
-	FinishedAt        string
-	ErrorMessage      string
+	SessionID    string
+	OperationID  string
+	LeaseOwner   string
+	LeaseVersion int
+	UpdatedAt    string
+	FinishedAt   string
+	ErrorMessage string
+	// Failure explains a failed reply or regenerate once no retry remains.
+	Failure           *PlanningTurnFailure
 	AllowExpiredLease bool
 
 	ProviderSettlement *FinalizePlanningProviderSettlementRequest
@@ -138,6 +140,9 @@ func (s *PlanningStore) finalizePlanningFailureWithRetryOnce(ctx context.Context
 
 	if !retry {
 		if err := finalizePlanningFailureSessionTx(ctx, tx, operation, req); err != nil {
+			return false, rollbackPlanningTx(tx, "finalize planning failure with retry", err)
+		}
+		if err := settleFailedTurnTx(ctx, tx, operation, req.Failure); err != nil {
 			return false, rollbackPlanningTx(tx, "finalize planning failure with retry", err)
 		}
 	}
@@ -231,13 +236,6 @@ func finalizePlanningFailureSessionTx(ctx context.Context, tx *sql.Tx, operation
 			Where("current_title_operation_id = ?", operation.OperationID)
 	default:
 		update.Set("conversation_state", string(PlanningSessionConversationStateReady))
-		if operation.Type == PlanningOperationTypeRegenerate {
-			previousLeafID, err := regeneratePreviousActiveLeafMessageID(operation.RequestPayloadJSON)
-			if err != nil {
-				return err
-			}
-			update.Set("active_leaf_message_id", finalizeNullable(previousLeafID))
-		}
 		update.Where("planning_session_id = ?", operation.PlanningSessionID).
 			Where("current_operation_id = ?", operation.OperationID)
 	}

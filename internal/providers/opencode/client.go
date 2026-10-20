@@ -56,7 +56,13 @@ type ProtocolError struct {
 	Cause     error
 }
 
-func (e *ProtocolError) Error() string { return "invalid OpenCode " + e.Operation + " response" }
+func (e *ProtocolError) Error() string {
+	message := "invalid OpenCode " + e.Operation + " response"
+	if e.Cause != nil {
+		message += ": " + e.Cause.Error()
+	}
+	return message
+}
 func (e *ProtocolError) Unwrap() error { return e.Cause }
 
 type ConfigurationError struct{}

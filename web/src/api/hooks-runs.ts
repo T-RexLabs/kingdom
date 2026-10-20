@@ -20,7 +20,9 @@ import type {
   MutationWithValue,
   ProviderModelsResponse,
   WorkspaceCapabilities,
-  RetryNodeResult,
+  ResumeRunRequest,
+  ResumeRunResult,
+  RunResumePlan,
 	RetryExecutionStopResult,
   RerunFromNodeResult,
 	RolesResponse,
@@ -64,6 +66,7 @@ export const runQueryKeys = {
 	governanceSummary: (runId: string) => ["runs", runId, "governance-summary"] as const,
 	governanceHistory: (runId: string) => ["runs", runId, "governance-decisions", "history"] as const,
 	graph: (runId: string) => ["runs", runId, "graph"] as const,
+	resumePlan: (runId: string) => ["runs", runId, "resume"] as const,
 	executions: (runId: string) => ["runs", runId, "executions"] as const,
 	nodeAttemptsRoot: (runId: string) => ["runs", runId, "nodes"] as const,
 	nodeAttempts: (runId: string, nodeId: string) => ["runs", runId, "nodes", nodeId, "attempts"] as const,
@@ -670,24 +673,36 @@ export function useCreatePlanApproval(runId: string) {
 	});
 }
 
-export function useRetryNode(runId: string) {
+// The server derives the interrupted frontier and its eligibility; the client
+// only displays and confirms it.
+export function useRunResumePlan(runId: string, options?: RunDetailQueryOptions) {
+  return useQuery({
+    queryKey: runQueryKeys.resumePlan(runId),
+    queryFn: () => apiFetch<RunResumePlan>(`/runs/${runId}/resume`),
+    enabled: !!runId && (options?.enabled ?? true),
+    retry: retryRunDetailQuery,
+    ...refetchOnMountQueryOptions,
+  });
+}
+
+export function useResumeRun(runId: string) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ value, key }: MutationWithValue<string>) =>
-      apiFetch<RetryNodeResult>(`/runs/${runId}/nodes/${value}/retry`, {
+    mutationFn: ({ body, key }: MutationWithBody<ResumeRunRequest>) =>
+      apiFetch<ResumeRunResult>(`/runs/${runId}/resume`, {
         method: "POST",
         headers: { "Idempotency-Key": key },
-        body: JSON.stringify({ reason: "manual retry from run detail" }),
+        body: JSON.stringify(body),
       }),
 		onSuccess: async () => {
 			await Promise.all([
-				invalidateRunsCollectionQueries(qc),
-				invalidateRunDetailQueries(qc, runId),
-				invalidateRunExecutionAffectedQueries(qc, runId),
+				invalidateRunRerunQueries(qc, runId),
 				invalidateDashboardAnalyticsQueries(qc),
 				invalidateRuntimeMetricsQueries(qc),
 			]);
 		},
+		// A rejected confirmation carries a changed plan; show the current one.
+		onError: () => qc.invalidateQueries({ queryKey: runQueryKeys.resumePlan(runId) }),
 	});
 }
 

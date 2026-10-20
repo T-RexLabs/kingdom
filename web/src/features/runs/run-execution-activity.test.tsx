@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "@/api/schema";
 import { RunExecutionActivity } from "./run-execution-activity";
 
@@ -89,14 +89,55 @@ function observedThoughtAndTool(): components["schemas"]["AcpRunActivityItem"][]
   ];
 }
 
+const scrollToLatest = vi.fn();
+const originalScrollIntoView = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+
 describe("focused provider activity", () => {
+  afterEach(() => {
+    if (originalScrollIntoView) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScrollIntoView);
+    else Reflect.deleteProperty(HTMLElement.prototype, "scrollIntoView");
+  });
   beforeEach(() => {
+    scrollToLatest.mockClear();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollToLatest });
     state.items = [];
     state.gaps = [];
     state.pending = false;
     state.error = false;
     state.retry.mockClear();
     state.historyProps.mockClear();
+  });
+  it("opens at the latest content after history and detail load without moving a reader on updates", () => {
+    state.pending = true;
+    const view = render(<RunExecutionActivity runId="run" attemptId="a" status="running" isDetailLoading />);
+    expect(scrollToLatest).not.toHaveBeenCalled();
+
+    state.pending = false;
+    state.items = observedThoughtAndTool();
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="running" isDetailLoading />);
+    expect(scrollToLatest).not.toHaveBeenCalled();
+
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(1);
+    expect(scrollToLatest).toHaveBeenLastCalledWith({ block: "end" });
+
+    state.items = [...state.items, { ...state.items[1], id: "next", event_id: "next", sequence: 3 }];
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(1);
+
+    view.rerender(<RunExecutionActivity runId="run" attemptId="b" status="running" />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(2);
+  });
+
+  it("scrolls only when the conversation is visible and starts at latest when reopened", () => {
+    const view = render(<RunExecutionActivity runId="run" attemptId="a" isVisible={false} />);
+    expect(scrollToLatest).not.toHaveBeenCalled();
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" isVisible />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(1);
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" isVisible={false} />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(1);
+    view.rerender(<RunExecutionActivity runId="run" attemptId="a" isVisible />);
+    expect(scrollToLatest).toHaveBeenCalledTimes(2);
   });
   it("explains a finished attempt with only hidden message observations and no settled reply", () => {
     state.items = [{ ...observedThoughtAndTool()[0], kind: "message", label: "Provider Message" }];
@@ -160,7 +201,6 @@ describe("focused provider activity", () => {
     state.items = observedThoughtAndTool();
     const view = render(<RunExecutionActivity runId="run" attemptId="a" status="running" />);
     const history = screen.getByRole("region", { name: "Provider activity history" });
-    expect(screen.queryByRole("region", { name: "Provider activity preview" })).not.toBeInTheDocument();
     view.rerender(<RunExecutionActivity runId="run" attemptId="a" status="succeeded" detail={{
       attempt_id: "a", output_status: "settled", settlement_status: "succeeded", output_text: "## Complete result",
     } as import("@/api/hooks").RunExecutionDetail} />);

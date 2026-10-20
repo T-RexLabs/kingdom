@@ -1244,7 +1244,7 @@ func TestServerRetryNodeAllowsRepeatedOperatorAttempts(t *testing.T) {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
-			path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+			path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 			body:           map[string]any{"reason": "retry attempt"},
 			idempotencyKey: "idem-retry-attempt-" + strconv.Itoa(i),
 		})
@@ -1264,7 +1264,7 @@ func TestServerRetryNodeAllowsRepeatedOperatorAttempts(t *testing.T) {
 	setRunStatus(t, db, runID, "failed")
 	accepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "operator requested another retry"},
 		idempotencyKey: "idem-retry-over-cap",
 	})
@@ -1303,7 +1303,7 @@ LIMIT 1`, runID).Scan(&reviewNodeID); err != nil {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
-			path:           "/api/v1/runs/" + runID + "/nodes/" + reviewNodeID + "/retry",
+			path:           "/api/v1/runs/" + runID + "/rerun-from/" + reviewNodeID,
 			body:           map[string]any{"reason": "retry under configured loop cap"},
 			idempotencyKey: "idem-retry-loop-cap-" + strconv.Itoa(i),
 		})
@@ -1327,7 +1327,7 @@ func TestServerRetryQueueFailureDoesNotLeaveStrayPendingAttempt(t *testing.T) {
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/execution_kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/execution_kickoff",
 		body:           map[string]any{"reason": "queue should fail before plan approval"},
 		idempotencyKey: "idem-retry-unapproved-plan",
 	})
@@ -1383,7 +1383,7 @@ LIMIT 1`, runID).Scan(&kickoffNodeID); err != nil {
 		setRunStatus(t, db, runID, "failed")
 		res := performJSONRequest(t, handler, requestSpec{
 			method:         http.MethodPost,
-			path:           "/api/v1/runs/" + runID + "/nodes/" + reviewNodeID + "/retry",
+			path:           "/api/v1/runs/" + runID + "/rerun-from/" + reviewNodeID,
 			body:           map[string]any{"reason": "seed delegated execution attempt budget"},
 			idempotencyKey: "idem-retry-seed-budget-" + strconv.Itoa(i),
 		})
@@ -1426,7 +1426,7 @@ func TestServerRetryReusesCanonicalRoleAgentWithoutCreatingSystemDuplicate(t *te
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "manual retry should reuse canonical council agent"},
 		idempotencyKey: "idem-retry-canonical-agent",
 	})
@@ -1480,7 +1480,7 @@ func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 
 	retryConflict := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "retry while running"},
 		idempotencyKey: "idem-retry-conflict",
 	})
@@ -1503,7 +1503,7 @@ func TestServerRetryAndRerunRequireTerminalRunStatus(t *testing.T) {
 	setRunStatus(t, db, runID, "failed")
 	retryAccepted := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "retry after failed"},
 		idempotencyKey: "idem-retry-accepted",
 	})
@@ -1530,7 +1530,7 @@ func TestServerRetryAndRerunRejectStartedManagedWorktreeCleanup(t *testing.T) {
 		name string
 		path func(string) string
 	}{
-		{name: "retry", path: func(runID string) string { return "/api/v1/runs/" + runID + "/nodes/kickoff/retry" }},
+		{name: "retry", path: func(runID string) string { return "/api/v1/runs/" + runID + "/rerun-from/kickoff" }},
 		{name: "rerun", path: func(runID string) string { return "/api/v1/runs/" + runID + "/rerun-from/kickoff" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1601,7 +1601,7 @@ func TestServerRetryNodeReopensSettledCancelledRun(t *testing.T) {
 
 	res := performJSONRequest(t, handler, requestSpec{
 		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
+		path:           "/api/v1/runs/" + runID + "/rerun-from/kickoff",
 		body:           map[string]any{"reason": "resume cancelled work"},
 		idempotencyKey: "idem-retry-cancelled",
 	})
@@ -1682,22 +1682,11 @@ func TestServerRerunFromCancelledWaitsForCancellationOutbox(t *testing.T) {
 	assertLatestAttempt(t, db, runID, "kickoff", 2, "ready")
 }
 
-func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
+func TestServerRerunProjectsCollectionStreamUpdates(t *testing.T) {
 	t.Parallel()
 
 	handler, db := newAPIServerForTest(t)
 	runID := seedRunViaAPI(t, handler)
-
-	setRunStatus(t, db, runID, "failed")
-	retryAccepted := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/kickoff/retry",
-		body:           map[string]any{"reason": "retry should refresh collection stream"},
-		idempotencyKey: "idem-retry-collection-stream",
-	})
-	if retryAccepted.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 retry accepted, got %d (%s)", retryAccepted.Code, retryAccepted.Body.String())
-	}
 
 	setRunStatus(t, db, runID, "failed")
 	rerunAccepted := performJSONRequest(t, handler, requestSpec{
@@ -1708,14 +1697,6 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 	})
 	if rerunAccepted.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 rerun accepted, got %d (%s)", rerunAccepted.Code, rerunAccepted.Body.String())
-	}
-
-	var retryCollectionEvents int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM run_collection_events WHERE run_id = ? AND event_type = 'run.retry_reopened'`, runID).Scan(&retryCollectionEvents); err != nil {
-		t.Fatalf("count retry collection events: %v", err)
-	}
-	if retryCollectionEvents != 1 {
-		t.Fatalf("expected one retry collection event, got %d", retryCollectionEvents)
 	}
 
 	var rerunCollectionEvents int
@@ -1734,9 +1715,6 @@ func TestServerRetryAndRerunProjectCollectionStreamUpdates(t *testing.T) {
 		t.Fatalf("expected 200 stream response, got %d (%s)", streamRes.Code, streamRes.Body.String())
 	}
 	body := streamRes.Body.String()
-	if !strings.Contains(body, "event: run.retry_reopened") {
-		t.Fatalf("expected retry reopen collection event in stream, got body: %s", body)
-	}
 	if !strings.Contains(body, "event: run.rerun_reopened") {
 		t.Fatalf("expected rerun reopen collection event in stream, got body: %s", body)
 	}
@@ -1818,29 +1796,3 @@ func TestServerRerunFromPlanDraftingIncludesNeedsReworkBranchTargets(t *testing.
 	assertLatestAttempt(t, db, runID, "execution_review", 1, "pending")
 }
 
-func TestServerRetryQueuesOnlyTargetNode(t *testing.T) {
-	t.Parallel()
-
-	handler, db := newAPIServerForTest(t)
-	runID := seedRunWithLinearExecutionWorkflow(t, handler)
-	setRunStatus(t, db, runID, "failed")
-
-	res := performJSONRequest(t, handler, requestSpec{
-		method:         http.MethodPost,
-		path:           "/api/v1/runs/" + runID + "/nodes/completion/retry",
-		body:           map[string]any{"reason": "retry final decision"},
-		idempotencyKey: "idem-retry-royal-closure",
-	})
-	if res.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 retry accepted, got %d (%s)", res.Code, res.Body.String())
-	}
-
-	assertLatestAttempt(t, db, runID, "completion", 1, "ready")
-	var count int
-	if err := db.QueryRow(`SELECT COUNT(1) FROM node_runs WHERE run_id = ? AND node_id IN ('plan_drafting','execution_kickoff','implementation','execution_review','quality_validation')`, runID).Scan(&count); err != nil {
-		t.Fatalf("count non-target replay attempts: %v", err)
-	}
-	if count != 0 {
-		t.Fatalf("expected retry to queue only target node, got %d non-target attempts", count)
-	}
-}

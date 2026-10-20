@@ -1404,7 +1404,9 @@ func TestRestoreTrustedWorkspaceAfterCancellationUsesAttemptBaseSnapshot(t *test
 		t.Fatalf("ensure execution target: %v", err)
 	}
 
-	loop := orchestrationLoop{executionStore: executionstore.New(db), fsStore: fsStore}
+	loop := orchestrationLoop{db: db, executionStore: executionstore.New(db), fsStore: fsStore, now: func() time.Time {
+		return time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	}}
 	err = loop.restoreTrustedWorkspaceAfterCancellation(context.Background(), executionstore.AttemptCancelRecord{AttemptID: "run_1:implementation:1", RunID: "run_1", NodeID: "implementation", NodeClass: "delegated_execution", BaseSnapshotID: "snap_attempt_base"}, now)
 	var blocked workspaceHandoffBlockedError
 	if !errors.As(err, &blocked) {
@@ -2191,7 +2193,6 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 		nodeEventType string
 		eventPrefix   string
 	}{
-		{name: "retry", runEventType: "run.retry_reopened", runReasonCode: "manual_retry_requested", nodeEventType: "attempt.retry_queued", eventPrefix: "retry"},
 		{name: "rerun", runEventType: "run.rerun_reopened", runReasonCode: "manual_rerun_requested", nodeEventType: "attempt.rerun_queued", eventPrefix: "rerun"},
 	} {
 		t.Run(replay.name, func(t *testing.T) {
@@ -2246,7 +2247,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 			if _, err := db.Exec(`UPDATE node_runs SET node_status = 'failed', finished_at = ? WHERE node_run_id = 'nr_manual_quarantine_recovery_1'`, quarantinedAt.Format(time.RFC3339Nano)); err != nil {
 				t.Fatalf("mark original node failed: %v", err)
 			}
-			if err := rt.orchestrator.recoverQuarantinedExecutionTargetBeforeDispatch(context.Background(), runID, "nr_manual_quarantine_recovery_1"); err == nil || !strings.Contains(err.Error(), "requires an explicit retry or rerun") {
+			if err := rt.orchestrator.recoverQuarantinedExecutionTargetBeforeDispatch(context.Background(), runID, "nr_manual_quarantine_recovery_1"); err == nil || !strings.Contains(err.Error(), "requires an explicit rerun") {
 				t.Fatalf("automatic preparation against quarantined target err=%v, want explicit-replay rejection", err)
 			}
 			if adapter.callsCount() != 0 {
@@ -2256,7 +2257,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 			idCounter := 0
 			queued, err := rt.orchestrator.transition.ReplayTerminalRun(context.Background(), state.ReplayTerminalRunRequest{
 				RunID: runID, AnchorNodeID: nodeID, TargetNodeIDs: []string{nodeID}, Reason: "operator confirmed recovery",
-				ActorID: "local-operator", RoleID: "operator", AuthoritySource: "api." + replay.name,
+				ActorID: "local-operator", RoleID: "operator", AuthoritySource: "api.rerun_from_node",
 				RunEventType: replay.runEventType, RunReasonCode: replay.runReasonCode, NodeEventType: replay.nodeEventType,
 				EventPrefix: replay.eventPrefix, OccurredAt: quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano),
 				GenerateID: func(prefix string) string {
@@ -2269,7 +2270,7 @@ func TestManualReplayRecoversQuarantinedExecutionTargetBeforeDispatch(t *testing
 			}
 
 			attempt := nodeAttempt{NodeRunID: queued[0].NodeRunID, NodeID: queued[0].NodeID, Attempt: queued[0].Attempt, Wave: queued[0].Wave, NodeStatus: "ready", RequiredRole: queued[0].RequiredRole, AgentID: queued[0].AgentID}
-			attempt.TransitionAuthority = "api." + replay.name
+			attempt.TransitionAuthority = "api.rerun_from_node"
 			if err := rt.orchestrator.dispatchNodeAttempt(context.Background(), runSnapshot{RunID: runID, RunStatus: "running", PlanState: "approved", PublishMode: PublishModeDirect}, nodeDefinition{NodeID: nodeID, RequiredRole: "builder", NodeClass: workflow.NodeClassDelegatedExecution}, attempt, quarantinedAt.Add(time.Minute).Format(time.RFC3339Nano)); err != nil {
 				t.Fatalf("dispatch manually recovered target: %v", err)
 			}

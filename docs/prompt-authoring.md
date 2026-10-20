@@ -8,7 +8,7 @@
 | --- | --- |
 | `roles.yaml` | Protected role instructions and system-owned mailbox templates |
 | `default_guidance.yaml` | Substantive editable working defaults for each role |
-| `node_contracts.yaml` | Shared authority/evidence, and node-class planning, path, inspection, response, and final-check requirements |
+| `node_contracts.yaml` | Shared authority/evidence, the resumed-attempt continuation, and node-class planning, path, inspection, response, and final-check requirements |
 | `planning_modes.yaml` | Planning invocation context, shared safety, and the `reply`, `formalize`, and `generate_title` contracts and final checks |
 | `communication_styles.yaml` | Built-in Neutral style and protected Communication Style framing |
 
@@ -44,6 +44,8 @@ Content changes produce a new catalog digest. Keep `Catalog.Version` aligned wit
 4. Regenerate Go and TypeScript OpenAPI types only when the public API contract changes.
 5. Run focused Go and web checks, then `make verify` for a full change.
 6. When prompt behavior changes, compare a representative before/after provider prompt and confirm role capabilities remain intact.
+
+A resumed attempt sends only new input, because its conversation already holds the original Run Context. That input is the pinned `shared.resume_continuation` section, the saved checkpoint's outcome and time, and the snapshot-resolved Final Checks as the last section. Catalog revisions pinned before this section existed remain valid, but their runs cannot be resumed.
 
 ## Inspecting Dispatched Instructions
 

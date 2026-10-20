@@ -85,8 +85,10 @@ export function PlannerMessageCard({
     currentVariantIndex != null &&
     sessionId &&
     onActivateVariant;
+  const failure = isAssistant ? message.failure : undefined;
   const showRegenerate =
     isAssistant &&
+    !failure &&
     !isFirstAssistant &&
     !(isProcessing ?? false) &&
     onRegenerate;
@@ -128,7 +130,6 @@ export function PlannerMessageCard({
                     }
                     activity={messageActivity}
                     isLive={isAssistantStreaming && !hasFinalResponse}
-                    hasFinalResponse={hasFinalResponse}
                   />
                 )}
                 {displayText.trim() ? (
@@ -144,6 +145,26 @@ export function PlannerMessageCard({
                       className="text-sm leading-relaxed"
                     />
                   )
+                ) : null}
+                {failure ? (
+                  <div
+                    role="alert"
+                    className="space-y-2 rounded-xl border border-status-failed/30 bg-status-failed/10 p-3"
+                  >
+                    <p className="text-xs font-medium text-status-failed">Reply Failed</p>
+                    <p className="text-sm leading-relaxed text-foreground">{failure.message}</p>
+                    {onRegenerate ? (
+                      <button
+                        type="button"
+                        onClick={onRegenerate}
+                        disabled={isProcessing ?? false}
+                        className="ui-button ui-button--ghost inline-flex min-h-8 items-center gap-1.5 rounded-md border border-border/60 px-2.5 text-xs font-medium text-foreground transition-colors hover:border-accent/40 hover:text-accent disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        <RefreshCw aria-hidden="true" className="h-3 w-3" />
+                        Retry
+                      </button>
+                    ) : null}
+                  </div>
                 ) : null}
                 {children}
                 {showSources ? (

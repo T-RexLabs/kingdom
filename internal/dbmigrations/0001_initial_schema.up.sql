@@ -1175,6 +1175,9 @@ CREATE TABLE planning_messages (
   created_at TEXT NOT NULL,
   content_content_id TEXT REFERENCES request_contents(content_id),
   answer_text_content_id TEXT REFERENCES request_contents(content_id),
+  -- A failed assistant turn keeps its place in the tree with no content.
+  failure_reason_code TEXT CHECK (failure_reason_code IS NULL OR (role = 'assistant' AND failure_reason_code <> '')),
+  failure_provider_message TEXT NOT NULL DEFAULT '' CHECK (failure_reason_code IS NOT NULL OR failure_provider_message = ''),
   FOREIGN KEY (planning_session_id) REFERENCES planning_sessions(planning_session_id) ON DELETE CASCADE,
   FOREIGN KEY (parent_message_id) REFERENCES planning_messages(planning_message_id) ON DELETE CASCADE
 );

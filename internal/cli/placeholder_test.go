@@ -202,22 +202,22 @@ func TestExecuteApprovalsDecideHelpIsSpecific(t *testing.T) {
 	}
 }
 
-func TestExecuteNodeRetryHelpIsSpecific(t *testing.T) {
+func TestExecuteRunResumeHelpIsSpecific(t *testing.T) {
 	t.Parallel()
 
 	stdout := &bytes.Buffer{}
 	stderr := &bytes.Buffer{}
-	exitCode := Execute(context.Background(), stdout, stderr, []string{"node", "retry", "--help"})
+	exitCode := Execute(context.Background(), stdout, stderr, []string{"run", "resume", "--help"})
 
 	if exitCode != ExitSuccess {
 		t.Fatalf("expected help exit code %d, got %d", ExitSuccess, exitCode)
 	}
-	assertContainsAll(t, stdout.String(), "Retry a specific node.", "kd node retry --run-id <id> --node-key <key> --reason <text>", "--node-key <key>")
-	if strings.Contains(stdout.String(), "kd node rerun-from") {
-		t.Fatalf("expected specific retry help, got %q", stdout.String())
-	}
+	assertContainsAll(t, stdout.String(), "Resume the run's interrupted steps from their saved checkpoints.", "kd run resume --run-id <id> --reason <text>", "kd node rerun-from")
 	if stderr.Len() != 0 {
 		t.Fatalf("expected empty stderr, got %q", stderr.String())
+	}
+	if exitCode := Execute(context.Background(), &bytes.Buffer{}, &bytes.Buffer{}, []string{"node", "retry", "--help"}); exitCode == ExitSuccess {
+		t.Fatal("removed node retry command is still available")
 	}
 }
 
@@ -1154,24 +1154,27 @@ func TestExecuteRunArtifactsExport(t *testing.T) {
 	}
 }
 
-func TestExecuteNodeRetryReturnsAPIExitCode(t *testing.T) {
+func TestExecuteRunResumeConfirmsTheServerPlan(t *testing.T) {
 	t.Parallel()
 
+	var posted map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost || r.URL.Path != "/api/v1/runs/run-1/nodes/kickoff/retry" {
+		if r.URL.Path != "/api/v1/runs/run-1/resume" {
 			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		}
-		writeJSONResponse(t, w, http.StatusBadRequest, map[string]interface{}{
-			"error": map[string]interface{}{
-				"category":       "policy",
-				"code":           "policy_violation",
-				"correlation_id": "corr-1",
-				"details":        map[string]interface{}{},
-				"message":        "retry denied",
-				"occurred_at":    "2026-03-01T10:00:00Z",
-				"retryable":      false,
-			},
-		})
+		if r.Method == http.MethodGet {
+			writeJSONResponse(t, w, http.StatusOK, map[string]any{"run_id": "run-1", "available": true, "steps": []any{
+				map[string]any{"node_id": "implementation", "source_attempt_id": "run-1:implementation:1", "checkpoint_captured_at": "2026-03-01T10:00:00Z"},
+			}})
+			return
+		}
+		if r.Header.Get("Idempotency-Key") == "" {
+			t.Fatal("resume was sent without an idempotency key")
+		}
+		if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+			t.Fatal(err)
+		}
+		writeJSONResponse(t, w, http.StatusAccepted, map[string]any{"run_id": "run-1", "resumed_node_ids": []string{"implementation"}, "resume_enqueued": true})
 	}))
 	defer server.Close()
 
@@ -1179,14 +1182,40 @@ func TestExecuteNodeRetryReturnsAPIExitCode(t *testing.T) {
 	stderr := &bytes.Buffer{}
 	exitCode := executeAuthenticatedAPICommand(t, stdout, stderr, []string{
 		"--server", server.URL + "/api/v1",
-		"node", "retry", "--run-id", "run-1", "--node-key", "kickoff", "--reason", "try again",
+		"run", "resume", "--run-id", "run-1", "--reason", "continue",
 	})
-
-	if exitCode != ExitAPI {
-		t.Fatalf("expected API exit code %d, got %d", ExitAPI, exitCode)
+	if exitCode != ExitSuccess {
+		t.Fatalf("resume failed: code=%d stderr=%q", exitCode, stderr.String())
 	}
-	if !strings.Contains(stderr.String(), "policy_violation") {
-		t.Fatalf("expected API code in stderr, got %q", stderr.String())
+	steps, _ := posted["steps"].([]any)
+	if posted["reason"] != "continue" || len(steps) != 1 || steps[0].(map[string]any)["source_attempt_id"] != "run-1:implementation:1" {
+		t.Fatalf("resume did not confirm the server plan: %#v", posted)
+	}
+	if !strings.Contains(stdout.String(), "resume enqueued: run=run-1 steps=implementation") {
+		t.Fatalf("unexpected output %q", stdout.String())
+	}
+}
+
+func TestExecuteRunResumeExplainsUnavailableCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("unavailable resume was submitted: %s %s", r.Method, r.URL.Path)
+		}
+		writeJSONResponse(t, w, http.StatusOK, map[string]any{"run_id": "run-1", "available": false, "steps": []any{
+			map[string]any{"node_id": "review", "unavailable_reason": "No checkpoint was saved when this step stopped."},
+		}})
+	}))
+	defer server.Close()
+
+	stderr := &bytes.Buffer{}
+	exitCode := executeAuthenticatedAPICommand(t, &bytes.Buffer{}, stderr, []string{
+		"--server", server.URL + "/api/v1",
+		"run", "resume", "--run-id", "run-1", "--reason", "continue",
+	})
+	if exitCode == ExitSuccess || !strings.Contains(stderr.String(), "review: No checkpoint was saved when this step stopped.") || !strings.Contains(stderr.String(), "kd node rerun-from") {
+		t.Fatalf("unavailable resume was not explained: code=%d stderr=%q", exitCode, stderr.String())
 	}
 }
 

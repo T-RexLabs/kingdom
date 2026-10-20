@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"kingdom/internal/execution/providerrequest"
 	executionstore "kingdom/internal/execution/store"
 	"kingdom/internal/state"
 )
@@ -93,6 +94,9 @@ func (o *orchestrationLoop) completeAttemptCancelHandoff(ctx context.Context, re
 		return false, o.recordAttemptCancelFailureMessage(ctx, rec, "Kingdom is waiting for the provider worker to finish before completing cancellation.", handoffState, publishedAt)
 	}
 	if restoreErr := o.restoreTrustedWorkspaceAfterCancellation(ctx, rec, publishedAt); restoreErr != nil {
+		if errors.Is(restoreErr, providerrequest.ErrResourcesOpen) {
+			return false, restoreErr
+		}
 		publishedAt = o.now().UTC().Format(time.RFC3339Nano)
 		slog.Warn("failed to restore trusted workspace after cancellation", "attempt_id", rec.AttemptID, "run_id", rec.RunID, "error", restoreErr)
 		var blocked workspaceHandoffBlockedError
@@ -187,6 +191,9 @@ func (o *orchestrationLoop) restoreTrustedWorkspaceAfterCancellation(ctx context
 	}
 	if strings.TrimSpace(target.ExecutionRoot) == "" {
 		return fmt.Errorf("workspace-owning attempt has no execution root")
+	}
+	if err := o.captureCancelledResumeCheckpoint(ctx, rec.AttemptID, rec.RunID, rec.NodeID, rec.NodeClass, target.ExecutionRoot, baseSnapshotID); err != nil {
+		return fmt.Errorf("preserve cancelled workspace checkpoint: %w", err)
 	}
 	if err := o.restoreExecutionTarget(ctx, rec.RunID, target.ExecutionRoot, baseSnapshotID, restoredAt); err != nil {
 		return fmt.Errorf("restore trusted workspace after cancellation: %w", err)

@@ -134,6 +134,7 @@ export function PopoverListbox({
     open,
     onOpenChange: handleOpenChange,
     role: "listbox",
+    allowFlip: true,
     minWidth,
     maxHeight,
     triggerDisabled,

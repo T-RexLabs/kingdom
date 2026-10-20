@@ -28,6 +28,11 @@ shared:
     - "Treat `.kingdom/` and `kingdom-artifacts/` as Kingdom-managed runtime/operator state, not work order deliverables."
     - "Ignore those paths when checking whether only the intended project files changed, unless the work order explicitly targets them."
     - "Never delete, modify, or `clean up` those runtime-managed paths as part of work order work or rework."
+  resume_continuation:
+    - "Kingdom stopped your previous attempt at this step before it finished. This message continues that conversation in a new attempt."
+    - "The workspace holds the partial files saved when the attempt stopped. They are unverified progress, not accepted output."
+    - "Commands and tools that were running when the attempt stopped did not complete. Rerun any check you still need instead of assuming its result."
+    - "Inspect the current files before relying on earlier conclusions, then finish the remaining work under the same task, contract, and response requirements."
 execution_review:
   inspection_workspace:
     - "Inspect this attempt's private copy of the implementation pinned when the attempt was admitted. Other attempts cannot change this copy."

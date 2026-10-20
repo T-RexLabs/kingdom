@@ -269,6 +269,55 @@ type dispatchPromptConfiguration struct {
 	SystemPrompt string
 }
 
+// runPinnedNodePrompt resolves the node's system prompt and Final Checks from
+// the run's immutable configuration snapshot, never the latest catalog.
+func (o *orchestrationLoop) runPinnedNodePrompt(ctx context.Context, run runSnapshot, node nodeDefinition) (prompts.Catalog, string, string, error) {
+	snapshot, err := state.LoadRunAgentConfigurationSnapshot(ctx, o.db, run.RunID)
+	if err != nil {
+		return prompts.Catalog{}, "", "", fmt.Errorf("load run agent configuration snapshot: %w", err)
+	}
+	roleConfiguration := snapshot.ForRole(node.RequiredRole)
+	nodeClass := resolvedNodeClass(node.NodeID, node.NodeClass)
+	systemPrompt, err := snapshot.PromptCatalog.ExecutionSystemPrompt(prompts.ExecutionSystemPromptInput{
+		RoleID: node.RequiredRole, NodeClass: nodeClass,
+		CommunicationStyle: roleConfiguration.Voice.Instruction, AgentGuidance: roleConfiguration.GuidanceText,
+	})
+	if err != nil {
+		return prompts.Catalog{}, "", "", fmt.Errorf("compose run-pinned agent system prompt: %w", err)
+	}
+	behavior := workflow.BehaviorForNode(node.NodeID, node.NodeClass)
+	finalChecks := snapshot.PromptCatalog.FinalChecksSection(nodeClass, behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse)
+	return snapshot.PromptCatalog, systemPrompt, finalChecks, nil
+}
+
+// prepareResumePrompt is the only new input of a resumed attempt: the source
+// conversation already holds the original Run Context. It names the restored
+// checkpoint and repeats the pinned Final Checks as the last section.
+func (o *orchestrationLoop) prepareResumePrompt(ctx context.Context, run runSnapshot, node nodeDefinition, resume state.AttemptResumeInput) (*promptFile, dispatchPromptConfiguration, error) {
+	catalog, systemPrompt, finalChecks, err := o.runPinnedNodePrompt(ctx, run, node)
+	if err != nil {
+		return nil, dispatchPromptConfiguration{}, err
+	}
+	continuation, err := catalog.ResumeContinuationSection()
+	if err != nil {
+		return nil, dispatchPromptConfiguration{}, err
+	}
+	var phase, failureCode string
+	if err := o.db.QueryRowContext(ctx, `SELECT state,COALESCE(failure_code,'') FROM attempt_executions WHERE attempt_id=?`, resume.Checkpoint.SourceAttemptID).Scan(&phase, &failureCode); err != nil {
+		return nil, dispatchPromptConfiguration{}, fmt.Errorf("load resumed attempt outcome: %w", err)
+	}
+	outcome := strings.TrimPrefix(phase, "committed_")
+	if failureCode = strings.TrimSpace(failureCode); failureCode != "" {
+		outcome += " (" + failureCode + ")"
+	}
+	checkpoint := "Saved Checkpoint:\n- Previous attempt: " + outcome + "\n- Saved at: " + resume.Checkpoint.CapturedAt
+	file, err := preparePromptDocument(ctx, promptInstructions(promptLiteral(continuation), promptLiteral(checkpoint), promptLiteral(finalChecks)))
+	if err != nil {
+		return nil, dispatchPromptConfiguration{}, err
+	}
+	return file, dispatchPromptConfiguration{SystemPrompt: systemPrompt}, nil
+}
+
 func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSnapshot, node nodeDefinition, attempt nodeAttempt, delegator string) (*promptFile, string, dispatchPromptConfiguration, error) {
 	a := &promptAssembly{ctx: ctx}
 	defer a.close()
@@ -289,23 +338,10 @@ func (o *orchestrationLoop) prepareDispatchPrompt(ctx context.Context, run runSn
 		return nil, "", dispatchPromptConfiguration{}, err
 	}
 	guidance = promptPrepared(prepared)
-	agentConfigurationSnapshot, err := state.LoadRunAgentConfigurationSnapshot(ctx, o.db, run.RunID)
+	_, systemPrompt, finalChecks, err := o.runPinnedNodePrompt(ctx, run, node)
 	if err != nil {
-		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("load run agent configuration snapshot: %w", err)
+		return nil, "", dispatchPromptConfiguration{}, err
 	}
-	roleConfiguration := agentConfigurationSnapshot.ForRole(node.RequiredRole)
-	behavior := workflow.BehaviorForNode(node.NodeID, node.NodeClass)
-	systemPrompt, err := agentConfigurationSnapshot.PromptCatalog.ExecutionSystemPrompt(prompts.ExecutionSystemPromptInput{
-		RoleID: node.RequiredRole, NodeClass: resolvedNodeClass(node.NodeID, node.NodeClass),
-		CommunicationStyle: roleConfiguration.Voice.Instruction, AgentGuidance: roleConfiguration.GuidanceText,
-	})
-	if err != nil {
-		return nil, "", dispatchPromptConfiguration{}, fmt.Errorf("compose run-pinned agent system prompt: %w", err)
-	}
-	finalChecks := agentConfigurationSnapshot.PromptCatalog.FinalChecksSection(
-		resolvedNodeClass(node.NodeID, node.NodeClass),
-		behavior.ProviderCompletionMode == workflow.ProviderCompletionModeServerResponse,
-	)
 	doc := o.buildNodeContextDocument(ctx, run.RunID, node.NodeID, node.NodeClass, o.roleIDForAgent(ctx, delegator), finalChecks, promptSource(workOrder), approved, guidance)
 	file, err := preparePromptDocument(ctx, doc)
 	if err != nil {

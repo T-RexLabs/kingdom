@@ -4,15 +4,13 @@ import {
   ActivityHistory,
   type ActivityHistoryControls,
 } from "./activity-history";
+import { activityStatusLine } from "./activity-status";
 import { isConversationActivity, type ActivityItem } from "./activity-view";
-import { ActivityPreview } from "./activity-preview";
 
 type ActivityDisclosureProps = ActivityHistoryControls & {
   scopeKey: string;
   items: ActivityItem[];
   isLive: boolean;
-  hasFinalResponse: boolean;
-  completionBehavior: "collapse" | "keep-open";
   isLoading?: boolean;
   error?: Error | null;
   retry?: () => Promise<unknown>;
@@ -27,17 +25,10 @@ function ScopedActivityDisclosure({
   error,
   retry,
   isLive,
-  hasFinalResponse,
-  completionBehavior,
   ...history
 }: ActivityDisclosureProps) {
   const [open, setOpen] = useState(false);
   const [hasOpened, setHasOpened] = useState(false);
-  const showPreview = completionBehavior === "keep-open" || !hasFinalResponse;
-  const openHistory = () => {
-    setHasOpened(true);
-    setOpen(true);
-  };
   const panelId = useId();
   const visibleItems = useMemo(
     () => history.items.filter(isConversationActivity),
@@ -50,32 +41,34 @@ function ScopedActivityDisclosure({
 
   return (
     <div className="space-y-2">
-      {showPreview && (
-        <ActivityPreview
-          items={history.items}
-          isLive={isLive}
-          hasGaps={history.gaps.length > 0}
-          onReadMore={openHistory}
-        />
-      )}
-      {showHistoryControl && (
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => {
-            setHasOpened(true);
-            setOpen((current) => !current);
-          }}
-          className="inline-flex min-h-9 items-center gap-2 text-xs font-medium text-foreground-muted transition-colors hover:text-foreground"
-        >
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
-          />
-          {open ? "Hide Activity" : "Show Activity"}
-        </button>
-      )}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1">
+        {isLive && (
+          <p
+            role="status"
+            className="min-w-0 truncate text-xs text-foreground-muted"
+          >
+            {activityStatusLine(history.items)}
+          </p>
+        )}
+        {showHistoryControl && (
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={panelId}
+            onClick={() => {
+              setHasOpened(true);
+              setOpen((current) => !current);
+            }}
+            className="inline-flex min-h-9 items-center gap-2 text-xs font-medium text-foreground-muted transition-colors hover:text-foreground"
+          >
+            <ChevronDown
+              aria-hidden="true"
+              className={`h-3.5 w-3.5 transition-transform ${open ? "rotate-180" : ""}`}
+            />
+            {open ? "Hide Activity" : "Show Activity"}
+          </button>
+        )}
+      </div>
       {readError && (
         <p role="alert" className="text-xs text-status-failed">
           Activity could not be loaded.{" "}

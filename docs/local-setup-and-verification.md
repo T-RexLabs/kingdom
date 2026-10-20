@@ -42,7 +42,7 @@ kd summon --port 18080
 
 Pick a free port other than 8080 and replace `18080` if it is already in use. Open the URL printed by Kingdom.
 
-In the browser, open **Planning**, select a model, and start a planning session or create a Work Order. Follow its run under **Runs** and inspect the workflow, execution, result, and approval state. If manual approvals are on, try both approval gates.
+In the browser, open **Planning**, select **OpenAI - GPT-6 Luna** with **Medium** thinking effort, and start a planning session or create a Work Order. Follow its run under **Runs** and inspect the workflow, execution, result, and approval state. If manual approvals are on, try both approval gates.
 
 The fresh directory keeps this check separate from the repository and from your other projects. When you are done, stop Kingdom in that directory with `kd summon stop`. Do not use `kd clean` unless you intend to remove that directory’s entire `.kingdom/` state.
 

@@ -445,3 +445,31 @@ func TestReviewAndValidatorRoleInstructionsDeclareExactVerdict(t *testing.T) {
 		}
 	}
 }
+
+func TestResumeContinuationIsPinnedWithTheRunCatalog(t *testing.T) {
+	catalog, err := prompts.LoadDefault(state.CanonicalRoleIDs())
+	if err != nil {
+		t.Fatal(err)
+	}
+	section, err := catalog.ResumeContinuationSection()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(section, "Resumed Attempt:\n- ") || !strings.Contains(section, "unverified progress") || !strings.Contains(section, "did not complete") {
+		t.Fatalf("resume continuation lost its protected obligations:\n%s", section)
+	}
+	shared := catalog.NodeContracts["shared"]
+	shared.ResumeContinuation = nil
+	catalog.NodeContracts["shared"] = shared
+	raw, digest, err := catalog.Revision()
+	if err != nil {
+		t.Fatal(err)
+	}
+	historical, err := prompts.ParseRevision(raw, digest, nil)
+	if err != nil {
+		t.Fatalf("revision pinned before Resume must stay usable: %v", err)
+	}
+	if _, err := historical.ResumeContinuationSection(); err == nil {
+		t.Fatal("revision pinned before Resume produced continuation text")
+	}
+}

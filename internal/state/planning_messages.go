@@ -29,7 +29,10 @@ func (s *PlanningStore) AppendMessage(ctx context.Context, req AppendPlanningMes
 }
 
 func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlanningMessageRequest) (PlanningMessage, error) {
-	if err := validatePlanningTextContent(ctx, req.ContentSource, !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON)); err != nil {
+	if req.Failure != nil && (req.Role != PlanningMessageRoleAssistant || strings.TrimSpace(req.Failure.ReasonCode) == "" || req.ContentSource != nil || req.ContentMarkdown != "") {
+		return PlanningMessage{}, fmt.Errorf("a failed planning turn is an assistant message with a reason and no content")
+	}
+	if err := validatePlanningTextContent(ctx, req.ContentSource, req.Failure == nil && !allowsEmptyPlanningMessageContent(req.Role, req.QuestionPayloadJSON)); err != nil {
 		return PlanningMessage{}, err
 	}
 	if req.ContentSource != nil && req.ContentMarkdown != "" {
@@ -57,10 +60,17 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 		QuestionPayloadJSON: strings.TrimSpace(req.QuestionPayloadJSON),
 		AnswerPayloadJSON:   strings.TrimSpace(req.AnswerPayloadJSON),
 		CreatedAt:           strings.TrimSpace(req.CreatedAt),
+		Failure:             req.Failure,
+	}
+	var failureCode any
+	providerMessage := ""
+	if row.Failure != nil {
+		row.Failure = &PlanningTurnFailure{ReasonCode: strings.TrimSpace(row.Failure.ReasonCode), ProviderMessage: strings.TrimSpace(row.Failure.ProviderMessage)}
+		failureCode, providerMessage = row.Failure.ReasonCode, row.Failure.ProviderMessage
 	}
 	_, err = exec.ExecContext(ctx,
-		`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at,content_content_id,answer_text_content_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?)`,
+		`INSERT INTO planning_messages (planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at,content_content_id,answer_text_content_id,failure_reason_code,failure_provider_message)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?)`,
 		row.PlanningMessageID,
 		row.PlanningSessionID,
 		nullableMessageID(trimmedParent),
@@ -70,6 +80,7 @@ func insertPlanningMessage(ctx context.Context, exec sqlExecutor, req AppendPlan
 		row.AnswerPayloadJSON,
 		row.CreatedAt,
 		planningContentID(content), planningContentID(answer),
+		failureCode, providerMessage,
 	)
 	if err != nil {
 		return PlanningMessage{}, fmt.Errorf("insert planning message: %w", err)
@@ -102,7 +113,7 @@ func (s *PlanningStore) GetMessageMetadataInSession(ctx context.Context, plannin
 	}
 	var row PlanningMessage
 	if err := scanPlanningMessage(s.db.QueryRowContext(ctx,
-		`SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at
+		`SELECT `+planningMessageColumns+`
 		 FROM planning_messages WHERE planning_message_id = ? AND planning_session_id = ?`,
 		trimmedID, trimmedSession,
 	), &row); err != nil {
@@ -139,6 +150,10 @@ func (s *PlanningStore) ActiveMessageSource(ctx context.Context, sessionID strin
 			message, err := s.GetMessageMetadataInSession(ctx, sessionID, id)
 			if err != nil {
 				return err
+			}
+			// A failed turn holds no reply, so the planner never sees it.
+			if message.Failure != nil {
+				continue
 			}
 			if err := visit(message); err != nil {
 				return err
@@ -244,7 +259,7 @@ func (s *PlanningStore) SetActiveBranch(ctx context.Context, planningSessionID, 
 
 	var target PlanningMessage
 	if err := scanPlanningMessage(tx.QueryRowContext(ctx,
-		`SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at
+		`SELECT `+planningMessageColumns+`
 		 FROM planning_messages WHERE planning_message_id = ? AND planning_session_id = ?`,
 		trimmedID, trimmedSession,
 	), &target); err != nil {
@@ -280,7 +295,7 @@ func (s *PlanningStore) SiblingsOf(ctx context.Context, planningSessionID, plann
 		return nil, err
 	}
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at
+		`SELECT `+planningMessageColumns+`
 		 FROM planning_messages
 		 WHERE planning_session_id = ? AND parent_message_id IS ?
 		 ORDER BY created_at ASC, planning_message_id ASC`,
@@ -394,7 +409,7 @@ func planningMessagesByIDs(ctx context.Context, exec *sql.DB, planningSessionID 
 	items := make([]PlanningMessage, 0, len(ids))
 	for _, id := range ids {
 		var row PlanningMessage
-		if err := scanPlanningMessage(exec.QueryRowContext(ctx, `SELECT planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at FROM planning_messages WHERE planning_session_id=? AND planning_message_id=?`, planningSessionID, id), &row); err != nil {
+		if err := scanPlanningMessage(exec.QueryRowContext(ctx, `SELECT `+planningMessageColumns+` FROM planning_messages WHERE planning_session_id=? AND planning_message_id=?`, planningSessionID, id), &row); err != nil {
 			return nil, fmt.Errorf("scan planning message: %w", err)
 		}
 		if err := NewPlanningStore(exec).loadMessageTextSources(ctx, &row); err != nil {
@@ -443,8 +458,11 @@ type scannable interface {
 	Scan(dest ...any) error
 }
 
+const planningMessageColumns = `planning_message_id, planning_session_id, parent_message_id, role, content_markdown, question_payload_json, answer_payload_json, created_at, failure_reason_code, failure_provider_message`
+
 func scanPlanningMessage(row scannable, dest *PlanningMessage) error {
-	var parent sql.NullString
+	var parent, failureCode sql.NullString
+	var providerMessage string
 	if err := row.Scan(
 		&dest.PlanningMessageID,
 		&dest.PlanningSessionID,
@@ -454,10 +472,16 @@ func scanPlanningMessage(row scannable, dest *PlanningMessage) error {
 		&dest.QuestionPayloadJSON,
 		&dest.AnswerPayloadJSON,
 		&dest.CreatedAt,
+		&failureCode,
+		&providerMessage,
 	); err != nil {
 		return err
 	}
 	dest.ParentMessageID = nullStringToPtr(parent)
+	dest.Failure = nil
+	if failureCode.Valid {
+		dest.Failure = &PlanningTurnFailure{ReasonCode: failureCode.String, ProviderMessage: providerMessage}
+	}
 	return nil
 }
 

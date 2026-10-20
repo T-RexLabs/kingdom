@@ -302,6 +302,8 @@ export function RunExecutionSurface({
             attemptId={selectedID ?? null}
             status={execution?.status}
             detail={selectedDetail}
+            isVisible={view === "conversation"}
+            isDetailLoading={isDetailLoading}
           />
         )}
         {node?.execution_ownership === "runtime_owned" &&

@@ -67,6 +67,7 @@
         "attempt.retry_scheduled",
         "attempt.retry_queued",
         "attempt.rerun_queued",
+        "attempt.resume_queued",
 		"attempt.final_rework_queued",
         "attempt.timeout_warning",
         "attempt.recovery_blocked",
@@ -76,6 +77,7 @@
         "run.state_changed",
         "run.retry_reopened",
         "run.rerun_reopened",
+        "run.resume_reopened",
         "node.state_changed",
         "mailbox.message_recorded"
       ]

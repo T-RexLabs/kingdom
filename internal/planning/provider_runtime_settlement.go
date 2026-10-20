@@ -189,6 +189,9 @@ func providerMetadataFromError(err error) ProviderExecutionMetadata {
 }
 
 func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, cause error, cancelled bool) string {
+	if cancelled {
+		return "provider_cancelled"
+	}
 	var contextVersionErr *state.UnsupportedPlanningExternalContextVersionError
 	if errors.As(cause, &contextVersionErr) {
 		return "dependency_blocked"
@@ -196,14 +199,18 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 	if providerlimits.IsResourceLimitError(cause) {
 		return "resource_limit_exceeded"
 	}
-	if strings.TrimSpace(metadata.OutcomeState) == "success" && strings.TrimSpace(metadata.FinalText) == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil {
-		return "provider_empty_output"
+	if strings.TrimSpace(metadata.OutcomeState) == "success" {
+		if strings.TrimSpace(metadata.FinalText) == "" && metadata.StreamObservation.CanonicalTerminalTextRef == nil {
+			return "provider_empty_output"
+		}
+		// The provider reported success, but the turn it returned was not one.
+		return "provider_incomplete_turn"
 	}
 	if reasonCode := strings.TrimSpace(metadata.FailureReasonCode); reasonCode != "" {
 		reasonCode = providerexecution.NormalizeAdapterTerminalFailureCode(reasonCode)
 		return reasonCode
 	}
-	if cancelled || errors.Is(cause, context.Canceled) {
+	if errors.Is(cause, context.Canceled) {
 		return "provider_cancelled"
 	}
 	if errors.Is(cause, context.DeadlineExceeded) {
@@ -213,6 +220,18 @@ func failureReasonCodeForPlannerFailure(metadata ProviderExecutionMetadata, caus
 		return "agent_unresponsive"
 	}
 	return "internal_error"
+}
+
+// plannerTurnFailure is how a failed reply explains itself in the
+// conversation: the code the failure settles under, and the provider's own
+// message when the provider gave one. Internal error text is never shown.
+func plannerTurnFailure(code string, cause error) *state.PlanningTurnFailure {
+	failure := &state.PlanningTurnFailure{ReasonCode: code}
+	var providerErr *ProviderFailureError
+	if errors.As(cause, &providerErr) {
+		failure.ProviderMessage = providerErr.Message
+	}
+	return failure
 }
 
 func plannerOutcomeStateForCancelled(cancelled bool) string {

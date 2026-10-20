@@ -88,6 +88,16 @@ type PlanningMessage struct {
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
 	CreatedAt           string
+	// Failure is set on an assistant turn that failed; it then has no content.
+	Failure *PlanningTurnFailure
+}
+
+// PlanningTurnFailure records why an assistant turn failed. ReasonCode is an
+// error catalog code; ProviderMessage is the provider's own explanation, when
+// it gave one.
+type PlanningTurnFailure struct {
+	ReasonCode      string
+	ProviderMessage string
 }
 
 // PlanningMessageBranchInfo positions a message among its siblings (messages
@@ -214,6 +224,7 @@ type AppendPlanningMessageRequest struct {
 	QuestionPayloadJSON string
 	AnswerPayloadJSON   string
 	CreatedAt           string
+	Failure             *PlanningTurnFailure
 }
 
 type CreatePlanningDraftRequest struct {
@@ -279,6 +290,7 @@ type CancelQueuedPlanningOperationRequest struct {
 type FailQueuedPlanningOperationRequest struct {
 	OperationID   string
 	ErrorMessage  string
+	Failure       *PlanningTurnFailure
 	UpdatedAt     string
 	FinishedAt    string
 	TerminalEvent AppendPlanningOperationEventRequest
@@ -380,8 +392,11 @@ type FinalizeOperationRequest struct {
 	CurrentDraftID string
 
 	// Common
-	ResultRef          string
-	ErrorMessage       string // FinalizeFail / FinalizeCancel only
+	ResultRef    string
+	ErrorMessage string // FinalizeFail / FinalizeCancel only
+	// Failure explains a failed reply or regenerate (FinalizeFail only); the
+	// turn stays in the conversation as a failed assistant message.
+	Failure            *PlanningTurnFailure
 	ObservedOutputText string
 	ProviderSettlement *FinalizePlanningProviderSettlementRequest
 	// MessageCompletedEvent is committed atomically with the canonical message,

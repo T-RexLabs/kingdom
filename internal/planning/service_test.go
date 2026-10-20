@@ -111,7 +111,7 @@ func TestRecoveryFailsQueuedOperationWithUnsupportedExternalContextVersion(t *te
 		t.Fatalf("create planning session: %v", err)
 	}
 	const operationID = "po_legacy_external_context"
-	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: session.PlanningSessionID, Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{}`, CreatedAt: at}); err != nil {
+	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{OperationID: operationID, PlanningSessionID: session.PlanningSessionID, Type: state.PlanningOperationTypeReply, Status: state.PlanningOperationStatusQueued, RequestPayloadJSON: `{"assistant_message_id":"pm_legacy_reply","assistant_created_at":"2026-04-21T17:10:00Z"}`, CreatedAt: at}); err != nil {
 		t.Fatalf("create queued planner operation: %v", err)
 	}
 	processing := state.PlanningSessionConversationStateProcessing
@@ -183,7 +183,7 @@ func TestStuckOperationWithUnsupportedExternalContextVersionFailsAfterQuiescence
 	const operationID = "po_stuck_legacy_external_context"
 	if _, err := store.CreateOperation(ctx, state.CreatePlanningOperationRequest{
 		OperationID: operationID, PlanningSessionID: session.PlanningSessionID, Type: state.PlanningOperationTypeReply,
-		Status: state.PlanningOperationStatusRunning, RequestPayloadJSON: `{}`, LeaseOwner: "stale-worker",
+		Status: state.PlanningOperationStatusRunning, RequestPayloadJSON: `{"assistant_message_id":"pm_stale_reply","assistant_created_at":"2026-04-21T17:10:00Z"}`, LeaseOwner: "stale-worker",
 		LeaseExpiresAt: expired, LeaseVersion: 1, LastHeartbeatAt: expired, StartedAt: expired, CreatedAt: expired,
 	}); err != nil {
 		t.Fatalf("create stale planner operation: %v", err)
@@ -1045,8 +1045,8 @@ func TestServiceReplyOperationRequiresSettledOutput(t *testing.T) {
 		}
 		emptyContent := strings.TrimSpace(message.ContentMarkdown) == ""
 		emptyQuestion := strings.TrimSpace(message.QuestionPayloadJSON) == "" || strings.TrimSpace(message.QuestionPayloadJSON) == "{}"
-		if emptyContent && emptyQuestion {
-			t.Fatalf("expected no empty assistant reply message to be persisted, got %+v", message)
+		if emptyContent && emptyQuestion && message.Failure == nil {
+			t.Fatalf("an empty assistant reply may only be a failed turn, got %+v", message)
 		}
 	}
 }
@@ -2165,16 +2165,11 @@ func TestRecoveryFailsStuckRunningOperationAsFailed(t *testing.T) {
 	if settlement.Outcome != state.PlanningProviderCompletionOutcomeFailed {
 		t.Fatalf("expected failed planning settlement, got %+v", settlement)
 	}
-	// Server-side success is never replayed from a stuck op, so no canonical
-	// assistant message is persisted.
-	messages, err := store.ListMessages(context.Background(), "ps_stuck_e2e")
-	if err != nil {
-		t.Fatalf("list messages: %v", err)
-	}
-	for _, message := range messages {
-		if message.PlanningMessageID == "pm_stuck_e2e_assistant" {
-			t.Fatalf("expected no replayed assistant message for failed recovery, got %+v", message)
-		}
+	// Server-side success is never replayed from a stuck op: the turn stays
+	// as a failed reply that explains why.
+	failed, err := store.GetMessageInSession(context.Background(), "ps_stuck_e2e", "pm_stuck_e2e_assistant")
+	if err != nil || failed.Failure == nil || failed.Failure.ReasonCode != "agent_unresponsive" || failed.ContentMarkdown != "" {
+		t.Fatalf("a stuck reply must leave an unresponsive failed turn, got %+v err=%v", failed, err)
 	}
 	invocation, found, err := store.GetPlanningProviderInvocation(context.Background(), "ppinv_stuck_e2e")
 	if err != nil {
@@ -2674,7 +2669,7 @@ func TestFailStuckMetricBumpsExactlyOnceUnderConcurrentFinalize(t *testing.T) {
 		PlanningSessionID:  "ps_metric_race",
 		Type:               state.PlanningOperationTypeReply,
 		Status:             state.PlanningOperationStatusRunning,
-		RequestPayloadJSON: `{}`,
+		RequestPayloadJSON: `{"assistant_message_id":"pm_metric_race_reply","assistant_created_at":"2026-04-21T17:10:00Z"}`,
 		LeaseOwner:         "abandoned-worker",
 		LeaseExpiresAt:     "2026-04-26T09:00:00Z",
 		LeaseVersion:       1,
@@ -4404,5 +4399,86 @@ func TestRecoveryLeavesAStuckOperationBlockedWhenItsRequestAdmittedATool(t *test
 	op, ok, err := store.GetOperation(ctx, "po_bound")
 	if err != nil || !ok || op.Status != state.PlanningOperationStatusRunning {
 		t.Fatalf("an operation whose tool may have changed the workspace must stay running: %#v %v", op, err)
+	}
+}
+
+// unprovenAgent plays a provider whose request ran but could not be proven:
+// the request is activated and closed, and Execute reports an error with no
+// terminal evidence.
+type unprovenAgent struct{ err error }
+
+func (m *unprovenAgent) unproven(ctx context.Context, invocation *ProviderInvocationContext) error {
+	prepared := providerledger.Prepared(invocation.InvocationID, providerledger.SessionFor(invocation.InvocationID, invocation.ReusableProviderSessionID))
+	if err := invocation.Activate(ctx, prepared); err != nil {
+		return err
+	}
+	if err := providerledger.CloseRequest(ctx, invocation.InvocationID); err != nil {
+		return err
+	}
+	return executionError(ProviderExecutionMetadata{}, m.err)
+}
+
+func (m *unprovenAgent) ContinueTurnStream(ctx context.Context, input AgentContext, _ func(text string)) (AgentTurn, error) {
+	return AgentTurn{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func (m *unprovenAgent) FormalizePlanStream(ctx context.Context, input AgentContext, _ func(text string)) (FormalizedPlan, error) {
+	return FormalizedPlan{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func (m *unprovenAgent) GenerateTitle(ctx context.Context, input AgentContext, _ func(text string)) (GeneratedTitle, error) {
+	return GeneratedTitle{}, m.unproven(ctx, input.ProviderInvocation)
+}
+
+func TestReplyWhoseProviderRequestCannotBeProvenFailsAtOnceWithItsCause(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	store := state.NewPlanningStore(stateTestDB(t))
+	cause := errors.New("verify OpenCode request: the final step is missing")
+	service := NewServiceWithRetryEngine(store, &unprovenAgent{err: cause}, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	operation, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Hello", AnswerPayloadJSON: `{"text":"Hello"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := awaitOperationTerminal(t, store, operation.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusFailed || terminal.Error == nil || !strings.Contains(*terminal.Error, cause.Error()) {
+		t.Fatalf("an unproven request must fail its turn with the provider's cause: %s %v", terminal.Status, terminal.Error)
+	}
+}
+
+func TestFailedReplyStaysInTheConversationWithTheProvidersReason(t *testing.T) {
+	projectRoot := t.TempDir()
+	writeTestFile(t, projectRoot, "README.md", "# Project\n")
+	store := state.NewPlanningStore(stateTestDB(t))
+	const message = "Attempted to access resource from outside project geography EU"
+	agent := &erroringAgent{err: &ProviderFailureError{Outcome: "failed", ReasonCode: "provider_unknown_failure", Message: message}}
+	service := NewServiceWithRetryEngine(store, agent, projectRoot, func() string { return "2026-04-21T17:10:00Z" }, deterministicID(), loadPlanningRetryEngine(t))
+	session, err := service.CreateSession(context.Background(), "Planner flow", `{"model":"github-copilot/gpt-5.4"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.CreateOperation(context.Background(), session.PlanningSessionID, CreateOperationInput{
+		Type: state.PlanningOperationTypeReply, ReplyMarkdown: "Hello", AnswerPayloadJSON: `{"text":"Hello"}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal := awaitOperationTerminal(t, store, created.Operation.OperationID)
+	if terminal.Status != state.PlanningOperationStatusFailed || terminal.ResultRef == nil {
+		t.Fatalf("the failed reply must produce a turn: %s %v", terminal.Status, terminal.ResultRef)
+	}
+	reply, err := store.GetMessageInSession(context.Background(), session.PlanningSessionID, *terminal.ResultRef)
+	if err != nil || reply.Failure == nil || reply.Failure.ProviderMessage != message || reply.ContentMarkdown != "" {
+		t.Fatalf("failed reply=%+v err=%v", reply, err)
+	}
+	current, _, err := store.GetSession(context.Background(), session.PlanningSessionID)
+	if err != nil || current.ActiveLeafMessageID == nil || *current.ActiveLeafMessageID != reply.PlanningMessageID {
+		t.Fatalf("the failed reply must be where the conversation continues: %+v %v", current.ActiveLeafMessageID, err)
 	}
 }

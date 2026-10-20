@@ -972,7 +972,10 @@ func (s *Store) persistProviderTerminalHandoffOnce(ctx context.Context, req Pers
 	if err != nil {
 		return result, err
 	}
-	if observation.Request == nil || observation.Request.Identity != binding.Identity || binding.Lease != (providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}) || observation.ProviderSessionID != binding.Identity.SessionID {
+	missingFailedAnswer := observation.Request == nil && failedProviderHandoffPayload(normalized.PayloadJSON)
+	if binding.Lease != (providerrequest.Lease{Owner: normalized.ExpectedLeaseOwner, Version: normalized.ExpectedLeaseVersion}) ||
+		(!missingFailedAnswer && (observation.Request == nil || observation.Request.Identity != binding.Identity || observation.ProviderSessionID != binding.Identity.SessionID)) ||
+		(missingFailedAnswer && observation.ProviderSessionID != "" && observation.ProviderSessionID != binding.Identity.SessionID) {
 		return result, fmt.Errorf("provider request handoff requires its exact bound observation and lease")
 	}
 	if observation.ProviderSessionID != strings.TrimSpace(observation.ProviderSessionID) {
@@ -1567,8 +1570,10 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "invocation_superseded", invocation.ProviderInvocationID, invocation.AttemptID, string(invocation.InvocationState))
 	}
 	requestOwner := providerrequest.Owner{Kind: providerrequest.OwnerRun, InvocationID: invocation.ProviderInvocationID}
-	if err := providerrequest.SettleCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, *req.StreamObservation, string(settlementReq.Outcome)); err != nil {
-		return ProviderCompletionSettlement{}, err
+	if req.StreamObservation.Request != nil {
+		if err := providerrequest.SettleCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, *req.StreamObservation, string(settlementReq.Outcome)); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
 	}
 	// Every row in this atomic boundary uses the canonical settlement time.
 	// Replay wall-clock values are metadata, not a new settlement claim.
@@ -1674,6 +1679,33 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 	if useTerminalHandoff && terminalHandoff.StreamObservationJSON != streamPayload {
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "terminal_handoff_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 	}
+	// A failed handoff can report that no provider answer was recoverable. Keep
+	// its exact original observation as evidence; only the bound request's
+	// closed effects can authorize the separate abandonment used for settlement.
+	requestObservation := observation
+	if observation.Request == nil && settlementReq.Outcome == ProviderCompletionOutcomeFailed &&
+		((useTerminalHandoff && failedProviderHandoffPayload(terminalHandoff.PayloadJSON)) || existingCanonical) {
+		binding, err := runRequestTx(ctx, tx, invocation.ProviderInvocationID)
+		if err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		if binding.Lease != (providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}) {
+			return ProviderCompletionSettlement{}, fmt.Errorf("provider abandonment does not match its binding and lease")
+		}
+		if err := providerrequest.AbandonTx(ctx, tx, binding.ID, binding.Lease, s.currentTime()); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+		requestObservation = providerexecution.InvocationStreamObservation{
+			ProviderSessionID: binding.Identity.SessionID,
+			Request: &providerexecution.RequestObservation{Identity: binding.Identity,
+				Terminal: providerexecution.AbandonedRequestTerminal(invocation.ProviderInvocationID)},
+		}
+	}
+	if observation.Request == nil {
+		if err := providerrequest.SettleCompletionTx(ctx, tx, requestOwner, providerrequest.Lease{Owner: req.ExpectedLeaseOwner, Version: req.ExpectedLeaseVersion}, requestObservation, string(settlementReq.Outcome)); err != nil {
+			return ProviderCompletionSettlement{}, err
+		}
+	}
 	streamEvidence, err := insertProviderCompletionEvidenceTx(ctx, tx, AppendProviderCompletionEvidenceRequest{
 		EvidenceID:           TerminalProviderCompletionEvidenceID(invocation.ProviderInvocationID),
 		ProviderInvocationID: invocation.ProviderInvocationID,
@@ -1741,7 +1773,7 @@ func (s *Store) settleProviderCompletionAndTerminalOnce(ctx context.Context, req
 			return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "workflow_outcome_conflict", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 		}
 	}
-	if terminal.ProviderSessionID != "" && terminal.ProviderSessionID != observation.ProviderSessionID {
+	if terminal.ProviderSessionID != "" && terminal.ProviderSessionID != requestObservation.ProviderSessionID {
 		return ProviderCompletionSettlement{}, providerSettlementError("settle_provider_completion_and_terminal", "provider_session_mismatch", invocation.ProviderInvocationID, invocation.AttemptID, authority.State)
 	}
 	settlementReq, err = normalizeFinalizeProviderCompletionSettlementRequest(settlementReq)
@@ -3172,4 +3204,15 @@ func (s *Store) AbandonProviderRequest(ctx context.Context, invocationID string)
 		return err
 	}, sqlitex.Options{})
 	return identity, err
+}
+
+// failedProviderHandoffPayload identifies a local failure without granting any
+// authority to unverified provider content in the rest of the handoff.
+func failedProviderHandoffPayload(raw string) bool {
+	var payload struct {
+		Outcome struct {
+			State string `json:"state"`
+		} `json:"outcome"`
+	}
+	return json.Unmarshal([]byte(raw), &payload) == nil && payload.Outcome.State == "failed"
 }

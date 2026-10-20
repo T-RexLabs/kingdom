@@ -967,3 +967,20 @@ func TestOpenCodeAgentLeavesNothingToSettleWhenPrepareFails(t *testing.T) {
 		t.Fatalf("provider phases ran as %q (activated=%v), want only prepare", got, invocation.activated)
 	}
 }
+
+func TestPlannerReportsTheProviderFailureInsteadOfTheMissingStop(t *testing.T) {
+	const providerMessage = "Attempted to access resource from outside project geography EU"
+	adapter := &recordingPlannerAdapter{adjust: func(response *opencode.ExecuteResponse) {
+		response.Outcome = opencode.ExecutionOutcome{State: "failed", ReasonCode: "provider_auth_failed", FailureText: providerMessage, EvidenceSource: "request"}
+		response.StreamObservation.NormalizedFinishReason, response.StreamObservation.RawFinishReason = "error", ""
+	}}
+	agent := NewOpenCodeAgent(adapter, deterministicID())
+	turn, err := agent.ContinueTurnStream(context.Background(), AgentContext{PromptCatalog: testPromptCatalog(t), SessionID: "session", ProviderInvocation: adapter.invocation("")}, nil)
+	defer turn.Close()
+	if err == nil || !strings.Contains(err.Error(), providerMessage) || strings.Contains(err.Error(), "final step reason") {
+		t.Fatalf("the provider's own failure must be reported: %v", err)
+	}
+	if metadata := providerMetadataFromError(err); metadata.FailureReasonCode != "provider_auth_failed" {
+		t.Fatalf("the provider's failure code must be kept: %q", metadata.FailureReasonCode)
+	}
+}

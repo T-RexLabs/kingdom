@@ -349,7 +349,11 @@ func (o *orchestrationLoop) scheduleAttemptCancellations(ctx context.Context) (i
 			request.allowExecuting = false
 			request.canonical = executionSpecForNode(rec.NodeID, rec.NodeClass).WorkspaceKind == workspaceCanonical
 		}
-		if o.tryScheduleMaintenance(ctx, request, func(ctx context.Context) error {
+		// Only an explicit stop request can dispatch an external cancellation.
+		// Waiting phases remain observable across restarts until disposal allows
+		// completion, without occupying a worker or repeating that side effect.
+		stopRequested := rec.HandoffState == "cancellation_requested" || rec.HandoffState == "stop_retry_requested"
+		if (ready || stopRequested) && o.tryScheduleMaintenance(ctx, request, func(ctx context.Context) error {
 			now := o.now().UTC().Format(time.RFC3339Nano)
 			if ready {
 				if rec.HandoffState == "guardian_evidence_recovery_requested" && !quiescent {

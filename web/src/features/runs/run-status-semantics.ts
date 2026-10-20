@@ -145,6 +145,8 @@ export function liveExecutionLabel(
 			return "Retry scheduled";
 		case "attempt.rerun_queued":
 			return "Rerun queued";
+		case "attempt.resume_queued":
+			return "Resume queued";
 		case "attempt.final_rework_queued":
 			return "Final Governance Rework Queued";
 		case "attempt.failed":
@@ -175,6 +177,7 @@ export function attemptEventIconKey(event: Pick<TimelineEvent, "event_type" | "r
 		case "attempt.retry_scheduled":
 		case "attempt.retry_queued":
 		case "attempt.rerun_queued":
+		case "attempt.resume_queued":
 		case "attempt.final_rework_queued":
 			return "rotate";
 			case "attempt.timeout_warning":
@@ -212,6 +215,8 @@ export function attemptEventLabelFragment(event: Pick<TimelineEvent, "event_type
 			return "retry queued";
 		case "attempt.rerun_queued":
 			return "rerun queued";
+		case "attempt.resume_queued":
+			return "resume queued";
 		case "attempt.final_rework_queued":
 			return "final governance rework queued";
 		case "attempt.progress":
@@ -265,7 +270,7 @@ export function badgeToneForLabel(label: string | undefined, fallbackTone: RunSt
 			case "x":
 				return normalizedToken(event.event_type) === "attempt.cancelled" ? "cancelled" : "failed";
 			case "rotate":
-				return normalizedToken(event.event_type) === "attempt.retry_queued" || normalizedToken(event.event_type) === "attempt.rerun_queued" || normalizedToken(event.event_type) === "attempt.final_rework_queued"
+				return normalizedToken(event.event_type) === "attempt.retry_queued" || normalizedToken(event.event_type) === "attempt.rerun_queued" || normalizedToken(event.event_type) === "attempt.resume_queued" || normalizedToken(event.event_type) === "attempt.final_rework_queued"
 					? "ready"
 					: "blocked";
 			case "alert":

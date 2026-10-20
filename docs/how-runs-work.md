@@ -55,9 +55,23 @@ With `publish.mode: direct`, Kingdom works against the project and publishes cha
 
 Kingdom may retry some failures automatically, based on the canonical rules in `policies/retry_policy.yaml`. It does not retry every error, and observed work can make an automatic retry unsafe. The run activity shows the decision and its reason.
 
+`provider_protocol_error` means Kingdom could not verify an OpenCode reply. The request fails with its rejected event and message snapshots retained as diagnostic content, separate from accepted response evidence. This is an adapter verification failure, not a provider usage or authentication error, and it does not retry automatically. Inspect the operation or attempt’s failure and invocation diagnostic content before retrying; a completed provider reply alone cannot establish Kingdom success.
+
 If a provider process may still be running, Kingdom holds the run in a blocked state until it can prove that the process stopped. **Retry Stop** authorizes one more bounded stop request for an eligible blocked attempt. It does not skip the safety checks.
 
-You can use **Retry** or **Rerun** when a run is eligible to reopen. If Kingdom reports `idempotency_pending` after an interrupted request, continue with the same request key. A new key could repeat an action whose result is still unknown.
+Failed and cancelled runs offer **Resume** and **Rerun**.
+
+**Resume** continues interrupted work from where it stopped. When a provider step fails or is cancelled, Kingdom first proves its request, tools, and commands have stopped, then saves a checkpoint: the conversation so far and the step's partial files. This happens before the trusted workspace is restored. Resume starts a new attempt for every interrupted step on the run's frontier. Each attempt continues its saved conversation with a short continuation message, starting from the saved partial files. Completed upstream steps and their approvals are kept, and the steps that depend on the resumed work are released. Partial files are never trusted output: the resumed attempt is still checked against the original trusted baseline, then goes through the normal review, validation, and publication rules. If it is interrupted again, Kingdom saves a newer checkpoint. A command that was running when work stopped did not complete, and Resume does not restart it.
+
+The server decides which steps Resume covers and shows when each checkpoint was saved. Resume is unavailable, with the reason shown, if any interrupted step has no usable checkpoint. That covers a step that never started, a step that runs inside Kingdom, a review or validation step that works in a private copy, and a run created before Resume existed. Kingdom never turns a Resume into a Rerun on its own.
+
+If the workspace was edited after the checkpoint, Resume refuses to start rather than overwrite those edits, and the step fails with that reason. A Resume that ends before reaching the provider keeps its checkpoint: undo the edits and choose **Resume** again. Once a resumed attempt reaches the provider, its checkpoint is used, and a later interruption saves a newer one.
+
+**Rerun** repeats a step and its downstream workflow from the trusted baseline. Both failed and cancelled steps are eligible, including when the run is failed but every interrupted step is cancelled. The dialog selects the earliest interrupted step when there is one clear starting point; parallel interrupted branches require an explicit choice.
+
+Both actions wait for provider cancellation, completion projection, attempt settlement, and session leases to close before starting replacement work. From the command line, use `kd run resume` or `kd node rerun-from`. Earlier manual **Retry** records stay in the run history with their original label.
+
+A lost browser connection does not itself stop the runtime. Reconnect and check the current run before restarting work. If Kingdom reports `idempotency_pending` after an interrupted request, continue with the same request key. A new key could repeat an action whose result is still unknown.
 
 ## Other ways to operate
 

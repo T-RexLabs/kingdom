@@ -34,17 +34,20 @@ export function activityToolSummary(item: ActivityItem): string {
   }
   if (["webfetch", "websearch", "glob", "grep"].includes(name)) return item.label.split(/\r?\n/)[0];
   if (!["read", "write", "edit"].includes(name)) return action;
+  const fileName = activityToolFileName(item);
+  return fileName ? `${action} ${fileName}` : action;
+}
+
+/** The base name of the file a read, write or edit call names, when its input is readable. */
+export function activityToolFileName(item: ActivityItem): string | undefined {
   try {
-    const input: unknown = JSON.parse(
-      item.inputContent?.preview ?? item.input ?? "",
-    );
-    if (!input || typeof input !== "object") return action;
+    const input: unknown = JSON.parse(item.inputContent?.preview ?? item.input ?? "");
+    if (!input || typeof input !== "object") return undefined;
     const fields = input as Record<string, unknown>;
     const path = fields.filePath ?? fields.file_path ?? fields.path;
-    if (typeof path !== "string") return action;
-    const basename = path.split(/[\\/]/).filter(Boolean).at(-1);
-    return basename ? `${action} ${basename}` : action;
+    if (typeof path !== "string") return undefined;
+    return path.split(/[\\/]/).filter(Boolean).at(-1);
   } catch {
-    return action;
+    return undefined;
   }
 }

@@ -19,8 +19,8 @@ const LOOP_CAP_AUTO_SUCCEEDED_BADGE = "Cap Auto-Succeeded";
 const NOISE_REASON_CODES = new Set(["orchestration_progress"]);
 
 const NODE_LIFECYCLE_EVENT_TYPES = new Set(["node.state_changed"]);
-const RECOVERY_QUEUE_EVENT_TYPES = new Set(["attempt.retry_queued", "attempt.rerun_queued"]);
-const RECOVERY_RUN_REOPEN_EVENT_TYPES = new Set(["run.retry_reopened", "run.rerun_reopened"]);
+const RECOVERY_QUEUE_EVENT_TYPES = new Set(["attempt.retry_queued", "attempt.rerun_queued", "attempt.resume_queued"]);
+const RECOVERY_RUN_REOPEN_EVENT_TYPES = new Set(["run.retry_reopened", "run.rerun_reopened", "run.resume_reopened"]);
 
 interface FanOutGroup {
   parentNodeId: string;
@@ -815,7 +815,7 @@ function isRecoveryPhase(value: unknown): value is RecoveryLike["phase"] {
 }
 
 function isRecoveryTrigger(value: unknown): value is RecoveryLike["trigger"] {
-	return value === "automatic_retry" || value === "operator_retry" || value === "operator_rerun";
+	return value === "automatic_retry" || value === "operator_retry" || value === "operator_rerun" || value === "operator_resume";
 }
 
 function executionForEvent(event: TimelineEvent, lookups: TimelineLookups): RunExecution | undefined {
@@ -906,6 +906,7 @@ function latestNodeLifecycleState(events: TimelineEvent[], currentNodeRunID?: st
 			switch (event.event_type) {
 				case "attempt.retry_queued":
 				case "attempt.rerun_queued":
+				case "attempt.resume_queued":
 					return "ready";
 				case "attempt.started":
 					return "running";

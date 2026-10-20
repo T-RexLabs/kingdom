@@ -159,7 +159,7 @@ func (r *operationRecovery) recoverEligiblePlaceholderTitleSessions(ctx context.
 // which decides whether the operation is eligible for this transition.
 func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOperation, idleFor time.Duration) error {
 	cause := fmt.Errorf("%w (idle for %s)", ErrOperationStuck, idleFor.Round(time.Second))
-	cause, release, err := r.abandonUnprovenRequest(ctx, op, cause)
+	cause, release, err := r.deps.abandonUnprovenRequest(ctx, op, cause)
 	if err != nil {
 		return err
 	}
@@ -169,16 +169,17 @@ func (r *operationRecovery) failStuck(ctx context.Context, op state.PlanningOper
 }
 
 // abandonUnprovenRequest closes the provider request of an operation whose
-// worker is gone, so that the operation can settle as failed. While something
-// the request admitted may still run, it cannot be closed without its provider
-// evidence, and its operation stays blocked: errBlockedByProviderRequest.
-func (r *operationRecovery) abandonUnprovenRequest(ctx context.Context, op state.PlanningOperation, cause error) (error, func(), error) {
+// request ended without terminal evidence, so that the operation can settle
+// as failed. While something the request admitted may still run, it cannot be
+// closed without its provider evidence, and its operation stays blocked:
+// errBlockedByProviderRequest.
+func (d runtimeDeps) abandonUnprovenRequest(ctx context.Context, op state.PlanningOperation, cause error) (error, func(), error) {
 	noRelease := func() {}
 	if operationHasNoActiveProviderInvocation(op) {
 		return cause, noRelease, nil
 	}
 	invocationID := strings.TrimSpace(*op.ActiveProviderInvocationID)
-	identity, err := r.deps.store.AbandonPlanningProviderRequest(ctx, invocationID)
+	identity, err := d.store.AbandonPlanningProviderRequest(ctx, invocationID)
 	if errors.Is(err, providerrequest.ErrResourcesOpen) {
 		return cause, noRelease, errBlockedByProviderRequest
 	}
@@ -189,8 +190,24 @@ func (r *operationRecovery) abandonUnprovenRequest(ctx context.Context, op state
 	if err != nil {
 		return cause, noRelease, err
 	}
-	metadata := ProviderExecutionMetadata{ProviderSessionID: identity.SessionID, OutcomeState: "failed", StreamObservation: observation}
-	return executionError(metadata, cause), func() { _ = observation.ReleaseContent() }, nil
+	releaseAbandoned := observation.ReleaseContent
+	original := providerMetadataFromError(cause)
+	if len(original.StreamObservation.DiagnosticContent) > 0 {
+		// Rejected snapshots remain diagnostics when the runtime can finally
+		// abandon the request. Keep the exact list the adapter's retirement
+		// callback owns; the canonical empty terminal is independently derived.
+		observation.DiagnosticContent = original.StreamObservation.DiagnosticContent
+		observation.StagedDiagnosticContent = original.StreamObservation.StagedDiagnosticContent
+		observation.ReleaseContent = original.StreamObservation.ReleaseContent
+		observation.MalformedProtocolCount = original.StreamObservation.MalformedProtocolCount
+		observation.MeaningfulProgress = original.StreamObservation.MeaningfulProgress
+	}
+	metadata := ProviderExecutionMetadata{
+		ProviderSessionID: identity.SessionID, OutcomeState: "failed",
+		FailureReasonCode: original.FailureReasonCode, FailureReasonText: original.FailureReasonText,
+		StreamObservation: observation,
+	}
+	return executionError(metadata, cause), func() { _ = releaseAbandoned() }, nil
 }
 
 // errBlockedByProviderRequest marks an operation that recovery cannot settle

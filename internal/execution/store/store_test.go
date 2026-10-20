@@ -1068,13 +1068,16 @@ func TestStoreListPendingAttemptCancelsPublishAndFailure(t *testing.T) {
 	if handoffState != "awaiting_quiescence" {
 		t.Fatalf("expected failed cancellation to await quiescence, got %q", handoffState)
 	}
-	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'stop_retry_dispatched' WHERE cancel_outbox_id = 'cancel_outbox_1'`)
-	pending, err = s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
-	if err != nil {
-		t.Fatalf("list dispatched stop retry handoffs: %v", err)
-	}
-	if len(pending) != 0 {
-		t.Fatalf("expected dispatched stop retry to wait for an operator action after restart, got %#v", pending)
+	for _, phase := range []string{"awaiting_quiescence", "cancellation_dispatched", "stop_retry_dispatched"} {
+		mustExec(t, db, fmt.Sprintf(`UPDATE attempt_cancel_outbox SET handoff_state=%q WHERE cancel_outbox_id='cancel_outbox_1'`, phase))
+		observedEnd, err := s.PendingAttemptCancelHighWatermark(ctx)
+		if err != nil || observedEnd != through {
+			t.Fatalf("waiting %s cancellation must remain discoverable: end=%+v err=%v", phase, observedEnd, err)
+		}
+		pending, err = s.ListPendingAttemptCancels(ctx, AttemptCancelCursor{}, through, 10)
+		if err != nil || len(pending) != 1 || pending[0].HandoffState != phase {
+			t.Fatalf("waiting %s cancellation must remain observable: pending=%+v err=%v", phase, pending, err)
+		}
 	}
 	mustExec(t, db, `UPDATE attempt_cancel_outbox SET handoff_state = 'awaiting_quiescence' WHERE cancel_outbox_id = 'cancel_outbox_1'`)
 

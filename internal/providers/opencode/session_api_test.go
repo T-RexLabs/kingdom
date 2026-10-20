@@ -125,6 +125,12 @@ func TestMessagesPageNewestFirstAndFollowCursor(t *testing.T) {
 	var queries []string
 	client := sessionTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
+		// OpenCode v2 cursors carry ordering. Its public API rejects a cursor
+		// combined with an explicit order, even when that order is unchanged.
+		if r.URL.Query().Get("cursor") != "" && r.URL.Query().Has("order") {
+			http.Error(w, "cursor cannot be combined with order", http.StatusBadRequest)
+			return
+		}
 		if r.URL.Query().Get("cursor") == "" {
 			io.WriteString(w, `{"data":[{"id":"c"},{"id":"b"}],"cursor":{"next":"page-2"}}`)
 			return
@@ -148,7 +154,7 @@ func TestMessagesPageNewestFirstAndFollowCursor(t *testing.T) {
 	if err := client.Messages(context.Background(), "/workspace", "ses_1", visit(&ids, "")); err != nil || strings.Join(ids, ",") != "c,b,a" {
 		t.Fatalf("ids=%v error=%v", ids, err)
 	}
-	if len(queries) != 2 || !strings.Contains(queries[0], "order=desc") || !strings.Contains(queries[1], "order=desc") || !strings.Contains(queries[1], "cursor=page-2") {
+	if len(queries) != 2 || !strings.Contains(queries[0], "order=desc") || strings.Contains(queries[1], "order=") || !strings.Contains(queries[1], "cursor=page-2") {
 		t.Fatalf("unexpected paging %v", queries)
 	}
 	ids, queries = nil, nil

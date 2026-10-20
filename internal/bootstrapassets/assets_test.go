@@ -142,6 +142,7 @@ func TestFreshScaffoldContainsCanonicalMigrations(t *testing.T) {
 		"0005_agent_voice_and_guidance.up.sql",
 		"0006_planning_session_owned_cascades.up.sql",
 		"0007_provider_request_ownership.up.sql",
+		"0008_attempt_resume_checkpoints.up.sql",
 	}
 	if len(entries) != len(want) {
 		t.Fatalf("fresh scaffold has %d migrations, want %d", len(entries), len(want))

@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { useRunExecutionActivity } from "@/api/hooks-runs";
 import type { RunExecution, RunExecutionDetail } from "@/api/hooks";
 import {
@@ -22,6 +22,8 @@ type RunActivityProps = {
   attemptId: string | null;
   status?: RunExecution["status"];
   detail?: RunExecutionDetail | null;
+  isVisible?: boolean;
+  isDetailLoading?: boolean;
 };
 export function RunExecutionActivity(props: RunActivityProps) {
   return (
@@ -36,11 +38,26 @@ function RunAttemptActivity({
   attemptId,
   status,
   detail,
+  isVisible = true,
+  isDetailLoading = false,
 }: RunActivityProps) {
   const isRunning = isActiveExecutionStatus(status);
   const durable = useRunExecutionActivity(runId, attemptId, {
     refetchIntervalMs: isRunning ? 1_500 : false,
   });
+  const activityRef = useRef<HTMLElement>(null);
+  const openedAtLatest = useRef(false);
+  useEffect(() => {
+    if (!isVisible) {
+      openedAtLatest.current = false;
+      return;
+    }
+    if (openedAtLatest.current || durable.isLoading || isDetailLoading) return;
+    const activity = activityRef.current;
+    if (!activity) return;
+    activity.scrollIntoView({ block: "end" });
+    openedAtLatest.current = true;
+  }, [isVisible, durable.isLoading, isDetailLoading, attemptId]);
   const liveBuffer = useLiveRunActivity(runId);
   const liveItems = selectLiveRunActivity(liveBuffer, attemptId);
   const state = useMemo(
@@ -74,7 +91,7 @@ function RunAttemptActivity({
       </p>
     );
   return (
-    <section className="space-y-2" aria-label="Provider activity">
+    <section ref={activityRef} className="space-y-2" aria-label="Provider activity">
       <h3 className="sr-only">Provider Activity</h3>
       {showPhase && (
         <p role="status" className="py-2 text-sm text-foreground-muted">

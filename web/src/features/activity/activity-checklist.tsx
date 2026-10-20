@@ -1,7 +1,6 @@
-import { useId, useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   CheckCircle2,
-  ChevronDown,
   Circle,
   CircleDot,
   CircleSlash,
@@ -12,16 +11,8 @@ import type { ActivityContent } from "./activity-view";
 type ReportedTask = { content: string; status: string };
 
 /** A readable projection of one complete provider snapshot, never inferred task state. */
-export function ActivityChecklist({
-  content,
-  collapsible = false,
-}: {
-  content: ActivityContent;
-  collapsible?: boolean;
-}) {
+export function ActivityChecklist({ content }: { content: ActivityContent }) {
   const tasks = useMemo(() => readReportedTasks(content), [content]);
-  const [open, setOpen] = useState(false);
-  const panelId = useId();
   if (!tasks) return null;
   const completed = tasks.filter((task) => task.status === "completed").length;
   return (
@@ -30,48 +21,26 @@ export function ActivityChecklist({
       role="group"
       aria-label="Reported checklist"
     >
-      {collapsible ? (
-        <button
-          type="button"
-          aria-expanded={open}
-          aria-controls={panelId}
-          onClick={() => setOpen((current) => !current)}
-          className="flex min-h-9 items-center gap-2 text-xs font-medium text-foreground-muted"
-        >
-          <span>Checklist</span>
-          <span>
-            {completed}/{tasks.length}
-          </span>
-          <ChevronDown
-            aria-hidden="true"
-            className={`h-3 w-3 transition-transform ${open ? "rotate-180" : ""}`}
+      <p className="text-xs font-medium text-foreground-muted">
+        {completed} of {tasks.length} Completed
+      </p>
+      {tasks.length > 8 ? (
+        <div role="list" aria-label="Reported tasks">
+          <Virtuoso
+            style={{ height: 256 }}
+            aria-label="Scrollable reported tasks"
+            data={tasks}
+            defaultItemHeight={52}
+            itemContent={(_, task) => <ReportedTaskRow task={task} />}
           />
-        </button>
+        </div>
       ) : (
-        <p className="text-xs font-medium text-foreground-muted">
-          {completed} of {tasks.length} Completed
-        </p>
-      )}
-      <div id={panelId} hidden={collapsible && !open}>
-        {(!collapsible || open) &&
-          (tasks.length > 8 ? (
-            <div role="list" aria-label="Reported tasks">
-              <Virtuoso
-                style={{ height: 256 }}
-                aria-label="Scrollable reported tasks"
-                data={tasks}
-                defaultItemHeight={52}
-                itemContent={(_, task) => <ReportedTaskRow task={task} />}
-              />
-            </div>
-          ) : (
-            <div role="list" aria-label="Reported tasks" className="space-y-2">
-              {tasks.map((task, index) => (
-                <ReportedTaskRow key={index} task={task} />
-              ))}
-            </div>
+        <div role="list" aria-label="Reported tasks" className="space-y-2">
+          {tasks.map((task, index) => (
+            <ReportedTaskRow key={index} task={task} />
           ))}
-      </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -53,8 +53,8 @@ var rootHelpSections = []rootHelpSection{
 			{"create", "work-order"},
 			{"run", "start"},
 			{"run", "status"},
+			{"run", "resume"},
 			{"graph", "show"},
-			{"node", "retry"},
 			{"node", "rerun-from"},
 			{"timeline", "follow"},
 		},
@@ -167,8 +167,8 @@ var helpTopics = []*helpTopic{
 	{
 		path:               []string{"run"},
 		summary:            "Start, inspect, and export work order runs.",
-		usage:              []string{"kd run start --work-order-id <id> [flags]", "kd run status --run-id <id>", "kd run artifacts export --run-id <id> [flags]"},
-		subcommands:        [][]string{{"run", "start"}, {"run", "status"}, {"run", "artifacts", "export"}},
+		usage:              []string{"kd run start --work-order-id <id> [flags]", "kd run status --run-id <id>", "kd run resume --run-id <id> --reason <text>", "kd run artifacts export --run-id <id> [flags]"},
+		subcommands:        [][]string{{"run", "start"}, {"run", "status"}, {"run", "resume"}, {"run", "artifacts", "export"}},
 		includeGlobalFlags: true,
 	},
 	{
@@ -192,6 +192,18 @@ var helpTopics = []*helpTopic{
 		usage:   []string{"kd run status --run-id <id>"},
 		flags: func(flags *flag.FlagSet) {
 			bindRunStatusFlags(flags, &runStatusOptions{})
+		},
+		includeGlobalFlags: true,
+	},
+	{
+		path:    []string{"run", "resume"},
+		summary: "Resume the run's interrupted steps from their saved checkpoints.",
+		usage:   []string{"kd run resume --run-id <id> --reason <text>"},
+		flags: func(flags *flag.FlagSet) {
+			bindRunResumeFlags(flags, &runResumeOptions{})
+		},
+		notes: []string{
+			"Resume continues each interrupted step's saved conversation and partial files in a new attempt. When no valid checkpoint exists, use `kd node rerun-from`.",
 		},
 		includeGlobalFlags: true,
 	},
@@ -230,17 +242,8 @@ var helpTopics = []*helpTopic{
 	{
 		path:               []string{"node"},
 		summary:            "Control run execution at the node level.",
-		usage:              []string{"kd node retry --run-id <id> --node-key <key> --reason <text>", "kd node rerun-from --run-id <id> --node-key <key> --reason <text>"},
-		subcommands:        [][]string{{"node", "retry"}, {"node", "rerun-from"}},
-		includeGlobalFlags: true,
-	},
-	{
-		path:    []string{"node", "retry"},
-		summary: "Retry a specific node.",
-		usage:   []string{"kd node retry --run-id <id> --node-key <key> --reason <text>"},
-		flags: func(flags *flag.FlagSet) {
-			bindNodeMutationFlags(flags, &nodeMutationOptions{}, "retry reason")
-		},
+		usage:              []string{"kd node rerun-from --run-id <id> --node-key <key> --reason <text>"},
+		subcommands:        [][]string{{"node", "rerun-from"}},
 		includeGlobalFlags: true,
 	},
 	{

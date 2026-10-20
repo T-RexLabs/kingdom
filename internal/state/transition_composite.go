@@ -36,9 +36,12 @@ type QueuedNodeAttempt struct {
 }
 
 type ReplayTerminalRunRequest struct {
-	RunID           string
-	AnchorNodeID    string
-	TargetNodeIDs   []string
+	RunID         string
+	AnchorNodeID  string
+	TargetNodeIDs []string
+	// ResumeSources pins the interrupted frontier to the exact source attempts
+	// the operator reviewed. Other replay targets start fresh without context.
+	ResumeSources   map[string]string
 	Reason          string
 	ActorID         string
 	RoleID          string
@@ -995,8 +998,12 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	if occurredAt == "" {
 		occurredAt = time.Now().UTC().Format(time.RFC3339)
 	}
-	if strings.TrimSpace(req.RunReasonCode) != "manual_retry_requested" && strings.TrimSpace(req.RunReasonCode) != "manual_rerun_requested" {
-		return nil, fmt.Errorf("manual retry or rerun run reason code is required")
+	resume := strings.TrimSpace(req.RunReasonCode) == "manual_resume_requested"
+	if !resume && strings.TrimSpace(req.RunReasonCode) != "manual_rerun_requested" {
+		return nil, fmt.Errorf("manual rerun or resume run reason code is required")
+	}
+	if resume != (len(req.ResumeSources) > 0) {
+		return nil, fmt.Errorf("resume sources are required only for manual resume")
 	}
 	if strings.TrimSpace(req.RunEventType) == "" || strings.TrimSpace(req.NodeEventType) == "" {
 		return nil, fmt.Errorf("run and node event types are required")
@@ -1025,13 +1032,18 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	if err := validateTransition(EntityTypeRun, runStatus, "running"); err != nil {
 		return nil, err
 	}
-	if runStatus == "cancelled" {
+	if runStatus == "cancelled" || resume {
 		blockers, err := cancelledRunReplayBlockersTx(ctx, tx, req.RunID)
 		if err != nil {
 			return nil, err
 		}
 		if len(blockers) > 0 {
 			return nil, &ReplayNotQuiescentError{RunID: req.RunID, Blockers: blockers}
+		}
+	}
+	if resume {
+		if err := validateResumeReplayTx(ctx, tx, req); err != nil {
+			return nil, err
 		}
 	}
 	if err := prepareRunWorktreeForTerminalReplayTx(ctx, tx, req.RunID); err != nil {
@@ -1052,9 +1064,9 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 	if err != nil {
 		return nil, err
 	}
-	trigger := "operator_retry"
-	if strings.TrimSpace(req.RunReasonCode) == "manual_rerun_requested" {
-		trigger = "operator_rerun"
+	trigger := "operator_rerun"
+	if resume {
+		trigger = "operator_resume"
 	}
 	runPayload, err := marshalRetryRecoveryEventPayload(retryRecoveryEventPayload{
 		NodeID:          req.AnchorNodeID,
@@ -1109,13 +1121,25 @@ func (s *TransitionService) replayTerminalRunOnce(ctx context.Context, req Repla
 			return nil, err
 		}
 		sourceNodeRunID := ""
+		nodeTrigger := trigger
+		checkpointSourceID := ""
+		if resume {
+			if selected, ok := req.ResumeSources[nodeID]; ok {
+				// The validated checkpoint attempt is the recovery source, even
+				// when later Resume attempts ended before reaching the provider.
+				checkpointSourceID = selected
+				sourceAttemptID = selected
+			} else {
+				nodeTrigger = "operator_rerun"
+			}
+		}
 		if sourceAttemptID != "" {
 			if err := tx.QueryRowContext(ctx, `SELECT node_run_id FROM attempt_executions WHERE run_id = ? AND attempt_id = ?`, req.RunID, sourceAttemptID).Scan(&sourceNodeRunID); err != nil {
 				return nil, fmt.Errorf("load manual recovery source lineage: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx, `INSERT INTO node_attempt_recoveries
-				(target_node_run_id, run_id, node_id, source_attempt_id, source_node_run_id, trigger, reason_code, scheduled_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, queuedAttempt.NodeRunID, req.RunID, nodeID, sourceAttemptID, sourceNodeRunID, trigger, strings.TrimSpace(req.RunReasonCode), occurredAt); err != nil {
+				(target_node_run_id, run_id, node_id, source_attempt_id, source_node_run_id, trigger, reason_code, scheduled_at, checkpoint_source_attempt_id)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?,''))`, queuedAttempt.NodeRunID, req.RunID, nodeID, sourceAttemptID, sourceNodeRunID, nodeTrigger, strings.TrimSpace(req.RunReasonCode), occurredAt, checkpointSourceID); err != nil {
 				return nil, fmt.Errorf("persist manual recovery provenance: %w", err)
 			}
 		}

@@ -231,6 +231,11 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 	if err != nil {
 		return metadata, executionError(metadata, fmt.Errorf("opencode execute: %w", err))
 	}
+	// A request the provider failed carries its own reason; the structural
+	// checks below would only report what a failed answer lacks.
+	if metadata.OutcomeState != "success" {
+		return metadata, executionError(metadata, providerFailure(metadata))
+	}
 	if err := providerexecution.ValidateServerResponseSuccess(resp.StreamObservation); err != nil {
 		return metadata, executionError(metadata, fmt.Errorf("invalid planner terminal observation: %w", err))
 	}
@@ -238,6 +243,25 @@ func (a *OpenCodeAgent) execute(ctx context.Context, input AgentContext, prompts
 		return metadata, executionError(metadata, err)
 	}
 	return metadata, nil
+}
+
+// ProviderFailureError is a planner request the provider itself failed.
+// Message is the provider's own explanation, when it gave one.
+type ProviderFailureError struct {
+	Outcome    string
+	ReasonCode string
+	Message    string
+}
+
+func (e *ProviderFailureError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return fmt.Sprintf("the planner request ended as %s (%s)", e.Outcome, e.ReasonCode)
+}
+
+func providerFailure(metadata ProviderExecutionMetadata) error {
+	return &ProviderFailureError{Outcome: metadata.OutcomeState, ReasonCode: metadata.FailureReasonCode, Message: metadata.FailureReasonText}
 }
 
 // stagedPrompt is a prompt held on disk so Execute can read it as many times as

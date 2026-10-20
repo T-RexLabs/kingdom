@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"kingdom/internal/core/errorcatalog"
 	"kingdom/internal/core/providerexecution"
 	"kingdom/internal/execution/providerrequest"
 	"kingdom/internal/providers/opencode/protocol"
@@ -369,8 +370,8 @@ func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResp
 		Watermark: watermark, CaptureHealthy: e.capture().healthy() == nil, WaitCompleted: true,
 	}, text)
 	if err != nil {
-		discard()
-		return ExecuteResponse{}, fmt.Errorf("verify OpenCode request: %w", err)
+		text.discard()
+		return e.reject(ctx, "verify OpenCode request", err, eventsContent, messagesContent)
 	}
 	textContent, err := text.finish(invocationID)
 	if err != nil {
@@ -380,10 +381,41 @@ func (e *execution) finalize(ctx context.Context, invokedAt string) (ExecuteResp
 	// The terminal becomes the request's evidence when it settles. Checking it
 	// here keeps an inconsistent record from ever leaving the provider.
 	if err := runtime.authority.CheckTerminal(ctx, identity, verified.Terminal); err != nil {
-		discard()
-		return ExecuteResponse{}, fmt.Errorf("check OpenCode terminal evidence: %w", err)
+		_ = os.Remove(textContent.Path)
+		return e.reject(ctx, "check OpenCode terminal evidence", err, eventsContent, messagesContent)
 	}
 	return e.response(ctx, verified, eventsContent, messagesContent, textContent, invokedAt, commandErr)
+}
+
+// reject retains the rejected snapshots only as diagnostics. Abandonment is
+// the canonical result, and is allowed only after all admitted effects close.
+// Neither a rejected snapshot nor its text can certify provider success.
+func (e *execution) reject(ctx context.Context, operation string, cause error, diagnostics ...providerexecution.StagedContent) (ExecuteResponse, error) {
+	response, err := e.abandon(ctx, &ProtocolError{Operation: operation, Cause: cause})
+	response.ProviderSessionID = e.identity().SessionID
+	response.ProviderInvocationID = e.req.InvocationID
+	response.Outcome = ExecutionOutcome{State: "failed", ReasonCode: string(errorcatalog.CodeProviderProtocolError), FailureText: "Kingdom could not verify the OpenCode reply. Diagnostic evidence has been retained.", EvidenceSource: "request"}
+	observation := &response.StreamObservation
+	observation.ProviderSessionID = e.identity().SessionID
+	observation.MalformedProtocolCount = 1
+	for _, content := range diagnostics {
+		observation.DiagnosticContent = append(observation.DiagnosticContent, content.Reference)
+		observation.StagedDiagnosticContent = append(observation.StagedDiagnosticContent, content)
+	}
+	release := observation.ReleaseContent
+	observation.ReleaseContent = func() error {
+		var failures []error
+		if release != nil {
+			failures = append(failures, release())
+		}
+		for _, content := range diagnostics {
+			if err := os.Remove(content.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+				failures = append(failures, err)
+			}
+		}
+		return errors.Join(failures...)
+	}
+	return response, err
 }
 
 // writeMessages writes the projected messages from this request's user input
@@ -439,7 +471,7 @@ func (e *execution) response(ctx context.Context, verified protocol.Verified, ev
 		StagedDiagnosticContent: staged,
 		ToolCalls:               terminal.ToolCalls(), Tokens: verified.Tokens,
 		TimedOut:           e.cause == stopTimedOut,
-		Cancelled:          terminal.Outcome == providerexecution.RequestOutcomeInterrupted && e.cause != stopTimedOut,
+		Cancelled:          e.cause == stopCancelled || (terminal.Outcome == providerexecution.RequestOutcomeInterrupted && e.cause != stopTimedOut),
 		MeaningfulProgress: terminal.Text != nil || len(terminal.Tools) > 0,
 	}
 	for _, tool := range terminal.Tools {

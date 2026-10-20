@@ -122,6 +122,11 @@ func (s *Service) Prepare(ctx context.Context, req ExecuteRequest) (Prepared, er
 		return Prepared{}, fmt.Errorf("model must name a provider and a model")
 	}
 	model := ModelRef{ProviderID: providerID, ID: modelID, Variant: req.Variant}
+	if req.ResumeFrom != nil {
+		if err := s.verifyResumeCheckpoint(ctx, req); err != nil {
+			return Prepared{}, err
+		}
+	}
 	p, err := newProfile(req.System, profileActions(req.Agent))
 	if err != nil {
 		return Prepared{}, err
@@ -166,6 +171,8 @@ func requirePrepareRequest(req ExecuteRequest) error {
 		return fmt.Errorf("workspace path must be absolute")
 	case strings.TrimSpace(req.System) == "" || strings.TrimSpace(req.Agent) == "":
 		return fmt.Errorf("agent and system instruction are required")
+	case req.ResumeFrom != nil && (req.ProviderSessionID != "" || req.ForceNewSession || req.OpenContinuationPrompt == nil):
+		return fmt.Errorf("explicit resume requires a continuation prompt without another session selection")
 	}
 	return nil
 }
@@ -174,6 +181,9 @@ func requirePrepareRequest(req ExecuteRequest) error {
 // history since creation, and otherwise creates a fresh one.
 func (s *Service) prepareSession(ctx context.Context, started *serviceStart, req ExecuteRequest, prepared *request) (string, bool, error) {
 	client, directory := started.client, prepared.directory
+	if req.ResumeFrom != nil {
+		return s.resumeSession(ctx, started, *req.ResumeFrom, prepared)
+	}
 	if sessionID := req.ProviderSessionID; sessionID != "" && !req.ForceNewSession && started.capture.tracked(sessionID) {
 		info, err := client.Session(ctx, directory, sessionID)
 		if err != nil {

@@ -179,7 +179,40 @@ func planningMessageFromState(item state.PlanningMessage) (gen.PlanningMessage, 
 	if answer != nil {
 		result.AnswerPayload = answer
 	}
+	if item.Failure != nil {
+		result.Failure = &gen.PlanningMessageFailure{ReasonCode: item.Failure.ReasonCode, Message: planningTurnFailureMessage(*item.Failure)}
+	}
 	return result, nil
+}
+
+// planningTurnFailureMessages explains a failed planner turn by its error code.
+// Internal error text is never shown to the operator.
+var planningTurnFailureMessages = map[string]string{
+	"provider_protocol_error":  "Kingdom could not verify the OpenCode reply. Diagnostic evidence has been retained.",
+	"llm_rate_limited":         "The provider is limiting requests right now. Wait a moment, then retry.",
+	"llm_usage_limit_reached":  "The provider account has reached its usage limit.",
+	"llm_model_unavailable":    "The selected model is unavailable.",
+	"llm_context_overflow":     "The conversation is too long for the selected model.",
+	"llm_invalid_response":     "The provider returned a reply Kingdom could not read.",
+	"transient_transport":      "Kingdom lost the connection to the provider.",
+	"timeout":                  "The provider stopped responding before the reply finished.",
+	"agent_unresponsive":       "The planner stopped responding before the reply finished.",
+	"provider_incomplete_turn": "The provider ended the turn before finishing the reply.",
+	"provider_empty_output":    "The provider finished without writing a reply.",
+	"resource_limit_exceeded":  "The reply exceeded a Kingdom resource limit.",
+	"dependency_blocked":       "A linked source for this conversation could not be used.",
+}
+
+// planningTurnFailureMessage prefers the provider's own explanation, which
+// names the actual cause, such as an authorization error.
+func planningTurnFailureMessage(failure state.PlanningTurnFailure) string {
+	if message := strings.TrimSpace(failure.ProviderMessage); message != "" {
+		return message
+	}
+	if message, ok := planningTurnFailureMessages[failure.ReasonCode]; ok {
+		return message
+	}
+	return "The planner could not finish this reply."
 }
 
 func planningDraftFromState(item state.PlanningDraft) gen.PlanningDraft {

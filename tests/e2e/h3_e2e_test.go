@@ -35,24 +35,11 @@ import (
 
 const e2eOperatorCredential = "e2e-operator-credential"
 
-func TestE2ERetryAndRerunFlowsAccepted(t *testing.T) {
+func TestE2ERerunFlowAcceptedAndResumeRequiresCheckpoint(t *testing.T) {
 	t.Parallel()
 
 	env := newE2EEnv(t)
 	runID := env.createRun(t)
-	env.setRunStatus(t, runID, "failed")
-
-	retryRes := env.request(t, requestSpec{
-		method: http.MethodPost,
-		path:   "/api/v1/runs/" + runID + "/nodes/execution_kickoff/retry",
-		body: map[string]any{
-			"reason": "recover flaky downstream",
-		},
-		idempotencyKey: "idem-h3-retry",
-	})
-	if retryRes.Code != http.StatusAccepted {
-		t.Fatalf("expected 202 for retry, got %d (%s)", retryRes.Code, retryRes.Body.String())
-	}
 	env.setRunStatus(t, runID, "failed")
 
 	rerunRes := env.request(t, requestSpec{
@@ -66,24 +53,39 @@ func TestE2ERetryAndRerunFlowsAccepted(t *testing.T) {
 	if rerunRes.Code != http.StatusAccepted {
 		t.Fatalf("expected 202 for rerun, got %d (%s)", rerunRes.Code, rerunRes.Body.String())
 	}
+
+	removed := env.request(t, requestSpec{
+		method:         http.MethodPost,
+		path:           "/api/v1/runs/" + runID + "/nodes/execution_kickoff/retry",
+		body:           map[string]any{"reason": "manual retry no longer exists"},
+		idempotencyKey: "idem-h3-retry-removed",
+	})
+	if removed.Code != http.StatusNotFound && removed.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("expected removed manual retry route, got %d (%s)", removed.Code, removed.Body.String())
+	}
 }
 
-func TestE2ERetryRejectedWhenRunNotFailed(t *testing.T) {
+func TestE2EResumeRejectedWhenRunNotFailed(t *testing.T) {
 	t.Parallel()
 
 	env := newE2EEnv(t)
 	runID := env.createRun(t)
 
-	retryRes := env.request(t, requestSpec{
+	plan := env.request(t, requestSpec{method: http.MethodGet, path: "/api/v1/runs/" + runID + "/resume"})
+	if plan.Code != http.StatusOK || !strings.Contains(plan.Body.String(), `"available":false`) || !strings.Contains(plan.Body.String(), "Only a failed or cancelled run can be resumed.") {
+		t.Fatalf("expected unavailable resume plan, got %d (%s)", plan.Code, plan.Body.String())
+	}
+	resumeRes := env.request(t, requestSpec{
 		method: http.MethodPost,
-		path:   "/api/v1/runs/" + runID + "/nodes/execution_kickoff/retry",
+		path:   "/api/v1/runs/" + runID + "/resume",
 		body: map[string]any{
-			"reason": "retry while still active",
+			"reason": "resume while still active",
+			"steps":  []any{map[string]any{"node_id": "execution_kickoff", "source_attempt_id": "none"}},
 		},
-		idempotencyKey: "idem-h3-retry-conflict",
+		idempotencyKey: "idem-h3-resume-conflict",
 	})
-	if retryRes.Code != http.StatusConflict {
-		t.Fatalf("expected 409 retry conflict, got %d (%s)", retryRes.Code, retryRes.Body.String())
+	if resumeRes.Code != http.StatusConflict {
+		t.Fatalf("expected 409 resume conflict, got %d (%s)", resumeRes.Code, resumeRes.Body.String())
 	}
 }
 

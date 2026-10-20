@@ -284,6 +284,7 @@ type asyncExecutionResult struct {
 	responseOnlyWorkspaceCleanupMarkedAt string
 	delegator                            string
 	openPrompt                           opencodePromptOpener
+	resume                               *state.AttemptResumeInput
 	system                               string
 	model                                string
 	variant                              string

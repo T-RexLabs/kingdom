@@ -337,7 +337,7 @@ describe("PlannerThread response cancellation", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("keeps actual operation failure distinct from cancellation", () => {
+  it("leaves a failed turn's explanation to its reply rather than showing internal error text", () => {
     renderThread(
       <PlannerThread
         {...props}
@@ -349,9 +349,7 @@ describe("PlannerThread response cancellation", () => {
         }}
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "Provider failed before settlement",
-    );
+    expect(screen.queryByText("Provider failed before settlement")).not.toBeInTheDocument();
     expect(screen.queryByText("Response Stopped")).not.toBeInTheDocument();
   });
 });

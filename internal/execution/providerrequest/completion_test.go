@@ -172,3 +172,70 @@ func TestCompletionRecordsTheTerminalExactlyOnce(t *testing.T) {
 		})
 	}
 }
+
+func TestCancellationPreservesConcurrentProviderCompletion(t *testing.T) {
+	for _, kind := range []OwnerKind{OwnerRun, OwnerPlanning} {
+		for _, rawOutcome := range []string{providerexecution.RequestOutcomeSucceeded, providerexecution.RequestOutcomeFailed} {
+			t.Run(string(kind)+"/"+rawOutcome, func(t *testing.T) {
+				db, b, now := fixture(t, kind)
+				bind(t, db, b, now)
+				dispatch(t, db, b, now)
+				closeAdmission(t, db, b, now)
+				observation, _ := completionObservation(b)
+				observation.Request.Terminal.Outcome = rawOutcome
+				observation.Cancelled = true
+				want, err := observation.Request.Terminal.Reference()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := transaction(t, db, func(tx *sql.Tx) error {
+					return SettleCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "cancelled")
+				}); err != nil {
+					t.Fatalf("cancellation racing a verified %s terminal must settle: %v", rawOutcome, err)
+				}
+				stored, err := Get(context.Background(), db, b.ID)
+				if err != nil || stored.TerminalReference == nil || *stored.TerminalReference != want {
+					t.Fatalf("cancellation must preserve the provider's exact terminal: %#v %v", stored, err)
+				}
+			})
+		}
+	}
+}
+
+func TestCancellationRequiresAnOwnedDecisionAndClosedResources(t *testing.T) {
+	for _, name := range []string{"no cancellation decision", "stale lease", "open admission", "pending write"} {
+		t.Run(name, func(t *testing.T) {
+			db, b, now := fixture(t, OwnerPlanning)
+			bind(t, db, b, now)
+			dispatch(t, db, b, now)
+			observation, _ := completionObservation(b)
+			observation.Cancelled = name != "no cancellation decision"
+			if name == "pending write" {
+				call := native(b)
+				if err := transaction(t, db, func(tx *sql.Tx) error {
+					_, err := AdmitNativeTx(context.Background(), tx, call, now)
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				observation.Request.Terminal.Tools = []providerexecution.RequestTool{nativeTool(t, call, "completed")}
+				observation.ToolCalls = observation.Request.Terminal.ToolCalls()
+			}
+			if name != "open admission" {
+				closeAdmission(t, db, b, now)
+			}
+			if name == "stale lease" {
+				execSQL(t, db, "UPDATE planning_operations SET lease_version=lease_version+1")
+			}
+			if err := transaction(t, db, func(tx *sql.Tx) error {
+				return SettleCompletionTx(context.Background(), tx, b.Owner, b.Lease, observation, "cancelled")
+			}); err == nil {
+				t.Fatalf("cancellation accepted with %s", name)
+			}
+			stored, err := Get(context.Background(), db, b.ID)
+			if err != nil || stored.TerminalReference != nil {
+				t.Fatalf("rejected cancellation recorded evidence: %#v %v", stored, err)
+			}
+		})
+	}
+}

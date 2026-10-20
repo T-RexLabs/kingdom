@@ -58,6 +58,78 @@ func TestCommandRunsGuardedAndIsClaimedOnce(t *testing.T) {
 	}
 }
 
+func TestCommandRunsInItsRequestedWorkspaceDirectory(t *testing.T) {
+	for _, spelling := range []string{"relative", "absolute", "symlink"} {
+		t.Run(spelling, func(t *testing.T) {
+			bound := newBoundRun(t)
+			bridge, _ := newTestBridge(t, bound)
+			directory := filepath.Join(bound.workspace, "packages", "app")
+			if err := os.MkdirAll(directory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			workdir := "packages/app"
+			if spelling == "absolute" {
+				workdir = directory
+			}
+			if spelling == "symlink" {
+				workdir = "app-link"
+				if err := os.Symlink(directory, filepath.Join(bound.workspace, workdir)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			call := shellCall(bound, "call-nested", "pwd; echo ran >> runs.txt")
+			call.Cwd = directory
+			call.ToolInput, _ = json.Marshal(map[string]any{"command": call.Command, "timeout": call.Timeout, "workdir": workdir})
+			result, err := bridge.invoke(context.Background(), call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			canonical, err := filepath.EvalSymlinks(directory)
+			if err != nil || strings.TrimSpace(result.Output) != canonical {
+				t.Fatalf("cwd=%q want=%q err=%v", result.Output, canonical, err)
+			}
+			if _, err := bridge.invoke(context.Background(), call); err != nil {
+				t.Fatal(err)
+			}
+			if raw, err := os.ReadFile(filepath.Join(directory, "runs.txt")); err != nil || string(raw) != "ran\n" {
+				t.Fatalf("nested command replay: %q %v", raw, err)
+			}
+			if _, err := os.Stat(filepath.Join(bound.workspace, "runs.txt")); !os.IsNotExist(err) {
+				t.Fatalf("command ran in root: %v", err)
+			}
+		})
+	}
+}
+
+func TestCommandRejectsInvalidWorkspaceDirectoriesBeforeClaiming(t *testing.T) {
+	bound := newBoundRun(t)
+	bridge, _ := newTestBridge(t, bound)
+	external := t.TempDir()
+	if err := os.Symlink(external, filepath.Join(bound.workspace, "escape")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bound.workspace, "file"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, workdir := range []string{"missing", "file", "escape", "..", external} {
+		t.Run(workdir, func(t *testing.T) {
+			call := shellCall(bound, "call-invalid", "true")
+			call.Cwd = filepath.Join(bound.workspace, workdir)
+			if filepath.IsAbs(workdir) {
+				call.Cwd = workdir
+			}
+			call.ToolInput, _ = json.Marshal(map[string]any{"command": call.Command, "timeout": call.Timeout, "workdir": workdir})
+			if _, err := bridge.invoke(context.Background(), call); err == nil {
+				t.Fatal("invalid directory accepted")
+			}
+		})
+	}
+	var claims int
+	if err := bound.db.QueryRow(`SELECT count(*) FROM provider_command_calls`).Scan(&claims); err != nil || claims != 0 {
+		t.Fatalf("refused directories left claims: %d %v", claims, err)
+	}
+}
+
 func TestCommandKeepsExitStatusAndBoundsOutput(t *testing.T) {
 	bound := newBoundRun(t)
 	bridge, _ := newTestBridge(t, bound)
@@ -80,7 +152,12 @@ func TestCommandIsRefusedBeforeAnyClaimWhenItIsNotTheToolCall(t *testing.T) {
 	timeout.Timeout = 5
 	foreign := shellCall(bound, "call-5", "true")
 	foreign.Identity.RequestID = "msg_other"
-	for name, call := range map[string]commandInput{"cwd": elsewhere, "background": background, "other command": different, "other timeout": timeout, "unregistered": foreign} {
+	if err := os.Mkdir(filepath.Join(bound.workspace, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	differentDirectory := shellCall(bound, "call-6", "true")
+	differentDirectory.Cwd = filepath.Join(bound.workspace, "nested")
+	for name, call := range map[string]commandInput{"cwd": elsewhere, "background": background, "other command": different, "other timeout": timeout, "unregistered": foreign, "other directory": differentDirectory} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := bridge.invoke(context.Background(), call); err == nil {
 				t.Fatal("accepted a command that is not its tool call")

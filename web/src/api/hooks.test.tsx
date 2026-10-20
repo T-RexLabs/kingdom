@@ -24,7 +24,7 @@ import {
   useRunGraph,
   useRunLatestGovernanceDecision,
   useRunPlan,
-  useRetryNode,
+  useResumeRun,
   useRoles,
   useRuns,
   useTimeline,
@@ -550,21 +550,22 @@ describe("execution query keys", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeMetricsQueryKey });
 	});
 
-	it("lets retry-node mutations own stale run execution queries", async () => {
-		apiFetchMock.mockResolvedValue({ node_key: "execution_review" });
+	it("lets resume mutations own stale run execution queries", async () => {
+		apiFetchMock.mockResolvedValue({ run_id: "run-1", resumed_node_ids: ["execution_review"], resume_enqueued: true });
 
 		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
-		const { result } = renderHook(() => useRetryNode("run-1"), {
+		const { result } = renderHook(() => useResumeRun("run-1"), {
 			wrapper: makeWrapper(qc),
 		});
 
 		await act(async () => {
 			await result.current.mutateAsync({
-				value: "execution_review",
-				key: "idem-retry-node",
+				body: { reason: "continue", steps: [{ node_id: "execution_review", source_attempt_id: "run-1:execution_review:1" }] },
+				key: "idem-resume",
 			});
 		});
 
+		expect(apiFetchMock).toHaveBeenCalledWith("/runs/run-1/resume", expect.objectContaining({ method: "POST", headers: { "Idempotency-Key": "idem-resume" } }));
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runQueryKeys.detail("run-1") });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runQueryKeys.graph("run-1"), exact: true });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["runs", "run-1", "timeline"], exact: false });
@@ -572,6 +573,16 @@ describe("execution query keys", () => {
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dashboardSnapshotQueryKey });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: analyticsQueryKey });
 		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runtimeMetricsQueryKey });
+	});
+
+	it("refreshes the resume plan when a confirmation is rejected", async () => {
+		apiFetchMock.mockRejectedValue(new Error("the interrupted steps changed"));
+		const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+		const { result } = renderHook(() => useResumeRun("run-1"), { wrapper: makeWrapper(qc) });
+		await act(async () => {
+			await expect(result.current.mutateAsync({ body: { reason: "continue", steps: [] }, key: "idem-resume-stale" })).rejects.toThrow();
+		});
+		expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: runQueryKeys.resumePlan("run-1") });
 	});
 
 	it("invalidates runtime metrics after rerunning from a node", async () => {
